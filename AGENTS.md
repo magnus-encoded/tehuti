@@ -13,3 +13,7 @@ Default five: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfi
 ### Domain docs
 
 Multi-context: `GLOSSARY-MAP.md` at the root points to one `GLOSSARY.md` per crate. See `docs/agents/domain.md`.
+
+## Standards
+
+Run `scripts/check` before every commit; CI runs the same gate. Review rules are in `CODING_STANDARDS.md`.

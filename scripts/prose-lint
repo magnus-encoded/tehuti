@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Mechanical prose rules from CODING_STANDARDS.md, over tracked files and, if given, extra files (PR bodies).
+set -uo pipefail
+cd "$(dirname "$0")/.."
+banned='—|load[- ]bearing|\bit'"'"'s not (just|only)\b|\bnot just\b.*\bbut\b|\bleverag(e|ing)\b|\bsynerg|\bseamless(ly)?\b|\brobust\b|\bstreamlin|\bpreviously\b|\bno longer\b|\bwe (changed|switched|moved|replaced)\b|\bformerly\b|\bold (version|behaviou?r|code|implementation)\b'
+files=$( { git ls-files -- ':!scripts/prose-lint' ':!CODING_STANDARDS.md'; printf '%s\n' "$@"; } | grep -v '^$')
+hits=$(printf '%s\n' "$files" | xargs -r grep -nIiE "$banned" -- 2>/dev/null)
+if [ -n "$hits" ]; then echo "prose-lint: banned phrasing (see CODING_STANDARDS.md):"; echo "$hits"; exit 1; fi

@@ -1,0 +1,26 @@
+name: check
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: scripts/check
+  pr-body:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n' "$BODY" > "$RUNNER_TEMP/pr-body.md"
+          grep -qE '^(Closes|Fixes|Resolves) #[0-9]+' "$RUNNER_TEMP/pr-body.md" || { echo "PR body must reference the issue it answers: Closes #N"; exit 1; }
+          [ "$(wc -w < "$RUNNER_TEMP/pr-body.md")" -le 120 ] || { echo "PR body over 120 words"; exit 1; }
+          scripts/prose-lint "$RUNNER_TEMP/pr-body.md"
