@@ -29,6 +29,10 @@ test("rejects an ADR label applied by someone else", () => {
   );
 });
 
+test("rejects unsigned ADR changes", () => {
+  assert.equal(ownerAppliedLatestAcceptance([], "magnus-encoded"), false);
+});
+
 test("rejects an owner label that was later removed", () => {
   assert.equal(
     ownerAppliedLatestAcceptance(
