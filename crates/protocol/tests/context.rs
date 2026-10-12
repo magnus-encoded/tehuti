@@ -24,6 +24,18 @@ mod context {
     }
 
     #[test]
+    fn text_rejects_nul_at_construction_and_deserialization() {
+        assert!(tehuti_protocol::Text::new("a\0b".into()).is_err());
+        let source = r#"app_id = 'test'
+[buttons.east]
+text = "a\u0000b"
+"#;
+        assert!(parse_context(source).is_err());
+        assert!(parse_context(&source.replace("\\u0000", "\\u0001")).is_ok());
+        assert_eq!(tehuti_protocol::Text::new("🦀".into()).unwrap().as_str(), "🦀");
+    }
+
+    #[test]
     fn malformed_contexts_are_rejected() {
         for source in [
             "app_id = ''\n[buttons]",

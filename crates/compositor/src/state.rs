@@ -9,7 +9,7 @@ use smithay::{
     desktop::{Space, Window},
     input::{
         Seat, SeatHandler, SeatState,
-        keyboard::{FilterResult, KeyboardHandle, Keycode, XkbConfig},
+        keyboard::{FilterResult, KeyboardHandle, KeyboardTarget, Keycode, ModifiersState, XkbConfig, xkb},
         pointer::CursorImageStatus,
     },
     output::Output,
@@ -55,6 +55,8 @@ pub struct Compositor {
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
     keyboard: KeyboardHandle<Self>,
+    seat: Seat<Self>,
+    text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
 }
 
@@ -62,6 +64,8 @@ pub struct Compositor {
 pub enum SetupError {
     #[error("keyboard keymap: {0}")]
     Keymap(#[from] smithay::input::keyboard::Error),
+    #[error("keyboard keymap compilation failed")]
+    KeymapCompilation,
 }
 
 impl Compositor {
@@ -72,8 +76,13 @@ impl Compositor {
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .ok_or(SetupError::KeymapCompilation)?;
         let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
-        Ok(Self {
+        let text_keys = text_keys(&keymap);
+        let mut compositor = Self {
             start_time: Instant::now(),
             space: Space::default(),
             output: None,
@@ -86,8 +95,15 @@ impl Compositor {
             seat_state,
             data_device_state: DataDeviceState::new::<Self>(display),
             keyboard,
+            seat,
+            text_keys,
             text_input: crate::text_input::TextInput::new(display),
-        })
+        };
+        compositor
+            .keyboard
+            .clone()
+            .set_keymap_from_string(&mut compositor, keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))?;
+        Ok(compositor)
     }
 
     /// Installs contexts before accepting clients.
@@ -113,7 +129,11 @@ impl Compositor {
     fn apply(&mut self, action: &Action) {
         match action {
             Action::Key { key } => self.tap(*key),
-            Action::Text { text } => self.text_input.send(text),
+            Action::Text { text } => {
+                if !self.text_input.send(text.as_str()) {
+                    self.type_text(text.as_str());
+                }
+            }
             Action::Quit => self.quit_requested = true,
         }
     }
@@ -121,6 +141,10 @@ impl Compositor {
     fn tap(&mut self, key: KeyName) {
         let evdev_code = key.evdev_code();
         let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
+        self.tap_keycode(keycode);
+    }
+
+    fn tap_keycode(&mut self, keycode: Keycode) {
         let keyboard = self.keyboard.clone();
         for state in [
             smithay::backend::input::KeyState::Pressed,
@@ -134,6 +158,50 @@ impl Compositor {
                 SERIAL_COUNTER.next_serial(),
                 time,
                 |_, _, _| FilterResult::Forward,
+            );
+        }
+    }
+
+    fn type_text(&mut self, text: &str) {
+        let Some(focus) = self
+            .keyboard
+            .current_focus()
+            .filter(smithay::reexports::wayland_server::Resource::is_alive)
+        else {
+            tracing::warn!("text action skipped: no focused client");
+            return;
+        };
+        let client = smithay::wayland::compositor::with_states(&focus, |states| {
+            states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .and_then(|attributes| {
+                    attributes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .app_id
+                        .clone()
+                })
+        });
+        let surface = smithay::reexports::wayland_server::Resource::id(&focus);
+        let seat = self.seat.clone();
+        for character in text.chars() {
+            let Some((keycode, modifiers)) = self.text_keys.get(&character).copied() else {
+                tracing::warn!(
+                    ?client,
+                    ?surface,
+                    ?character,
+                    "text character unavailable in client keymap; skipped"
+                );
+                continue;
+            };
+            focus.modifiers(&seat, self, modifiers, SERIAL_COUNTER.next_serial());
+            self.tap_keycode(keycode);
+            focus.modifiers(
+                &seat,
+                self,
+                ModifiersState::default(),
+                SERIAL_COUNTER.next_serial(),
             );
         }
     }
@@ -190,6 +258,29 @@ impl Compositor {
                 .is_some_and(|toplevel| toplevel.wl_surface() == root)
         })
     }
+}
+
+fn text_keys(keymap: &xkb::Keymap) -> std::collections::HashMap<char, (Keycode, ModifiersState)> {
+    let mut keys = std::collections::HashMap::new();
+    let mut state = xkb::State::new(keymap);
+    for layout in 0..keymap.num_layouts() {
+        for mask in 0..256 {
+            let _changed = state.update_mask(mask, 0, 0, 0, 0, layout);
+            let mut modifiers = ModifiersState::default();
+            modifiers.update_with(&state);
+            for code in keymap.min_keycode().raw()..=keymap.max_keycode().raw() {
+                let keycode = Keycode::new(code);
+                let text = state.key_get_utf8(keycode);
+                let mut characters = text.chars();
+                if let Some(character) = characters.next()
+                    && characters.next().is_none()
+                {
+                    let _entry = keys.entry(character).or_insert((keycode, modifiers));
+                }
+            }
+        }
+    }
+    keys
 }
 
 #[derive(Debug, Default)]

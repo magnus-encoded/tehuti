@@ -7,6 +7,7 @@ mod synthetic_pad {
         time::Duration,
     };
     use std::{
+        io::{Read, Seek, SeekFrom},
         os::unix::net::UnixStream,
         sync::{Arc, mpsc},
         thread,
@@ -48,9 +49,12 @@ mod synthetic_pad {
     struct App {
         keys: Vec<(u32, KeyState)>,
         text: String,
+        keyboard_text: String,
+        keymap_source: String,
         pending_text: String,
         suppress_enable: bool,
         modifiers: (u32, u32, u32),
+        group: u32,
     }
 
     impl Dispatch<WlRegistry, GlobalListContents> for App {
@@ -104,14 +108,23 @@ mod synthetic_pad {
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
+            if let wl_keyboard::Event::Keymap { fd: descriptor, .. } = event {
+                app.keymap_source.clear();
+                let mut keymap_file = std::fs::File::from(descriptor);
+                let _offset = keymap_file.seek(SeekFrom::Start(0)).unwrap();
+                let _bytes = keymap_file.read_to_string(&mut app.keymap_source).unwrap();
+                return;
+            }
             if let wl_keyboard::Event::Modifiers {
                 mods_depressed,
                 mods_latched,
                 mods_locked,
+                group,
                 ..
             } = &event
             {
                 app.modifiers = (*mods_depressed, *mods_latched, *mods_locked);
+                app.group = *group;
             }
             if let wl_keyboard::Event::Key {
                 key,
@@ -120,6 +133,30 @@ mod synthetic_pad {
             } = event
             {
                 app.keys.push((key, state));
+                if state == KeyState::Pressed {
+                    use smithay::input::keyboard::xkb;
+                    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+                    let keymap = xkb::Keymap::new_from_string(
+                        &context,
+                        app.keymap_source.trim_end_matches('\0').into(),
+                        xkb::KEYMAP_FORMAT_TEXT_V1,
+                        xkb::KEYMAP_COMPILE_NO_FLAGS,
+                    )
+                    .unwrap();
+                    let mut xkb_state = xkb::State::new(&keymap);
+                    let _changed = xkb_state.update_mask(
+                        app.modifiers.0,
+                        app.modifiers.1,
+                        app.modifiers.2,
+                        0,
+                        0,
+                        app.group,
+                    );
+                    app.keyboard_text.push_str(
+                        &xkb_state
+                            .key_get_utf8(smithay::input::keyboard::Keycode::new(key.saturating_add(8))),
+                    );
+                }
             }
         }
     }
@@ -181,7 +218,8 @@ mod synthetic_pad {
         let seat: WlSeat = globals.bind(&handle, 1..=1, ()).unwrap();
         let _keyboard = seat.get_keyboard(&handle, ());
         let manager: ZwpTextInputManagerV3 = globals.bind(&handle, 1..=1, ()).unwrap();
-        let text_input = manager.get_text_input(&seat, &handle, ());
+        let text_input = (!matches!(text_state, ClientTextState::Absent))
+            .then(|| manager.get_text_input(&seat, &handle, ()));
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
@@ -194,8 +232,8 @@ mod synthetic_pad {
         let _focus_dispatch = queue.roundtrip(&mut app).unwrap();
         let _enabled_dispatch = queue.roundtrip(&mut app).unwrap();
         if matches!(text_state, ClientTextState::Disabled) {
-            text_input.disable();
-            text_input.commit();
+            text_input.as_ref().unwrap().disable();
+            text_input.as_ref().unwrap().commit();
             let _disabled_dispatch = queue.roundtrip(&mut app).unwrap();
         }
         if matches!(text_state, ClientTextState::FocusChanged) {
@@ -322,6 +360,7 @@ mod synthetic_pad {
     #[derive(Clone, Copy)]
     enum ClientTextState {
         Enabled,
+        Absent,
         Disabled,
         FocusChanged,
     }
@@ -394,21 +433,116 @@ mod synthetic_pad {
     }
 
     #[test]
-    fn disabled_and_unmatched_clients_receive_no_text() {
-        for (app_id, enabled) in [("test", false), ("other", true)] {
-            let app = exchange_with_enablement(app_id, Some("héllo ✓"), enabled);
+    fn clients_without_enabled_text_input_receive_ascii_key_taps() {
+        for text_state in [
+            ClientTextState::Absent,
+            ClientTextState::Disabled,
+            ClientTextState::FocusChanged,
+        ] {
+            let app = exchange_with_text_state("test", Some("aA!"), text_state);
             assert_eq!(app.text, "");
+            assert_eq!(app.keyboard_text, "aA!\r");
             assert_eq!(
                 app.keys,
-                vec![(KEY_ENTER, KeyState::Pressed), (KEY_ENTER, KeyState::Released)]
+                vec![
+                    (30, KeyState::Pressed),
+                    (30, KeyState::Released),
+                    (30, KeyState::Pressed),
+                    (30, KeyState::Released),
+                    (2, KeyState::Pressed),
+                    (2, KeyState::Released),
+                    (KEY_ENTER, KeyState::Pressed),
+                    (KEY_ENTER, KeyState::Released),
+                ]
             );
             assert_eq!(app.modifiers, (0, 0, 0));
         }
     }
 
+    #[derive(Clone)]
+    struct LogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
-    fn focus_change_requires_text_input_to_be_enabled_again() {
-        let app = exchange_with_text_state("test", Some("héllo ✓"), ClientTextState::FocusChanged);
+    fn unavailable_character_is_logged_and_skipped_without_stuck_keys() {
+        let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = LogWriter(logs.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        let app = tracing::subscriber::with_default(subscriber, || {
+            exchange_with_text_state("test", Some("a🦀b"), ClientTextState::Absent)
+        });
+        assert_eq!(app.text, "");
+        assert_eq!(
+            app.keys,
+            vec![
+                (30, KeyState::Pressed),
+                (30, KeyState::Released),
+                (48, KeyState::Pressed),
+                (48, KeyState::Released),
+                (KEY_ENTER, KeyState::Pressed),
+                (KEY_ENTER, KeyState::Released),
+            ]
+        );
+        assert_eq!(app.modifiers, (0, 0, 0));
+        let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("WARN")
+                && output.contains("test")
+                && output.contains('🦀')
+                && output.contains("skipped"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn text_without_a_focused_client_is_logged() {
+        let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = LogWriter(logs.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            load_test_context(&mut compositor, Some("hello"));
+            compositor.handle(&Event::Focus {
+                app_id: Some("test".into()),
+                title: String::new(),
+            });
+            compositor.handle(&Event::Button {
+                name: ButtonName::East,
+                state: ButtonState::Pressed,
+            });
+        });
+        let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("WARN") && output.contains("no focused client"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn unmatched_client_receives_only_the_global_key() {
+        let app = exchange("other", Some("hello"));
         assert_eq!(app.text, "");
         assert_eq!(
             app.keys,

@@ -1,5 +1,52 @@
 //! Protocol v0 types shared by the core and plugins.
 
+/// Text that can cross a Wayland string boundary.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(try_from = "String")]
+pub struct Text(String);
+
+impl Text {
+    /// Validates text before it becomes an action.
+    ///
+    /// # Errors
+    /// The string contains NUL.
+    pub fn new(text: String) -> Result<Self, String> {
+        if text.contains('\0') {
+            return Err("text must not contain NUL".into());
+        }
+        Ok(Self(text))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for Text {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::new(text)
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl proptest::arbitrary::Arbitrary for Text {
+    type Parameters = ();
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+    fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
+        use proptest::strategy::Strategy;
+        proptest::collection::vec(
+            proptest::arbitrary::any::<char>().prop_filter("NUL-free", |character| *character != '\0'),
+            0..100,
+        )
+        .prop_map(|characters| Self(characters.into_iter().collect()))
+        .boxed()
+    }
+}
+
 /// A controller button. Face buttons are named by position: South is A on an Xbox pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
@@ -114,7 +161,7 @@ struct ContextFile {
 #[serde(untagged)]
 enum MappingAction {
     Key { key: KeyName },
-    Text { text: String },
+    Text { text: Text },
 }
 
 /// Parses a context at the configuration boundary.
@@ -125,13 +172,6 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
     if context.app_id.trim().is_empty() {
         return Err("app_id must not be empty".into());
-    }
-    if context
-        .buttons
-        .values()
-        .any(|action| matches!(action, MappingAction::Text { text } if text.contains('\0')))
-    {
-        return Err("text must not contain NUL: Wayland strings cannot carry it".into());
     }
     Ok(Context {
         app_id: context.app_id,
@@ -145,8 +185,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 pub enum Action {
     /// Press and release `key` in the focused client.
     Key { key: KeyName },
-    /// Commit Unicode text to the focused client.
-    Text { text: String },
+    /// Send Unicode text to the focused client.
+    Text { text: Text },
     /// Release the controller and stop the compositor.
     Quit,
 }

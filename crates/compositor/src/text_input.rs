@@ -55,22 +55,20 @@ impl TextInput {
         self.focus = focus;
     }
 
-    pub(crate) fn send(&self, text: &str) {
-        if text.contains('\0') {
-            tracing::warn!("text action rejected: Wayland strings cannot carry NUL");
-            return;
-        }
+    pub(crate) fn send(&self, text: &str) -> bool {
         let Some(surface) = self.focus.as_ref().filter(|surface| surface.is_alive()) else {
-            return;
+            return false;
         };
+        let mut sent = false;
         for instance in &self.instances {
             if instance.enabled && instance.resource.id().same_client_as(&surface.id()) {
+                sent = true;
                 // https://wayland.app/protocols/text-input-unstable-v3: strings fit in 4000 bytes.
                 let mut remaining = text;
                 while !remaining.is_empty() {
                     let end = remaining.floor_char_boundary(remaining.len().min(4000));
                     let Some((chunk, rest)) = remaining.split_at_checked(end) else {
-                        return;
+                        return true;
                     };
                     instance.resource.commit_string(Some(chunk.into()));
                     instance.resource.done(instance.serial);
@@ -78,6 +76,7 @@ impl TextInput {
                 }
             }
         }
+        sent
     }
 }
 
