@@ -55,14 +55,14 @@ mod tests {
     };
 
     #[derive(Debug)]
-    struct FakeProvider;
+    struct FakeProvider(String);
 
     impl SecretProvider for FakeProvider {
         fn lookup(
             &mut self,
             _reference: &SecretReference,
         ) -> Result<SecretValue, tehuti_core::secret::SecretProviderUnavailable> {
-            Ok(SecretValue::new("s3ntinel".into()))
+            Ok(SecretValue::new(self.0.clone()))
         }
     }
 
@@ -76,7 +76,7 @@ mod tests {
             .request(reference.clone(), TARGET, Duration::ZERO, Duration::from_secs(5))
             .unwrap();
         let authorization = gate.confirm(request, Duration::from_secs(1), TARGET).unwrap();
-        let mut provider = FakeProvider;
+        let mut provider = FakeProvider("s3ntinel".into());
         let secret = provider.lookup(&authorization.reference).unwrap();
         let keys: HashMap<_, _> = "s3ntiel"
             .chars()
@@ -124,5 +124,29 @@ mod tests {
 
         let mut denied = DenySecretProvider;
         assert!(denied.lookup(&authorization.reference).is_err());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn generated_provider_values_flow_only_through_the_delivery_sink(value in "[A-Za-z0-9]{1,32}") {
+            let mut gate = SecretConfirmationGate::new();
+            let reference = SecretReference { entry: "property-test".into() };
+            let request = gate.request(reference, TARGET, Duration::ZERO, Duration::from_secs(5)).unwrap();
+            let authorization = gate.confirm(request, Duration::from_secs(1), TARGET).unwrap();
+            let mut provider = FakeProvider(value.clone());
+            let secret = provider.lookup(&authorization.reference).unwrap();
+            let keys: HashMap<_, _> = value.chars().map(|character| (character, character)).collect();
+            let mut delivered = String::new();
+
+            prop_assert!(deliver_if_current(
+                authorization.destination,
+                Some(TARGET),
+                &secret,
+                &keys,
+                |key| delivered.push(key),
+            ));
+            prop_assert_eq!(delivered, value);
+            prop_assert!(!format!("{secret:?}").contains(&value));
+        }
     }
 }

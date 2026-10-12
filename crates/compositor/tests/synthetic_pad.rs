@@ -223,6 +223,7 @@ mod synthetic_pad {
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
+        toplevel.set_title("Synthetic target window".into());
         let initial_app_id_before_focus_change = if app_id == "test" { "other" } else { "test" };
         toplevel.set_app_id(initial_app_id_before_focus_change.into());
         surface.commit();
@@ -887,7 +888,8 @@ else:
 
     proptest! {
         #[test]
-        fn secret_store_values_stay_out_of_protocol_and_debug_records(value in "[A-Za-z0-9]{1,64}") {
+        fn secret_store_values_stay_out_of_protocol_and_debug_records(suffix in "[A-Za-z0-9]{1,64}") {
+            let value = format!("SENTINEL-UNIQUE-{suffix}");
             let secret = tehuti_core::secret::SecretValue::new(value.clone());
             let reference = tehuti_protocol::SecretReference { entry: "mail".into() };
             let action = tehuti_protocol::Action::SecretRequest { reference };
@@ -897,11 +899,22 @@ else:
                 request_id: 1,
                 result: tehuti_protocol::ResultValue::Actions(vec![action.clone()]),
             });
+            let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let writer = LogWriter(logs.clone());
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!(secret = ?secret, "fake provider lookup");
+            });
             let records = [
                 serde_json::to_string(&event).unwrap(),
                 serde_json::to_string(&action).unwrap(),
                 serde_json::to_string(&plugin_reply).unwrap(),
                 format!("{secret:?}"),
+                String::from_utf8(logs.lock().unwrap().clone()).unwrap(),
             ];
             for record in records {
                 prop_assert!(!record.contains(&value), "secret value escaped: {record}");
@@ -952,7 +965,7 @@ else:
         route(&mut compositor, &mut pad).unwrap();
         assert_eq!(
             compositor.secret_confirmation_text().as_deref(),
-            Some("CONFIRM SECRET: test-entry\nTARGET: test")
+            Some("CONFIRM SECRET: test-entry\nTARGET: Synthetic target window")
         );
         compositor.note_secret_confirmation_presented();
         for state in [ButtonState::Pressed, ButtonState::Released] {

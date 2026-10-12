@@ -312,8 +312,11 @@ impl Compositor {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     attributes
-                        .app_id
-                        .clone()
+                        .title
+                        .as_ref()
+                        .filter(|title| !title.trim().is_empty())
+                        .cloned()
+                        .or_else(|| attributes.app_id.clone())
                         .unwrap_or_else(|| "unknown window".into())
                 })
         })
