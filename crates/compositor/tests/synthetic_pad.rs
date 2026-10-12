@@ -489,7 +489,7 @@ mod synthetic_pad {
             display.flush_clients().unwrap();
             focused |= receiver.try_recv().is_ok();
         }
-        compositor.advance_time();
+        thread::sleep(Duration::from_millis(150));
         let started = Instant::now();
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
@@ -513,6 +513,7 @@ mod synthetic_pad {
         }
         let delivered = client.join().unwrap();
         assert!(started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET);
+        assert!(started.elapsed() >= tehuti_core::plugin::BUTTON_BUDGET);
         assert_eq!(
             delivered.keys,
             vec![(15, KeyState::Pressed), (15, KeyState::Released)]

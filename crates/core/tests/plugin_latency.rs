@@ -30,6 +30,58 @@ mod plugin_latency {
         state
     }
 
+    #[test]
+    fn saturated_pending_requests_fall_back_once_and_resolving_frees_capacity() {
+        let event = speech(serde_json::from_str("\"fallback\"").unwrap());
+        let mut state = State::new();
+        for id in 0..256 {
+            state = request(state, RequestKey { plugin: 0, id }, event.clone());
+        }
+        let excess = RequestKey { plugin: 0, id: 256 };
+        let (state, fallback, _) = plugin::step(
+            state,
+            Input::Request {
+                key: excess,
+                event: event.clone(),
+                permissions: vec![Permission::Key],
+            },
+        );
+        assert_eq!(fallback.len(), 1);
+        let (state, duplicate, _) = plugin::step(
+            state,
+            Input::Reply {
+                key: excess,
+                result: Ok(vec![Action::Key { key: KeyName::Enter }]),
+            },
+        );
+        assert!(duplicate.is_empty());
+        let (state, declined, _) = plugin::step(
+            state,
+            Input::Reply {
+                key: RequestKey { plugin: 0, id: 0 },
+                result: Ok(Vec::new()),
+            },
+        );
+        assert_eq!(declined, fallback);
+        let state = request(state, RequestKey { plugin: 0, id: 257 }, event.clone());
+        let (state, expired, _) = plugin::step(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_secs(2),
+            },
+        );
+        assert_eq!(expired, vec![fallback[0].clone(); 256]);
+        let state = request(state, RequestKey { plugin: 0, id: 258 }, event);
+        let (_, resolved, _) = plugin::step(
+            state,
+            Input::Reply {
+                key: RequestKey { plugin: 0, id: 258 },
+                result: Ok(Vec::new()),
+            },
+        );
+        assert_eq!(resolved, fallback);
+    }
+
     proptest! {
         #[test]
         fn button_fallback_fires_at_exactly_100_milliseconds(

@@ -177,17 +177,7 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
                 return Err(format!("unknown field `{field}`"));
             }
         }
-        if value
-            .get("method")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|method| matches!(method, "actions" | "submit_actions"))
-        {
-            let actions = value
-                .get("params")
-                .and_then(|params| params.get("actions"))
-                .ok_or("actions notice requires actions")?;
-            let _validated = parse_actions(actions.clone())?;
-        }
+        validate_call_actions(&value)?;
         let call: Call = serde_json::from_value(value).map_err(|error| error.to_string())?;
         let needs_reply = matches!(
             call.method,
@@ -221,7 +211,7 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
                 serde_json::from_value(envelope.result).map_err(|error| error.to_string())?,
             )
         } else {
-            ResultValue::Actions(parse_actions(envelope.result)?)
+            ResultValue::Actions(parse_actions(&envelope.result)?)
         };
         Ok(Message::Response(Response {
             jsonrpc: envelope.jsonrpc,
@@ -231,21 +221,37 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
     }
 }
 
+fn validate_call_actions(value: &serde_json::Value) -> Result<(), String> {
+    if value
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|method| matches!(method, "actions" | "submit_actions"))
+    {
+        let actions = value
+            .get("params")
+            .and_then(|params| params.get("actions"))
+            .ok_or("actions notice requires actions")?;
+        let _validated = parse_actions(actions)?;
+    }
+    Ok(())
+}
+
 /// Validates each action and names the rejected index and action kind.
 ///
 /// # Errors
 /// The result is not an action list or an action violates its schema.
-pub fn parse_actions(value: serde_json::Value) -> Result<Vec<Action>, String> {
+pub fn parse_actions(value: &serde_json::Value) -> Result<Vec<Action>, String> {
     let values = value.as_array().ok_or("result must be an action list")?;
     values
         .iter()
         .enumerate()
-        .map(|(index, value)| {
-            let name = value
+        .map(|(index, action)| {
+            let name = action
                 .get("type")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("unknown");
-            serde_json::from_value(value.clone()).map_err(|error| format!("action {index} ({name}): {error}"))
+            serde_json::from_value(action.clone())
+                .map_err(|error| format!("action {index} ({name}): {error}"))
         })
         .collect()
 }

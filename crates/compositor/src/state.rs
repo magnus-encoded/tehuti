@@ -249,13 +249,18 @@ impl Compositor {
     pub fn advance_time(&mut self) {
         let now = Instant::now();
         let elapsed = now.duration_since(self.previous_tick);
-        self.handle(&Event::Tick { elapsed });
         self.previous_tick = now;
+        self.handle(&Event::Tick { elapsed });
     }
 
     /// Runs one event through the core step and carries out the resulting actions.
     pub fn handle(&mut self, event: &Event) {
         use tehuti_core::speech::SpeechInput;
+        if matches!(event, Event::Tick { .. }) {
+            self.previous_tick = Instant::now();
+        } else {
+            self.advance_time();
+        }
         if let Event::Button {
             name: tehuti_protocol::ButtonName::South,
             state,
@@ -282,19 +287,16 @@ impl Compositor {
                 state,
             } if self.handle_secret_confirmation_button(*state) => return,
             Event::Focus { .. } => self.speech_input(SpeechInput::Cancel),
-            Event::Tick { elapsed } => {
-                self.previous_tick = Instant::now();
-                let inputs = self
-                    .speech_process
-                    .as_mut()
-                    .map_or_else(Vec::new, |process| process.poll(*elapsed));
-                for input in inputs {
-                    self.speech_input(input);
-                }
-                self.poll_secret_lookup();
-            }
+            Event::Tick { .. } => {}
             Event::Button { .. } | Event::Speech { .. } => {}
         }
+        self.route_event(event);
+        if let Event::Tick { elapsed } = event {
+            self.poll_tick(*elapsed);
+        }
+    }
+
+    fn route_event(&mut self, event: &Event) {
         let active = self.plugins.as_mut().is_some_and(|plugins| plugins.active(event));
         let (mut next, mut actions, route_plugin) =
             tehuti_core::step_with_plugin(core::mem::take(&mut self.core), event, active);
@@ -324,6 +326,17 @@ impl Compositor {
         for action in &actions {
             self.apply(action);
         }
+    }
+
+    fn poll_tick(&mut self, elapsed: core::time::Duration) {
+        let inputs = self
+            .speech_process
+            .as_mut()
+            .map_or_else(Vec::new, |process| process.poll(elapsed));
+        for input in inputs {
+            self.speech_input(input);
+        }
+        self.poll_secret_lookup();
     }
 
     fn reset_secret_confirmation_for_focus(&mut self) {

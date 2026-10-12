@@ -212,7 +212,8 @@ Every action requires its matching manifest permission: `key`, `text`, or
 `quit`. The core rejects the entire batch if any action lacks permission or
 uses a core-only action. No action in a rejected batch is delivered. Permissions restrict
 protocol actions; they do not sandbox the process or restrict its OS access.
-Actions target focus when applied, even if it changed since the request.
+Unsolicited actions target focus when applied. A focus change invalidates pending
+request decisions and their fallback actions.
 
 Secret references are objects shaped as `{"entry":"mail"}`. A core context
 may bind one to a controller button; the compositor asks for fresh confirmation
