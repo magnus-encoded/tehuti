@@ -886,6 +886,45 @@ else:
         }
     }
 
+    fn dispatch_until_ready(
+        display: &mut Display<Compositor>,
+        event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
+        compositor: &mut Compositor,
+        ready: &mpsc::Receiver<()>,
+        started: Instant,
+    ) {
+        while ready.try_recv().is_err() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "synthetic client did not focus"
+            );
+            let _dispatched = display.dispatch_clients(compositor).unwrap();
+            event_loop.dispatch(Duration::from_millis(1), compositor).unwrap();
+            display.flush_clients().unwrap();
+        }
+    }
+
+    fn dispatch_until_finished(
+        display: &mut Display<Compositor>,
+        event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
+        compositor: &mut Compositor,
+        client: &thread::JoinHandle<App>,
+        started: Instant,
+    ) {
+        while !client.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "secret delivery stalled"
+            );
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_millis(1),
+            });
+            let _dispatched = display.dispatch_clients(compositor).unwrap();
+            event_loop.dispatch(Duration::from_millis(1), compositor).unwrap();
+            display.flush_clients().unwrap();
+        }
+    }
+
     proptest! {
         #[test]
         fn secret_store_values_stay_out_of_protocol_and_debug_records(suffix in "[A-Za-z0-9]{1,64}") {
@@ -943,17 +982,13 @@ else:
         let client =
             thread::spawn(move || run_client(client_end, "test", ClientTextState::Enabled, &ready_sender));
         let started = Instant::now();
-        while ready_receiver.try_recv().is_err() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "synthetic client did not focus"
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            event_loop
-                .dispatch(Duration::from_millis(1), &mut compositor)
-                .unwrap();
-            display.flush_clients().unwrap();
-        }
+        dispatch_until_ready(
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &ready_receiver,
+            started,
+        );
 
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
@@ -984,20 +1019,7 @@ else:
         }
         route(&mut compositor, &mut pad).unwrap();
 
-        while !client.is_finished() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "secret delivery stalled"
-            );
-            compositor.handle(&Event::Tick {
-                elapsed: Duration::from_millis(1),
-            });
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            event_loop
-                .dispatch(Duration::from_millis(1), &mut compositor)
-                .unwrap();
-            display.flush_clients().unwrap();
-        }
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
         let app = client.join().unwrap();
         assert_eq!(app.keyboard_text, "s3ntinel");
         assert_eq!(

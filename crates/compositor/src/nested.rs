@@ -129,11 +129,31 @@ impl Nested {
             self.notice = tehuti::notice::notice_buffer(text);
             self.notice_text.clone_from(text);
         }
+        let (confirmation_element_included, output_drew) =
+            self.draw_bound_output(data, visible_notice.is_some(), confirmation_pending);
+        let submit_succeeded = match self.backend.submit(Some(&[Rectangle::from_size(size)])) {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(?error, "submit failed");
+                false
+            }
+        };
+        if confirmation_element_included && output_drew && submit_succeeded {
+            data.compositor.note_secret_confirmation_frame_submitted();
+        }
+    }
+
+    fn draw_bound_output(
+        &mut self,
+        data: &LoopData,
+        visible_notice: bool,
+        confirmation_pending: bool,
+    ) -> (bool, bool) {
         let mut output_drew = false;
         let mut confirmation_element_included = false;
         match self.backend.bind() {
             Ok((renderer, mut framebuffer)) => {
-                let notices = if visible_notice.is_some() {
+                let notices = if visible_notice {
                     match MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
                         (16.0, 16.0),
@@ -173,15 +193,6 @@ impl Nested {
             }
             Err(error) => warn!(?error, "bind failed"),
         }
-        let submit_succeeded = match self.backend.submit(Some(&[Rectangle::from_size(size)])) {
-            Ok(()) => true,
-            Err(error) => {
-                warn!(?error, "submit failed");
-                false
-            }
-        };
-        if confirmation_element_included && output_drew && submit_succeeded {
-            data.compositor.note_secret_confirmation_frame_submitted();
-        }
+        (confirmation_element_included, output_drew)
     }
 }
