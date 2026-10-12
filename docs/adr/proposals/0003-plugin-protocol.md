@@ -35,7 +35,7 @@ How it stays reversible, inside one version:
 - The core rejects unknown fields and actions from plugins (`CODING_STANDARDS.md` boundary rule), and names the field in the error.
 - A removal or change of meaning bumps the version. The core supports the current and previous version for at least one release.
 
-Sticky: the shape of `initialize` itself, since every version must parse it. Recommendation: keep it minimal (the four fields above plus an optional object for later capabilities).
+Sticky: the shape of `initialize` itself, since every version must parse it. Decision: keep it minimal (the four fields above plus an optional object for later capabilities).
 
 ## 3. Message shape and timeouts
 
@@ -53,7 +53,7 @@ Decision: **separate process plus a permissively licensed protocol spec and SDK.
 
 Rejected: in-process plugins (excluded by #1). A licence exception, like GCC's Runtime Library Exception for code compiled with its runtime libraries [12], stays available if the core ever needs one; it is not needed while plugins do not link to core code.
 
-Sticky: once vendors ship against the spec, its licence cannot be narrowed. Recommendation: publish the spec permissively from the first release, and have the owner confirm with counsel before inviting vendors. This is not legal advice.
+Sticky: once vendors ship against the spec, its licence cannot be narrowed. Principle (owner, 2026-10-12): anyone, including a vendor shipping a closed-source plugin, can write a plugin without asking permission or taking on obligations. So the spec is published permissively from the first release. The owner confirms with counsel before inviting vendors. This is not legal advice.
 
 ## Sources
 
