@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 80f63440258922a7ea8c1ae3f0a169e6c5490ad69411ee30ba29aedbb909fab8 # shrinks to phrase = "a", output = Text(""), app_id = "a", matching_focus = false, other_phrases = {}

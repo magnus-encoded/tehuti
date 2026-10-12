@@ -44,6 +44,15 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     if let Some(action) = global_layer(event) {
         return (state, vec![action], false);
     }
+    if matches!(
+        event,
+        Event::Button {
+            name: ButtonName::Record,
+            ..
+        }
+    ) {
+        return (state, Vec::new(), false);
+    }
     if plugin_active {
         return (state, Vec::new(), true);
     }
@@ -61,11 +70,21 @@ const fn global_layer(event: &Event) -> Option<Action> {
             name: ButtonName::South,
             state: ButtonState::Pressed,
         } => Some(Action::Key { key: KeyName::Enter }),
-        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => None,
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => None,
     }
 }
 
 fn active_context(state: &State, event: &Event) -> Option<Action> {
+    if let Event::Speech { text } = event {
+        return Some(
+            state
+                .contexts
+                .iter()
+                .find(|context| Some(context.app_id()) == state.focused_app_id.as_deref())
+                .and_then(|context| context.speech_action(text.as_str()))
+                .unwrap_or_else(|| Action::Notice { text: text.clone() }),
+        );
+    }
     let Event::Button {
         name,
         state: ButtonState::Pressed,
@@ -108,6 +127,8 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             }
             Some(Vec::new())
         }
-        Event::Button { .. } | Event::Focus { .. } => None,
+        Event::Button { .. } | Event::Focus { .. } | Event::Speech { .. } => None,
     }
 }
+
+pub mod speech;

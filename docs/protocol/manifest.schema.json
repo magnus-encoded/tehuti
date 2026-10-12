@@ -45,7 +45,8 @@
       "items": {
         "enum": [
           "button",
-          "focus"
+          "focus",
+          "speech"
         ]
       }
     },

@@ -65,6 +65,7 @@ pub enum ButtonName {
     LeftBumper,
     RightBumper,
     Select,
+    Record,
     Start,
     Guide,
     LeftStick,
@@ -91,6 +92,7 @@ pub enum Event {
     Button { name: ButtonName, state: ButtonState },
     Focus { app_id: Option<String>, title: String },
     Tick { elapsed: core::time::Duration },
+    Speech { text: Text },
 }
 
 /// A key the core can send to the focused client.
@@ -132,12 +134,18 @@ impl KeyName {
 pub struct Context {
     app_id: String,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
+    speech: std::collections::HashMap<String, MappingAction>,
 }
 
 impl Context {
     #[must_use]
     pub fn app_id(&self) -> &str {
         &self.app_id
+    }
+
+    #[must_use]
+    pub fn speech_action(&self, phrase: &str) -> Option<Action> {
+        self.speech.get(phrase).map(MappingAction::action)
     }
 
     #[must_use]
@@ -162,6 +170,8 @@ impl Context {
 struct ContextFile {
     app_id: String,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
+    #[serde(default)]
+    speech: std::collections::HashMap<String, MappingAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -170,6 +180,15 @@ struct ContextFile {
 enum MappingAction {
     Key { key: KeyName },
     Text { text: Text },
+}
+
+impl MappingAction {
+    fn action(&self) -> Action {
+        match self {
+            Self::Key { key } => Action::Key { key: *key },
+            Self::Text { text } => Action::Text { text: text.clone() },
+        }
+    }
 }
 
 /// Parses a context at the configuration boundary.
@@ -184,6 +203,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     Ok(Context {
         app_id: context.app_id,
         buttons: context.buttons,
+        speech: context.speech,
     })
 }
 
@@ -198,6 +218,8 @@ pub enum Action {
     Text { text: Text },
     /// Release the controller and stop the compositor.
     Quit,
+    /// Display a notice without changing the focused client.
+    Notice { text: Text },
 }
 
 mod plugin;

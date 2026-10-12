@@ -12,3 +12,4 @@
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |
 | Escape chord | Holding Guide for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |
+| Capture session | A core-owned speech start paired with exactly one stop, independently of sidecar I/O. |

@@ -39,6 +39,7 @@ mod json {
             let event_call = match event {
                 Event::Button { name, state } => Some(Call { jsonrpc: RpcVersion::Two, request_id: Some(request_id), method: Method::Button { name, state } }),
                 Event::Focus { app_id, title } => Some(Call { jsonrpc: RpcVersion::Two, request_id: None, method: Method::Focus { app_id, title } }),
+                Event::Speech { text } => Some(Call { jsonrpc: RpcVersion::Two, request_id: Some(request_id), method: Method::Speech { text } }),
                 Event::Tick { .. } => None,
             };
             if let Some(call) = event_call {

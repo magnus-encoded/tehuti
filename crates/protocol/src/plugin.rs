@@ -18,6 +18,7 @@ pub struct SecretReference {
 pub enum Subscription {
     Button,
     Focus,
+    Speech,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +96,7 @@ pub struct Initialized {
 pub enum Method {
     Initialize(Initialize),
     Button { name: ButtonName, state: ButtonState },
+    Speech { text: crate::Text },
     Focus { app_id: Option<String>, title: String },
     Actions { actions: Vec<Action> },
 }
@@ -174,9 +176,14 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
             }
         }
         let call: Call = serde_json::from_value(value).map_err(|error| error.to_string())?;
-        let needs_reply = matches!(call.method, Method::Initialize(_) | Method::Button { .. });
+        let needs_reply = matches!(
+            call.method,
+            Method::Initialize(_) | Method::Button { .. } | Method::Speech { .. }
+        );
         if needs_reply != call.request_id.is_some() {
-            return Err("initialize/button require an request_id; focus/actions must be notices".into());
+            return Err(
+                "initialize/button/speech require an request_id; focus/actions must be notices".into(),
+            );
         }
         Ok(Message::Call(call))
     } else if value.get("error").is_some() {

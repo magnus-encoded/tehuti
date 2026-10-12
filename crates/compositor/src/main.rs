@@ -53,6 +53,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             |data| &mut data.compositor,
         )?);
     }
+    if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
+        compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
+    }
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
     let controller = Some(insert_controller(&event_loop)?);
     nested::insert(&event_loop, &display.handle(), &mut compositor)?;
