@@ -131,6 +131,9 @@ for line in sys.stdin:
 
     fn manifest() -> Manifest {
         Manifest {
+            plugin_id: None,
+            author: None,
+            security_contact: None,
             executable: "plugin.py".into(),
             app_ids: vec!["test".into()],
             events: vec![Subscription::Button, Subscription::Focus],

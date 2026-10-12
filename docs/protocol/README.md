@@ -52,7 +52,9 @@ Reply once with the same integer id and a list of actions:
 An empty list means no action. At most 256 button requests may be outstanding per plugin. Excess requests
 are dropped. Button requests expire after 250 milliseconds;
 a missing or late reply means no action. Late and duplicate replies are
-dropped. Replies may arrive out of order. v0 has no cancellation request.
+dropped. While a plugin is not answering, its buttons count as declined: no
+action runs and the buttons do not fall through to the context or fallback
+layer ([ADR 0003 §5](../adr/0003-plugin-protocol.md)). Replies may arrive out of order. v0 has no cancellation request.
 
 Focus is a notice, with no id and no reply:
 
@@ -104,11 +106,14 @@ delivery action in v0. Never put secret contents in text, events or logs.
 
 Place JSON manifests in `<context-directory>/plugins/`. The compositor is
 started as `tehuti <context-directory> <application> [arguments...]`.
-A manifest contains exactly these fields:
+A manifest requires these fields:
 
 ```json
 {"executable":"./example.py","app_ids":["test"],"events":["button","focus"],"start":"always","permissions":["key"]}
 ```
+
+`id`, `author` and `security_contact` are optional strings. Unknown manifest
+fields are rejected.
 
 Executable paths are absolute or relative to the plugin directory. Make the
 program executable and use a shebang for its interpreter. Install that

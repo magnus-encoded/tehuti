@@ -38,6 +38,13 @@ pub enum Permission {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "id")]
+    pub plugin_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_contact: Option<String>,
     pub executable: String,
     pub app_ids: Vec<String>,
     pub events: Vec<Subscription>,

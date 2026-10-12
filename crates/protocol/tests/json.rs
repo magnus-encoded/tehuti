@@ -21,6 +21,8 @@ mod json {
             executable in "[a-z/.-]{1,80}", app_ids in prop::collection::vec("[a-z.]{1,40}", 0..8),
             subscriptions in prop::collection::vec(any::<bool>(), 0..8),
             permissions in prop::collection::vec(0u8..3, 0..8), always in any::<bool>(),
+            plugin_id in prop::option::of(any::<String>()), author in prop::option::of(any::<String>()),
+            security_contact in prop::option::of(any::<String>()),
             entry in any::<String>(), version in any::<u64>(), request_id in any::<u64>(),
         ) {
             round_trip(&event);
@@ -28,7 +30,7 @@ mod json {
             round_trip(&SecretReference { entry });
             let events: Vec<_> = subscriptions.into_iter().map(|focus| if focus { Subscription::Focus } else { Subscription::Button }).collect();
             let manifest = Manifest {
-                executable, app_ids, events: events.clone(),
+                plugin_id, author, security_contact, executable, app_ids, events: events.clone(),
                 start: if always { StartPolicy::Always } else { StartPolicy::OnFocus },
                 permissions: permissions.into_iter().map(|permission| match permission { 0 => Permission::Key, 1 => Permission::Text, _ => Permission::Quit }).collect(),
             };
@@ -89,6 +91,23 @@ mod json {
         assert!(
             serde_json::from_str::<SecretReference>(r#"{"entry":"mail","value":"password"}"#).is_err(),
             "secret references cannot carry a value"
+        );
+    }
+
+    #[test]
+    fn manifest_metadata_is_optional_and_unknown_fields_are_rejected() {
+        let source =
+            br#"{"executable":"plugin.py","app_ids":["test"],"events":[],"start":"always","permissions":[]}"#;
+        let manifest = tehuti_protocol::parse_manifest(source).unwrap();
+        assert_eq!(manifest.plugin_id, None);
+        assert_eq!(manifest.author, None);
+        assert_eq!(manifest.security_contact, None);
+        let mut value: serde_json::Value = serde_json::from_slice(source).unwrap();
+        value["unrecognized"] = true.into();
+        assert!(
+            tehuti_protocol::parse_manifest(&serde_json::to_vec(&value).unwrap())
+                .unwrap_err()
+                .contains("unrecognized")
         );
     }
 }
