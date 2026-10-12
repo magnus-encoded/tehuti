@@ -40,8 +40,6 @@ use tehuti_protocol::{Action, Event, KeyName};
 
 /// XKB keycodes are evdev codes plus 8.
 const XKB_KEYCODE_OFFSET: u32 = 8;
-/// `KEY_ENTER` from linux/input-event-codes.h.
-const EVDEV_KEY_ENTER: u32 = 28;
 
 #[derive(Debug)]
 pub struct Compositor {
@@ -88,6 +86,11 @@ impl Compositor {
         })
     }
 
+    /// Installs contexts before accepting clients.
+    pub fn set_contexts(&mut self, contexts: Vec<tehuti_protocol::Context>) {
+        self.core = tehuti_core::State::with_contexts(contexts);
+    }
+
     /// Runs one event through the core step and carries out the resulting actions.
     pub fn handle(&mut self, event: &Event) {
         let (next, actions) = tehuti_core::step(core::mem::take(&mut self.core), event);
@@ -105,9 +108,7 @@ impl Compositor {
     }
 
     fn tap(&mut self, key: KeyName) {
-        let evdev_code = match key {
-            KeyName::Enter => EVDEV_KEY_ENTER,
-        };
+        let evdev_code = key.evdev_code();
         let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
         let keyboard = self.keyboard.clone();
         for state in [
@@ -145,6 +146,29 @@ impl Compositor {
                     let _serial = toplevel.send_pending_configure();
                 }
             }
+        }
+    }
+
+    fn update_focus(&mut self, surface: &ToplevelSurface) {
+        if self.keyboard.current_focus().as_ref() != Some(surface.wl_surface()) {
+            return;
+        }
+        let event = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+            let attributes = states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>();
+            attributes.map(|attributes| {
+                let attributes = attributes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                Event::Focus {
+                    app_id: attributes.app_id.clone(),
+                    title: attributes.title.clone().unwrap_or_default(),
+                }
+            })
+        });
+        if let Some(event) = event {
+            self.handle(&event);
         }
     }
 
@@ -218,10 +242,34 @@ impl XdgShellHandler for Compositor {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let focus = surface.wl_surface().clone();
         self.space
-            .map_element(Window::new_wayland_window(surface), (0, 0), true);
+            .map_element(Window::new_wayland_window(surface.clone()), (0, 0), true);
         self.fill_output();
         let keyboard = self.keyboard.clone();
         keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
+        self.update_focus(&surface);
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        self.update_focus(&surface);
+    }
+
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        self.update_focus(&surface);
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        if self.keyboard.current_focus().as_ref() == Some(surface.wl_surface()) {
+            let keyboard = self.keyboard.clone();
+            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+            self.handle(&Event::Focus {
+                app_id: None,
+                title: String::new(),
+            });
+        }
+        let window = self.window_for_root(surface.wl_surface()).cloned();
+        if let Some(window) = window {
+            self.space.unmap_elem(&window);
+        }
     }
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
