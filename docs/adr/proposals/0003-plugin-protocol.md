@@ -6,7 +6,7 @@ Proposed. The owner decides; nothing here is accepted.
 
 ## Context
 
-Plugins are separate programs that speak JSON-RPC 2.0 over stdin and stdout (#6). Anyone can write one, in any language. Once plugins are out there, some choices are hard to change. The licence is a separate decision (ADR 0004).
+Plugins are separate programs that speak JSON-RPC 2.0 over stdin and stdout (#6). Once plugins are out there, some choices are hard to change. The licence is a separate decision (ADR 0004).
 
 ## Principle
 
@@ -14,7 +14,7 @@ The core does the work and handles fast input itself. Plugins only make decision
 
 ## Decisions
 
-**1. One JSON message per line.** Each message is one line of UTF-8 JSON. MCP [1] and niri [2] do the same. Every language can read a line and parse JSON, and a person can test a plugin by typing. Logs go to stderr, never stdout [1]. The core logs and drops a bad line, and limits line length.
+**1. One JSON message per line.** Each message is one line of UTF-8 JSON. MCP [1] and niri [2] do the same. Any language can parse it, and a person can test a plugin by typing. Logs go to stderr, never stdout [1]. The core drops bad or overlong lines.
 
 - Rejected: `Content-Length` headers as in LSP [3]. Every plugin would need extra code.
 - Rejected: binary length prefixes. Not plain text.
