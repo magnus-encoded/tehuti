@@ -109,7 +109,7 @@ impl Nested {
             self.notice_text = text;
         }
         let size = self.backend.window_size();
-        let mut rendered = false;
+        let mut output_drew = false;
         match self.backend.bind() {
             Ok((renderer, mut framebuffer)) => {
                 let notices = if data.compositor.visible_notice_text().is_some() {
@@ -143,20 +143,20 @@ impl Nested {
                     &mut self.damage_tracker,
                     BACKGROUND,
                 ) {
-                    Ok(()) => rendered = true,
+                    Ok(_) => output_drew = true,
                     Err(error) => warn!(?error, "render failed"),
                 }
             }
             Err(error) => warn!(?error, "bind failed"),
         }
-        let submitted = match self.backend.submit(Some(&[Rectangle::from_size(size)])) {
+        let submit_succeeded = match self.backend.submit(Some(&[Rectangle::from_size(size)])) {
             Ok(()) => true,
             Err(error) => {
                 warn!(?error, "submit failed");
                 false
             }
         };
-        if rendered && submitted && data.compositor.secret_confirmation_text().is_some() {
+        if output_drew && submit_succeeded && data.compositor.secret_confirmation_text().is_some() {
             data.compositor.note_secret_confirmation_presented();
         }
         let elapsed = data.compositor.start_time.elapsed();
