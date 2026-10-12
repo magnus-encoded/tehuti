@@ -38,6 +38,14 @@ use smithay::{
 };
 use tehuti_protocol::{Action, Event, KeyName};
 
+struct RedactedSecretProvider(Box<dyn tehuti_core::secret::SecretProvider>);
+
+impl std::fmt::Debug for RedactedSecretProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SecretProvider(<redacted>)")
+    }
+}
+
 /// XKB keycodes are evdev codes plus 8.
 const XKB_KEYCODE_OFFSET: u32 = 8;
 
@@ -52,10 +60,10 @@ pub struct Compositor {
     speech_state: tehuti_core::speech::SpeechState,
     speech_process: Option<crate::speech::SpeechProcess>,
     secret_gate: tehuti_core::secret::SecretConfirmationGate,
-    secret_provider: Option<Box<dyn tehuti_core::secret::SecretProvider>>,
+    secret_provider: Option<RedactedSecretProvider>,
     secret_lookup: Option<
         std::sync::mpsc::Receiver<(
-            Box<dyn tehuti_core::secret::SecretProvider>,
+            RedactedSecretProvider,
             tehuti_core::secret::AuthorizedSecretLookup,
             Result<tehuti_core::secret::SecretValue, tehuti_core::secret::SecretProviderUnavailable>,
         )>,
@@ -113,7 +121,9 @@ impl Compositor {
             speech_state: tehuti_core::speech::SpeechState::default(),
             speech_process: None,
             secret_gate: tehuti_core::secret::SecretConfirmationGate::new(),
-            secret_provider: Some(Box::new(tehuti_core::secret::DenySecretProvider)),
+            secret_provider: Some(RedactedSecretProvider(Box::new(
+                tehuti_core::secret::DenySecretProvider,
+            ))),
             secret_lookup: None,
             secret_focus_generation: 0,
             secret_surface_id: 0,
@@ -159,7 +169,7 @@ impl Compositor {
     }
 
     pub fn set_secret_provider(&mut self, provider: Box<dyn tehuti_core::secret::SecretProvider>) {
-        self.secret_provider = Some(provider);
+        self.secret_provider = Some(RedactedSecretProvider(provider));
     }
 
     pub(crate) fn apply_plugin_action(&mut self, action: &Action) {
@@ -415,7 +425,7 @@ impl Compositor {
         let spawned = std::thread::Builder::new()
             .name("tehuti-secret-lookup".into())
             .spawn(move || {
-                let result = provider.lookup(&authorization.reference);
+                let result = provider.0.lookup(&authorization.reference);
                 let _sent = sender.send((provider, authorization, result));
             });
         if spawned.is_err() {
@@ -486,6 +496,11 @@ impl Compositor {
             Action::Text { text } => {
                 if !self.text_input.send(text.as_str()) {
                     self.type_text(text.as_str());
+                }
+            }
+            Action::SecretRequest { reference } => {
+                if !self.request_secret_delivery(reference.clone()) {
+                    self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
                 }
             }
             Action::Quit => {

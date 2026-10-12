@@ -177,9 +177,11 @@ An unpermitted Quit does not stop the remaining actions. Permissions restrict
 protocol actions; they do not sandbox the process or restrict its OS access.
 Actions target focus when applied, even if it changed since the request.
 
-Secret references are reserved objects shaped as `{"entry":"mail"}`.
-No v0 message or manifest accepts them. There is no secret lookup, delivery
-or permission in v0. Never put secret contents in text, events or logs.
+Secret references are objects shaped as `{"entry":"mail"}`. A core context
+may bind one to a controller button; the compositor asks for fresh confirmation
+before lookup and delivery. Plugin-originated requests are rejected and there
+is no plugin permission for secret access. Never put secret contents in text,
+events, actions, plugin messages or logs.
 
 ## Manifest and installation
 

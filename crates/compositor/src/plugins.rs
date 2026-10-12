@@ -196,17 +196,45 @@ impl Session {
             }) => actions,
             Message::Call(_) => Vec::new(),
         };
-        actions
-            .into_iter()
-            .filter(|action| {
-                self.manifest.permissions.contains(&match action {
-                    Action::Key { .. } => Permission::Key,
-                    Action::Text { .. } => Permission::Text,
-                    Action::Quit => Permission::Quit,
-                    Action::Notice { .. } => return false,
-                })
+        plugin_actions(actions, &self.manifest)
+    }
+}
+
+fn plugin_actions(actions: Vec<Action>, manifest: &Manifest) -> Vec<Action> {
+    actions
+        .into_iter()
+        .filter(|action| {
+            manifest.permissions.contains(&match action {
+                Action::Key { .. } => Permission::Key,
+                Action::Text { .. } => Permission::Text,
+                Action::SecretRequest { .. } | Action::Notice { .. } => return false,
+                Action::Quit => Permission::Quit,
             })
-            .collect()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugins_cannot_request_secret_delivery() {
+        let manifest = Manifest {
+            plugin_id: None,
+            author: None,
+            security_contact: None,
+            executable: "plugin".into(),
+            app_ids: vec!["test".into()],
+            events: Vec::new(),
+            start: StartPolicy::Always,
+            permissions: vec![Permission::Key, Permission::Text, Permission::Quit],
+        };
+        let request = Action::SecretRequest {
+            reference: tehuti_protocol::SecretReference { entry: "mail".into() },
+        };
+
+        assert!(plugin_actions(vec![request], &manifest).is_empty());
     }
 }
 

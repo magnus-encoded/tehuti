@@ -8,6 +8,7 @@ pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 /// An entry name in a secret store, never its contents.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct SecretReference {
     pub entry: String,

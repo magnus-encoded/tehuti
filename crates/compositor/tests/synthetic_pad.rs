@@ -885,11 +885,41 @@ else:
         }
     }
 
+    proptest! {
+        #[test]
+        fn secret_store_values_stay_out_of_protocol_and_debug_records(value in "[A-Za-z0-9]{1,64}") {
+            let secret = tehuti_core::secret::SecretValue::new(value.clone());
+            let reference = tehuti_protocol::SecretReference { entry: "mail".into() };
+            let action = tehuti_protocol::Action::SecretRequest { reference };
+            let event = Event::Button { name: ButtonName::East, state: ButtonState::Pressed };
+            let plugin_reply = tehuti_protocol::Message::Response(tehuti_protocol::Response {
+                jsonrpc: tehuti_protocol::RpcVersion::Two,
+                request_id: 1,
+                result: tehuti_protocol::ResultValue::Actions(vec![action.clone()]),
+            });
+            let records = [
+                serde_json::to_string(&event).unwrap(),
+                serde_json::to_string(&action).unwrap(),
+                serde_json::to_string(&plugin_reply).unwrap(),
+                format!("{secret:?}"),
+            ];
+            for record in records {
+                prop_assert!(!record.contains(&value), "secret value escaped: {record}");
+            }
+        }
+    }
+
     #[test]
     fn controller_confirmation_delivers_fake_secret_to_the_focused_wayland_client() {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_secret_provider(Box::new(FakeSecretProvider));
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(
+                "app_id = 'test'\n[buttons.east]\nsecret = { entry = 'test-entry' }",
+            )
+            .unwrap(),
+        ]);
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
@@ -912,17 +942,19 @@ else:
             display.flush_clients().unwrap();
         }
 
-        assert!(
-            compositor.request_secret_delivery(tehuti_protocol::SecretReference {
-                entry: "test-entry".into(),
-            })
-        );
+        let mut pad = SyntheticPad::default();
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(Event::Button {
+                name: ButtonName::East,
+                state,
+            });
+        }
+        route(&mut compositor, &mut pad).unwrap();
         assert_eq!(
             compositor.secret_confirmation_text().as_deref(),
             Some("CONFIRM SECRET: test-entry\nTARGET: test")
         );
         compositor.note_secret_confirmation_presented();
-        let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {
                 name: ButtonName::South,
