@@ -30,9 +30,7 @@ mod plugin_latency {
         state
     }
 
-    #[test]
-    fn saturated_pending_requests_fall_back_once_and_resolving_frees_capacity() {
-        let event = speech(Text::new("fallback".into()).unwrap());
+    fn saturated_pending_state(event: &Event) -> State {
         let mut state = State::new();
         for request_id in 0..256 {
             state = request(
@@ -44,6 +42,14 @@ mod plugin_latency {
                 event.clone(),
             );
         }
+        state
+    }
+
+    #[test]
+    fn excess_pending_requests_fall_back_once() {
+        let text = Text::new("fallback".into()).unwrap();
+        let event = speech(text.clone());
+        let state = saturated_pending_state(&event);
         let excess = RequestKey {
             plugin: 0,
             request_id: 256,
@@ -52,19 +58,27 @@ mod plugin_latency {
             state,
             Input::Request {
                 key: excess,
-                event: event.clone(),
+                event,
                 permissions: vec![Permission::Key],
             },
         );
-        assert_eq!(fallback.len(), 1);
-        let (state, duplicate, _) = plugin::step(
+        assert_eq!(fallback, vec![Action::Notice { text }]);
+        let (_, duplicate, _) = plugin::step(
             state,
             Input::Reply {
                 key: excess,
                 result: Ok(vec![Action::Key { key: KeyName::Enter }]),
             },
         );
-        assert!(duplicate.is_empty());
+        assert_eq!(duplicate, Vec::<Action>::new());
+    }
+
+    #[test]
+    fn resolving_and_expiring_requests_free_pending_capacity() {
+        let text = Text::new("fallback".into()).unwrap();
+        let fallback = vec![Action::Notice { text: text.clone() }];
+        let event = speech(text);
+        let state = saturated_pending_state(&event);
         let (state, declined, _) = plugin::step(
             state,
             Input::Reply {
@@ -140,8 +154,8 @@ mod plugin_latency {
             elapsed in 0_u64..2000,
         ) {
             let key = RequestKey { plugin: 0, request_id: 1 };
-            let (state, _) = step(State::new(), &Event::Focus { app_id: Some("editor".into()), title: String::new() });
-            let pending = request(state, key, speech(text));
+            let (focused, _) = step(State::new(), &Event::Focus { app_id: Some("editor".into()), title: String::new() });
+            let pending = request(focused, key, speech(text));
             let (state, _) = step(pending, &Event::Focus { app_id: Some("other".into()), title: String::new() });
             let (state, _) = step(state, &Event::Focus { app_id: Some("editor".into()), title: String::new() });
             let (state, timed, _) = plugin::step(state, Input::Tick { elapsed: Duration::from_millis(elapsed) });
@@ -170,7 +184,7 @@ mod plugin_latency {
             });
             prop_assert!(rejection.is_none());
             prop_assert!(expiry_rejection.is_none());
-            prop_assert_eq!(&decline_actions, &vec![Action::Notice { text: text.clone() }]);
+            prop_assert_eq!(&decline_actions, &vec![Action::Notice { text }]);
             prop_assert_eq!(expiry_actions, decline_actions);
             for event in future {
                 let (next_declined, declined_actions) = step(declined, &event);
@@ -188,7 +202,7 @@ mod plugin_latency {
         ) {
             let key = RequestKey { plugin: 0, request_id: 1 };
             let pending = request(State::new(), key, speech(text.clone()));
-            let mut actions: Vec<_> = prefix.into_iter().map(|key| Action::Key { key }).collect();
+            let mut actions: Vec<_> = prefix.into_iter().map(|name| Action::Key { key: name }).collect();
             actions.push(Action::Text { text: text.clone() });
             let (resolved, delivered, rejection) = plugin::step(pending, Input::Reply { key, result: Ok(actions) });
             prop_assert_eq!(delivered, vec![Action::Notice { text }]);
