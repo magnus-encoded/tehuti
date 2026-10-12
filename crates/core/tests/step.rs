@@ -69,6 +69,89 @@ mod step {
         }
     }
 
+    /// A generated plugin: the app it matches, whether it subscribes to buttons
+    /// and whether its handshake completed. The compositor reports whether any
+    /// such plugin is live for the focused app; consume or decline is the
+    /// plugin's reply and never feeds back into the core step.
+    #[derive(Debug, Clone)]
+    struct Plugin {
+        app_id: &'static str,
+        subscribes: bool,
+        ready: bool,
+    }
+
+    const APP_IDS: [&str; 3] = ["a", "b", "c"];
+
+    fn plugin() -> impl Strategy<Value = Plugin> {
+        (
+            prop::sample::select(APP_IDS.to_vec()),
+            any::<bool>(),
+            any::<bool>(),
+        )
+            .prop_map(|(app_id, subscribes, ready)| Plugin {
+                app_id,
+                subscribes,
+                ready,
+            })
+    }
+
+    fn routed_event() -> impl Strategy<Value = Event> {
+        prop_oneof![
+            any::<Event>(),
+            prop::option::of(prop::sample::select(APP_IDS.to_vec())).prop_map(|app_id| Event::Focus {
+                app_id: app_id.map(str::to_owned),
+                title: String::new()
+            }),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn plugin_routing_obeys_the_layer_laws_for_every_configuration(
+            configurations in prop::collection::vec((prop::sample::select(APP_IDS.to_vec()), prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15)), 0..6),
+            plugins in prop::collection::vec(plugin(), 0..6),
+            events in prop::collection::vec(routed_event(), 0..100),
+            millis in 3000u64..100_000,
+        ) {
+            let contexts: Vec<_> = configurations.iter().map(|(app_id, mappings)| generated_context(app_id, mappings)).collect();
+            let mut routed = State::with_contexts(contexts.clone());
+            let mut plain = State::with_contexts(contexts);
+            let mut bare = State::new();
+            let mut focus: Option<String> = None;
+            let mut routed_quits = Vec::new();
+            let mut plain_quits = Vec::new();
+            let series = events.iter().cloned().chain([guide(ButtonState::Pressed), tick(millis)]);
+            for (index, event) in series.enumerate() {
+                if let Event::Focus { app_id, .. } = &event { focus.clone_from(app_id); }
+                let active = plugins.iter().any(|plugin| plugin.ready && plugin.subscribes && focus.as_deref() == Some(plugin.app_id));
+                let (next_routed, routed_actions, sent) = tehuti_core::step_with_plugin(routed, &event, active);
+                let (next_plain, plain_actions) = step(plain, &event);
+                let (next_bare, bare_actions) = step(bare, &event);
+                prop_assert_eq!(&next_routed, &next_plain, "routing to a plugin never changes core state");
+                if sent {
+                    prop_assert!(routed_actions.is_empty(), "an event sent to a plugin never also reaches the context layer");
+                    prop_assert!(bare_actions.is_empty(), "only events no layer above the context consumed reach a plugin");
+                    prop_assert!(active, "nothing is sent while no plugin is live");
+                } else {
+                    prop_assert_eq!(&routed_actions, &plain_actions, "a plugin set that is not sent the event leaves output untouched");
+                }
+                if !bare_actions.is_empty() || plain_actions.contains(&Action::Quit) {
+                    prop_assert!(!sent, "whenever an escape or global action fires, nothing is sent to a plugin");
+                }
+                if matches!(event, Event::Tick { .. }) {
+                    prop_assert!(!sent, "Tick never crosses the wire");
+                }
+                routed_quits.extend(routed_actions.iter().filter(|action| **action == Action::Quit).map(|_| index));
+                plain_quits.extend(plain_actions.iter().filter(|action| **action == Action::Quit).map(|_| index));
+                routed = next_routed;
+                plain = next_plain;
+                bare = next_bare;
+            }
+            prop_assert_eq!(&routed_quits, &plain_quits, "no plugin set moves or suppresses escape");
+            prop_assert_eq!(routed_quits.last().copied(), events.len().checked_add(1), "holding Guide for three seconds quits under every plugin set");
+        }
+    }
+
     fn button_name(button: ButtonName) -> String {
         let mut name = String::new();
         for (index, letter) in format!("{button:?}").chars().enumerate() {

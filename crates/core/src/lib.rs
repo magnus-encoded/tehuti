@@ -27,19 +27,31 @@ impl State {
 
 /// Advances the core by one event. Performs no I/O.
 #[must_use]
-pub fn step(mut state: State, event: &Event) -> (State, Vec<Action>) {
+pub fn step(state: State, event: &Event) -> (State, Vec<Action>) {
+    let (next, actions, _) = step_with_plugin(state, event, false);
+    (next, actions)
+}
+
+/// Routes to a plugin in place of the active context after higher layers consume input.
+#[must_use]
+pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Action>, bool) {
     if let Event::Focus { app_id, .. } = event {
         state.focused_app_id.clone_from(app_id);
     }
     if let Some(actions) = escape_chord(&mut state, event) {
-        return (state, actions);
+        return (state, actions, false);
     }
-    let actions = global_layer(event)
-        .or_else(|| active_context(&state, event))
+    if let Some(action) = global_layer(event) {
+        return (state, vec![action], false);
+    }
+    if plugin_active {
+        return (state, Vec::new(), true);
+    }
+    let actions = active_context(&state, event)
         .or_else(|| fallback(event))
         .into_iter()
         .collect();
-    (state, actions)
+    (state, actions, false)
 }
 
 /// The fixed global mapping takes priority over contexts.

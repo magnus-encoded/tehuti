@@ -370,9 +370,219 @@ mod synthetic_pad {
         text: Option<&str>,
         text_state: ClientTextState,
     ) -> App {
+        exchange_with_plugin(app_id, text, text_state, false)
+    }
+
+    #[test]
+    fn documented_python_plugin_sends_tab_to_a_real_wayland_client() {
+        let app = exchange_with_plugin("test", None, ClientTextState::Absent, true);
+        assert_eq!(
+            app.keys,
+            vec![(15, KeyState::Pressed), (15, KeyState::Released)],
+            "the child process remaps East through SyntheticPad and input::route"
+        );
+    }
+
+    #[test]
+    fn plugins_that_never_read_stall_or_flood_cannot_block_input_or_escape() {
+        for mode in ["never_read", "stalled", "flood", "overlong_flood"] {
+            let (sender, receiver) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                exercise_unresponsive_plugin(mode);
+                sender.send(()).unwrap();
+            });
+            receiver
+                .recv_timeout(Duration::from_secs(12))
+                .unwrap_or_else(|error| panic!("{mode} blocked compositor input or escape: {error}"));
+            worker.join().unwrap();
+        }
+    }
+
+    fn unresponsive_plugin(mode: &str) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = format!(
+            r"#!/usr/bin/env python3
+import json, os, sys, time
+from pathlib import Path
+if {mode:?} != 'never_read':
+    request = json.loads(sys.stdin.readline())
+    print(json.dumps({{'jsonrpc': '2.0', 'id': request['id'], 'result': {{'protocol_version': 0, 'encoding': 'json', 'events': ['button', 'focus']}}}}), flush=True)
+Path(__file__).with_name('ready').touch()
+if {mode:?} in ('never_read', 'stalled'):
+    while True:
+        time.sleep(60)
+else:
+    line = b'x' * (70000 if {mode:?} == 'overlong_flood' else 100) + b'\n'
+    while True:
+        os.write(1, line)
+"
+        );
+        let executable = directory.path().join("plugin.py");
+        std::fs::write(&executable, script).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(directory.path().join("plugin.json"),
+            r#"{"executable":"plugin.py","app_ids":["test"],"events":["button","focus"],"start":"always","permissions":[]}"#).unwrap();
+        directory
+    }
+
+    fn exercise_unresponsive_plugin(mode: &str) {
+        use smithay::reexports::calloop::EventLoop;
+        let directory = unresponsive_plugin(mode);
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context("app_id = 'other'\n[buttons.east]\nkey = 'tab'").unwrap(),
+            tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
+        ]);
+        let mut event_loop = EventLoop::try_new().unwrap();
+        compositor
+            .set_plugins(tehuti::plugins::install(&event_loop, directory.path(), |state| state).unwrap());
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let client =
+            thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
+        let started = Instant::now();
+        let mut client_ready = false;
+        loop {
+            assert!(started.elapsed() < Duration::from_secs(5), "{mode} setup stalled");
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            event_loop
+                .dispatch(Duration::from_millis(1), &mut compositor)
+                .unwrap();
+            display.flush_clients().unwrap();
+            client_ready |= ready_receiver.try_recv().is_ok();
+            if client_ready
+                && directory.path().join("ready").exists()
+                && (mode == "never_read" || compositor.initialized_plugins() == 1)
+            {
+                break;
+            }
+        }
+
+        let mut pad = SyntheticPad::default();
+        overload_then_send_keys(mode, &mut compositor, &mut event_loop, &mut pad);
+        while !client.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "{mode} blocked key delivery"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            event_loop
+                .dispatch(Duration::from_millis(1), &mut compositor)
+                .unwrap();
+            display.flush_clients().unwrap();
+        }
+        assert_eq!(
+            client.join().unwrap().keys,
+            vec![
+                (KEY_ENTER, KeyState::Pressed),
+                (KEY_ENTER, KeyState::Released),
+                (15, KeyState::Pressed),
+                (15, KeyState::Released),
+            ],
+            "global and context layers receive input during {mode}"
+        );
+
+        assert_escape_deadline(mode, &mut compositor, &mut event_loop, &mut pad);
+    }
+
+    fn overload_then_send_keys(
+        mode: &str,
+        compositor: &mut Compositor,
+        event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
+        pad: &mut SyntheticPad,
+    ) {
+        for _ in 0..2048 {
+            pad.push(Event::Focus {
+                app_id: Some("test".into()),
+                title: "x".repeat(128),
+            });
+            if mode != "never_read" {
+                pad.push(Event::Button {
+                    name: ButtonName::East,
+                    state: ButtonState::Pressed,
+                });
+            }
+        }
+        route(compositor, pad).unwrap();
+        event_loop.dispatch(Duration::ZERO, compositor).unwrap();
+        for name in [ButtonName::South, ButtonName::East] {
+            if name == ButtonName::East {
+                pad.push(Event::Focus {
+                    app_id: Some("other".into()),
+                    title: String::new(),
+                });
+            }
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button { name, state });
+            }
+        }
+        route(compositor, pad).unwrap();
+    }
+
+    fn assert_escape_deadline(
+        mode: &str,
+        compositor: &mut Compositor,
+        event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
+        pad: &mut SyntheticPad,
+    ) {
+        pad.push(Event::Focus {
+            app_id: Some("test".into()),
+            title: String::new(),
+        });
+        pad.push(Event::Button {
+            name: ButtonName::Guide,
+            state: ButtonState::Pressed,
+        });
+        route(compositor, pad).unwrap();
+        let escape_started = Instant::now();
+        let mut previous_tick = escape_started;
+        let signal = event_loop.get_signal();
+        event_loop
+            .run(Some(Duration::from_millis(5)), compositor, |compositor| {
+                let now = Instant::now();
+                assert!(
+                    escape_started.elapsed() < Duration::from_secs(4),
+                    "{mode} missed escape deadline"
+                );
+                pad.push(Event::Tick {
+                    elapsed: now.duration_since(previous_tick),
+                });
+                previous_tick = now;
+                route(compositor, pad).unwrap();
+                tehuti::input::finish_quit(compositor, pad, &signal).unwrap();
+            })
+            .unwrap();
+        assert!(compositor.quit_requested());
+        assert!(pad.is_released());
+        assert!(escape_started.elapsed() < Duration::from_secs(4));
+    }
+
+    fn exchange_with_plugin(
+        app_id: &'static str,
+        text: Option<&str>,
+        text_state: ClientTextState,
+        plugin: bool,
+    ) -> App {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        if plugin {
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+            compositor.set_plugins(tehuti::plugins::install(&event_loop, &directory, |state| state).unwrap());
+        }
         load_test_context(&mut compositor, text);
+        if plugin {
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
+            ]);
+        }
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
             .handle()
@@ -382,7 +592,11 @@ mod synthetic_pad {
         let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
 
         let mut pad = SyntheticPad::default();
-        for name in [ButtonName::East, ButtonName::Start, ButtonName::South] {
+        for name in if plugin {
+            vec![ButtonName::East]
+        } else {
+            vec![ButtonName::East, ButtonName::Start, ButtonName::South]
+        } {
             pad.push(Event::Button {
                 name,
                 state: ButtonState::Pressed,
@@ -393,6 +607,7 @@ mod synthetic_pad {
             });
         }
         let mut pressed = false;
+        let mut client_ready = false;
         let started = Instant::now();
         while !client.is_finished() {
             assert!(
@@ -400,7 +615,9 @@ mod synthetic_pad {
                 "client never received a key"
             );
             let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            if !pressed && ready_receiver.try_recv().is_ok() {
+            event_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
+            client_ready |= ready_receiver.try_recv().is_ok();
+            if !pressed && client_ready && (!plugin || compositor.initialized_plugins() == 1) {
                 route(&mut compositor, &mut pad).unwrap();
                 pressed = true;
             }
