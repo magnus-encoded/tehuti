@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. The owner decides; nothing here is accepted.
+Accepted by the owner, 2026-10-12.
 
 ## Context
 
