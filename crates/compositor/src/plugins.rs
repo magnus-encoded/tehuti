@@ -542,7 +542,7 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
             encoding: "json".into(),
             core_version: env!("CARGO_PKG_VERSION").into(),
             options: Some(
-                std::iter::once(("action_submission".into(), serde_json::json!("submit_actions"))).collect(),
+                core::iter::once(("action_submission".into(), serde_json::json!("submit_actions"))).collect(),
             ),
         }),
     })?;
