@@ -1,0 +1,5 @@
+app_id = "org.example.App"
+[buttons.east]
+key = "tab"
+[buttons.dpad_up]
+key = "up"

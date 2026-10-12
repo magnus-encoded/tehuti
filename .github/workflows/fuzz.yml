@@ -1,0 +1,20 @@
+name: fuzz
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+jobs:
+  context:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - run: cargo fuzz run context fuzz/seeds/context -- -max_total_time=120
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts

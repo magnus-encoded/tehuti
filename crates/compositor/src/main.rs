@@ -33,13 +33,17 @@ pub(crate) struct LoopData {
 fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
     let mut application = std::env::args_os().skip(1);
+    let context_directory = application
+        .next()
+        .ok_or("usage: tehuti <context-directory> <application> [arguments...]")?;
     let program = application
         .next()
-        .ok_or("usage: tehuti <application> [arguments...]")?;
+        .ok_or("usage: tehuti <context-directory> <application> [arguments...]")?;
 
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
+    compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory))?);
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
     let controller = Some(insert_controller(&event_loop)?);
     nested::insert(&event_loop, &display.handle(), &mut compositor)?;

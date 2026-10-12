@@ -37,6 +37,58 @@ mod step {
         }
     }
 
+    proptest! {
+        #[test]
+        fn routing_stops_at_the_first_consuming_layer(events in prop::collection::vec(prop_oneof![any::<Event>(), Just(Event::Focus { app_id: "test".into(), title: String::new() })], 0..200)) {
+            let context = tehuti_protocol::parse_context("app_id = 'test'\n[buttons.south]\nkey = 'escape'\n[buttons.east]\nkey = 'tab'").unwrap();
+            let mut state = State::with_contexts(vec![context]);
+            let mut focused = String::new();
+            for event in events {
+                let expected = match &event {
+                    Event::Focus { app_id, .. } => { focused.clone_from(app_id); vec![] }
+                    Event::Button { name: ButtonName::South, state: ButtonState::Pressed } => vec![Action::Key { key: KeyName::Enter }],
+                    Event::Button { name: ButtonName::East, state: ButtonState::Pressed } if focused == "test" => vec![Action::Key { key: KeyName::Tab }],
+                    Event::Button { .. } => vec![],
+                };
+                let (next, actions) = step(state, &event);
+                state = next;
+                prop_assert_eq!(actions, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn focus_selects_and_clears_the_active_context() {
+        let context = tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'tab'").unwrap();
+        let mut state = State::with_contexts(vec![context]);
+        for app_id in ["test", "other", "test", ""] {
+            (state, _) = step(
+                state,
+                &Event::Focus {
+                    app_id: app_id.into(),
+                    title: String::new(),
+                },
+            );
+            let (next, actions) = step(
+                state,
+                &Event::Button {
+                    name: ButtonName::East,
+                    state: ButtonState::Pressed,
+                },
+            );
+            state = next;
+            assert_eq!(
+                actions,
+                if app_id == "test" {
+                    vec![Action::Key { key: KeyName::Tab }]
+                } else {
+                    vec![]
+                },
+                "only matching focus selects the context"
+            );
+        }
+    }
+
     #[test]
     fn pressing_a_sends_enter() {
         assert_eq!(

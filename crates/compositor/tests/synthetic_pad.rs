@@ -3,7 +3,12 @@
 #[cfg(test)]
 mod synthetic_pad {
     use core::time::Duration;
-    use std::{os::unix::net::UnixStream, sync::Arc, thread, time::Instant};
+    use std::{
+        os::unix::net::UnixStream,
+        sync::{Arc, mpsc},
+        thread,
+        time::Instant,
+    };
 
     use smithay::reexports::wayland_server::Display;
     use tehuti::{
@@ -104,7 +109,7 @@ mod synthetic_pad {
     delegate_noop!(App: ignore XdgToplevel);
 
     /// Opens one toplevel and returns every key it receives once it has seen one full key tap.
-    fn run_client(stream: UnixStream) -> Vec<(u32, KeyState)> {
+    fn run_client(stream: UnixStream, app_id: &str, ready: &mpsc::Sender<()>) -> Vec<(u32, KeyState)> {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -114,9 +119,14 @@ mod synthetic_pad {
         let _keyboard = seat.get_keyboard(&handle, ());
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
-        let _toplevel = xdg_surface.get_toplevel(&handle, ());
+        let toplevel = xdg_surface.get_toplevel(&handle, ());
+        toplevel.set_app_id(if app_id == "test" { "other" } else { "test" }.into());
         surface.commit();
         let mut app = App::default();
+        let _initial_dispatch = queue.roundtrip(&mut app).unwrap();
+        toplevel.set_app_id(app_id.into());
+        let _focus_dispatch = queue.roundtrip(&mut app).unwrap();
+        ready.send(()).unwrap();
         while app.keys.len() < 2 {
             let _dispatched = queue.blocking_dispatch(&mut app).unwrap();
         }
@@ -126,23 +136,38 @@ mod synthetic_pad {
     }
 
     #[test]
-    fn pressing_a_on_a_synthetic_pad_sends_enter_to_the_focused_client() {
+    fn changing_to_an_unmatched_app_id_uses_global_and_fallback_routing() {
+        check_routing("other", KEY_ENTER);
+    }
+
+    #[test]
+    fn changing_to_a_matching_app_id_sends_tab_from_a_synthetic_pad() {
+        check_routing("test", 15);
+    }
+
+    fn check_routing(app_id: &'static str, expected_key: u32) {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("tehuti-wayland-context-{}-{app_id}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(
+            directory.join("context.toml"),
+            "app_id = 'test'\n[buttons.east]\nkey = 'tab'",
+        )
+        .unwrap();
+        compositor.set_contexts(tehuti::contexts::load(&directory).unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let client = thread::spawn(move || run_client(client_end));
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let client = thread::spawn(move || run_client(client_end, app_id, &ready_sender));
 
         let mut pad = SyntheticPad::default();
-        for name in [
-            ButtonName::East,
-            ButtonName::Start,
-            ButtonName::South,
-            ButtonName::East,
-        ] {
+        for name in [ButtonName::East, ButtonName::Start, ButtonName::South] {
             pad.push(Event::Button {
                 name,
                 state: ButtonState::Pressed,
@@ -153,11 +178,14 @@ mod synthetic_pad {
             });
         }
         let mut pressed = false;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let started = Instant::now();
         while !client.is_finished() {
-            assert!(Instant::now() < deadline, "client never received a key");
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "client never received a key"
+            );
             let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            if !pressed && compositor.space.elements().next().is_some() {
+            if !pressed && ready_receiver.try_recv().is_ok() {
                 route(&mut compositor, &mut pad).unwrap();
                 pressed = true;
             }
@@ -167,8 +195,17 @@ mod synthetic_pad {
 
         assert_eq!(
             client.join().unwrap(),
-            vec![(KEY_ENTER, KeyState::Pressed), (KEY_ENTER, KeyState::Released)],
-            "only A reaches the client, as one Enter tap"
+            if expected_key == KEY_ENTER {
+                vec![(KEY_ENTER, KeyState::Pressed), (KEY_ENTER, KeyState::Released)]
+            } else {
+                vec![
+                    (expected_key, KeyState::Pressed),
+                    (expected_key, KeyState::Released),
+                    (KEY_ENTER, KeyState::Pressed),
+                    (KEY_ENTER, KeyState::Released),
+                ]
+            },
+            "context and global actions reach the client as complete taps"
         );
     }
 }
