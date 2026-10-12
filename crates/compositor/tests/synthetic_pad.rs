@@ -925,6 +925,21 @@ else:
         }
     }
 
+    fn assert_secret_confirmation_label(compositor: &Compositor) {
+        assert_eq!(
+            compositor.secret_confirmation_text().as_deref(),
+            Some("CONFIRM SECRET: password-store/exampl...\nTARGET: Synthetic-window-title-123456...")
+        );
+        assert!(
+            compositor
+                .secret_confirmation_text()
+                .unwrap()
+                .lines()
+                .all(|line| line.chars().count() <= 40),
+            "both confirmation labels fit the rendered notice lines"
+        );
+    }
+
     proptest! {
         #[test]
         fn secret_store_values_stay_out_of_protocol_and_debug_records(suffix in "[A-Za-z0-9]{1,64}") {
@@ -998,18 +1013,7 @@ else:
             });
         }
         route(&mut compositor, &mut pad).unwrap();
-        assert_eq!(
-            compositor.secret_confirmation_text().as_deref(),
-            Some("CONFIRM SECRET: password-store/exampl...\nTARGET: Synthetic-window-title-123456...")
-        );
-        assert!(
-            compositor
-                .secret_confirmation_text()
-                .unwrap()
-                .lines()
-                .all(|line| line.chars().count() <= 40),
-            "both confirmation labels fit the rendered notice lines"
-        );
+        assert_secret_confirmation_label(&compositor);
         compositor.note_secret_confirmation_frame_submitted();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {
