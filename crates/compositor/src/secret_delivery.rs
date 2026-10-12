@@ -1,6 +1,6 @@
 //! The only route that may carry a secret value to a Wayland client.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::BuildHasher};
 
 use tehuti_core::secret::{SecretDestination, SecretValue};
 
@@ -8,11 +8,11 @@ use tehuti_core::secret::{SecretDestination, SecretValue};
 ///
 /// `send` must target the compositor's direct keyboard path. It must not use
 /// text-input, plugins, clipboard selection, logging, or ordinary text actions.
-pub fn deliver_if_current<K: Copy>(
+pub fn deliver_if_current<K: Copy, S: BuildHasher>(
     authorized: SecretDestination,
     current: Option<SecretDestination>,
     secret: &SecretValue,
-    keys: &HashMap<char, K>,
+    keys: &HashMap<char, K, S>,
     mut send: impl FnMut(K),
 ) -> bool {
     if current != Some(authorized) {
@@ -151,7 +151,7 @@ mod tests {
                 |key| delivered.push(key),
             ));
             prop_assert_eq!(delivered, value);
-            prop_assert!(!format!("{secret:?}").contains(&value));
+            prop_assert!(!format!("{:?}", secret).contains(&value));
         }
     }
 }

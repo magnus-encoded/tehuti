@@ -18,8 +18,8 @@ pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[32, 32, 32, 255]);
     }
-    for (line, text) in text.lines().take(2).enumerate() {
-        for (letter, character) in text.chars().take(40).enumerate() {
+    for (line, line_text) in text.lines().take(2).enumerate() {
+        for (letter, character) in line_text.chars().take(40).enumerate() {
             let glyph = glyph(character.to_ascii_uppercase());
             for (row, bits) in glyph.iter().enumerate() {
                 for column in 0..5usize {

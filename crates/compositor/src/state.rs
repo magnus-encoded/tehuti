@@ -1,6 +1,6 @@
 //! Smithay state and protocol handlers. Shows one toplevel fullscreen and gives it keyboard focus.
 
-use std::time::Instant;
+use core::time::Instant;
 
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
@@ -40,11 +40,27 @@ use tehuti_protocol::{Action, Event, KeyName};
 
 struct RedactedSecretProvider(Box<dyn tehuti_core::secret::SecretProvider>);
 
-impl std::fmt::Debug for RedactedSecretProvider {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for RedactedSecretProvider {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("SecretProvider(<redacted>)")
     }
 }
+
+#[derive(Debug, Default)]
+struct SecretConfirmationState {
+    presented: bool,
+    armed: bool,
+    south_pressed: bool,
+}
+
+#[derive(Debug)]
+struct SecretLookupResult {
+    provider: RedactedSecretProvider,
+    authorization: tehuti_core::secret::AuthorizedSecretLookup,
+    value: Result<tehuti_core::secret::SecretValue, tehuti_core::secret::SecretProviderUnavailable>,
+}
+
+type SecretLookupReceiver = std::sync::mpsc::Receiver<SecretLookupResult>;
 
 /// XKB keycodes are evdev codes plus 8.
 const XKB_KEYCODE_OFFSET: u32 = 8;
@@ -61,20 +77,12 @@ pub struct Compositor {
     speech_process: Option<crate::speech::SpeechProcess>,
     secret_gate: tehuti_core::secret::SecretConfirmationGate,
     secret_provider: Option<RedactedSecretProvider>,
-    secret_lookup: Option<
-        std::sync::mpsc::Receiver<(
-            RedactedSecretProvider,
-            tehuti_core::secret::AuthorizedSecretLookup,
-            Result<tehuti_core::secret::SecretValue, tehuti_core::secret::SecretProviderUnavailable>,
-        )>,
-    >,
+    secret_lookup: Option<SecretLookupReceiver>,
     secret_focus_generation: u64,
     secret_surface_id: u64,
     secret_focus_surface: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
     secret_confirmation_label: Option<(String, String)>,
-    secret_confirmation_presented: bool,
-    secret_confirmation_armed: bool,
-    secret_south_pressed: bool,
+    secret_confirmation: SecretConfirmationState,
     secret_notice_until: Option<Instant>,
     notice_until: Option<Instant>,
     surfaces: CompositorState,
@@ -129,9 +137,7 @@ impl Compositor {
             secret_surface_id: 0,
             secret_focus_surface: None,
             secret_confirmation_label: None,
-            secret_confirmation_presented: false,
-            secret_confirmation_armed: false,
-            secret_south_pressed: false,
+            secret_confirmation: SecretConfirmationState::default(),
             secret_notice_until: None,
             notice_until: None,
             surfaces: CompositorState::new::<Self>(display),
@@ -229,22 +235,10 @@ impl Compositor {
             state,
         } = event
         {
-            self.secret_south_pressed = *state == tehuti_protocol::ButtonState::Pressed;
+            self.secret_confirmation.south_pressed = *state == tehuti_protocol::ButtonState::Pressed;
         }
         if matches!(event, Event::Focus { .. }) {
-            self.secret_focus_generation = self.secret_focus_generation.wrapping_add(1);
-            self.secret_gate.cancel();
-            self.secret_confirmation_label = None;
-            self.secret_confirmation_presented = false;
-            self.secret_confirmation_armed = false;
-            let focus = self
-                .keyboard
-                .current_focus()
-                .filter(smithay::reexports::wayland_server::Resource::is_alive);
-            if self.secret_focus_surface != focus {
-                self.secret_surface_id = self.secret_surface_id.wrapping_add(1);
-                self.secret_focus_surface = focus;
-            }
+            self.reset_secret_confirmation_for_focus();
         }
         match event {
             Event::Button {
@@ -286,6 +280,22 @@ impl Compositor {
         }
     }
 
+    fn reset_secret_confirmation_for_focus(&mut self) {
+        self.secret_focus_generation = self.secret_focus_generation.wrapping_add(1);
+        self.secret_gate.cancel();
+        self.secret_confirmation_label = None;
+        self.secret_confirmation.presented = false;
+        self.secret_confirmation.armed = false;
+        let focus = self
+            .keyboard
+            .current_focus()
+            .filter(smithay::reexports::wayland_server::Resource::is_alive);
+        if self.secret_focus_surface != focus {
+            self.secret_surface_id = self.secret_surface_id.wrapping_add(1);
+            self.secret_focus_surface = focus;
+        }
+    }
+
     #[must_use]
     pub const fn quit_requested(&self) -> bool {
         self.quit_requested
@@ -324,22 +334,20 @@ impl Compositor {
         let Some(destination) = self.current_secret_destination() else {
             return false;
         };
+        let entry_label = sanitize_confirmation_label(&reference.entry, 21);
         let requested = self
             .secret_gate
             .request(
-                reference.clone(),
+                reference,
                 destination,
                 self.start_time.elapsed(),
                 core::time::Duration::from_secs(20),
             )
             .is_some();
         if requested {
-            self.secret_confirmation_label = Some((
-                sanitize_confirmation_label(&reference.entry, 21),
-                sanitize_confirmation_label(&target, 29),
-            ));
-            self.secret_confirmation_presented = false;
-            self.secret_confirmation_armed = false;
+            self.secret_confirmation_label = Some((entry_label, sanitize_confirmation_label(&target, 29)));
+            self.secret_confirmation.presented = false;
+            self.secret_confirmation.armed = false;
         }
         requested
     }
@@ -350,15 +358,21 @@ impl Compositor {
             .as_ref()
             .and_then(|(entry, target)| {
                 let destination = self.current_secret_destination()?;
-                self.secret_gate.pending(self.start_time.elapsed(), destination)?;
+                if self
+                    .secret_gate
+                    .pending(self.start_time.elapsed(), destination)
+                    .is_none()
+                {
+                    return None;
+                }
                 Some(format!("CONFIRM SECRET: {entry}\nTARGET: {target}"))
             })
     }
 
     pub fn note_secret_confirmation_presented(&mut self) {
         if self.secret_confirmation_text().is_some() {
-            self.secret_confirmation_presented = true;
-            self.secret_confirmation_armed = !self.secret_south_pressed;
+            self.secret_confirmation.presented = true;
+            self.secret_confirmation.armed = !self.secret_confirmation.south_pressed;
         }
     }
 
@@ -389,17 +403,17 @@ impl Compositor {
         }
         match state {
             tehuti_protocol::ButtonState::Released => {
-                self.secret_south_pressed = false;
-                if self.secret_confirmation_presented {
-                    self.secret_confirmation_armed = true;
+                self.secret_confirmation.south_pressed = false;
+                if self.secret_confirmation.presented {
+                    self.secret_confirmation.armed = true;
                 }
             }
-            tehuti_protocol::ButtonState::Pressed if self.secret_confirmation_armed => {
-                self.secret_south_pressed = true;
-                self.secret_confirmation_armed = false;
+            tehuti_protocol::ButtonState::Pressed if self.secret_confirmation.armed => {
+                self.secret_confirmation.south_pressed = true;
+                self.secret_confirmation.armed = false;
                 let _consumed = self.confirm_pending_secret();
             }
-            tehuti_protocol::ButtonState::Pressed => self.secret_south_pressed = true,
+            tehuti_protocol::ButtonState::Pressed => self.secret_confirmation.south_pressed = true,
         }
         true
     }
@@ -412,7 +426,7 @@ impl Compositor {
         let Some(confirmation_id) = self
             .secret_gate
             .pending(now, destination)
-            .map(|pending| pending.confirmation_id())
+            .map(tehuti_core::secret::PendingSecretDelivery::confirmation_id)
         else {
             return false;
         };
@@ -428,8 +442,12 @@ impl Compositor {
         let spawned = std::thread::Builder::new()
             .name("tehuti-secret-lookup".into())
             .spawn(move || {
-                let result = provider.0.lookup(&authorization.reference);
-                let _sent = sender.send((provider, authorization, result));
+                let value = provider.0.lookup(&authorization.reference);
+                let _sent = sender.send(SecretLookupResult {
+                    provider,
+                    authorization,
+                    value,
+                });
             });
         if spawned.is_err() {
             self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
@@ -452,16 +470,16 @@ impl Compositor {
                 return;
             }
         };
-        let Some((provider, authorization, result)) = lookup_result else {
+        let Some(lookup) = lookup_result else {
             return;
         };
         self.secret_lookup = None;
-        self.secret_provider = Some(provider);
-        let Some(secret) = result.ok() else {
+        self.secret_provider = Some(lookup.provider);
+        let Some(secret) = lookup.value.ok() else {
             self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
             return;
         };
-        if self.current_secret_destination() != Some(authorization.destination) {
+        if self.current_secret_destination() != Some(lookup.authorization.destination) {
             return;
         }
         let Some(focus) = self
@@ -474,7 +492,7 @@ impl Compositor {
         let keymap = self.text_keys.clone();
         let seat = self.seat.clone();
         let delivered = crate::secret_delivery::deliver_if_current(
-            authorization.destination,
+            lookup.authorization.destination,
             self.current_secret_destination(),
             &secret,
             &keymap,
