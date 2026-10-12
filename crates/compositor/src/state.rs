@@ -125,7 +125,9 @@ impl Compositor {
     }
 
     pub(crate) fn apply_plugin_action(&mut self, action: &Action) {
-        self.apply(action);
+        if !self.quit_requested {
+            self.apply(action);
+        }
     }
 
     /// Runs one event through the core step and carries out the resulting actions.

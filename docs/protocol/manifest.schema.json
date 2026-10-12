@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tehuti plugin manifest v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "executable",
+    "app_ids",
+    "events",
+    "start",
+    "permissions"
+  ],
+  "properties": {
+    "id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "author": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "security_contact": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "executable": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "app_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "\\S"
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "button",
+          "focus"
+        ]
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "key",
+          "text",
+          "quit"
+        ]
+      }
+    },
+    "start": {
+      "enum": [
+        "always",
+        "on_focus"
+      ]
+    }
+  }
+}

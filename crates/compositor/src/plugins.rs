@@ -50,7 +50,7 @@ impl Drop for Session {
 impl Session {
     fn queue(&mut self, call: &Call) -> io::Result<()> {
         let bytes = serde_json::to_vec(call)?;
-        if self.output.len().saturating_add(bytes.len()) > MAX_MESSAGE_BYTES {
+        if self.output.len().saturating_add(bytes.len()).saturating_add(1) > MAX_MESSAGE_BYTES {
             return Err(io::Error::other("plugin output queue full"));
         }
         self.output.extend(bytes);
