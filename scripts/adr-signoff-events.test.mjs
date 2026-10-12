@@ -77,11 +77,11 @@ test("handles event pages as nested arrays", () => {
   assert.equal(
     ownerAppliedLatestAcceptance(
       [
-        [labelEvent("labeled", "magnus-encoded", "2026-10-12T10:00:00Z")],
-        [labelEvent("unlabeled", "moderator", "2026-10-12T10:01:00Z")],
+        [labelEvent("unlabeled", "moderator", "2026-10-12T10:00:00Z")],
+        [labelEvent("labeled", "magnus-encoded", "2026-10-12T10:01:00Z")],
       ],
       "magnus-encoded",
     ),
-    false,
+    true,
   );
 });
