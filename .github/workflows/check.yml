@@ -3,8 +3,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 jobs:
   check:
+    if: github.event_name != 'pull_request' || !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,12 +18,46 @@ jobs:
   pr-body:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
-      - env:
+      - name: Test ADR signoff event handling
+        run: node scripts/adr-signoff-events.test.mjs
+      - name: Check issue reference or owner-approved ADR
+        env:
           BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           printf '%s\n' "$BODY" > "$RUNNER_TEMP/pr-body.md"
-          grep -qE '^(Closes|Fixes|Resolves) #[0-9]+' "$RUNNER_TEMP/pr-body.md" || { echo "PR body must reference the issue it answers: Closes #N"; exit 1; }
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[].filename')
+          has_adr=false
+          has_non_adr=false
+          while IFS= read -r file; do
+            case "$file" in
+              docs/adr/*.md|crates/*/docs/adr/*.md) has_adr=true ;;
+              *) has_non_adr=true ;;
+            esac
+          done <<< "$files"
+
+          if [ "$has_adr" = true ]; then
+            labels=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER" --jq '[.labels[].name] | index("adr-accepted") != null')
+            events=$(gh api --paginate --slurp "repos/$GH_REPO/issues/$PR_NUMBER/events?per_page=100")
+            owner_signed=$(node scripts/adr-signoff-events.mjs "$OWNER" <<< "$events" || true)
+            [ "$labels" = true ] && [ "$owner_signed" = true ] || {
+              echo "ADR changes require the owner-applied adr-accepted label."; exit 1;
+            }
+          fi
+
+          if [ "$has_non_adr" = true ] || [ "$has_adr" = false ]; then
+            grep -qE '^(Closes|Fixes|Resolves) #[0-9]+' "$RUNNER_TEMP/pr-body.md" || {
+              echo "PR body must reference the issue it answers: Closes #N"; exit 1;
+            }
+          fi
           [ "$(wc -w < "$RUNNER_TEMP/pr-body.md")" -le 120 ] || { echo "PR body over 120 words"; exit 1; }
           scripts/prose-lint "$RUNNER_TEMP/pr-body.md"
