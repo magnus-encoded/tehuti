@@ -648,7 +648,7 @@ else:
     fn assert_unresponsive_delivery(delivered: &App, elapsed: Duration, mode: &str) {
         assert!(
             elapsed < tehuti_core::plugin::BUTTON_LATENCY_BUDGET,
-            "client delivery exceeds button latency budget during {mode}"
+            "client delivery took {elapsed:?}, exceeding the button latency budget during {mode}"
         );
         assert_eq!(
             delivered.keys,
@@ -676,7 +676,7 @@ else:
             if mode != "never_read" {
                 pad.push(Event::Button {
                     name: ButtonName::East,
-                    state: ButtonState::Pressed,
+                    state: ButtonState::Released,
                 });
             }
         }
