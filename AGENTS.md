@@ -17,3 +17,7 @@ Multi-context: `GLOSSARY-MAP.md` at the root points to one `GLOSSARY.md` per cra
 ## Standards
 
 Run `scripts/check` before every commit; CI runs the same gate. Review rules are in `CODING_STANDARDS.md`.
+
+## Decisions
+
+Agents never add or edit files in `docs/adr/`. Only the owner accepts an ADR. When a change needs a decision that is hard to reverse, say so in the PR body and stop; the chief of staff turns it into an ADR proposal for the owner.
