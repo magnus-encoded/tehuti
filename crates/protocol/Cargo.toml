@@ -1,0 +1,10 @@
+[package]
+name = "tehuti-protocol"
+version = "0.0.0"
+description = "Tehuti plugin protocol: events and actions"
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

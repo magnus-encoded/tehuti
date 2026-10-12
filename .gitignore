@@ -1,2 +1,4 @@
 /target
 /.claude/
+mutants.out/
+mutants.out.old/

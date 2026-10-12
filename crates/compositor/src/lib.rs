@@ -1,0 +1,9 @@
+//! Tehuti's compositor edge: Smithay state, input sources, and the effects of core actions.
+#![expect(
+    clippy::multiple_crate_versions,
+    reason = "Smithay and winit pull in duplicate transitive versions outside our control"
+)]
+
+pub mod controller;
+pub mod input;
+pub mod state;

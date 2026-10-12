@@ -1,0 +1,21 @@
+name: mutants
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      # A surviving mutant is a missing test (ADR 0001), so any survivor fails the job.
+      - run: cargo mutants --package tehuti-core --package tehuti-protocol
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants.out
+          path: mutants.out
