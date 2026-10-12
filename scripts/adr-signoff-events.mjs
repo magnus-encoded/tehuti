@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
 
 export function ownerAppliedLatestAcceptance(events, owner) {
-  const latest = events
+  const latest = events.flat(Infinity)
     .filter(
       (event) =>
         (event.event === "labeled" || event.event === "unlabeled") &&

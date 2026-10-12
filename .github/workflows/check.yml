@@ -47,7 +47,7 @@ jobs:
 
           if [ "$has_adr" = true ]; then
             labels=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER" --jq '[.labels[].name] | index("adr-accepted") != null')
-            events=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/events?per_page=100")
+            events=$(gh api --paginate --slurp "repos/$GH_REPO/issues/$PR_NUMBER/events?per_page=100")
             owner_signed=$(node scripts/adr-signoff-events.mjs "$OWNER" <<< "$events" || true)
             [ "$labels" = true ] && [ "$owner_signed" = true ] || {
               echo "ADR changes require the owner-applied adr-accepted label."; exit 1;
