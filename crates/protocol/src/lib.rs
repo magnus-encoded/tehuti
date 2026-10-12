@@ -1,5 +1,52 @@
 //! Protocol v0 types shared by the core and plugins.
 
+/// Text that can cross a Wayland string boundary.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(try_from = "String")]
+pub struct Text(String);
+
+impl Text {
+    /// Validates text before it becomes an action.
+    ///
+    /// # Errors
+    /// The string contains NUL.
+    pub fn new(text: String) -> Result<Self, String> {
+        if text.contains('\0') {
+            return Err("text must not contain NUL".into());
+        }
+        Ok(Self(text))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for Text {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::new(text)
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl proptest::arbitrary::Arbitrary for Text {
+    type Parameters = ();
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+    fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
+        use proptest::strategy::Strategy;
+        proptest::collection::vec(
+            proptest::arbitrary::any::<char>().prop_filter("NUL-free", |character| *character != '\0'),
+            0..100,
+        )
+        .prop_map(|characters| Self(characters.into_iter().collect()))
+        .boxed()
+    }
+}
+
 /// A controller button. Face buttons are named by position: South is A on an Xbox pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
@@ -76,7 +123,7 @@ impl KeyName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
     app_id: String,
-    buttons: std::collections::HashMap<ButtonName, KeyAction>,
+    buttons: std::collections::HashMap<ButtonName, MappingAction>,
 }
 
 impl Context {
@@ -87,7 +134,18 @@ impl Context {
 
     #[must_use]
     pub fn key_for(&self, button: ButtonName) -> Option<KeyName> {
-        self.buttons.get(&button).map(|action| action.key)
+        self.buttons.get(&button).and_then(|action| match action {
+            MappingAction::Key { key } => Some(*key),
+            MappingAction::Text { .. } => None,
+        })
+    }
+
+    #[must_use]
+    pub fn action_for(&self, button: ButtonName) -> Option<Action> {
+        self.buttons.get(&button).map(|action| match action {
+            MappingAction::Key { key } => Action::Key { key: *key },
+            MappingAction::Text { text } => Action::Text { text: text.clone() },
+        })
     }
 }
 
@@ -95,13 +153,15 @@ impl Context {
 #[serde(deny_unknown_fields)]
 struct ContextFile {
     app_id: String,
-    buttons: std::collections::HashMap<ButtonName, KeyAction>,
+    buttons: std::collections::HashMap<ButtonName, MappingAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct KeyAction {
-    key: KeyName,
+#[serde(untagged)]
+enum MappingAction {
+    Key { key: KeyName },
+    Text { text: Text },
 }
 
 /// Parses a context at the configuration boundary.
@@ -125,6 +185,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 pub enum Action {
     /// Press and release `key` in the focused client.
     Key { key: KeyName },
+    /// Send Unicode text to the focused client.
+    Text { text: Text },
     /// Release the controller and stop the compositor.
     Quit,
 }

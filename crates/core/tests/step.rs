@@ -47,6 +47,28 @@ mod step {
         }
     }
 
+    proptest! {
+        #[test]
+        fn context_text_preserves_unicode_when_its_mapping_fires(
+            text in any::<tehuti_protocol::Text>(),
+            app_id in "[a-z]{1,30}",
+            name in any::<ButtonName>().prop_filter("context-routed button", |name| !matches!(name, ButtonName::South | ButtonName::Guide)),
+            mappings in prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15),
+        ) {
+            let mut source = format!("app_id = {}\n[buttons]\n", toml::Value::String(app_id.clone()));
+            for (button, key) in mappings {
+                if button != name {
+                    writeln!(source, "[buttons.{}]\nkey = '{}'", button_name(button), format!("{key:?}").to_lowercase()).unwrap();
+                }
+            }
+            writeln!(source, "[buttons.{}]\ntext = {}", button_name(name), toml::Value::String(text.as_str().into())).unwrap();
+            let context = tehuti_protocol::parse_context(&source).unwrap();
+            let (state, _) = step(State::with_contexts(vec![context]), &Event::Focus { app_id: Some(app_id), title: String::new() });
+            let (_, actions) = step(state, &Event::Button { name, state: ButtonState::Pressed });
+            prop_assert_eq!(actions, vec![Action::Text { text }]);
+        }
+    }
+
     fn button_name(button: ButtonName) -> String {
         let mut name = String::new();
         for (index, letter) in format!("{button:?}").chars().enumerate() {

@@ -13,5 +13,6 @@ workspace = true
 tehuti-protocol = { path = "../protocol" }
 
 [dev-dependencies]
+toml = "1.1"
 proptest = "1"
 tehuti-protocol = { path = "../protocol", features = ["arbitrary"] }

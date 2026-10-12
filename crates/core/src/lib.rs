@@ -65,8 +65,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         .contexts
         .iter()
         .find(|context| Some(context.app_id()) == state.focused_app_id.as_deref())
-        .and_then(|context| context.key_for(*name))
-        .map(|key| Action::Key { key })
+        .and_then(|context| context.action_for(*name))
 }
 
 const fn fallback(_event: &Event) -> Option<Action> {
