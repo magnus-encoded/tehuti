@@ -3,10 +3,6 @@
     clippy::multiple_crate_versions,
     reason = "Smithay and winit pull in duplicate transitive versions outside our control"
 )]
-#![expect(
-    clippy::redundant_pub_crate,
-    reason = "conflicts with the unreachable_pub rustc lint the workspace enables"
-)]
 
 mod nested;
 
@@ -25,7 +21,7 @@ use tehuti::{
     input,
     state::{ClientState, Compositor},
 };
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 #[derive(Debug)]
 pub(crate) struct LoopData {
@@ -45,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
-    let controller = insert_controller(&event_loop)?;
+    let controller = Some(insert_controller(&event_loop)?);
     nested::insert(&event_loop, &display.handle(), &mut compositor)?;
 
     let _child = Command::new(program)
@@ -88,18 +84,15 @@ fn insert_wayland_sources(
     Ok(socket_name)
 }
 
-fn insert_controller(event_loop: &EventLoop<LoopData>) -> Result<Option<EvdevPad>, Box<dyn Error>> {
-    let Some(device) = controller::open_grabbed() else {
-        warn!("no controller found");
-        return Ok(None);
-    };
+fn insert_controller(event_loop: &EventLoop<LoopData>) -> Result<EvdevPad, Box<dyn Error>> {
+    let device = controller::open_grabbed().ok_or("no controller found: Tehuti needs a pad it can grab")?;
     info!(name = device.name(), "controller grabbed");
     let controller_fd = device.as_fd().try_clone_to_owned()?;
     let _controller_token = event_loop.handle().insert_source(
         Generic::new(controller_fd, Interest::READ, calloop::Mode::Level),
         |_, _, data| Ok(route_controller_input(data)),
     )?;
-    Ok(Some(device))
+    Ok(device)
 }
 
 /// Routes ready controller input. A controller that fails to read is dropped with its event source.
@@ -110,7 +103,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     match input::route(&mut data.compositor, device) {
         Ok(()) => PostAction::Continue,
         Err(error) => {
-            warn!(%error, "controller read failed; dropping it");
+            error!(%error, "controller read failed; dropping it");
             data.controller = None;
             PostAction::Remove
         }

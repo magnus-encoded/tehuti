@@ -103,7 +103,7 @@ mod synthetic_pad {
     delegate_noop!(App: ignore WlSeat);
     delegate_noop!(App: ignore XdgToplevel);
 
-    /// Opens one toplevel and returns every key it receives until it has seen one full key tap.
+    /// Opens one toplevel and returns every key it receives once it has seen one full key tap.
     fn run_client(stream: UnixStream) -> Vec<(u32, KeyState)> {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
@@ -120,6 +120,8 @@ mod synthetic_pad {
         while app.keys.len() < 2 {
             let _dispatched = queue.blocking_dispatch(&mut app).unwrap();
         }
+        // Any further key the compositor sent arrives before this roundtrip completes.
+        let _dispatched = queue.roundtrip(&mut app).unwrap();
         app.keys
     }
 
@@ -135,7 +137,12 @@ mod synthetic_pad {
         let client = thread::spawn(move || run_client(client_end));
 
         let mut pad = SyntheticPad::default();
-        for name in [ButtonName::East, ButtonName::Start, ButtonName::South] {
+        for name in [
+            ButtonName::East,
+            ButtonName::Start,
+            ButtonName::South,
+            ButtonName::East,
+        ] {
             pad.push(Event::Button {
                 name,
                 state: ButtonState::Pressed,

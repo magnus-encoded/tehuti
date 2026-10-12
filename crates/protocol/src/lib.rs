@@ -2,6 +2,7 @@
 
 /// A controller button. Face buttons are named by position: South is A on an Xbox pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum ButtonName {
     South,
     East,
@@ -20,27 +21,8 @@ pub enum ButtonName {
     DpadRight,
 }
 
-impl ButtonName {
-    pub const ALL: [Self; 15] = [
-        Self::South,
-        Self::East,
-        Self::North,
-        Self::West,
-        Self::LeftBumper,
-        Self::RightBumper,
-        Self::Select,
-        Self::Start,
-        Self::Guide,
-        Self::LeftStick,
-        Self::RightStick,
-        Self::DpadUp,
-        Self::DpadDown,
-        Self::DpadLeft,
-        Self::DpadRight,
-    ];
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum ButtonState {
     Pressed,
     Released,
@@ -48,6 +30,7 @@ pub enum ButtonState {
 
 /// Input that reaches the core.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum Event {
     Button { name: ButtonName, state: ButtonState },
 }

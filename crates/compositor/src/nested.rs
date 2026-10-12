@@ -34,6 +34,10 @@ struct Nested {
     stop: LoopSignal,
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "conflicts with the unreachable_pub rustc lint the workspace enables"
+)]
 pub(crate) fn insert(
     event_loop: &EventLoop<LoopData>,
     display: &DisplayHandle,

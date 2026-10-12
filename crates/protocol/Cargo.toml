@@ -8,3 +8,10 @@ publish = false
 
 [lints]
 workspace = true
+
+[features]
+arbitrary = ["dep:proptest", "dep:proptest-derive"]
+
+[dependencies]
+proptest = { version = "1", optional = true }
+proptest-derive = { version = "0.9", optional = true }
