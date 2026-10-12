@@ -85,10 +85,8 @@ mod tests {
         let authorization = gate.confirm(request, Duration::from_secs(1), TARGET).unwrap();
         let mut provider = FakeProvider("s3ntinel".into());
         let secret = provider.lookup(&authorization.reference).unwrap();
-        let keys_for_unrepresentable: HashMap<_, _> = "s3ntiel"
-            .chars()
-            .map(|character| (character, character))
-            .collect();
+        let keys_for_unrepresentable: HashMap<_, _> =
+            "s3ntil".chars().map(|character| (character, character)).collect();
         let mut sent_for_unrepresentable = Vec::new();
 
         assert!(!deliver_if_current(
@@ -140,13 +138,14 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn generated_provider_values_flow_only_through_the_delivery_sink(value in "[A-Za-z0-9]{1,32}") {
+            let sentinel = format!("SECRET-SENTINEL-{value}");
             let mut gate = SecretConfirmationGate::new();
             let reference = SecretReference { entry: "property-test".into() };
             let request = gate.request(reference, TARGET, Duration::ZERO, Duration::from_secs(5)).unwrap();
             let authorization = gate.confirm(request, Duration::from_secs(1), TARGET).unwrap();
-            let mut provider = FakeProvider(value.clone());
+            let mut provider = FakeProvider(sentinel.clone());
             let secret = provider.lookup(&authorization.reference).unwrap();
-            let keys: HashMap<_, _> = value.chars().map(|character| (character, character)).collect();
+            let keys: HashMap<_, _> = sentinel.chars().map(|character| (character, character)).collect();
             let mut delivered = String::new();
 
             prop_assert!(deliver_if_current(
@@ -157,8 +156,8 @@ mod tests {
                 |key| delivered.push(key),
             ));
             let debug_record = debug_string(&secret);
-            assert!(!debug_record.contains(&value));
-            prop_assert_eq!(delivered, value);
+            assert!(!debug_record.contains(&sentinel));
+            prop_assert_eq!(delivered, sentinel);
         }
     }
 }
