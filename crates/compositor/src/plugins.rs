@@ -270,9 +270,7 @@ impl Session {
     fn call_for_event(&mut self, event: &Event, selected: bool) -> Option<Call> {
         let (request_id, method) = match event {
             Event::Button { name, state } if selected && self.events.contains(&Subscription::Button) => {
-                let Some(request_id) = self.request() else {
-                    return None;
-                };
+                let request_id = self.request()?;
                 (
                     Some(request_id),
                     Method::Button {
@@ -282,9 +280,7 @@ impl Session {
                 )
             }
             Event::Speech { text } if selected && self.events.contains(&Subscription::Speech) => {
-                let Some(request_id) = self.request() else {
-                    return None;
-                };
+                let request_id = self.request()?;
                 (Some(request_id), Method::Speech { text: text.clone() })
             }
             Event::Focus { app_id, title } if self.events.contains(&Subscription::Focus) => (

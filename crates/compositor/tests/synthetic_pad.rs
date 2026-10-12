@@ -499,20 +499,7 @@ mod synthetic_pad {
         }
         route(&mut compositor, &mut pad).unwrap();
         if change_focus {
-            thread::sleep(Duration::from_millis(150));
-            compositor.handle(&Event::Focus {
-                app_id: Some("other".into()),
-                title: String::new(),
-            });
-            pad.push(Event::Button {
-                name: ButtonName::South,
-                state: ButtonState::Pressed,
-            });
-            pad.push(Event::Button {
-                name: ButtonName::South,
-                state: ButtonState::Released,
-            });
-            route(&mut compositor, &mut pad).unwrap();
+            change_focus_after_deadline(&mut compositor, &mut pad);
         }
         while !client.is_finished() {
             assert!(
@@ -537,6 +524,23 @@ mod synthetic_pad {
                 (expected_key, KeyState::Released)
             ]
         );
+    }
+
+    fn change_focus_after_deadline(compositor: &mut Compositor, pad: &mut SyntheticPad) {
+        thread::sleep(Duration::from_millis(150));
+        compositor.handle(&Event::Focus {
+            app_id: Some("other".into()),
+            title: String::new(),
+        });
+        pad.push(Event::Button {
+            name: ButtonName::South,
+            state: ButtonState::Pressed,
+        });
+        pad.push(Event::Button {
+            name: ButtonName::South,
+            state: ButtonState::Released,
+        });
+        route(compositor, pad).unwrap();
     }
 
     fn wait_for_focused_plugin(
