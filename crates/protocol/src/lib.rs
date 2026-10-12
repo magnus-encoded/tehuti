@@ -161,8 +161,8 @@ impl Context {
         self.buttons.get(&button).map(|action| match action {
             MappingAction::Key { key } => Action::Key { key: *key },
             MappingAction::Text { text } => Action::Text { text: text.clone() },
-            MappingAction::Secret { reference } => Action::SecretRequest {
-                reference: reference.clone(),
+            MappingAction::Secret { secret } => Action::SecretRequest {
+                reference: secret.clone(),
             },
         })
     }
