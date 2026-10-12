@@ -18,22 +18,24 @@ pub fn deliver_if_current<K: Copy>(
     if current != Some(authorized) {
         return false;
     }
-    secret.with_value(|value| {
+    let mut delivered = false;
+    secret.deliver_to(|value| {
         if value.chars().any(char::is_control) {
-            return false;
+            return;
         }
         let Some(prepared) = value
             .chars()
             .map(|character| keys.get(&character).copied())
             .collect::<Option<Vec<_>>>()
         else {
-            return false;
+            return;
         };
         for key in prepared {
             send(key);
         }
-        true
-    })
+        delivered = true;
+    });
+    delivered
 }
 
 #[cfg(test)]

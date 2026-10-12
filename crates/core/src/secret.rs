@@ -134,9 +134,12 @@ impl SecretValue {
         Self(value)
     }
 
-    /// Borrows the value only for the duration of the delivery callback.
-    pub fn with_value<T>(&self, deliver: impl FnOnce(&str) -> T) -> T {
-        deliver(&self.0)
+    /// Borrows the value for one synchronous delivery effect.
+    ///
+    /// The callback cannot return the plaintext; it must send it directly to
+    /// the authorized destination and must not retain, log or serialize it.
+    pub fn deliver_to(&self, deliver: impl FnOnce(&str)) {
+        deliver(&self.0);
     }
 }
 
