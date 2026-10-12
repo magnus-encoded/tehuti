@@ -3,8 +3,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 jobs:
   check:
+    if: github.event_name != 'pull_request' || !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,6 +24,8 @@ jobs:
       pull-requests: read
     steps:
       - uses: actions/checkout@v4
+      - name: Test ADR signoff event handling
+        run: node scripts/adr-signoff-events.test.mjs
       - name: Check issue reference or owner-approved ADR
         env:
           BODY: ${{ github.event.pull_request.body }}
@@ -44,7 +48,7 @@ jobs:
           if [ "$has_adr" = true ]; then
             labels=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER" --jq '[.labels[].name] | index("adr-accepted") != null')
             events=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/events?per_page=100")
-            owner_signed=$(jq --arg owner "$OWNER" '[.[] | select(.event == "labeled" and .label.name == "adr-accepted" and .actor.login == $owner)] | length > 0' <<< "$events")
+            owner_signed=$(node scripts/adr-signoff-events.mjs "$OWNER" <<< "$events" || true)
             [ "$labels" = true ] && [ "$owner_signed" = true ] || {
               echo "ADR changes require the owner-applied adr-accepted label."; exit 1;
             }
