@@ -13,3 +13,5 @@
 | Quit | The action that asks the compositor to release input and stop its event loop. |
 | Escape chord | Holding Guide for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |
 | Capture session | A core-owned speech start paired with exactly one stop, independently of sidecar I/O. |
+| Secret destination | One focused surface during one focus generation; returning to the same surface creates a different destination. |
+| Secret confirmation | A one-use controller approval bound to a named reference and secret destination, with a short expiry. |

@@ -17,3 +17,5 @@ pub mod plugins;
 pub mod speech;
 
 pub mod notice;
+
+pub mod secret_delivery;

@@ -872,6 +872,89 @@ else:
         );
     }
 
+    #[derive(Debug)]
+    struct FakeSecretProvider;
+
+    impl tehuti_core::secret::SecretProvider for FakeSecretProvider {
+        fn lookup(
+            &mut self,
+            _reference: &tehuti_protocol::SecretReference,
+        ) -> Result<tehuti_core::secret::SecretValue, tehuti_core::secret::SecretProviderUnavailable>
+        {
+            Ok(tehuti_core::secret::SecretValue::new("s3ntinel".into()))
+        }
+    }
+
+    #[test]
+    fn controller_confirmation_delivers_fake_secret_to_the_focused_wayland_client() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_secret_provider(Box::new(FakeSecretProvider));
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let client =
+            thread::spawn(move || run_client(client_end, "test", ClientTextState::Enabled, &ready_sender));
+        let started = Instant::now();
+        while ready_receiver.try_recv().is_err() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "synthetic client did not focus"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            event_loop
+                .dispatch(Duration::from_millis(1), &mut compositor)
+                .unwrap();
+            display.flush_clients().unwrap();
+        }
+
+        assert!(
+            compositor.request_secret_delivery(tehuti_protocol::SecretReference {
+                entry: "test-entry".into(),
+            })
+        );
+        assert_eq!(
+            compositor.secret_confirmation_text().as_deref(),
+            Some("CONFIRM SECRET: test-entry\nTARGET: test")
+        );
+        compositor.note_secret_confirmation_presented();
+        let mut pad = SyntheticPad::default();
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(Event::Button {
+                name: ButtonName::South,
+                state,
+            });
+        }
+        route(&mut compositor, &mut pad).unwrap();
+
+        while !client.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "secret delivery stalled"
+            );
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_millis(1),
+            });
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            event_loop
+                .dispatch(Duration::from_millis(1), &mut compositor)
+                .unwrap();
+            display.flush_clients().unwrap();
+        }
+        let app = client.join().unwrap();
+        assert_eq!(app.keyboard_text, "s3ntinel");
+        assert_eq!(
+            app.keys.len(),
+            16,
+            "one press and release per character, with no Enter"
+        );
+        assert_eq!(app.text, "", "secret delivery bypasses text-input instances");
+    }
+
     #[test]
     fn context_text_delivers_characters_outside_the_keymap() {
         assert_text("héllo ✓");

@@ -38,6 +38,7 @@ struct Nested {
     damage_tracker: OutputDamageTracker,
     stop: LoopSignal,
     notice: MemoryRenderBuffer,
+    notice_text: String,
 }
 
 #[expect(
@@ -75,6 +76,7 @@ pub(crate) fn insert(
         output,
         stop: event_loop.get_signal(),
         notice: tehuti::notice::speech_notice_buffer(),
+        notice_text: "NO SPEECH MAPPING".into(),
     };
     let _winit_token = event_loop
         .handle()
@@ -100,10 +102,17 @@ impl Nested {
     }
 
     fn redraw(&mut self, data: &mut LoopData) {
+        if let Some(text) = data.compositor.visible_notice_text()
+            && text != self.notice_text
+        {
+            self.notice = tehuti::notice::notice_buffer(&text);
+            self.notice_text = text;
+        }
         let size = self.backend.window_size();
+        let mut rendered = false;
         match self.backend.bind() {
             Ok((renderer, mut framebuffer)) => {
-                let notices = if data.compositor.speech_notice_visible() {
+                let notices = if data.compositor.visible_notice_text().is_some() {
                     MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
                         (16.0, 16.0),
@@ -123,7 +132,7 @@ impl Nested {
                 } else {
                     Vec::new()
                 };
-                if let Err(error) = render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
+                match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
                     &self.output,
                     renderer,
                     &mut framebuffer,
@@ -134,13 +143,21 @@ impl Nested {
                     &mut self.damage_tracker,
                     BACKGROUND,
                 ) {
-                    warn!(?error, "render failed");
+                    Ok(()) => rendered = true,
+                    Err(error) => warn!(?error, "render failed"),
                 }
             }
             Err(error) => warn!(?error, "bind failed"),
         }
-        if let Err(error) = self.backend.submit(Some(&[Rectangle::from_size(size)])) {
-            warn!(?error, "submit failed");
+        let submitted = match self.backend.submit(Some(&[Rectangle::from_size(size)])) {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(?error, "submit failed");
+                false
+            }
+        };
+        if rendered && submitted && data.compositor.secret_confirmation_text().is_some() {
+            data.compositor.note_secret_confirmation_presented();
         }
         let elapsed = data.compositor.start_time.elapsed();
         let output = &self.output;

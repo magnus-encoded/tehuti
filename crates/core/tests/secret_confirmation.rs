@@ -1,0 +1,84 @@
+//! Secret lookup authorization is one-use and tied to one focus lifetime.
+
+#[cfg(test)]
+mod secret_confirmation {
+    use core::time::Duration;
+
+    use tehuti_core::secret::{
+        DenySecretProvider, SecretConfirmationGate, SecretDestination, SecretProvider,
+    };
+    use tehuti_protocol::SecretReference;
+
+    fn reference(entry: &str) -> SecretReference {
+        SecretReference { entry: entry.into() }
+    }
+
+    const TARGET: SecretDestination = SecretDestination {
+        surface: 17,
+        focus_generation: 4,
+    };
+
+    #[test]
+    fn fresh_confirmation_authorizes_one_lookup_for_the_named_destination() {
+        let mut gate = SecretConfirmationGate::new();
+        let id = gate
+            .request(reference("mail"), TARGET, Duration::ZERO, Duration::from_secs(10))
+            .unwrap();
+
+        let authorization = gate.confirm(id, Duration::from_secs(1), TARGET).unwrap();
+        assert_eq!(authorization.reference.entry, "mail");
+        assert_eq!(authorization.destination, TARGET);
+        assert!(gate.confirm(id, Duration::from_secs(1), TARGET).is_none());
+    }
+
+    #[test]
+    fn replacing_request_invalidates_old_confirmation() {
+        let mut gate = SecretConfirmationGate::new();
+        let old = gate
+            .request(reference("old"), TARGET, Duration::ZERO, Duration::from_secs(10))
+            .unwrap();
+        let new = gate
+            .request(reference("new"), TARGET, Duration::ZERO, Duration::from_secs(10))
+            .unwrap();
+
+        assert!(gate.confirm(old, Duration::from_secs(1), TARGET).is_none());
+        assert_eq!(
+            gate.confirm(new, Duration::from_secs(1), TARGET)
+                .unwrap()
+                .reference
+                .entry,
+            "new"
+        );
+    }
+
+    #[test]
+    fn focus_change_expiry_and_cancel_fail_closed() {
+        let mut gate = SecretConfirmationGate::new();
+        let id = gate
+            .request(reference("mail"), TARGET, Duration::ZERO, Duration::from_secs(10))
+            .unwrap();
+        let returned_focus = SecretDestination {
+            focus_generation: 5,
+            ..TARGET
+        };
+
+        assert!(gate.pending(Duration::from_secs(1), returned_focus).is_none());
+        assert!(gate.confirm(id, Duration::from_secs(1), returned_focus).is_none());
+
+        let id = gate
+            .request(reference("mail"), TARGET, Duration::ZERO, Duration::from_secs(1))
+            .unwrap();
+        assert!(gate.confirm(id, Duration::from_secs(1), TARGET).is_none());
+        let id = gate
+            .request(reference("mail"), TARGET, Duration::ZERO, Duration::from_secs(10))
+            .unwrap();
+        gate.cancel();
+        assert!(gate.confirm(id, Duration::from_secs(1), TARGET).is_none());
+    }
+
+    #[test]
+    fn provider_is_unavailable_until_a_backend_is_selected() {
+        let mut provider = DenySecretProvider;
+        assert!(provider.lookup(&reference("mail")).is_err());
+    }
+}
