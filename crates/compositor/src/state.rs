@@ -47,6 +47,7 @@ pub struct Compositor {
     pub space: Space<Window>,
     pub output: Option<Output>,
     core: tehuti_core::State,
+    quit_requested: bool,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
     shm_state: ShmState,
@@ -76,6 +77,7 @@ impl Compositor {
             space: Space::default(),
             output: None,
             core: tehuti_core::State::new(),
+            quit_requested: false,
             surfaces: CompositorState::new::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             shm_state: ShmState::new::<Self>(display, vec![]),
@@ -100,10 +102,16 @@ impl Compositor {
         }
     }
 
+    #[must_use]
+    pub const fn quit_requested(&self) -> bool {
+        self.quit_requested
+    }
+
     /// Carries out one action from the core step.
     fn apply(&mut self, action: &Action) {
         match *action {
             Action::Key { key } => self.tap(key),
+            Action::Quit => self.quit_requested = true,
         }
     }
 

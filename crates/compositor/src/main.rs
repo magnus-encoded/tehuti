@@ -6,8 +6,8 @@
 
 mod nested;
 
-use core::error::Error;
-use std::{os::fd::AsFd, process::Command, sync::Arc};
+use core::{error::Error, time::Duration};
+use std::{os::fd::AsFd, process::Command, sync::Arc, time::Instant};
 
 use smithay::{
     reexports::{
@@ -28,6 +28,7 @@ pub(crate) struct LoopData {
     display: Display<Compositor>,
     compositor: Compositor,
     controller: Option<EvdevPad>,
+    previous_tick: Instant,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -57,8 +58,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         display,
         compositor,
         controller,
+        previous_tick: Instant::now(),
     };
-    event_loop.run(None, &mut data, |_| {})?;
+    let signal = event_loop.get_signal();
+    event_loop.run(Some(Duration::from_millis(10)), &mut data, |data| {
+        advance_time(data);
+        if let Some(pad) = data.controller.as_mut() {
+            if let Err(error) = input::finish_quit(&data.compositor, pad, &signal) {
+                error!(%error, "controller release failed");
+            }
+        } else if data.compositor.quit_requested() {
+            signal.stop();
+        }
+    })?;
     Ok(())
 }
 
@@ -101,6 +113,7 @@ fn insert_controller(event_loop: &EventLoop<LoopData>) -> Result<EvdevPad, Box<d
 
 /// Routes ready controller input. A controller that fails to read is dropped with its event source.
 fn route_controller_input(data: &mut LoopData) -> PostAction {
+    advance_time(data);
     let Some(device) = data.controller.as_mut() else {
         return PostAction::Remove;
     };
@@ -112,4 +125,12 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
             PostAction::Remove
         }
     }
+}
+
+fn advance_time(data: &mut LoopData) {
+    let now = Instant::now();
+    data.compositor.handle(&tehuti_protocol::Event::Tick {
+        elapsed: now.duration_since(data.previous_tick),
+    });
+    data.previous_tick = now;
 }

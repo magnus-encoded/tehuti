@@ -54,6 +54,10 @@ impl AsFd for EvdevPad {
 }
 
 impl InputSource for EvdevPad {
+    fn release(&mut self) -> io::Result<()> {
+        self.0.ungrab()
+    }
+
     fn drain(&mut self) -> io::Result<Vec<Event>> {
         drain_device(&mut self.0)
     }

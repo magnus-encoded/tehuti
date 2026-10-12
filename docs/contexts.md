@@ -24,3 +24,7 @@ contain a non-whitespace character.
 The global layer consumes South presses and sends Enter. The active context
 handles other mapped presses. The fallback discards events that neither handles.
 Focus changes select a context by the focused toplevel's current application id.
+
+The escape chord consumes every Guide press and release before context routing.
+A context mapping on Guide never fires. Holding Guide for three seconds emits
+Quit once; releasing it before then cancels the hold.

@@ -9,3 +9,6 @@
 | Active context | The context selected for the focused window's application id, or none when no context matches. |
 | Fallback | The final routing layer, which discards input that earlier layers do not consume. |
 | Global layer | The fixed first routing layer, which consumes South presses and sends Enter in every application. |
+| Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
+| Quit | The action that asks the compositor to release input and stop its event loop. |
+| Escape chord | Holding Guide for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |

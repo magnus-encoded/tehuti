@@ -35,6 +35,7 @@ pub enum ButtonState {
 pub enum Event {
     Button { name: ButtonName, state: ButtonState },
     Focus { app_id: Option<String>, title: String },
+    Tick { elapsed: core::time::Duration },
 }
 
 /// A key the core can send to the focused client.
@@ -124,4 +125,6 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 pub enum Action {
     /// Press and release `key` in the focused client.
     Key { key: KeyName },
+    /// Release the controller and stop the compositor.
+    Quit,
 }

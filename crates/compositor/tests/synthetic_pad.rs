@@ -149,6 +149,41 @@ mod synthetic_pad {
         check_routing("test", 15);
     }
 
+    #[test]
+    fn guide_hold_releases_the_synthetic_pad_and_exits_the_event_loop() {
+        use smithay::reexports::calloop::EventLoop;
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut pad = SyntheticPad::default();
+        pad.push(Event::Button {
+            name: ButtonName::Guide,
+            state: ButtonState::Pressed,
+        });
+        pad.push(Event::Tick {
+            elapsed: Duration::from_millis(2999),
+        });
+        route(&mut compositor, &mut pad).unwrap();
+        assert!(!compositor.quit_requested());
+        assert!(!pad.is_released());
+
+        let mut event_loop: EventLoop<()> = EventLoop::try_new().unwrap();
+        let signal = event_loop.get_signal();
+        pad.push(Event::Tick {
+            elapsed: Duration::from_millis(1),
+        });
+        let mut iterations = 0;
+        event_loop
+            .run(Some(Duration::ZERO), &mut (), |()| {
+                iterations += 1;
+                assert_eq!(iterations, 1, "the quit action stops the loop");
+                route(&mut compositor, &mut pad).unwrap();
+                tehuti::input::finish_quit(&compositor, &mut pad, &signal).unwrap();
+            })
+            .unwrap();
+        assert!(pad.is_released(), "the pad is released before the loop exits");
+        assert!(compositor.quit_requested());
+    }
+
     fn load_test_context(compositor: &mut Compositor) {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
