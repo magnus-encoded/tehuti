@@ -4,6 +4,7 @@
 mod secret_confirmation {
     use core::time::Duration;
 
+    use proptest::prelude::*;
     use tehuti_core::secret::{
         DenySecretProvider, SecretConfirmationGate, SecretDestination, SecretProvider,
     };
@@ -54,6 +55,35 @@ mod secret_confirmation {
                 .entry,
             "new"
         );
+    }
+
+    proptest! {
+        #[test]
+        fn stale_confirmations_never_consume_the_latest_replacement(replacements in 1usize..32) {
+            let mut gate = SecretConfirmationGate::new();
+            let mut stale_ids = Vec::new();
+            for index in 0..replacements {
+                stale_ids.push(
+                    gate.request(
+                        reference(&format!("old-{index}")),
+                        TARGET,
+                        Duration::ZERO,
+                        Duration::from_secs(10),
+                    )
+                    .unwrap(),
+                );
+            }
+            let latest_id = gate
+                .request(reference("latest"), TARGET, Duration::ZERO, Duration::from_secs(10))
+                .unwrap();
+
+            for stale_id in stale_ids {
+                prop_assert!(gate.confirm(stale_id, Duration::from_secs(1), TARGET).is_none());
+                prop_assert!(gate.pending(Duration::from_secs(1), TARGET).is_some());
+            }
+            let authorized = gate.confirm(latest_id, Duration::from_secs(1), TARGET).unwrap();
+            prop_assert_eq!(authorized.reference.entry, "latest");
+        }
     }
 
     #[test]
