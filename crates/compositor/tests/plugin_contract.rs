@@ -84,12 +84,12 @@ mod contract {
     const INITIALIZE: &str = "print(json.dumps({'jsonrpc':'2.0','id':0,'result':{'protocol_version':0,'encoding':'json','events':['focus']}}), flush=True)";
 
     #[test]
-    fn quit_stops_later_actions_and_notices_but_unpermitted_quit_does_not() {
+    fn quit_stops_later_actions_and_unpermitted_batches_are_rejected() {
         let body = format!(
             "{INITIALIZE}\nprint(json.dumps({{'jsonrpc':'2.0','method':'actions','params':{{'actions':[{{'type':'text','text':'before'}},{{'type':'quit'}},{{'type':'text','text':'after'}}]}}}}), flush=True)\nprint(json.dumps({{'jsonrpc':'2.0','method':'actions','params':{{'actions':[{{'type':'text','text':'later'}}]}}}}), flush=True)"
         );
         for (permissions, expected_quit, expected_texts) in
-            [(vec!["text", "quit"], true, 1), (vec!["text"], false, 3)]
+            [(vec!["text", "quit"], true, 1), (vec!["text"], false, 1)]
         {
             let (quit, logs) = session(&body, &permissions, "");
             assert_eq!(quit, expected_quit);

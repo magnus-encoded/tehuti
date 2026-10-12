@@ -71,6 +71,7 @@ pub struct Compositor {
     pub space: Space<Window>,
     pub output: Option<Output>,
     core: tehuti_core::State,
+    previous_tick: Instant,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
     speech_state: tehuti_core::speech::SpeechState,
@@ -124,6 +125,7 @@ impl Compositor {
             space: Space::default(),
             output: None,
             core: tehuti_core::State::new(),
+            previous_tick: Instant::now(),
             plugins: None,
             quit_requested: false,
             speech_state: tehuti_core::speech::SpeechState::default(),
@@ -184,6 +186,22 @@ impl Compositor {
         }
     }
 
+    pub(crate) fn plugin_reply(
+        &mut self,
+        key: tehuti_core::plugin::RequestKey,
+        result: Result<Vec<Action>, String>,
+    ) -> Option<tehuti_core::plugin::Rejection> {
+        let (next, actions, rejection) = tehuti_core::plugin::step(
+            core::mem::take(&mut self.core),
+            tehuti_core::plugin::Input::Reply { key, result },
+        );
+        self.core = next;
+        for action in &actions {
+            self.apply_plugin_action(action);
+        }
+        rejection
+    }
+
     pub fn set_speech(&mut self, process: crate::speech::SpeechProcess) {
         self.speech_process = Some(process);
     }
@@ -227,6 +245,14 @@ impl Compositor {
         }
     }
 
+    /// Supplies elapsed wall time to the pure core before input or replies.
+    pub fn advance_time(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.previous_tick);
+        self.handle(&Event::Tick { elapsed });
+        self.previous_tick = now;
+    }
+
     /// Runs one event through the core step and carries out the resulting actions.
     pub fn handle(&mut self, event: &Event) {
         use tehuti_core::speech::SpeechInput;
@@ -257,6 +283,7 @@ impl Compositor {
             } if self.handle_secret_confirmation_button(*state) => return,
             Event::Focus { .. } => self.speech_input(SpeechInput::Cancel),
             Event::Tick { elapsed } => {
+                self.previous_tick = Instant::now();
                 let inputs = self
                     .speech_process
                     .as_mut()
@@ -269,10 +296,29 @@ impl Compositor {
             Event::Button { .. } | Event::Speech { .. } => {}
         }
         let active = self.plugins.as_mut().is_some_and(|plugins| plugins.active(event));
-        let (next, actions, route_plugin) =
+        let (mut next, mut actions, route_plugin) =
             tehuti_core::step_with_plugin(core::mem::take(&mut self.core), event, active);
-        if let Some(plugins) = &mut self.plugins {
-            plugins.dispatch(event, route_plugin);
+        let request = self
+            .plugins
+            .as_mut()
+            .and_then(|plugins| plugins.dispatch(event, route_plugin));
+        if route_plugin {
+            if let Some((key, permissions)) = request {
+                let (state, mut routed, _) = tehuti_core::plugin::step(
+                    next,
+                    tehuti_core::plugin::Input::Request {
+                        key,
+                        event: event.clone(),
+                        permissions,
+                    },
+                );
+                next = state;
+                actions.append(&mut routed);
+            } else {
+                let (state, mut fallback) = tehuti_core::step(next, event);
+                next = state;
+                actions.append(&mut fallback);
+            }
         }
         self.core = next;
         for action in &actions {

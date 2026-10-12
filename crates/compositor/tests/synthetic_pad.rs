@@ -462,6 +462,63 @@ mod synthetic_pad {
         }
     }
 
+    #[test]
+    fn a_hanging_selected_plugin_releases_context_input_within_the_button_latency_budget() {
+        let directory = unresponsive_plugin("stalled");
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        load_test_context(&mut compositor, None);
+        let mut event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        compositor
+            .set_plugins(tehuti::plugins::install(&event_loop, directory.path(), |state| state).unwrap());
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
+        let setup_started = Instant::now();
+        let mut focused = false;
+        while !focused || compositor.initialized_plugins() != 1 {
+            assert!(setup_started.elapsed() < Duration::from_secs(5));
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            event_loop
+                .dispatch(Duration::from_millis(1), &mut compositor)
+                .unwrap();
+            display.flush_clients().unwrap();
+            focused |= receiver.try_recv().is_ok();
+        }
+        compositor.advance_time();
+        let started = Instant::now();
+        let mut pad = SyntheticPad::default();
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(Event::Button {
+                name: ButtonName::East,
+                state,
+            });
+        }
+        route(&mut compositor, &mut pad).unwrap();
+        while !client.is_finished() {
+            assert!(
+                started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET,
+                "selected hanging plugin exceeded the client delivery budget"
+            );
+            compositor.advance_time();
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            event_loop
+                .dispatch(Duration::from_millis(1), &mut compositor)
+                .unwrap();
+            display.flush_clients().unwrap();
+        }
+        let delivered = client.join().unwrap();
+        assert!(started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET);
+        assert_eq!(
+            delivered.keys,
+            vec![(15, KeyState::Pressed), (15, KeyState::Released)]
+        );
+    }
+
     fn unresponsive_plugin(mode: &str) -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt;
 
@@ -530,7 +587,7 @@ else:
         }
 
         let mut pad = SyntheticPad::default();
-        overload_then_send_keys(mode, &mut compositor, &mut event_loop, &mut pad);
+        let delivery_started = overload_then_send_keys(mode, &mut compositor, &mut event_loop, &mut pad);
         while !client.is_finished() {
             assert!(
                 started.elapsed() < Duration::from_secs(5),
@@ -542,8 +599,13 @@ else:
                 .unwrap();
             display.flush_clients().unwrap();
         }
+        let delivered = client.join().unwrap();
+        assert!(
+            delivery_started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET,
+            "client delivery exceeds button latency budget during {mode}"
+        );
         assert_eq!(
-            client.join().unwrap().keys,
+            delivered.keys,
             vec![
                 (KEY_ENTER, KeyState::Pressed),
                 (KEY_ENTER, KeyState::Released),
@@ -561,7 +623,7 @@ else:
         compositor: &mut Compositor,
         event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
         pad: &mut SyntheticPad,
-    ) {
+    ) -> Instant {
         for _ in 0..2048 {
             pad.push(Event::Focus {
                 app_id: Some("test".into()),
@@ -576,6 +638,7 @@ else:
         }
         route(compositor, pad).unwrap();
         event_loop.dispatch(Duration::ZERO, compositor).unwrap();
+        let delivery_started = Instant::now();
         for name in [ButtonName::South, ButtonName::East] {
             if name == ButtonName::East {
                 pad.push(Event::Focus {
@@ -588,6 +651,7 @@ else:
             }
         }
         route(compositor, pad).unwrap();
+        delivery_started
     }
 
     fn assert_escape_deadline(

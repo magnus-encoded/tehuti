@@ -5,7 +5,7 @@ pipes stdin and stdout. Send one UTF-8 JSON object per line, ending with a
 newline, and flush stdout. Escape newlines inside strings. Log to stderr.
 Each incoming line may contain at most 65,536 bytes before the newline.
 The core's output queue holds at most 65,536 bytes, including newlines;
-events that do not fit are logged and dropped.
+events that do not fit are logged and declined through the captured fallback.
 
 ## Validation and errors
 
@@ -15,8 +15,16 @@ JSON cause the whole line to be logged and dropped, including all its actions.
 Unknown fields are named in the log. The next line is parsed independently.
 Ignore unknown fields sent by the core.
 
-The core sends no JSON-RPC error responses. A plugin may answer any request
-with a standard `error` object instead of `result`, for example:
+The core rejects an invalid action batch atomically and sends JSON-RPC error
+-32602 for `submit_actions` requests, using the plugin's submission id, the
+rejected action index and kind, and its reason. Schema errors name invalid
+values or unknown fields; permission errors name the missing permission.
+Legacy action replies and notices receive an `action_rejected` notification
+whose params contain `event_id` (null for notices) and an `error` object with
+code -32602 and the reason. Notifications never receive response objects.
+Malformed JSON and lines without recognizable action envelopes are logged and
+dropped. A plugin may answer any request with a standard `error` object instead
+of `result`, for example:
 
 ```json
 {"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}
@@ -33,7 +41,7 @@ only replies and `actions` notices.
 
 Ids are unsigned integers from 0 through 18446744073709551615, never strings,
 fractions or negative numbers. Replies require an id; notices should omit it
-(the parser also accepts null on notices). Only the core assigns request ids.
+(the parser also accepts null on notices). The core assigns event ids; plugins assign their own submission ids.
 
 ## Initialize
 
@@ -91,12 +99,37 @@ Reply once with the same id and a list of actions:
 {"jsonrpc":"2.0","id":1,"result":[{"type":"key","key":"tab"}]}
 ```
 
+Plugins may submit their decision as an additive `submit_actions` request.
+Initialize advertises this method in `options.action_submission`; protocol v0
+also continues to accept the action-list replies above. The plugin owns the
+submission id; `event_id` echoes the core's event id:
+
+```json
+{"jsonrpc":"2.0","id":42,"method":"submit_actions","params":{"event_id":1,"actions":[{"type":"key","key":"tab"}]}}
+```
+
+The core replies to submission 42 with `result: []` when the decision is
+accepted or stale. If a pending decision contains an invalid action, it replies
+with `error` code -32602 and releases that event's captured fallback:
+
+```json
+{"jsonrpc":"2.0","id":42,"error":{"code":-32602,"message":"action 0 (key): unknown variant `Tab`"}}
+```
+
+Action submissions share the event deadline and exactly-once handling of legacy
+replies. A submission cannot complete a different plugin's event. There is no
+response to a legacy response object; its rejection feedback is a notification.
+
 An empty list means no action. Button ids start at 1 per process. Echo each id exactly.
 Replies may arrive out of order. Late, duplicate and unmatched replies are
 ignored. There is no cancellation request. At most 256 requests may be pending
-per plugin. Excess requests are dropped. Each deadline is 250 milliseconds
-from dispatch, before queuing, not from the plugin's receipt. A missing reply,
-an invalid reply or a reply received at or after the deadline means no action.
+per plugin. Excess requests decline immediately. The button decision budget is
+100 milliseconds from dispatch, before queuing, not from the plugin's receipt.
+Time and replies enter the pure core as inputs; the core expires requests at
+or after the budget. A missing, invalid or late reply declines the event.
+Global button mappings never wait for a plugin; client delivery while a plugin
+hangs has a 250-millisecond latency budget. Pipe reads and writes are nonblocking
+and bounded, including when a child stops reading or floods stdout.
 
 Speech decisions are requests to the first matching initialized `speech`
 subscriber, with a two-second deadline and the same action reply shape:
@@ -124,10 +157,13 @@ Manifests sort by their full filesystem paths, in ascending Rust path order;
 and case sensitively. No application matches null. A starting, refused or
 focus-only plugin does not take part in button selection.
 
-The selected plugin replaces the active context. An empty, invalid, missing
-or late reply does not fall through to context or fallback
-([ADR 0003 §5](../adr/0003-plugin-protocol.md)). If no plugin qualifies, normal
-context routing applies. Global mappings and the escape chord take priority.
+The selected plugin runs before the active context. An empty, invalid, missing
+or late reply releases the context or fallback actions captured when the
+request was dispatched, exactly once. Replies cannot complete other requests,
+and duplicate or stale replies cannot act on later input. A focus notification
+invalidates all pending decisions, including when focus leaves and returns,
+so captured actions never reach another destination. If no plugin qualifies,
+normal context routing applies. Global mappings and the escape chord take priority.
 
 ## Actions
 
@@ -169,11 +205,12 @@ A plugin may send actions without a request:
 ```
 
 These notices need no event subscription or application match, but require
-completed initialization. They have no id, reply or button deadline.
+completed initialization. They have no id, response or button deadline.
+They are independent actions and never complete a pending request.
 Notice actions are reserved for the core and are dropped from plugins.
 Every action requires its matching manifest permission: `key`, `text`, or
-`quit`. The core drops each unpermitted action and keeps the others in order.
-An unpermitted Quit does not stop the remaining actions. Permissions restrict
+`quit`. The core rejects the entire batch if any action lacks permission or
+uses a core-only action. No action in a rejected batch is delivered. Permissions restrict
 protocol actions; they do not sandbox the process or restrict its OS access.
 Actions target focus when applied, even if it changed since the request.
 

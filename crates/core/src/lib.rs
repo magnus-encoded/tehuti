@@ -7,6 +7,7 @@ pub struct State {
     contexts: Vec<Context>,
     focused_app_id: Option<String>,
     guide_held: Option<core::time::Duration>,
+    pending: Vec<plugin::Pending>,
 }
 
 impl State {
@@ -21,6 +22,7 @@ impl State {
             contexts,
             focused_app_id: None,
             guide_held: None,
+            pending: Vec::new(),
         }
     }
 }
@@ -35,7 +37,15 @@ pub fn step(state: State, event: &Event) -> (State, Vec<Action>) {
 /// Routes to a plugin in place of the active context after higher layers consume input.
 #[must_use]
 pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Action>, bool) {
+    if let Event::Tick { elapsed } = event {
+        let mut actions = plugin::expire(&mut state, *elapsed);
+        if let Some(mut chord_actions) = escape_chord(&mut state, event) {
+            actions.append(&mut chord_actions);
+        }
+        return (state, actions, false);
+    }
     if let Event::Focus { app_id, .. } = event {
+        state.pending.clear();
         state.focused_app_id.clone_from(app_id);
     }
     if let Some(actions) = escape_chord(&mut state, event) {
@@ -53,7 +63,7 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     ) {
         return (state, Vec::new(), false);
     }
-    if plugin_active {
+    if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
         return (state, Vec::new(), true);
     }
     let actions = active_context(&state, event)
@@ -133,3 +143,5 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
 
 pub mod secret;
 pub mod speech;
+
+pub mod plugin;
