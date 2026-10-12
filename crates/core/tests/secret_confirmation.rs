@@ -21,14 +21,19 @@ mod secret_confirmation {
     #[test]
     fn fresh_confirmation_authorizes_one_lookup_for_the_named_destination() {
         let mut gate = SecretConfirmationGate::new();
-        let id = gate
+        let confirmation_id = gate
             .request(reference("mail"), TARGET, Duration::ZERO, Duration::from_secs(10))
             .unwrap();
 
-        let authorization = gate.confirm(id, Duration::from_secs(1), TARGET).unwrap();
+        let authorization = gate
+            .confirm(confirmation_id, Duration::from_secs(1), TARGET)
+            .unwrap();
         assert_eq!(authorization.reference.entry, "mail");
         assert_eq!(authorization.destination, TARGET);
-        assert!(gate.confirm(id, Duration::from_secs(1), TARGET).is_none());
+        assert!(
+            gate.confirm(confirmation_id, Duration::from_secs(1), TARGET)
+                .is_none()
+        );
     }
 
     #[test]
@@ -54,7 +59,7 @@ mod secret_confirmation {
     #[test]
     fn focus_change_expiry_and_cancel_fail_closed() {
         let mut gate = SecretConfirmationGate::new();
-        let id = gate
+        let stale_confirmation_id = gate
             .request(reference("mail"), TARGET, Duration::ZERO, Duration::from_secs(10))
             .unwrap();
         let returned_focus = SecretDestination {
@@ -63,17 +68,26 @@ mod secret_confirmation {
         };
 
         assert!(gate.pending(Duration::from_secs(1), returned_focus).is_none());
-        assert!(gate.confirm(id, Duration::from_secs(1), returned_focus).is_none());
+        assert!(
+            gate.confirm(stale_confirmation_id, Duration::from_secs(1), returned_focus)
+                .is_none()
+        );
 
-        let id = gate
+        let expired_confirmation_id = gate
             .request(reference("mail"), TARGET, Duration::ZERO, Duration::from_secs(1))
             .unwrap();
-        assert!(gate.confirm(id, Duration::from_secs(1), TARGET).is_none());
-        let id = gate
+        assert!(
+            gate.confirm(expired_confirmation_id, Duration::from_secs(1), TARGET)
+                .is_none()
+        );
+        let cancelled_confirmation_id = gate
             .request(reference("mail"), TARGET, Duration::ZERO, Duration::from_secs(10))
             .unwrap();
         gate.cancel();
-        assert!(gate.confirm(id, Duration::from_secs(1), TARGET).is_none());
+        assert!(
+            gate.confirm(cancelled_confirmation_id, Duration::from_secs(1), TARGET)
+                .is_none()
+        );
     }
 
     #[test]
