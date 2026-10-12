@@ -487,17 +487,7 @@ mod synthetic_pad {
             .unwrap();
         let (sender, receiver) = mpsc::channel();
         let client = thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
-        let setup_started = Instant::now();
-        let mut focused = false;
-        while !focused || compositor.initialized_plugins() != 1 {
-            assert!(setup_started.elapsed() < Duration::from_secs(5));
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            event_loop
-                .dispatch(Duration::from_millis(1), &mut compositor)
-                .unwrap();
-            display.flush_clients().unwrap();
-            focused |= receiver.try_recv().is_ok();
-        }
+        wait_for_focused_plugin(&mut display, &mut compositor, &mut event_loop, &receiver);
         thread::sleep(Duration::from_millis(150));
         let started = Instant::now();
         let mut pad = SyntheticPad::default();
@@ -547,6 +537,23 @@ mod synthetic_pad {
                 (expected_key, KeyState::Released)
             ]
         );
+    }
+
+    fn wait_for_focused_plugin(
+        display: &mut Display<Compositor>,
+        compositor: &mut Compositor,
+        event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
+        receiver: &mpsc::Receiver<()>,
+    ) {
+        let setup_started = Instant::now();
+        let mut focused = false;
+        while !focused || compositor.initialized_plugins() != 1 {
+            assert!(setup_started.elapsed() < Duration::from_secs(5));
+            let _dispatched = display.dispatch_clients(compositor).unwrap();
+            event_loop.dispatch(Duration::from_millis(1), compositor).unwrap();
+            display.flush_clients().unwrap();
+            focused |= receiver.try_recv().is_ok();
+        }
     }
 
     fn unresponsive_plugin(mode: &str) -> tempfile::TempDir {

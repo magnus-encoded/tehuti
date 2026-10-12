@@ -32,7 +32,7 @@ mod plugin_latency {
 
     #[test]
     fn saturated_pending_requests_fall_back_once_and_resolving_frees_capacity() {
-        let event = speech(serde_json::from_str("\"fallback\"").unwrap());
+        let event = speech(Text::new("fallback".into()).unwrap());
         let mut state = State::new();
         for request_id in 0..256 {
             state = request(
