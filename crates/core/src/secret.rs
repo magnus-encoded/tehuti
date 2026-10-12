@@ -88,11 +88,11 @@ impl SecretConfirmationGate {
         now: Duration,
         destination: SecretDestination,
     ) -> Option<AuthorizedSecretLookup> {
+        if self.pending.as_ref()?.confirmation_id != confirmation {
+            return None;
+        }
         let pending = self.pending.take()?;
-        if pending.confirmation_id != confirmation
-            || pending.expires_at <= now
-            || pending.destination != destination
-        {
+        if pending.expires_at <= now || pending.destination != destination {
             return None;
         }
         Some(AuthorizedSecretLookup {
