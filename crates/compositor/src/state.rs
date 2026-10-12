@@ -409,14 +409,14 @@ impl Compositor {
             return false;
         };
         let now = self.start_time.elapsed();
-        let Some(id) = self
+        let Some(confirmation_id) = self
             .secret_gate
             .pending(now, destination)
             .map(|pending| pending.confirmation_id())
         else {
             return false;
         };
-        let Some(authorization) = self.secret_gate.confirm(id, now, destination) else {
+        let Some(authorization) = self.secret_gate.confirm(confirmation_id, now, destination) else {
             return true;
         };
         self.secret_confirmation_label = None;
