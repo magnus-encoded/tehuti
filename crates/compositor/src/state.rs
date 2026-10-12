@@ -1,6 +1,7 @@
 //! Smithay state and protocol handlers. Shows one toplevel fullscreen and gives it keyboard focus.
 
-use core::time::Instant;
+#[allow(clippy::std_instead_of_core)] // Instant has no core equivalent.
+use std::time::Instant;
 
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,

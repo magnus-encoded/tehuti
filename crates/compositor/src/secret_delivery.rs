@@ -150,8 +150,9 @@ mod tests {
                 &keys,
                 |key| delivered.push(key),
             ));
+            let debug_record = format!("{:?}", secret);
+            prop_assert!(!debug_record.contains(&value));
             prop_assert_eq!(delivered, value);
-            prop_assert!(!format!("{:?}", secret).contains(&value));
         }
     }
 }
