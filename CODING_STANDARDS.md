@@ -44,9 +44,11 @@ The core keeps running whatever plugins, clients, devices or input do.
 
 ## Tests
 
-A test states a rule about behaviour, never a second copy of the code.
+A test states a rule about behaviour. It never computes its expected value by copying the implementation's logic.
 
-- A property asserts a law that holds for generated inputs, such as "a consumed event never reaches a later layer". If its expected value comes from a hand-written copy of the code under test, it is not a property.
-- Generate the configuration as well as the events, so that a property holds for every context, mapping or plugin set, not only one fixture.
-- Every promise in the docs has a test that pins it.
-- Tests drive input through the synthetic input source, never through real devices or uinput.
+- A property asserts a law over generated inputs, such as "a consumed event never reaches a later layer". A state-machine test may compare against a small reference model that is simpler than the code; a copy of the code is not a model.
+- Properties of the core step generate the configuration as well as the events, so they hold for every context, mapping or plugin set, not one fixture.
+- Tests go through public seams. They never reach into private state, mock internal modules or assert on call order between internal functions.
+- Every documented promise has an automated test, except where a spec or ADR says it is checked by hand.
+- No test needs a real device, uinput, display or microphone. Core tests drive the pure step with generated events; compositor tests use the synthetic pad.
+- Mutation testing measures this: a surviving mutant is a missing test.
