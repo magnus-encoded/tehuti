@@ -13,7 +13,7 @@ Speech is heard by anyone nearby and passes through transcription, logs, the eve
 Secrets are referred to by a reference (an entry name in a secret store), never by value. A secret value exists only inside the secret store and the one core effect that delivers it to its destination.
 
 - The protocol has secret references, not secret values. No event or action carries a value.
-- Core context mappings can request delivery by reference. Plugin- and speech-originated requests remain denied until a separate permission and trust design authorizes them; neither receives secret values.
+- Plugins, contexts and the speech sidecar can request that a referenced secret be delivered; they never receive it.
 - Delivering a secret into a window requires an explicit controller confirmation that names the entry and the target window.
 - Secret values are never logged, never placed on the clipboard, and never shown on screen.
 - A property test checks that no event, action, log record or plugin message ever contains a secret value from the test store.
