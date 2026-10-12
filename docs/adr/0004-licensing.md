@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. The owner decides; nothing here is accepted. This is not legal advice.
+Accepted on 2026-10-12. Owner signoff: magnus-encoded. This is not legal advice.
 
 ## The test
 
