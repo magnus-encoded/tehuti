@@ -367,6 +367,69 @@ for line in sys.stdin:
         }
     }
 
+    /// Counts the text actions the compositor carried out, observed as the
+    /// warning each one logs when no client is focused.
+    fn text_actions(run: impl FnOnce()) -> usize {
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let writer = LogWriter(logs.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        output.matches("text action skipped").count()
+    }
+
+    fn text_context(mappings: &std::collections::HashMap<ButtonName, String>) -> tehuti_protocol::Context {
+        let mut source = String::from("app_id = 'test'\n[buttons]\n");
+        for (name, text) in mappings {
+            let name = serde_json::to_value(name).unwrap();
+            source = source
+                + "[buttons."
+                + name.as_str().unwrap()
+                + "]\ntext = "
+                + &toml::Value::String(text.clone()).to_string()
+                + "\n";
+        }
+        tehuti_protocol::parse_context(&source).unwrap()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+        #[test]
+        fn a_plugin_that_does_not_subscribe_to_buttons_never_changes_context_output(
+            focus_subscription in any::<bool>(), on_focus in any::<bool>(), consumes in any::<bool>(),
+            other_apps in prop::collection::vec(prop::sample::select(vec!["other", "third"]), 0..3),
+            permissions in prop::collection::vec(prop::sample::select(vec![Permission::Key, Permission::Text, Permission::Quit]), 0..10),
+            mappings in prop::collection::hash_map(any::<ButtonName>(), "[a-z]{1,8}", 0..=8),
+            events in prop::collection::vec((any::<ButtonName>(), any::<ButtonState>()).prop_map(|(name, state)| Event::Button { name, state }), 0..20),
+        ) {
+            let mut configuration = manifest();
+            configuration.events = focus_subscription.then_some(Subscription::Focus).into_iter().collect();
+            configuration.start = if on_focus { StartPolicy::OnFocus } else { StartPolicy::Always };
+            configuration.app_ids = core::iter::once("test").chain(other_apps).map(str::to_owned).collect();
+            configuration.permissions = permissions;
+            let context = text_context(&mappings);
+            let with_plugin = text_actions(|| {
+                let mut harness = Harness::new(&configuration, if consumes { "quit" } else { "empty" }, 0, "json");
+                harness.compositor.set_contexts(vec![context.clone()]);
+                harness.ready();
+                harness.send(events.iter().cloned());
+            });
+            let without_plugin = text_actions(|| {
+                let display: Display<Compositor> = Display::new().unwrap();
+                let mut compositor = Compositor::new(&display.handle()).unwrap();
+                compositor.set_contexts(vec![context.clone()]);
+                compositor.handle(&focus("test"));
+                let mut pad = SyntheticPad::default();
+                for event in events.iter().cloned() { pad.push(event); }
+                route(&mut compositor, &mut pad).unwrap();
+            });
+            prop_assert_eq!(with_plugin, without_plugin, "context output is the same as with no plugin installed");
+        }
+    }
+
     #[derive(Clone)]
     struct LogWriter(Arc<Mutex<Vec<u8>>>);
     impl Write for LogWriter {

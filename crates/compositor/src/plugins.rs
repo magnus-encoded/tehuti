@@ -260,7 +260,7 @@ impl Plugins {
             .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id))
             && entry.session.as_ref().is_some_and(|session| {
                 let session = session.borrow();
-                session.ready && !session.refused
+                session.ready && !session.refused && session.events.contains(&Subscription::Button)
             })
     }
 

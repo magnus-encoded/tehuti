@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 202ef6e9b099f125800dc8f553486a32634ca90a330fc025eb272ed73d0dbd7f # shrinks to focus_subscription = false, on_focus = false, consumes = false, other_apps = [], permissions = [], mappings = {DpadDown: "a"}, events = [Button { name: DpadDown, state: Pressed }]
