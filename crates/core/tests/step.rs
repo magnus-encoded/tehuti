@@ -9,7 +9,10 @@ mod step {
     use tehuti_protocol::{Action, ButtonName, ButtonState, Event, KeyName};
 
     fn run(events: &[Event]) -> Vec<Action> {
-        let mut state = State::new();
+        run_from(State::new(), events)
+    }
+
+    fn run_from(mut state: State, events: &[Event]) -> Vec<Action> {
         let mut actions = Vec::new();
         for event in events {
             let (next, emitted) = step(state, event);
@@ -26,8 +29,12 @@ mod step {
 
     proptest! {
         #[test]
-        fn step_returns_for_any_event_series(events in prop::collection::vec(any::<Event>(), 0..200)) {
-            let _actions = run(&events);
+        fn step_returns_for_any_event_series(
+            events in prop::collection::vec(any::<Event>(), 0..200),
+            configurations in prop::collection::vec(prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15), 0..20),
+        ) {
+            let contexts = configurations.iter().map(|mappings| generated_context("test", mappings)).collect();
+            let _actions = run_from(State::with_contexts(contexts), &events);
         }
 
         #[test]
@@ -35,8 +42,20 @@ mod step {
             events in prop::collection::vec(any::<Event>(), 0..200),
         ) {
             let a_presses = events.iter().filter(|event| **event == A_PRESSED).count();
-            prop_assert_eq!(run(&events), vec![Action::Key { key: KeyName::Enter }; a_presses]);
+            let keys: Vec<_> = run(&events).into_iter().filter(|action| matches!(action, Action::Key { .. })).collect();
+            prop_assert_eq!(keys, vec![Action::Key { key: KeyName::Enter }; a_presses]);
         }
+    }
+
+    fn button_name(button: ButtonName) -> String {
+        let mut name = String::new();
+        for (index, letter) in format!("{button:?}").chars().enumerate() {
+            if index > 0 && letter.is_uppercase() {
+                name.push('_');
+            }
+            name.extend(letter.to_lowercase());
+        }
+        name
     }
 
     fn generated_context(
@@ -48,7 +67,7 @@ mod step {
             write!(
                 source,
                 "[buttons.{}]\nkey = '{}'\n",
-                format!("{button:?}").to_lowercase(),
+                button_name(*button),
                 format!("{key:?}").to_lowercase()
             )
             .unwrap();
@@ -85,6 +104,58 @@ mod step {
             } else {
                 prop_assert!(actions.is_empty(), "releases use the empty fallback");
             }
+        }
+    }
+
+    fn guide(button_state: ButtonState) -> Event {
+        Event::Button {
+            name: ButtonName::Guide,
+            state: button_state,
+        }
+    }
+
+    fn tick(millis: u64) -> Event {
+        Event::Tick {
+            elapsed: core::time::Duration::from_millis(millis),
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn every_configuration_quits_after_three_seconds(
+            configurations in prop::collection::vec(
+                prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15), 0..20),
+            first in 0u64..3000,
+            extra in 0u64..10000,
+            focused in prop::option::of(prop::sample::select(vec!["test", "other"])),
+        ) {
+            let contexts = configurations.iter().map(|mappings| generated_context("test", mappings)).collect();
+            let (state, _) = step(State::with_contexts(contexts), &Event::Focus { app_id: focused.map(str::to_owned), title: String::new() });
+            let (state, press_actions) = step(state, &guide(ButtonState::Pressed));
+            prop_assert!(press_actions.is_empty(), "Guide is reserved globally");
+            let (state, early_actions) = step(state, &tick(first));
+            prop_assert!(early_actions.is_empty());
+            let (state, _) = step(state, &Event::Focus { app_id: Some("test".into()), title: String::new() });
+            let (state, _) = step(state, &guide(ButtonState::Pressed));
+            let (state, actions) = step(state, &tick(3000u64.checked_sub(first).unwrap().checked_add(extra).unwrap()));
+            prop_assert_eq!(actions, vec![Action::Quit]);
+            let (_, later_actions) = step(state, &tick(u64::MAX));
+            prop_assert!(later_actions.is_empty(), "one hold quits once");
+        }
+
+        #[test]
+        fn releasing_early_cancels_the_hold(
+            elapsed in 0u64..3000,
+            mappings in prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15),
+        ) {
+            let mut state = State::with_contexts(vec![generated_context("test", &mappings)]);
+            for event in [tick(u64::MAX), guide(ButtonState::Pressed), tick(elapsed), guide(ButtonState::Released), tick(u64::MAX), guide(ButtonState::Pressed), tick(2999)] {
+                let (next, actions) = step(state, &event);
+                state = next;
+                prop_assert!(actions.is_empty());
+            }
+            let (_, actions) = step(state, &tick(1));
+            prop_assert_eq!(actions, vec![Action::Quit]);
         }
     }
 
