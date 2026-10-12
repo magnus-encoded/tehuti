@@ -122,25 +122,48 @@ mod step {
 
     proptest! {
         #[test]
-        fn every_configuration_quits_after_three_seconds(
+        fn every_held_guide_series_quits_once_at_three_seconds(
             configurations in prop::collection::vec(
-                prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15), 0..20),
-            first in 0u64..3000,
-            extra in 0u64..10000,
-            focused in prop::option::of(prop::sample::select(vec!["test", "other"])),
+                prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15), 1..20),
+            guide_key in any::<KeyName>(),
+            series in prop::collection::vec(
+                (
+                    prop::collection::vec(prop_oneof![
+                        (any::<ButtonName>().prop_filter("Guide stays held", |name| *name != ButtonName::Guide), any::<ButtonState>())
+                            .prop_map(|(name, state)| Event::Button { name, state }),
+                        (prop::option::of(prop::sample::select(vec!["test", "other", "unmatched"])), any::<String>())
+                            .prop_map(|(app_id, title)| Event::Focus { app_id: app_id.map(str::to_owned), title }),
+                    ], 0..5),
+                    50u64..=100,
+                ),
+                60..150,
+            ),
         ) {
-            let contexts = configurations.iter().map(|mappings| generated_context("test", mappings)).collect();
-            let (state, _) = step(State::with_contexts(contexts), &Event::Focus { app_id: focused.map(str::to_owned), title: String::new() });
-            let (state, press_actions) = step(state, &guide(ButtonState::Pressed));
-            prop_assert!(press_actions.is_empty(), "Guide is reserved globally");
-            let (state, early_actions) = step(state, &tick(first));
-            prop_assert!(early_actions.is_empty());
-            let (state, _) = step(state, &Event::Focus { app_id: Some("test".into()), title: String::new() });
-            let (state, _) = step(state, &guide(ButtonState::Pressed));
-            let (state, actions) = step(state, &tick(3000u64.checked_sub(first).unwrap().checked_add(extra).unwrap()));
-            prop_assert_eq!(actions, vec![Action::Quit]);
-            let (_, later_actions) = step(state, &tick(u64::MAX));
-            prop_assert!(later_actions.is_empty(), "one hold quits once");
+            let contexts = configurations.into_iter().enumerate().map(|(index, mut mappings)| {
+                let _previous = mappings.insert(ButtonName::Guide, guide_key);
+                generated_context(if index % 2 == 0 { "test" } else { "other" }, &mappings)
+            }).collect();
+            let (state, _) = step(State::with_contexts(contexts), &Event::Focus {
+                app_id: Some("test".into()), title: String::new(),
+            });
+            let (mut state, press_actions) = step(state, &guide(ButtonState::Pressed));
+            prop_assert!(press_actions.is_empty(), "Guide never fires its context mapping");
+            let mut elapsed = core::time::Duration::ZERO;
+            let mut quits = 0usize;
+            for (other_events, millis) in series {
+                for event in other_events.into_iter().chain(core::iter::once(tick(millis))) {
+                    if let Event::Tick { elapsed: delta } = &event {
+                        elapsed = elapsed.checked_add(*delta).unwrap();
+                    }
+                    let (next, actions) = step(state, &event);
+                    state = next;
+                    quits = quits.checked_add(actions.iter().filter(|action| **action == Action::Quit).count()).unwrap();
+                    prop_assert_eq!(quits, usize::from(elapsed >= core::time::Duration::from_secs(3)),
+                        "every prefix emits no Quit before three seconds and exactly one thereafter");
+                }
+            }
+            prop_assert!(elapsed >= core::time::Duration::from_secs(3));
+            prop_assert_eq!(quits, 1);
         }
 
         #[test]
