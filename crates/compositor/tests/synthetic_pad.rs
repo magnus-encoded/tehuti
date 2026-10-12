@@ -975,7 +975,7 @@ else:
                 .all(|line| line.chars().count() <= 40),
             "both confirmation labels fit the rendered notice lines"
         );
-        compositor.note_secret_confirmation_presented();
+        compositor.note_secret_confirmation_frame_submitted();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {
                 name: ButtonName::South,

@@ -102,6 +102,25 @@ impl Nested {
     }
 
     fn redraw(&mut self, data: &mut LoopData) {
+        let size = self.backend.window_size();
+        self.render_frame(data, size);
+        let elapsed = data.compositor.start_time.elapsed();
+        let output = &self.output;
+        for window in data.compositor.space.elements() {
+            window.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| Some(output.clone()));
+        }
+        data.compositor.space.refresh();
+        if let Err(error) = data.display.flush_clients() {
+            warn!(%error, "flush failed");
+        }
+        self.backend.window().request_redraw();
+    }
+
+    fn render_frame(
+        &mut self,
+        data: &mut LoopData,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) {
         let confirmation_pending = data.compositor.secret_confirmation_text().is_some();
         let visible_notice = data.compositor.visible_notice_text();
         if let Some(text) = &visible_notice
@@ -110,7 +129,6 @@ impl Nested {
             self.notice = tehuti::notice::notice_buffer(text);
             self.notice_text.clone_from(text);
         }
-        let size = self.backend.window_size();
         let mut output_drew = false;
         let mut confirmation_element_included = false;
         match self.backend.bind() {
@@ -165,15 +183,5 @@ impl Nested {
         if confirmation_element_included && output_drew && submit_succeeded {
             data.compositor.note_secret_confirmation_frame_submitted();
         }
-        let elapsed = data.compositor.start_time.elapsed();
-        let output = &self.output;
-        for window in data.compositor.space.elements() {
-            window.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| Some(output.clone()));
-        }
-        data.compositor.space.refresh();
-        if let Err(error) = data.display.flush_clients() {
-            warn!(%error, "flush failed");
-        }
-        self.backend.window().request_redraw();
     }
 }
