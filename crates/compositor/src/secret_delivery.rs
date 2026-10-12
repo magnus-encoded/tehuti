@@ -82,17 +82,17 @@ mod tests {
             .chars()
             .map(|character| (character, character))
             .collect();
-        let mut sent = Vec::new();
+        let mut sent_for_unrepresentable = Vec::new();
 
         assert!(!deliver_if_current(
             authorization.destination,
             Some(TARGET),
             &secret,
             &keys,
-            |key| sent.push(key)
+            |key| sent_for_unrepresentable.push(key)
         ));
         assert!(
-            sent.is_empty(),
+            sent_for_unrepresentable.is_empty(),
             "unrepresentable secret must not send a partial prefix"
         );
 
@@ -100,7 +100,7 @@ mod tests {
             .chars()
             .map(|character| (character, character))
             .collect();
-        let mut sent = Vec::new();
+        let mut sent_for_stale_focus = Vec::new();
         assert!(!deliver_if_current(
             authorization.destination,
             Some(SecretDestination {
@@ -109,10 +109,14 @@ mod tests {
             }),
             &secret,
             &keys,
-            |key| sent.push(key),
+            |key| sent_for_stale_focus.push(key),
         ));
-        assert!(sent.is_empty(), "stale focus must receive zero characters");
+        assert!(
+            sent_for_stale_focus.is_empty(),
+            "stale focus must receive zero characters"
+        );
 
+        let mut sent = Vec::new();
         assert!(deliver_if_current(
             authorization.destination,
             Some(TARGET),
