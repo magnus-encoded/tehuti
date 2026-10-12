@@ -15,10 +15,21 @@ JSON cause the whole line to be logged and dropped, including all its actions.
 Unknown fields are named in the log. The next line is parsed independently.
 Ignore unknown fields sent by the core.
 
-The core sends no JSON-RPC error responses. Plugin `error` replies are also
-logged and dropped; they do not complete a pending request. Use `result:[]`
-to decline a button. Valid plugin `initialize`, `button` and `focus` calls
-are ignored: plugins send only replies and `actions` notices.
+The core sends no JSON-RPC error responses. A plugin may answer any request
+with a standard `error` object instead of `result`, for example:
+
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}
+```
+
+The error has an integer `code`, a string `message` and optional `data`.
+The core logs the code and message at warn and treats the reply as declining
+(an empty action list), completing a matching pending button request. It never
+closes the plugin for an error reply. An initialize error leaves initialization
+pending until a valid reply or the existing deadline. For unknown methods sent
+to a plugin, it may reply with error -32601 or stay silent; both mean declined.
+Valid plugin `initialize`, `button` and `focus` calls are ignored: plugins send
+only replies and `actions` notices.
 
 Ids are unsigned integers from 0 through 18446744073709551615, never strings,
 fractions or negative numbers. Replies require an id; notices should omit it

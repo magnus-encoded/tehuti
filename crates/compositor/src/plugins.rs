@@ -143,6 +143,9 @@ impl Session {
     }
 
     fn message(&mut self, message: Message) -> Vec<Action> {
+        if let Message::Error(response) = &message {
+            tracing::warn!(code = response.error.code, message = %response.error.message, "plugin request declined");
+        }
         if self.refused {
             return Vec::new();
         }
@@ -162,6 +165,10 @@ impl Session {
                     ResultValue::Actions(actions) => actions,
                     ResultValue::Initialized(_) => Vec::new(),
                 }
+            }
+            Message::Error(response) => {
+                let _deadline = self.pending.remove(&response.request_id);
+                Vec::new()
             }
             Message::Call(Call {
                 method: Method::Actions { actions },

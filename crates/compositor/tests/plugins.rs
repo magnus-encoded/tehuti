@@ -30,46 +30,7 @@ mod plugins {
     impl Harness {
         fn new(manifest: &Manifest, mode: &str, version: u64, encoding: &str) -> Self {
             let directory = tempfile::tempdir().unwrap();
-            let script = format!(
-                r"#!/usr/bin/env python3
-import json, sys, time
-held = None
-from pathlib import Path
-root = Path(__file__).parent
-(root / 'pid').write_text(str(__import__('os').getpid()))
-for line in sys.stdin:
-    message = json.loads(line)
-    with (root / 'received').open('a') as log:
-        log.write(line)
-    if message['method'] == 'initialize':
-        if {mode:?} == 'slow_initialize':
-            time.sleep(2.1)
-        result = {{'protocol_version': {version}, 'encoding': {encoding:?}, 'events': ['button', 'focus']}}
-    elif message['method'] == 'button':
-        if {mode:?} == 'out_of_order':
-            if held is None:
-                held = message['id']
-                continue
-            print(json.dumps({{'jsonrpc': '2.0', 'id': message['id'], 'result': []}}), flush=True)
-            print(json.dumps({{'jsonrpc': '2.0', 'id': held, 'result': [{{'type': 'quit'}}]}}), flush=True)
-            (root / 'replied').write_text('yes')
-            continue
-        if {mode:?} == 'slow':
-            time.sleep(0.4)
-        result = [{{'type': 'quit'}}] if {mode:?} not in ('empty', 'duplicate') else []
-    else:
-        continue
-    if message['method'] == 'button' and {mode:?} == 'junk':
-        sys.stdout.write('not json\n' + 'x' * 70000 + '\n')
-    if message['method'] == 'button' and {mode:?} == 'notice':
-        print(json.dumps({{'jsonrpc': '2.0', 'method': 'actions', 'params': {{'actions': [{{'type': 'quit'}}]}}}}), flush=True)
-        result = []
-    print(json.dumps({{'jsonrpc': '2.0', 'id': message['id'], 'result': result}}), flush=True)
-    if message['method'] == 'button' and {mode:?} == 'duplicate':
-        print(json.dumps({{'jsonrpc': '2.0', 'id': message['id'], 'result': [{{'type': 'quit'}}]}}), flush=True)
-    (root / 'replied').write_text('yes')
-"
-            );
+            let script = plugin_script(mode, version, encoding);
             let executable = directory.path().join("plugin.py");
             std::fs::write(&executable, script).unwrap();
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -129,6 +90,54 @@ for line in sys.stdin:
                 .map(|line| serde_json::from_str(line).unwrap())
                 .collect()
         }
+    }
+
+    fn plugin_script(mode: &str, version: u64, encoding: &str) -> String {
+        format!(
+            r"#!/usr/bin/env python3
+import json, sys, time
+held = None
+from pathlib import Path
+root = Path(__file__).parent
+(root / 'pid').write_text(str(__import__('os').getpid()))
+for line in sys.stdin:
+    message = json.loads(line)
+    with (root / 'received').open('a') as log:
+        log.write(line)
+    if message['method'] == 'initialize':
+        if {mode:?} == 'slow_initialize':
+            time.sleep(2.1)
+        result = {{'protocol_version': {version}, 'encoding': {encoding:?}, 'events': ['button', 'focus']}}
+    elif message['method'] == 'button':
+        if {mode:?} == 'out_of_order':
+            if held is None:
+                held = message['id']
+                continue
+            print(json.dumps({{'jsonrpc': '2.0', 'id': message['id'], 'result': []}}), flush=True)
+            print(json.dumps({{'jsonrpc': '2.0', 'id': held, 'result': [{{'type': 'quit'}}]}}), flush=True)
+            (root / 'replied').write_text('yes')
+            continue
+        if {mode:?} == 'slow':
+            time.sleep(0.4)
+        result = [{{'type': 'quit'}}] if {mode:?} not in ('empty', 'duplicate') else []
+    else:
+        continue
+    if message['method'] == 'button' and {mode:?} == 'junk':
+        sys.stdout.write('not json\n' + 'x' * 70000 + '\n')
+    if message['method'] == 'button' and {mode:?} == 'notice':
+        print(json.dumps({{'jsonrpc': '2.0', 'method': 'actions', 'params': {{'actions': [{{'type': 'quit'}}]}}}}), flush=True)
+        result = []
+    if message['method'] == 'button' and {mode:?} == 'error':
+        error = json.loads((root / 'error').read_text())
+        print(json.dumps({{'jsonrpc': '2.0', 'id': message['id'], 'error': error}}), flush=True)
+        print(json.dumps({{'jsonrpc': '2.0', 'id': message['id'], 'result': [{{'type': 'quit'}}]}}), flush=True)
+    else:
+        print(json.dumps({{'jsonrpc': '2.0', 'id': message['id'], 'result': result}}), flush=True)
+    if message['method'] == 'button' and {mode:?} == 'duplicate':
+        print(json.dumps({{'jsonrpc': '2.0', 'id': message['id'], 'result': [{{'type': 'quit'}}]}}), flush=True)
+    (root / 'replied').write_text('yes')
+"
+        )
     }
 
     fn manifest() -> Manifest {
@@ -427,6 +436,43 @@ for line in sys.stdin:
                 route(&mut compositor, &mut pad).unwrap();
             });
             prop_assert_eq!(with_plugin, without_plugin, "context output is the same as with no plugin installed");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+        #[test]
+        fn generated_error_replies_route_like_empty_results_and_keep_the_plugin_active(
+            code in any::<i64>(), message in "[a-z]{1,30}",
+            mappings in prop::collection::hash_map(any::<ButtonName>(), "[a-z]{1,8}", 0..=8),
+            names in prop::collection::vec(
+                prop::sample::select(vec![ButtonName::East, ButtonName::West, ButtonName::North]), 1..8),
+        ) {
+            let configuration = manifest();
+            let context = text_context(&mappings);
+            let mut outputs = Vec::new();
+            for mode in ["empty", "error"] {
+                let output = text_actions(|| {
+                    let mut harness = Harness::new(&configuration, mode, 0, "json");
+                    harness.compositor.set_contexts(vec![context.clone()]);
+                    harness.ready();
+                    std::fs::write(harness.directory.path().join("error"),
+                        serde_json::to_vec(&serde_json::json!({"code": code, "message": message})).unwrap()).unwrap();
+                    for name in &names {
+                        std::fs::remove_file(harness.directory.path().join("replied")).unwrap();
+                        harness.send([button(*name)]);
+                        harness.pump_until(|harness| harness.directory.path().join("replied").exists());
+                        for _attempt in 0..3 {
+                            harness.event_loop.dispatch(Duration::from_millis(5), &mut harness.compositor).unwrap();
+                        }
+                        assert!(!harness.compositor.quit_requested(), "declines complete requests and duplicate results are ignored");
+                        assert_eq!(harness.compositor.initialized_plugins(), 1, "errors keep the plugin active");
+                    }
+                    assert_eq!(harness.received().iter().filter(|received| received["method"] == "button").count(), names.len());
+                });
+                outputs.push(output);
+            }
+            prop_assert_eq!(&outputs, &[0, 0], "neither reply falls through to context text actions");
         }
     }
 

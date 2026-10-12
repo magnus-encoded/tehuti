@@ -120,6 +120,23 @@ mod contract {
     }
 
     #[test]
+    fn initialize_errors_warn_and_allow_a_valid_reply_and_later_actions() {
+        let body = format!(
+            "print(json.dumps({{'jsonrpc':'2.0','id':0,'error':{{'code':-32601,'message':'Method not found','data':{{'detail':'optional'}}}}}}), flush=True)\n{INITIALIZE}\nprint(json.dumps({{'jsonrpc':'2.0','method':'actions','params':{{'actions':[{{'type':'text','text':'ready'}}]}}}}), flush=True)"
+        );
+        let (quit, logs) = session(&body, &["text"], "");
+        assert!(!quit);
+        let warning = logs
+            .lines()
+            .find(|line| line.contains("plugin request declined"))
+            .unwrap();
+        assert!(warning.contains("WARN"));
+        assert!(warning.contains("-32601"));
+        assert!(warning.contains("Method not found"));
+        assert_eq!(logs.matches("text action skipped").count(), 1);
+    }
+
+    #[test]
     fn output_queue_limit_counts_the_final_newline() {
         let focus = tehuti_protocol::Call {
             jsonrpc: tehuti_protocol::RpcVersion::Two,

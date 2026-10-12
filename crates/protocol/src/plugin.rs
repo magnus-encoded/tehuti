@@ -132,10 +132,29 @@ pub struct Response {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RpcError {
+    pub code: i64,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorResponse {
+    pub jsonrpc: RpcVersion,
+    #[serde(rename = "id")]
+    pub request_id: u64,
+    pub error: RpcError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Message {
     Call(Call),
     Response(Response),
+    Error(ErrorResponse),
 }
 
 /// Parses one UTF-8 JSON-RPC line, rejecting fields outside the v0 schema.
@@ -160,6 +179,10 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
             return Err("initialize/button require an request_id; focus/actions must be notices".into());
         }
         Ok(Message::Call(call))
+    } else if value.get("error").is_some() {
+        serde_json::from_value(value)
+            .map(Message::Error)
+            .map_err(|error| error.to_string())
     } else {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]

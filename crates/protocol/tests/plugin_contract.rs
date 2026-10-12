@@ -21,9 +21,8 @@ mod contract {
     }
 
     #[test]
-    fn errors_unknown_methods_and_invalid_values_are_rejected() {
+    fn unknown_methods_and_invalid_values_are_rejected() {
         for source in [
-            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"unknown"}}"#,
             r#"{"jsonrpc":"2.0","id":1,"method":"unknown","params":{}}"#,
             r#"[{"jsonrpc":"2.0","id":1,"result":[]}]"#,
             r#"{"jsonrpc":"2.0","id":"1","result":[]}"#,
@@ -32,6 +31,29 @@ mod contract {
             r#"{"jsonrpc":"2.0","method":"focus","params":{"app_id":null,"title":null}}"#,
             r#"{"jsonrpc":"2.0","id":1,"result":[{"type":"text","text":"\u0000"}]}"#,
             r#"{"jsonrpc":"2.0","id":1,"result":[{"type":"text","text":{"entry":"mail"}}]}"#,
+        ] {
+            assert!(parse_message(source.as_bytes()).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn error_responses_accept_standard_fields_and_reject_invalid_shapes() {
+        for source in [
+            r#"{"jsonrpc":"2.0","id":0,"error":{"code":-32601,"message":"unknown"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":42,"message":"","data":{"detail":null}}}"#,
+        ] {
+            let message = parse_message(source.as_bytes()).unwrap();
+            assert!(matches!(message, Message::Error(_)));
+            assert_eq!(
+                parse_message(&serde_json::to_vec(&message).unwrap()).unwrap(),
+                message
+            );
+        }
+        for source in [
+            r#"{"jsonrpc":"2.0","id":1,"result":[],"error":{"code":-32601,"message":"unknown"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":1.5,"message":"unknown"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":1}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"unknown","extra":true}}"#,
         ] {
             assert!(parse_message(source.as_bytes()).is_err(), "{source}");
         }
