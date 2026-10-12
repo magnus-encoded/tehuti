@@ -1,6 +1,5 @@
 //! Smithay state and protocol handlers. Shows one toplevel fullscreen and gives it keyboard focus.
 
-#[allow(clippy::std_instead_of_core)] // Instant has no core equivalent.
 use std::time::Instant;
 
 use smithay::{
@@ -359,13 +358,7 @@ impl Compositor {
             .as_ref()
             .and_then(|(entry, target)| {
                 let destination = self.current_secret_destination()?;
-                if self
-                    .secret_gate
-                    .pending(self.start_time.elapsed(), destination)
-                    .is_none()
-                {
-                    return None;
-                }
+                let _pending = self.secret_gate.pending(self.start_time.elapsed(), destination)?;
                 Some(format!("CONFIRM SECRET: {entry}\nTARGET: {target}"))
             })
     }

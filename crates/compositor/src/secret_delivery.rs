@@ -1,6 +1,7 @@
 //! The only route that may carry a secret value to a Wayland client.
 
-use std::{collections::HashMap, hash::BuildHasher};
+use core::hash::BuildHasher;
+use std::collections::HashMap;
 
 use tehuti_core::secret::{SecretDestination, SecretValue};
 
@@ -40,7 +41,8 @@ pub fn deliver_if_current<K: Copy, S: BuildHasher>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, time::Duration};
+    use core::time::Duration;
+    use std::collections::HashMap;
 
     use proptest::prelude::*;
     use tehuti_core::secret::{
@@ -49,6 +51,10 @@ mod tests {
     use tehuti_protocol::SecretReference;
 
     use super::deliver_if_current;
+
+    fn debug_string<T: core::fmt::Debug>(value: &T) -> String {
+        format!("{value:?}")
+    }
 
     const TARGET: SecretDestination = SecretDestination {
         surface: 23,
@@ -74,12 +80,12 @@ mod tests {
             entry: "test-entry".into(),
         };
         let request = gate
-            .request(reference.clone(), TARGET, Duration::ZERO, Duration::from_secs(5))
+            .request(reference, TARGET, Duration::ZERO, Duration::from_secs(5))
             .unwrap();
         let authorization = gate.confirm(request, Duration::from_secs(1), TARGET).unwrap();
         let mut provider = FakeProvider("s3ntinel".into());
         let secret = provider.lookup(&authorization.reference).unwrap();
-        let keys: HashMap<_, _> = "s3ntiel"
+        let keys_for_unrepresentable: HashMap<_, _> = "s3ntiel"
             .chars()
             .map(|character| (character, character))
             .collect();
@@ -89,7 +95,7 @@ mod tests {
             authorization.destination,
             Some(TARGET),
             &secret,
-            &keys,
+            &keys_for_unrepresentable,
             |key| sent_for_unrepresentable.push(key)
         ));
         assert!(
@@ -97,7 +103,7 @@ mod tests {
             "unrepresentable secret must not send a partial prefix"
         );
 
-        let keys: HashMap<_, _> = "s3ntinel"
+        let keys_for_delivery: HashMap<_, _> = "s3ntinel"
             .chars()
             .map(|character| (character, character))
             .collect();
@@ -109,7 +115,7 @@ mod tests {
                 ..TARGET
             }),
             &secret,
-            &keys,
+            &keys_for_delivery,
             |key| sent_for_stale_focus.push(key),
         ));
         assert!(
@@ -122,7 +128,7 @@ mod tests {
             authorization.destination,
             Some(TARGET),
             &secret,
-            &keys,
+            &keys_for_delivery,
             |key| sent.push(key)
         ));
         assert_eq!(sent.into_iter().collect::<String>(), "s3ntinel");
@@ -150,8 +156,8 @@ mod tests {
                 &keys,
                 |key| delivered.push(key),
             ));
-            let debug_record = format!("{:?}", secret);
-            prop_assert!(!debug_record.contains(&value));
+            let debug_record = debug_string(&secret);
+            assert!(!debug_record.contains(&value));
             prop_assert_eq!(delivered, value);
         }
     }

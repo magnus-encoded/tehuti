@@ -214,30 +214,6 @@ fn plugin_actions(actions: Vec<Action>, manifest: &Manifest) -> Vec<Action> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plugins_cannot_request_secret_delivery() {
-        let manifest = Manifest {
-            plugin_id: None,
-            author: None,
-            security_contact: None,
-            executable: "plugin".into(),
-            app_ids: vec!["test".into()],
-            events: Vec::new(),
-            start: StartPolicy::Always,
-            permissions: vec![Permission::Key, Permission::Text, Permission::Quit],
-        };
-        let request = Action::SecretRequest {
-            reference: tehuti_protocol::SecretReference { entry: "mail".into() },
-        };
-
-        assert!(plugin_actions(vec![request], &manifest).is_empty());
-    }
-}
-
 type Running = (Rc<RefCell<Session>>, Box<dyn Fn()>);
 type Start = Box<dyn Fn(&Manifest) -> io::Result<Running>>;
 struct Entry {
@@ -592,4 +568,28 @@ fn read_ready(
         }
     }
     PostAction::Continue
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugins_cannot_request_secret_delivery() {
+        let manifest = Manifest {
+            plugin_id: None,
+            author: None,
+            security_contact: None,
+            executable: "plugin".into(),
+            app_ids: vec!["test".into()],
+            events: Vec::new(),
+            start: StartPolicy::Always,
+            permissions: vec![Permission::Key, Permission::Text, Permission::Quit],
+        };
+        let request = Action::SecretRequest {
+            reference: tehuti_protocol::SecretReference { entry: "mail".into() },
+        };
+
+        assert_eq!(plugin_actions(vec![request], &manifest), Vec::<Action>::new());
+    }
 }
