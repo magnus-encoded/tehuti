@@ -36,6 +36,24 @@ text = "a\u0000b"
     }
 
     #[test]
+    fn context_can_request_a_secret_by_reference() {
+        let context = parse_context(
+            "app_id = 'browser'\n[buttons.east]\nsecret = { entry = 'password-store/browser' }\n",
+        )
+        .unwrap();
+
+        assert!(context.key_for(tehuti_protocol::ButtonName::East).is_none());
+        assert_eq!(
+            context.action_for(tehuti_protocol::ButtonName::East),
+            Some(tehuti_protocol::Action::SecretRequest {
+                reference: tehuti_protocol::SecretReference {
+                    entry: "password-store/browser".into()
+                }
+            }),
+        );
+    }
+
+    #[test]
     fn malformed_contexts_are_rejected() {
         for source in [
             "app_id = ''\n[buttons]",

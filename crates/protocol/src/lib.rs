@@ -152,7 +152,7 @@ impl Context {
     pub fn key_for(&self, button: ButtonName) -> Option<KeyName> {
         self.buttons.get(&button).and_then(|action| match action {
             MappingAction::Key { key } => Some(*key),
-            MappingAction::Text { .. } => None,
+            MappingAction::Text { .. } | MappingAction::Secret { .. } => None,
         })
     }
 
@@ -161,6 +161,9 @@ impl Context {
         self.buttons.get(&button).map(|action| match action {
             MappingAction::Key { key } => Action::Key { key: *key },
             MappingAction::Text { text } => Action::Text { text: text.clone() },
+            MappingAction::Secret { secret } => Action::SecretRequest {
+                reference: secret.clone(),
+            },
         })
     }
 }
@@ -180,6 +183,7 @@ struct ContextFile {
 enum MappingAction {
     Key { key: KeyName },
     Text { text: Text },
+    Secret { secret: SecretReference },
 }
 
 impl MappingAction {
@@ -187,6 +191,9 @@ impl MappingAction {
         match self {
             Self::Key { key } => Action::Key { key: *key },
             Self::Text { text } => Action::Text { text: text.clone() },
+            Self::Secret { secret } => Action::SecretRequest {
+                reference: secret.clone(),
+            },
         }
     }
 }
@@ -216,6 +223,8 @@ pub enum Action {
     Key { key: KeyName },
     /// Send Unicode text to the focused client.
     Text { text: Text },
+    /// Ask the compositor to confirm delivery of a named secret reference.
+    SecretRequest { reference: SecretReference },
     /// Release the controller and stop the compositor.
     Quit,
     /// Display a notice without changing the focused client.

@@ -38,6 +38,7 @@ struct Nested {
     damage_tracker: OutputDamageTracker,
     stop: LoopSignal,
     notice: MemoryRenderBuffer,
+    notice_text: String,
 }
 
 #[expect(
@@ -75,6 +76,7 @@ pub(crate) fn insert(
         output,
         stop: event_loop.get_signal(),
         notice: tehuti::notice::speech_notice_buffer(),
+        notice_text: "NO SPEECH MAPPING".into(),
     };
     let _winit_token = event_loop
         .handle()
@@ -101,47 +103,7 @@ impl Nested {
 
     fn redraw(&mut self, data: &mut LoopData) {
         let size = self.backend.window_size();
-        match self.backend.bind() {
-            Ok((renderer, mut framebuffer)) => {
-                let notices = if data.compositor.speech_notice_visible() {
-                    MemoryRenderBufferRenderElement::from_buffer(
-                        renderer,
-                        (16.0, 16.0),
-                        &self.notice,
-                        None,
-                        None,
-                        None,
-                        Kind::Unspecified,
-                    )
-                    .map_or_else(
-                        |error| {
-                            warn!(?error, "notice render failed");
-                            Vec::new()
-                        },
-                        |element| vec![element],
-                    )
-                } else {
-                    Vec::new()
-                };
-                if let Err(error) = render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
-                    &self.output,
-                    renderer,
-                    &mut framebuffer,
-                    1.0,
-                    0,
-                    [&data.compositor.space],
-                    &notices,
-                    &mut self.damage_tracker,
-                    BACKGROUND,
-                ) {
-                    warn!(?error, "render failed");
-                }
-            }
-            Err(error) => warn!(?error, "bind failed"),
-        }
-        if let Err(error) = self.backend.submit(Some(&[Rectangle::from_size(size)])) {
-            warn!(?error, "submit failed");
-        }
+        self.render_frame(data, size);
         let elapsed = data.compositor.start_time.elapsed();
         let output = &self.output;
         for window in data.compositor.space.elements() {
@@ -152,5 +114,85 @@ impl Nested {
             warn!(%error, "flush failed");
         }
         self.backend.window().request_redraw();
+    }
+
+    fn render_frame(
+        &mut self,
+        data: &mut LoopData,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) {
+        let confirmation_pending = data.compositor.secret_confirmation_text().is_some();
+        let visible_notice = data.compositor.visible_notice_text();
+        if let Some(text) = &visible_notice
+            && text != &self.notice_text
+        {
+            self.notice = tehuti::notice::notice_buffer(text);
+            self.notice_text.clone_from(text);
+        }
+        let (confirmation_element_included, output_drew) =
+            self.draw_bound_output(data, visible_notice.is_some(), confirmation_pending);
+        let submit_succeeded = match self.backend.submit(Some(&[Rectangle::from_size(size)])) {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(?error, "submit failed");
+                false
+            }
+        };
+        if confirmation_element_included && output_drew && submit_succeeded {
+            data.compositor.note_secret_confirmation_frame_submitted();
+        }
+    }
+
+    fn draw_bound_output(
+        &mut self,
+        data: &LoopData,
+        visible_notice: bool,
+        confirmation_pending: bool,
+    ) -> (bool, bool) {
+        let mut output_drew = false;
+        let mut confirmation_element_included = false;
+        match self.backend.bind() {
+            Ok((renderer, mut framebuffer)) => {
+                let notices = if visible_notice {
+                    match MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        (16.0, 16.0),
+                        &self.notice,
+                        None,
+                        None,
+                        None,
+                        Kind::Unspecified,
+                    ) {
+                        Ok(element) => {
+                            confirmation_element_included = confirmation_pending;
+                            vec![element]
+                        }
+                        Err(error) => {
+                            warn!(?error, "notice render failed");
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
+                match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
+                    &self.output,
+                    renderer,
+                    &mut framebuffer,
+                    1.0,
+                    0,
+                    [&data.compositor.space],
+                    &notices,
+                    &mut self.damage_tracker,
+                    BACKGROUND,
+                ) {
+                    Ok(result) if result.damage.is_some() => output_drew = true,
+                    Ok(_) => {}
+                    Err(error) => warn!(?error, "render failed"),
+                }
+            }
+            Err(error) => warn!(?error, "bind failed"),
+        }
+        (confirmation_element_included, output_drew)
     }
 }

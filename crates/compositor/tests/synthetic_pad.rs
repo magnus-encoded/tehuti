@@ -223,6 +223,7 @@ mod synthetic_pad {
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
+        toplevel.set_title("Synthetic-window-title-1234567890".into());
         let initial_app_id_before_focus_change = if app_id == "test" { "other" } else { "test" };
         toplevel.set_app_id(initial_app_id_before_focus_change.into());
         surface.commit();
@@ -870,6 +871,167 @@ else:
             app.keys,
             vec![(KEY_ENTER, KeyState::Pressed), (KEY_ENTER, KeyState::Released)]
         );
+    }
+
+    #[derive(Debug)]
+    struct FakeSecretProvider;
+
+    impl tehuti_core::secret::SecretProvider for FakeSecretProvider {
+        fn lookup(
+            &mut self,
+            _reference: &tehuti_protocol::SecretReference,
+        ) -> Result<tehuti_core::secret::SecretValue, tehuti_core::secret::SecretProviderUnavailable>
+        {
+            Ok(tehuti_core::secret::SecretValue::new("s3ntinel".into()))
+        }
+    }
+
+    fn dispatch_until_ready(
+        display: &mut Display<Compositor>,
+        event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
+        compositor: &mut Compositor,
+        ready: &mpsc::Receiver<()>,
+        started: Instant,
+    ) {
+        while ready.try_recv().is_err() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "synthetic client did not focus"
+            );
+            let _dispatched = display.dispatch_clients(compositor).unwrap();
+            event_loop.dispatch(Duration::from_millis(1), compositor).unwrap();
+            display.flush_clients().unwrap();
+        }
+    }
+
+    fn dispatch_until_finished(
+        display: &mut Display<Compositor>,
+        event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
+        compositor: &mut Compositor,
+        client: &thread::JoinHandle<App>,
+        started: Instant,
+    ) {
+        while !client.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "secret delivery stalled"
+            );
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_millis(1),
+            });
+            let _dispatched = display.dispatch_clients(compositor).unwrap();
+            event_loop.dispatch(Duration::from_millis(1), compositor).unwrap();
+            display.flush_clients().unwrap();
+        }
+    }
+
+    fn assert_secret_confirmation_label(compositor: &Compositor) {
+        assert_eq!(
+            compositor.secret_confirmation_text().as_deref(),
+            Some("CONFIRM SECRET: password-store/exampl...\nTARGET: Synthetic-window-title-123456...")
+        );
+        assert!(
+            compositor
+                .secret_confirmation_text()
+                .unwrap()
+                .lines()
+                .all(|line| line.chars().count() <= 40),
+            "both confirmation labels fit the rendered notice lines"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn secret_store_values_stay_out_of_protocol_and_debug_records(suffix in "[A-Za-z0-9]{1,64}") {
+            let value = format!("SENTINEL-UNIQUE-{suffix}");
+            let secret = tehuti_core::secret::SecretValue::new(value.clone());
+            let reference = tehuti_protocol::SecretReference { entry: "mail".into() };
+            let action = tehuti_protocol::Action::SecretRequest { reference };
+            let event = Event::Button { name: ButtonName::East, state: ButtonState::Pressed };
+            let plugin_reply = tehuti_protocol::Message::Response(tehuti_protocol::Response {
+                jsonrpc: tehuti_protocol::RpcVersion::Two,
+                request_id: 1,
+                result: tehuti_protocol::ResultValue::Actions(vec![action.clone()]),
+            });
+            let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let writer = LogWriter(logs.clone());
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!(secret = ?secret, "fake provider lookup");
+            });
+            let records = [
+                serde_json::to_string(&event).unwrap(),
+                serde_json::to_string(&action).unwrap(),
+                serde_json::to_string(&plugin_reply).unwrap(),
+                format!("{secret:?}"),
+                String::from_utf8(logs.lock().unwrap().clone()).unwrap(),
+            ];
+            for record in records {
+                prop_assert!(!record.contains(&value), "secret value escaped: {record}");
+            }
+        }
+    }
+
+    #[test]
+    fn controller_confirmation_delivers_fake_secret_to_the_focused_wayland_client() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_secret_provider(Box::new(FakeSecretProvider));
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(
+                "app_id = 'test'\n[buttons.east]\nsecret = { entry = 'password-store/example-production-login' }",
+            )
+            .unwrap(),
+        ]);
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let client =
+            thread::spawn(move || run_client(client_end, "test", ClientTextState::Enabled, &ready_sender));
+        let started = Instant::now();
+        dispatch_until_ready(
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &ready_receiver,
+            started,
+        );
+
+        let mut pad = SyntheticPad::default();
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(Event::Button {
+                name: ButtonName::East,
+                state,
+            });
+        }
+        route(&mut compositor, &mut pad).unwrap();
+        assert_secret_confirmation_label(&compositor);
+        compositor.note_secret_confirmation_frame_submitted();
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(Event::Button {
+                name: ButtonName::South,
+                state,
+            });
+        }
+        route(&mut compositor, &mut pad).unwrap();
+
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        let app = client.join().unwrap();
+        assert_eq!(app.keyboard_text, "s3ntinel");
+        assert_eq!(
+            app.keys.len(),
+            16,
+            "one press and release per character, with no Enter"
+        );
+        assert_eq!(app.text, "", "secret delivery bypasses text-input instances");
     }
 
     #[test]
