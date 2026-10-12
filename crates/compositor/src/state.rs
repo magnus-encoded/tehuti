@@ -335,8 +335,8 @@ impl Compositor {
             .is_some();
         if requested {
             self.secret_confirmation_label = Some((
-                sanitize_confirmation_label(&reference.entry),
-                sanitize_confirmation_label(&target),
+                sanitize_confirmation_label(&reference.entry, 21),
+                sanitize_confirmation_label(&target, 29),
             ));
             self.secret_confirmation_presented = false;
             self.secret_confirmation_armed = false;
@@ -665,7 +665,7 @@ fn text_keys(keymap: &xkb::Keymap) -> std::collections::HashMap<char, (Keycode, 
     keys
 }
 
-fn sanitize_confirmation_label(value: &str) -> String {
+fn sanitize_confirmation_label(value: &str, maximum: usize) -> String {
     let mut label: String = value
         .chars()
         .map(|character| {
@@ -675,9 +675,9 @@ fn sanitize_confirmation_label(value: &str) -> String {
                 '?'
             }
         })
-        .take(32)
+        .take(maximum)
         .collect();
-    if value.chars().count() > 32 {
+    if value.chars().count() > maximum {
         label.push_str("...");
     }
     if label.is_empty() {

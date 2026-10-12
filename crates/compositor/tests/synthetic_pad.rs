@@ -223,7 +223,7 @@ mod synthetic_pad {
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
-        toplevel.set_title("Synthetic target window".into());
+        toplevel.set_title("Synthetic-window-title-1234567890".into());
         let initial_app_id_before_focus_change = if app_id == "test" { "other" } else { "test" };
         toplevel.set_app_id(initial_app_id_before_focus_change.into());
         surface.commit();
@@ -929,7 +929,7 @@ else:
         compositor.set_secret_provider(Box::new(FakeSecretProvider));
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(
-                "app_id = 'test'\n[buttons.east]\nsecret = { entry = 'test-entry' }",
+                "app_id = 'test'\n[buttons.east]\nsecret = { entry = 'password-store/example-production-login' }",
             )
             .unwrap(),
         ]);
@@ -965,7 +965,15 @@ else:
         route(&mut compositor, &mut pad).unwrap();
         assert_eq!(
             compositor.secret_confirmation_text().as_deref(),
-            Some("CONFIRM SECRET: test-entry\nTARGET: Synthetic target window")
+            Some("CONFIRM SECRET: password-store/exampl...\nTARGET: Synthetic-window-title-123456...")
+        );
+        assert!(
+            compositor
+                .secret_confirmation_text()
+                .unwrap()
+                .lines()
+                .all(|line| line.chars().count() <= 40),
+            "both confirmation labels fit the rendered notice lines"
         );
         compositor.note_secret_confirmation_presented();
         for state in [ButtonState::Pressed, ButtonState::Released] {
