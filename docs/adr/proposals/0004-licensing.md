@@ -45,7 +45,7 @@ Rejected: a binding licence floor. The owner keeps full freedom; public records 
 
 ### Trademark, security and privacy
 
-These are set by trademark policy and `SECURITY.md`, not by the licence. Only builds that meet the published conditions may be called Tehuti. The owner registers the trademark with counsel before inviting vendors.
+These are set by trademark policy and `SECURITY.md`, not by the licence. Only builds that meet the published conditions may be called Tehuti. Tehuti is used as an unregistered trademark under `TRADEMARKS.md`; registration is the owner's decision.
 
 Rejected: privacy or security terms in the licence. They would be use limits [3].
 
@@ -56,7 +56,7 @@ MPL-2.0 lets anyone use the code under a later MPL version from Mozilla [1]. Cou
 ## Left for counsel
 
 - Wording of the donation and of the fallback licence. German law keeps some rights with the author even under an exclusive licence [4].
-- Trademark registration and the conditions for using the name.
+- The conditions for using the name.
 - Whether to choose Apache-2.0 alone or MIT OR Apache-2.0 for the SDKs.
 - The MPL later-versions clause.
 
