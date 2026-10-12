@@ -267,6 +267,44 @@ impl Session {
         }
     }
 
+    fn call_for_event(&mut self, event: &Event, selected: bool) -> Option<Call> {
+        let (request_id, method) = match event {
+            Event::Button { name, state } if selected && self.events.contains(&Subscription::Button) => {
+                let Some(request_id) = self.request() else {
+                    return None;
+                };
+                (
+                    Some(request_id),
+                    Method::Button {
+                        name: *name,
+                        state: *state,
+                    },
+                )
+            }
+            Event::Speech { text } if selected && self.events.contains(&Subscription::Speech) => {
+                let Some(request_id) = self.request() else {
+                    return None;
+                };
+                (Some(request_id), Method::Speech { text: text.clone() })
+            }
+            Event::Focus { app_id, title } if self.events.contains(&Subscription::Focus) => (
+                None,
+                Method::Focus {
+                    app_id: app_id.clone(),
+                    title: title.clone(),
+                },
+            ),
+            Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
+                return None;
+            }
+        };
+        Some(Call {
+            jsonrpc: RpcVersion::Two,
+            request_id,
+            method,
+        })
+    }
+
     fn reject(&mut self, request_id: Option<u64>, reason: &str) -> io::Result<()> {
         self.queue_bytes(serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0", "method": "action_rejected",
@@ -381,49 +419,11 @@ impl Plugins {
             if !session.ready || session.refused {
                 continue;
             }
-            let (request_id, method) = match event {
-                Event::Button { name, state }
-                    if route_button
-                        && selected == Some(index)
-                        && session.events.contains(&Subscription::Button) =>
-                {
-                    let Some(request_id) = session.request() else {
-                        continue;
-                    };
-                    (
-                        Some(request_id),
-                        Method::Button {
-                            name: *name,
-                            state: *state,
-                        },
-                    )
-                }
-                Event::Speech { text }
-                    if route_button
-                        && selected == Some(index)
-                        && session.events.contains(&Subscription::Speech) =>
-                {
-                    let Some(request_id) = session.request() else {
-                        continue;
-                    };
-                    (Some(request_id), Method::Speech { text: text.clone() })
-                }
-                Event::Focus { app_id, title } if session.events.contains(&Subscription::Focus) => (
-                    None,
-                    Method::Focus {
-                        app_id: app_id.clone(),
-                        title: title.clone(),
-                    },
-                ),
-                Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
-                    continue;
-                }
+            let Some(call) = session.call_for_event(event, route_button && selected == Some(index)) else {
+                continue;
             };
-            if let Err(error) = session.queue(&Call {
-                jsonrpc: RpcVersion::Two,
-                request_id,
-                method,
-            }) {
+            let request_id = call.request_id;
+            if let Err(error) = session.queue(&call) {
                 tracing::warn!(%error, "plugin event dropped");
                 continue;
             }
@@ -546,9 +546,7 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
             encoding: "json".into(),
             core_version: env!("CARGO_PKG_VERSION").into(),
             options: Some(
-                [("action_submission".into(), serde_json::json!("submit_actions"))]
-                    .into_iter()
-                    .collect(),
+                std::iter::once(("action_submission".into(), serde_json::json!("submit_actions"))).collect(),
             ),
         }),
     })?;
@@ -632,11 +630,11 @@ fn read_ready(
                 return PostAction::Remove;
             }
             Ok(count) => {
-                let actions = reader
+                let deliveries = reader
                     .borrow_mut()
                     .receive(bytes.get(..count).unwrap_or_default());
                 compositor.advance_time();
-                for delivery in actions {
+                for delivery in deliveries {
                     match delivery {
                         Delivery::Reply {
                             key,
@@ -648,9 +646,9 @@ fn read_ready(
                                 let value = rejection.map_or_else(
                                     || serde_json::json!({"jsonrpc":"2.0", "id":request_id, "result":[]}),
                                     |rejected| serde_json::json!({"jsonrpc":"2.0", "id":request_id, "error":{"code":-32602, "message":rejected.reason}}));
-                                serde_json::to_vec(&value)
-                                    .map_err(io::Error::from)
-                                    .and_then(|bytes| reader.borrow_mut().queue_bytes(bytes))
+                                serde_json::to_vec(&value).map_err(io::Error::from).and_then(
+                                    |response_bytes| reader.borrow_mut().queue_bytes(response_bytes),
+                                )
                             } else if let Some(rejected) = rejection {
                                 reader.borrow_mut().reject(Some(key.request_id), &rejected.reason)
                             } else {

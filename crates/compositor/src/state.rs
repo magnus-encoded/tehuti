@@ -287,8 +287,7 @@ impl Compositor {
                 state,
             } if self.handle_secret_confirmation_button(*state) => return,
             Event::Focus { .. } => self.speech_input(SpeechInput::Cancel),
-            Event::Tick { .. } => {}
-            Event::Button { .. } | Event::Speech { .. } => {}
+            Event::Tick { .. } | Event::Button { .. } | Event::Speech { .. } => {}
         }
         self.route_event(event);
         if matches!(event, Event::Focus { .. }) {
