@@ -186,6 +186,10 @@ impl Compositor {
         let surface = smithay::reexports::wayland_server::Resource::id(&focus);
         let seat = self.seat.clone();
         for character in text.chars() {
+            if character == '\n' {
+                self.tap(KeyName::Enter);
+                continue;
+            }
             let Some((keycode, modifiers)) = self.text_keys.get(&character).copied() else {
                 tracing::warn!(
                     ?client,

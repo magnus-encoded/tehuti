@@ -421,6 +421,48 @@ mod synthetic_pad {
         }
     }
 
+    proptest! {
+        #[test]
+        fn keymap_text_arrives_in_order_without_stuck_keys_or_modifiers(
+            characters in prop::collection::vec(
+                prop_oneof![Just('\n'), (0x20u8..=0x7e).prop_map(char::from)],
+                0..80,
+            ),
+        ) {
+            let text: String = characters.into_iter().collect();
+            let app = exchange_with_text_state("test", Some(&text), ClientTextState::Absent);
+            prop_assert_eq!(app.text, "");
+            prop_assert_eq!(app.keyboard_text.replace('\r', "\n"), format!("{text}\n"));
+            let mut pressed = std::collections::HashSet::new();
+            for (key, state) in app.keys {
+                match state {
+                    KeyState::Pressed => prop_assert!(pressed.insert(key), "key already pressed: {key}"),
+                    KeyState::Released => prop_assert!(pressed.remove(&key), "key released without press: {key}"),
+                    KeyState::Repeated | _ => prop_assert!(false, "unexpected key state"),
+                }
+            }
+            prop_assert!(pressed.is_empty());
+            prop_assert_eq!(app.modifiers, (0, 0, 0));
+            prop_assert_eq!(app.group, 0);
+        }
+    }
+
+    #[test]
+    fn keymap_newline_is_an_enter_tap() {
+        let app = exchange_with_text_state("test", Some("\n"), ClientTextState::Absent);
+        assert_eq!(app.keyboard_text, "\r\r");
+        assert_eq!(
+            app.keys,
+            vec![
+                (KEY_ENTER, KeyState::Pressed),
+                (KEY_ENTER, KeyState::Released),
+                (KEY_ENTER, KeyState::Pressed),
+                (KEY_ENTER, KeyState::Released),
+            ]
+        );
+        assert_eq!(app.modifiers, (0, 0, 0));
+    }
+
     fn assert_text(text: &str) {
         let app = exchange("test", Some(text));
         assert_eq!(app.text, text);
