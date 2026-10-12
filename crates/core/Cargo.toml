@@ -1,0 +1,17 @@
+[package]
+name = "tehuti-core"
+version = "0.0.0"
+description = "Tehuti core: the pure step that routes input to actions"
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+tehuti-protocol = { path = "../protocol" }
+
+[dev-dependencies]
+proptest = "1"
+tehuti-protocol = { path = "../protocol", features = ["arbitrary"] }
