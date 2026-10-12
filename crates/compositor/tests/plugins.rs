@@ -272,9 +272,7 @@ for line in sys.stdin:
             let mut configuration = manifest();
             configuration.permissions.push(Permission::Key);
             let mut harness = Harness::new(&configuration, "invalid_action", 0, "json");
-            let mappings = [(ButtonName::East, String::from("fallback"))]
-                .into_iter()
-                .collect();
+            let mappings = core::iter::once((ButtonName::East, String::from("fallback"))).collect();
             harness.compositor.set_contexts(vec![text_context(&mappings)]);
             harness.ready();
             harness.send([button(ButtonName::East)]);

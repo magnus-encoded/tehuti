@@ -641,8 +641,13 @@ else:
             display.flush_clients().unwrap();
         }
         let delivered = client.join().unwrap();
+        assert_unresponsive_delivery(&delivered, delivery_started.elapsed(), mode);
+        assert_escape_deadline(mode, &mut compositor, &mut event_loop, &mut pad);
+    }
+
+    fn assert_unresponsive_delivery(delivered: &App, elapsed: Duration, mode: &str) {
         assert!(
-            delivery_started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET,
+            elapsed < tehuti_core::plugin::BUTTON_LATENCY_BUDGET,
             "client delivery exceeds button latency budget during {mode}"
         );
         assert_eq!(
@@ -655,8 +660,6 @@ else:
             ],
             "global and context layers receive input during {mode}"
         );
-
-        assert_escape_deadline(mode, &mut compositor, &mut event_loop, &mut pad);
     }
 
     fn overload_then_send_keys(
