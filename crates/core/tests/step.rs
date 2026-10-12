@@ -52,7 +52,7 @@ mod step {
         fn context_text_preserves_unicode_when_its_mapping_fires(
             text in any::<tehuti_protocol::Text>(),
             app_id in "[a-z]{1,30}",
-            name in any::<ButtonName>().prop_filter("context-routed button", |name| !matches!(name, ButtonName::South | ButtonName::Guide)),
+            name in any::<ButtonName>().prop_filter("context-routed button", |name| !matches!(name, ButtonName::South | ButtonName::Guide | ButtonName::Record)),
             mappings in prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15),
         ) {
             let mut source = format!("app_id = {}\n[buttons]\n", toml::Value::String(app_id.clone()));
@@ -130,12 +130,12 @@ mod step {
                 prop_assert_eq!(&next_routed, &next_plain, "routing to a plugin never changes core state");
                 if sent {
                     prop_assert!(routed_actions.is_empty(), "an event sent to a plugin never also reaches the context layer");
-                    prop_assert!(bare_actions.is_empty(), "only events no layer above the context consumed reach a plugin");
+                    prop_assert!(!bare_actions.iter().any(|action| matches!(action, Action::Key { .. } | Action::Quit)), "only events no layer above the context consumed reach a plugin");
                     prop_assert!(active, "nothing is sent while no plugin is live");
                 } else {
                     prop_assert_eq!(&routed_actions, &plain_actions, "a plugin set that is not sent the event leaves output untouched");
                 }
-                if !bare_actions.is_empty() || plain_actions.contains(&Action::Quit) {
+                if bare_actions.iter().any(|action| matches!(action, Action::Key { .. } | Action::Quit)) || plain_actions.contains(&Action::Quit) {
                     prop_assert!(!sent, "whenever an escape or global action fires, nothing is sent to a plugin");
                 }
                 if matches!(event, Event::Tick { .. }) {

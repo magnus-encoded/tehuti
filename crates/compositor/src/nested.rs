@@ -6,7 +6,12 @@ use core::{error::Error, time::Duration};
 use smithay::{
     backend::{
         renderer::{
-            damage::OutputDamageTracker, element::surface::WaylandSurfaceRenderElement, gles::GlesRenderer,
+            damage::OutputDamageTracker,
+            element::{
+                Kind,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+            },
+            gles::GlesRenderer,
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
@@ -32,6 +37,7 @@ struct Nested {
     output: Output,
     damage_tracker: OutputDamageTracker,
     stop: LoopSignal,
+    notice: MemoryRenderBuffer,
 }
 
 #[expect(
@@ -68,6 +74,7 @@ pub(crate) fn insert(
         damage_tracker: OutputDamageTracker::from_output(&output),
         output,
         stop: event_loop.get_signal(),
+        notice: tehuti::notice::speech_notice_buffer(),
     };
     let _winit_token = event_loop
         .handle()
@@ -96,14 +103,34 @@ impl Nested {
         let size = self.backend.window_size();
         match self.backend.bind() {
             Ok((renderer, mut framebuffer)) => {
-                if let Err(error) = render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
+                let notices = if data.compositor.speech_notice_visible() {
+                    MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        (16.0, 16.0),
+                        &self.notice,
+                        None,
+                        None,
+                        None,
+                        Kind::Unspecified,
+                    )
+                    .map_or_else(
+                        |error| {
+                            warn!(?error, "notice render failed");
+                            Vec::new()
+                        },
+                        |element| vec![element],
+                    )
+                } else {
+                    Vec::new()
+                };
+                if let Err(error) = render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
                     &self.output,
                     renderer,
                     &mut framebuffer,
                     1.0,
                     0,
                     [&data.compositor.space],
-                    &[],
+                    &notices,
                     &mut self.damage_tracker,
                     BACKGROUND,
                 ) {

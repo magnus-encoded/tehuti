@@ -255,6 +255,69 @@ mod synthetic_pad {
     }
 
     #[test]
+    fn sidecar_transcript_reaches_client_and_unmatched_speech_shows_notice() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context("app_id = 'test'\n[buttons]\n[speech]\nconfirm = { key = 'tab' }")
+                .unwrap(),
+        ]);
+        let process = tehuti::speech::SpeechProcess::new(vec!["python3".into(), "-u".into(), "-c".into(),
+            "import sys,json\nprint(json.dumps({'ready':True}),flush=True)\nfor line in sys.stdin:\n c=json.loads(line)\n if 'stop' in c and c['transcribe']: print(json.dumps({'session':c['stop'],'text':'confirm'}),flush=True)".into()]);
+        compositor.set_speech(process);
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let client =
+            thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
+        let began = Instant::now();
+        let mut ready = false;
+        let mut spoken = false;
+        let mut speech_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let mut pad = SyntheticPad::default();
+        while !client.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "speech delivery stalled: client ready={ready}, sidecar ready={}, spoken={spoken}",
+                compositor.speech_ready()
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            speech_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            ready |= ready_receiver.try_recv().is_ok();
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_millis(10),
+            });
+            if ready && compositor.speech_ready() && !spoken {
+                spoken = true;
+                for state in [ButtonState::Pressed, ButtonState::Released] {
+                    pad.push(Event::Button {
+                        name: ButtonName::Record,
+                        state,
+                    });
+                }
+                route(&mut compositor, &mut pad).unwrap();
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            client.join().unwrap().keys,
+            vec![(15, KeyState::Pressed), (15, KeyState::Released)],
+            "released speech executes focused mapping once"
+        );
+        compositor.handle(&Event::Speech {
+            text: tehuti_protocol::Text::new("unknown".into()).unwrap(),
+        });
+        assert!(
+            compositor.speech_notice_visible(),
+            "unmatched speech produces a visible notice"
+        );
+    }
+
+    #[test]
     fn changing_to_an_unmatched_app_id_uses_global_and_fallback_routing() {
         check_routing("other", KEY_ENTER);
     }

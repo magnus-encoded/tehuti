@@ -28,3 +28,17 @@ Focus changes select a context by the focused toplevel's current application id.
 The escape chord consumes every Guide press and release before context routing.
 A context mapping on Guide never fires. Holding Guide for three seconds emits
 Quit once; releasing it before then cancels the hold.
+
+Speech phrases map to the same key or text actions:
+
+```toml
+[speech]
+confirm = { key = "enter" }
+"insert greeting" = { text = "Hello" }
+```
+
+Phrase matching is exact and case sensitive. The first initialized plugin
+subscribed to speech for the focused application replaces these mappings.
+Otherwise unmatched speech shows “No speech mapping” for three seconds above
+the client without changing focus. Record (Share) controls push-to-talk and
+never reaches context mappings.

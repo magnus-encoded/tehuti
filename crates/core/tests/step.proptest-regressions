@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f2315f659b6a553c69132b5afdf7afd27e5592f603b6891fb87f9cb13d3c9b67 # shrinks to configurations = [], plugins = [Plugin { app_id: "a", subscribes: true, ready: true }], events = [Focus { app_id: Some("a"), title: "" }, Speech { text: Text("") }], millis = 3000
+cc 6ea3a64eb3a83126c20288e2446d421078b1aa32031181b061358a08a4924955 # shrinks to text = Text(""), app_id = "a", name = Record, mappings = {}

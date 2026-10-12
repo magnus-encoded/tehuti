@@ -55,7 +55,14 @@ impl InputSource for SyntheticPad {
 /// # Errors
 /// The source failed to read.
 pub fn route(compositor: &mut Compositor, source: &mut dyn InputSource) -> io::Result<()> {
-    for event in source.drain()? {
+    let events = match source.drain() {
+        Ok(events) => events,
+        Err(error) => {
+            compositor.speech_input(tehuti_core::speech::SpeechInput::Disconnected);
+            return Err(error);
+        }
+    };
+    for event in events {
         compositor.handle(&event);
         if compositor.quit_requested() {
             break;

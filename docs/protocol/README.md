@@ -75,10 +75,11 @@ Button decisions are requests:
 ```
 
 States are `pressed` and `released`. Names are `south`, `east`, `north`,
-`west`, `left_bumper`, `right_bumper`, `select`, `start`, `guide`, `left_stick`,
+`west`, `left_bumper`, `right_bumper`, `select`, `record`, `start`, `guide`, `left_stick`,
 `right_stick`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`.
 All names and enum values are case sensitive.
 
+Record (Share) presses and releases control push-to-talk and never reach plugins.
 Guide presses and releases never reach plugins. Holding Guide for three
 seconds requests Quit; releasing early cancels the hold. Other buttons still
 route while Guide is held. South presses send Enter and never reach plugins;
@@ -96,6 +97,16 @@ ignored. There is no cancellation request. At most 256 requests may be pending
 per plugin. Excess requests are dropped. Each deadline is 250 milliseconds
 from dispatch, before queuing, not from the plugin's receipt. A missing reply,
 an invalid reply or a reply received at or after the deadline means no action.
+
+Speech decisions are requests to the first matching initialized `speech`
+subscriber, with a two-second deadline and the same action reply shape:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"speech","params":{"text":"confirm"}}
+```
+
+Speech text is NUL-free. The speech sidecar replies only after release.
+Cancelled sessions and replies from failed sidecars never reach plugins.
 
 Focus is a notice, with no reply:
 
@@ -159,6 +170,7 @@ A plugin may send actions without a request:
 
 These notices need no event subscription or application match, but require
 completed initialization. They have no id, reply or button deadline.
+Notice actions are reserved for the core and are dropped from plugins.
 Every action requires its matching manifest permission: `key`, `text`, or
 `quit`. The core drops each unpermitted action and keeps the others in order.
 An unpermitted Quit does not stop the remaining actions. Permissions restrict

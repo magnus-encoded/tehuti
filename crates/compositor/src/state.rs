@@ -49,6 +49,9 @@ pub struct Compositor {
     core: tehuti_core::State,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    speech_state: tehuti_core::speech::SpeechState,
+    speech_process: Option<crate::speech::SpeechProcess>,
+    notice_until: Option<Instant>,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
     shm_state: ShmState,
@@ -90,6 +93,9 @@ impl Compositor {
             core: tehuti_core::State::new(),
             plugins: None,
             quit_requested: false,
+            speech_state: tehuti_core::speech::SpeechState::default(),
+            speech_process: None,
+            notice_until: None,
             surfaces: CompositorState::new::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             shm_state: ShmState::new::<Self>(display, vec![]),
@@ -130,8 +136,64 @@ impl Compositor {
         }
     }
 
+    pub fn set_speech(&mut self, process: crate::speech::SpeechProcess) {
+        self.speech_process = Some(process);
+    }
+
+    #[must_use]
+    pub fn speech_ready(&self) -> bool {
+        self.speech_process
+            .as_ref()
+            .is_some_and(crate::speech::SpeechProcess::is_ready)
+    }
+
+    #[must_use]
+    pub fn speech_notice_visible(&self) -> bool {
+        self.notice_until.is_some_and(|until| Instant::now() < until)
+    }
+
+    pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
+        use tehuti_core::speech::{SpeechEffect, speech_step};
+        let (state, effects) = speech_step(core::mem::take(&mut self.speech_state), input);
+        self.speech_state = state;
+        for effect in effects {
+            if let SpeechEffect::Speech { text, .. } = effect {
+                self.handle(&Event::Speech { text });
+            } else if let Some(process) = &mut self.speech_process
+                && let Err(error) = process.send(&effect)
+            {
+                tracing::warn!(%error, "speech command failed");
+                self.speech_input(tehuti_core::speech::SpeechInput::Unavailable);
+            }
+        }
+    }
+
     /// Runs one event through the core step and carries out the resulting actions.
     pub fn handle(&mut self, event: &Event) {
+        use tehuti_core::speech::SpeechInput;
+        match event {
+            Event::Button {
+                name: tehuti_protocol::ButtonName::Record,
+                state,
+            } => {
+                self.speech_input(match state {
+                    tehuti_protocol::ButtonState::Pressed => SpeechInput::Press,
+                    tehuti_protocol::ButtonState::Released => SpeechInput::Release,
+                });
+                return;
+            }
+            Event::Focus { .. } => self.speech_input(SpeechInput::Cancel),
+            Event::Tick { elapsed } => {
+                let inputs = self
+                    .speech_process
+                    .as_mut()
+                    .map_or_else(Vec::new, |process| process.poll(*elapsed));
+                for input in inputs {
+                    self.speech_input(input);
+                }
+            }
+            Event::Button { .. } | Event::Speech { .. } => {}
+        }
         let active = self.plugins.as_mut().is_some_and(|plugins| plugins.active(event));
         let (next, actions, route_plugin) =
             tehuti_core::step_with_plugin(core::mem::take(&mut self.core), event, active);
@@ -158,7 +220,13 @@ impl Compositor {
                     self.type_text(text.as_str());
                 }
             }
-            Action::Quit => self.quit_requested = true,
+            Action::Quit => {
+                self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
+                self.quit_requested = true;
+            }
+            Action::Notice { .. } => {
+                self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+            }
         }
     }
 

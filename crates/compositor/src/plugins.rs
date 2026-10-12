@@ -48,6 +48,26 @@ impl Drop for Session {
 }
 
 impl Session {
+    fn observe(&mut self, event: &Event) {
+        self.pending.retain(|_, deadline| *deadline > Instant::now());
+        if let Event::Focus { app_id, title } = event {
+            self.latest_focus = Some((app_id.clone(), title.clone()));
+        }
+    }
+
+    fn request(&mut self, timeout: core::time::Duration) -> Option<u64> {
+        if self.pending.len() >= 256 {
+            return None;
+        }
+        let request_id = self.next_id;
+        self.next_id = self.next_id.checked_add(1)?;
+        let _previous = self.pending.insert(
+            request_id,
+            Instant::now().checked_add(timeout).unwrap_or_else(Instant::now),
+        );
+        Some(request_id)
+    }
+
     fn queue(&mut self, call: &Call) -> io::Result<()> {
         let bytes = serde_json::to_vec(call)?;
         if self.output.len().saturating_add(bytes.len()).saturating_add(1) > MAX_MESSAGE_BYTES {
@@ -183,6 +203,7 @@ impl Session {
                     Action::Key { .. } => Permission::Key,
                     Action::Text { .. } => Permission::Text,
                     Action::Quit => Permission::Quit,
+                    Action::Notice { .. } => return false,
                 })
             })
             .collect()
@@ -258,30 +279,34 @@ impl Plugins {
                 session.borrow_mut().expire_initialize();
             }
         }
-        self.entries.iter().any(|entry| self.matches(entry))
+        self.entries.iter().any(|entry| self.matches(entry, event))
     }
 
-    fn matches(&self, entry: &Entry) -> bool {
+    fn matches(&self, entry: &Entry, event: &Event) -> bool {
         self.focus
             .as_ref()
             .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id))
             && entry.session.as_ref().is_some_and(|session| {
                 let session = session.borrow();
-                session.ready && !session.refused && session.events.contains(&Subscription::Button)
+                session.ready
+                    && !session.refused
+                    && session.events.contains(&match event {
+                        Event::Speech { .. } => Subscription::Speech,
+                        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => {
+                            Subscription::Button
+                        }
+                    })
             })
     }
 
     pub(crate) fn dispatch(&mut self, event: &Event, route_button: bool) {
-        let selected = self.entries.iter().position(|entry| self.matches(entry));
+        let selected = self.entries.iter().position(|entry| self.matches(entry, event));
         for (index, entry) in self.entries.iter_mut().enumerate() {
             let Some(session) = &entry.session else {
                 continue;
             };
             let mut session = session.borrow_mut();
-            session.pending.retain(|_, deadline| *deadline > Instant::now());
-            if let Event::Focus { app_id, title } = event {
-                session.latest_focus = Some((app_id.clone(), title.clone()));
-            }
+            session.observe(event);
             if !session.ready || session.refused {
                 continue;
             }
@@ -291,17 +316,9 @@ impl Plugins {
                         && selected == Some(index)
                         && session.events.contains(&Subscription::Button) =>
                 {
-                    if session.pending.len() >= 256 {
+                    let Some(request_id) = session.request(BUTTON_TIMEOUT) else {
                         continue;
-                    }
-                    let request_id = session.next_id;
-                    session.next_id = session.next_id.saturating_add(1);
-                    let _previous = session.pending.insert(
-                        request_id,
-                        Instant::now()
-                            .checked_add(BUTTON_TIMEOUT)
-                            .unwrap_or_else(Instant::now),
-                    );
+                    };
                     (
                         Some(request_id),
                         Method::Button {
@@ -310,6 +327,16 @@ impl Plugins {
                         },
                     )
                 }
+                Event::Speech { text }
+                    if route_button
+                        && selected == Some(index)
+                        && session.events.contains(&Subscription::Speech) =>
+                {
+                    let Some(request_id) = session.request(core::time::Duration::from_secs(2)) else {
+                        continue;
+                    };
+                    (Some(request_id), Method::Speech { text: text.clone() })
+                }
                 Event::Focus { app_id, title } if session.events.contains(&Subscription::Focus) => (
                     None,
                     Method::Focus {
@@ -317,7 +344,9 @@ impl Plugins {
                         title: title.clone(),
                     },
                 ),
-                Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => continue,
+                Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
+                    continue;
+                }
             };
             if let Err(error) = session.queue(&Call {
                 jsonrpc: RpcVersion::Two,

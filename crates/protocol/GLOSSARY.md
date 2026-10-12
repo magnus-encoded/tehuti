@@ -12,3 +12,6 @@
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |
 | Escape chord | Holding Guide for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |
+| Speech | Validated transcription text routed to the focused context or subscribed plugin. |
+| Record | The Share button, KEY_RECORD, reserved for push-to-talk. |
+| Notice | A core action displaying unmatched speech feedback without changing focus. |

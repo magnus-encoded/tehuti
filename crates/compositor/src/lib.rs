@@ -13,3 +13,7 @@ pub mod contexts;
 pub(crate) mod text_input;
 
 pub mod plugins;
+
+pub mod speech;
+
+pub mod notice;

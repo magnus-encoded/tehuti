@@ -95,6 +95,7 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
         KeyCode::BTN_TL => ButtonName::LeftBumper,
         KeyCode::BTN_TR => ButtonName::RightBumper,
         KeyCode::BTN_SELECT => ButtonName::Select,
+        KeyCode::KEY_RECORD => ButtonName::Record,
         KeyCode::BTN_START => ButtonName::Start,
         KeyCode::BTN_MODE => ButtonName::Guide,
         KeyCode::BTN_THUMBL => ButtonName::LeftStick,
