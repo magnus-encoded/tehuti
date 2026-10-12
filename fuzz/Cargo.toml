@@ -20,3 +20,17 @@ path = "fuzz_targets/context.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "message"
+path = "fuzz_targets/message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false

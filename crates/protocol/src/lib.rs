@@ -1,8 +1,8 @@
 //! Protocol v0 types shared by the core and plugins.
 
 /// Text that can cross a Wayland string boundary.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(try_from = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Text(String);
 
 impl Text {
@@ -20,6 +20,12 @@ impl Text {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl From<Text> for String {
+    fn from(text: Text) -> Self {
+        text.0
     }
 }
 
@@ -48,7 +54,7 @@ impl proptest::arbitrary::Arbitrary for Text {
 }
 
 /// A controller button. Face buttons are named by position: South is A on an Xbox pad.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 #[serde(rename_all = "snake_case")]
 pub enum ButtonName {
@@ -69,15 +75,17 @@ pub enum ButtonName {
     DpadRight,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
+#[serde(rename_all = "snake_case")]
 pub enum ButtonState {
     Pressed,
     Released,
 }
 
 /// Input that reaches the core.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum Event {
     Button { name: ButtonName, state: ButtonState },
@@ -86,7 +94,7 @@ pub enum Event {
 }
 
 /// A key the core can send to the focused client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum KeyName {
@@ -149,14 +157,14 @@ impl Context {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContextFile {
     app_id: String,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(untagged)]
 enum MappingAction {
@@ -180,7 +188,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 }
 
 /// What the core asks its edges to do.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum Action {
     /// Press and release `key` in the focused client.
@@ -190,3 +199,6 @@ pub enum Action {
     /// Release the controller and stop the compositor.
     Quit,
 }
+
+mod plugin;
+pub use plugin::*;

@@ -370,9 +370,38 @@ mod synthetic_pad {
         text: Option<&str>,
         text_state: ClientTextState,
     ) -> App {
+        exchange_with_plugin(app_id, text, text_state, false)
+    }
+
+    #[test]
+    fn documented_python_plugin_sends_tab_to_a_real_wayland_client() {
+        let app = exchange_with_plugin("test", None, ClientTextState::Absent, true);
+        assert_eq!(
+            app.keys,
+            vec![(15, KeyState::Pressed), (15, KeyState::Released)],
+            "the child process remaps East through SyntheticPad and input::route"
+        );
+    }
+
+    fn exchange_with_plugin(
+        app_id: &'static str,
+        text: Option<&str>,
+        text_state: ClientTextState,
+        plugin: bool,
+    ) -> App {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        if plugin {
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+            compositor.set_plugins(tehuti::plugins::install(&event_loop, &directory, |state| state).unwrap());
+        }
         load_test_context(&mut compositor, text);
+        if plugin {
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
+            ]);
+        }
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
             .handle()
@@ -382,7 +411,11 @@ mod synthetic_pad {
         let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
 
         let mut pad = SyntheticPad::default();
-        for name in [ButtonName::East, ButtonName::Start, ButtonName::South] {
+        for name in if plugin {
+            vec![ButtonName::East]
+        } else {
+            vec![ButtonName::East, ButtonName::Start, ButtonName::South]
+        } {
             pad.push(Event::Button {
                 name,
                 state: ButtonState::Pressed,
@@ -393,6 +426,7 @@ mod synthetic_pad {
             });
         }
         let mut pressed = false;
+        let mut client_ready = false;
         let started = Instant::now();
         while !client.is_finished() {
             assert!(
@@ -400,7 +434,9 @@ mod synthetic_pad {
                 "client never received a key"
             );
             let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            if !pressed && ready_receiver.try_recv().is_ok() {
+            event_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
+            client_ready |= ready_receiver.try_recv().is_ok();
+            if !pressed && client_ready && (!plugin || compositor.initialized_plugins() == 1) {
                 route(&mut compositor, &mut pad).unwrap();
                 pressed = true;
             }

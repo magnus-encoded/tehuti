@@ -4,7 +4,10 @@ on:
     - cron: "0 4 * * 1"
   workflow_dispatch:
 jobs:
-  context:
+  parsers:
+    strategy:
+      matrix:
+        target: [context, message, manifest]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -12,9 +15,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      - run: cargo fuzz run context fuzz/seeds/context -- -max_total_time=120
+      - run: cargo fuzz run ${{ matrix.target }} fuzz/seeds/${{ matrix.target }} -- -max_total_time=120
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-artifacts
+          name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts

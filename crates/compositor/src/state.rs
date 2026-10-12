@@ -47,6 +47,7 @@ pub struct Compositor {
     pub space: Space<Window>,
     pub output: Option<Output>,
     core: tehuti_core::State,
+    plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
@@ -87,6 +88,7 @@ impl Compositor {
             space: Space::default(),
             output: None,
             core: tehuti_core::State::new(),
+            plugins: None,
             quit_requested: false,
             surfaces: CompositorState::new::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
@@ -111,9 +113,29 @@ impl Compositor {
         self.core = tehuti_core::State::with_contexts(contexts);
     }
 
+    #[must_use]
+    pub fn initialized_plugins(&self) -> usize {
+        self.plugins
+            .as_ref()
+            .map_or(0, crate::plugins::Plugins::initialized_count)
+    }
+
+    pub fn set_plugins(&mut self, plugins: crate::plugins::Plugins) {
+        self.plugins = Some(plugins);
+    }
+
+    pub(crate) fn apply_plugin_action(&mut self, action: &Action) {
+        self.apply(action);
+    }
+
     /// Runs one event through the core step and carries out the resulting actions.
     pub fn handle(&mut self, event: &Event) {
-        let (next, actions) = tehuti_core::step(core::mem::take(&mut self.core), event);
+        let active = self.plugins.as_mut().is_some_and(|plugins| plugins.active(event));
+        let (next, actions, route_plugin) =
+            tehuti_core::step_with_plugin(core::mem::take(&mut self.core), event, active);
+        if let Some(plugins) = &mut self.plugins {
+            plugins.dispatch(event, route_plugin);
+        }
         self.core = next;
         for action in &actions {
             self.apply(action);

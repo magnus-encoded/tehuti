@@ -1,0 +1,7 @@
+{
+  "executable": "./east-to-tab.py",
+  "app_ids": ["test"],
+  "events": ["button"],
+  "start": "always",
+  "permissions": ["key"]
+}

@@ -69,6 +69,31 @@ mod step {
         }
     }
 
+    proptest! {
+        #[test]
+        fn consumed_events_never_reach_any_plugin_configuration(
+            configurations in prop::collection::vec(prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15), 0..20),
+            events in prop::collection::vec(any::<Event>(), 0..100),
+            plugins in prop::collection::vec(any::<bool>(), 0..20),
+            millis in 3000u64..100_000,
+        ) {
+            let contexts = configurations.iter().map(|mappings| generated_context("test", mappings)).collect();
+            let mut state = State::with_contexts(contexts);
+            let active = plugins.iter().any(|plugin| *plugin);
+            for event in events {
+                let consumed = matches!(event, Event::Tick { .. } | Event::Button { name: ButtonName::Guide, .. } | Event::Button { name: ButtonName::South, state: ButtonState::Pressed });
+                let (next, _, sent) = tehuti_core::step_with_plugin(state, &event, active);
+                state = next;
+                if consumed { prop_assert!(!sent, "consumed input never reaches the plugin layer"); }
+            }
+            let (state, _, sent) = tehuti_core::step_with_plugin(state, &guide(ButtonState::Pressed), active);
+            prop_assert!(!sent);
+            let (_, actions, tick_sent) = tehuti_core::step_with_plugin(state, &tick(millis), active);
+            prop_assert_eq!(actions, vec![Action::Quit], "every plugin configuration preserves escape");
+            prop_assert!(!tick_sent, "Tick stays inside the core");
+        }
+    }
+
     fn button_name(button: ButtonName) -> String {
         let mut name = String::new();
         for (index, letter) in format!("{button:?}").chars().enumerate() {
