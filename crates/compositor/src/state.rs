@@ -258,7 +258,7 @@ impl Compositor {
         use tehuti_core::speech::SpeechInput;
         if matches!(event, Event::Tick { .. }) {
             self.previous_tick = Instant::now();
-        } else {
+        } else if !matches!(event, Event::Focus { .. }) {
             self.advance_time();
         }
         if let Event::Button {
@@ -291,6 +291,9 @@ impl Compositor {
             Event::Button { .. } | Event::Speech { .. } => {}
         }
         self.route_event(event);
+        if matches!(event, Event::Focus { .. }) {
+            self.advance_time();
+        }
         if let Event::Tick { elapsed } = event {
             self.poll_tick(*elapsed);
         }

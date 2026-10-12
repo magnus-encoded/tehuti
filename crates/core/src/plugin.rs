@@ -12,7 +12,7 @@ pub const SPEECH_BUDGET: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequestKey {
     pub plugin: usize,
-    pub id: u64,
+    pub request_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -464,6 +464,15 @@ mod synthetic_pad {
 
     #[test]
     fn a_hanging_selected_plugin_releases_context_input_within_the_button_latency_budget() {
+        check_hanging_plugin_deadline(false);
+    }
+
+    #[test]
+    fn overdue_plugin_fallback_cannot_cross_a_focus_notification() {
+        check_hanging_plugin_deadline(true);
+    }
+
+    fn check_hanging_plugin_deadline(change_focus: bool) {
         let directory = unresponsive_plugin("stalled");
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
@@ -499,6 +508,22 @@ mod synthetic_pad {
             });
         }
         route(&mut compositor, &mut pad).unwrap();
+        if change_focus {
+            thread::sleep(Duration::from_millis(150));
+            compositor.handle(&Event::Focus {
+                app_id: Some("other".into()),
+                title: String::new(),
+            });
+            pad.push(Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed,
+            });
+            pad.push(Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Released,
+            });
+            route(&mut compositor, &mut pad).unwrap();
+        }
         while !client.is_finished() {
             assert!(
                 started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET,
@@ -514,9 +539,13 @@ mod synthetic_pad {
         let delivered = client.join().unwrap();
         assert!(started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET);
         assert!(started.elapsed() >= tehuti_core::plugin::BUTTON_BUDGET);
+        let expected_key = if change_focus { KEY_ENTER } else { 15 };
         assert_eq!(
             delivered.keys,
-            vec![(15, KeyState::Pressed), (15, KeyState::Released)]
+            vec![
+                (expected_key, KeyState::Pressed),
+                (expected_key, KeyState::Released)
+            ]
         );
     }
 

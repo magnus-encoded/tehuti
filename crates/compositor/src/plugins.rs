@@ -130,7 +130,7 @@ impl Session {
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
             return Vec::new();
         };
-        let id = value.get("id").and_then(serde_json::Value::as_u64);
+        let request_id = value.get("id").and_then(serde_json::Value::as_u64);
         let method = value.get("method").and_then(serde_json::Value::as_str);
         let event_id = if method == Some("submit_actions") {
             value
@@ -138,7 +138,7 @@ impl Session {
                 .and_then(|params| params.get("event_id"))
                 .and_then(serde_json::Value::as_u64)
         } else if value.get("result").is_some() {
-            id
+            request_id
         } else {
             None
         };
@@ -146,11 +146,11 @@ impl Session {
             return vec![Delivery::Reply {
                 key: tehuti_core::plugin::RequestKey {
                     plugin: self.plugin,
-                    id: event_id,
+                    request_id: event_id,
                 },
                 result: Err(reason),
                 submission_id: if method == Some("submit_actions") {
-                    id
+                    request_id
                 } else {
                     None
                 },
@@ -223,7 +223,7 @@ impl Session {
             Message::Response(response) => vec![Delivery::Reply {
                 key: tehuti_core::plugin::RequestKey {
                     plugin: self.plugin,
-                    id: response.request_id,
+                    request_id: response.request_id,
                 },
                 result: match response.result {
                     ResultValue::Actions(actions) => Ok(actions),
@@ -234,7 +234,7 @@ impl Session {
             Message::Error(response) => vec![Delivery::Reply {
                 key: tehuti_core::plugin::RequestKey {
                     plugin: self.plugin,
-                    id: response.request_id,
+                    request_id: response.request_id,
                 },
                 result: Ok(Vec::new()),
                 submission_id: None,
@@ -246,7 +246,7 @@ impl Session {
             }) => vec![Delivery::Reply {
                 key: tehuti_core::plugin::RequestKey {
                     plugin: self.plugin,
-                    id: event_id,
+                    request_id: event_id,
                 },
                 result: Ok(actions),
                 submission_id: Some(submission_id),
@@ -267,10 +267,10 @@ impl Session {
         }
     }
 
-    fn reject(&mut self, id: Option<u64>, reason: &str) -> io::Result<()> {
+    fn reject(&mut self, request_id: Option<u64>, reason: &str) -> io::Result<()> {
         self.queue_bytes(serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0", "method": "action_rejected",
-            "params": { "event_id": id, "error": { "code": -32602, "message": reason } }
+            "params": { "event_id": request_id, "error": { "code": -32602, "message": reason } }
         }))?)
     }
 }
@@ -427,9 +427,12 @@ impl Plugins {
                 tracing::warn!(%error, "plugin event dropped");
                 continue;
             }
-            if let Some(id) = request_id {
+            if let Some(request_id) = request_id {
                 request = Some((
-                    tehuti_core::plugin::RequestKey { plugin: index, id },
+                    tehuti_core::plugin::RequestKey {
+                        plugin: index,
+                        request_id,
+                    },
                     session.manifest.permissions.clone(),
                 ));
             }
@@ -641,15 +644,15 @@ fn read_ready(
                             submission_id,
                         } => {
                             let rejection = compositor.plugin_reply(key, result);
-                            let response = if let Some(id) = submission_id {
+                            let response = if let Some(request_id) = submission_id {
                                 let value = rejection.map_or_else(
-                                    || serde_json::json!({"jsonrpc":"2.0", "id":id, "result":[]}),
-                                    |rejected| serde_json::json!({"jsonrpc":"2.0", "id":id, "error":{"code":-32602, "message":rejected.reason}}));
+                                    || serde_json::json!({"jsonrpc":"2.0", "id":request_id, "result":[]}),
+                                    |rejected| serde_json::json!({"jsonrpc":"2.0", "id":request_id, "error":{"code":-32602, "message":rejected.reason}}));
                                 serde_json::to_vec(&value)
                                     .map_err(io::Error::from)
                                     .and_then(|bytes| reader.borrow_mut().queue_bytes(bytes))
                             } else if let Some(rejected) = rejection {
-                                reader.borrow_mut().reject(Some(key.id), &rejected.reason)
+                                reader.borrow_mut().reject(Some(key.request_id), &rejected.reason)
                             } else {
                                 Ok(())
                             };
