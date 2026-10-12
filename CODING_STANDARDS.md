@@ -32,6 +32,8 @@ One concrete desired change per issue: the observable behaviour after the change
 
 `Closes #N`, then one to three sentences on how the change answers that issue. CI caps the body at 120 words.
 
+Every ADR change needs owner signoff. The owner applies the `adr-accepted` label to the PR after deciding; CI checks the label and verifies the owner applied it. ADR-only PRs may omit an issue reference when this signoff is present. PRs that also change other files still need an issue reference.
+
 ## Robustness of the core
 
 The core keeps running whatever plugins, clients, devices or input do.
