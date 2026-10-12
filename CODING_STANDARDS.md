@@ -41,3 +41,12 @@ The core keeps running whatever plugins, clients, devices or input do.
 - Failures in one plugin, client or device are contained to it, logged, and recovered from.
 - `unsafe` needs an ADR and a `// SAFETY:` comment per block.
 - Lint exceptions are `#[expect(lint, reason = "...")]` at the narrowest scope.
+
+## Tests
+
+A test states a rule about behaviour, never a second copy of the code.
+
+- A property asserts a law that holds for generated inputs, such as "a consumed event never reaches a later layer". If its expected value comes from a hand-written copy of the code under test, it is not a property.
+- Generate the configuration as well as the events, so that a property holds for every context, mapping or plugin set, not only one fixture.
+- Every promise in the docs has a test that pins it.
+- Tests drive input through the synthetic input source, never through real devices or uinput.
