@@ -443,7 +443,7 @@ impl Compositor {
         let Some(receiver) = &self.secret_lookup else {
             return;
         };
-        let received = match receiver.try_recv() {
+        let lookup_result = match receiver.try_recv() {
             Ok(result) => Some(result),
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -452,7 +452,7 @@ impl Compositor {
                 return;
             }
         };
-        let Some((provider, authorization, result)) = received else {
+        let Some((provider, authorization, result)) = lookup_result else {
             return;
         };
         self.secret_lookup = None;
@@ -471,16 +471,18 @@ impl Compositor {
         else {
             return;
         };
+        let keymap = self.text_keys.clone();
+        let seat = self.seat.clone();
         let delivered = crate::secret_delivery::deliver_if_current(
             authorization.destination,
             self.current_secret_destination(),
             &secret,
-            &self.text_keys,
+            &keymap,
             |(keycode, modifiers)| {
-                focus.modifiers(&self.seat, self, modifiers, SERIAL_COUNTER.next_serial());
+                focus.modifiers(&seat, self, modifiers, SERIAL_COUNTER.next_serial());
                 self.tap_keycode(keycode);
                 focus.modifiers(
-                    &self.seat,
+                    &seat,
                     self,
                     ModifiersState::default(),
                     SERIAL_COUNTER.next_serial(),

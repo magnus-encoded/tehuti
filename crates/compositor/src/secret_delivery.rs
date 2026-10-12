@@ -42,6 +42,7 @@ pub fn deliver_if_current<K: Copy>(
 mod tests {
     use std::{collections::HashMap, time::Duration};
 
+    use proptest::prelude::*;
     use tehuti_core::secret::{
         DenySecretProvider, SecretConfirmationGate, SecretDestination, SecretProvider, SecretValue,
     };
