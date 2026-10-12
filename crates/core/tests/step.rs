@@ -47,6 +47,33 @@ mod step {
         }
     }
 
+    proptest! {
+        #[test]
+        fn context_text_preserves_unicode_and_only_emits_for_matching_presses(
+            characters in prop::collection::vec(any::<char>(), 0..100),
+            name in any::<ButtonName>(),
+            button_state in any::<ButtonState>(),
+            focused in any::<bool>(),
+        ) {
+            let text: String = characters.into_iter().collect();
+            let source = format!("app_id = 'test'\n[buttons.{}]\ntext = {}", button_name(name), toml::Value::String(text.clone()));
+            let parsed = tehuti_protocol::parse_context(&source);
+            if text.contains('\0') {
+                prop_assert!(parsed.is_err());
+            } else {
+                let state = State::with_contexts(vec![parsed.unwrap()]);
+                let (state, _) = step(state, &Event::Focus { app_id: Some(if focused { "test" } else { "other" }.into()), title: String::new() });
+                let (_, actions) = step(state, &Event::Button { name, state: button_state });
+                let expected = if button_state == ButtonState::Pressed && name == ButtonName::South {
+                    vec![Action::Key { key: KeyName::Enter }]
+                } else if button_state == ButtonState::Pressed && name != ButtonName::Guide && focused {
+                    vec![Action::Text { text }]
+                } else { vec![] };
+                prop_assert_eq!(actions, expected);
+            }
+        }
+    }
+
     fn button_name(button: ButtonName) -> String {
         let mut name = String::new();
         for (index, letter) in format!("{button:?}").chars().enumerate() {

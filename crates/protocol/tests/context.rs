@@ -32,6 +32,7 @@ mod context {
             "app_id = 'test'\n[buttons.east]\nkey = 'unknown'",
             "app_id = 'test'\nextra = true\n[buttons]",
             "app_id = 'test'\n[buttons.east]\nkey = 'enter'\ntext = 'secret'",
+            "app_id = 'test'\n[buttons.east]\ntext = '\0'",
             "not toml",
         ] {
             assert!(

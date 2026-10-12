@@ -1580,10 +1580,12 @@ version = "0.0.0"
 dependencies = [
  "evdev",
  "libc",
+ "proptest",
  "smithay",
  "tehuti-core",
  "tehuti-protocol",
  "thiserror 2.0.21",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "wayland-client",
@@ -1596,6 +1598,7 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "tehuti-protocol",
+ "toml",
 ]
 
 [[package]]

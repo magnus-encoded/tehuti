@@ -76,7 +76,7 @@ impl KeyName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
     app_id: String,
-    buttons: std::collections::HashMap<ButtonName, KeyAction>,
+    buttons: std::collections::HashMap<ButtonName, MappingAction>,
 }
 
 impl Context {
@@ -87,7 +87,18 @@ impl Context {
 
     #[must_use]
     pub fn key_for(&self, button: ButtonName) -> Option<KeyName> {
-        self.buttons.get(&button).map(|action| action.key)
+        self.buttons.get(&button).and_then(|action| match action {
+            MappingAction::Key { key } => Some(*key),
+            MappingAction::Text { .. } => None,
+        })
+    }
+
+    #[must_use]
+    pub fn action_for(&self, button: ButtonName) -> Option<Action> {
+        self.buttons.get(&button).map(|action| match action {
+            MappingAction::Key { key } => Action::Key { key: *key },
+            MappingAction::Text { text } => Action::Text { text: text.clone() },
+        })
     }
 }
 
@@ -95,13 +106,15 @@ impl Context {
 #[serde(deny_unknown_fields)]
 struct ContextFile {
     app_id: String,
-    buttons: std::collections::HashMap<ButtonName, KeyAction>,
+    buttons: std::collections::HashMap<ButtonName, MappingAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct KeyAction {
-    key: KeyName,
+#[serde(untagged)]
+enum MappingAction {
+    Key { key: KeyName },
+    Text { text: String },
 }
 
 /// Parses a context at the configuration boundary.
@@ -112,6 +125,13 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
     if context.app_id.trim().is_empty() {
         return Err("app_id must not be empty".into());
+    }
+    if context
+        .buttons
+        .values()
+        .any(|action| matches!(action, MappingAction::Text { text } if text.contains('\0')))
+    {
+        return Err("text must not contain NUL: Wayland strings cannot carry it".into());
     }
     Ok(Context {
         app_id: context.app_id,
@@ -125,6 +145,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 pub enum Action {
     /// Press and release `key` in the focused client.
     Key { key: KeyName },
+    /// Commit Unicode text to the focused client.
+    Text { text: String },
     /// Release the controller and stop the compositor.
     Quit,
 }

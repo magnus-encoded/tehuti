@@ -55,6 +55,7 @@ pub struct Compositor {
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
     keyboard: KeyboardHandle<Self>,
+    pub(crate) text_input: crate::text_input::TextInput,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +86,7 @@ impl Compositor {
             seat_state,
             data_device_state: DataDeviceState::new::<Self>(display),
             keyboard,
+            text_input: crate::text_input::TextInput::new(display),
         })
     }
 
@@ -109,8 +111,9 @@ impl Compositor {
 
     /// Carries out one action from the core step.
     fn apply(&mut self, action: &Action) {
-        match *action {
-            Action::Key { key } => self.tap(key),
+        match action {
+            Action::Key { key } => self.tap(*key),
+            Action::Text { text } => self.text_input.send(text),
             Action::Quit => self.quit_requested = true,
         }
     }
@@ -294,6 +297,10 @@ impl SeatHandler for Compositor {
 
     fn seat_state(&mut self) -> &mut SeatState<Self> {
         &mut self.seat_state
+    }
+
+    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        self.text_input.focus(focused.cloned());
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
