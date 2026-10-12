@@ -41,3 +41,14 @@ The core keeps running whatever plugins, clients, devices or input do.
 - Failures in one plugin, client or device are contained to it, logged, and recovered from.
 - `unsafe` needs an ADR and a `// SAFETY:` comment per block.
 - Lint exceptions are `#[expect(lint, reason = "...")]` at the narrowest scope.
+
+## Tests
+
+A test states a rule about behaviour. It never computes its expected value by copying the implementation's logic.
+
+- A property asserts a law over generated inputs, such as "a consumed event never reaches a later layer". A state-machine test may compare against a small reference model that is simpler than the code; a copy of the code is not a model.
+- Properties of the core step generate the configuration as well as the events, so they hold for every context, mapping or plugin set, not one fixture.
+- Tests go through public seams. They never reach into private state, mock internal modules or assert on call order between internal functions.
+- Every documented promise has an automated test, except where a spec or ADR says it is checked by hand.
+- No test needs a real device, uinput, display or microphone. Core tests drive the pure step with generated events; compositor tests use the synthetic pad.
+- Mutation testing measures this: a surviving mutant is a missing test.
