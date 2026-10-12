@@ -1,4 +1,4 @@
-# 3. Plugin protocol: framing, versioning, message shape, licence boundary
+# 3. Plugin protocol
 
 ## Status
 
@@ -6,67 +6,43 @@ Proposed. The owner decides; nothing here is accepted.
 
 ## Context
 
-Issue #6 adds plugin programs that speak JSON-RPC 2.0 on stdio. Plugins are written by the community in any language, often by a coding agent, and vendors may ship closed-source ones. Once plugins exist in the wild, some choices are hard to change. This ADR makes each choice reversible where it can, and names the parts that stay sticky.
+Plugins are separate programs that speak JSON-RPC 2.0 over stdin and stdout (#6). Anyone can write one, in any language. Once plugins are out there, some choices are hard to change. The licence is a separate decision (ADR 0004).
 
-## Decision
+## Principle
 
-**Governing principle.** The core provides capabilities and runs continuous input on its own fast path. Plugins only decide, using the capabilities they are given. A plugin that needs low latency declares its constraints ahead of time (bindings, curves, deadlines) and the core executes them. There is no per-event round trip for continuous motion such as pointer movement or axis streams.
+The core does the work and handles fast input itself. Plugins only make decisions. A plugin that needs speed tells the core its rules ahead of time (bindings, curves, deadlines), and the core applies them. The core never asks a plugin about each pointer move or scroll step.
 
-**Encoding.** v0 uses newline-delimited JSON (section 1). The `initialize` handshake carries an `encoding` field; v0 accepts only `"json"`. A binary encoding (Protobuf, generated from the same schema and using Protobuf's canonical JSON mapping [13]) is deferred as #24. The weekly benchmark in #23 reopens #24 when JSON encoding and decoding take more than 25% of a plugin round trip at p99; #24 says what to do then. If the round trip is over its 1 ms budget but JSON is under 25%, a binary encoding would not help: the fix is to move that work onto the core's fast path under the principle above.
+## Decisions
 
-## 1. Framing on stdio
+**1. One JSON message per line.** Each message is one line of UTF-8 JSON. MCP [1] and niri [2] do the same. Every language can read a line and parse JSON, and a person can test a plugin by typing. Logs go to stderr, never stdout [1]. The core logs and drops a bad line, and limits line length.
 
-Decision: **newline-delimited JSON (NDJSON)**, one UTF-8 JSON object per line. MCP's stdio transport [1], niri IPC [2] and Kakoune's JSON UI [3] do the same. Every language has "read a line, parse JSON", so a plugin needs no framing code, and a person can test a plugin by typing into it. Standard JSON encoders escape newlines in strings, so the rule only forbids pretty-printing.
+- Rejected: `Content-Length` headers as in LSP [3]. Every plugin would need extra code.
+- Rejected: binary length prefixes. Not plain text.
 
-Rejected: `Content-Length` headers as in LSP [4] and DAP [5], which add framing code to every plugin for no gain here; binary length prefixes as in sway IPC [6] or Neovim's MessagePack-RPC [7], which are not plain text.
+**2. An `encoding` field.** The first message carries `encoding`; v0 accepts only `"json"`. A binary format (Protobuf [4]) waits in #24. The weekly benchmark in #23 reopens #24 if JSON takes more than 25% of a plugin round trip at p99. If a round trip is slow but JSON is not the cause, the fix is to move that work into the core, per the principle.
 
-How it stays reversible: the `encoding` field lets a later version add another encoding without breaking plugins that keep `"json"`.
+**3. Versions.** The core sends `initialize` first, with `protocol_version` (a whole number from 0), `encoding` and its own version. The plugin replies with the version it speaks, the encoding, and the events it wants. MCP works the same way [5]. The core refuses a version it does not support and logs why.
 
-Risk: a plugin writes a log line to stdout and corrupts the stream. Mitigation: stdout is protocol only and stderr is for logs, as in MCP [1]; the core drops and logs an unparsable line and caps line length.
+Within one version:
 
-## 2. Versioning and handshake
+- The core sends only events a plugin asked for, so new events never reach old plugins.
+- New fields are optional; plugins ignore fields they do not know.
+- The core rejects unknown fields from plugins and names the field in the error.
+- Removing or changing a field means a new version. The core supports the current and the previous version for at least one release.
 
-Decision: **version negotiation plus subscriptions.** The core sends `initialize` first with `protocol_version` (an integer, starting at 0), `encoding` and the core version. The plugin answers with the version it speaks, the encoding, and the events it subscribes to. This follows MCP, where the server answers with the requested version or another it supports and the client disconnects if it cannot use it [8]; LSP negotiates capabilities only [9]. The core refuses and logs an unsupported version (#6).
+**4. Requests and notices.** Events that need a decision (`button`, `speech`, single scroll steps) are requests. Each gets one reply [6]: a list of actions, empty for "no". Events that only inform (`focus`) are notices with no reply [6]. A plugin can send its own actions as notices; the core checks them against its permissions.
 
-How it stays reversible, inside one version:
+**5. Timeouts.** Each request has a time limit: about two seconds, shorter for buttons (#1). A late or missing reply counts as "no", and a late reply is dropped. Plugins may reply out of order, and the docs say so. Cancelling a request is not in v0. The tests in #7 cover timeouts.
 
-- The core sends only subscribed events, so a new event type never reaches an old plugin.
-- New event fields are optional; plugins ignore fields they do not know.
-- The core rejects unknown fields and actions from plugins (`CODING_STANDARDS.md` boundary rule), and names the field in the error.
-- A removal or change of meaning bumps the version. The core supports the current and previous version for at least one release.
+## Sticky
 
-Sticky: the shape of `initialize` itself, since every version must parse it. Decision: keep it minimal (the four fields above plus an optional object for later capabilities).
-
-## 3. Message shape and timeouts
-
-Decision: **mixed.** Events that need a decision (`button`, `speech`, discrete `axis` steps) are JSON-RPC requests, which carry an `id` and get exactly one response [10]; the result is a list of actions, empty for "declined". Events that only inform (`focus`) are notifications, which get no reply [10]. Plugin-initiated actions (a timer that shows a `notify`) are notifications from the plugin, checked against its permissions. Continuous motion is never a request; the plugin declares bindings and curves and the core applies them (principle above).
-
-The core sets a time limit per request (about two seconds, shorter for buttons per #1), treats a late or missing response as "declined", and drops a late response by id. Cancellation like LSP's `$/cancelRequest` [4] is not in v0.
-
-How it stays reversible: whether an event is a request or a notification is per event type, so moving one type is a version bump that old plugins never see unless they subscribe to it.
-
-Risk: a plugin that answers in order and blocks on slow work makes later events time out. Mitigation: the docs state the time limit and that responses may arrive out of order; the timeout tests in #7 cover it.
-
-## 4. Licence boundary for closed-source plugins
-
-Decision: **separate process plus a permissively licensed protocol spec and SDK.** Plugins are always child processes (#1). The FSF's reading is that pipes and sockets are normally used between separate programs, but that exchanging complex internal data structures could make them one program [11]. A documented, public, versioned schema is the arm's-length case. The docs under `docs/protocol/`, the schemas and any SDK carry MIT or Apache-2.0, separate from the core's licence, and the SDK is written against the schema, not the Rust types.
-
-Rejected: in-process plugins (excluded by #1). A licence exception, like GCC's Runtime Library Exception for code compiled with its runtime libraries [12], stays available if the core ever needs one; it is not needed while plugins do not link to core code.
-
-Sticky: once vendors ship against the spec, its licence cannot be narrowed. Principle (owner, 2026-10-12): anyone, including a vendor shipping a closed-source plugin, can write a plugin without asking permission or taking on obligations. So the spec is published permissively from the first release. The owner confirms with counsel before inviting vendors. This is not legal advice.
+The shape of `initialize`, because every version must read it. So it stays small: the fields above plus one optional object for later needs.
 
 ## Sources
 
 1. MCP transports, stdio: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
 2. niri IPC: https://github.com/YaLTeR/niri/wiki/IPC
-3. Kakoune JSON UI: https://github.com/mawww/kakoune/blob/master/doc/json_ui.asciidoc
-4. LSP 3.17 base protocol and cancellation: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
-5. DAP base protocol: https://microsoft.github.io/debug-adapter-protocol/overview
-6. sway-ipc(7): https://github.com/swaywm/sway/blob/master/sway/sway-ipc.7.scd
-7. Neovim API, MessagePack-RPC: https://neovim.io/doc/user/api.html
-8. MCP lifecycle, version negotiation: https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
-9. LSP initialize request: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#initialize
-10. JSON-RPC 2.0: https://www.jsonrpc.org/specification
-11. GPL FAQ, mere aggregation: https://www.gnu.org/licenses/gpl-faq.html#MereAggregation
-12. GCC Runtime Library Exception: https://www.gnu.org/licenses/gcc-exception-3.1.html
-13. Protobuf ProtoJSON format: https://protobuf.dev/programming-guides/json/
+3. LSP 3.17 base protocol: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
+4. Protobuf ProtoJSON format: https://protobuf.dev/programming-guides/json/
+5. MCP lifecycle, version negotiation: https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
+6. JSON-RPC 2.0: https://www.jsonrpc.org/specification
