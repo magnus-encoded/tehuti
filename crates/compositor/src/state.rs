@@ -48,7 +48,7 @@ impl core::fmt::Debug for RedactedSecretProvider {
 
 #[derive(Debug, Default)]
 struct SecretConfirmationState {
-    presented: bool,
+    frame_submitted: bool,
     armed: bool,
     south_pressed: bool,
 }
@@ -284,7 +284,7 @@ impl Compositor {
         self.secret_focus_generation = self.secret_focus_generation.wrapping_add(1);
         self.secret_gate.cancel();
         self.secret_confirmation_label = None;
-        self.secret_confirmation.presented = false;
+        self.secret_confirmation.frame_submitted = false;
         self.secret_confirmation.armed = false;
         let focus = self
             .keyboard
@@ -346,7 +346,7 @@ impl Compositor {
             .is_some();
         if requested {
             self.secret_confirmation_label = Some((entry_label, sanitize_confirmation_label(&target, 29)));
-            self.secret_confirmation.presented = false;
+            self.secret_confirmation.frame_submitted = false;
             self.secret_confirmation.armed = false;
         }
         requested
@@ -363,9 +363,10 @@ impl Compositor {
             })
     }
 
-    pub fn note_secret_confirmation_presented(&mut self) {
+    /// Records that a damaged frame containing the confirmation was submitted.
+    pub fn note_secret_confirmation_frame_submitted(&mut self) {
         if self.secret_confirmation_text().is_some() {
-            self.secret_confirmation.presented = true;
+            self.secret_confirmation.frame_submitted = true;
             self.secret_confirmation.armed = !self.secret_confirmation.south_pressed;
         }
     }
@@ -398,7 +399,7 @@ impl Compositor {
         match state {
             tehuti_protocol::ButtonState::Released => {
                 self.secret_confirmation.south_pressed = false;
-                if self.secret_confirmation.presented {
+                if self.secret_confirmation.frame_submitted {
                     self.secret_confirmation.armed = true;
                 }
             }

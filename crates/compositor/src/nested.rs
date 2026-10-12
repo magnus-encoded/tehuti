@@ -102,18 +102,21 @@ impl Nested {
     }
 
     fn redraw(&mut self, data: &mut LoopData) {
-        if let Some(text) = data.compositor.visible_notice_text()
-            && text != self.notice_text
+        let confirmation_pending = data.compositor.secret_confirmation_text().is_some();
+        let visible_notice = data.compositor.visible_notice_text();
+        if let Some(text) = &visible_notice
+            && text != &self.notice_text
         {
-            self.notice = tehuti::notice::notice_buffer(&text);
-            self.notice_text = text;
+            self.notice = tehuti::notice::notice_buffer(text);
+            self.notice_text.clone_from(text);
         }
         let size = self.backend.window_size();
         let mut output_drew = false;
+        let mut confirmation_element_included = false;
         match self.backend.bind() {
             Ok((renderer, mut framebuffer)) => {
-                let notices = if data.compositor.visible_notice_text().is_some() {
-                    MemoryRenderBufferRenderElement::from_buffer(
+                let notices = if visible_notice.is_some() {
+                    match MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
                         (16.0, 16.0),
                         &self.notice,
@@ -121,14 +124,16 @@ impl Nested {
                         None,
                         None,
                         Kind::Unspecified,
-                    )
-                    .map_or_else(
-                        |error| {
+                    ) {
+                        Ok(element) => {
+                            confirmation_element_included = confirmation_pending;
+                            vec![element]
+                        }
+                        Err(error) => {
                             warn!(?error, "notice render failed");
                             Vec::new()
-                        },
-                        |element| vec![element],
-                    )
+                        }
+                    }
                 } else {
                     Vec::new()
                 };
@@ -143,7 +148,8 @@ impl Nested {
                     &mut self.damage_tracker,
                     BACKGROUND,
                 ) {
-                    Ok(_) => output_drew = true,
+                    Ok(result) if result.damage.is_some() => output_drew = true,
+                    Ok(_) => {}
                     Err(error) => warn!(?error, "render failed"),
                 }
             }
@@ -156,8 +162,8 @@ impl Nested {
                 false
             }
         };
-        if output_drew && submit_succeeded && data.compositor.secret_confirmation_text().is_some() {
-            data.compositor.note_secret_confirmation_presented();
+        if confirmation_element_included && output_drew && submit_succeeded {
+            data.compositor.note_secret_confirmation_frame_submitted();
         }
         let elapsed = data.compositor.start_time.elapsed();
         let output = &self.output;
