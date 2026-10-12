@@ -162,7 +162,7 @@ impl Compositor {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 Event::Focus {
-                    app_id: attributes.app_id.clone().unwrap_or_default(),
+                    app_id: attributes.app_id.clone(),
                     title: attributes.title.clone().unwrap_or_default(),
                 }
             })
@@ -262,7 +262,7 @@ impl XdgShellHandler for Compositor {
             let keyboard = self.keyboard.clone();
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
             self.handle(&Event::Focus {
-                app_id: String::new(),
+                app_id: None,
                 title: String::new(),
             });
         }

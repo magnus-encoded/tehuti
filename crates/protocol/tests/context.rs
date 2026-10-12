@@ -15,7 +15,7 @@ mod context {
         fn every_named_key_parses(key in prop::sample::select(vec![
             ("enter", KeyName::Enter), ("escape", KeyName::Escape),
             ("space", KeyName::Space), ("tab", KeyName::Tab),
-            ("backspace", KeyName::Backspace), ("up", KeyName::ArrowUp),
+            ("backspace", KeyName::Backspace), ("up", KeyName::Up),
             ("down", KeyName::Down), ("left", KeyName::Left), ("right", KeyName::Right),
         ])) {
             let context = parse_context(&format!("app_id = 'test'\n[buttons.east]\nkey = '{}'", key.0)).unwrap();

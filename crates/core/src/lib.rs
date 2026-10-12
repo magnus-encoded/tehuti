@@ -5,7 +5,7 @@ use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, KeyName};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     contexts: Vec<Context>,
-    focused_app_id: String,
+    focused_app_id: Option<String>,
 }
 
 impl State {
@@ -18,7 +18,7 @@ impl State {
     pub const fn with_contexts(contexts: Vec<Context>) -> Self {
         Self {
             contexts,
-            focused_app_id: String::new(),
+            focused_app_id: None,
         }
     }
 }
@@ -59,7 +59,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
     state
         .contexts
         .iter()
-        .find(|context| context.app_id() == state.focused_app_id)
+        .find(|context| Some(context.app_id()) == state.focused_app_id.as_deref())
         .and_then(|context| context.key_for(*name))
         .map(|key| Action::Key { key })
 }

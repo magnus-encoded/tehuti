@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
-    compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory))?);
+    compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory)));
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
     let controller = Some(insert_controller(&event_loop)?);
     nested::insert(&event_loop, &display.handle(), &mut compositor)?;

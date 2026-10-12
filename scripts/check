@@ -7,4 +7,5 @@ if [ -n "$(find crates -name Cargo.toml 2>/dev/null)" ]; then
     cargo clippy --workspace --all-targets --locked -- -D warnings
     cargo test --workspace --locked
 fi
+cargo check --manifest-path fuzz/Cargo.toml --locked
 scripts/prose-lint

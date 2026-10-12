@@ -34,7 +34,7 @@ pub enum ButtonState {
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum Event {
     Button { name: ButtonName, state: ButtonState },
-    Focus { app_id: String, title: String },
+    Focus { app_id: Option<String>, title: String },
 }
 
 /// A key the core can send to the focused client.
@@ -47,8 +47,8 @@ pub enum KeyName {
     Space,
     Tab,
     Backspace,
-    #[serde(rename = "up")]
-    ArrowUp,
+    #[expect(clippy::min_ident_chars, reason = "Up matches the other direction key names")]
+    Up,
     Down,
     Left,
     Right,
@@ -63,7 +63,7 @@ impl KeyName {
             Self::Space => 57,
             Self::Tab => 15,
             Self::Backspace => 14,
-            Self::ArrowUp => 103,
+            Self::Up => 103,
             Self::Down => 108,
             Self::Left => 105,
             Self::Right => 106,

@@ -1579,6 +1579,7 @@ name = "tehuti"
 version = "0.0.0"
 dependencies = [
  "evdev",
+ "libc",
  "smithay",
  "tehuti-core",
  "tehuti-protocol",

@@ -2,7 +2,10 @@
 
 #[cfg(test)]
 mod synthetic_pad {
-    use core::time::Duration;
+    use core::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::Duration,
+    };
     use std::{
         os::unix::net::UnixStream,
         sync::{Arc, mpsc},
@@ -120,7 +123,8 @@ mod synthetic_pad {
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
-        toplevel.set_app_id(if app_id == "test" { "other" } else { "test" }.into());
+        let initial_app_id_before_focus_change = if app_id == "test" { "other" } else { "test" };
+        toplevel.set_app_id(initial_app_id_before_focus_change.into());
         surface.commit();
         let mut app = App::default();
         let _initial_dispatch = queue.roundtrip(&mut app).unwrap();
@@ -145,19 +149,27 @@ mod synthetic_pad {
         check_routing("test", 15);
     }
 
-    fn check_routing(app_id: &'static str, expected_key: u32) {
-        let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
-        let directory =
-            std::env::temp_dir().join(format!("tehuti-wayland-context-{}-{app_id}", std::process::id()));
-        std::fs::create_dir(&directory).unwrap();
+    fn load_test_context(compositor: &mut Compositor) {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "tehuti-wayland-context-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
             directory.join("context.toml"),
             "app_id = 'test'\n[buttons.east]\nkey = 'tab'",
         )
         .unwrap();
-        compositor.set_contexts(tehuti::contexts::load(&directory).unwrap());
+        compositor.set_contexts(tehuti::contexts::load(&directory));
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn check_routing(app_id: &'static str, expected_key: u32) {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        load_test_context(&mut compositor);
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
             .handle()
