@@ -16,7 +16,9 @@ mod plugins {
         plugins::install,
         state::Compositor,
     };
-    use tehuti_protocol::{ButtonName, ButtonState, Event, Manifest, Permission, StartPolicy, Subscription};
+    use tehuti_protocol::{
+        ButtonName, ButtonState, Event, KeyName, Manifest, Permission, StartPolicy, Subscription,
+    };
 
     struct Harness {
         event_loop: EventLoop<'static, Compositor>,
@@ -142,6 +144,27 @@ for line in sys.stdin:
         }
     }
 
+    fn focus(app_id: &str) -> Event {
+        Event::Focus {
+            app_id: Some(app_id.into()),
+            title: String::new(),
+        }
+    }
+
+    fn context(
+        app_id: &str,
+        mappings: &std::collections::HashMap<ButtonName, KeyName>,
+    ) -> tehuti_protocol::Context {
+        let mut source = format!("app_id = '{app_id}'\n[buttons]\n");
+        for (name, key) in mappings {
+            let name = serde_json::to_value(name).unwrap();
+            let key = serde_json::to_value(key).unwrap();
+            source =
+                source + "[buttons." + name.as_str().unwrap() + "]\nkey = '" + key.as_str().unwrap() + "'\n";
+        }
+        tehuti_protocol::parse_context(&source).unwrap()
+    }
+
     fn button(name: ButtonName) -> Event {
         Event::Button {
             name,
@@ -152,38 +175,77 @@ for line in sys.stdin:
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(16))]
         #[test]
-        fn tick_and_consumed_buttons_never_cross_any_subscribed_plugin_wire(
+        fn only_buttons_the_core_routes_cross_the_wire_and_escape_always_quits(
             focus_subscription in any::<bool>(), button_subscription in any::<bool>(), on_focus in any::<bool>(),
-            permissions in prop::collection::vec(any::<bool>(), 0..10),
-            ticks in prop::collection::vec(0u64..500, 0..20),
-            events in prop::collection::vec(prop::sample::select(vec![ButtonName::South, ButtonName::Guide]), 0..20),
+            plugin_apps in prop::collection::vec(prop::sample::select(vec!["test", "other"]), 0..3),
+            permissions in prop::collection::vec(prop::sample::select(vec![Permission::Key, Permission::Text, Permission::Quit]), 0..10),
+            consumes in any::<bool>(),
+            configurations in prop::collection::vec((prop::sample::select(vec!["test", "other"]), prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=8)), 0..3),
+            events in prop::collection::vec(prop_oneof![
+                (any::<ButtonName>(), any::<ButtonState>()).prop_map(|(name, state)| Event::Button { name, state }),
+                (0u64..500).prop_map(|millis| Event::Tick { elapsed: Duration::from_millis(millis) }),
+            ], 0..20),
         ) {
             let mut configuration = manifest();
             configuration.events = [focus_subscription.then_some(Subscription::Focus), button_subscription.then_some(Subscription::Button)].into_iter().flatten().collect();
             configuration.start = if on_focus { StartPolicy::OnFocus } else { StartPolicy::Always };
-            configuration.permissions = permissions.into_iter().map(|quit| if quit { Permission::Quit } else { Permission::Key }).collect();
-            let mut harness = Harness::new(&configuration, "empty", 0, "json");
-            harness.ready();
-            harness.send(events.into_iter().map(button).chain(ticks.into_iter().map(|millis| Event::Tick { elapsed: Duration::from_millis(millis) })));
-            harness.send([button(ButtonName::Guide), Event::Tick { elapsed: Duration::from_secs(3) }]);
-            prop_assert!(harness.compositor.quit_requested(), "no plugin can suppress escape");
+            configuration.app_ids = plugin_apps.into_iter().map(str::to_owned).collect();
+            configuration.permissions = permissions;
+            let starts = !on_focus || configuration.app_ids.iter().any(|app_id| app_id == "test");
+            let contexts: Vec<_> = configurations.iter().map(|(app_id, mappings)| context(app_id, mappings)).collect();
+            let mut harness = Harness::new(&configuration, if consumes { "quit" } else { "empty" }, 0, "json");
+            harness.compositor.set_contexts(contexts.clone());
+            harness.compositor.handle(&focus("test"));
+            if starts {
+                harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1 && harness.directory.path().join("replied").exists());
+            }
+            // The most permissive core: every button it would route to any live plugin.
+            let mut core = tehuti_core::State::with_contexts(contexts);
+            let mut routable = Vec::new();
+            let chord = [button(ButtonName::Guide), Event::Tick { elapsed: Duration::from_secs(3) }];
+            for event in core::iter::once(focus("test")).chain(events.iter().cloned()).chain(chord.iter().cloned()) {
+                let (next, _, sent) = tehuti_core::step_with_plugin(core, &event, true);
+                core = next;
+                if sent { routable.push(event); }
+            }
+            prop_assert!(!harness.compositor.quit_requested(), "no reply is read before the loop dispatches");
+            harness.send(events);
+            harness.send(chord);
+            prop_assert!(harness.compositor.quit_requested(), "no plugin configuration can suppress escape");
             for _attempt in 0..10 { harness.event_loop.dispatch(Duration::from_millis(1), &mut harness.compositor).unwrap(); }
+            let mut remaining = routable.iter();
             for message in harness.received() {
-                prop_assert!(matches!(message["method"].as_str(), Some("initialize" | "focus")), "consumed events never cross the wire: {message}");
+                match message["method"].as_str() {
+                    Some("initialize") => {}
+                    Some("focus") => prop_assert_eq!(&message["params"]["app_id"], "test", "only the generated focus crosses the wire"),
+                    Some("button") => {
+                        let wire: Event = serde_json::from_value(serde_json::json!({"type": "button", "name": message["params"]["name"], "state": message["params"]["state"]})).unwrap();
+                        prop_assert!(remaining.any(|event| *event == wire), "every button on the wire is one the core routed, in order: {message}");
+                    }
+                    _ => prop_assert!(false, "only initialize, focus and routed buttons cross the wire (Tick never does): {message}"),
+                }
             }
         }
 
         #[test]
-        fn a_late_reply_cannot_execute_under_any_permission_configuration(
+        fn a_late_reply_cannot_execute_under_any_configuration(
             permissions in prop::collection::vec(prop::sample::select(vec![Permission::Key, Permission::Text, Permission::Quit]), 0..10),
-            name in prop::sample::select(vec![ButtonName::East, ButtonName::North, ButtonName::West]),
+            mappings in prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=8),
+            name in any::<ButtonName>(),
+            button_state in any::<ButtonState>(),
         ) {
+            let event = Event::Button { name, state: button_state };
+            let contexts = vec![context("test", &mappings)];
+            let (core, _, _) = tehuti_core::step_with_plugin(tehuti_core::State::with_contexts(contexts.clone()), &focus("test"), true);
+            let (_, _, routed) = tehuti_core::step_with_plugin(core, &event, true);
+            prop_assume!(routed, "only a routed button gets a reply");
             let mut configuration = manifest();
             configuration.permissions = permissions;
             let mut harness = Harness::new(&configuration, "slow", 0, "json");
+            harness.compositor.set_contexts(contexts);
             harness.ready();
             std::fs::remove_file(harness.directory.path().join("replied")).unwrap();
-            harness.send([button(name)]);
+            harness.send([event]);
             harness.pump_until(|harness| harness.directory.path().join("replied").exists());
             for _attempt in 0..3 { harness.event_loop.dispatch(Duration::from_millis(5), &mut harness.compositor).unwrap(); }
             prop_assert!(!harness.compositor.quit_requested(), "a late Quit reply is dropped even with permission");
