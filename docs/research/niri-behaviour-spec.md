@@ -34,7 +34,12 @@ Every URL consulted while writing this spec:
 ## Conventions
 
 - Each statement is numbered `N<area>.<n>` and cites its sources.
-- "Working area" is the output area minus layer-shell exclusive zones and struts.
+- Rectangles, from largest to smallest, per output:
+  - "Output area": the full logical output rectangle.
+  - "Usable area": the output area minus layer-shell exclusive zones.
+  - "Working area": the usable area minus struts (negative struts enlarge it). [S1]
+  - "Tiling area": the working area inset on every side by one outer gap `g`. [S1] [confirm: outer gap equals inner gap]
+- "Tile": a window plus its border `b` on each side. Tile height = client height + 2b; tile width = client width + 2b. The focus ring sits outside the tile and takes no space. [S1] [S7]
 - Statements tagged **[confirm]** are inferred from prose that implies but does not state the rule. The verifier should confirm them by running niri before turning them into properties.
 - Animations are specified only as behaviour: what state the layout reaches, and when input sees it. Curves and timings are out of scope beyond what is listed under NA.
 
@@ -56,7 +61,7 @@ Every URL consulted while writing this spec:
 - NW.3 A `fixed` size applies to the window itself. A `proportion` applies to the whole tile, including the border. Once set, sizes are stored as tile sizes that include the border. [S7]
 - NW.4 The border shrinks the window inside its tile. The focus ring does not change window geometry. [S1]
 - NW.5 Default `preset-column-widths` are 1/3, 1/2 and 2/3. [S1]
-- NW.6 `switch-preset-column-width` sets the focused column to the next preset in the list. `switch-preset-column-width-back` steps in the reverse order. [S1] [S5]
+- NW.6 `switch-preset-column-width` sets the focused column to the next preset in the list. `switch-preset-column-width-back` steps in the reverse order. [S1] [S5] After the last preset the forward cycle wraps to the first, and the back cycle wraps from the first to the last. When the current width matches no preset, the forward step picks the smallest preset larger than the current width. [confirm both]
 - NW.7 `default-column-width` sets the width of a new column. Default is `proportion 0.5` in the shipped config. [S1]
 - NW.8 An empty `default-column-width {}` lets the client choose its width: the initial configure carries width 0 and a concrete height. [S1]
 - NW.9 `set-column-width "+10%"` and `"-10%"` change the focused column width by 10 percentage points of the working area (default binds Mod+= and Mod+-). [S5]
@@ -69,13 +74,13 @@ Every URL consulted while writing this spec:
 
 ## NH: Window heights within a column
 
-- NH.1 In a column of two or more windows, the window heights plus inner gaps sum to the working-area height, when the windows' minimum sizes allow it. [S18 v0.1.9]
+- NH.1 In a column of n >= 2 windows, the sum of the n tile heights plus (n-1) inner gaps equals the tiling-area height (working-area height minus 2g), when the windows' minimum sizes allow it. Each client height is its tile height minus 2b. [S1] [S7] [S18 v0.1.9] [confirm: outer gaps excluded as stated]
 - NH.2 A single-window column fills the working-area height by default (automatic height). [S17] [S18 v0.1.9]
 - NH.3 Resizing one window's height in a multi-window column resizes the others proportionally. The last-resized window keeps its requested height. [S18 v0.1.9]
 - NH.4 A single-window column may be resized to any height, clamped to the output height. [S18 v0.1.9] [S18 v25.01]
 - NH.5 Closing a window in a column gives its height to the remaining windows in that column. [S18 v0.1.9]
 - NH.6 `set-window-height "+10%"`/`"-10%"` change the focused window height (default Mod+Shift+= and Mod+Shift+-). `reset-window-height` (Mod+Ctrl+R) returns it to automatic. [S5]
-- NH.7 Default `preset-window-heights` are 1/3, 1/2 and 2/3 of the working-area height, gap-aware. `switch-preset-window-height` cycles them forward; `switch-preset-window-height-back` cycles backward. [S1]
+- NH.7 Default `preset-window-heights` are 1/3, 1/2 and 2/3 of the working-area height, gap-aware. `switch-preset-window-height` cycles them forward; `switch-preset-window-height-back` cycles backward. [S1] Wrap at the ends and the choice from an off-preset height follow NW.6. [confirm]
 - NH.8 Double-clicking a horizontal resize edge resets the window height to fill the available space. [S19 v0.1.6]
 - NH.9 `min-height`/`max-height` window rules bound the heights niri requests. `max-height` constrains an automatically sized window only when it equals `min-height`. The client keeps the final say on its size. [S9]
 - NH.10 In a tabbed column, every tab has the same window size, equal to the full column height. [S8]
@@ -93,7 +98,7 @@ Every URL consulted while writing this spec:
 ### Within a column
 
 - NF.6 `focus-window-down`/`focus-window-up` move focus within the column. In a tabbed column they switch the visible tab. [S5] [S8]
-- NF.7 `focus-window-top`/`bottom`, `focus-window-down-or-top`, `focus-window-up-or-bottom` and `focus-window-in-column <index>` exist and do what their names say. [S18 v25.02]
+- NF.7 `focus-window-top`/`bottom`, `focus-window-down-or-top`, `focus-window-up-or-bottom` and `focus-window-in-column <index>` exist. [S18 v25.02] The following details are not stated by any allowed source: `-or-top`/`-or-bottom` wrap to the other end of the column at the boundary; `<index>` is 1-based; an out-of-range index is a no-op. [confirm all three]
 - NF.8 `move-window-down`/`move-window-up` reorder the focused window within its column. [S5]
 - NF.9 `focus-window-up-or-column-right` focuses the window above, or the column to the right when already at the top. [S18 v0.1.10]
 
@@ -143,13 +148,13 @@ Every URL consulted while writing this spec:
 
 ## NM: Fullscreen and maximize
 
-- NM.1 `fullscreen-window` makes the focused window cover the whole output. [S4]
+- NM.1 `fullscreen-window` makes the focused window's client rectangle equal the output area, with no border, gaps or struts. [S4]
 - NM.2 A fullscreen window stays a tile in the scrolling layout. Neighbouring columns are reachable by scrolling. [S4] [S7]
 - NM.3 A fullscreen window smaller than the output is shown over a solid black backdrop. [S4]
 - NM.4 When the view rests on a focused fullscreen window, floating windows and the top layer-shell layer are hidden. The overlay layer stays visible. [S4] [S7]
 - NM.5 Focusing away from a fullscreen window keeps it fullscreen. [S7]
 - NM.6 A non-tabbed column with more than one window cannot be fullscreen as a whole. A tabbed column can. [S8] [confirm: what happens to a multi-window normal column on fullscreen]
-- NM.7 `maximize-window-to-edges` makes one window fill the working area, ignoring gaps, struts and border. Layer-shell bars stay visible. [S4] [S18 v25.11]
+- NM.7 `maximize-window-to-edges` makes the client rectangle equal the usable area (output area minus layer-shell exclusive zones). Struts, gaps and border do not apply, so tile equals client. Layer-shell bars stay visible. [S4] [S18 v25.11]
 - NM.8 Fullscreening or maximizing a floating window moves it into the scrolling layout. Undoing it returns the window to the floating layout. [S4] [S7]
 - NM.9 Window rules `open-fullscreen`, `open-maximized`, `open-maximized-to-edges` act only on the state requested at the initial configure. Later client requests are not changed by them. [S4] [S9]
 - NM.10 `toggle-windowed-fullscreen` tells the client it is fullscreen while its tile keeps its normal size. [S4] [S18 v25.05]
@@ -161,7 +166,7 @@ Every URL consulted while writing this spec:
 - NN.1 A new tiled window opens as a new column directly to the right of the focused column. [S17] [confirm]
 - NN.2 New windows never open inside an existing column. [S15]
 - NN.3 The new column takes `default-column-width`, overridden per window by a `default-column-width` rule. A `default-window-height` rule sets the initial height. [S1] [S9]
-- NN.4 The new window is focused, unless an `open-focused false` rule applies or it opens on an output other than the focused one. [S9]
+- NN.4 The new window is focused, except when: an `open-focused false` rule applies; it opens on an output other than the focused one; or it is a dialog whose parent is not the focused window (the KeePassXC example: a dialog parented to an unfocused window is not auto-focused). An `open-focused true` rule focuses the window even in these cases. [S9 #open-focused]
 - NN.5 `open-on-output`/`open-on-workspace` place it on that output or named workspace, falling back to the focused one if the target does not exist. [S9]
 - NN.6 Windows with a parent, and fixed-size windows, open in the floating layout. `open-floating false` forces tiling. [S16]
 - NN.7 Window rules that set opening properties apply once, at the initial configure. [S9]
@@ -171,7 +176,7 @@ Every URL consulted while writing this spec:
 
 ## NV: View scrolling and centering
 
-- NV.1 With `center-focused-column "never"` (default), focusing a column that is not fully visible scrolls the view by the minimum amount to bring it fully into view at the nearest edge. [S1]
+- NV.1 With `center-focused-column "never"` (default), focusing a column that is not fully visible scrolls the view by the minimum amount to bring it fully into view at the nearest edge. [S1] A column wider than the tiling area is aligned so its left edge sits at the tiling-area left edge, consistent with NS.8. [confirm]
 - NV.2 With `"always"`, the focused column is always horizontally centred in the working area. [S1]
 - NV.3 With `"on-overflow"`, the view centres the focused column only when it cannot be fully visible together with the last-focused column; otherwise it behaves like `"never"`. [S1]
 - NV.4 With `always-center-single-column`, a workspace with exactly one column centres it, whatever `center-focused-column` says. [S1]
