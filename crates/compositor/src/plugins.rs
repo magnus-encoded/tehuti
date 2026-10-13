@@ -521,8 +521,8 @@ impl Plugins {
             .count()
     }
 
-    fn start_entry(start: &Start, entry: &mut Entry) {
-        if entry.session.is_none() && entry.restart_at.is_none_or(|deadline| Instant::now() >= deadline) {
+    fn start_entry(start: &Start, entry: &mut Entry, now: Instant) {
+        if entry.session.is_none() && entry.restart_at.is_none_or(|deadline| now >= deadline) {
             entry.started = true;
             entry.restart_at = None;
             match start(&entry.manifest) {
@@ -539,20 +539,23 @@ impl Plugins {
                 }
                 Err(error) => {
                     tracing::warn!(%error, "plugin start failed");
-                    Self::schedule_restart(entry);
+                    Self::schedule_restart(entry, now);
                 }
             }
         }
     }
 
-    fn schedule_restart(entry: &mut Entry) {
-        entry.restart_at = Instant::now().checked_add(entry.backoff);
+    fn schedule_restart(entry: &mut Entry, now: Instant) {
+        entry.restart_at = now.checked_add(entry.backoff);
         tracing::warn!(executable = %entry.manifest.executable, delay_ms = entry.backoff.as_millis(), "plugin restart backoff");
         entry.backoff = entry.backoff.saturating_mul(2).min(RESTART_BACKOFF_CAP);
     }
 
     pub(crate) fn supervise(&mut self) {
-        let now = Instant::now();
+        self.supervise_at(Instant::now());
+    }
+
+    fn supervise_at(&mut self, now: Instant) {
         for entry in &mut self.entries {
             let failed = entry.session.as_ref().is_some_and(|session| {
                 let mut session = session.borrow_mut();
@@ -574,10 +577,10 @@ impl Plugins {
                 }
                 entry.wake = None;
                 entry.session = None;
-                Self::schedule_restart(entry);
+                Self::schedule_restart(entry, now);
             }
             if entry.started {
-                Self::start_entry(&self.start, entry);
+                Self::start_entry(&self.start, entry, now);
             }
         }
     }
@@ -597,7 +600,7 @@ impl Plugins {
                         .as_ref()
                         .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id)))
             {
-                Self::start_entry(&self.start, entry);
+                Self::start_entry(&self.start, entry, Instant::now());
             }
         }
         for entry in &self.entries {
@@ -698,7 +701,7 @@ pub fn install<Data: 'static>(
                 }
                 let mut entry = Entry::new(manifest, entries.len());
                 if entry.manifest.start == StartPolicy::Always {
-                    Plugins::start_entry(&start, &mut entry);
+                    Plugins::start_entry(&start, &mut entry, Instant::now());
                 }
                 entries.push(entry);
             }
@@ -935,6 +938,101 @@ fn deliver(reader: &Rc<RefCell<Session>>, compositor: &mut Compositor, deliverie
     }
 }
 
+thread_local! {
+    static FUZZ_SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+}
+
+/// Feeds arbitrary bytes to one plugin session as if they were its stdout and routes the replies
+/// through the core. Fuzzing seam only; the core must never panic on any input.
+///
+/// The first byte picks the session state and the read chunk size.
+///
+/// # Errors
+/// The stand-in child process cannot be spawned.
+#[doc(hidden)]
+pub fn fuzz_stdout(bytes: &[u8]) -> io::Result<()> {
+    let Some((&control, stdout)) = bytes.split_first() else {
+        return Ok(());
+    };
+    FUZZ_SESSION.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            let manifest = Manifest {
+                plugin_id: None,
+                author: None,
+                security_contact: None,
+                executable: "sleep".into(),
+                app_ids: vec!["fuzz".into()],
+                events: vec![Subscription::Button, Subscription::Speech, Subscription::Focus],
+                start: StartPolicy::Always,
+                permissions: vec![Permission::Key, Permission::Text],
+            };
+            let mut child = Command::new("sleep")
+                .arg("infinity")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| io::Error::other("stdin missing"))?;
+            let now = Instant::now();
+            *slot = Some(Session {
+                child: Process { child: Some(child) },
+                stdin,
+                output: VecDeque::new(),
+                input: Vec::new(),
+                dropping_line: false,
+                status: Status::Starting,
+                initialize_deadline: now,
+                latest_focus: None,
+                events: Vec::new(),
+                manifest,
+                next_id: 1,
+                plugin: 0,
+                invalid_messages: 0,
+                healthy_since: None,
+                pending: BTreeMap::new(),
+                read_window: now,
+                read_bytes: 0,
+            });
+        }
+        let Some(session) = slot.as_mut() else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        session.output.clear();
+        session.input.clear();
+        session.dropping_line = false;
+        session.invalid_messages = 0;
+        session.pending.clear();
+        session.read_window = now;
+        session.read_bytes = 0;
+        session.initialize_deadline = now.checked_add(HANG_TIMEOUT).unwrap_or(now);
+        session.status = if control.is_multiple_of(2) {
+            Status::Starting
+        } else {
+            Status::Ready
+        };
+        session.events = session.manifest.events.clone();
+        let chunk = usize::from(control.checked_shr(1).unwrap_or(0)).max(1);
+        let mut core = tehuti_core::State::new();
+        for part in stdout.chunks(chunk) {
+            if !session.accept_bytes(part.len()) {
+                break;
+            }
+            for delivery in session.receive(part) {
+                if let Delivery::Reply { key, result, .. } = delivery {
+                    let (next, _actions, _rejection) =
+                        tehuti_core::plugin::step(core, tehuti_core::plugin::Input::Reply { key, result });
+                    core = next;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,5 +1054,270 @@ mod tests {
         };
 
         assert!(tehuti_core::plugin::validate_actions(vec![request], &manifest.permissions).is_err());
+    }
+
+    /// Reference-model tests for restart supervision on a virtual clock.
+    mod supervision {
+        use super::*;
+        use proptest::prelude::*;
+
+        const PLUGINS: usize = 3;
+
+        fn manifest(index: usize) -> Manifest {
+            Manifest {
+                plugin_id: None,
+                author: None,
+                security_contact: None,
+                executable: format!("plugin-{index}"),
+                app_ids: vec!["test".into()],
+                events: Vec::new(),
+                start: StartPolicy::Always,
+                permissions: Vec::new(),
+            }
+        }
+
+        fn later(now: Instant, millis: u64) -> Instant {
+            now.checked_add(Duration::from_millis(millis)).unwrap()
+        }
+
+        /// A ready session backed by a live child that never writes.
+        fn live_session(manifest: &Manifest) -> io::Result<Rc<RefCell<Session>>> {
+            let mut child = Command::new("sleep")
+                .arg("3600")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()?;
+            let stdin = child.stdin.take().ok_or_else(|| io::Error::other("stdin missing"))?;
+            let now = Instant::now();
+            Ok(Rc::new(RefCell::new(Session {
+                child: Process { child: Some(child) },
+                stdin,
+                output: VecDeque::new(),
+                input: Vec::new(),
+                dropping_line: false,
+                status: Status::Ready,
+                initialize_deadline: now,
+                latest_focus: None,
+                events: Vec::new(),
+                manifest: manifest.clone(),
+                next_id: 1,
+                plugin: usize::MAX,
+                invalid_messages: 0,
+                healthy_since: None,
+                pending: BTreeMap::new(),
+                read_window: now,
+                read_bytes: 0,
+            })))
+        }
+
+        /// Plugins whose starts succeed when `succeed[index]` is set and are counted in `starts`.
+        fn plugins(succeed: &Rc<RefCell<Vec<bool>>>, starts: &Rc<RefCell<Vec<usize>>>) -> Plugins {
+            let succeed = Rc::clone(succeed);
+            let starts = Rc::clone(starts);
+            let start: Start = Box::new(move |manifest: &Manifest| {
+                let index: usize = manifest
+                    .executable
+                    .trim_start_matches("plugin-")
+                    .parse()
+                    .map_err(io::Error::other)?;
+                let count = starts.borrow()[index].saturating_add(1);
+                starts.borrow_mut()[index] = count;
+                if !succeed.borrow()[index] {
+                    return Err(io::Error::other("start refused"));
+                }
+                let running: Running = (live_session(manifest)?, Box::new(|| {}), Box::new(|| {}));
+                Ok(running)
+            });
+            let entries = (0..PLUGINS)
+                .map(|index| {
+                    let mut entry = Entry::new(manifest(index), index);
+                    entry.started = true;
+                    entry
+                })
+                .collect();
+            Plugins {
+                entries,
+                start,
+                focus: None,
+                cleanup_timer: Box::new(|| {}),
+            }
+        }
+
+        /// Marks freshly started sessions healthy from the virtual `now`.
+        fn mark_healthy(plugins: &Plugins, now: Instant) {
+            for entry in &plugins.entries {
+                if let Some(session) = &entry.session {
+                    let mut session = session.borrow_mut();
+                    if session.healthy_since.is_none() {
+                        session.healthy_since = Some(now);
+                    }
+                }
+            }
+        }
+
+        #[derive(Debug, Clone)]
+        struct ModelEntry {
+            running: bool,
+            broken: bool,
+            healthy_since: Option<Instant>,
+            restart_at: Option<Instant>,
+            backoff: Duration,
+            starts: usize,
+        }
+
+        impl ModelEntry {
+            const fn new() -> Self {
+                Self {
+                    running: false,
+                    broken: false,
+                    healthy_since: None,
+                    restart_at: None,
+                    backoff: Duration::from_millis(100),
+                    starts: 0,
+                }
+            }
+
+            fn schedule(&mut self, now: Instant) {
+                self.restart_at = now.checked_add(self.backoff);
+                self.backoff = self.backoff.saturating_mul(2).min(Duration::from_secs(30));
+            }
+
+            fn supervise(&mut self, now: Instant, succeed: bool) {
+                if self.running {
+                    if self.broken {
+                        self.running = false;
+                        self.broken = false;
+                        self.schedule(now);
+                    } else if self
+                        .healthy_since
+                        .is_some_and(|since| now.duration_since(since) >= Duration::from_secs(30))
+                    {
+                        self.backoff = Duration::from_millis(100);
+                    }
+                }
+                if !self.running && self.restart_at.is_none_or(|deadline| now >= deadline) {
+                    self.starts = self.starts.saturating_add(1);
+                    self.restart_at = None;
+                    if succeed {
+                        self.running = true;
+                        self.healthy_since = Some(now);
+                    } else {
+                        self.schedule(now);
+                    }
+                }
+            }
+        }
+
+        #[derive(Debug, Clone)]
+        enum Op {
+            Advance(u64),
+            Crash(usize),
+            Hang(usize),
+            StartsSucceed(usize, bool),
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                4 => (0_u64..40_000).prop_map(Op::Advance),
+                2 => (0..PLUGINS).prop_map(Op::Crash),
+                1 => (0..PLUGINS).prop_map(Op::Hang),
+                2 => (0..PLUGINS, any::<bool>()).prop_map(|(index, ok)| Op::StartsSucceed(index, ok)),
+            ]
+        }
+
+        fn break_session(plugins: &Plugins, index: usize, hang: bool, now: Instant) {
+            if let Some(session) = &plugins.entries[index].session {
+                let mut session = session.borrow_mut();
+                if hang {
+                    // A request whose deadline has already passed: the plugin never answered.
+                    let _deadline = session.pending.insert(u64::MAX, now);
+                } else {
+                    session.fail("simulated crash");
+                }
+            }
+        }
+
+        fn check(plugins: &Plugins, model: &[ModelEntry], starts: &[usize]) -> Result<(), TestCaseError> {
+            for (index, (entry, expected)) in plugins.entries.iter().zip(model).enumerate() {
+                prop_assert_eq!(entry.session.is_some(), expected.running, "plugin {} running", index);
+                prop_assert_eq!(entry.backoff, expected.backoff, "plugin {} backoff", index);
+                prop_assert_eq!(entry.restart_at, expected.restart_at, "plugin {} restart time", index);
+                prop_assert_eq!(starts[index], expected.starts, "plugin {} start count", index);
+            }
+            Ok(())
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            #[test]
+            fn supervision_matches_the_reference_model(ops in prop::collection::vec(op(), 1..60)) {
+                let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
+                let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+                let mut plugins = plugins(&succeed, &starts);
+                let mut model = vec![ModelEntry::new(); PLUGINS];
+                let mut now = Instant::now();
+                for op in ops {
+                    match op {
+                        Op::Advance(millis) => now = later(now, millis),
+                        Op::Crash(index) | Op::Hang(index) => {
+                            break_session(&plugins, index, matches!(op, Op::Hang(_)), now);
+                            model[index].broken = model[index].running;
+                        }
+                        Op::StartsSucceed(index, ok) => succeed.borrow_mut()[index] = ok,
+                    }
+                    // Every plugin is supervised in the same pass; a broken one must not disturb the rest.
+                    plugins.supervise_at(now);
+                    mark_healthy(&plugins, now);
+                    for (index, entry) in model.iter_mut().enumerate() {
+                        entry.supervise(now, succeed.borrow()[index]);
+                    }
+                    check(&plugins, &model, &starts.borrow())?;
+                }
+            }
+        }
+
+        #[test]
+        fn restart_delay_starts_at_100_ms_doubles_and_caps_at_30_s() {
+            let succeed = Rc::new(RefCell::new(vec![false; PLUGINS]));
+            let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+            let mut plugins = plugins(&succeed, &starts);
+            let mut now = Instant::now();
+            let mut delays = Vec::new();
+            for _attempt in 0..12 {
+                plugins.supervise_at(now);
+                let restart_at = plugins.entries[0].restart_at.unwrap();
+                delays.push(restart_at.duration_since(now).as_millis());
+                plugins.supervise_at(restart_at.checked_sub(Duration::from_millis(1)).unwrap());
+                assert_eq!(starts.borrow()[0], delays.len(), "no restart before the delay elapses");
+                now = restart_at;
+            }
+            assert_eq!(
+                delays,
+                vec![100, 200, 400, 800, 1600, 3200, 6400, 12_800, 25_600, 30_000, 30_000, 30_000],
+                "backoff doubles from 100 ms and caps at 30 s"
+            );
+        }
+
+        #[test]
+        fn backoff_resets_after_30_s_healthy() {
+            let succeed = Rc::new(RefCell::new(vec![false; PLUGINS]));
+            let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+            let mut plugins = plugins(&succeed, &starts);
+            let mut now = Instant::now();
+            for _attempt in 0..5 {
+                plugins.supervise_at(now);
+                now = plugins.entries[0].restart_at.unwrap();
+            }
+            succeed.borrow_mut()[0] = true;
+            plugins.supervise_at(now);
+            mark_healthy(&plugins, now);
+            let young = Duration::from_millis(3200);
+            assert_eq!(plugins.entries[0].backoff, young, "backoff kept while young");
+            plugins.supervise_at(later(now, 29_999));
+            assert_eq!(plugins.entries[0].backoff, young, "not reset before 30 s");
+            plugins.supervise_at(later(now, 30_000));
+            assert_eq!(plugins.entries[0].backoff, RESTART_BACKOFF_BASE, "reset after 30 s healthy");
+        }
     }
 }

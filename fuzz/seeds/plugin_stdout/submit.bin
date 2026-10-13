@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","method":"submit_actions","id":9,"params":{"event_id":1,"actions":[{"type":"quit"}]}}
+{"id":3,"result":7}

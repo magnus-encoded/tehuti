@@ -7,7 +7,7 @@ jobs:
   parsers:
     strategy:
       matrix:
-        target: [context, message, manifest]
+        target: [context, message, manifest, plugin_stdout]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
