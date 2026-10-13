@@ -31,7 +31,31 @@ pub fn open_grabbed() -> Option<EvdevPad> {
         })
 }
 
-fn grab_nonblocking(device: &mut Device) -> io::Result<()> {
+/// Device operations needed to acquire exclusive, nonblocking input.
+pub trait GrabDevice {
+    /// Acquires exclusive input ownership.
+    /// # Errors
+    /// The kernel refused the grab.
+    fn grab(&mut self) -> io::Result<()>;
+    /// Enables nonblocking reads.
+    /// # Errors
+    /// The device flags could not be changed.
+    fn set_nonblocking(&mut self, enabled: bool) -> io::Result<()>;
+}
+
+impl GrabDevice for Device {
+    fn grab(&mut self) -> io::Result<()> {
+        Self::grab(self)
+    }
+    fn set_nonblocking(&mut self, enabled: bool) -> io::Result<()> {
+        Self::set_nonblocking(self, enabled)
+    }
+}
+
+/// Acquires exclusive input and enables nonblocking reads.
+/// # Errors
+/// Either device operation failed.
+pub fn grab_nonblocking(device: &mut impl GrabDevice) -> io::Result<()> {
     device.grab()?;
     device.set_nonblocking(true)
 }
@@ -148,5 +172,53 @@ mod tests {
     fn autorepeat_and_unknown_codes_are_dropped() {
         assert_eq!(parse_button(KeyCode::BTN_SOUTH, 2), None, "autorepeat");
         assert_eq!(parse_button(KeyCode::KEY_A, 1), None, "keyboard key");
+    }
+}
+
+/// Controller discovery state; an attached controller cannot schedule another open.
+#[derive(Debug)]
+pub enum Discovery {
+    Attached,
+    Searching { retry_at: core::time::Duration },
+}
+
+/// Inputs from the clock, directory watcher and device registration.
+#[derive(Debug)]
+pub enum DiscoveryInput {
+    Poll { now: core::time::Duration, rescan: bool },
+    Disconnected { now: core::time::Duration },
+    Found,
+}
+
+/// Effects performed by the event loop.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DiscoveryEffect {
+    Scan,
+    Reconnected,
+}
+
+pub const RETRY_INTERVAL: core::time::Duration = core::time::Duration::from_millis(250);
+
+/// Schedules discovery and announces successful attachment after a disconnect.
+#[must_use]
+pub fn discover(state: Discovery, input: DiscoveryInput) -> (Discovery, Option<DiscoveryEffect>) {
+    match (state, input) {
+        (Discovery::Attached, DiscoveryInput::Disconnected { now }) => {
+            (Discovery::Searching { retry_at: now }, None)
+        }
+        (Discovery::Searching { retry_at }, DiscoveryInput::Poll { now, rescan })
+            if rescan || now >= retry_at =>
+        {
+            (
+                Discovery::Searching {
+                    retry_at: now.saturating_add(RETRY_INTERVAL),
+                },
+                Some(DiscoveryEffect::Scan),
+            )
+        }
+        (Discovery::Searching { .. }, DiscoveryInput::Found) => {
+            (Discovery::Attached, Some(DiscoveryEffect::Reconnected))
+        }
+        (state, _) => (state, None),
     }
 }

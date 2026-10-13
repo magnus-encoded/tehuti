@@ -3,19 +3,14 @@
 use tehuti_protocol::{ButtonName, ButtonState, Event};
 
 #[derive(Debug)]
-pub struct State {
-    held: Vec<ButtonName>,
-    connected: bool,
-    discard_unpaired_releases: bool,
+pub enum State {
+    Connected { held: Vec<ButtonName> },
+    Disconnected,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self {
-            held: Vec::new(),
-            connected: true,
-            discard_unpaired_releases: false,
-        }
+        Self::Connected { held: Vec::new() }
     }
 }
 
@@ -31,37 +26,35 @@ pub enum Input {
 pub fn step(mut state: State, input: Input) -> (State, Vec<Event>) {
     let events = match input {
         Input::Disconnected => {
-            state.connected = false;
-            state.discard_unpaired_releases = true;
-            state
-                .held
-                .drain(..)
-                .map(|name| Event::Button {
-                    name,
-                    state: ButtonState::Released,
-                })
-                .collect()
+            let old = core::mem::replace(&mut state, State::Disconnected);
+            match old {
+                State::Connected { held } => held
+                    .into_iter()
+                    .map(|name| Event::Button {
+                        name,
+                        state: ButtonState::Released,
+                    })
+                    .collect(),
+                State::Disconnected => Vec::new(),
+            }
         }
         Input::Reconnected => {
-            state.connected = true;
+            if matches!(state, State::Disconnected) {
+                state = State::default();
+            }
             Vec::new()
         }
         Input::Event(Event::Button {
             name,
             state: button_state,
         }) => {
-            if !state.connected {
+            let State::Connected { held } = &mut state else {
                 return (state, Vec::new());
-            }
+            };
             match button_state {
-                ButtonState::Pressed if !state.held.contains(&name) => {
-                    state.held.push(name);
-                }
-                ButtonState::Released if state.held.contains(&name) => {
-                    state.held.retain(|held| *held != name);
-                }
-                ButtonState::Released if state.discard_unpaired_releases => return (state, Vec::new()),
-                ButtonState::Pressed | ButtonState::Released => {}
+                ButtonState::Pressed if !held.contains(&name) => held.push(name),
+                ButtonState::Released if held.contains(&name) => held.retain(|held| *held != name),
+                ButtonState::Pressed | ButtonState::Released => return (state, Vec::new()),
             }
             vec![Event::Button {
                 name,

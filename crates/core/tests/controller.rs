@@ -61,33 +61,17 @@ mod tests {
 
     proptest! {
         #[test]
-        fn initial_session_preserves_button_events(buttons in prop::collection::vec((any::<ButtonName>(), any::<ButtonState>()), 0..200)) {
+        fn every_forwarded_press_gets_exactly_one_release(sequence in interleavings()) {
             let mut session = controller::State::default();
-            for (name, state) in buttons {
-                let event = Event::Button { name, state };
-                let (next, events) = controller::step(session, Input::Event(event.clone()));
-                session = next;
-                prop_assert_eq!(events, vec![event]);
-            }
-        }
-
-        #[test]
-        fn every_forwarded_press_gets_exactly_one_release(sequence in interleavings(), configuration in mappings()) {
-            let mut session = controller::State::default();
-            let mut core = context(&configuration);
-            let mut pressed = Vec::new();
+            let mut pressed = std::collections::HashSet::new();
             for (kind, name, state) in sequence.into_iter().chain(core::iter::once((2, ButtonName::South, ButtonState::Released))) {
                 let (next, events) = controller::step(session, input(kind, name, state));
                 session = next;
-                for (key, key_state) in forward(&mut core, &events) {
-                    match key_state {
-                        ButtonState::Pressed => {
-                            prop_assert!(!pressed.contains(&key));
-                            pressed.push(key);
-                        }
-                        ButtonState::Released => {
-                            prop_assert!(pressed.contains(&key), "release without a press or second release");
-                            pressed.retain(|held| *held != key);
+                for event in events {
+                    if let Event::Button { name: output_name, state: output_state } = event {
+                        match output_state {
+                            ButtonState::Pressed => prop_assert!(pressed.insert(output_name), "duplicate press"),
+                            ButtonState::Released => prop_assert!(pressed.remove(&output_name), "unpaired release"),
                         }
                     }
                 }
@@ -96,18 +80,37 @@ mod tests {
         }
 
         #[test]
-        fn disconnect_leaves_no_client_key_pressed(sequence in interleavings(), configuration in mappings()) {
+        fn disconnect_leaves_no_button_held(sequence in interleavings()) {
             let mut session = controller::State::default();
-            let mut core = context(&configuration);
             let mut pressed = std::collections::HashSet::new();
             for (kind, name, state) in sequence.into_iter().chain(core::iter::once((2, ButtonName::South, ButtonState::Released))) {
                 let (next, events) = controller::step(session, input(kind, name, state));
                 session = next;
-                for (key, key_state) in forward(&mut core, &events) {
-                    if key_state == ButtonState::Pressed { let _inserted = pressed.insert(key); }
-                    else { let _removed = pressed.remove(&key); }
+                for event in events {
+                    if let Event::Button { name: output_name, state: output_state } = event {
+                        if output_state == ButtonState::Pressed { let _inserted = pressed.insert(output_name); }
+                        else { let _removed = pressed.remove(&output_name); }
+                    }
                 }
                 if kind == 2 { prop_assert!(pressed.is_empty()); }
+            }
+        }
+
+        #[test]
+        fn fresh_presses_pair_after_each_disconnect(button in any::<ButtonName>(), sessions in 1_usize..20) {
+            let mut session = controller::State::default();
+            for _ in 0..sessions {
+                let (next, _) = controller::step(session, Input::Disconnected);
+                let (next, _) = controller::step(next, Input::Reconnected);
+                let release = Event::Button { name: button, state: ButtonState::Released };
+                let (next, stale) = controller::step(next, Input::Event(release.clone()));
+                prop_assert!(stale.is_empty());
+                let press = Event::Button { name: button, state: ButtonState::Pressed };
+                let (next, pressed) = controller::step(next, Input::Event(press.clone()));
+                prop_assert_eq!(pressed, vec![press]);
+                let (next, released) = controller::step(next, Input::Event(release.clone()));
+                prop_assert_eq!(released, vec![release]);
+                session = next;
             }
         }
 

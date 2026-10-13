@@ -29,6 +29,8 @@ pub(crate) struct LoopData {
     compositor: Compositor,
     controller: Option<EvdevPad>,
     rescan_controller: bool,
+    discovery: controller::Discovery,
+    discovery_epoch: std::time::Instant,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -61,6 +63,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         warn!(%error, "controller watch unavailable; periodic discovery continues");
     }
     let controller = insert_controller(&event_loop.handle())?;
+    let discovery = initial_discovery(controller.as_ref(), &mut compositor);
     nested::insert(&event_loop, &display.handle(), &mut compositor)?;
 
     let _child = Command::new(program)
@@ -73,13 +76,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         compositor,
         controller,
         rescan_controller: true,
+        discovery,
+        discovery_epoch: std::time::Instant::now(),
     };
     let signal = event_loop.get_signal();
     let handle = event_loop.handle();
-    let mut last_retry = std::time::Instant::now();
     event_loop.run(Some(Duration::from_millis(10)), &mut data, |data| {
         advance_time(data);
-        reconnect_controller(data, &handle, &mut last_retry);
+        reconnect_controller(data, &handle);
         if let Some(pad) = data.controller.as_mut() {
             if let Err(error) = input::finish_quit(&data.compositor, pad, &signal) {
                 error!(%error, "controller release failed");
@@ -91,25 +95,45 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn reconnect_controller(
-    data: &mut LoopData,
-    handle: &calloop::LoopHandle<'_, LoopData>,
-    last_retry: &mut std::time::Instant,
-) {
-    if data.controller.is_none()
-        && (data.rescan_controller || last_retry.elapsed() >= Duration::from_millis(250))
-        && !data.compositor.quit_requested()
-    {
-        data.rescan_controller = false;
-        *last_retry = std::time::Instant::now();
+fn initial_discovery(controller: Option<&EvdevPad>, compositor: &mut Compositor) -> controller::Discovery {
+    if controller.is_some() {
+        controller::Discovery::Attached
+    } else {
+        warn!("no controller found; discovery retries every 250 ms");
+        compositor.controller_input(tehuti_core::controller::Input::Disconnected);
+        controller::Discovery::Searching {
+            retry_at: Duration::ZERO,
+        }
+    }
+}
+
+fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
+    if data.compositor.quit_requested() {
+        return;
+    }
+    let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+    let (state, effect) = controller::discover(
+        state,
+        controller::DiscoveryInput::Poll {
+            now: data.discovery_epoch.elapsed(),
+            rescan: core::mem::take(&mut data.rescan_controller),
+        },
+    );
+    data.discovery = state;
+    if effect == Some(controller::DiscoveryEffect::Scan) {
         match insert_controller(handle) {
-            Ok(device) => {
-                data.controller = device;
-                if data.controller.is_some() {
+            Ok(Some(device)) => {
+                data.controller = Some(device);
+                let searching = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+                let (attached, notification) =
+                    controller::discover(searching, controller::DiscoveryInput::Found);
+                data.discovery = attached;
+                if notification == Some(controller::DiscoveryEffect::Reconnected) {
                     data.compositor
                         .controller_input(tehuti_core::controller::Input::Reconnected);
                 }
             }
+            Ok(None) => {}
             Err(error) => warn!(%error, "controller registration failed; retrying"),
         }
     }
@@ -187,6 +211,14 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         Err(error) => {
             error!(%error, "controller read failed; dropping it");
             data.controller = None;
+            let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+            data.discovery = controller::discover(
+                state,
+                controller::DiscoveryInput::Disconnected {
+                    now: data.discovery_epoch.elapsed(),
+                },
+            )
+            .0;
             PostAction::Remove
         }
     }

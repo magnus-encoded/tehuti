@@ -11,11 +11,7 @@ mod plugins {
         sync::{Arc, Mutex},
         time::Instant,
     };
-    use tehuti::{
-        input::{SyntheticPad, route},
-        plugins::install,
-        state::Compositor,
-    };
+    use tehuti::{plugins::install, state::Compositor};
     use tehuti_protocol::{
         ButtonName, ButtonState, Event, KeyName, Manifest, Permission, StartPolicy, Subscription,
     };
@@ -76,11 +72,12 @@ mod plugins {
         }
 
         fn send(&mut self, events: impl IntoIterator<Item = Event>) {
-            let mut pad = SyntheticPad::default();
             for event in events {
-                pad.push(event);
+                self.compositor.handle(&event);
+                if self.compositor.quit_requested() {
+                    break;
+                }
             }
-            route(&mut self.compositor, &mut pad).unwrap();
         }
 
         fn received(&self) -> Vec<serde_json::Value> {
@@ -470,9 +467,7 @@ for line in sys.stdin:
                 let mut compositor = Compositor::new(&display.handle()).unwrap();
                 compositor.set_contexts(vec![context.clone()]);
                 compositor.handle(&focus("test"));
-                let mut pad = SyntheticPad::default();
-                for event in events.iter().cloned() { pad.push(event); }
-                route(&mut compositor, &mut pad).unwrap();
+                for event in &events { compositor.handle(event); }
             });
             prop_assert_eq!(with_plugin, without_plugin, "context output is the same as with no plugin installed");
         }
