@@ -75,7 +75,7 @@ Every URL consulted while writing this spec:
 ## NH: Window heights within a column
 
 - NH.1 In a column of n >= 2 windows, the sum of the n tile heights plus (n-1) inner gaps equals the tiling-area height (working-area height minus 2g), when the windows' minimum sizes allow it. Each client height is its tile height minus 2b. [S1] [S7] [S18 v0.1.9] [confirm: outer gaps excluded as stated]
-- NH.2 A single-window column fills the working-area height by default (automatic height). [S17] [S18 v0.1.9]
+- NH.2 With automatic height, a single-window column's tile height equals the tiling-area height (working-area height minus 2g), and its requested client height is that tile height minus 2b. This is the n = 1 case of NH.1. [S1] [S17] [S18 v0.1.9] [confirm: outer gaps applied as in NH.1]
 - NH.3 Resizing one window's height in a multi-window column resizes the others proportionally. The last-resized window keeps its requested height. [S18 v0.1.9]
 - NH.4 A single-window column may be resized to any height, clamped to the output height. [S18 v0.1.9] [S18 v25.01]
 - NH.5 Closing a window in a column gives its height to the remaining windows in that column. [S18 v0.1.9]
@@ -148,7 +148,7 @@ Every URL consulted while writing this spec:
 
 ## NM: Fullscreen and maximize
 
-- NM.1 `fullscreen-window` makes the focused window's client rectangle equal the output area, with no border, gaps or struts. [S4]
+- NM.1 `fullscreen-window` makes niri request a client size equal to the output area, with no border, gaps or struts. The actual client geometry is whatever the client commits and may be smaller (fixed-size clients); NM.3 covers that case. [S4]
 - NM.2 A fullscreen window stays a tile in the scrolling layout. Neighbouring columns are reachable by scrolling. [S4] [S7]
 - NM.3 A fullscreen window smaller than the output is shown over a solid black backdrop. [S4]
 - NM.4 When the view rests on a focused fullscreen window, floating windows and the top layer-shell layer are hidden. The overlay layer stays visible. [S4] [S7]
