@@ -1915,7 +1915,9 @@ mod layout_laws {
         if centring_applies(centring, snap) {
             let geometry = focused_geometry(snap)
                 .filter(|_| focused_column(snap).is_some_and(column_is_normal))
-                .filter(|&(tile, working, gaps)| fits(tile, working, gaps));
+                // A column wider than the working area is left-aligned per NV.1 [confirm]; any narrower
+                // column, even one wider than the gap-inset area, is centred.
+                .filter(|&(tile, working, _gaps)| tile.width <= working.width + EPSILON);
             if let Some((tile, working, _gaps)) = geometry {
                 prop_assert!(
                     centred(tile, working),
