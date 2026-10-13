@@ -59,11 +59,12 @@ pub fn route(compositor: &mut Compositor, source: &mut dyn InputSource) -> io::R
         Ok(events) => events,
         Err(error) => {
             compositor.speech_input(tehuti_core::speech::SpeechInput::Disconnected);
+            compositor.controller_input(tehuti_core::controller::Input::Disconnected);
             return Err(error);
         }
     };
     for event in events {
-        compositor.handle(&event);
+        compositor.controller_input(tehuti_core::controller::Input::Event(event));
         if compositor.quit_requested() {
             break;
         }

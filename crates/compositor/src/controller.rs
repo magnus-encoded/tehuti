@@ -36,6 +36,25 @@ fn grab_nonblocking(device: &mut Device) -> io::Result<()> {
     device.set_nonblocking(true)
 }
 
+/// Watches controller node creation, removal and permission changes.
+///
+/// # Errors
+/// The directory cannot be watched.
+pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::OwnedFd> {
+    use rustix::fs::inotify;
+    let watcher = inotify::init(inotify::CreateFlags::NONBLOCK | inotify::CreateFlags::CLOEXEC)?;
+    let _watch = inotify::add_watch(
+        &watcher,
+        path,
+        inotify::WatchFlags::CREATE
+            | inotify::WatchFlags::DELETE
+            | inotify::WatchFlags::ATTRIB
+            | inotify::WatchFlags::MOVED_TO
+            | inotify::WatchFlags::MOVED_FROM,
+    )?;
+    Ok(watcher)
+}
+
 /// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
 #[derive(Debug)]
 pub struct EvdevPad(Device);

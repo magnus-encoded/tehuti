@@ -146,3 +146,5 @@ pub mod secret;
 pub mod speech;
 
 pub mod plugin;
+
+pub mod controller;
