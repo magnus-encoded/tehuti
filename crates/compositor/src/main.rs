@@ -103,15 +103,11 @@ fn run(
     data: &mut LoopData,
     mut child: Option<std::process::Child>,
 ) -> Result<(), Box<dyn Error>> {
-    let terminated = Arc::new(core::sync::atomic::AtomicBool::new(false));
-    let _term = signal_hook::flag::register(signal_hook::consts::SIGTERM, terminated.clone())?;
-    let _interrupt = signal_hook::flag::register(signal_hook::consts::SIGINT, terminated.clone())?;
+    let termination = tehuti::shutdown::Termination::register()?;
     let signal = event_loop.get_signal();
     let handle = event_loop.handle();
     let result = event_loop.run(Some(Duration::from_millis(10)), data, |data| {
-        if terminated.load(core::sync::atomic::Ordering::Relaxed) {
-            signal.stop();
-        }
+        termination.stop_if_requested(&signal);
         advance_time(data);
         reconnect_controller(data, &handle);
         if let Some(pad) = data.controller.as_mut() {
@@ -123,18 +119,7 @@ fn run(
         }
     });
     if let Some(child) = child.as_mut() {
-        match child.try_wait() {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                if let Err(error) = child.kill() {
-                    warn!(%error, "application termination failed");
-                }
-                if let Err(error) = child.wait() {
-                    warn!(%error, "application reap failed");
-                }
-            }
-            Err(error) => warn!(%error, "application status unavailable"),
-        }
+        tehuti::shutdown::terminate(child, false);
     }
     result?;
     Ok(())

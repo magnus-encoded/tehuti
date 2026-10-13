@@ -12,4 +12,4 @@ fi
 install -D -m 0755 "$repo/dist/tehuti-session" "$launcher"
 install -D -m 0644 "$repo/dist/tehuti.desktop" "$entry"
 printf '%s\n' 'Tehuti session installed. The compositor must be at ~/.local/bin/tehuti.'
-printf '%s\n' 'Remove with: sudo rm -- /usr/local/bin/tehuti-session /usr/share/wayland-sessions/tehuti.desktop'
+printf 'Remove with: rm -- "%s" "%s"\n' "$launcher" "$entry"

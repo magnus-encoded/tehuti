@@ -23,3 +23,5 @@ pub mod secret_delivery;
 pub mod desktop;
 
 pub mod backend;
+
+pub mod shutdown;

@@ -13,8 +13,14 @@ It prints the two paths to remove. No compositor binary is installed by it.
 
 The launcher logs to `~/.local/state/tehuti/session.log`, or beneath
 `XDG_STATE_HOME` when set. `TEHUTI_BINARY` and `TEHUTI_CONTEXT_DIRECTORY` can
-select another user binary and context directory. TERM, INT and the controller's
-quit action end the compositor and return control to the login manager.
+select another user binary and context directory. A start failure returns to the
+login screen; the reason is in `~/.local/state/tehuti/session.log`.
+
+Hold the controller's Guide button for three seconds to stop and return to the
+login screen. With a keyboard, Ctrl+Alt+F1 through Ctrl+Alt+F12 switch VTs through
+libseat; Ctrl+Alt+Backspace stops the compositor. From phone SSH, run
+`pkill -TERM tehuti` to return to the login screen. TERM and INT stop the loop
+cleanly. Children receive SIGTERM, then SIGKILL after a 200 ms grace period.
 
 Without a host display, libseat opens the seat's primary GPU and DRM uses the
 first connected output and its first advertised mode. Pixman renders clients

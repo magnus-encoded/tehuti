@@ -74,19 +74,7 @@ struct Session {
 impl Drop for Process {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            if let Err(error) = child.kill() {
-                tracing::debug!(%error, "plugin kill failed");
-            }
-            if let Err(error) = std::thread::Builder::new()
-                .name("plugin-reaper".into())
-                .spawn(move || {
-                    if let Err(error) = child.wait() {
-                        tracing::warn!(%error, "plugin reap failed");
-                    }
-                })
-            {
-                tracing::warn!(%error, "plugin reaper unavailable");
-            }
+            crate::shutdown::terminate(&mut child, false);
         }
     }
 }

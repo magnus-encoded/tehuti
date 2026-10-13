@@ -28,18 +28,7 @@ impl Drop for Running {
 }
 
 fn terminate(child: &mut Child) {
-    if let Ok(raw_pid) = i32::try_from(child.id())
-        && let Some(group) = rustix::process::Pid::from_raw(raw_pid)
-        && let Err(error) = rustix::process::kill_process_group(group, rustix::process::Signal::KILL)
-    {
-        tracing::debug!(%error, "speech process group kill failed");
-    }
-    if let Err(error) = child.kill() {
-        tracing::debug!(%error, "speech kill failed");
-    }
-    if let Err(error) = child.wait() {
-        tracing::debug!(%error, "speech reap failed");
-    }
+    crate::shutdown::terminate(child, true);
 }
 
 #[derive(Debug)]

@@ -46,6 +46,9 @@ struct Scanout {
 }
 
 struct Tty {
+    keyboard: tehuti::backend::EscapeKeyboard,
+    session: LibSeatSession,
+    libinput: smithay::reexports::input::Libinput,
     surface: DrmSurface,
     device: DrmDevice,
     buffers: [Scanout; 2],
@@ -66,14 +69,15 @@ pub(crate) fn insert(
     display: &DisplayHandle,
     compositor: &mut Compositor,
 ) -> Result<(), Box<dyn Error>> {
-    let (mut session, notifier) = LibSeatSession::new()?;
+    let (session, notifier) = LibSeatSession::new()?;
     let udev = UdevBackend::new(session.seat())?;
     let path = primary_gpu(session.seat())?
         .or_else(|| udev.device_list().next().map(|(_, path)| path.to_owned()))
         .ok_or("no DRM device on seat")?;
-    let (initialized_tty, drm_notifier) = create_output(&mut session, &path, display, compositor)?;
+    let (initialized_tty, drm_notifier) = create_output(session, &path, display, compositor)?;
     let tty = Rc::new(RefCell::new(initialized_tty));
     insert_seat(event_loop, notifier, tty.clone())?;
+    insert_keyboard(event_loop, &tty)?;
     let flip_tty = tty.clone();
     let flip_stop = event_loop.get_signal();
     let _drm_token = event_loop
@@ -116,6 +120,39 @@ pub(crate) fn insert(
     Ok(())
 }
 
+fn insert_keyboard(event_loop: &EventLoop<LoopData>, tty: &Rc<RefCell<Tty>>) -> Result<(), Box<dyn Error>> {
+    let keyboard_tty = tty.clone();
+    let keyboard_stop = event_loop.get_signal();
+    let input_backend = smithay::backend::libinput::LibinputInputBackend::new(tty.borrow().libinput.clone());
+    let _input_token = event_loop
+        .handle()
+        .insert_source(input_backend, move |event, (), data| {
+            use smithay::backend::input::{InputEvent, KeyState, KeyboardKeyEvent};
+            if !data.seat_active {
+                return;
+            }
+            if let InputEvent::Keyboard { event } = event {
+                let key = u32::from(event.key_code()).saturating_sub(8);
+                let escape = keyboard_tty
+                    .borrow_mut()
+                    .keyboard
+                    .key(key, event.state() == KeyState::Pressed);
+                match escape {
+                    Some(tehuti::backend::Escape::Stop) => keyboard_stop.stop(),
+                    Some(tehuti::backend::Escape::ChangeVt(number)) => {
+                        if let Err(error) = keyboard_tty.borrow_mut().session.change_vt(number) {
+                            warn!(%error, "VT switch failed");
+                        }
+                    }
+                    None => {}
+                }
+            } else if matches!(event, InputEvent::DeviceRemoved { .. }) {
+                keyboard_tty.borrow_mut().keyboard = tehuti::backend::EscapeKeyboard::default();
+            }
+        })?;
+    Ok(())
+}
+
 fn insert_seat(
     event_loop: &EventLoop<LoopData>,
     notifier: smithay::backend::session::libseat::LibSeatSessionNotifier,
@@ -141,11 +178,17 @@ fn insert_seat(
                     data.discovery = tehuti::controller::Discovery::Searching {
                         retry_at: Duration::ZERO,
                     };
+                    tty.keyboard = tehuti::backend::EscapeKeyboard::default();
+                    tty.libinput.suspend();
                     tty.device.pause();
                     tty.pending = false;
                 }
                 Event::ActivateSession => match tty.device.activate(true) {
                     Ok(()) => {
+                        if let Err(error) = tty.libinput.resume() {
+                            warn!(?error, "keyboard resume failed");
+                            stop.stop();
+                        }
                         data.seat_active = true;
                         tty.modeset = true;
                         data.rescan_controller = true;
@@ -161,7 +204,7 @@ fn insert_seat(
 }
 
 fn create_output(
-    session: &mut LibSeatSession,
+    mut session: LibSeatSession,
     path: &std::path::Path,
     display: &DisplayHandle,
     compositor: &mut Compositor,
@@ -207,7 +250,11 @@ fn create_output(
     output.set_preferred(mode.into());
     compositor.space.map_output(&output, (0, 0));
     compositor.output = Some(output.clone());
+    let libinput = create_libinput(&session)?;
     let tty = Tty {
+        keyboard: tehuti::backend::EscapeKeyboard::default(),
+        session,
+        libinput,
         surface,
         device,
         buffers,
@@ -219,6 +266,16 @@ fn create_output(
         modeset: true,
     };
     Ok((tty, drm_notifier))
+}
+
+fn create_libinput(session: &LibSeatSession) -> Result<smithay::reexports::input::Libinput, Box<dyn Error>> {
+    let mut libinput = smithay::reexports::input::Libinput::new_with_udev(
+        smithay::backend::libinput::LibinputSessionInterface::from(session.clone()),
+    );
+    libinput
+        .udev_assign_seat(&session.seat())
+        .map_err(|()| "libinput seat assignment failed")?;
+    Ok(libinput)
 }
 
 fn connected_surface(device: &mut DrmDevice) -> Result<DrmSurface, Box<dyn Error>> {

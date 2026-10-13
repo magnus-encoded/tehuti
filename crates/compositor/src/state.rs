@@ -959,8 +959,7 @@ impl Compositor {
 impl Drop for Compositor {
     fn drop(&mut self) {
         for child in &mut self.launchers {
-            let _killed = child.kill();
-            let _reaped = child.wait();
+            crate::shutdown::terminate(child, false);
         }
     }
 }
