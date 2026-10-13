@@ -786,6 +786,18 @@ mod synthetic_pad {
     }
 
     #[test]
+    fn failed_transcription_shows_speech_failed_overlay() {
+        use tehuti_core::speech::SpeechInput;
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.speech_input(SpeechInput::Available);
+        compositor.speech_input(SpeechInput::Press);
+        compositor.speech_input(SpeechInput::Release);
+        compositor.speech_input(SpeechInput::Failed { session: 0 });
+        assert_eq!(compositor.visible_notice_text().as_deref(), Some("SPEECH FAILED"));
+    }
+
+    #[test]
     fn changing_to_an_unmatched_app_id_uses_global_and_fallback_routing() {
         check_routing("other", KEY_ENTER);
     }

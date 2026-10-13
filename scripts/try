@@ -11,7 +11,12 @@ venv=${TEHUTI_SPEECH_VENV:-$HOME/.cache/tehuti-speech-venv}
 if [ "${TEHUTI_NO_SPEECH:-}" = "" ]; then
     if [ ! -x "$venv/bin/python" ]; then
         python3 -m venv "$venv"
+    fi
+    # Reinstall whenever the requirements change so existing venvs pick up new pins.
+    stamp="$venv/.tehuti-requirements"
+    if ! cmp -s sidecars/speech/requirements.txt "$stamp"; then
         "$venv/bin/pip" install -r sidecars/speech/requirements.txt
+        cp sidecars/speech/requirements.txt "$stamp"
     fi
     wrapper=$(mktemp -t tehuti-speech.XXXXXX)
     trap 'rm -f "$wrapper"' EXIT

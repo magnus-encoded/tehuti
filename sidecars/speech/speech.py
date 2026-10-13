@@ -98,7 +98,7 @@ class Speech:
                 reply({"session": session, "text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)
-                reply({"session": session, "text": ""})
+                reply({"session": session, "error": str(error)})
             finally:
                 clip.close()
                 self.transcriptions.release()

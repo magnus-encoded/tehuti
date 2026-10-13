@@ -43,7 +43,10 @@ Commands and replies are one JSON object per line, capped at 64 KiB:
 {"stop":0,"transcribe":true}
 {"ready":true}
 {"session":0,"text":"confirm"}
+{"session":1,"error":"model failed"}
 ```
+
+An `error` reply shows SPEECH FAILED instead of NO SPEECH MAPPING.
 
 `transcribe:false` discards audio. Session ids are nonnegative integers.
 The core accepts one transcript for the current released session; stale,

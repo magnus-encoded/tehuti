@@ -20,6 +20,7 @@ pub enum SpeechInput {
     Unavailable,
     Available,
     Transcript { session: u64, text: Text },
+    Failed { session: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +28,7 @@ pub enum SpeechEffect {
     Start { session: u64 },
     Stop { session: u64, transcribe: bool },
     Speech { session: u64, text: Text },
+    Failed { session: u64 },
 }
 
 #[must_use]
@@ -77,6 +79,12 @@ pub fn speech_step(mut state: SpeechState, input: SpeechInput) -> (SpeechState, 
             if state.pending == Some(session) {
                 state.pending = None;
                 effects.push(SpeechEffect::Speech { session, text });
+            }
+        }
+        SpeechInput::Failed { session } => {
+            if state.pending == Some(session) {
+                state.pending = None;
+                effects.push(SpeechEffect::Failed { session });
             }
         }
     }

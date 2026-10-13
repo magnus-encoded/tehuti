@@ -145,7 +145,11 @@ impl Context {
 
     #[must_use]
     pub fn speech_action(&self, phrase: &str) -> Option<Action> {
-        self.speech.get(phrase).map(MappingAction::action)
+        let wanted = normalize_phrase(phrase);
+        self.speech
+            .iter()
+            .find(|(mapped, _)| normalize_phrase(mapped) == wanted)
+            .map(|(_, action)| action.action())
     }
 
     #[must_use]
@@ -249,3 +253,12 @@ pub enum Action {
 
 mod plugin;
 pub use plugin::*;
+
+/// Folds case, surrounding whitespace and trailing punctuation so "Hello." matches "hello".
+#[must_use]
+pub fn normalize_phrase(phrase: &str) -> String {
+    phrase
+        .trim()
+        .trim_end_matches(|character: char| character.is_ascii_punctuation() || character.is_whitespace())
+        .to_lowercase()
+}

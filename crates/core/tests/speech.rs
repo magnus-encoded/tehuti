@@ -17,6 +17,7 @@ mod speech {
             Just(SpeechInput::Unavailable),
             Just(SpeechInput::Available),
             (0u64..100, any::<Text>()).prop_map(|(session, text)| SpeechInput::Transcript { session, text }),
+            (0u64..100).prop_map(|session| SpeechInput::Failed { session }),
         ]
     }
 
@@ -50,7 +51,7 @@ mod speech {
                             prop_assert!(stopped.insert(session));
                             eligible = transcribe.then_some(session);
                         }
-                        SpeechEffect::Speech { session, .. } => {
+                        SpeechEffect::Speech { session, .. } | SpeechEffect::Failed { session } => {
                             prop_assert_eq!(eligible.take(), Some(session));
                             prop_assert!(delivered.insert(session));
                         }

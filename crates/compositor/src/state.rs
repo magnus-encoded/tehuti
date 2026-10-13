@@ -262,6 +262,8 @@ impl Compositor {
         for effect in effects {
             if let SpeechEffect::Speech { text, .. } = effect {
                 self.handle(&Event::Speech { text });
+            } else if let SpeechEffect::Failed { .. } = effect {
+                self.show_notice("SPEECH FAILED");
             } else if let Some(process) = &mut self.speech_process
                 && let Err(error) = process.send(&effect)
             {
@@ -670,11 +672,15 @@ impl Compositor {
                 }
             }
             Action::Notice { text } => {
-                let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
-                self.notice_text = Some(text.as_str().into());
-                self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+                self.show_notice(text.as_str());
             }
         }
+    }
+
+    fn show_notice(&mut self, text: &str) {
+        let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
+        self.notice_text = Some(text.into());
+        self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
     }
 
     fn tap(&mut self, key: KeyName) {

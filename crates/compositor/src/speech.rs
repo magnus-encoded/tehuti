@@ -116,7 +116,7 @@ impl SpeechProcess {
             SpeechEffect::Stop { session, transcribe } => {
                 serde_json::json!({"stop": session, "transcribe": transcribe})
             }
-            SpeechEffect::Speech { .. } => return Ok(()),
+            SpeechEffect::Speech { .. } | SpeechEffect::Failed { .. } => return Ok(()),
         };
         let bytes = serde_json::to_vec(&value)?;
         let running = self
@@ -222,6 +222,22 @@ fn parse_reply(bytes: &[u8]) -> Option<SpeechInput> {
         return None;
     }
     let session = value.get("session")?.as_u64()?;
+    if value.get("error").is_some_and(serde_json::Value::is_string) {
+        return Some(SpeechInput::Failed { session });
+    }
     let text = Text::new(value.get("text")?.as_str()?.to_owned()).ok()?;
     Some(SpeechInput::Transcript { session, text })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidecar_error_reply_is_a_failed_transcript() {
+        assert_eq!(
+            parse_reply(br#"{"session": 4, "error": "boom"}"#),
+            Some(SpeechInput::Failed { session: 4 })
+        );
+    }
 }
