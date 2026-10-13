@@ -1,5 +1,7 @@
 # Tehuti
 
+<img src="assets/tehuti.png" alt="Tehuti icon: an ibis head with a moon disc" width="160">
+
 A desktop environment you drive with a game controller and your voice.
 
 ## Try it
