@@ -7,7 +7,7 @@
 mod nested;
 
 use core::{error::Error, time::Duration};
-use std::{os::fd::AsFd, process::Command, sync::Arc, time::Instant};
+use std::{os::fd::AsFd, process::Command, sync::Arc};
 
 use smithay::{
     reexports::{
@@ -28,7 +28,6 @@ pub(crate) struct LoopData {
     display: Display<Compositor>,
     compositor: Compositor,
     controller: Option<EvdevPad>,
-    previous_tick: Instant,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -69,7 +68,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         display,
         compositor,
         controller,
-        previous_tick: Instant::now(),
     };
     let signal = event_loop.get_signal();
     event_loop.run(Some(Duration::from_millis(10)), &mut data, |data| {
@@ -139,9 +137,5 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
 }
 
 fn advance_time(data: &mut LoopData) {
-    let now = Instant::now();
-    data.compositor.handle(&tehuti_protocol::Event::Tick {
-        elapsed: now.duration_since(data.previous_tick),
-    });
-    data.previous_tick = now;
+    data.compositor.advance_time();
 }

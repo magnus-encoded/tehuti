@@ -104,6 +104,8 @@ for line in sys.stdin:
     message = json.loads(line)
     with (root / 'received').open('a') as log:
         log.write(line)
+    if 'method' not in message:
+        continue
     if message['method'] == 'initialize':
         if {mode:?} == 'slow_initialize':
             time.sleep(2.1)
@@ -121,6 +123,9 @@ for line in sys.stdin:
             time.sleep(0.4)
         result = [{{'type': 'quit'}}] if {mode:?} not in ('empty', 'duplicate') else []
     else:
+        continue
+    if message['method'] == 'button' and {mode:?} == 'invalid_action':
+        print(json.dumps({{'jsonrpc':'2.0','id':42,'method':'submit_actions','params':{{'event_id':message['id'],'actions':[{{'type':'key','key':'Tab'}}]}}}}), flush=True)
         continue
     if message['method'] == 'button' and {mode:?} == 'junk':
         sys.stdout.write('not json\n' + 'x' * 70000 + '\n')
@@ -259,6 +264,40 @@ for line in sys.stdin:
             for _attempt in 0..3 { harness.event_loop.dispatch(Duration::from_millis(5), &mut harness.compositor).unwrap(); }
             prop_assert!(!harness.compositor.quit_requested(), "a late Quit reply is dropped even with permission");
         }
+    }
+
+    #[test]
+    fn invalid_action_names_the_rejected_action_and_falls_through_once() {
+        let output = text_actions(|| {
+            let mut configuration = manifest();
+            configuration.permissions.push(Permission::Key);
+            let mut harness = Harness::new(&configuration, "invalid_action", 0, "json");
+            let mappings = core::iter::once((ButtonName::East, String::from("fallback"))).collect();
+            harness.compositor.set_contexts(vec![text_context(&mappings)]);
+            harness.ready();
+            harness.send([button(ButtonName::East)]);
+            harness.pump_until(|harness| {
+                harness
+                    .received()
+                    .iter()
+                    .any(|message| message.get("error").is_some())
+            });
+            let received = harness.received();
+            let rejection = received
+                .iter()
+                .find(|message| message.get("error").is_some())
+                .unwrap();
+            assert_eq!(rejection["jsonrpc"], "2.0");
+            assert_eq!(rejection["id"], 42);
+            assert_eq!(rejection["error"]["code"], -32602);
+            let reason = rejection["error"]["message"].as_str().unwrap();
+            assert!(reason.contains("action 0 (key)"));
+            assert!(reason.contains("Tab"));
+            harness.send([Event::Tick {
+                elapsed: Duration::from_secs(3),
+            }]);
+        });
+        assert_eq!(output, 1, "rejection releases the captured fallback exactly once");
     }
 
     #[test]
@@ -472,7 +511,7 @@ for line in sys.stdin:
                 });
                 outputs.push(output);
             }
-            prop_assert_eq!(&outputs, &[0, 0], "neither reply falls through to context text actions");
+            prop_assert_eq!(outputs.first(), outputs.get(1), "error and empty replies produce the same context fallback");
         }
     }
 

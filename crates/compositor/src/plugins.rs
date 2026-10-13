@@ -4,7 +4,7 @@ use crate::state::Compositor;
 use core::cell::RefCell;
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     io::{self, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::Path,
@@ -17,7 +17,14 @@ use tehuti_protocol::{
     RpcVersion, StartPolicy, Subscription,
 };
 
-const BUTTON_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(250);
+enum Delivery {
+    Reply {
+        key: tehuti_core::plugin::RequestKey,
+        result: Result<Vec<Action>, String>,
+        submission_id: Option<u64>,
+    },
+    Notice(Vec<Action>),
+}
 
 #[derive(Debug)]
 struct Session {
@@ -33,7 +40,7 @@ struct Session {
     events: Vec<Subscription>,
     manifest: Manifest,
     next_id: u64,
-    pending: HashMap<u64, Instant>,
+    plugin: usize,
 }
 
 impl Drop for Session {
@@ -49,27 +56,22 @@ impl Drop for Session {
 
 impl Session {
     fn observe(&mut self, event: &Event) {
-        self.pending.retain(|_, deadline| *deadline > Instant::now());
         if let Event::Focus { app_id, title } = event {
             self.latest_focus = Some((app_id.clone(), title.clone()));
         }
     }
 
-    fn request(&mut self, timeout: core::time::Duration) -> Option<u64> {
-        if self.pending.len() >= 256 {
-            return None;
-        }
+    fn request(&mut self) -> Option<u64> {
         let request_id = self.next_id;
         self.next_id = self.next_id.checked_add(1)?;
-        let _previous = self.pending.insert(
-            request_id,
-            Instant::now().checked_add(timeout).unwrap_or_else(Instant::now),
-        );
         Some(request_id)
     }
 
     fn queue(&mut self, call: &Call) -> io::Result<()> {
-        let bytes = serde_json::to_vec(call)?;
+        self.queue_bytes(serde_json::to_vec(call)?)
+    }
+
+    fn queue_bytes(&mut self, bytes: Vec<u8>) -> io::Result<()> {
         if self.output.len().saturating_add(bytes.len()).saturating_add(1) > MAX_MESSAGE_BYTES {
             return Err(io::Error::other("plugin output queue full"));
         }
@@ -93,7 +95,7 @@ impl Session {
         Ok(PostAction::Disable)
     }
 
-    fn receive(&mut self, bytes: &[u8]) -> Vec<Action> {
+    fn receive(&mut self, bytes: &[u8]) -> Vec<Delivery> {
         let mut actions = Vec::new();
         for byte in bytes {
             if *byte == b'\n' {
@@ -101,7 +103,10 @@ impl Session {
                     let line = core::mem::take(&mut self.input);
                     match tehuti_protocol::parse_message(&line) {
                         Ok(message) => actions.extend(self.message(message)),
-                        Err(error) => tracing::warn!(%error, "plugin message dropped"),
+                        Err(error) => {
+                            tracing::warn!(%error, "plugin message dropped");
+                            actions.extend(self.invalid_message(&line, error));
+                        }
                     }
                 }
                 self.dropping_line = false;
@@ -116,6 +121,47 @@ impl Session {
             }
         }
         actions
+    }
+
+    fn invalid_message(&mut self, line: &[u8], reason: String) -> Vec<Delivery> {
+        if !self.ready || self.refused {
+            return Vec::new();
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+            return Vec::new();
+        };
+        let request_id = value.get("id").and_then(serde_json::Value::as_u64);
+        let method = value.get("method").and_then(serde_json::Value::as_str);
+        let event_id = if method == Some("submit_actions") {
+            value
+                .get("params")
+                .and_then(|params| params.get("event_id"))
+                .and_then(serde_json::Value::as_u64)
+        } else if value.get("result").is_some() {
+            request_id
+        } else {
+            None
+        };
+        if let Some(event_id) = event_id {
+            return vec![Delivery::Reply {
+                key: tehuti_core::plugin::RequestKey {
+                    plugin: self.plugin,
+                    request_id: event_id,
+                },
+                result: Err(reason),
+                submission_id: if method == Some("submit_actions") {
+                    request_id
+                } else {
+                    None
+                },
+            }];
+        }
+        if method == Some("actions")
+            && let Err(error) = self.reject(None, &reason)
+        {
+            tracing::warn!(%error, "plugin rejection dropped");
+        }
+        Vec::new()
     }
 
     fn expire_initialize(&mut self) {
@@ -162,7 +208,7 @@ impl Session {
         }
     }
 
-    fn message(&mut self, message: Message) -> Vec<Action> {
+    fn message(&mut self, message: Message) -> Vec<Delivery> {
         if let Message::Error(response) = &message {
             tracing::warn!(code = response.error.code, message = %response.error.message, "plugin request declined");
         }
@@ -173,45 +219,94 @@ impl Session {
             self.initialize_reply(message);
             return Vec::new();
         }
-        let actions = match message {
-            Message::Response(response) => {
-                let Some(deadline) = self.pending.remove(&response.request_id) else {
-                    return Vec::new();
-                };
-                if Instant::now() >= deadline {
-                    return Vec::new();
-                }
-                match response.result {
-                    ResultValue::Actions(actions) => actions,
-                    ResultValue::Initialized(_) => Vec::new(),
-                }
-            }
-            Message::Error(response) => {
-                let _deadline = self.pending.remove(&response.request_id);
-                Vec::new()
-            }
+        match message {
+            Message::Response(response) => vec![Delivery::Reply {
+                key: tehuti_core::plugin::RequestKey {
+                    plugin: self.plugin,
+                    request_id: response.request_id,
+                },
+                result: match response.result {
+                    ResultValue::Actions(actions) => Ok(actions),
+                    ResultValue::Initialized(_) => Err("result must be an action list".into()),
+                },
+                submission_id: None,
+            }],
+            Message::Error(response) => vec![Delivery::Reply {
+                key: tehuti_core::plugin::RequestKey {
+                    plugin: self.plugin,
+                    request_id: response.request_id,
+                },
+                result: Ok(Vec::new()),
+                submission_id: None,
+            }],
+            Message::Call(Call {
+                request_id: Some(submission_id),
+                method: Method::SubmitActions { event_id, actions },
+                ..
+            }) => vec![Delivery::Reply {
+                key: tehuti_core::plugin::RequestKey {
+                    plugin: self.plugin,
+                    request_id: event_id,
+                },
+                result: Ok(actions),
+                submission_id: Some(submission_id),
+            }],
             Message::Call(Call {
                 method: Method::Actions { actions },
                 ..
-            }) => actions,
+            }) => match tehuti_core::plugin::validate_actions(actions, &self.manifest.permissions) {
+                Ok(actions) => vec![Delivery::Notice(actions)],
+                Err(reason) => {
+                    if let Err(error) = self.reject(None, &reason) {
+                        tracing::warn!(%error, "plugin rejection dropped");
+                    }
+                    Vec::new()
+                }
+            },
             Message::Call(_) => Vec::new(),
-        };
-        plugin_actions(actions, &self.manifest)
+        }
     }
-}
 
-fn plugin_actions(actions: Vec<Action>, manifest: &Manifest) -> Vec<Action> {
-    actions
-        .into_iter()
-        .filter(|action| {
-            manifest.permissions.contains(&match action {
-                Action::Key { .. } => Permission::Key,
-                Action::Text { .. } => Permission::Text,
-                Action::SecretRequest { .. } | Action::Notice { .. } => return false,
-                Action::Quit => Permission::Quit,
-            })
+    fn call_for_event(&mut self, event: &Event, selected: bool) -> Option<Call> {
+        let (request_id, method) = match event {
+            Event::Button { name, state } if selected && self.events.contains(&Subscription::Button) => {
+                let request_id = self.request()?;
+                (
+                    Some(request_id),
+                    Method::Button {
+                        name: *name,
+                        state: *state,
+                    },
+                )
+            }
+            Event::Speech { text } if selected && self.events.contains(&Subscription::Speech) => {
+                let request_id = self.request()?;
+                (Some(request_id), Method::Speech { text: text.clone() })
+            }
+            Event::Focus { app_id, title } if self.events.contains(&Subscription::Focus) => (
+                None,
+                Method::Focus {
+                    app_id: app_id.clone(),
+                    title: title.clone(),
+                },
+            ),
+            Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
+                return None;
+            }
+        };
+        Some(Call {
+            jsonrpc: RpcVersion::Two,
+            request_id,
+            method,
         })
-        .collect()
+    }
+
+    fn reject(&mut self, request_id: Option<u64>, reason: &str) -> io::Result<()> {
+        self.queue_bytes(serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0", "method": "action_rejected",
+            "params": { "event_id": request_id, "error": { "code": -32602, "message": reason } }
+        }))?)
+    }
 }
 
 type Running = (Rc<RefCell<Session>>, Box<dyn Fn()>);
@@ -303,66 +398,45 @@ impl Plugins {
             })
     }
 
-    pub(crate) fn dispatch(&mut self, event: &Event, route_button: bool) {
+    pub(crate) fn dispatch(
+        &mut self,
+        event: &Event,
+        route_button: bool,
+    ) -> Option<(tehuti_core::plugin::RequestKey, Vec<Permission>)> {
+        let mut request = None;
         let selected = self.entries.iter().position(|entry| self.matches(entry, event));
         for (index, entry) in self.entries.iter_mut().enumerate() {
             let Some(session) = &entry.session else {
                 continue;
             };
             let mut session = session.borrow_mut();
+            session.plugin = index;
             session.observe(event);
             if !session.ready || session.refused {
                 continue;
             }
-            let (request_id, method) = match event {
-                Event::Button { name, state }
-                    if route_button
-                        && selected == Some(index)
-                        && session.events.contains(&Subscription::Button) =>
-                {
-                    let Some(request_id) = session.request(BUTTON_TIMEOUT) else {
-                        continue;
-                    };
-                    (
-                        Some(request_id),
-                        Method::Button {
-                            name: *name,
-                            state: *state,
-                        },
-                    )
-                }
-                Event::Speech { text }
-                    if route_button
-                        && selected == Some(index)
-                        && session.events.contains(&Subscription::Speech) =>
-                {
-                    let Some(request_id) = session.request(core::time::Duration::from_secs(2)) else {
-                        continue;
-                    };
-                    (Some(request_id), Method::Speech { text: text.clone() })
-                }
-                Event::Focus { app_id, title } if session.events.contains(&Subscription::Focus) => (
-                    None,
-                    Method::Focus {
-                        app_id: app_id.clone(),
-                        title: title.clone(),
-                    },
-                ),
-                Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
-                    continue;
-                }
+            let Some(call) = session.call_for_event(event, route_button && selected == Some(index)) else {
+                continue;
             };
-            if let Err(error) = session.queue(&Call {
-                jsonrpc: RpcVersion::Two,
-                request_id,
-                method,
-            }) {
+            let request_id = call.request_id;
+            if let Err(error) = session.queue(&call) {
                 tracing::warn!(%error, "plugin event dropped");
+                continue;
+            }
+            if let Some(request_id) = request_id {
+                request = Some((
+                    tehuti_core::plugin::RequestKey {
+                        plugin: index,
+                        request_id,
+                    },
+                    session.manifest.permissions.clone(),
+                ));
             }
             if let Some(wake) = &entry.wake {
                 wake();
             }
         }
+        request
     }
 }
 
@@ -458,7 +532,7 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
         events: Vec::new(),
         manifest: manifest.clone(),
         next_id: 1,
-        pending: HashMap::new(),
+        plugin: usize::MAX,
     }));
     session.borrow_mut().queue(&Call {
         jsonrpc: RpcVersion::Two,
@@ -467,7 +541,9 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
             protocol_version: 0,
             encoding: "json".into(),
             core_version: env!("CARGO_PKG_VERSION").into(),
-            options: None,
+            options: Some(
+                core::iter::once(("action_submission".into(), serde_json::json!("submit_actions"))).collect(),
+            ),
         }),
     })?;
     Ok((session, stdout))
@@ -550,11 +626,40 @@ fn read_ready(
                 return PostAction::Remove;
             }
             Ok(count) => {
-                let actions = reader
+                let deliveries = reader
                     .borrow_mut()
                     .receive(bytes.get(..count).unwrap_or_default());
-                for action in actions {
-                    compositor.apply_plugin_action(&action);
+                compositor.advance_time();
+                for delivery in deliveries {
+                    match delivery {
+                        Delivery::Reply {
+                            key,
+                            result,
+                            submission_id,
+                        } => {
+                            let rejection = compositor.plugin_reply(key, result);
+                            let response = if let Some(request_id) = submission_id {
+                                let value = rejection.map_or_else(
+                                    || serde_json::json!({"jsonrpc":"2.0", "id":request_id, "result":[]}),
+                                    |rejected| serde_json::json!({"jsonrpc":"2.0", "id":request_id, "error":{"code":-32602, "message":rejected.reason}}));
+                                serde_json::to_vec(&value).map_err(io::Error::from).and_then(
+                                    |response_bytes| reader.borrow_mut().queue_bytes(response_bytes),
+                                )
+                            } else if let Some(rejected) = rejection {
+                                reader.borrow_mut().reject(Some(key.request_id), &rejected.reason)
+                            } else {
+                                Ok(())
+                            };
+                            if let Err(error) = response {
+                                tracing::warn!(%error, "plugin rejection dropped");
+                            }
+                        }
+                        Delivery::Notice(actions) => {
+                            for action in actions {
+                                compositor.apply_plugin_action(&action);
+                            }
+                        }
+                    }
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -590,6 +695,6 @@ mod tests {
             reference: tehuti_protocol::SecretReference { entry: "mail".into() },
         };
 
-        assert_eq!(plugin_actions(vec![request], &manifest), Vec::<Action>::new());
+        assert!(tehuti_core::plugin::validate_actions(vec![request], &manifest.permissions).is_err());
     }
 }

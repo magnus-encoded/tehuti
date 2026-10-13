@@ -100,6 +100,7 @@ pub enum Method {
     Speech { text: crate::Text },
     Focus { app_id: Option<String>, title: String },
     Actions { actions: Vec<Action> },
+    SubmitActions { event_id: u64, actions: Vec<Action> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,14 +177,18 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
                 return Err(format!("unknown field `{field}`"));
             }
         }
+        validate_call_actions(&value)?;
         let call: Call = serde_json::from_value(value).map_err(|error| error.to_string())?;
         let needs_reply = matches!(
             call.method,
-            Method::Initialize(_) | Method::Button { .. } | Method::Speech { .. }
+            Method::Initialize(_)
+                | Method::Button { .. }
+                | Method::Speech { .. }
+                | Method::SubmitActions { .. }
         );
         if needs_reply != call.request_id.is_some() {
             return Err(
-                "initialize/button/speech require an request_id; focus/actions must be notices".into(),
+                "initialize/button/speech/submit_actions require an id; focus/actions must be notices".into(),
             );
         }
         Ok(Message::Call(call))
@@ -206,7 +211,7 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
                 serde_json::from_value(envelope.result).map_err(|error| error.to_string())?,
             )
         } else {
-            ResultValue::Actions(serde_json::from_value(envelope.result).map_err(|error| error.to_string())?)
+            ResultValue::Actions(parse_actions(&envelope.result)?)
         };
         Ok(Message::Response(Response {
             jsonrpc: envelope.jsonrpc,
@@ -214,4 +219,39 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
             result,
         }))
     }
+}
+
+fn validate_call_actions(value: &serde_json::Value) -> Result<(), String> {
+    if value
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|method| matches!(method, "actions" | "submit_actions"))
+    {
+        let actions = value
+            .get("params")
+            .and_then(|params| params.get("actions"))
+            .ok_or("actions notice requires actions")?;
+        let _validated = parse_actions(actions)?;
+    }
+    Ok(())
+}
+
+/// Validates each action and names the rejected index and action kind.
+///
+/// # Errors
+/// The result is not an action list or an action violates its schema.
+pub fn parse_actions(value: &serde_json::Value) -> Result<Vec<Action>, String> {
+    let values = value.as_array().ok_or("result must be an action list")?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, action)| {
+            let name = action
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            serde_json::from_value(action.clone())
+                .map_err(|error| format!("action {index} ({name}): {error}"))
+        })
+        .collect()
 }

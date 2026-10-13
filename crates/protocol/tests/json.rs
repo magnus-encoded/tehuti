@@ -50,6 +50,7 @@ mod json {
                 Message::Call(Call { jsonrpc: RpcVersion::Two, request_id: Some(0), method: Method::Initialize(Initialize { protocol_version: version, encoding: "json".into(), core_version: "test".into(), options: Some(std::collections::BTreeMap::new()) }) }),
                 Message::Response(Response { jsonrpc: RpcVersion::Two, request_id: 0, result: ResultValue::Initialized(initialized) }),
                 Message::Response(Response { jsonrpc: RpcVersion::Two, request_id, result: ResultValue::Actions(vec![action.clone()]) }),
+                Message::Call(Call { jsonrpc: RpcVersion::Two, request_id: Some(request_id), method: Method::SubmitActions { event_id: request_id, actions: vec![action.clone()] } }),
                 Message::Call(Call { jsonrpc: RpcVersion::Two, request_id: None, method: Method::Actions { actions: vec![action] } }),
                 Message::Call(Call { jsonrpc: RpcVersion::Two, request_id: None, method: Method::Focus { app_id: Some("test".into()), title: String::new() } }),
             ];
