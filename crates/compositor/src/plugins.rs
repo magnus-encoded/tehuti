@@ -153,7 +153,6 @@ impl Session {
     fn observe(&mut self, event: &Event) {
         if let Event::Focus { app_id, title } = event {
             self.latest_focus = Some((app_id.clone(), title.clone()));
-            self.pending.clear();
         }
     }
 
@@ -168,8 +167,13 @@ impl Session {
             return Err(io::Error::other("plugin pending queue full"));
         }
         self.queue(call)?;
+        let budget = if matches!(call.method, Method::Button { .. }) {
+            tehuti_core::plugin::BUTTON_BUDGET
+        } else {
+            tehuti_core::plugin::SPEECH_BUDGET
+        };
         if let Some(request_id) = call.request_id
-            && let Some(deadline) = Instant::now().checked_add(HANG_TIMEOUT)
+            && let Some(deadline) = Instant::now().checked_add(budget)
         {
             let _deadline = self.pending.insert(request_id, deadline);
         }
@@ -551,11 +555,12 @@ impl Plugins {
         entry.backoff = entry.backoff.saturating_mul(2).min(RESTART_BACKOFF_CAP);
     }
 
-    pub(crate) fn supervise(&mut self) {
-        self.supervise_at(Instant::now());
+    pub(crate) fn supervise(&mut self) -> Vec<usize> {
+        self.supervise_at(Instant::now())
     }
 
-    fn supervise_at(&mut self, now: Instant) {
+    fn supervise_at(&mut self, now: Instant) -> Vec<usize> {
+        let mut exited = Vec::new();
         for entry in &mut self.entries {
             let failed = entry.session.as_ref().is_some_and(|session| {
                 let mut session = session.borrow_mut();
@@ -572,6 +577,7 @@ impl Plugins {
                 session.status == Status::Failed
             });
             if failed {
+                exited.push(entry.plugin);
                 if let Some(cleanup) = entry.cleanup.take() {
                     cleanup();
                 }
@@ -583,6 +589,7 @@ impl Plugins {
                 Self::start_entry(&self.start, entry, now);
             }
         }
+        exited
     }
 
     pub(crate) fn active(&mut self, event: &Event) -> bool {
@@ -711,7 +718,7 @@ pub fn install<Data: 'static>(
     let timer_token = handle
         .insert_source(
             smithay::reexports::calloop::timer::Timer::from_duration(SUPERVISION_INTERVAL),
-            move |_, _, data| {
+            move |_, (), data| {
                 compositor(data).supervise_plugins();
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(SUPERVISION_INTERVAL)
             },
@@ -795,11 +802,12 @@ fn start_process<Data: 'static>(
     let token = handle
         .insert_source(
             Generic::new(descriptor, Interest::WRITE, Mode::Level),
-            move |_, _, _| {
+            move |_, _, data| {
                 let result = writer.borrow_mut().write_ready();
                 Ok(result.unwrap_or_else(|error| {
                     tracing::warn!(%error, "plugin write failed");
                     writer.borrow_mut().fail("plugin pipe write failed");
+                    compositor(data).plugin_exited(writer.borrow().plugin);
                     PostAction::Remove
                 }))
             },
@@ -867,15 +875,18 @@ fn read_ready(
     let mut bytes = [0; 4096];
     for _attempt in 0..READ_ATTEMPTS {
         if reader.borrow().status == Status::Failed {
+            compositor.plugin_exited(reader.borrow().plugin);
             return PostAction::Remove;
         }
         match source.read(&mut bytes) {
             Ok(0) => {
                 reader.borrow_mut().fail("plugin stdout closed");
+                compositor.plugin_exited(reader.borrow().plugin);
                 return PostAction::Remove;
             }
             Ok(count) => {
                 if !reader.borrow_mut().accept_bytes(count) {
+                    compositor.plugin_exited(reader.borrow().plugin);
                     return PostAction::Remove;
                 }
                 let deliveries = reader
@@ -890,6 +901,7 @@ fn read_ready(
             Err(error) => {
                 tracing::warn!(%error, "plugin read failed");
                 reader.borrow_mut().fail("plugin pipe read failed");
+                compositor.plugin_exited(reader.borrow().plugin);
                 return PostAction::Remove;
             }
         }
@@ -942,6 +954,48 @@ thread_local! {
     static FUZZ_SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
 }
 
+fn fuzz_session() -> io::Result<Session> {
+    let manifest = Manifest {
+        plugin_id: None,
+        author: None,
+        security_contact: None,
+        executable: "sleep".into(),
+        app_ids: vec!["fuzz".into()],
+        events: vec![Subscription::Button, Subscription::Speech, Subscription::Focus],
+        start: StartPolicy::Always,
+        permissions: vec![Permission::Key, Permission::Text],
+    };
+    let mut child = Command::new("sleep")
+        .arg("infinity")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("stdin missing"))?;
+    let now = Instant::now();
+    Ok(Session {
+        child: Process { child: Some(child) },
+        stdin,
+        output: VecDeque::new(),
+        input: Vec::new(),
+        dropping_line: false,
+        status: Status::Starting,
+        initialize_deadline: now,
+        latest_focus: None,
+        events: Vec::new(),
+        manifest,
+        next_id: 1,
+        plugin: 0,
+        invalid_messages: 0,
+        healthy_since: None,
+        pending: BTreeMap::new(),
+        read_window: now,
+        read_bytes: 0,
+    })
+}
+
 /// Feeds arbitrary bytes to one plugin session as if they were its stdout and routes the replies
 /// through the core. Fuzzing seam only; the core must never panic on any input.
 ///
@@ -957,45 +1011,7 @@ pub fn fuzz_stdout(bytes: &[u8]) -> io::Result<()> {
     FUZZ_SESSION.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
-            let manifest = Manifest {
-                plugin_id: None,
-                author: None,
-                security_contact: None,
-                executable: "sleep".into(),
-                app_ids: vec!["fuzz".into()],
-                events: vec![Subscription::Button, Subscription::Speech, Subscription::Focus],
-                start: StartPolicy::Always,
-                permissions: vec![Permission::Key, Permission::Text],
-            };
-            let mut child = Command::new("sleep")
-                .arg("infinity")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .spawn()?;
-            let stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| io::Error::other("stdin missing"))?;
-            let now = Instant::now();
-            *slot = Some(Session {
-                child: Process { child: Some(child) },
-                stdin,
-                output: VecDeque::new(),
-                input: Vec::new(),
-                dropping_line: false,
-                status: Status::Starting,
-                initialize_deadline: now,
-                latest_focus: None,
-                events: Vec::new(),
-                manifest,
-                next_id: 1,
-                plugin: 0,
-                invalid_messages: 0,
-                healthy_since: None,
-                pending: BTreeMap::new(),
-                read_window: now,
-                read_bytes: 0,
-            });
+            *slot = Some(fuzz_session()?);
         }
         let Some(session) = slot.as_mut() else {
             return Ok(());
@@ -1087,7 +1103,10 @@ mod tests {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .spawn()?;
-            let stdin = child.stdin.take().ok_or_else(|| io::Error::other("stdin missing"))?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| io::Error::other("stdin missing"))?;
             let now = Instant::now();
             Ok(Rc::new(RefCell::new(Session {
                 child: Process { child: Some(child) },
@@ -1209,19 +1228,19 @@ mod tests {
         }
 
         #[derive(Debug, Clone)]
-        enum Op {
+        enum Operation {
             Advance(u64),
             Crash(usize),
             Hang(usize),
             StartsSucceed(usize, bool),
         }
 
-        fn op() -> impl Strategy<Value = Op> {
+        fn operation() -> impl Strategy<Value = Operation> {
             prop_oneof![
-                4 => (0_u64..40_000).prop_map(Op::Advance),
-                2 => (0..PLUGINS).prop_map(Op::Crash),
-                1 => (0..PLUGINS).prop_map(Op::Hang),
-                2 => (0..PLUGINS, any::<bool>()).prop_map(|(index, ok)| Op::StartsSucceed(index, ok)),
+                4 => (0_u64..40_000).prop_map(Operation::Advance),
+                2 => (0..PLUGINS).prop_map(Operation::Crash),
+                1 => (0..PLUGINS).prop_map(Operation::Hang),
+                2 => (0..PLUGINS, any::<bool>()).prop_map(|(index, succeeds)| Operation::StartsSucceed(index, succeeds)),
             ]
         }
 
@@ -1239,9 +1258,19 @@ mod tests {
 
         fn check(plugins: &Plugins, model: &[ModelEntry], starts: &[usize]) -> Result<(), TestCaseError> {
             for (index, (entry, expected)) in plugins.entries.iter().zip(model).enumerate() {
-                prop_assert_eq!(entry.session.is_some(), expected.running, "plugin {} running", index);
+                prop_assert_eq!(
+                    entry.session.is_some(),
+                    expected.running,
+                    "plugin {} running",
+                    index
+                );
                 prop_assert_eq!(entry.backoff, expected.backoff, "plugin {} backoff", index);
-                prop_assert_eq!(entry.restart_at, expected.restart_at, "plugin {} restart time", index);
+                prop_assert_eq!(
+                    entry.restart_at,
+                    expected.restart_at,
+                    "plugin {} restart time",
+                    index
+                );
                 prop_assert_eq!(starts[index], expected.starts, "plugin {} start count", index);
             }
             Ok(())
@@ -1251,23 +1280,58 @@ mod tests {
             #![proptest_config(ProptestConfig::with_cases(64))]
 
             #[test]
-            fn supervision_matches_the_reference_model(ops in prop::collection::vec(op(), 1..60)) {
+            fn unanswered_requests_restart_despite_focus_changes(
+                changes in prop::collection::vec((0_u64..100, any::<String>()), 1..30),
+                button in any::<bool>(),
+            ) {
+                let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
+                let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+                let mut plugins = plugins(&succeed, &starts);
+                let now = Instant::now();
+                drop(plugins.supervise_at(now));
+                let old = plugins.entries[0].session.as_ref().unwrap().clone();
+                let method = if button {
+                    Method::Button {
+                        name: tehuti_protocol::ButtonName::East,
+                        state: tehuti_protocol::ButtonState::Pressed,
+                    }
+                } else {
+                    Method::Speech { text: tehuti_protocol::Text::new("request".into()).unwrap() }
+                };
+                let request_id = old.borrow_mut().request().unwrap();
+                old.borrow_mut().queue_event(&Call {
+                    jsonrpc: RpcVersion::Two, request_id: Some(request_id), method,
+                }).unwrap();
+                let deadline = old.borrow().pending[&request_id];
+                for (millis, title) in changes {
+                    old.borrow_mut().observe(&Event::Focus { app_id: None, title });
+                    drop(plugins.supervise_at(later(now, millis)));
+                    prop_assert_eq!(starts.borrow()[0], 1);
+                }
+                prop_assert_eq!(plugins.supervise_at(deadline), vec![0]);
+                drop(plugins.supervise_at(later(deadline, 100)));
+                prop_assert_eq!(starts.borrow()[0], 2);
+                prop_assert!(old.borrow_mut().receive(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":[]}\n").is_empty(), "a retired session drops its reply");
+            }
+
+            #[test]
+            fn supervision_matches_the_reference_model(ops in prop::collection::vec(operation(), 1..60)) {
                 let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
                 let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
                 let mut plugins = plugins(&succeed, &starts);
                 let mut model = vec![ModelEntry::new(); PLUGINS];
                 let mut now = Instant::now();
-                for op in ops {
-                    match op {
-                        Op::Advance(millis) => now = later(now, millis),
-                        Op::Crash(index) | Op::Hang(index) => {
-                            break_session(&plugins, index, matches!(op, Op::Hang(_)), now);
+                for operation in ops {
+                    match operation {
+                        Operation::Advance(millis) => now = later(now, millis),
+                        Operation::Crash(index) | Operation::Hang(index) => {
+                            break_session(&plugins, index, matches!(operation, Operation::Hang(_)), now);
                             model[index].broken = model[index].running;
                         }
-                        Op::StartsSucceed(index, ok) => succeed.borrow_mut()[index] = ok,
+                        Operation::StartsSucceed(index, succeeds) => succeed.borrow_mut()[index] = succeeds,
                     }
                     // Every plugin is supervised in the same pass; a broken one must not disturb the rest.
-                    plugins.supervise_at(now);
+                    drop(plugins.supervise_at(now));
                     mark_healthy(&plugins, now);
                     for (index, entry) in model.iter_mut().enumerate() {
                         entry.supervise(now, succeed.borrow()[index]);
@@ -1285,16 +1349,22 @@ mod tests {
             let mut now = Instant::now();
             let mut delays = Vec::new();
             for _attempt in 0..12 {
-                plugins.supervise_at(now);
+                drop(plugins.supervise_at(now));
                 let restart_at = plugins.entries[0].restart_at.unwrap();
                 delays.push(restart_at.duration_since(now).as_millis());
-                plugins.supervise_at(restart_at.checked_sub(Duration::from_millis(1)).unwrap());
-                assert_eq!(starts.borrow()[0], delays.len(), "no restart before the delay elapses");
+                drop(plugins.supervise_at(restart_at.checked_sub(Duration::from_millis(1)).unwrap()));
+                assert_eq!(
+                    starts.borrow()[0],
+                    delays.len(),
+                    "no restart before the delay elapses"
+                );
                 now = restart_at;
             }
             assert_eq!(
                 delays,
-                vec![100, 200, 400, 800, 1600, 3200, 6400, 12_800, 25_600, 30_000, 30_000, 30_000],
+                vec![
+                    100, 200, 400, 800, 1600, 3200, 6400, 12_800, 25_600, 30_000, 30_000, 30_000
+                ],
                 "backoff doubles from 100 ms and caps at 30 s"
             );
         }
@@ -1306,18 +1376,21 @@ mod tests {
             let mut plugins = plugins(&succeed, &starts);
             let mut now = Instant::now();
             for _attempt in 0..5 {
-                plugins.supervise_at(now);
+                drop(plugins.supervise_at(now));
                 now = plugins.entries[0].restart_at.unwrap();
             }
             succeed.borrow_mut()[0] = true;
-            plugins.supervise_at(now);
+            drop(plugins.supervise_at(now));
             mark_healthy(&plugins, now);
             let young = Duration::from_millis(3200);
             assert_eq!(plugins.entries[0].backoff, young, "backoff kept while young");
-            plugins.supervise_at(later(now, 29_999));
+            drop(plugins.supervise_at(later(now, 29_999)));
             assert_eq!(plugins.entries[0].backoff, young, "not reset before 30 s");
-            plugins.supervise_at(later(now, 30_000));
-            assert_eq!(plugins.entries[0].backoff, RESTART_BACKOFF_BASE, "reset after 30 s healthy");
+            drop(plugins.supervise_at(later(now, 30_000)));
+            assert_eq!(
+                plugins.entries[0].backoff, RESTART_BACKOFF_BASE,
+                "reset after 30 s healthy"
+            );
         }
     }
 }

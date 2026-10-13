@@ -16,6 +16,7 @@ for line in sys.stdin:
         }}), flush=True)
         (root / "replied").write_text("yes")
     elif message.get("method") == "button":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": []}), flush=True)
         wire = (root / "wire").read_text()
         chunk = wire * 128
         while True:

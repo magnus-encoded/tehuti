@@ -21,7 +21,7 @@ mod dead_plugin_fallback {
     }
 
     #[derive(Debug, Clone)]
-    enum Op {
+    enum Operation {
         Request(usize),
         Reply(usize, Reply),
         Tick(u64),
@@ -29,14 +29,14 @@ mod dead_plugin_fallback {
         Restart(usize),
     }
 
-    fn op() -> impl Strategy<Value = Op> {
+    fn operation() -> impl Strategy<Value = Operation> {
         let reply = prop_oneof![Just(Reply::Empty), Just(Reply::Invalid), Just(Reply::Decided)];
         prop_oneof![
-            4 => (0..PLUGINS).prop_map(Op::Request),
-            3 => (0_usize..64, reply).prop_map(|(index, reply)| Op::Reply(index, reply)),
-            3 => (0_u64..2500).prop_map(Op::Tick),
-            1 => (0..PLUGINS).prop_map(Op::Crash),
-            1 => (0..PLUGINS).prop_map(Op::Restart),
+            4 => (0..PLUGINS).prop_map(Operation::Request),
+            3 => (0_usize..64, reply).prop_map(|(index, reply)| Operation::Reply(index, reply)),
+            3 => (0_u64..2500).prop_map(Operation::Tick),
+            1 => (0..PLUGINS).prop_map(Operation::Crash),
+            1 => (0..PLUGINS).prop_map(Operation::Restart),
         ]
     }
 
@@ -55,8 +55,6 @@ mod dead_plugin_fallback {
     struct Model {
         pending: Vec<(RequestKey, Duration)>,
         issued: Vec<RequestKey>,
-        orphaned: Vec<RequestKey>,
-        dead: [bool; PLUGINS],
         next_id: u64,
     }
 
@@ -87,27 +85,67 @@ mod dead_plugin_fallback {
         }
     }
 
-    fn count(actions: &[Action], counts: &mut Vec<u64>) {
+    fn count(actions: &[Action], counts: &mut [u64]) {
         for action in actions {
             if let Action::Notice { text } = action
-                && let Some(id) = text.as_str().strip_prefix("request ")
+                && let Some(index) = text.as_str().strip_prefix("request ")
             {
-                let id: usize = id.parse().unwrap();
-                counts[id] = counts[id].saturating_add(1);
+                let index: usize = index.parse().unwrap();
+                counts[index] = counts[index].saturating_add(1);
             }
         }
     }
 
     proptest! {
         #[test]
-        fn every_request_resolves_exactly_once(ops in prop::collection::vec(op(), 1..120)) {
+        fn exit_releases_fallbacks_in_arrival_order_before_later_actions(
+            owners in prop::collection::vec(0..PLUGINS, 1..80),
+            dead in 0..PLUGINS,
+        ) {
+            let mut state = State::new();
+            let mut expected = Vec::new();
+            let mut keys = Vec::new();
+            for (index, owner) in owners.into_iter().enumerate() {
+                let key = RequestKey { plugin: owner, request_id: u64::try_from(index).unwrap() };
+                keys.push(key);
+                if owner == dead {
+                    expected.push(fallback(key.request_id));
+                }
+                let (next, actions, _) = plugin::step(state, Input::Request {
+                    key,
+                    event: Event::Speech { text: Text::new(format!("request {}", key.request_id)).unwrap() },
+                    permissions: vec![Permission::Key],
+                });
+                prop_assert!(actions.is_empty());
+                state = next;
+            }
+            let (next, actions, _) = plugin::step(state, Input::Exited { plugin: dead });
+            prop_assert_eq!(actions, expected);
+            state = next;
+            let (after_duplicate, duplicate_actions, _) = plugin::step(state, Input::Exited { plugin: dead });
+            prop_assert!(duplicate_actions.is_empty());
+            state = after_duplicate;
+            for key in keys.into_iter().filter(|key| key.plugin == dead) {
+                let (after_reply, reply_actions, _) = plugin::step(state, Input::Reply { key, result: Ok(decided()) });
+                prop_assert!(reply_actions.is_empty(), "a dead incarnation releases nothing");
+                state = after_reply;
+            }
+            let (_, later_actions) = tehuti_core::step(state, &Event::Button {
+                name: tehuti_protocol::ButtonName::South,
+                state: tehuti_protocol::ButtonState::Pressed,
+            });
+            prop_assert_eq!(later_actions, decided());
+        }
+
+        #[test]
+        fn every_request_resolves_exactly_once(ops in prop::collection::vec(operation(), 1..120)) {
             let mut state = State::new();
             let mut model = Model::default();
             let mut fallbacks: Vec<u64> = Vec::new();
             let mut decisions: Vec<u64> = Vec::new();
-            for op in ops {
-                let (next, actions, expected) = match op {
-                    Op::Request(plugin) => {
+            for operation in ops {
+                let (next, actions, expected) = match operation {
+                    Operation::Request(plugin) => {
                         let key = RequestKey { plugin, request_id: model.next_id };
                         model.next_id = model.next_id.saturating_add(1);
                         model.issued.push(key);
@@ -124,14 +162,10 @@ mod dead_plugin_fallback {
                         prop_assert!(rejection.is_none(), "a valid request is accepted");
                         (next, actions, Vec::new())
                     }
-                    Op::Reply(index, reply) => {
+                    Operation::Reply(index, reply) => {
                         let Some(&key) = model.issued.get(index) else {
                             continue;
                         };
-                        // A crashed plugin, or the dead incarnation before a restart, never replies.
-                        if model.dead[key.plugin] || model.orphaned.contains(&key) {
-                            continue;
-                        }
                         let expected = model.reply(key, &reply);
                         if expected == decided() {
                             let slot = usize::try_from(key.request_id).unwrap();
@@ -145,25 +179,27 @@ mod dead_plugin_fallback {
                         let (next, actions, _) = plugin::step(state, Input::Reply { key, result });
                         (next, actions, expected)
                     }
-                    Op::Tick(millis) => {
+                    Operation::Tick(millis) => {
                         let elapsed = Duration::from_millis(millis);
                         let expected = model.tick(elapsed);
                         let (next, actions, rejection) = plugin::step(state, Input::Tick { elapsed });
                         prop_assert!(rejection.is_none(), "a tick rejects nothing");
                         (next, actions, expected)
                     }
-                    Op::Crash(plugin) => {
-                        model.dead[plugin] = true;
-                        continue;
+                    Operation::Crash(plugin) | Operation::Restart(plugin) => {
+                        let mut expected = Vec::new();
+                        model.pending.retain(|(key, _)| {
+                            if key.plugin == plugin {
+                                expected.push(fallback(key.request_id));
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        let (next, actions, _) = plugin::step(state, Input::Exited { plugin });
+                        (next, actions, expected)
                     }
-                    Op::Restart(plugin) => {
-                        // A restarted plugin gets fresh request ids; the old ones stay unanswered.
-                        model.dead[plugin] = false;
-                        let old: Vec<RequestKey> =
-                            model.issued.iter().filter(|key| key.plugin == plugin).copied().collect();
-                        model.orphaned.extend(old);
-                        continue;
-                    }
+
                 };
                 prop_assert_eq!(&actions, &expected, "core output matches the reference model");
                 count(&actions, &mut fallbacks);
@@ -172,8 +208,8 @@ mod dead_plugin_fallback {
             let (_, actions, _) = plugin::step(state, Input::Tick { elapsed: SPEECH_BUDGET });
             prop_assert_eq!(&actions, &model.tick(SPEECH_BUDGET), "final timeout matches the model");
             count(&actions, &mut fallbacks);
-            for (id, (fell_through, chosen)) in fallbacks.iter().zip(&decisions).enumerate() {
-                prop_assert_eq!(fell_through.saturating_add(*chosen), 1, "request {} must resolve exactly once", id);
+            for (index, (fell_through, chosen)) in fallbacks.iter().zip(&decisions).enumerate() {
+                prop_assert_eq!(fell_through.saturating_add(*chosen), 1, "request {} must resolve exactly once", index);
             }
         }
     }

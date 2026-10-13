@@ -245,9 +245,24 @@ impl Compositor {
         }
     }
 
+    pub(crate) fn plugin_exited(&mut self, plugin: usize) {
+        let (next, actions, _) = tehuti_core::plugin::step(
+            core::mem::take(&mut self.core),
+            tehuti_core::plugin::Input::Exited { plugin },
+        );
+        self.core = next;
+        for action in &actions {
+            self.apply_plugin_action(action);
+        }
+    }
+
     pub(crate) fn supervise_plugins(&mut self) {
-        if let Some(plugins) = &mut self.plugins {
-            plugins.supervise();
+        let exited = self
+            .plugins
+            .as_mut()
+            .map_or_else(Vec::new, crate::plugins::Plugins::supervise);
+        for plugin in exited {
+            self.plugin_exited(plugin);
         }
         self.advance_time();
     }
@@ -263,6 +278,13 @@ impl Compositor {
     /// Runs one event through the core step and carries out the resulting actions.
     pub fn handle(&mut self, event: &Event) {
         use tehuti_core::speech::SpeechInput;
+        let exited = self
+            .plugins
+            .as_mut()
+            .map_or_else(Vec::new, crate::plugins::Plugins::supervise);
+        for plugin in exited {
+            self.plugin_exited(plugin);
+        }
         if matches!(event, Event::Tick { .. }) {
             self.previous_tick = Instant::now();
         } else if !matches!(event, Event::Focus { .. }) {
