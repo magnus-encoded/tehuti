@@ -112,6 +112,19 @@ mod context {
         assert_eq!(tehuti_protocol::normalize_phrase("cafe\u{301}"), "caf\u{e9}");
     }
 
+    /// Lowercasing "J\u{30c}" yields "j\u{30c}", which only composes to "\u{1f0}" if NFC runs last.
+    #[test]
+    fn nfc_applies_after_lowercasing() {
+        let context =
+            parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }").unwrap();
+        assert!(context.speech_action("J\u{30c}").is_some());
+        let error = parse_context(
+            "app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }\n\"J\u{30c}\" = { key = 'tab' }",
+        )
+        .unwrap_err();
+        assert!(error.contains("normalizes to"), "{error}");
+    }
+
     #[test]
     fn text_rejects_nul_at_construction_and_deserialization() {
         assert!(tehuti_protocol::Text::new("a\0b".into()).is_err());

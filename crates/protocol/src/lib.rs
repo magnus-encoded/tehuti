@@ -279,6 +279,7 @@ pub use plugin::*;
 pub fn normalize_phrase(phrase: &str) -> String {
     use unicode_normalization::{UnicodeNormalization as _, char::is_combining_mark};
     phrase
+        .to_lowercase()
         .nfc()
         .collect::<String>()
         .replace(['\u{2019}', '\u{2bc}'], "'")
@@ -289,5 +290,4 @@ pub fn normalize_phrase(phrase: &str) -> String {
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
-        .to_lowercase()
 }
