@@ -1936,11 +1936,11 @@ mod layout_laws {
                 }
                 world.close(extra)?;
             }
-            let snap = world.snap();
-            prop_assume!(snap.focused_window == Some(lone));
-            prop_assume!(focused_workspace(&snap).is_some_and(|workspace| workspace.columns.len() == 1));
-            prop_assume!(focused_column(&snap).is_some_and(column_is_normal));
-            let (tile, working, gaps) = focused_geometry(&snap).ok_or_else(|| TestCaseError::fail("nothing focused"))?;
+            let after = world.snap();
+            prop_assume!(after.focused_window == Some(lone));
+            prop_assume!(focused_workspace(&after).is_some_and(|workspace| workspace.columns.len() == 1));
+            prop_assume!(focused_column(&after).is_some_and(column_is_normal));
+            let (tile, working, gaps) = focused_geometry(&after).ok_or_else(|| TestCaseError::fail("nothing focused"))?;
             prop_assume!(fits(tile, working, gaps));
             prop_assert!(centred(tile, working), "tile {:?} in {:?}", tile, working);
         }
