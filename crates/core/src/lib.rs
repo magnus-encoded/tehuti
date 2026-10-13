@@ -7,6 +7,7 @@ pub struct State {
     contexts: Vec<Context>,
     focused_app_id: Option<String>,
     guide_held: Option<core::time::Duration>,
+    start_held: bool,
     pending: Vec<plugin::Pending>,
 }
 
@@ -22,8 +23,15 @@ impl State {
             contexts,
             focused_app_id: None,
             guide_held: None,
+            start_held: false,
             pending: Vec::new(),
         }
+    }
+
+    /// Cancels controller holds when the device disconnects or the seat pauses.
+    pub const fn controller_disconnected(&mut self) {
+        self.guide_held = None;
+        self.start_held = false;
     }
 
     /// Plugin decisions still awaiting a reply, expiry or plugin exit.
@@ -136,8 +144,20 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             }
             Some(Vec::new())
         }
+        Event::Button {
+            name: ButtonName::Start,
+            state: button_state,
+        } => {
+            state.start_held = *button_state == ButtonState::Pressed;
+            state.guide_held.as_mut().map(|held| {
+                *held = core::time::Duration::ZERO;
+                Vec::new()
+            })
+        }
         Event::Tick { elapsed } => {
-            if let Some(held) = &mut state.guide_held {
+            if state.start_held
+                && let Some(held) = &mut state.guide_held
+            {
                 *held = held.saturating_add(*elapsed);
                 if *held >= core::time::Duration::from_secs(3) {
                     state.guide_held = None;

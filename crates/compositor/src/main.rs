@@ -1,13 +1,18 @@
-//! Tehuti nested in the current desktop: one application fullscreen, driven by the controller.
+//! Tehuti on a seat or nested in the current desktop, driven by the controller.
 #![expect(
     clippy::multiple_crate_versions,
     reason = "Smithay and winit pull in duplicate transitive versions outside our control"
 )]
 
 mod nested;
+mod tty;
 
 use core::{error::Error, time::Duration};
-use std::{os::fd::AsFd, process::Command, sync::Arc};
+use std::{
+    os::fd::AsFd,
+    process::{Command, ExitCode},
+    sync::Arc,
+};
 
 use smithay::{
     reexports::{
@@ -28,20 +33,33 @@ pub(crate) struct LoopData {
     display: Display<Compositor>,
     compositor: Compositor,
     controller: Option<EvdevPad>,
+    controller_token: Option<calloop::RegistrationToken>,
     rescan_controller: bool,
     discovery: controller::Discovery,
     discovery_epoch: std::time::Instant,
+    seat_active: bool,
+    log_out: bool,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+impl LoopData {
+    fn exit_code(&self) -> ExitCode {
+        ExitCode::from(if self.log_out {
+            21
+        } else if self.compositor.quit_requested() {
+            20
+        } else {
+            1
+        })
+    }
+}
+
+fn main() -> Result<ExitCode, Box<dyn Error>> {
     tracing_subscriber::fmt::init();
     let mut application = std::env::args_os().skip(1);
     let context_directory = application
         .next()
-        .ok_or("usage: tehuti <context-directory> <application> [arguments...]")?;
-    let program = application
-        .next()
-        .ok_or("usage: tehuti <context-directory> <application> [arguments...]")?;
+        .ok_or("usage: tehuti <context-directory> [application] [arguments...]")?;
+    let program = application.next();
 
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Compositor> = Display::new()?;
@@ -63,26 +81,52 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Err(error) = insert_controller_watch(&event_loop) {
         warn!(%error, "controller watch unavailable; periodic discovery continues");
     }
-    let controller = insert_controller(&event_loop.handle())?;
+    match tehuti::backend::select(
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        std::env::var_os("DISPLAY").as_deref(),
+    ) {
+        tehuti::backend::Backend::Nested => nested::insert(&event_loop, &display.handle(), &mut compositor)?,
+        tehuti::backend::Backend::Tty => tty::insert(&event_loop, &display.handle(), &mut compositor)?,
+    }
+    let attached_controller = insert_controller(&event_loop.handle())?;
+    let (controller, controller_token) =
+        attached_controller.map_or((None, None), |(device, token)| (Some(device), Some(token)));
     let discovery = initial_discovery(controller.as_ref(), &mut compositor);
-    nested::insert(&event_loop, &display.handle(), &mut compositor)?;
 
-    let _child = Command::new(program)
-        .args(application)
-        .env("WAYLAND_DISPLAY", &socket_name)
-        .spawn()?;
+    let child = program
+        .map(|program| {
+            Command::new(program)
+                .args(application)
+                .env("WAYLAND_DISPLAY", &socket_name)
+                .spawn()
+        })
+        .transpose()?;
 
     let mut data = LoopData {
         display,
         compositor,
         controller,
+        controller_token,
         rescan_controller: true,
         discovery,
         discovery_epoch: std::time::Instant::now(),
+        seat_active: true,
+        log_out: false,
     };
+    run(&mut event_loop, &mut data, child)?;
+    Ok(data.exit_code())
+}
+
+fn run(
+    event_loop: &mut EventLoop<LoopData>,
+    data: &mut LoopData,
+    mut child: Option<std::process::Child>,
+) -> Result<(), Box<dyn Error>> {
+    let termination = tehuti::shutdown::Termination::register()?;
     let signal = event_loop.get_signal();
     let handle = event_loop.handle();
-    event_loop.run(Some(Duration::from_millis(10)), &mut data, |data| {
+    let result = event_loop.run(Some(Duration::from_millis(10)), data, |data| {
+        termination.stop_if_requested(&signal);
         advance_time(data);
         reconnect_controller(data, &handle);
         if let Some(pad) = data.controller.as_mut() {
@@ -92,7 +136,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else if data.compositor.quit_requested() {
             signal.stop();
         }
-    })?;
+    });
+    if let Some(child) = child.as_mut() {
+        tehuti::shutdown::terminate(child, false);
+    }
+    result?;
     Ok(())
 }
 
@@ -109,7 +157,7 @@ fn initial_discovery(controller: Option<&EvdevPad>, compositor: &mut Compositor)
 }
 
 fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
-    if data.compositor.quit_requested() {
+    if !data.seat_active || data.compositor.quit_requested() {
         return;
     }
     let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
@@ -123,8 +171,9 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
     data.discovery = state;
     if effect == Some(controller::DiscoveryEffect::Scan) {
         match insert_controller(handle) {
-            Ok(Some(device)) => {
+            Ok(Some((device, token))) => {
                 data.controller = Some(device);
+                data.controller_token = Some(token);
                 let searching = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
                 let (attached, notification) =
                     controller::discover(searching, controller::DiscoveryInput::Found);
@@ -166,17 +215,19 @@ fn insert_wayland_sources(
     Ok(socket_name)
 }
 
-fn insert_controller(handle: &calloop::LoopHandle<'_, LoopData>) -> Result<Option<EvdevPad>, Box<dyn Error>> {
+fn insert_controller(
+    handle: &calloop::LoopHandle<'_, LoopData>,
+) -> Result<Option<(EvdevPad, calloop::RegistrationToken)>, Box<dyn Error>> {
     let Some(device) = controller::open_grabbed() else {
         return Ok(None);
     };
     info!(name = device.name(), "controller grabbed");
     let controller_fd = device.as_fd().try_clone_to_owned()?;
-    let _controller_token = handle.insert_source(
+    let controller_token = handle.insert_source(
         Generic::new(controller_fd, Interest::READ, calloop::Mode::Level),
         |_, _, data| Ok(route_controller_input(data)),
     )?;
-    Ok(Some(device))
+    Ok(Some((device, controller_token)))
 }
 
 fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<dyn Error>> {
@@ -212,6 +263,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         Err(error) => {
             error!(%error, "controller read failed; dropping it");
             data.controller = None;
+            data.controller_token = None;
             let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
             data.discovery = controller::discover(
                 state,

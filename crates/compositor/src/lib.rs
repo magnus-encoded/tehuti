@@ -22,4 +22,8 @@ pub mod secret_delivery;
 
 pub mod desktop;
 
+pub mod backend;
+
 mod layout_window;
+
+pub mod shutdown;

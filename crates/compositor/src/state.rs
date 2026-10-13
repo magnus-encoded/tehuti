@@ -332,6 +332,9 @@ impl Compositor {
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
+        if matches!(input, tehuti_core::controller::Input::Disconnected) {
+            self.core.controller_disconnected();
+        }
         let (next, events) =
             tehuti_core::controller::step(core::mem::take(&mut self.controller_session), input);
         self.controller_session = next;
@@ -1106,8 +1109,7 @@ impl Compositor {
 impl Drop for Compositor {
     fn drop(&mut self) {
         for child in &mut self.launchers {
-            let _killed = child.kill();
-            let _reaped = child.wait();
+            crate::shutdown::terminate(child, false);
         }
     }
 }

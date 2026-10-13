@@ -120,7 +120,7 @@ mod step {
             let mut focus: Option<String> = None;
             let mut routed_quits = Vec::new();
             let mut plain_quits = Vec::new();
-            let series = events.iter().cloned().chain([guide(ButtonState::Pressed), tick(millis)]);
+            let series = events.iter().cloned().chain([guide(ButtonState::Pressed), start(), tick(millis)]);
             for (index, event) in series.enumerate() {
                 if let Event::Focus { app_id, .. } = &event { focus.clone_from(app_id); }
                 let active = plugins.iter().any(|plugin| plugin.ready && plugin.subscribes && focus.as_deref() == Some(plugin.app_id));
@@ -148,7 +148,7 @@ mod step {
                 bare = next_bare;
             }
             prop_assert_eq!(&routed_quits, &plain_quits, "no plugin set moves or suppresses escape");
-            prop_assert_eq!(routed_quits.last().copied(), events.len().checked_add(1), "holding Guide for three seconds quits under every plugin set");
+            prop_assert_eq!(routed_quits.last().copied(), events.len().checked_add(2), "holding Guide+Start for three seconds quits under every plugin set");
         }
     }
 
@@ -219,6 +219,88 @@ mod step {
         }
     }
 
+    #[test]
+    fn both_buttons_must_stay_held_for_three_seconds() {
+        for released in [ButtonName::Guide, ButtonName::Start] {
+            let mut state = State::new();
+            for event in [
+                guide(ButtonState::Pressed),
+                tick(4000),
+                start(),
+                tick(2999),
+                Event::Button {
+                    name: released,
+                    state: ButtonState::Released,
+                },
+                tick(4000),
+            ] {
+                let (next, actions) = step(state, &event);
+                state = next;
+                assert!(!actions.contains(&Action::Quit));
+            }
+        }
+    }
+
+    #[test]
+    fn start_alone_reaches_the_app_and_only_joint_hold_counts() {
+        let context =
+            tehuti_protocol::parse_context("app_id = 'test'\n[buttons.start]\nkey = 'space'").unwrap();
+        let (state, _) = step(
+            State::with_contexts(vec![context]),
+            &Event::Focus {
+                app_id: Some("test".into()),
+                title: String::new(),
+            },
+        );
+        let (state, start_actions) = step(state, &start());
+        assert_eq!(start_actions, vec![Action::Key { key: KeyName::Space }]);
+        let (state, solo_actions) = step(state, &tick(4000));
+        assert_eq!(solo_actions, Vec::<Action>::new());
+        let (state, guide_actions) = step(state, &guide(ButtonState::Pressed));
+        assert_eq!(guide_actions, Vec::<Action>::new());
+        let (state, early_actions) = step(state, &tick(2999));
+        assert_eq!(early_actions, Vec::<Action>::new());
+        let (_, quit_actions) = step(state, &tick(1));
+        assert_eq!(quit_actions, vec![Action::Quit]);
+    }
+
+    #[test]
+    fn controller_disconnect_clears_both_holds_and_elapsed_time() {
+        for first in [ButtonName::Guide, ButtonName::Start] {
+            let mut state = State::new();
+            for event in [guide(ButtonState::Pressed), start(), tick(2999)] {
+                state = step(state, &event).0;
+            }
+            state.controller_disconnected();
+            let (state, _) = step(
+                state,
+                &Event::Button {
+                    name: first,
+                    state: ButtonState::Pressed,
+                },
+            );
+            let (state, reconnect_actions) = step(state, &tick(4000));
+            assert_eq!(reconnect_actions, Vec::<Action>::new());
+            let second = if first == ButtonName::Guide {
+                start()
+            } else {
+                guide(ButtonState::Pressed)
+            };
+            let (state, _) = step(state, &second);
+            let (state, fresh_early_actions) = step(state, &tick(2999));
+            assert_eq!(fresh_early_actions, Vec::<Action>::new());
+            let (_, fresh_quit_actions) = step(state, &tick(1));
+            assert_eq!(fresh_quit_actions, vec![Action::Quit]);
+        }
+    }
+
+    fn start() -> Event {
+        Event::Button {
+            name: ButtonName::Start,
+            state: ButtonState::Pressed,
+        }
+    }
+
     fn tick(millis: u64) -> Event {
         Event::Tick {
             elapsed: core::time::Duration::from_millis(millis),
@@ -234,7 +316,7 @@ mod step {
             series in prop::collection::vec(
                 (
                     prop::collection::vec(prop_oneof![
-                        (any::<ButtonName>().prop_filter("Guide stays held", |name| *name != ButtonName::Guide), any::<ButtonState>())
+                        (any::<ButtonName>().prop_filter("Guide stays held", |name| !matches!(name, ButtonName::Guide | ButtonName::Start)), any::<ButtonState>())
                             .prop_map(|(name, state)| Event::Button { name, state }),
                         (prop::option::of(prop::sample::select(vec!["test", "other", "unmatched"])), any::<String>())
                             .prop_map(|(app_id, title)| Event::Focus { app_id: app_id.map(str::to_owned), title }),
@@ -251,8 +333,9 @@ mod step {
             let (state, _) = step(State::with_contexts(contexts), &Event::Focus {
                 app_id: Some("test".into()), title: String::new(),
             });
-            let (mut state, press_actions) = step(state, &guide(ButtonState::Pressed));
+            let (state, press_actions) = step(state, &guide(ButtonState::Pressed));
             prop_assert!(press_actions.is_empty(), "Guide never fires its context mapping");
+            let (mut state, _) = step(state, &start());
             let mut elapsed = core::time::Duration::ZERO;
             let mut quits = 0usize;
             for (other_events, millis) in series {
@@ -277,7 +360,7 @@ mod step {
             mappings in prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15),
         ) {
             let mut state = State::with_contexts(vec![generated_context("test", &mappings)]);
-            for event in [tick(u64::MAX), guide(ButtonState::Pressed), tick(elapsed), guide(ButtonState::Released), tick(u64::MAX), guide(ButtonState::Pressed), tick(2999)] {
+            for event in [tick(u64::MAX), guide(ButtonState::Pressed), start(), tick(elapsed), guide(ButtonState::Released), tick(u64::MAX), guide(ButtonState::Pressed), tick(2999)] {
                 let (next, actions) = step(state, &event);
                 state = next;
                 prop_assert!(actions.is_empty());
