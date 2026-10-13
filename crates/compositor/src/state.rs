@@ -98,6 +98,7 @@ pub struct Compositor {
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
     keyboard: KeyboardHandle<Self>,
+    controller_session: tehuti_core::controller::State,
     seat: Seat<Self>,
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
@@ -161,6 +162,7 @@ impl Compositor {
             seat_state,
             data_device_state: DataDeviceState::new::<Self>(display),
             keyboard,
+            controller_session: tehuti_core::controller::State::default(),
             seat,
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
@@ -269,6 +271,15 @@ impl Compositor {
         let elapsed = now.duration_since(self.previous_tick);
         self.previous_tick = now;
         self.handle(&Event::Tick { elapsed });
+    }
+
+    pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
+        let (next, events) =
+            tehuti_core::controller::step(core::mem::take(&mut self.controller_session), input);
+        self.controller_session = next;
+        for event in events {
+            self.handle(&event);
+        }
     }
 
     /// Runs one event through the core step and carries out the resulting actions.
@@ -636,10 +647,11 @@ impl Compositor {
 
     fn tap_keycode(&mut self, keycode: Keycode) {
         let keyboard = self.keyboard.clone();
-        for state in [
-            smithay::backend::input::KeyState::Pressed,
-            smithay::backend::input::KeyState::Released,
-        ] {
+        for state in tehuti_core::controller::key_tap() {
+            let state = match state {
+                tehuti_protocol::ButtonState::Pressed => smithay::backend::input::KeyState::Pressed,
+                tehuti_protocol::ButtonState::Released => smithay::backend::input::KeyState::Released,
+            };
             let time = self.millis_since_start();
             let _forwarded: Option<()> = keyboard.input(
                 self,

@@ -149,4 +149,6 @@ pub mod speech;
 
 pub mod plugin;
 
+pub mod controller;
+
 pub mod windows;
