@@ -29,3 +29,5 @@ mod layout_window;
 pub mod shutdown;
 
 pub mod rendering;
+
+pub mod scale;
