@@ -113,3 +113,17 @@ mod json {
         );
     }
 }
+
+#[cfg(test)]
+mod notice_wire {
+
+    #[test]
+    fn notify_is_not_a_wire_action() {
+        assert!(
+            serde_json::from_str::<tehuti_protocol::Action>(r#"{"type":"notify","text":"Ready"}"#).is_err()
+        );
+        let notice: tehuti_protocol::Action =
+            serde_json::from_str(r#"{"type":"notice","text":"Ready"}"#).unwrap();
+        assert!(matches!(notice, tehuti_protocol::Action::Notice { .. }));
+    }
+}

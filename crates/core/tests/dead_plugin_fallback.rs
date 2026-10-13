@@ -46,6 +46,28 @@ mod dead_plugin_fallback {
         }
     }
 
+    /// A focused state that maps each spoken request to its own notice, so fallbacks stay identifiable.
+    fn identified_state() -> State {
+        use core::fmt::Write as _;
+        let mut source = String::from("app_id = 'dead'\n[buttons]\nsouth = { key = 'enter' }\n[speech]\n");
+        for request_id in 0..128 {
+            writeln!(
+                source,
+                "'request {request_id}' = {{ notify = 'request {request_id}' }}"
+            )
+            .unwrap();
+        }
+        let context = tehuti_protocol::parse_context(&source).unwrap();
+        let (state, _) = tehuti_core::step(
+            State::with_contexts(vec![context]),
+            &Event::Focus {
+                app_id: Some("dead".into()),
+                title: String::new(),
+            },
+        );
+        state
+    }
+
     fn decided() -> Vec<Action> {
         vec![Action::Key { key: KeyName::Enter }]
     }
@@ -102,7 +124,7 @@ mod dead_plugin_fallback {
             owners in prop::collection::vec(0..PLUGINS, 1..80),
             dead in 0..PLUGINS,
         ) {
-            let mut state = State::new();
+            let mut state = identified_state();
             let mut expected = Vec::new();
             let mut keys = Vec::new();
             for (index, owner) in owners.into_iter().enumerate() {
@@ -139,7 +161,7 @@ mod dead_plugin_fallback {
 
         #[test]
         fn every_request_resolves_exactly_once(ops in prop::collection::vec(operation(), 1..120)) {
-            let mut state = State::new();
+            let mut state = identified_state();
             let mut model = Model::default();
             let mut fallbacks: Vec<u64> = Vec::new();
             let mut decisions: Vec<u64> = Vec::new();

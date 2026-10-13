@@ -12,6 +12,12 @@ mod plugin_latency {
     };
     use tehuti_protocol::{Action, ButtonName, ButtonState, Event, KeyName, Permission, Text};
 
+    fn unmapped_notice() -> Action {
+        Action::Notice {
+            text: Text::new("NO SPEECH MAPPING".into()).unwrap(),
+        }
+    }
+
     fn speech(text: Text) -> Event {
         Event::Speech { text }
     }
@@ -48,7 +54,7 @@ mod plugin_latency {
     #[test]
     fn excess_pending_requests_fall_back_once() {
         let text = Text::new("fallback".into()).unwrap();
-        let event = speech(text.clone());
+        let event = speech(text);
         let state = saturated_pending_state(&event);
         let excess = RequestKey {
             plugin: 0,
@@ -62,7 +68,7 @@ mod plugin_latency {
                 permissions: vec![Permission::Key],
             },
         );
-        assert_eq!(fallback, vec![Action::Notice { text }]);
+        assert_eq!(fallback, vec![unmapped_notice()]);
         let (_, duplicate, _) = plugin::step(
             state,
             Input::Reply {
@@ -76,7 +82,7 @@ mod plugin_latency {
     #[test]
     fn resolving_and_expiring_requests_free_pending_capacity() {
         let text = Text::new("fallback".into()).unwrap();
-        let fallback = vec![Action::Notice { text: text.clone() }];
+        let fallback = vec![unmapped_notice()];
         let event = speech(text);
         let state = saturated_pending_state(&event);
         let (state, declined, _) = plugin::step(
@@ -174,7 +180,7 @@ mod plugin_latency {
                 tehuti_protocol::parse_context(&format!("app_id = '{app_id}'\n[buttons]\n")).unwrap()
             }).collect();
             let key = RequestKey { plugin: 0, request_id: 1 };
-            let pending = request(State::with_contexts(contexts), key, speech(text.clone()));
+            let pending = request(State::with_contexts(contexts), key, speech(text));
             let (mut declined, decline_actions, rejection) = plugin::step(pending.clone(), Input::Reply {
                 key,
                 result: Ok(Vec::new()),
@@ -184,7 +190,7 @@ mod plugin_latency {
             });
             prop_assert!(rejection.is_none());
             prop_assert!(expiry_rejection.is_none());
-            prop_assert_eq!(&decline_actions, &vec![Action::Notice { text }]);
+            prop_assert_eq!(&decline_actions, &vec![unmapped_notice()]);
             prop_assert_eq!(expiry_actions, decline_actions);
             for event in future {
                 let (next_declined, declined_actions) = step(declined, &event);
@@ -203,9 +209,9 @@ mod plugin_latency {
             let key = RequestKey { plugin: 0, request_id: 1 };
             let pending = request(State::new(), key, speech(text.clone()));
             let mut actions: Vec<_> = prefix.into_iter().map(|name| Action::Key { key: name }).collect();
-            actions.push(Action::Text { text: text.clone() });
+            actions.push(Action::Text { text });
             let (resolved, delivered, rejection) = plugin::step(pending, Input::Reply { key, result: Ok(actions) });
-            prop_assert_eq!(delivered, vec![Action::Notice { text }]);
+            prop_assert_eq!(delivered, vec![unmapped_notice()]);
             prop_assert!(rejection.as_ref().is_some_and(|rejected| rejected.key == key && rejected.reason.contains("text")), "a denied action names its request and reason");
             let (_, repeated, _) = plugin::step(resolved, Input::Reply {
                 key,
@@ -225,14 +231,14 @@ mod plugin_latency {
             let new = RequestKey { plugin: plugin_index, request_id: first_id.saturating_add(1) };
             let state = request(State::new(), old, speech(first));
             let (state, _, _) = plugin::step(state, Input::Tick { elapsed: Duration::from_secs(2) });
-            let state = request(state, new, speech(second.clone()));
+            let state = request(state, new, speech(second));
             let (state, late, _) = plugin::step(state, Input::Reply {
                 key: old,
                 result: Ok(vec![Action::Key { key: KeyName::Enter }]),
             });
             prop_assert!(late.is_empty(), "late replies cannot deliver or release another event");
             let (_, delivered, _) = plugin::step(state, Input::Reply { key: new, result: Ok(Vec::new()) });
-            prop_assert_eq!(delivered, vec![Action::Notice { text: second }]);
+            prop_assert_eq!(delivered, vec![unmapped_notice()]);
         }
     }
 }

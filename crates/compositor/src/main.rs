@@ -28,6 +28,9 @@ pub(crate) struct LoopData {
     display: Display<Compositor>,
     compositor: Compositor,
     controller: Option<EvdevPad>,
+    rescan_controller: bool,
+    discovery: controller::Discovery,
+    discovery_epoch: std::time::Instant,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -56,7 +59,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
     }
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
-    let controller = Some(insert_controller(&event_loop)?);
+    compositor.set_launch_socket(socket_name.clone());
+    if let Err(error) = insert_controller_watch(&event_loop) {
+        warn!(%error, "controller watch unavailable; periodic discovery continues");
+    }
+    let controller = insert_controller(&event_loop.handle())?;
+    let discovery = initial_discovery(controller.as_ref(), &mut compositor);
     nested::insert(&event_loop, &display.handle(), &mut compositor)?;
 
     let _child = Command::new(program)
@@ -68,10 +76,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         display,
         compositor,
         controller,
+        rescan_controller: true,
+        discovery,
+        discovery_epoch: std::time::Instant::now(),
     };
     let signal = event_loop.get_signal();
+    let handle = event_loop.handle();
     event_loop.run(Some(Duration::from_millis(10)), &mut data, |data| {
         advance_time(data);
+        reconnect_controller(data, &handle);
         if let Some(pad) = data.controller.as_mut() {
             if let Err(error) = input::finish_quit(&data.compositor, pad, &signal) {
                 error!(%error, "controller release failed");
@@ -81,6 +94,50 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     })?;
     Ok(())
+}
+
+fn initial_discovery(controller: Option<&EvdevPad>, compositor: &mut Compositor) -> controller::Discovery {
+    if controller.is_some() {
+        controller::Discovery::Attached
+    } else {
+        warn!("no controller found; discovery retries every 250 ms");
+        compositor.controller_input(tehuti_core::controller::Input::Disconnected);
+        controller::Discovery::Searching {
+            retry_at: Duration::ZERO,
+        }
+    }
+}
+
+fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
+    if data.compositor.quit_requested() {
+        return;
+    }
+    let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+    let (state, effect) = controller::discover(
+        state,
+        controller::DiscoveryInput::Poll {
+            now: data.discovery_epoch.elapsed(),
+            rescan: core::mem::take(&mut data.rescan_controller),
+        },
+    );
+    data.discovery = state;
+    if effect == Some(controller::DiscoveryEffect::Scan) {
+        match insert_controller(handle) {
+            Ok(Some(device)) => {
+                data.controller = Some(device);
+                let searching = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+                let (attached, notification) =
+                    controller::discover(searching, controller::DiscoveryInput::Found);
+                data.discovery = attached;
+                if notification == Some(controller::DiscoveryEffect::Reconnected) {
+                    data.compositor
+                        .controller_input(tehuti_core::controller::Input::Reconnected);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => warn!(%error, "controller registration failed; retrying"),
+        }
+    }
 }
 
 fn insert_wayland_sources(
@@ -109,15 +166,39 @@ fn insert_wayland_sources(
     Ok(socket_name)
 }
 
-fn insert_controller(event_loop: &EventLoop<LoopData>) -> Result<EvdevPad, Box<dyn Error>> {
-    let device = controller::open_grabbed().ok_or("no controller found: Tehuti needs a pad it can grab")?;
+fn insert_controller(handle: &calloop::LoopHandle<'_, LoopData>) -> Result<Option<EvdevPad>, Box<dyn Error>> {
+    let Some(device) = controller::open_grabbed() else {
+        return Ok(None);
+    };
     info!(name = device.name(), "controller grabbed");
     let controller_fd = device.as_fd().try_clone_to_owned()?;
-    let _controller_token = event_loop.handle().insert_source(
+    let _controller_token = handle.insert_source(
         Generic::new(controller_fd, Interest::READ, calloop::Mode::Level),
         |_, _, data| Ok(route_controller_input(data)),
     )?;
-    Ok(device)
+    Ok(Some(device))
+}
+
+fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<dyn Error>> {
+    let watcher = controller::watch_input_directory(std::path::Path::new("/dev/input"))?;
+    let _watch_token = event_loop.handle().insert_source(
+        Generic::new(watcher, Interest::READ, calloop::Mode::Level),
+        |_, watcher, data| {
+            let mut buffer = [0_u8; 4096];
+            for _batch in 0..16 {
+                match rustix::io::read(&*watcher, &mut buffer) {
+                    Ok(0) | Err(rustix::io::Errno::WOULDBLOCK) => break,
+                    Ok(_) => data.rescan_controller = true,
+                    Err(error) => {
+                        warn!(%error, "controller watch failed; periodic discovery continues");
+                        return Ok(PostAction::Remove);
+                    }
+                }
+            }
+            Ok(PostAction::Continue)
+        },
+    )?;
+    Ok(())
 }
 
 /// Routes ready controller input. A controller that fails to read is dropped with its event source.
@@ -131,6 +212,14 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         Err(error) => {
             error!(%error, "controller read failed; dropping it");
             data.controller = None;
+            let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+            data.discovery = controller::discover(
+                state,
+                controller::DiscoveryInput::Disconnected {
+                    now: data.discovery_epoch.elapsed(),
+                },
+            )
+            .0;
             PostAction::Remove
         }
     }

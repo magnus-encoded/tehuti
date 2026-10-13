@@ -9,3 +9,5 @@
 | Apply | Carry out an action from the core step, such as sending a key tap to the focused client. |
 | Secret confirmation notice | An overlay naming one secret reference and the focused application before a controller press can authorize lookup. |
 | Secret destination | One live Wayland surface during one focus generation; secret insertion checks it again after lookup. |
+
+Starting without a controller logs a warning. Discovery continues every 250 ms and on input directory changes until a controller can be grabbed.
