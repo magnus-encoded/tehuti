@@ -126,6 +126,9 @@ pub fn validate_actions(actions: Vec<Action>, permissions: &[Permission]) -> Res
             Action::Text { .. } => ("text", Some(Permission::Text)),
             Action::Quit => ("quit", Some(Permission::Quit)),
             Action::SecretRequest { .. } => ("secret_request", None),
+            Action::Launch { .. } => ("launch", None),
+            Action::Close => ("close", None),
+            Action::Notify { .. } => ("notify", None),
             Action::Notice { .. } => ("notice", None),
         };
         match permission {

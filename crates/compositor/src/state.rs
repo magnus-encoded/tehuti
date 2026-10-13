@@ -86,6 +86,10 @@ pub struct Compositor {
     secret_confirmation: SecretConfirmationState,
     secret_notice_until: Option<Instant>,
     notice_until: Option<Instant>,
+    notice_text: Option<String>,
+    launchers: Vec<std::process::Child>,
+    launch_socket: Option<std::ffi::OsString>,
+    windows: tehuti_core::windows::Windows<WlSurface>,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
     shm_state: ShmState,
@@ -142,6 +146,10 @@ impl Compositor {
             secret_confirmation: SecretConfirmationState::default(),
             secret_notice_until: None,
             notice_until: None,
+            notice_text: None,
+            launchers: Vec::new(),
+            launch_socket: None,
+            windows: tehuti_core::windows::Windows::new(),
             surfaces: CompositorState::new::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             shm_state: ShmState::new::<Self>(display, vec![]),
@@ -226,7 +234,13 @@ impl Compositor {
                     .is_some_and(|until| Instant::now() < until)
                     .then(|| "SECRET DELIVERY UNAVAILABLE".into())
             })
-            .or_else(|| self.speech_notice_visible().then(|| "NO SPEECH MAPPING".into()))
+            .or_else(|| {
+                self.speech_notice_visible().then(|| {
+                    self.notice_text
+                        .clone()
+                        .unwrap_or_else(|| "NO SPEECH MAPPING".into())
+                })
+            })
     }
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
@@ -339,6 +353,7 @@ impl Compositor {
             self.speech_input(input);
         }
         self.poll_secret_lookup();
+        self.poll_launchers();
     }
 
     fn reset_secret_confirmation_for_focus(&mut self) {
@@ -586,7 +601,27 @@ impl Compositor {
                 self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
                 self.quit_requested = true;
             }
+            Action::Launch { desktop_entry } => self.launch_application(desktop_entry),
+            Action::Close => {
+                if let Some(tehuti_core::windows::Effect::Close(surface)) =
+                    self.windows.step(tehuti_core::windows::Input::Close)
+                {
+                    if let Some(window) = self.window_for_root(&surface).cloned() {
+                        if let Some(toplevel) = window.toplevel() {
+                            toplevel.send_close();
+                        }
+                        self.space.unmap_elem(&window);
+                    }
+                    self.sync_window_focus();
+                }
+            }
+            Action::Notify { text } => {
+                let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
+                self.notice_text = Some(text.as_str().into());
+                self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+            }
             Action::Notice { .. } => {
+                self.notice_text = None;
                 self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
             }
         }
@@ -686,6 +721,86 @@ impl Compositor {
         }
     }
 
+    fn launch_application(&mut self, desktop_entry: &tehuti_protocol::Text) {
+        let installed = crate::desktop::installed_entries();
+        let decision = self.windows.step(tehuti_core::windows::Input::Launch {
+            desktop_entry: desktop_entry.as_str().into(),
+            installed,
+        });
+        if decision != Some(tehuti_core::windows::Effect::Launch) {
+            self.show_launch_failure();
+            return;
+        }
+        let result = self
+            .launch_socket
+            .as_ref()
+            .ok_or_else(|| "no compositor socket".to_owned())
+            .and_then(|socket| {
+                if self.launchers.len() >= 16 {
+                    return Err("too many pending launches".into());
+                }
+                crate::desktop::launch(desktop_entry.as_str(), socket)
+            });
+        match result {
+            Ok(child) => self.launchers.push(child),
+            Err(error) => {
+                tracing::warn!(%error, "desktop launch failed");
+                self.show_launch_failure();
+            }
+        }
+    }
+
+    pub fn set_launch_socket(&mut self, socket: std::ffi::OsString) {
+        self.launch_socket = Some(socket);
+    }
+
+    fn show_launch_failure(&mut self) {
+        self.notice_text = Some("APPLICATION UNAVAILABLE".into());
+        self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+    }
+
+    fn poll_launchers(&mut self) {
+        let mut failed = false;
+        self.launchers.retain_mut(|child| match child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(status)) => {
+                failed |= !status.success();
+                false
+            }
+            Err(error) => {
+                tracing::warn!(%error, "desktop launcher wait failed");
+                failed = true;
+                let _killed = child.kill();
+                let _reaped = child.wait();
+                false
+            }
+        });
+        if failed {
+            self.show_launch_failure();
+        }
+    }
+
+    fn sync_window_focus(&mut self) {
+        let focus = self.windows.focus().cloned();
+        self.keyboard
+            .clone()
+            .set_focus(self, focus.clone(), SERIAL_COUNTER.next_serial());
+        if let Some(window) = focus
+            .as_ref()
+            .and_then(|surface| self.window_for_root(surface))
+            .cloned()
+        {
+            if let Some(toplevel) = window.toplevel() {
+                self.update_focus(toplevel);
+            }
+        } else {
+            self.handle(&Event::Focus {
+                app_id: None,
+                title: String::new(),
+            });
+        }
+    }
+
     fn update_focus(&mut self, surface: &ToplevelSurface) {
         if self.keyboard.current_focus().as_ref() != Some(surface.wl_surface()) {
             return;
@@ -715,6 +830,15 @@ impl Compositor {
                 .toplevel()
                 .is_some_and(|toplevel| toplevel.wl_surface() == root)
         })
+    }
+}
+
+impl Drop for Compositor {
+    fn drop(&mut self) {
+        for child in &mut self.launchers {
+            let _killed = child.kill();
+            let _reaped = child.wait();
+        }
     }
 }
 
@@ -821,13 +945,13 @@ impl XdgShellHandler for Compositor {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        let focus = surface.wl_surface().clone();
+        let _effect = self
+            .windows
+            .step(tehuti_core::windows::Input::Map(surface.wl_surface().clone()));
         self.space
-            .map_element(Window::new_wayland_window(surface.clone()), (0, 0), true);
+            .map_element(Window::new_wayland_window(surface), (0, 0), true);
         self.fill_output();
-        let keyboard = self.keyboard.clone();
-        keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
-        self.update_focus(&surface);
+        self.sync_window_focus();
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
@@ -839,17 +963,15 @@ impl XdgShellHandler for Compositor {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        if self.keyboard.current_focus().as_ref() == Some(surface.wl_surface()) {
-            let keyboard = self.keyboard.clone();
-            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
-            self.handle(&Event::Focus {
-                app_id: None,
-                title: String::new(),
-            });
-        }
-        let window = self.window_for_root(surface.wl_surface()).cloned();
-        if let Some(window) = window {
+        let previous_focus = self.windows.focus().cloned();
+        let _effect = self
+            .windows
+            .step(tehuti_core::windows::Input::Unmap(surface.wl_surface().clone()));
+        if let Some(window) = self.window_for_root(surface.wl_surface()).cloned() {
             self.space.unmap_elem(&window);
+        }
+        if self.windows.focus() != previous_focus.as_ref() {
+            self.sync_window_focus();
         }
     }
 

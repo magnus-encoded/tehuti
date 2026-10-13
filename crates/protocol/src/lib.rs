@@ -152,19 +152,17 @@ impl Context {
     pub fn key_for(&self, button: ButtonName) -> Option<KeyName> {
         self.buttons.get(&button).and_then(|action| match action {
             MappingAction::Key { key } => Some(*key),
-            MappingAction::Text { .. } | MappingAction::Secret { .. } => None,
+            MappingAction::Text { .. }
+            | MappingAction::Secret { .. }
+            | MappingAction::Launch { .. }
+            | MappingAction::Close { .. }
+            | MappingAction::Notify { .. } => None,
         })
     }
 
     #[must_use]
     pub fn action_for(&self, button: ButtonName) -> Option<Action> {
-        self.buttons.get(&button).map(|action| match action {
-            MappingAction::Key { key } => Action::Key { key: *key },
-            MappingAction::Text { text } => Action::Text { text: text.clone() },
-            MappingAction::Secret { secret } => Action::SecretRequest {
-                reference: secret.clone(),
-            },
-        })
+        self.buttons.get(&button).map(MappingAction::action)
     }
 }
 
@@ -184,11 +182,25 @@ enum MappingAction {
     Key { key: KeyName },
     Text { text: Text },
     Secret { secret: SecretReference },
+    Launch { launch: Text },
+    Close { close: CloseMapping },
+    Notify { notify: Text },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum CloseMapping {
+    #[serde(rename = "focused")]
+    Focused,
 }
 
 impl MappingAction {
     fn action(&self) -> Action {
         match self {
+            Self::Launch { launch } => Action::Launch {
+                desktop_entry: launch.clone(),
+            },
+            Self::Close { .. } => Action::Close,
+            Self::Notify { notify } => Action::Notify { text: notify.clone() },
             Self::Key { key } => Action::Key { key: *key },
             Self::Text { text } => Action::Text { text: text.clone() },
             Self::Secret { secret } => Action::SecretRequest {
@@ -219,16 +231,31 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum Action {
+    Launch {
+        desktop_entry: Text,
+    },
+    Close,
+    Notify {
+        text: Text,
+    },
     /// Press and release `key` in the focused client.
-    Key { key: KeyName },
+    Key {
+        key: KeyName,
+    },
     /// Send Unicode text to the focused client.
-    Text { text: Text },
+    Text {
+        text: Text,
+    },
     /// Ask the compositor to confirm delivery of a named secret reference.
-    SecretRequest { reference: SecretReference },
+    SecretRequest {
+        reference: SecretReference,
+    },
     /// Release the controller and stop the compositor.
     Quit,
     /// Display a notice without changing the focused client.
-    Notice { text: Text },
+    Notice {
+        text: Text,
+    },
 }
 
 mod plugin;

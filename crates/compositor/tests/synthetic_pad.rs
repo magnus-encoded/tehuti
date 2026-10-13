@@ -48,6 +48,7 @@ mod synthetic_pad {
     #[derive(Debug, Default)]
     struct App {
         keys: Vec<(u32, KeyState)>,
+        close_requested: bool,
         text: String,
         keyboard_text: String,
         keymap_source: String,
@@ -201,7 +202,23 @@ mod synthetic_pad {
     delegate_noop!(App: ignore WlCompositor);
     delegate_noop!(App: ignore WlSurface);
     delegate_noop!(App: ignore WlSeat);
-    delegate_noop!(App: ignore XdgToplevel);
+    impl Dispatch<XdgToplevel, ()> for App {
+        fn event(
+            app: &mut Self,
+            _: &XdgToplevel,
+            event: <XdgToplevel as wayland_client::Proxy>::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if matches!(
+                event,
+                wayland_protocols::xdg::shell::client::xdg_toplevel::Event::Close
+            ) {
+                app.close_requested = true;
+            }
+        }
+    }
 
     /// Opens one toplevel and returns every key it receives once it has seen one full key tap.
     fn run_client(
@@ -247,12 +264,76 @@ mod synthetic_pad {
             let _changed_focus = queue.roundtrip(&mut app).unwrap();
         }
         ready.send(()).unwrap();
-        while app.keys.len() < 2 {
+        while app.keys.len() < 2 && !app.close_requested {
             let _dispatched = queue.blocking_dispatch(&mut app).unwrap();
         }
         // Any further key the compositor sent arrives before this roundtrip completes.
         let _dispatched = queue.roundtrip(&mut app).unwrap();
         app
+    }
+
+    #[test]
+    fn notices_preserve_focus_and_close_transfers_it_to_the_remaining_client() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![tehuti_protocol::parse_context(
+            "app_id = 'test'\n[buttons]\n[speech]\nnotice = { notify = 'Ready' }\nunknown = { launch = 'tehuti-missing-entry-9.desktop' }\nclose = { close = 'focused' }"
+        ).unwrap()]);
+        let first = start_action_client(&mut display, &mut compositor);
+        let second = start_action_client(&mut display, &mut compositor);
+        for (phrase, notice) in [("notice", "Ready"), ("unknown", "APPLICATION UNAVAILABLE")] {
+            compositor.handle(&Event::Speech {
+                text: tehuti_protocol::Text::new(phrase.into()).unwrap(),
+            });
+            assert_eq!(compositor.visible_notice_text().as_deref(), Some(notice));
+        }
+        compositor.handle(&Event::Speech {
+            text: tehuti_protocol::Text::new("close".into()).unwrap(),
+        });
+        compositor.handle(&Event::Button {
+            name: ButtonName::South,
+            state: ButtonState::Pressed,
+        });
+        let began = Instant::now();
+        while !first.is_finished() || !second.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "close or focus transfer stalled"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let closed = second.join().unwrap();
+        assert!(closed.close_requested, "the focused client received close");
+        assert!(closed.keys.is_empty(), "the closed client received no later key");
+        let remaining = first.join().unwrap();
+        assert!(!remaining.close_requested, "the remaining client stayed open");
+        assert_eq!(
+            remaining.keys,
+            vec![(KEY_ENTER, KeyState::Pressed), (KEY_ENTER, KeyState::Released)]
+        );
+    }
+
+    fn start_action_client(
+        display: &mut Display<Compositor>,
+        compositor: &mut Compositor,
+    ) -> thread::JoinHandle<App> {
+        let (server, client) = UnixStream::pair().unwrap();
+        let _inserted = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || run_client(client, "test", ClientTextState::Absent, &sender));
+        let began = Instant::now();
+        while receiver.try_recv().is_err() {
+            assert!(began.elapsed() < Duration::from_secs(5), "client setup stalled");
+            let _dispatched = display.dispatch_clients(compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        worker
     }
 
     #[test]
