@@ -57,6 +57,53 @@ mod context {
     }
 
     #[test]
+    fn speech_phrases_that_normalize_alike_are_rejected() {
+        let error = parse_context(
+            "app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }\n\"hello.\" = { key = 'tab' }",
+        )
+        .unwrap_err();
+        assert!(error.contains("normalizes to \"hello\""), "{error}");
+    }
+
+    #[test]
+    fn speech_phrases_that_normalize_to_nothing_are_rejected() {
+        for phrase in ["", "...", " ' ", "\u{2014}\u{ff01}"] {
+            let source = format!("app_id = 'foot'\n[buttons]\n[speech]\n{phrase:?} = {{ key = 'enter' }}");
+            let error = parse_context(&source).unwrap_err();
+            assert!(error.contains("no words"), "{phrase:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn empty_transcript_never_matches() {
+        let context =
+            parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"go\" = { key = 'enter' }").unwrap();
+        for spoken in ["", "  ", "...", "\u{3002}"] {
+            assert!(context.speech_action(spoken).is_none(), "{spoken:?}");
+        }
+    }
+
+    #[test]
+    fn unicode_apostrophes_and_punctuation_fold() {
+        let context = parse_context(
+            "app_id = 'foot'\n[buttons]\n[speech]\n\"don't stop\" = { key = 'enter' }\n\"caf\u{e9} ol\u{e9}\" = { key = 'tab' }",
+        )
+        .unwrap();
+        assert!(context.speech_action("Don\u{2019}t stop.").is_some());
+        assert!(
+            context
+                .speech_action("don\u{2bc}t \u{201c}stop\u{201d}")
+                .is_some()
+        );
+        assert!(
+            context
+                .speech_action("\u{bf}Caf\u{e9}\u{2014}ol\u{e9}!")
+                .is_some()
+        );
+        assert!(context.speech_action("dont stop").is_none());
+    }
+
+    #[test]
     fn text_rejects_nul_at_construction_and_deserialization() {
         assert!(tehuti_protocol::Text::new("a\0b".into()).is_err());
         let source = r#"app_id = 'test'

@@ -6,22 +6,30 @@ cd "$(dirname "$0")/.."
 root=$(pwd)
 
 cargo build --release --locked -p tehuti
+binary=${TEHUTI_BIN:-target/release/tehuti}
 
 venv=${TEHUTI_SPEECH_VENV:-$HOME/.cache/tehuti-speech-venv}
 if [ "${TEHUTI_NO_SPEECH:-}" = "" ]; then
-    if [ ! -x "$venv/bin/python" ]; then
-        python3 -m venv "$venv"
-    fi
     # Reinstall whenever the requirements change so existing venvs pick up new pins.
     stamp="$venv/.tehuti-requirements"
+    if [ ! -x "$venv/bin/python" ]; then
+        python3 -m venv "$venv"
+        rm -f "$stamp"
+    fi
     if ! cmp -s sidecars/speech/requirements.txt "$stamp"; then
         "$venv/bin/pip" install -r sidecars/speech/requirements.txt
         cp sidecars/speech/requirements.txt "$stamp"
     fi
-    # faster-whisper on CUDA needs cuBLAS 12; without it every transcription fails, so use the CPU.
+    # Probe whether faster-whisper can really run a model on CUDA; missing cuBLAS, cuDNN
+    # or a GPU would make every transcription fail, so fall back to the CPU.
     if [ "${TEHUTI_SPEECH_DEVICE:-}" = "" ] \
-        && ! "$venv/bin/python" -c 'import ctypes; ctypes.CDLL("libcublas.so.12")' 2>/dev/null; then
-        echo "libcublas.so.12 not found; speech runs on the CPU" >&2
+        && ! "$venv/bin/python" -c '
+import numpy
+from faster_whisper import WhisperModel
+model = WhisperModel("tiny", device="cuda", compute_type="float16")
+list(model.transcribe(numpy.zeros(16000, dtype=numpy.float32))[0])
+' >/dev/null 2>&1; then
+        echo "faster-whisper cannot run on CUDA; speech runs on the CPU" >&2
         export TEHUTI_SPEECH_DEVICE=cpu
     fi
     wrapper=$(mktemp -t tehuti-speech.XXXXXX)
@@ -31,4 +39,4 @@ if [ "${TEHUTI_NO_SPEECH:-}" = "" ]; then
     export TEHUTI_SPEECH_SIDECAR=$wrapper
 fi
 
-RUST_LOG=${RUST_LOG:-info} target/release/tehuti "$root/examples" foot -- env -i TERM=foot HOME="$HOME" PATH="$PATH" bash --norc --noprofile
+RUST_LOG=${RUST_LOG:-info} "$binary" "$root/examples" foot -- env -i TERM=foot HOME="$HOME" PATH="$PATH" bash --norc --noprofile

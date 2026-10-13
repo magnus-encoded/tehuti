@@ -10,4 +10,5 @@ if [ -n "$(find crates -name Cargo.toml 2>/dev/null)" ]; then
 fi
 cargo check --manifest-path fuzz/Cargo.toml --locked
 python3 -m unittest discover -s sidecars/speech -p 'test_*.py'
+scripts/test-try
 scripts/prose-lint

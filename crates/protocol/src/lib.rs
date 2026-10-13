@@ -146,10 +146,10 @@ impl Context {
     #[must_use]
     pub fn speech_action(&self, phrase: &str) -> Option<Action> {
         let wanted = normalize_phrase(phrase);
-        self.speech
-            .iter()
-            .find(|(mapped, _)| normalize_phrase(mapped) == wanted)
-            .map(|(_, action)| action.action())
+        if wanted.is_empty() {
+            return None;
+        }
+        self.speech.get(&wanted).map(MappingAction::action)
     }
 
     #[must_use]
@@ -217,16 +217,31 @@ impl MappingAction {
 /// Parses a context at the configuration boundary.
 ///
 /// # Errors
-/// The TOML, button names, key names or application id are invalid.
+/// The TOML, button names, key names or application id are invalid, or a speech
+/// phrase normalizes to nothing or to the same phrase as another mapping.
 pub fn parse_context(source: &str) -> Result<Context, String> {
     let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
     if context.app_id.trim().is_empty() {
         return Err("app_id must not be empty".into());
     }
+    let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
+    for (mapped, action) in context.speech {
+        let normalized = normalize_phrase(&mapped);
+        if normalized.is_empty() {
+            return Err(format!(
+                "speech phrase {mapped:?} has no words after normalization"
+            ));
+        }
+        if speech.insert(normalized.clone(), action).is_some() {
+            return Err(format!(
+                "speech phrase {mapped:?} duplicates another phrase that also normalizes to {normalized:?}"
+            ));
+        }
+    }
     Ok(Context {
         app_id: context.app_id,
         buttons: context.buttons,
-        speech: context.speech,
+        speech,
     })
 }
 
@@ -255,13 +270,15 @@ mod plugin;
 pub use plugin::*;
 
 /// Folds case, whitespace and punctuation between and around words, so Whisper's
-/// "Front. Center." matches "front center". Apostrophes inside words are kept.
+/// "Front. Center." matches "front center".
+///
+/// Apostrophes inside words are kept, with the typographic forms (’ and ʼ) folded to '. Any other character that is
+/// not alphanumeric, including Unicode punctuation, separates words.
 #[must_use]
 pub fn normalize_phrase(phrase: &str) -> String {
     phrase
-        .split(|character: char| {
-            character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
-        })
+        .replace(['\u{2019}', '\u{2bc}'], "'")
+        .split(|character: char| !character.is_alphanumeric() && character != '\'')
         .map(|word| word.trim_matches('\''))
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
