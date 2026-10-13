@@ -20,4 +20,4 @@ if [ "${TEHUTI_NO_SPEECH:-}" = "" ]; then
     export TEHUTI_SPEECH_SIDECAR=$wrapper
 fi
 
-RUST_LOG=${RUST_LOG:-info} target/release/tehuti "$root/examples" foot
+RUST_LOG=${RUST_LOG:-info} target/release/tehuti "$root/examples" foot -- env -i TERM=foot HOME="$HOME" PATH="$PATH" bash --norc --noprofile

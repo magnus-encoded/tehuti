@@ -20,4 +20,4 @@ Speech: hold Share to record, release to transcribe. Set `TEHUTI_NO_SPEECH=1` to
   Phrases must match Whisper's output exactly, including the final period.
 
 `examples/plugins/east-to-tab` remaps East to Tab, only for apps with app id `test`.
-Try it with `target/release/tehuti examples foot --app-id=test`.
+Try it with `target/release/tehuti examples foot -- bash --norc --noprofile` (a plain shell keeps the demo predictable).

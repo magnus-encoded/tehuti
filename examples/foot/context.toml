@@ -1,4 +1,5 @@
 # Buttons and spoken phrases for a foot terminal (app id "foot").
+# scripts/try starts foot with a plain bash so shell prompts and wizards stay out of the demo.
 app_id = "foot"
 
 [buttons]

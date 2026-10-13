@@ -16,6 +16,12 @@ use crate::input::InputSource;
 #[must_use]
 pub fn open_grabbed() -> Option<EvdevPad> {
     evdev::enumerate()
+        .filter(|(path, device)| {
+            let sysfs = path
+                .file_name()
+                .and_then(|node| std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok());
+            is_physical(device.input_id().bus_type(), sysfs.as_deref())
+        })
         .map(|(_, device)| device)
         .filter(|device| {
             device
@@ -29,6 +35,16 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                 None
             }
         })
+}
+
+/// Whether a device is real hardware rather than a virtual one.
+///
+/// Virtual devices, such as uinput pads made by
+/// other tools, report `BUS_VIRTUAL` or live under `/sys/devices/virtual`.
+/// An unknown sysfs path counts as physical so a sysfs-less system still finds pads.
+#[must_use]
+pub fn is_physical(bus: evdev::BusType, sysfs: Option<&std::path::Path>) -> bool {
+    bus != evdev::BusType::BUS_VIRTUAL && !sysfs.is_some_and(|path| path.starts_with("/sys/devices/virtual"))
 }
 
 /// Device operations needed to acquire exclusive, nonblocking input.
@@ -166,6 +182,21 @@ mod tests {
             }),
             "xpad reports A as BTN_SOUTH"
         );
+    }
+
+    #[test]
+    fn virtual_devices_are_not_physical() {
+        use evdev::BusType;
+        use std::path::Path;
+        let uinput = Path::new("/sys/devices/virtual/input/input42/event20");
+        let usb = Path::new("/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0/input/input5/event3");
+        assert!(
+            !is_physical(BusType::BUS_USB, Some(uinput)),
+            "uinput pad spoofing USB"
+        );
+        assert!(!is_physical(BusType::BUS_VIRTUAL, Some(usb)), "virtual bus");
+        assert!(is_physical(BusType::BUS_USB, Some(usb)), "real Xbox pad");
+        assert!(is_physical(BusType::BUS_BLUETOOTH, None), "no sysfs");
     }
 
     #[test]
