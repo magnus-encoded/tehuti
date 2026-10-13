@@ -1742,13 +1742,17 @@ mod layout_laws {
             geometry in geometry_strategy(),
             ops in ops_strategy(),
         ) {
+            let centring = centring_rules(&config);
             let mut world = World::single(config, geometry)?;
             world.run(&ops)?;
             let _window = world.open()?;
             let before = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
             world.apply(Command::ToggleFullscreen);
             world.apply(Command::ToggleFullscreen);
-            let after = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
+            let snap = world.snap();
+            // NV.2 and NV.4 re-centre after the restore; compare views only when neither applies.
+            prop_assume!(!centring_applies(centring, &snap));
+            let after = focused_workspace(&snap).map(|workspace| workspace.view_offset);
             prop_assert!(matches!((before, after), (Some(before), Some(after)) if near(before, after)));
         }
     }
@@ -1878,14 +1882,67 @@ mod layout_laws {
             ops in ops_strategy(),
             focused in any::<bool>(),
         ) {
+            let centring = centring_rules(&config);
             let mut world = World::single(config, geometry)?;
             world.run(&ops)?;
             let before = focused_workspace(&world.snap()).map(|workspace| (workspace.workspace, workspace.view_offset));
             prop_assume!(before.is_some_and(|_| world.snap().focused_window.is_some()));
             let window = world.open_with(WindowRules { open_focused: Some(focused), ..WindowRules::default() })?;
             world.close(window)?;
+            // NV.2 and NV.4 re-centre after the restore; compare views only when neither applies.
+            prop_assume!(!centring_applies(centring, &world.snap()));
             let after = focused_workspace(&world.snap()).map(|workspace| (workspace.workspace, workspace.view_offset));
             prop_assert!(matches!((before, after), (Some(before), Some(after)) if before.0 == after.0 && near(before.1, after.1)));
+        }
+    }
+
+    /// The centring rules a config enables: NV.2 ("always") and NV.4 (lone column).
+    fn centring_rules(config: &LayoutConfig) -> (bool, bool) {
+        (
+            config.center_focused_column == CenterFocusedColumn::Always,
+            config.always_center_single_column,
+        )
+    }
+
+    /// Whether NV.2 or NV.4 governs the view of the focused workspace in `snap`.
+    fn centring_applies((always, single): (bool, bool), snap: &Snapshot) -> bool {
+        always || (single && focused_workspace(snap).is_some_and(|workspace| workspace.columns.len() == 1))
+    }
+
+    proptest! {
+        #[test]
+        fn nv_4_a_lone_column_is_centred_after_close_or_unfullscreen(
+            config in single_centred_config(),
+            geometry in geometry_strategy(),
+            ops in ops_strategy(),
+            fullscreen in any::<bool>(),
+        ) {
+            let mut world = World::single(config, geometry)?;
+            world.run(&ops)?;
+            let snap = world.snap();
+            let windows: Vec<WindowId> = all_tiles(&snap).map(|tile| tile.window).collect();
+            prop_assume!(focused_workspace(&snap).is_some());
+            let lone = world.open()?;
+            if fullscreen {
+                for window in windows {
+                    world.close(window)?;
+                }
+                world.apply(Command::ToggleFullscreen);
+                world.apply(Command::ToggleFullscreen);
+            } else {
+                let extra = world.open()?;
+                for window in windows {
+                    world.close(window)?;
+                }
+                world.close(extra)?;
+            }
+            let snap = world.snap();
+            prop_assume!(snap.focused_window == Some(lone));
+            prop_assume!(focused_workspace(&snap).is_some_and(|workspace| workspace.columns.len() == 1));
+            prop_assume!(focused_column(&snap).is_some_and(column_is_normal));
+            let (tile, working, gaps) = focused_geometry(&snap).ok_or_else(|| TestCaseError::fail("nothing focused"))?;
+            prop_assume!(fits(tile, working, gaps));
+            prop_assert!(centred(tile, working), "tile {:?} in {:?}", tile, working);
         }
     }
 
@@ -1944,11 +2001,20 @@ mod layout_laws {
         ) {
             // NW.11 [confirm]: exempt only a state where centring would push another fully visible
             // column out of view.
+            // Exempt only when an expansion made the state (until focus or width changes) AND
+            // centring would displace another fully visible column.
             let mut world = World::single(config, geometry)?;
+            let mut expanded: Option<(Option<WindowId>, Option<PresetSize>)> = None;
             for step in &ops {
                 world.run(core::slice::from_ref(step))?;
                 let snap = world.snap();
-                let exempt = displaces_on_centring(&snap);
+                let key = (snap.focused_window, focused_column(&snap).and_then(|column| column.width));
+                if matches!(step, Step::Run(Command::ExpandColumnToAvailableWidth)) {
+                    expanded = Some(key);
+                } else if expanded.is_some_and(|held| held != key) {
+                    expanded = None;
+                }
+                let exempt = expanded.is_some() && displaces_on_centring(&snap);
                 if exempt || !focused_column(&snap).is_some_and(column_is_normal) {
                     continue;
                 }
