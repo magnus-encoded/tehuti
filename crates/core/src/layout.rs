@@ -210,6 +210,13 @@ pub enum Command {
     ToggleMaximizeToEdges,
 }
 
+/// The layout command a context's tiling action stands for.
+#[expect(clippy::todo, reason = "test-first stub; implemented in #52")]
+#[must_use]
+pub fn command_for(action: tehuti_protocol::LayoutAction) -> Command {
+    todo!("#52: map {action:?} to Command")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutError {
     UnknownWindow(WindowId),

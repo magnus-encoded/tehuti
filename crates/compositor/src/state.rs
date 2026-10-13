@@ -716,6 +716,7 @@ impl Compositor {
                     self.sync_window_focus();
                 }
             }
+            Action::Layout { action } => self.apply_layout(*action),
             Action::Notice { text } => {
                 self.show_notice(text.as_str());
             }
@@ -824,6 +825,19 @@ impl Compositor {
 
     fn millis_since_start(&self) -> u32 {
         u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
+    }
+
+    #[expect(clippy::todo, reason = "test-first stub; implemented in #52")]
+    #[expect(clippy::needless_pass_by_ref_mut, reason = "stub")]
+    fn apply_layout(&mut self, action: tehuti_protocol::LayoutAction) {
+        todo!("#52: apply {action:?} to the layout model and reconfigure windows")
+    }
+
+    /// The tiling layout every mapped window is placed by.
+    #[expect(clippy::todo, reason = "test-first stub; implemented in #52")]
+    #[must_use]
+    pub fn layout_snapshot(&self) -> tehuti_core::layout::Snapshot {
+        todo!("#52: expose the layout model snapshot")
     }
 
     /// Sizes every window to the output and marks it fullscreen.
