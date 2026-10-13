@@ -87,14 +87,16 @@ const fn global_layer(event: &Event) -> Option<Action> {
 
 fn active_context(state: &State, event: &Event) -> Option<Action> {
     if let Event::Speech { text } = event {
-        return Some(
-            state
-                .contexts
-                .iter()
-                .find(|context| Some(context.app_id()) == state.focused_app_id.as_deref())
-                .and_then(|context| context.speech_action(text.as_str()))
-                .unwrap_or_else(|| Action::Notice { text: text.clone() }),
-        );
+        return state
+            .contexts
+            .iter()
+            .find(|context| Some(context.app_id()) == state.focused_app_id.as_deref())
+            .and_then(|context| context.speech_action(text.as_str()))
+            .or_else(|| {
+                tehuti_protocol::Text::new("NO SPEECH MAPPING".into())
+                    .ok()
+                    .map(|notice| Action::Notice { text: notice })
+            });
     }
     let Event::Button {
         name,
@@ -146,3 +148,5 @@ pub mod secret;
 pub mod speech;
 
 pub mod plugin;
+
+pub mod windows;
