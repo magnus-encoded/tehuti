@@ -135,6 +135,7 @@ pub struct Context {
     app_id: String,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, MappingAction>,
+    unmatched_speech: Option<UnmatchedSpeech>,
 }
 
 impl Context {
@@ -146,10 +147,15 @@ impl Context {
     #[must_use]
     pub fn speech_action(&self, phrase: &str) -> Option<Action> {
         let wanted = normalize_phrase(phrase);
-        if wanted.is_empty() {
+        if phrase.trim().is_empty() {
             return None;
         }
-        self.speech.get(&wanted).map(MappingAction::action)
+        self.speech.get(&wanted).map(MappingAction::action).or_else(|| {
+            let UnmatchedSpeech::Type = self.unmatched_speech?;
+            Text::new(format!("{phrase} "))
+                .ok()
+                .map(|text| Action::Text { text })
+        })
     }
 
     #[must_use]
@@ -171,6 +177,12 @@ impl Context {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum UnmatchedSpeech {
+    #[serde(rename = "type")]
+    Type,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContextFile {
@@ -178,6 +190,8 @@ struct ContextFile {
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
     speech: std::collections::HashMap<String, MappingAction>,
+    #[serde(default)]
+    unmatched_speech: Option<UnmatchedSpeech>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -245,6 +259,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         app_id: context.app_id,
         buttons: context.buttons,
         speech,
+        unmatched_speech: context.unmatched_speech,
     })
 }
 

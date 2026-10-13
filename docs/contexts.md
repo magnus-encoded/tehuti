@@ -37,8 +37,12 @@ confirm = { key = "enter" }
 "insert greeting" = { text = "Hello" }
 ```
 
-Phrase matching is exact and case sensitive. The first initialized plugin
-subscribed to speech for the focused application replaces these mappings.
-Otherwise unmatched speech shows “No speech mapping” for three seconds above
-the client without changing focus. Record (Share) controls push-to-talk and
+Phrase matching ignores case, surrounding whitespace and trailing punctuation.
+The first initialized plugin subscribed to speech for the focused application replaces these mappings.
+Set top-level `unmatched_speech = "type"` before any TOML table to type unmatched
+speech into the focused window, followed by one space. Mapped phrases still win.
+The transcript keeps its original casing and punctuation. Empty or whitespace-only
+transcripts do nothing. The option applies only to the focused window's context.
+Without the option, unmatched speech shows “No speech mapping” for three
+seconds above the client without changing focus. Record (Share) controls push-to-talk and
 never reaches context mappings.

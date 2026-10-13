@@ -23,7 +23,7 @@ class SpeechTests(unittest.TestCase):
                     self.format = (clip.getframerate(), clip.getnchannels(), clip.getsampwidth())
                     self.samples = clip.readframes(clip.getnframes())
                 self.options = options
-                return iter([types.SimpleNamespace(text=" confirm ")]), None
+                return iter([types.SimpleNamespace(text=" confirm ", no_speech_prob=0.0, avg_logprob=0.0)]), None
 
         with tempfile.TemporaryDirectory() as directory:
             recorder = Path(directory) / "pw-record"
@@ -50,6 +50,36 @@ class SpeechTests(unittest.TestCase):
             finally:
                 speech.close()
                 os.environ["PATH"] = previous_path
+
+    def test_hallucinated_whole_transcripts_are_empty(self):
+        for text in [
+            ' "THANK YOU VERY MUCH FOR WATCHING AND BYE BYE!" ',
+            "thanks so much for listening", "Thank you, bye-bye.", "goodbye bye", "you",
+            "please subscribe to the channel", "like and subscribe!",
+            "subscribe now", "see you next time", "see you in the next video",
+            "subtitles by someone", "amara captions", "transcription by someone",
+            "the end",
+        ]:
+            with self.subTest(text=text):
+                segment = types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), "")
+
+    def test_real_sentences_preserve_the_original_text(self):
+        for text in ["Thank you for fixing the build.", "Say goodbye to the legacy module.",
+                     "Can you please subscribe to this event?", "Put this at the end."]:
+            with self.subTest(text=text):
+                segment = types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), text)
+
+    def test_segments_need_both_silence_indicators_to_be_dropped(self):
+        segments = [
+            types.SimpleNamespace(text="discard", no_speech_prob=0.61, avg_logprob=-1.01),
+            types.SimpleNamespace(text="keep probability boundary", no_speech_prob=0.6, avg_logprob=-2),
+            types.SimpleNamespace(text="keep logprob boundary", no_speech_prob=0.9, avg_logprob=-1.0),
+        ]
+        self.assertEqual(module.transcript(iter(segments)),
+                         "keep probability boundary keep logprob boundary")
+        self.assertEqual(module.transcript(segments[:1]), "")
 
     def test_peak_reads_signed_samples(self):
         self.assertEqual(module.peak(b""), 0)

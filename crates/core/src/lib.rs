@@ -101,6 +101,9 @@ const fn global_layer(event: &Event) -> Option<Action> {
 
 fn active_context(state: &State, event: &Event) -> Option<Action> {
     if let Event::Speech { text } = event {
+        if text.as_str().trim().is_empty() {
+            return None;
+        }
         return state
             .contexts
             .iter()
