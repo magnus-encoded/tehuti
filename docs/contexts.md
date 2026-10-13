@@ -46,3 +46,13 @@ transcripts do nothing. The option applies only to the focused window's context.
 Without the option, unmatched speech shows “No speech mapping” for three
 seconds above the client without changing focus. Record (Share) controls push-to-talk and
 never reaches context mappings.
+
+## Reload
+
+Tehuti watches the context directory and its child directories. Saving any
+`context.toml` reloads every context once edits pause for 300 ms; no restart is
+needed. A successful reload shows “Contexts reloaded”. If any file fails to read
+or parse, Tehuti keeps the contexts it had and shows a notice naming the file and
+the start of the error; the full error goes to the log. A reload leaves held
+buttons and a speech session in progress untouched. Plugins are not reloaded;
+they restart as processes.

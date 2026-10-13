@@ -28,6 +28,17 @@ impl State {
         }
     }
 
+    /// Swaps the contexts and keeps focus, held buttons and pending plugin decisions.
+    pub fn replace_contexts(&mut self, contexts: Vec<Context>) {
+        self.contexts = contexts;
+    }
+
+    /// The installed contexts, in priority order.
+    #[must_use]
+    pub fn contexts(&self) -> &[Context] {
+        &self.contexts
+    }
+
     /// Cancels controller holds when the device disconnects or the seat pauses.
     pub const fn controller_disconnected(&mut self) {
         self.guide_held = None;

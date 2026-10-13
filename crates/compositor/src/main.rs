@@ -39,6 +39,9 @@ pub(crate) struct LoopData {
     discovery_epoch: std::time::Instant,
     seat_active: bool,
     log_out: bool,
+    context_directory: std::path::PathBuf,
+    context_watcher: Option<std::rc::Rc<std::os::fd::OwnedFd>>,
+    context_reload: tehuti::contexts::Debounce,
 }
 
 impl LoopData {
@@ -65,14 +68,11 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory)));
-    let plugin_directory = std::path::Path::new(&context_directory).join("plugins");
-    if plugin_directory.exists() {
-        compositor.set_plugins(tehuti::plugins::install(
-            &event_loop,
-            &plugin_directory,
-            |data| &mut data.compositor,
-        )?);
-    }
+    install_plugins(
+        &event_loop,
+        std::path::Path::new(&context_directory),
+        &mut compositor,
+    )?;
     if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
         compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
     }
@@ -112,6 +112,9 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         discovery_epoch: std::time::Instant::now(),
         seat_active: true,
         log_out: false,
+        context_watcher: insert_context_watch(&event_loop, std::path::Path::new(&context_directory)),
+        context_directory: context_directory.into(),
+        context_reload: tehuti::contexts::Debounce::default(),
     };
     run(&mut event_loop, &mut data, child)?;
     Ok(data.exit_code())
@@ -128,6 +131,7 @@ fn run(
     let result = event_loop.run(Some(Duration::from_millis(10)), data, |data| {
         termination.stop_if_requested(&signal);
         advance_time(data);
+        reload_contexts(data);
         reconnect_controller(data, &handle);
         if let Some(pad) = data.controller.as_mut() {
             if let Err(error) = input::finish_quit(&data.compositor, pad, &signal) {
@@ -228,6 +232,73 @@ fn insert_controller(
         |_, _, data| Ok(route_controller_input(data)),
     )?;
     Ok(Some((device, controller_token)))
+}
+
+/// Starts plugins from `<context-directory>/plugins` when it exists.
+fn install_plugins(
+    event_loop: &EventLoop<'static, LoopData>,
+    context_directory: &std::path::Path,
+    compositor: &mut Compositor,
+) -> Result<(), Box<dyn Error>> {
+    let plugin_directory = context_directory.join("plugins");
+    if plugin_directory.exists() {
+        compositor.set_plugins(tehuti::plugins::install(event_loop, &plugin_directory, |data| {
+            &mut data.compositor
+        })?);
+    }
+    Ok(())
+}
+
+/// Watches context files; edits schedule a debounced reload.
+fn insert_context_watch(
+    event_loop: &EventLoop<LoopData>,
+    directory: &std::path::Path,
+) -> Option<std::rc::Rc<std::os::fd::OwnedFd>> {
+    let watcher = match tehuti::contexts::watch(directory) {
+        Ok(watcher) => std::rc::Rc::new(watcher),
+        Err(error) => {
+            warn!(%error, "context watch unavailable; contexts reload only on restart");
+            return None;
+        }
+    };
+    let inserted = event_loop.handle().insert_source(
+        Generic::new(std::rc::Rc::clone(&watcher), Interest::READ, calloop::Mode::Level),
+        |_, watcher, data| {
+            let mut buffer = [0_u8; 4096];
+            for _batch in 0..16 {
+                match rustix::io::read(&**watcher, &mut buffer) {
+                    Ok(0) | Err(rustix::io::Errno::WOULDBLOCK) => break,
+                    Ok(_) => data.context_reload.changed(std::time::Instant::now()),
+                    Err(error) => {
+                        warn!(%error, "context watch failed; contexts reload only on restart");
+                        return Ok(PostAction::Remove);
+                    }
+                }
+            }
+            Ok(PostAction::Continue)
+        },
+    );
+    match inserted {
+        Ok(_token) => Some(watcher),
+        Err(error) => {
+            warn!(%error, "context watch unavailable; contexts reload only on restart");
+            None
+        }
+    }
+}
+
+/// Reloads contexts once a burst of edits has gone quiet.
+fn reload_contexts(data: &mut LoopData) {
+    if !data.context_reload.due(std::time::Instant::now()) {
+        return;
+    }
+    if let Some(watcher) = &data.context_watcher
+        && let Err(error) = tehuti::contexts::rewatch(watcher, &data.context_directory)
+    {
+        warn!(%error, "context directory not rewatched");
+    }
+    data.compositor
+        .reload_contexts(tehuti::contexts::try_load(&data.context_directory));
 }
 
 fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<dyn Error>> {
