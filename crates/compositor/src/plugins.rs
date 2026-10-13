@@ -64,6 +64,7 @@ struct Session {
     next_id: u64,
     plugin: usize,
     invalid_messages: usize,
+    missed_decisions: usize,
     healthy_since: Option<Instant>,
     pending: BTreeMap<u64, Instant>,
     read_window: Instant,
@@ -138,8 +139,11 @@ impl Session {
 
     fn supervise(&mut self, now: Instant) {
         self.expire_initialize();
-        if self.pending.values().any(|deadline| now >= *deadline) {
-            self.fail("plugin decision timed out");
+        let expired = self.pending.values().filter(|deadline| now >= **deadline).count();
+        self.pending.retain(|_, deadline| now < *deadline);
+        self.missed_decisions = self.missed_decisions.saturating_add(expired);
+        if self.missed_decisions >= 3 {
+            self.fail("three consecutive plugin decisions missed");
         }
         if let Some(child) = &mut self.child.child {
             match child.try_wait() {
@@ -339,20 +343,20 @@ impl Session {
     }
 
     fn complete_decision(&mut self, message: &Message) {
-        match message {
-            Message::Response(response) => {
-                let _deadline = self.pending.remove(&response.request_id);
-            }
-            Message::Error(response) => {
-                let _deadline = self.pending.remove(&response.request_id);
-            }
+        self.supervise(Instant::now());
+        let event_id = match message {
+            Message::Response(response) => Some(response.request_id),
+            Message::Error(response) => Some(response.request_id),
             Message::Call(Call {
                 method: Method::SubmitActions { event_id, .. },
                 ..
-            }) => {
-                let _deadline = self.pending.remove(event_id);
-            }
-            Message::Call(_) => {}
+            }) => Some(*event_id),
+            Message::Call(_) => None,
+        };
+        if let Some(event_id) = event_id
+            && self.pending.remove(&event_id).is_some()
+        {
+            self.missed_decisions = 0;
         }
     }
 
@@ -782,6 +786,7 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
         next_id: 1,
         plugin: usize::MAX,
         invalid_messages: 0,
+        missed_decisions: 0,
         healthy_since: None,
         pending: BTreeMap::new(),
         read_window: Instant::now(),
@@ -989,6 +994,7 @@ fn fuzz_session() -> io::Result<Session> {
         next_id: 1,
         plugin: 0,
         invalid_messages: 0,
+        missed_decisions: 0,
         healthy_since: None,
         pending: BTreeMap::new(),
         read_window: now,
@@ -1122,6 +1128,7 @@ mod tests {
                 next_id: 1,
                 plugin: usize::MAX,
                 invalid_messages: 0,
+                missed_decisions: 0,
                 healthy_since: None,
                 pending: BTreeMap::new(),
                 read_window: now,
@@ -1249,7 +1256,9 @@ mod tests {
                 let mut session = session.borrow_mut();
                 if hang {
                     // A request whose deadline has already passed: the plugin never answered.
-                    let _deadline = session.pending.insert(u64::MAX, now);
+                    for request_id in 0..3 {
+                        let _deadline = session.pending.insert(request_id, now);
+                    }
                 } else {
                     session.fail("simulated crash");
                 }
@@ -1287,9 +1296,8 @@ mod tests {
                 let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
                 let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
                 let mut plugins = plugins(&succeed, &starts);
-                let now = Instant::now();
-                drop(plugins.supervise_at(now));
-                let old = plugins.entries[0].session.as_ref().unwrap().clone();
+                plugins.entries[0].manifest.start = StartPolicy::OnFocus;
+                plugins.entries[0].started = false;
                 let method = if button {
                     Method::Button {
                         name: tehuti_protocol::ButtonName::East,
@@ -1298,20 +1306,87 @@ mod tests {
                 } else {
                     Method::Speech { text: tehuti_protocol::Text::new("request".into()).unwrap() }
                 };
-                let request_id = old.borrow_mut().request().unwrap();
-                old.borrow_mut().queue_event(&Call {
-                    jsonrpc: RpcVersion::Two, request_id: Some(request_id), method,
-                }).unwrap();
-                let deadline = old.borrow().pending[&request_id];
-                for (millis, title) in changes {
-                    old.borrow_mut().observe(&Event::Focus { app_id: None, title });
-                    drop(plugins.supervise_at(later(now, millis)));
-                    prop_assert_eq!(starts.borrow()[0], 1);
+                prop_assert!(!plugins.active(&Event::Focus { app_id: None, title: String::new() }), "unmatched focus");
+                let _active = plugins.active(&Event::Focus { app_id: Some("test".into()), title: String::new() });
+                let old = plugins.entries[0].session.as_ref().unwrap().clone();
+                for miss in 1..=3 {
+                    let request_id = old.borrow_mut().request().unwrap();
+                    old.borrow_mut().queue_event(&Call {
+                        jsonrpc: RpcVersion::Two, request_id: Some(request_id), method: method.clone(),
+                    }).unwrap();
+                    let deadline = old.borrow().pending[&request_id];
+                    let event = if button {
+                        Event::Button { name: tehuti_protocol::ButtonName::East, state: tehuti_protocol::ButtonState::Pressed }
+                    } else {
+                        Event::Speech { text: tehuti_protocol::Text::new("request".into()).unwrap() }
+                    };
+                    let (core, _, _) = tehuti_core::plugin::step(tehuti_core::State::new(),
+                        tehuti_core::plugin::Input::Request {
+                            key: tehuti_core::plugin::RequestKey { plugin: 0, request_id },
+                            event, permissions: vec![Permission::Quit],
+                        });
+                    let (mut core, fallbacks, _) = tehuti_core::plugin::step(core,
+                        tehuti_core::plugin::Input::Tick { elapsed: Duration::from_secs(2) });
+                    prop_assert_eq!(fallbacks.len(), usize::from(!button));
+                    for (millis, title) in &changes {
+                        let _unmatched = plugins.active(&Event::Focus { app_id: None, title: title.clone() });
+                        drop(plugins.supervise_at(deadline.checked_sub(Duration::from_micros(millis.saturating_add(1))).unwrap()));
+                        prop_assert_eq!(starts.borrow()[0], 1);
+                    }
+                    let exited = plugins.supervise_at(deadline);
+                    if miss < 3 {
+                        prop_assert!(exited.is_empty());
+                        prop_assert_eq!(starts.borrow()[0], 1);
+                        for reply_id in [request_id, request_id.saturating_add(1000)] {
+                            let reply = format!("{{\"jsonrpc\":\"2.0\",\"id\":{reply_id},\"result\":[{{\"type\":\"quit\"}}]}}\n");
+                            for delivery in old.borrow_mut().receive(reply.as_bytes()) {
+                                if let Delivery::Reply { key, result, .. } = delivery {
+                                    let (next, actions, _) = tehuti_core::plugin::step(core,
+                                        tehuti_core::plugin::Input::Reply { key, result });
+                                    prop_assert!(actions.is_empty(), "late and mismatched live replies release nothing");
+                                    core = next;
+                                }
+                            }
+                            prop_assert_eq!(old.borrow().status, Status::Ready);
+                            prop_assert_eq!(old.borrow().missed_decisions, miss);
+                        }
+                    } else {
+                        prop_assert_eq!(exited, vec![0]);
+                        drop(plugins.supervise_at(later(deadline, 100)));
+                        prop_assert_eq!(starts.borrow()[0], 2);
+                    }
                 }
-                prop_assert_eq!(plugins.supervise_at(deadline), vec![0]);
-                drop(plugins.supervise_at(later(deadline, 100)));
-                prop_assert_eq!(starts.borrow()[0], 2);
-                prop_assert!(old.borrow_mut().receive(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":[]}\n").is_empty(), "a retired session drops its reply");
+            }
+
+            #[test]
+            fn a_timely_decline_breaks_the_consecutive_miss_streak(misses in 1_usize..3) {
+                let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
+                let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+                let mut plugins = plugins(&succeed, &starts);
+                drop(plugins.supervise_at(Instant::now()));
+                let session = plugins.entries[0].session.as_ref().unwrap().clone();
+                session.borrow_mut().events = vec![Subscription::Button];
+                let _active = plugins.active(&Event::Focus { app_id: Some("test".into()), title: String::new() });
+                let event = Event::Button { name: tehuti_protocol::ButtonName::East, state: tehuti_protocol::ButtonState::Pressed };
+                for _miss in 0..misses {
+                    let (key, _) = plugins.dispatch(&event, true).unwrap();
+                    let deadline = session.borrow().pending[&key.request_id];
+                    prop_assert!(plugins.supervise_at(deadline).is_empty());
+                }
+                let (answered, _) = plugins.dispatch(&event, true).unwrap();
+                let reply = format!("{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":[]}}\n", answered.request_id);
+                drop(session.borrow_mut().receive(reply.as_bytes()));
+                prop_assert_eq!(session.borrow().missed_decisions, 0);
+                for miss in 1..=3 {
+                    let (key, _) = plugins.dispatch(&event, true).unwrap();
+                    let deadline = session.borrow().pending[&key.request_id];
+                    let exited = plugins.supervise_at(deadline);
+                    if miss < 3 {
+                        prop_assert!(exited.is_empty(), "two fresh misses still leave the plugin live");
+                    } else {
+                        prop_assert_eq!(exited, vec![0]);
+                    }
+                }
             }
 
             #[test]

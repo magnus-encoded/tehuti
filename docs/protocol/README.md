@@ -269,15 +269,16 @@ invalid messages. Initialization alone does not reset backoff.
 Each failure logs the executable, reason and restart delay.
 
 A plugin that has not initialized within two seconds is terminated. After
-initialization, a decision unanswered for two seconds terminates the plugin.
+initialization, a plugin that misses three decisions in a row is restarted with
+backoff. A reply before its decision deadline resets the consecutive miss count.
 The core's shorter decision deadlines still release captured fallback actions
 on time. Idle plugins with no outstanding decisions may stay silent.
 Request ids continue across restarts, so a new process cannot complete an
 earlier process's pending decision.
 
 An isolated malformed or overlong line is dropped independently. Sixteen
-invalid messages or rejected action batches without 30 seconds of healthy
-initialized operation terminate the plugin and schedule a restart.
+invalid lines or rejected action batches without 30 seconds of healthy
+initialized operation restart the plugin with backoff.
 Valid error replies are declines and do not count as invalid messages.
 
 Each stdout callback reads at most 16 chunks of 4096 bytes. Each process may

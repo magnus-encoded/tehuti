@@ -48,6 +48,7 @@ mod synthetic_pad {
     #[derive(Debug, Default)]
     struct App {
         keys: Vec<(u32, KeyState)>,
+        focused: Option<wayland_client::backend::ObjectId>,
         text: String,
         keyboard_text: String,
         keymap_source: String,
@@ -99,6 +100,20 @@ mod synthetic_pad {
         }
     }
 
+    fn update_client_focus(app: &mut App, event: &wl_keyboard::Event) {
+        match event {
+            wl_keyboard::Event::Enter { surface, .. } => {
+                app.focused = Some(wayland_client::Proxy::id(surface));
+            }
+            wl_keyboard::Event::Leave { .. } => app.focused = None,
+            wl_keyboard::Event::Keymap { .. }
+            | wl_keyboard::Event::Key { .. }
+            | wl_keyboard::Event::Modifiers { .. }
+            | wl_keyboard::Event::RepeatInfo { .. }
+            | _ => {}
+        }
+    }
+
     impl Dispatch<WlKeyboard, ()> for App {
         fn event(
             app: &mut Self,
@@ -108,6 +123,7 @@ mod synthetic_pad {
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
+            update_client_focus(app, &event);
             if let wl_keyboard::Event::Keymap { fd: descriptor, .. } = event {
                 app.keymap_source.clear();
                 let mut keymap_file = std::fs::File::from(descriptor);
@@ -253,6 +269,303 @@ mod synthetic_pad {
         // Any further key the compositor sent arrives before this roundtrip completes.
         let _dispatched = queue.roundtrip(&mut app).unwrap();
         app
+    }
+
+    #[derive(Clone, Debug)]
+    enum Command {
+        Connect,
+        Disconnect,
+        Open,
+        Close,
+        Start,
+        Crash,
+        Hang,
+        Button,
+        Text,
+        Settle,
+    }
+
+    fn command() -> impl Strategy<Value = Command> {
+        prop_oneof![
+            Just(Command::Connect),
+            Just(Command::Disconnect),
+            Just(Command::Open),
+            Just(Command::Close),
+            Just(Command::Start),
+            Just(Command::Crash),
+            Just(Command::Hang),
+            Just(Command::Button),
+            Just(Command::Text),
+            Just(Command::Settle),
+        ]
+    }
+
+    #[derive(Default)]
+    struct Reference {
+        connected: bool,
+        windows: Vec<usize>,
+        focus: Option<usize>,
+        next_window: usize,
+        taps: usize,
+    }
+
+    impl Reference {
+        fn apply(&mut self, command: &Command) {
+            match command {
+                Command::Connect => self.connected = true,
+                Command::Disconnect => self.connected = false,
+                Command::Open => {
+                    self.windows.push(self.next_window);
+                    self.focus = Some(self.next_window);
+                    self.next_window = self.next_window.saturating_add(1);
+                }
+                Command::Close => {
+                    if let Some(closed) = self.windows.pop()
+                        && self.focus == Some(closed)
+                    {
+                        self.focus = None;
+                    }
+                }
+                Command::Button if self.connected && self.focus.is_some() => {
+                    self.taps = self.taps.saturating_add(1);
+                }
+                Command::Text | Command::Hang if self.focus.is_some() => {
+                    self.taps = self.taps.saturating_add(1);
+                }
+                Command::Start
+                | Command::Crash
+                | Command::Hang
+                | Command::Button
+                | Command::Text
+                | Command::Settle => {}
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Decisions {
+        state: tehuti_core::State,
+        pending: Vec<(tehuti_core::plugin::RequestKey, tehuti_protocol::Action)>,
+        issued: u64,
+        resolved: u64,
+    }
+
+    impl Decisions {
+        fn apply(&mut self, command: &Command) {
+            use tehuti_core::plugin::{self, Input, RequestKey};
+            use tehuti_protocol::{Action, Permission, Text};
+            let mut expected = Vec::new();
+            let input = match command {
+                Command::Hang | Command::Text => {
+                    let key = RequestKey {
+                        plugin: usize::from(matches!(command, Command::Text)),
+                        request_id: self.issued,
+                    };
+                    let text = Text::new(format!("decision {}", self.issued)).unwrap();
+                    self.issued = self.issued.saturating_add(1);
+                    self.pending.push((key, Action::Notice { text: text.clone() }));
+                    Input::Request {
+                        key,
+                        event: Event::Speech { text },
+                        permissions: vec![Permission::Text],
+                    }
+                }
+                Command::Crash => {
+                    self.pending.retain(|(key, action)| {
+                        if key.plugin == 0 {
+                            expected.push(action.clone());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    Input::Exited { plugin: 0 }
+                }
+                Command::Settle => {
+                    expected.extend(self.pending.drain(..).map(|(_, action)| action));
+                    Input::Tick {
+                        elapsed: Duration::from_secs(2),
+                    }
+                }
+                Command::Connect
+                | Command::Disconnect
+                | Command::Open
+                | Command::Close
+                | Command::Start
+                | Command::Button => Input::Tick {
+                    elapsed: Duration::ZERO,
+                },
+            };
+            let (state, actions, rejection) = plugin::step(core::mem::take(&mut self.state), input);
+            self.state = state;
+            assert!(rejection.is_none());
+            assert_eq!(actions, expected);
+            self.resolved = self
+                .resolved
+                .saturating_add(u64::try_from(actions.len()).unwrap());
+            if matches!(command, Command::Text) {
+                self.reply();
+            }
+            assert_eq!(
+                self.issued,
+                self.resolved
+                    .saturating_add(u64::try_from(self.pending.len()).unwrap())
+            );
+        }
+        fn reply(&mut self) {
+            use tehuti_core::plugin::{self, Input};
+            let (key, _) = self.pending.pop().unwrap();
+            let action = tehuti_protocol::Action::Text {
+                text: tehuti_protocol::Text::new(format!("decision {}", key.request_id)).unwrap(),
+            };
+            let (state, actions, rejection) = plugin::step(
+                core::mem::take(&mut self.state),
+                Input::Reply {
+                    key,
+                    result: Ok(vec![action.clone()]),
+                },
+            );
+            assert!(rejection.is_none());
+            assert_eq!(actions, vec![action]);
+            let (state, duplicate, _) = plugin::step(
+                state,
+                Input::Reply {
+                    key,
+                    result: Ok(Vec::new()),
+                },
+            );
+            assert_eq!(duplicate, Vec::new());
+            self.state = state;
+            self.resolved = self.resolved.saturating_add(1);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+        #[test]
+        fn supervision_and_input_match_a_window_reference_model(
+            commands in prop::collection::vec(command(), 1..60),
+        ) {
+            let directory = unresponsive_plugin("stalled");
+            let mut display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            compositor.set_contexts(vec![tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'enter'\n[speech]\nconfirm = { key = 'enter' }").unwrap()]);
+            let mut event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+            let (server, client) = UnixStream::pair().unwrap();
+            let _client = display.handle().insert_client(server, Arc::new(ClientState::default())).unwrap();
+            let (send, receive) = mpsc::channel::<Command>();
+            let (reports, snapshots) = mpsc::channel();
+            let client = thread::spawn(move || {
+                let connection = Connection::from_socket(client).unwrap();
+                let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+                let handle = queue.handle();
+                let wayland: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+                let shell: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+                let seat: WlSeat = globals.bind(&handle, 1..=1, ()).unwrap();
+                let _keyboard = seat.get_keyboard(&handle, ());
+                let mut app = App::default();
+                let mut windows = Vec::new();
+                let mut ids = Vec::new();
+                for command in receive {
+                    match command {
+                        Command::Open => {
+                            let surface = wayland.create_surface(&handle, ());
+                            ids.push(wayland_client::Proxy::id(&surface));
+                            let xdg = shell.get_xdg_surface(&surface, &handle, ());
+                            let toplevel = xdg.get_toplevel(&handle, ());
+                            toplevel.set_app_id("test".into());
+                            surface.commit();
+                            windows.push((surface, xdg, toplevel));
+                        }
+                        Command::Close => {
+                            if let Some((surface, xdg, toplevel)) = windows.pop() {
+                                toplevel.destroy();
+                                xdg.destroy();
+                                surface.destroy();
+                            }
+                        }
+                        Command::Connect | Command::Disconnect | Command::Start | Command::Crash | Command::Hang | Command::Button | Command::Text | Command::Settle => {}
+                    }
+                    let _roundtrip = queue.roundtrip(&mut app).unwrap();
+                    let focus = app.focused.as_ref().and_then(|surface_id| ids.iter().position(|candidate| candidate == surface_id));
+                    reports.send((windows.len(), focus, app.keys.len())).unwrap();
+                }
+            });
+            let mut model = Reference::default();
+            let mut decisions = Decisions::default();
+            let mut pad = None;
+            let mut installed = false;
+            let mut session = 0_u64;
+            for command in commands {
+                model.apply(&command);
+                decisions.apply(&command);
+                match &command {
+                    Command::Connect => pad = Some(SyntheticPad::default()),
+                    Command::Disconnect => {
+                        if let Some(mut source) = pad.take() {
+                            tehuti::input::InputSource::release(&mut source).unwrap();
+                            prop_assert!(source.is_released());
+                        }
+                        compositor.speech_input(tehuti_core::speech::SpeechInput::Disconnected);
+                    }
+                    Command::Start if !installed => {
+                        compositor.set_plugins(tehuti::plugins::install(&event_loop, directory.path(), |state| state).unwrap());
+                        installed = true;
+                        let began = Instant::now();
+                        while compositor.initialized_plugins() == 0 {
+                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
+                            prop_assert!(began.elapsed() < Duration::from_secs(5));
+                        }
+                    }
+                    Command::Crash if installed => {
+                        if let Ok(pid) = std::fs::read_to_string(directory.path().join("pid")) {
+                            let _status = std::process::Command::new("kill").arg(pid.trim())
+                                .stderr(std::process::Stdio::null()).status().unwrap();
+                        }
+                    }
+                    Command::Hang => compositor.handle(&Event::Button {
+                        name: ButtonName::East, state: ButtonState::Pressed,
+                    }),
+                    Command::Button => {
+                        if let Some(source) = &mut pad {
+                            source.push(Event::Button { name: ButtonName::South, state: ButtonState::Pressed });
+                            route(&mut compositor, source).unwrap();
+                        }
+                    }
+                    Command::Text => {
+                        use tehuti_core::speech::SpeechInput;
+                        compositor.speech_input(SpeechInput::Available);
+                        compositor.speech_input(SpeechInput::Press);
+                        compositor.speech_input(SpeechInput::Release);
+                        compositor.speech_input(SpeechInput::Transcript {
+                            session, text: tehuti_protocol::Text::new("confirm".into()).unwrap(),
+                        });
+                        compositor.speech_input(SpeechInput::Transcript {
+                            session, text: tehuti_protocol::Text::new("confirm".into()).unwrap(),
+                        });
+                        session = session.saturating_add(1);
+                    }
+                    Command::Open | Command::Close | Command::Start | Command::Crash | Command::Settle => {}
+                }
+                compositor.handle(&Event::Tick { elapsed: Duration::from_secs(3) });
+                send.send(command).unwrap();
+                let started = Instant::now();
+                let snapshot = loop {
+                    let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+                    event_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
+                    display.flush_clients().unwrap();
+                    if let Ok(snapshot) = snapshots.try_recv() { break snapshot; }
+                    prop_assert!(started.elapsed() < Duration::from_secs(5), "client progresses despite plugins");
+                    thread::yield_now();
+                };
+                prop_assert_eq!(snapshot, (model.windows.len(), model.focus, model.taps.saturating_mul(2)));
+                prop_assert!(model.focus.is_none_or(|focus| model.windows.contains(&focus)));
+            }
+            decisions.apply(&Command::Settle);
+            assert_eq!(decisions.issued, decisions.resolved);
+            drop(send);
+            client.join().unwrap();
+        }
     }
 
     #[test]
@@ -565,6 +878,7 @@ mod synthetic_pad {
             r"#!/usr/bin/env python3
 import json, os, sys, time
 from pathlib import Path
+Path(__file__).with_name('pid').write_text(str(os.getpid()))
 if {mode:?} != 'never_read':
     request = json.loads(sys.stdin.readline())
     print(json.dumps({{'jsonrpc': '2.0', 'id': request['id'], 'result': {{'protocol_version': 0, 'encoding': 'json', 'events': ['button', 'focus']}}}}), flush=True)
@@ -573,6 +887,8 @@ if {mode:?} in ('never_read', 'stalled'):
     while True:
         time.sleep(60)
 else:
+    while not Path(__file__).with_name('flood').exists():
+        time.sleep(0.001)
     line = b'x' * (70000 if {mode:?} == 'overlong_flood' else 100) + b'\n'
     while True:
         os.write(1, line)
@@ -624,6 +940,7 @@ else:
             }
         }
 
+        std::fs::write(directory.path().join("flood"), "").unwrap();
         let mut pad = SyntheticPad::default();
         let delivery_started = overload_then_send_keys(mode, &mut compositor, &mut event_loop, &mut pad);
         while !client.is_finished() {

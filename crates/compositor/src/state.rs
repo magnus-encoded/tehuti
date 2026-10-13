@@ -278,17 +278,18 @@ impl Compositor {
     /// Runs one event through the core step and carries out the resulting actions.
     pub fn handle(&mut self, event: &Event) {
         use tehuti_core::speech::SpeechInput;
+        if matches!(event, Event::Tick { .. }) {
+            self.previous_tick = Instant::now();
+            self.route_event(event);
+        } else {
+            self.advance_time();
+        }
         let exited = self
             .plugins
             .as_mut()
             .map_or_else(Vec::new, crate::plugins::Plugins::supervise);
         for plugin in exited {
             self.plugin_exited(plugin);
-        }
-        if matches!(event, Event::Tick { .. }) {
-            self.previous_tick = Instant::now();
-        } else if !matches!(event, Event::Focus { .. }) {
-            self.advance_time();
         }
         if let Event::Button {
             name: tehuti_protocol::ButtonName::South,
@@ -318,9 +319,8 @@ impl Compositor {
             Event::Focus { .. } => self.speech_input(SpeechInput::Cancel),
             Event::Tick { .. } | Event::Button { .. } | Event::Speech { .. } => {}
         }
-        self.route_event(event);
-        if matches!(event, Event::Focus { .. }) {
-            self.advance_time();
+        if !matches!(event, Event::Tick { .. }) {
+            self.route_event(event);
         }
         if let Event::Tick { elapsed } = event {
             self.poll_tick(*elapsed);

@@ -623,7 +623,11 @@ for line in sys.stdin:
             let mappings = core::iter::once((ButtonName::East, String::from("fallback"))).collect();
             harness.compositor.set_contexts(vec![text_context(&mappings)]);
             harness.ready();
-            harness.send([button(ButtonName::East)]);
+            harness.send([
+                button(ButtonName::East),
+                button(ButtonName::East),
+                button(ButtonName::East),
+            ]);
             harness.pump_until(|harness| launches(harness).len() >= 2);
             harness.send([
                 button(ButtonName::Guide),
@@ -637,8 +641,8 @@ for line in sys.stdin:
             );
         });
         assert_eq!(
-            output, 1,
-            "the unanswered decision releases its fallback exactly once"
+            output, 3,
+            "each unanswered decision releases its fallback exactly once"
         );
     }
 
