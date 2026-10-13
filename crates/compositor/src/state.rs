@@ -245,6 +245,13 @@ impl Compositor {
         }
     }
 
+    pub(crate) fn supervise_plugins(&mut self) {
+        if let Some(plugins) = &mut self.plugins {
+            plugins.supervise();
+        }
+        self.advance_time();
+    }
+
     /// Supplies elapsed wall time to the pure core before input or replies.
     pub fn advance_time(&mut self) {
         let now = Instant::now();

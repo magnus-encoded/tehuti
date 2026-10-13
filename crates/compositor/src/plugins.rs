@@ -1,10 +1,10 @@
 //! Plugin processes and their non-blocking stdio sources.
 
 use crate::state::Compositor;
-use core::cell::RefCell;
+use core::{cell::RefCell, time::Duration};
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     io::{self, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::Path,
@@ -17,6 +17,16 @@ use tehuti_protocol::{
     RpcVersion, StartPolicy, Subscription,
 };
 
+const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
+const RESTART_BACKOFF_CAP: Duration = Duration::from_secs(30);
+const RESTART_BACKOFF_RESET: Duration = Duration::from_secs(30);
+const SUPERVISION_INTERVAL: Duration = Duration::from_millis(10);
+const HANG_TIMEOUT: Duration = Duration::from_secs(2);
+const INVALID_MESSAGE_LIMIT: usize = 16;
+const READ_ATTEMPTS: usize = 16;
+const FLOOD_WINDOW: Duration = Duration::from_secs(1);
+const FLOOD_BYTES: usize = 262_144;
+
 enum Delivery {
     Reply {
         key: tehuti_core::plugin::RequestKey,
@@ -27,37 +37,123 @@ enum Delivery {
 }
 
 #[derive(Debug)]
+struct Process {
+    child: Option<Child>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    Starting,
+    Ready,
+    Refused,
+    Failed,
+}
+
+#[derive(Debug)]
 struct Session {
-    child: Child,
+    child: Process,
     stdin: ChildStdin,
     output: VecDeque<u8>,
     input: Vec<u8>,
     dropping_line: bool,
-    ready: bool,
+    status: Status,
     initialize_deadline: Instant,
     latest_focus: Option<(Option<String>, String)>,
-    refused: bool,
     events: Vec<Subscription>,
     manifest: Manifest,
     next_id: u64,
     plugin: usize,
+    invalid_messages: usize,
+    healthy_since: Option<Instant>,
+    pending: BTreeMap<u64, Instant>,
+    read_window: Instant,
+    read_bytes: usize,
 }
 
-impl Drop for Session {
+impl Drop for Process {
     fn drop(&mut self) {
-        if let Err(error) = self.child.kill() {
-            tracing::debug!(%error, "plugin kill failed");
-        }
-        if let Err(error) = self.child.wait() {
-            tracing::debug!(%error, "plugin reap failed");
+        if let Some(mut child) = self.child.take() {
+            if let Err(error) = child.kill() {
+                tracing::debug!(%error, "plugin kill failed");
+            }
+            if let Err(error) = std::thread::Builder::new()
+                .name("plugin-reaper".into())
+                .spawn(move || {
+                    if let Err(error) = child.wait() {
+                        tracing::warn!(%error, "plugin reap failed");
+                    }
+                })
+            {
+                tracing::warn!(%error, "plugin reaper unavailable");
+            }
         }
     }
 }
 
 impl Session {
+    fn queue_initialize(&mut self) -> io::Result<()> {
+        self.queue(&Call {
+            jsonrpc: RpcVersion::Two,
+            request_id: Some(0),
+            method: Method::Initialize(Initialize {
+                protocol_version: 0,
+                encoding: "json".into(),
+                core_version: env!("CARGO_PKG_VERSION").into(),
+                options: Some(
+                    core::iter::once(("action_submission".into(), serde_json::json!("submit_actions")))
+                        .collect(),
+                ),
+            }),
+        })
+    }
+
+    fn accept_bytes(&mut self, count: usize) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.read_window) >= FLOOD_WINDOW {
+            self.read_window = now;
+            self.read_bytes = 0;
+        }
+        self.read_bytes = self.read_bytes.saturating_add(count);
+        if self.read_bytes > FLOOD_BYTES {
+            self.fail("plugin stdout flood");
+            return false;
+        }
+        true
+    }
+
+    fn fail(&mut self, reason: &str) {
+        if self.status != Status::Failed {
+            tracing::warn!(plugin = self.plugin, executable = %self.manifest.executable, reason, "plugin restart scheduled");
+            self.status = Status::Failed;
+        }
+    }
+
+    fn invalid(&mut self) {
+        self.invalid_messages = self.invalid_messages.saturating_add(1);
+        self.healthy_since = (self.status == Status::Ready).then(Instant::now);
+        if self.invalid_messages >= INVALID_MESSAGE_LIMIT {
+            self.fail("repeated invalid messages");
+        }
+    }
+
+    fn supervise(&mut self, now: Instant) {
+        self.expire_initialize();
+        if self.pending.values().any(|deadline| now >= *deadline) {
+            self.fail("plugin decision timed out");
+        }
+        if let Some(child) = &mut self.child.child {
+            match child.try_wait() {
+                Ok(Some(status)) => self.fail(&format!("plugin exited: {status}")),
+                Ok(None) => {}
+                Err(error) => self.fail(&format!("plugin status failed: {error}")),
+            }
+        }
+    }
+
     fn observe(&mut self, event: &Event) {
         if let Event::Focus { app_id, title } = event {
             self.latest_focus = Some((app_id.clone(), title.clone()));
+            self.pending.clear();
         }
     }
 
@@ -65,6 +161,19 @@ impl Session {
         let request_id = self.next_id;
         self.next_id = self.next_id.checked_add(1)?;
         Some(request_id)
+    }
+
+    fn queue_event(&mut self, call: &Call) -> io::Result<()> {
+        if call.request_id.is_some() && self.pending.len() >= 256 {
+            return Err(io::Error::other("plugin pending queue full"));
+        }
+        self.queue(call)?;
+        if let Some(request_id) = call.request_id
+            && let Some(deadline) = Instant::now().checked_add(HANG_TIMEOUT)
+        {
+            let _deadline = self.pending.insert(request_id, deadline);
+        }
+        Ok(())
     }
 
     fn queue(&mut self, call: &Call) -> io::Result<()> {
@@ -106,6 +215,7 @@ impl Session {
                         Err(error) => {
                             tracing::warn!(%error, "plugin message dropped");
                             actions.extend(self.invalid_message(&line, error));
+                            self.invalid();
                         }
                     }
                 }
@@ -115,6 +225,7 @@ impl Session {
                     self.input.clear();
                     self.dropping_line = true;
                     tracing::warn!("overlong plugin line dropped");
+                    self.invalid();
                 } else {
                     self.input.push(*byte);
                 }
@@ -124,7 +235,7 @@ impl Session {
     }
 
     fn invalid_message(&mut self, line: &[u8], reason: String) -> Vec<Delivery> {
-        if !self.ready || self.refused {
+        if self.status != Status::Ready {
             return Vec::new();
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
@@ -143,6 +254,7 @@ impl Session {
             None
         };
         if let Some(event_id) = event_id {
+            let _deadline = self.pending.remove(&event_id);
             return vec![Delivery::Reply {
                 key: tehuti_core::plugin::RequestKey {
                     plugin: self.plugin,
@@ -165,15 +277,14 @@ impl Session {
     }
 
     fn expire_initialize(&mut self) {
-        if !self.ready && !self.refused && Instant::now() >= self.initialize_deadline {
-            self.refused = true;
-            tracing::warn!("plugin initialize timed out");
+        if self.status == Status::Starting && Instant::now() >= self.initialize_deadline {
+            self.fail("plugin initialize timed out");
         }
     }
 
     fn initialize_reply(&mut self, message: Message) {
         self.expire_initialize();
-        if self.refused {
+        if matches!(self.status, Status::Refused | Status::Failed) {
             return;
         }
         if let Message::Response(response) = message
@@ -181,7 +292,7 @@ impl Session {
             && let ResultValue::Initialized(result) = response.result
         {
             if result.protocol_version != 0 || result.encoding != "json" {
-                self.refused = true;
+                self.status = Status::Refused;
                 tracing::warn!(
                     version = result.protocol_version,
                     encoding = result.encoding,
@@ -193,7 +304,8 @@ impl Session {
                     .into_iter()
                     .filter(|event| self.manifest.events.contains(event))
                     .collect();
-                self.ready = true;
+                self.status = Status::Ready;
+                self.healthy_since = Some(Instant::now());
                 if self.events.contains(&Subscription::Focus)
                     && let Some((app_id, title)) = self.latest_focus.clone()
                     && let Err(error) = self.queue(&Call {
@@ -208,17 +320,50 @@ impl Session {
         }
     }
 
+    fn notice_actions(&mut self, actions: Vec<Action>) -> Vec<Delivery> {
+        match tehuti_core::plugin::validate_actions(actions, &self.manifest.permissions) {
+            Ok(actions) => vec![Delivery::Notice(actions)],
+            Err(reason) => {
+                self.invalid();
+                tracing::warn!(%reason, "plugin action rejected");
+                if let Err(error) = self.reject(None, &reason) {
+                    tracing::warn!(%error, "plugin rejection dropped");
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    fn complete_decision(&mut self, message: &Message) {
+        match message {
+            Message::Response(response) => {
+                let _deadline = self.pending.remove(&response.request_id);
+            }
+            Message::Error(response) => {
+                let _deadline = self.pending.remove(&response.request_id);
+            }
+            Message::Call(Call {
+                method: Method::SubmitActions { event_id, .. },
+                ..
+            }) => {
+                let _deadline = self.pending.remove(event_id);
+            }
+            Message::Call(_) => {}
+        }
+    }
+
     fn message(&mut self, message: Message) -> Vec<Delivery> {
         if let Message::Error(response) = &message {
             tracing::warn!(code = response.error.code, message = %response.error.message, "plugin request declined");
         }
-        if self.refused {
+        if matches!(self.status, Status::Refused | Status::Failed) {
             return Vec::new();
         }
-        if !self.ready {
+        if self.status != Status::Ready {
             self.initialize_reply(message);
             return Vec::new();
         }
+        self.complete_decision(&message);
         match message {
             Message::Response(response) => vec![Delivery::Reply {
                 key: tehuti_core::plugin::RequestKey {
@@ -254,15 +399,7 @@ impl Session {
             Message::Call(Call {
                 method: Method::Actions { actions },
                 ..
-            }) => match tehuti_core::plugin::validate_actions(actions, &self.manifest.permissions) {
-                Ok(actions) => vec![Delivery::Notice(actions)],
-                Err(reason) => {
-                    if let Err(error) = self.reject(None, &reason) {
-                        tracing::warn!(%error, "plugin rejection dropped");
-                    }
-                    Vec::new()
-                }
-            },
+            }) => self.notice_actions(actions),
             Message::Call(_) => Vec::new(),
         }
     }
@@ -309,20 +446,58 @@ impl Session {
     }
 }
 
-type Running = (Rc<RefCell<Session>>, Box<dyn Fn()>);
+type Running = (Rc<RefCell<Session>>, Box<dyn Fn()>, Box<dyn Fn()>);
 type Start = Box<dyn Fn(&Manifest) -> io::Result<Running>>;
 struct Entry {
     manifest: Manifest,
-    attempted: bool,
+    plugin: usize,
+    latest_focus: Option<(Option<String>, String)>,
+    started: bool,
+    restart_at: Option<Instant>,
+    backoff: Duration,
+    next_id: u64,
+    cleanup: Option<Box<dyn Fn()>>,
     session: Option<Rc<RefCell<Session>>>,
     wake: Option<Box<dyn Fn()>>,
+}
+
+impl Entry {
+    fn new(manifest: Manifest, plugin: usize) -> Self {
+        Self {
+            manifest,
+            plugin,
+            latest_focus: None,
+            started: false,
+            restart_at: None,
+            backoff: RESTART_BACKOFF_BASE,
+            next_id: 1,
+            cleanup: None,
+            session: None,
+            wake: None,
+        }
+    }
+}
+
+impl Drop for Entry {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
 }
 
 pub struct Plugins {
     entries: Vec<Entry>,
     start: Start,
     focus: Option<String>,
+    cleanup_timer: Box<dyn Fn()>,
 }
+impl Drop for Plugins {
+    fn drop(&mut self) {
+        (self.cleanup_timer)();
+    }
+}
+
 impl core::fmt::Debug for Plugins {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
@@ -340,21 +515,69 @@ impl Plugins {
             .filter(|entry| {
                 entry.session.as_ref().is_some_and(|session| {
                     let session = session.borrow();
-                    session.ready && !session.refused
+                    session.status == Status::Ready
                 })
             })
             .count()
     }
 
     fn start_entry(start: &Start, entry: &mut Entry) {
-        if !entry.attempted {
-            entry.attempted = true;
+        if entry.session.is_none() && entry.restart_at.is_none_or(|deadline| Instant::now() >= deadline) {
+            entry.started = true;
+            entry.restart_at = None;
             match start(&entry.manifest) {
-                Ok((session, wake)) => {
+                Ok((session, wake, cleanup)) => {
+                    {
+                        let mut session = session.borrow_mut();
+                        session.next_id = entry.next_id;
+                        session.plugin = entry.plugin;
+                        session.latest_focus.clone_from(&entry.latest_focus);
+                    }
+                    entry.cleanup = Some(cleanup);
                     entry.session = Some(session);
                     entry.wake = Some(wake);
                 }
-                Err(error) => tracing::warn!(%error, "plugin start failed"),
+                Err(error) => {
+                    tracing::warn!(%error, "plugin start failed");
+                    Self::schedule_restart(entry);
+                }
+            }
+        }
+    }
+
+    fn schedule_restart(entry: &mut Entry) {
+        entry.restart_at = Instant::now().checked_add(entry.backoff);
+        tracing::warn!(executable = %entry.manifest.executable, delay_ms = entry.backoff.as_millis(), "plugin restart backoff");
+        entry.backoff = entry.backoff.saturating_mul(2).min(RESTART_BACKOFF_CAP);
+    }
+
+    pub(crate) fn supervise(&mut self) {
+        let now = Instant::now();
+        for entry in &mut self.entries {
+            let failed = entry.session.as_ref().is_some_and(|session| {
+                let mut session = session.borrow_mut();
+                session.supervise(now);
+                entry.next_id = session.next_id;
+                if session.status != Status::Failed
+                    && session
+                        .healthy_since
+                        .is_some_and(|since| now.duration_since(since) >= RESTART_BACKOFF_RESET)
+                {
+                    entry.backoff = RESTART_BACKOFF_BASE;
+                    session.invalid_messages = 0;
+                }
+                session.status == Status::Failed
+            });
+            if failed {
+                if let Some(cleanup) = entry.cleanup.take() {
+                    cleanup();
+                }
+                entry.wake = None;
+                entry.session = None;
+                Self::schedule_restart(entry);
+            }
+            if entry.started {
+                Self::start_entry(&self.start, entry);
             }
         }
     }
@@ -364,11 +587,15 @@ impl Plugins {
             self.focus.clone_from(app_id);
         }
         for entry in &mut self.entries {
-            if entry.manifest.start == StartPolicy::Always
-                || self
-                    .focus
-                    .as_ref()
-                    .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id))
+            if let Event::Focus { app_id, title } = event {
+                entry.latest_focus = Some((app_id.clone(), title.clone()));
+            }
+            if !entry.started
+                && (entry.manifest.start == StartPolicy::Always
+                    || self
+                        .focus
+                        .as_ref()
+                        .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id)))
             {
                 Self::start_entry(&self.start, entry);
             }
@@ -387,8 +614,7 @@ impl Plugins {
             .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id))
             && entry.session.as_ref().is_some_and(|session| {
                 let session = session.borrow();
-                session.ready
-                    && !session.refused
+                session.status == Status::Ready
                     && session.events.contains(&match event {
                         Event::Speech { .. } => Subscription::Speech,
                         Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => {
@@ -412,14 +638,14 @@ impl Plugins {
             let mut session = session.borrow_mut();
             session.plugin = index;
             session.observe(event);
-            if !session.ready || session.refused {
+            if session.status != Status::Ready {
                 continue;
             }
             let Some(call) = session.call_for_event(event, route_button && selected == Some(index)) else {
                 continue;
             };
             let request_id = call.request_id;
-            if let Err(error) = session.queue(&call) {
+            if let Err(error) = session.queue_event(&call) {
                 tracing::warn!(%error, "plugin event dropped");
                 continue;
             }
@@ -450,7 +676,8 @@ pub fn install<Data: 'static>(
     compositor: fn(&mut Data) -> &mut Compositor,
 ) -> io::Result<Plugins> {
     let handle = event_loop.handle();
-    let start: Start = Box::new(move |manifest| start_process(&handle, manifest, compositor));
+    let start_handle = handle.clone();
+    let start: Start = Box::new(move |manifest| start_process(&start_handle, manifest, compositor));
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(directory)? {
         paths.push(entry?.path());
@@ -461,18 +688,7 @@ pub fn install<Data: 'static>(
         if path.extension().is_none_or(|extension| extension != "json") {
             continue;
         }
-        match std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&path)
-            .and_then(|file| {
-                if !file.metadata()?.is_file() {
-                    return Err(io::Error::other("manifest must be a regular file"));
-                }
-                let mut bytes = Vec::new();
-                let _count = file.take(65_537).read_to_end(&mut bytes)?;
-                tehuti_protocol::parse_manifest(&bytes).map_err(io::Error::other)
-            }) {
+        match read_manifest(&path) {
             Ok(mut manifest) => {
                 if Path::new(&manifest.executable).is_relative() {
                     manifest.executable = directory
@@ -480,12 +696,7 @@ pub fn install<Data: 'static>(
                         .to_string_lossy()
                         .into_owned();
                 }
-                let mut entry = Entry {
-                    manifest,
-                    attempted: false,
-                    session: None,
-                    wake: None,
-                };
+                let mut entry = Entry::new(manifest, entries.len());
                 if entry.manifest.start == StartPolicy::Always {
                     Plugins::start_entry(&start, &mut entry);
                 }
@@ -494,58 +705,79 @@ pub fn install<Data: 'static>(
             Err(error) => tracing::warn!(?path, %error, "plugin manifest skipped"),
         }
     }
+    let timer_token = handle
+        .insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(SUPERVISION_INTERVAL),
+            move |_, _, data| {
+                compositor(data).supervise_plugins();
+                smithay::reexports::calloop::timer::TimeoutAction::ToDuration(SUPERVISION_INTERVAL)
+            },
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(Plugins {
         entries,
         start,
         focus: None,
+        cleanup_timer: Box::new(move || handle.remove(timer_token)),
     })
 }
 
+fn read_manifest(path: &Path) -> io::Result<Manifest> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("manifest must be a regular file"));
+    }
+    let mut bytes = Vec::new();
+    let _count = file.take(65_537).read_to_end(&mut bytes)?;
+    tehuti_protocol::parse_manifest(&bytes).map_err(io::Error::other)
+}
+
 fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std::process::ChildStdout)> {
-    let mut child = Command::new(&manifest.executable)
+    let child = Command::new(&manifest.executable)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
-    let stdin = child
+    let mut process = Process { child: Some(child) };
+    let running_child = process
+        .child
+        .as_mut()
+        .ok_or_else(|| io::Error::other("plugin process missing"))?;
+    let stdin = running_child
         .stdin
         .take()
         .ok_or_else(|| io::Error::other("plugin stdin missing"))?;
-    let stdout = child
+    let stdout = running_child
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("plugin stdout missing"))?;
     rustix::fs::fcntl_setfl(&stdin, rustix::fs::OFlags::NONBLOCK)?;
     rustix::fs::fcntl_setfl(&stdout, rustix::fs::OFlags::NONBLOCK)?;
     let session = Rc::new(RefCell::new(Session {
-        child,
+        child: process,
         stdin,
         output: VecDeque::new(),
         input: Vec::new(),
         dropping_line: false,
-        ready: false,
+        status: Status::Starting,
         initialize_deadline: Instant::now()
             .checked_add(core::time::Duration::from_secs(2))
             .unwrap_or_else(Instant::now),
         latest_focus: None,
-        refused: false,
         events: Vec::new(),
         manifest: manifest.clone(),
         next_id: 1,
         plugin: usize::MAX,
+        invalid_messages: 0,
+        healthy_since: None,
+        pending: BTreeMap::new(),
+        read_window: Instant::now(),
+        read_bytes: 0,
     }));
-    session.borrow_mut().queue(&Call {
-        jsonrpc: RpcVersion::Two,
-        request_id: Some(0),
-        method: Method::Initialize(Initialize {
-            protocol_version: 0,
-            encoding: "json".into(),
-            core_version: env!("CARGO_PKG_VERSION").into(),
-            options: Some(
-                core::iter::once(("action_submission".into(), serde_json::json!("submit_actions"))).collect(),
-            ),
-        }),
-    })?;
+    session.borrow_mut().queue_initialize()?;
     Ok((session, stdout))
 }
 
@@ -564,20 +796,31 @@ fn start_process<Data: 'static>(
                 let result = writer.borrow_mut().write_ready();
                 Ok(result.unwrap_or_else(|error| {
                     tracing::warn!(%error, "plugin write failed");
-                    writer.borrow_mut().refused = true;
+                    writer.borrow_mut().fail("plugin pipe write failed");
                     PostAction::Remove
                 }))
             },
         )
         .map_err(|error| io::Error::other(error.to_string()))?;
-    insert_reader(handle, stdout, session.clone(), token, compositor)?;
+    let reader_token = match insert_reader(handle, stdout, session.clone(), token, compositor) {
+        Ok(reader_token) => reader_token,
+        Err(error) => {
+            handle.remove(token);
+            return Err(error);
+        }
+    };
     let wake_handle = handle.clone();
+    let cleanup_handle = handle.clone();
     Ok((
         session,
         Box::new(move || {
             if let Err(error) = wake_handle.enable(&token) {
                 tracing::warn!(%error, "plugin writer unavailable");
             }
+        }),
+        Box::new(move || {
+            cleanup_handle.remove(token);
+            cleanup_handle.remove(reader_token);
         }),
     ))
 }
@@ -588,10 +831,10 @@ fn insert_reader<Data: 'static>(
     session: Rc<RefCell<Session>>,
     writer_token: smithay::reexports::calloop::RegistrationToken,
     compositor: fn(&mut Data) -> &mut Compositor,
-) -> io::Result<()> {
+) -> io::Result<smithay::reexports::calloop::RegistrationToken> {
     let reader = session;
     let writer_handle = handle.downgrade();
-    let _reader_token = handle
+    let reader_token = handle
         .insert_source(
             Generic::new(
                 std::fs::File::from(std::os::fd::OwnedFd::from(stdout)),
@@ -610,7 +853,7 @@ fn insert_reader<Data: 'static>(
             },
         )
         .map_err(|error| io::Error::other(error.to_string()))?;
-    Ok(())
+    Ok(reader_token)
 }
 
 fn read_ready(
@@ -619,60 +862,77 @@ fn read_ready(
     compositor: &mut Compositor,
 ) -> PostAction {
     let mut bytes = [0; 4096];
-    for _attempt in 0..16 {
+    for _attempt in 0..READ_ATTEMPTS {
+        if reader.borrow().status == Status::Failed {
+            return PostAction::Remove;
+        }
         match source.read(&mut bytes) {
             Ok(0) => {
-                reader.borrow_mut().refused = true;
+                reader.borrow_mut().fail("plugin stdout closed");
                 return PostAction::Remove;
             }
             Ok(count) => {
+                if !reader.borrow_mut().accept_bytes(count) {
+                    return PostAction::Remove;
+                }
                 let deliveries = reader
                     .borrow_mut()
                     .receive(bytes.get(..count).unwrap_or_default());
                 compositor.advance_time();
-                for delivery in deliveries {
-                    match delivery {
-                        Delivery::Reply {
-                            key,
-                            result,
-                            submission_id,
-                        } => {
-                            let rejection = compositor.plugin_reply(key, result);
-                            let response = if let Some(request_id) = submission_id {
-                                let value = rejection.map_or_else(
-                                    || serde_json::json!({"jsonrpc":"2.0", "id":request_id, "result":[]}),
-                                    |rejected| serde_json::json!({"jsonrpc":"2.0", "id":request_id, "error":{"code":-32602, "message":rejected.reason}}));
-                                serde_json::to_vec(&value).map_err(io::Error::from).and_then(
-                                    |response_bytes| reader.borrow_mut().queue_bytes(response_bytes),
-                                )
-                            } else if let Some(rejected) = rejection {
-                                reader.borrow_mut().reject(Some(key.request_id), &rejected.reason)
-                            } else {
-                                Ok(())
-                            };
-                            if let Err(error) = response {
-                                tracing::warn!(%error, "plugin rejection dropped");
-                            }
-                        }
-                        Delivery::Notice(actions) => {
-                            for action in actions {
-                                compositor.apply_plugin_action(&action);
-                            }
-                        }
-                    }
-                }
+                deliver(reader, compositor, deliveries);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 return PostAction::Continue;
             }
             Err(error) => {
                 tracing::warn!(%error, "plugin read failed");
-                reader.borrow_mut().refused = true;
+                reader.borrow_mut().fail("plugin pipe read failed");
                 return PostAction::Remove;
             }
         }
     }
     PostAction::Continue
+}
+
+fn deliver(reader: &Rc<RefCell<Session>>, compositor: &mut Compositor, deliveries: Vec<Delivery>) {
+    for delivery in deliveries {
+        match delivery {
+            Delivery::Reply {
+                key,
+                result,
+                submission_id,
+            } => {
+                let already_invalid = result.is_err();
+                let rejection = compositor.plugin_reply(key, result);
+                if rejection.is_some() {
+                    tracing::warn!("plugin action rejected");
+                    if !already_invalid {
+                        reader.borrow_mut().invalid();
+                    }
+                }
+                let response = if let Some(request_id) = submission_id {
+                    let value = rejection.map_or_else(
+                                    || serde_json::json!({"jsonrpc":"2.0", "id":request_id, "result":[]}),
+                                    |rejected| serde_json::json!({"jsonrpc":"2.0", "id":request_id, "error":{"code":-32602, "message":rejected.reason}}));
+                    serde_json::to_vec(&value)
+                        .map_err(io::Error::from)
+                        .and_then(|response_bytes| reader.borrow_mut().queue_bytes(response_bytes))
+                } else if let Some(rejected) = rejection {
+                    reader.borrow_mut().reject(Some(key.request_id), &rejected.reason)
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = response {
+                    tracing::warn!(%error, "plugin rejection dropped");
+                }
+            }
+            Delivery::Notice(actions) => {
+                for action in actions {
+                    compositor.apply_plugin_action(&action);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
