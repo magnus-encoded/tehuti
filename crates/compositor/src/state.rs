@@ -88,6 +88,7 @@ pub struct Compositor {
     notice_until: Option<Instant>,
     notice_text: Option<String>,
     launchers: Vec<std::process::Child>,
+    desktop_entries: crate::desktop::EntryCache,
     launch_socket: Option<std::ffi::OsString>,
     windows: tehuti_core::windows::Windows<WlSurface>,
     surfaces: CompositorState,
@@ -108,13 +109,15 @@ pub enum SetupError {
     Keymap(#[from] smithay::input::keyboard::Error),
     #[error("keyboard keymap compilation failed")]
     KeymapCompilation,
+    #[error("desktop entry refresh worker: {0}")]
+    DesktopEntries(#[from] std::io::Error),
 }
 
 impl Compositor {
     /// Creates the Wayland globals and a seat with one keyboard.
     ///
     /// # Errors
-    /// The keyboard keymap fails to load.
+    /// The keyboard keymap fails to load or the desktop entry worker cannot start.
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
@@ -148,6 +151,7 @@ impl Compositor {
             notice_until: None,
             notice_text: None,
             launchers: Vec::new(),
+            desktop_entries: crate::desktop::EntryCache::new()?,
             launch_socket: None,
             windows: tehuti_core::windows::Windows::new(),
             surfaces: CompositorState::new::<Self>(display),
@@ -354,6 +358,7 @@ impl Compositor {
         }
         self.poll_secret_lookup();
         self.poll_launchers();
+        self.desktop_entries.poll();
     }
 
     fn reset_secret_confirmation_for_focus(&mut self) {
@@ -615,13 +620,9 @@ impl Compositor {
                     self.sync_window_focus();
                 }
             }
-            Action::Notify { text } => {
+            Action::Notice { text } => {
                 let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
                 self.notice_text = Some(text.as_str().into());
-                self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
-            }
-            Action::Notice { .. } => {
-                self.notice_text = None;
                 self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
             }
         }
@@ -722,7 +723,7 @@ impl Compositor {
     }
 
     fn launch_application(&mut self, desktop_entry: &tehuti_protocol::Text) {
-        let installed = crate::desktop::installed_entries();
+        let installed = self.desktop_entries.entries().to_vec();
         let decision = self.windows.step(tehuti_core::windows::Input::Launch {
             desktop_entry: desktop_entry.as_str().into(),
             installed,

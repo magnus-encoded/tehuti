@@ -210,7 +210,7 @@ Their action shapes are:
 ```json
 {"type":"launch","desktop_entry":"org.example.App.desktop"}
 {"type":"close"}
-{"type":"notify","text":"Ready"}
+{"type":"notice","text":"Ready"}
 ```
 
 These actions are reserved for core contexts; plugins cannot submit them.
@@ -219,7 +219,8 @@ socket. Desktop entry ids include `.desktop` and match entries beneath
 `$XDG_DATA_HOME/applications` (default `~/.local/share/applications`) and
 `$XDG_DATA_DIRS` (default `/usr/local/share:/usr/share`). Subdirectory separators
 become hyphens in the id. Directory symlinks are skipped and discovery stops
-at sixteen directory levels. Unknown ids, unavailable launchers and failed
+at sixteen directory levels. Discovery runs once at startup and refreshes every
+thirty seconds on a worker thread. Launch reads the cached ids. Unknown ids, unavailable launchers and failed
 launches show `APPLICATION UNAVAILABLE` without changing focus. Launch itself
 does not select a window; a newly mapped application window receives focus.
 At most sixteen launcher processes may be pending; excess launches show the
@@ -228,7 +229,7 @@ same notice. The compositor polls launch completion without blocking input.
 Close sends the focused client a close request, removes its window from the
 mapped set and focuses the most recently mapped remaining window. The client
 may finish shutting down later. Closing without a focused window does nothing.
-Notify displays NUL-free text for three seconds without taking keyboard focus.
+The `notify` TOML key produces a Notice action, which displays NUL-free text for three seconds without taking keyboard focus.
 The overlay renders two lines of forty characters, using uppercase Latin
 letters, digits and punctuation; unsupported characters appear as spaces.
 A later notice replaces the previous one. Secret confirmation overlays take

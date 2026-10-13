@@ -9,7 +9,7 @@ mod window_laws {
         #[test]
         fn focus_survives_arbitrary_lifecycle_and_action_sequences(
             installed in prop::collection::vec(any::<tehuti_protocol::Text>(), 0..30),
-            events in prop::collection::vec((0_u8..7, any::<u8>(), any::<tehuti_protocol::Text>()), 0..300),
+            events in prop::collection::vec((0_u8..6, any::<u8>(), any::<tehuti_protocol::Text>()), 0..300),
         ) {
             let mut windows = Windows::new();
             let mut existing = std::collections::HashSet::new();
@@ -24,8 +24,7 @@ mod window_laws {
                     }
                     3 => Input::Launch { desktop_entry: entry_id.as_str().into(), installed: installed.iter().chain(core::iter::once(&entry_id)).map(|entry| entry.as_str().into()).collect() },
                     4 => Input::Launch { desktop_entry: entry_id.as_str().into(), installed: installed.iter().filter(|entry| **entry != entry_id).map(|entry| entry.as_str().into()).collect() },
-                    5 => Input::Notify,
-                    _ => Input::Focus(window),
+                    _ => Input::Notify,
                 };
                 let effect = windows.step(input);
                 let after = windows.focus().copied();

@@ -16,7 +16,7 @@ mod context_actions {
             let (field, mapped, expected) = match kind {
                 0 => ("launch", value.as_str(), Action::Launch { desktop_entry: value.clone() }),
                 1 => ("close", "focused", Action::Close),
-                _ => ("notify", value.as_str(), Action::Notify { text: value.clone() }),
+                _ => ("notify", value.as_str(), Action::Notice { text: value.clone() }),
             };
             let mapping = toml::Value::Table(toml::Table::from_iter([
                 (field.into(), toml::Value::String(mapped.into())),

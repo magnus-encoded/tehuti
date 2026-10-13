@@ -10,7 +10,6 @@ pub struct Windows<Window> {
 pub enum Input<Window> {
     Map(Window),
     Unmap(Window),
-    Focus(Window),
     Close,
     Launch {
         desktop_entry: String,
@@ -54,11 +53,6 @@ impl<Window: Clone + Eq> Windows<Window> {
                 self.focused = Some(window);
             }
             Input::Unmap(window) => self.remove(&window),
-            Input::Focus(window) => {
-                if self.mapped.contains(&window) {
-                    self.focused = Some(window);
-                }
-            }
             Input::Close => {
                 if let Some(window) = self.focused.clone() {
                     self.remove(&window);

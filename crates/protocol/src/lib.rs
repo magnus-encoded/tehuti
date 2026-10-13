@@ -200,7 +200,7 @@ impl MappingAction {
                 desktop_entry: launch.clone(),
             },
             Self::Close { .. } => Action::Close,
-            Self::Notify { notify } => Action::Notify { text: notify.clone() },
+            Self::Notify { notify } => Action::Notice { text: notify.clone() },
             Self::Key { key } => Action::Key { key: *key },
             Self::Text { text } => Action::Text { text: text.clone() },
             Self::Secret { secret } => Action::SecretRequest {
@@ -231,31 +231,20 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum Action {
-    Launch {
-        desktop_entry: Text,
-    },
+    /// Launch an installed desktop entry.
+    Launch { desktop_entry: Text },
+    /// Close the focused client and focus the most recently mapped remaining window.
     Close,
-    Notify {
-        text: Text,
-    },
     /// Press and release `key` in the focused client.
-    Key {
-        key: KeyName,
-    },
+    Key { key: KeyName },
     /// Send Unicode text to the focused client.
-    Text {
-        text: Text,
-    },
+    Text { text: Text },
     /// Ask the compositor to confirm delivery of a named secret reference.
-    SecretRequest {
-        reference: SecretReference,
-    },
+    SecretRequest { reference: SecretReference },
     /// Release the controller and stop the compositor.
     Quit,
     /// Display a notice without changing the focused client.
-    Notice {
-        text: Text,
-    },
+    Notice { text: Text },
 }
 
 mod plugin;
