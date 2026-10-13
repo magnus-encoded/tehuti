@@ -458,15 +458,30 @@ mod layout_laws {
             .collect()
     }
 
-    /// Whether another column besides the focused one is fully visible, so centring an expanded
-    /// focused column could push it out of view (the NW.11 [confirm] case).
+    /// Whether centring the focused column would push another currently fully visible column out
+    /// of view (the NW.11 [confirm] case).
     fn displaces_on_centring(snap: &Snapshot) -> bool {
-        let (Some(output), Some(workspace)) = (focused_output(snap), focused_workspace(snap)) else {
+        let (Some(output), Some(workspace), Some(focused)) = (
+            focused_output(snap),
+            focused_workspace(snap),
+            focused_column(snap).and_then(column_rect),
+        ) else {
             return false;
         };
+        let working = output.working_area;
+        let shift = working.width.mul_add(0.5, working.x) - focused.width.mul_add(0.5, focused.x);
         workspace.columns.iter().enumerate().any(|(index, column)| {
             Some(index) != workspace.focused_column
-                && column_rect(column).is_some_and(|tile| fully_visible(tile, output.working_area))
+                && column_rect(column).is_some_and(|tile| {
+                    fully_visible(tile, working)
+                        && !fully_visible(
+                            Rect {
+                                x: tile.x + shift,
+                                ..tile
+                            },
+                            working,
+                        )
+                })
         })
     }
 
@@ -798,15 +813,32 @@ mod layout_laws {
                 .filter(|column| column_rect(column).is_some_and(|tile| fully_visible(tile, output.working_area)))
                 .filter_map(|column| column.tiles.first().map(|tile| tile.window)).collect();
             prop_assume!(focused_tile(&before).is_some_and(|tile| visible.contains(&tile.window)));
-            // NW.11 [confirm]: under "always" only the case where centring would displace another visible column is open.
-            prop_assume!(!always || visible.len() == 1);
+            // NW.11 [confirm]: under "always" the case where centring the expanded column would push
+            // another visible column out of view is open. The expected layout packs the visible
+            // columns edge to edge; centring then displaces something unless the focused column
+            // already sits in the middle.
+            let focused_window = focused_tile(&before).map(|tile| tile.window);
+            let others: f64 = visible.iter().filter(|window| Some(**window) != focused_window)
+                .filter_map(|window| tile_of(&before, *window)).map(|tile| tile.tile.width).sum();
+            let count = f64::from(u32::try_from(visible.len()).unwrap_or(u32::MAX));
+            let expanded = (count + 1.0).mul_add(-output.gaps, output.working_area.width) - others;
+            let mut x = output.working_area.x + output.gaps;
+            let mut predicted = None;
+            for window in &visible {
+                let width = if Some(*window) == focused_window { expanded } else { tile_of(&before, *window).map_or(0.0, |tile| tile.tile.width) };
+                if Some(*window) == focused_window {
+                    predicted = Some(Rect { x, width, ..output.working_area });
+                }
+                x += width + output.gaps;
+            }
+            let displaces = visible.len() > 1 && !predicted.is_some_and(|rect| centred(rect, output.working_area));
+            prop_assume!(!always || !displaces);
             world.apply(Command::ExpandColumnToAvailableWidth);
             let after = world.snap();
             let widths: f64 = visible.iter().filter_map(|window| tile_of(&after, *window)).map(|tile| tile.tile.width).sum();
             for window in &visible {
                 prop_assert!(tile_of(&after, *window).is_some_and(|tile| fully_visible(tile.tile, output.working_area)));
             }
-            let count = f64::from(u32::try_from(visible.len()).unwrap_or(u32::MAX));
             prop_assert!(near((count + 1.0).mul_add(output.gaps, widths), output.working_area.width));
         }
 
@@ -1267,6 +1299,14 @@ mod layout_laws {
             for window in &members {
                 prop_assert_eq!(workspace_of(&snap, *window).map(|workspace| workspace.workspace), ids.get(target).copied(), "window {:?}", window);
             }
+            // The column moves whole: one column, members in the same order.
+            let moved: Vec<Vec<WindowId>> = members.first().and_then(|first| workspace_of(&snap, *first))
+                .map(|workspace| workspace.columns.iter()
+                    .map(|column| column.tiles.iter().map(|tile| tile.window).collect::<Vec<_>>())
+                    .filter(|column| column.iter().any(|window| members.contains(window)))
+                    .collect())
+                .unwrap_or_default();
+            prop_assert_eq!(moved, vec![members]);
         }
 
         #[test]
@@ -1902,21 +1942,14 @@ mod layout_laws {
             geometry in geometry_strategy(),
             ops in ops_strategy(),
         ) {
-            // NW.11 [confirm]: only an expansion that leaves another column fully visible may skip
-            // centring, and only until the focused column or its width changes.
+            // NW.11 [confirm]: exempt only a state where centring would push another fully visible
+            // column out of view.
             let mut world = World::single(config, geometry)?;
-            let mut exempt: Option<(Option<WindowId>, Option<PresetSize>)> = None;
             for step in &ops {
-                let before = world.snap();
                 world.run(core::slice::from_ref(step))?;
                 let snap = world.snap();
-                let key = (snap.focused_window, focused_column(&snap).and_then(|column| column.width));
-                if matches!(step, Step::Run(Command::ExpandColumnToAvailableWidth)) && displaces_on_centring(&before) {
-                    exempt = Some(key);
-                } else if exempt.is_some_and(|held| held != key) {
-                    exempt = None;
-                }
-                if exempt.is_some() || !focused_column(&snap).is_some_and(column_is_normal) {
+                let exempt = displaces_on_centring(&snap);
+                if exempt || !focused_column(&snap).is_some_and(column_is_normal) {
                     continue;
                 }
                 let Some((tile, working, gaps)) = focused_geometry(&snap) else { continue };
