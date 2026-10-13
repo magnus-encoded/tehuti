@@ -210,6 +210,26 @@ pub enum Command {
     ToggleMaximizeToEdges,
 }
 
+/// The layout command a context's tiling action stands for.
+#[must_use]
+pub const fn command_for(action: tehuti_protocol::LayoutAction) -> Command {
+    match action {
+        tehuti_protocol::LayoutAction::FocusColumnLeft => Command::FocusColumnLeft,
+        tehuti_protocol::LayoutAction::FocusColumnRight => Command::FocusColumnRight,
+        tehuti_protocol::LayoutAction::FocusWindowUp => Command::FocusWindowUp,
+        tehuti_protocol::LayoutAction::FocusWindowDown => Command::FocusWindowDown,
+        tehuti_protocol::LayoutAction::MoveColumnLeft => Command::MoveColumnLeft,
+        tehuti_protocol::LayoutAction::MoveColumnRight => Command::MoveColumnRight,
+        tehuti_protocol::LayoutAction::SwitchPresetColumnWidth => Command::SwitchPresetColumnWidth,
+        tehuti_protocol::LayoutAction::FocusWorkspaceDown => Command::FocusWorkspaceDown,
+        tehuti_protocol::LayoutAction::FocusWorkspaceUp => Command::FocusWorkspaceUp,
+        tehuti_protocol::LayoutAction::MoveColumnToWorkspaceDown => Command::MoveColumnToWorkspaceDown,
+        tehuti_protocol::LayoutAction::MoveColumnToWorkspaceUp => Command::MoveColumnToWorkspaceUp,
+        tehuti_protocol::LayoutAction::ToggleFullscreen => Command::ToggleFullscreen,
+        tehuti_protocol::LayoutAction::MaximizeColumn => Command::MaximizeColumn,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutError {
     UnknownWindow(WindowId),
