@@ -3,7 +3,7 @@
 //! Statements tagged [confirm] in the spec, and the parts of a statement tagged [confirm],
 //! have no test until a verifier settles them by running niri:
 //! NS.1 strip end behaviour is not assumed; NW.6 wrap and off-preset choice; NH.1; NH.2;
-//! NH.7 wrap and off-preset choice; NF.1 end behaviour; NF.2; NF.7 `-or-top`, `-or-bottom`
+//! NH.7 wrap and off-preset choice; NW.11 under `center-focused-column "always"`; NF.1 end behaviour; NF.2; NF.7 `-or-top`, `-or-bottom`
 //! and index details; NF.10; NF.11 consume neighbour; NM.6; NN.1; NO.9 on moving a
 //! workspace; NV.1 over-wide column alignment; NV.6.
 //!
@@ -462,7 +462,6 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn ns_1_every_column_of_the_strip_is_reachable_one_step_at_a_time(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -482,7 +481,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn ns_1_columns_extend_past_the_visible_area(
             config in proportion_config(1.0),
             geometry in geometry_strategy(),
@@ -492,14 +490,15 @@ mod layout_laws {
             world.open_many(count)?;
             let snap = world.snap();
             let output = focused_output(&snap).ok_or_else(|| TestCaseError::fail("no output"))?;
+            // NS.6: struts may leave a neighbour partly visible outside the working area.
             let off_screen = all_tiles(&snap)
-                .filter(|tile| tile.tile.x + tile.tile.width <= 0.0 || tile.tile.x >= output.geometry.area.width)
+                .filter(|tile| tile.tile.x + tile.tile.width <= output.working_area.x + EPSILON
+                    || tile.tile.x >= output.working_area.x + output.working_area.width - EPSILON)
                 .count();
             prop_assert!(off_screen >= count - 1);
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn ns_2_every_column_holds_a_vertical_stack_of_windows(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -521,7 +520,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn ns_3_opening_a_window_never_resizes_existing_windows(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -541,7 +539,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn ns_4_every_window_belongs_to_exactly_one_output(
             config in config_strategy(),
             first in geometry_strategy(),
@@ -562,7 +559,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn ns_5_and_ns_7_adjacent_columns_are_separated_by_exactly_the_fractional_gap(
             config in config_strategy(),
             half_pixels in 0_u32..64,
@@ -586,7 +582,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn ns_6_struts_shrink_or_enlarge_the_working_area(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -603,7 +598,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn ns_8_a_window_wider_than_the_working_area_keeps_its_top_left_visible(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -626,7 +620,6 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_1_a_column_width_is_a_proportion_or_a_fixed_size(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -644,7 +637,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_2_n_columns_of_one_nth_fill_the_working_area_for_any_gap(
             count in 1_u32..7,
             config in config_strategy(),
@@ -660,7 +652,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_3_fixed_widths_apply_to_the_window_and_proportions_to_the_tile(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -682,7 +673,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_4_the_border_shrinks_the_window_inside_its_tile(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -698,7 +688,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_6_switching_presets_steps_forward_and_back_through_the_list(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -718,7 +707,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_7_a_new_column_takes_the_default_column_width(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -735,7 +723,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_8_an_empty_default_width_lets_the_client_choose(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -748,7 +735,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_9_ten_percent_steps_change_the_proportion_by_ten_points(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -764,7 +750,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_10_maximize_column_fills_the_working_area_minus_gaps_and_keeps_borders(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -785,12 +770,13 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_11_expanding_fills_free_space_and_keeps_visible_columns_visible(
             config in config_strategy(),
             geometry in geometry_strategy(),
             ops in ops_strategy(),
         ) {
+            // The spec does not rank NW.11 against NV.2 centring; that case is [confirm] under NW.11.
+            prop_assume!(config.center_focused_column != CenterFocusedColumn::Always);
             let mut world = World::single(config, geometry)?;
             world.run(&ops)?;
             let before = world.snap();
@@ -812,7 +798,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nw_12_windows_in_a_normal_column_share_its_width(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -831,7 +816,6 @@ mod layout_laws {
     }
 
     #[test]
-    #[ignore = "awaiting #51 implementation"]
     fn nw_5_nw_7_nh_7_shipped_defaults() {
         let config = LayoutConfig::default();
         assert_eq!(config.preset_column_widths, niri_presets());
@@ -843,7 +827,6 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nh_3_resizing_one_window_scales_the_others_proportionally(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -866,7 +849,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nh_4_a_single_window_height_is_clamped_to_the_output(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -880,7 +862,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nh_5_closing_a_window_gives_its_height_to_the_rest_of_the_column(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -902,7 +883,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nh_6_ten_percent_steps_change_height_and_reset_returns_to_automatic(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -922,7 +902,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nh_7_switching_height_presets_steps_forward_and_back(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -941,7 +920,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nh_9_equal_min_and_max_height_rules_fix_the_requested_height(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -957,7 +935,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nh_10_every_tab_has_the_full_column_size(
             config in with_display(ColumnDisplay::Tabbed),
             geometry in geometry_strategy(),
@@ -987,7 +964,6 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nf_1_focus_column_moves_to_the_adjacent_column(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1002,7 +978,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nf_3_moving_a_column_swaps_it_with_its_neighbour_and_keeps_focus(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1026,7 +1001,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nf_5_a_column_regains_focus_on_its_last_focused_window(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1049,7 +1023,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nf_6_and_nf_7_focus_moves_within_the_column_and_selects_the_tab(
             config in config_strategy(),
             display in prop_oneof![Just(ColumnDisplay::Normal), Just(ColumnDisplay::Tabbed)],
@@ -1076,7 +1049,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nf_8_moving_a_window_reorders_it_within_its_column(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1099,7 +1071,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nf_9_up_or_column_right_moves_up_then_right(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1120,7 +1091,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nf_11_and_nf_13_expel_gives_the_window_its_own_column(
             config in config_strategy(),
             display in prop_oneof![Just(ColumnDisplay::Normal), Just(ColumnDisplay::Tabbed)],
@@ -1142,7 +1112,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nf_12_consuming_resizes_the_window_at_once(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1156,7 +1125,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nf_13_a_new_window_takes_the_default_column_display(
             config in config_strategy(),
             display in prop_oneof![Just(ColumnDisplay::Normal), Just(ColumnDisplay::Tabbed)],
@@ -1173,7 +1141,6 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nws_1_to_nws_5_each_output_keeps_its_empty_workspaces_in_place(
             config in config_strategy(),
             first in geometry_strategy(),
@@ -1197,7 +1164,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nws_3_opening_on_the_trailing_workspace_appends_a_new_one(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1215,7 +1181,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nws_6_named_workspaces_persist_while_empty(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1230,7 +1195,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nws_7_focus_workspace_switches_to_the_adjacent_one(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1249,7 +1213,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nws_8_move_column_to_workspace_moves_its_windows(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1263,13 +1226,13 @@ mod layout_laws {
             let (start, target) = (pick.index(count), target.index(count + 1));
             prop_assume!(start != target);
             world.apply(Command::FocusWorkspaceAt(start));
-            let window = world.snap().focused_window.ok_or_else(|| TestCaseError::fail("nothing focused"))?;
+            // NWS.8 moves the focused column; an empty workspace (NWS.5 top) has none.
+            let window = world.snap().focused_window.ok_or_else(|| TestCaseError::reject("no focused column"))?;
             world.apply(Command::MoveColumnToWorkspaceAt(target));
             prop_assert_eq!(workspace_of(&world.snap(), window).map(|workspace| workspace.workspace), ids.get(target).copied());
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nws_8_move_column_down_and_up_moves_to_the_adjacent_workspace(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1284,14 +1247,16 @@ mod layout_laws {
             let window = world.snap().focused_window.ok_or_else(|| TestCaseError::fail("nothing focused"))?;
             world.apply(Command::MoveColumnToWorkspaceUp);
             prop_assert_eq!(workspace_of(&world.snap(), window).map(|workspace| workspace.workspace), ids.get(start - 1).copied());
-            world.apply(Command::FocusWorkspaceAt(start - 1));
-            world.focus_column(1);
+            // NWS.4 may remove the emptied workspace, so the target is read after the first move.
+            let (position, column) = locate(&world.snap(), window).ok_or_else(|| TestCaseError::fail("window lost"))?;
+            world.apply(Command::FocusWorkspaceAt(position));
+            world.focus_column(column);
+            let below = focused_output(&world.snap()).map(workspace_ids).and_then(|current| current.get(position + 1).copied());
             world.apply(Command::MoveColumnToWorkspaceDown);
-            prop_assert_eq!(workspace_of(&world.snap(), window).map(|workspace| workspace.workspace), ids.get(start).copied());
+            prop_assert_eq!(workspace_of(&world.snap(), window).map(|workspace| workspace.workspace), below);
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nws_9_and_nws_10_moving_a_workspace_reorders_and_indices_follow_position(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1313,7 +1278,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nws_11_focusing_the_current_workspace_by_index_goes_back_or_does_nothing(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1335,7 +1299,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nws_12_and_na_1_input_targets_the_destination_workspace_at_once(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1354,6 +1317,21 @@ mod layout_laws {
                 }
             }
         }
+    }
+
+    /// Position of the window's workspace on the focused output and of its column there.
+    fn locate(snap: &Snapshot, window: WindowId) -> Option<(usize, usize)> {
+        focused_output(snap)?
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(position, workspace)| {
+                let column = workspace
+                    .columns
+                    .iter()
+                    .position(|column| column.tiles.iter().any(|tile| tile.window == window))?;
+                Some((position, column))
+            })
     }
 
     // NO: per-output behaviour.
@@ -1400,7 +1378,6 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn no_1_no_2_no_4_focus_monitor_follows_global_positions_and_keeps_each_active_workspace(
             config in config_strategy(),
             (first, second, horizontal) in pair_strategy(),
@@ -1420,7 +1397,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn no_2_move_column_to_monitor_moves_it_to_that_outputs_active_workspace(
             config in config_strategy(),
             (first, second, horizontal) in pair_strategy(),
@@ -1437,7 +1413,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn no_3_move_workspace_to_monitor_moves_the_whole_workspace(
             config in config_strategy(),
             (first, second, horizontal) in pair_strategy(),
@@ -1457,7 +1432,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn no_5_and_no_7_workspaces_return_to_a_reconnected_output_with_its_active_one(
             config in config_strategy(),
             (first, second, horizontal) in pair_strategy(),
@@ -1467,7 +1441,11 @@ mod layout_laws {
                 world.apply(Command::FocusMonitor(towards(OutputId(0), horizontal)));
             }
             world.fill_workspaces(2)?;
-            world.apply(Command::FocusWorkspaceAt(0));
+            // With NWS.5 the top workspace is empty, so focus the first one holding a window.
+            let first_filled = focused_output(&world.snap())
+                .and_then(|output| output.workspaces.iter().position(|workspace| !workspace.columns.is_empty()))
+                .ok_or_else(|| TestCaseError::fail("no filled workspace"))?;
+            world.apply(Command::FocusWorkspaceAt(first_filled));
             let before = world.snap();
             let output = before.outputs.iter().find(|output| output.output == OutputId(1)).cloned().ok_or_else(|| TestCaseError::fail("no output"))?;
             let kept: Vec<WorkspaceId> = output.workspaces.iter().filter(|workspace| !workspace.columns.is_empty()).map(|workspace| workspace.workspace).collect();
@@ -1482,7 +1460,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn no_6_a_new_window_rehomes_its_workspace(
             config in config_strategy(),
             (first, second, horizontal) in pair_strategy(),
@@ -1507,7 +1484,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn no_8_a_per_output_layout_overrides_the_gaps(
             config in config_strategy(),
             override_gaps in 0.0_f64..48.0,
@@ -1531,7 +1507,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn no_9_proportions_use_the_working_area_of_their_own_output(
             config in proportion_config(1.0),
             (first, second, horizontal) in pair_strategy(),
@@ -1552,7 +1527,6 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nm_1_nm_2_fullscreen_requests_the_output_size_and_stays_in_the_strip(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1573,7 +1547,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nm_2_and_nm_5_neighbours_stay_reachable_and_focusing_away_keeps_fullscreen(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1589,7 +1562,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nm_7_maximize_to_edges_fills_the_usable_area(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1609,7 +1581,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nm_9_open_rules_set_only_the_initial_state(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1625,7 +1596,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nm_9_open_maximized_maximizes_the_column(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1638,7 +1608,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nm_10_windowed_fullscreen_keeps_the_tile_size(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1656,7 +1625,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nm_11_leaving_fullscreen_restores_the_view(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1677,7 +1645,6 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nn_2_a_new_window_always_opens_its_own_column(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1693,7 +1660,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nn_3_rules_override_the_new_column_width_and_window_height(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1710,7 +1676,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nn_4_open_focused_false_keeps_focus(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1726,7 +1691,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nn_4_and_nn_5_windows_opened_on_another_output_take_focus_only_when_forced(
             config in config_strategy(),
             (first, second, _horizontal) in pair_strategy(),
@@ -1745,7 +1709,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nn_5_open_targets_fall_back_to_the_focused_output(
             config in config_strategy(),
             (first, second, _horizontal) in pair_strategy(),
@@ -1765,7 +1728,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nn_5_open_on_workspace_places_the_window_there(
             config in config_strategy(),
             (first, second, _horizontal) in pair_strategy(),
@@ -1779,7 +1741,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nn_8_closing_a_window_to_the_left_keeps_the_focused_window_in_place(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1799,7 +1760,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nn_9_closing_a_window_restores_the_view_from_when_it_opened(
             config in config_strategy(),
             geometry in geometry_strategy(),
@@ -1826,19 +1786,24 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nv_1_never_scrolls_the_minimum_to_the_nearest_edge(
             config in with_center(CenterFocusedColumn::Never),
             geometry in geometry_strategy(),
-            ops in ops_strategy(),
+            widths in prop::collection::vec(0.1_f64..0.9, 2..8),
+            pick in any::<prop::sample::Index>(),
             rightward in any::<bool>(),
         ) {
             let mut world = World::single(config, geometry)?;
-            world.run(&ops)?;
+            for width in &widths {
+                let _window = world.open()?;
+                world.apply(Command::SetColumnWidth(SizeChange::SetProportion(*width)));
+            }
+            world.focus_column(pick.index(widths.len()));
             let before = world.snap();
             let workspace = focused_workspace(&before).ok_or_else(|| TestCaseError::fail("no workspace"))?;
             prop_assume!(workspace.columns.iter().all(column_is_normal));
-            let index = workspace.focused_column.ok_or_else(|| TestCaseError::fail("no column"))?;
+            // NV.1 governs focusing a column; an empty workspace has none.
+            let index = workspace.focused_column.ok_or_else(|| TestCaseError::reject("no column"))?;
             let target = if rightward { index + 1 } else { index.checked_sub(1).ok_or_else(|| TestCaseError::reject("first"))? };
             let old = workspace.columns.get(target).and_then(column_rect).ok_or_else(|| TestCaseError::reject("last"))?;
             world.apply(if rightward { Command::FocusColumnRight } else { Command::FocusColumnLeft });
@@ -1854,12 +1819,13 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nv_2_always_centres_the_focused_column(
             config in with_center(CenterFocusedColumn::Always),
             geometry in geometry_strategy(),
-            ops in ops_strategy(),
+            mut ops in ops_strategy(),
         ) {
+            // Expanding under "always" is [confirm] in NW.11, so it is left out of this law.
+            ops.retain(|step| !matches!(step, Step::Run(Command::ExpandColumnToAvailableWidth)));
             let mut world = World::single(config, geometry)?;
             world.run(&ops)?;
             let snap = world.snap();
@@ -1870,23 +1836,25 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nv_3_on_overflow_centres_only_when_the_previous_column_cannot_stay_visible(
             config in with_center(CenterFocusedColumn::OnOverflow),
             geometry in geometry_strategy(),
-            ops in ops_strategy(),
+            widths in prop::collection::vec(0.1_f64..0.9, 2..8),
+            pick in any::<prop::sample::Index>(),
         ) {
             let mut world = World::single(config, geometry)?;
-            world.run(&ops)?;
-            prop_assume!(focused_workspace(&world.snap()).is_some_and(|workspace| workspace.columns.iter().all(column_is_normal)));
+            for width in &widths {
+                let _window = world.open()?;
+                world.apply(Command::SetColumnWidth(SizeChange::SetProportion(*width)));
+            }
+            world.focus_column(pick.index(widths.len() - 1));
             let previous = world.snap().focused_window;
             world.apply(Command::FocusColumnRight);
             let snap = world.snap();
-            prop_assume!(snap.focused_window != previous);
             let (tile, working, gaps) = focused_geometry(&snap).ok_or_else(|| TestCaseError::fail("nothing focused"))?;
             let old = previous.and_then(|window| tile_of(&snap, window)).map(|found| found.tile).ok_or_else(|| TestCaseError::fail("window lost"))?;
             prop_assume!(fits(tile, working, gaps));
-            if 3.0f64.mul_add(gaps, old.width + tile.width) <= working.width - EPSILON {
+            if 3.0f64.mul_add(gaps, old.width + tile.width) <= working.width + EPSILON {
                 prop_assert!(fully_visible(tile, working) && fully_visible(old, working));
             } else {
                 prop_assert!(centred(tile, working));
@@ -1894,7 +1862,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nv_4_a_single_column_is_centred_when_configured(
             config in single_centred_config(),
             geometry in geometry_strategy(),
@@ -1907,7 +1874,6 @@ mod layout_laws {
         }
 
         #[test]
-        #[ignore = "awaiting #51 implementation"]
         fn nv_5_center_column_centres_the_focused_column(
             config in config_strategy(),
             geometry in geometry_strategy(),

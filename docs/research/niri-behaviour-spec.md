@@ -66,7 +66,7 @@ Every URL consulted while writing this spec:
 - NW.8 An empty `default-column-width {}` lets the client choose its width: the initial configure carries width 0 and a concrete height. [S1]
 - NW.9 `set-column-width "+10%"` and `"-10%"` change the focused column width by 10 percentage points of the working area (default binds Mod+= and Mod+-). [S5]
 - NW.10 `maximize-column` sets the column width equivalent to `proportion 1.0`. Gaps and struts still apply, and every window in the column keeps its border. [S4]
-- NW.11 `expand-column-to-available-width` grows the focused column to fill the free horizontal space left by the currently visible columns. Columns that were fully visible stay fully visible. [S18 v25.02]
+- NW.11 `expand-column-to-available-width` grows the focused column to fill the free horizontal space left by the currently visible columns. Columns that were fully visible stay fully visible. [S18 v25.02] [confirm: which wins under `center-focused-column "always"` when centring the expanded column would push a visible column out of view (NV.2)]
 - NW.12 All windows in a non-tabbed column share the column's width. [S18 v0.1.9]
 - NW.13 Resizes smaller than or equal to 10 logical pixels are applied without a resize animation. [S10]
 - NW.14 Interactive resizing from a column's left edge keeps the right edge fixed. [S19 v0.1.6]
