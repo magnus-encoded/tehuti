@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+export XDG_CURRENT_DESKTOP=Tehuti
+export XDG_SESSION_DESKTOP=Tehuti
+export XDG_SESSION_TYPE=wayland
+unset WAYLAND_DISPLAY DISPLAY
+state_dir=${XDG_STATE_HOME:-"$HOME/.local/state"}/tehuti
+umask 077
+mkdir -p "$state_dir"
+exec >>"$state_dir/session.log" 2>&1
+binary=${TEHUTI_BINARY:-"$HOME/.local/bin/tehuti"}
+contexts=${TEHUTI_CONTEXT_DIRECTORY:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/tehuti"}
+exec "$binary" "$contexts" "$@"

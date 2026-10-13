@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Tehuti
+Comment=Controller-driven Wayland session
+Exec=/usr/local/bin/tehuti-session
+Type=Application
+DesktopNames=Tehuti

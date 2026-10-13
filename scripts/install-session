@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# DESTDIR lets packaging checks copy into a temporary tree.
+root=${DESTDIR:-}
+launcher=$root/usr/local/bin/tehuti-session
+entry=$root/usr/share/wayland-sessions/tehuti.desktop
+if [ -e "$launcher" ] || [ -e "$entry" ]; then
+    printf '%s\n' 'Refusing to replace an existing Tehuti session. Remove it first.' >&2
+    exit 1
+fi
+install -D -m 0755 "$repo/dist/tehuti-session" "$launcher"
+install -D -m 0644 "$repo/dist/tehuti.desktop" "$entry"
+printf '%s\n' 'Tehuti session installed. The compositor must be at ~/.local/bin/tehuti.'
+printf '%s\n' 'Remove with: sudo rm -- /usr/local/bin/tehuti-session /usr/share/wayland-sessions/tehuti.desktop'

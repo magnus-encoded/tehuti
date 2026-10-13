@@ -1,0 +1,335 @@
+//! A libseat-owned DRM output rendered into linear buffers through Pixman.
+
+use crate::LoopData;
+use core::cell::RefCell;
+use core::{error::Error, time::Duration};
+use smithay::{
+    backend::{
+        allocator::{
+            Allocator, Fourcc, Modifier,
+            dmabuf::{AsDmabuf, Dmabuf},
+            dumb::{DumbAllocator, DumbBuffer},
+        },
+        drm::{
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmSurface, PlaneConfig, PlaneState,
+            dumb::{DumbFramebuffer, framebuffer_from_dumb_buffer},
+        },
+        renderer::{
+            Bind,
+            damage::OutputDamageTracker,
+            element::{Kind, memory::MemoryRenderBufferRenderElement},
+            pixman::PixmanRenderer,
+        },
+        session::{Event, Session, libseat::LibSeatSession},
+        udev::{UdevBackend, UdevEvent, primary_gpu},
+    },
+    desktop::space::render_output,
+    output::{Output, PhysicalProperties, Subpixel},
+    reexports::{
+        calloop::{
+            EventLoop,
+            timer::{TimeoutAction, Timer},
+        },
+        drm::control::{Device, connector},
+        wayland_server::DisplayHandle,
+    },
+    utils::{DeviceFd, Rectangle, Transform},
+};
+use std::rc::Rc;
+use tehuti::state::Compositor;
+use tracing::warn;
+
+struct Scanout {
+    framebuffer: DumbFramebuffer,
+    dmabuf: Dmabuf,
+    _buffer: DumbBuffer,
+}
+
+struct Tty {
+    surface: DrmSurface,
+    device: DrmDevice,
+    buffers: [Scanout; 2],
+    renderer: PixmanRenderer,
+    output: Output,
+    damage: OutputDamageTracker,
+    next: bool,
+    pending: bool,
+    modeset: bool,
+}
+
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "conflicts with the workspace unreachable_pub lint"
+)]
+pub(crate) fn insert(
+    event_loop: &EventLoop<LoopData>,
+    display: &DisplayHandle,
+    compositor: &mut Compositor,
+) -> Result<(), Box<dyn Error>> {
+    let (mut session, notifier) = LibSeatSession::new()?;
+    let udev = UdevBackend::new(session.seat())?;
+    let path = primary_gpu(session.seat())?
+        .or_else(|| udev.device_list().next().map(|(_, path)| path.to_owned()))
+        .ok_or("no DRM device on seat")?;
+    let (initialized_tty, drm_notifier) = create_output(&mut session, &path, display, compositor)?;
+    let tty = Rc::new(RefCell::new(initialized_tty));
+    insert_seat(event_loop, notifier, tty.clone())?;
+    let flip_tty = tty.clone();
+    let flip_stop = event_loop.get_signal();
+    let _drm_token = event_loop
+        .handle()
+        .insert_source(drm_notifier, move |event, _, _| match event {
+            DrmEvent::VBlank(_) => flip_tty.borrow_mut().pending = false,
+            DrmEvent::Error(error) => {
+                warn!(%error, "DRM event failed");
+                flip_stop.stop();
+            }
+        })?;
+    let device_id = tty.borrow().device.device_id();
+    let device_stop = event_loop.get_signal();
+    let _udev_token = event_loop
+        .handle()
+        .insert_source(udev, move |event, (), _| match event {
+            UdevEvent::Changed { device_id: changed } | UdevEvent::Removed { device_id: changed }
+                if changed == device_id =>
+            {
+                warn!("DRM device changed; returning to login manager");
+                device_stop.stop();
+            }
+            UdevEvent::Added { .. } | UdevEvent::Changed { .. } | UdevEvent::Removed { .. } => {}
+        })?;
+    let render_stop = event_loop.get_signal();
+    let _timer_token = event_loop
+        .handle()
+        .insert_source(Timer::immediate(), move |_, (), data| {
+            let mut backend = tty.borrow_mut();
+            if data.seat_active
+                && backend.device.is_active()
+                && !backend.pending
+                && let Err(error) = backend.render(data)
+            {
+                warn!(%error, "DRM frame failed");
+                render_stop.stop();
+            }
+            TimeoutAction::ToDuration(Duration::from_millis(16))
+        })?;
+    Ok(())
+}
+
+fn insert_seat(
+    event_loop: &EventLoop<LoopData>,
+    notifier: smithay::backend::session::libseat::LibSeatSessionNotifier,
+    seat_tty: Rc<RefCell<Tty>>,
+) -> Result<(), Box<dyn Error>> {
+    let weak_handle = event_loop.handle().downgrade();
+    let stop = event_loop.get_signal();
+    let _seat_token = event_loop
+        .handle()
+        .insert_source(notifier, move |event, (), data| {
+            let mut tty = seat_tty.borrow_mut();
+            match event {
+                Event::PauseSession => {
+                    data.seat_active = false;
+                    data.controller = None;
+                    data.compositor
+                        .controller_input(tehuti_core::controller::Input::Disconnected);
+                    if let Some(token) = data.controller_token.take()
+                        && let Some(handle) = weak_handle.upgrade()
+                    {
+                        handle.remove(token);
+                    }
+                    data.discovery = tehuti::controller::Discovery::Searching {
+                        retry_at: Duration::ZERO,
+                    };
+                    tty.device.pause();
+                    tty.pending = false;
+                }
+                Event::ActivateSession => match tty.device.activate(true) {
+                    Ok(()) => {
+                        data.seat_active = true;
+                        tty.modeset = true;
+                        data.rescan_controller = true;
+                    }
+                    Err(error) => {
+                        warn!(%error, "DRM resume failed");
+                        stop.stop();
+                    }
+                },
+            }
+        })?;
+    Ok(())
+}
+
+fn create_output(
+    session: &mut LibSeatSession,
+    path: &std::path::Path,
+    display: &DisplayHandle,
+    compositor: &mut Compositor,
+) -> Result<(Tty, smithay::backend::drm::DrmDeviceNotifier), Box<dyn Error>> {
+    let device_fd = DrmDeviceFd::new(DeviceFd::from(
+        session.open(path, rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC)?,
+    ));
+    let (mut device, drm_notifier) = DrmDevice::new(device_fd.clone(), false)?;
+    let surface = connected_surface(&mut device)?;
+    let mode = surface.pending_mode();
+    let mut allocator = DumbAllocator::new(device_fd.clone());
+    let mut allocate = || -> Result<Scanout, Box<dyn Error>> {
+        let (width, height) = mode.size();
+        let buffer = allocator.create_buffer(
+            u32::from(width),
+            u32::from(height),
+            Fourcc::Argb8888,
+            &[Modifier::Linear],
+        )?;
+        Ok(Scanout {
+            framebuffer: framebuffer_from_dumb_buffer(&device_fd, &buffer, true)?,
+            dmabuf: buffer.export()?,
+            _buffer: buffer,
+        })
+    };
+    let buffers = [allocate()?, allocate()?];
+    let output = Output::new(
+        "tehuti-drm".into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "Tehuti".into(),
+            model: "DRM".into(),
+        },
+    );
+    let _global = output.create_global::<Compositor>(display);
+    output.change_current_state(
+        Some(mode.into()),
+        Some(Transform::Normal),
+        None,
+        Some((0, 0).into()),
+    );
+    output.set_preferred(mode.into());
+    compositor.space.map_output(&output, (0, 0));
+    compositor.output = Some(output.clone());
+    let tty = Tty {
+        surface,
+        device,
+        buffers,
+        renderer: PixmanRenderer::new()?,
+        damage: OutputDamageTracker::from_output(&output),
+        output,
+        next: false,
+        pending: false,
+        modeset: true,
+    };
+    Ok((tty, drm_notifier))
+}
+
+fn connected_surface(device: &mut DrmDevice) -> Result<DrmSurface, Box<dyn Error>> {
+    let resources = device.resource_handles()?;
+    let mut selected = None;
+    for handle in resources.connectors() {
+        let connector = device.get_connector(*handle, true)?;
+        if connector.state() != connector::State::Connected {
+            continue;
+        }
+        let Some(mode) = connector.modes().first().copied() else {
+            continue;
+        };
+        for encoder in connector.encoders() {
+            let encoder = device.get_encoder(*encoder)?;
+            if let Some(crtc) = resources.filter_crtcs(encoder.possible_crtcs()).first().copied() {
+                selected = Some((crtc, mode, *handle));
+                break;
+            }
+        }
+        if selected.is_some() {
+            break;
+        }
+    }
+    let (crtc, mode, connector) = selected.ok_or("no connected DRM output with a usable mode")?;
+    Ok(device.create_surface(crtc, mode, &[connector])?)
+}
+
+impl Tty {
+    fn render(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
+        let buffer = self
+            .buffers
+            .get_mut(usize::from(self.next))
+            .ok_or("missing scanout buffer")?;
+        let mut target = self.renderer.bind(&mut buffer.dmabuf)?;
+        let notice = data
+            .compositor
+            .visible_notice_text()
+            .map(|text| tehuti::notice::notice_buffer(&text));
+        let elements = notice
+            .as_ref()
+            .map(|notice_buffer| {
+                MemoryRenderBufferRenderElement::from_buffer(
+                    &mut self.renderer,
+                    (16.0, 16.0),
+                    notice_buffer,
+                    None,
+                    None,
+                    None,
+                    Kind::Unspecified,
+                )
+            })
+            .transpose()?
+            .into_iter()
+            .collect::<Vec<_>>();
+        let _rendered = render_output::<_, MemoryRenderBufferRenderElement<PixmanRenderer>, _, _>(
+            &self.output,
+            &mut self.renderer,
+            &mut target,
+            1.0,
+            0,
+            [&data.compositor.space],
+            &elements,
+            &mut self.damage,
+            [0.0, 0.0, 0.0, 1.0],
+        )?;
+        drop(target);
+        submit(&self.surface, &buffer.framebuffer, &mut self.modeset)?;
+        self.pending = true;
+        self.next = !self.next;
+        if !elements.is_empty() && data.compositor.secret_confirmation_text().is_some() {
+            data.compositor.note_secret_confirmation_frame_submitted();
+        }
+        for window in data.compositor.space.elements() {
+            window.send_frame(
+                &self.output,
+                data.compositor.start_time.elapsed(),
+                Some(Duration::ZERO),
+                |_, _| Some(self.output.clone()),
+            );
+        }
+        data.compositor.space.refresh();
+        data.display.flush_clients()?;
+        Ok(())
+    }
+}
+
+fn submit(
+    surface: &DrmSurface,
+    framebuffer: &DumbFramebuffer,
+    modeset: &mut bool,
+) -> Result<(), Box<dyn Error>> {
+    let mode = surface.pending_mode();
+    let (width, height) = mode.size();
+    let plane = PlaneState {
+        handle: surface.plane(),
+        config: Some(PlaneConfig {
+            src: Rectangle::from_size((f64::from(width), f64::from(height)).into()),
+            dst: Rectangle::from_size((i32::from(width), i32::from(height)).into()),
+            transform: Transform::Normal,
+            alpha: 1.0,
+            damage_clips: None,
+            fb: *framebuffer.as_ref(),
+            fence: None,
+        }),
+    };
+    if *modeset {
+        surface.commit([plane], true)?;
+        *modeset = false;
+    } else {
+        surface.page_flip([plane], true)?;
+    }
+    Ok(())
+}
