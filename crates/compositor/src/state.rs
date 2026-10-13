@@ -1,6 +1,8 @@
-//! Smithay state and protocol handlers. Shows one toplevel fullscreen and gives it keyboard focus.
+//! Smithay state and protocol handlers for one output and its tiling layout.
 
 use std::time::Instant;
+
+use crate::layout_window::LayoutWindow;
 
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
@@ -68,7 +70,7 @@ const XKB_KEYCODE_OFFSET: u32 = 8;
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
-    pub space: Space<Window>,
+    pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
     core: tehuti_core::State,
     previous_tick: Instant,
@@ -90,6 +92,9 @@ pub struct Compositor {
     launchers: Vec<std::process::Child>,
     desktop_entries: crate::desktop::EntryCache,
     launch_socket: Option<std::ffi::OsString>,
+    layout: tehuti_core::layout::Layout,
+    layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
+    next_window: u64,
     windows: tehuti_core::windows::Windows<WlSurface>,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
@@ -154,6 +159,9 @@ impl Compositor {
             launchers: Vec::new(),
             desktop_entries: crate::desktop::EntryCache::new()?,
             launch_socket: None,
+            layout: tehuti_core::layout::Layout::new(tehuti_core::layout::LayoutConfig::default()),
+            layout_windows: Vec::new(),
+            next_window: 0,
             windows: tehuti_core::windows::Windows::new(),
             surfaces: CompositorState::new::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
@@ -704,16 +712,8 @@ impl Compositor {
             }
             Action::Launch { desktop_entry } => self.launch_application(desktop_entry),
             Action::Close => {
-                if let Some(tehuti_core::windows::Effect::Close(surface)) =
-                    self.windows.step(tehuti_core::windows::Input::Close)
-                {
-                    if let Some(window) = self.window_for_root(&surface).cloned() {
-                        if let Some(toplevel) = window.toplevel() {
-                            toplevel.send_close();
-                        }
-                        self.space.unmap_elem(&window);
-                    }
-                    self.sync_window_focus();
+                if let Some(identity) = self.layout.snapshot().focused_window {
+                    self.remove_layout_window(identity, true);
                 }
             }
             Action::Layout { action } => self.apply_layout(*action),
@@ -827,34 +827,159 @@ impl Compositor {
         u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
     }
 
-    #[expect(clippy::todo, reason = "test-first stub; implemented in #52")]
-    #[expect(clippy::needless_pass_by_ref_mut, reason = "stub")]
     fn apply_layout(&mut self, action: tehuti_protocol::LayoutAction) {
-        todo!("#52: apply {action:?} to the layout model and reconfigure windows")
+        self.layout.apply(tehuti_core::layout::command_for(action));
+        self.place_layout();
     }
 
     /// The tiling layout every mapped window is placed by.
-    #[expect(clippy::todo, reason = "test-first stub; implemented in #52")]
     #[must_use]
     pub fn layout_snapshot(&self) -> tehuti_core::layout::Snapshot {
-        todo!("#52: expose the layout model snapshot")
+        self.layout.snapshot()
     }
 
-    /// Sizes every window to the output and marks it fullscreen.
-    pub fn fill_output(&self) {
-        let Some(mode) = self.output.as_ref().and_then(Output::current_mode) else {
-            return;
+    /// Updates the layout to the output's logical size and configures its windows.
+    pub fn fill_output(&mut self) {
+        use tehuti_core::layout::{OutputGeometry, OutputId, Rect};
+        let size = self.output.as_ref().and_then(|output| {
+            output.current_mode().map(|mode| {
+                mode.size
+                    .to_f64()
+                    .to_logical(output.current_scale().fractional_scale())
+            })
+        });
+        let area = size.map_or(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0,
+            },
+            |size| Rect {
+                x: 0.0,
+                y: 0.0,
+                width: size.w,
+                height: size.h,
+            },
+        );
+        let geometry = OutputGeometry { area, usable: area };
+        let result = if self.layout.snapshot().outputs.is_empty() {
+            self.layout.add_output(OutputId(0), geometry, None)
+        } else {
+            self.layout.update_output(OutputId(0), geometry)
         };
-        for window in self.space.elements() {
+        if let Err(error) = result {
+            tracing::warn!(%error, "output layout failed");
+        }
+        self.place_layout();
+    }
+
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "client positions include the layout border"
+    )]
+    fn place_layout(&mut self) {
+        let snapshot = self.layout.snapshot();
+        for (identity, window) in &self.layout_windows {
+            let tile = snapshot.outputs.iter().find_map(|output| {
+                output
+                    .workspaces
+                    .get(output.active_workspace)
+                    .and_then(|workspace| {
+                        workspace.columns.iter().find_map(|column| {
+                            column.tiles.iter().enumerate().find_map(|(index, tile)| {
+                                (tile.window == *identity
+                                    && (column.display == tehuti_core::layout::ColumnDisplay::Normal
+                                        || index == column.focused_tile))
+                                    .then_some((tile, output.border))
+                            })
+                        })
+                    })
+            });
+            let Some((tile, border)) = tile else {
+                self.space.unmap_elem(window);
+                continue;
+            };
+            let border = if matches!(
+                tile.mode,
+                tehuti_core::layout::TileMode::Fullscreen | tehuti_core::layout::TileMode::MaximizedToEdges
+            ) {
+                0.0
+            } else {
+                border
+            };
+            window.set_size(
+                smithay::utils::Size::<f64, smithay::utils::Logical>::from((
+                    tile.requested_client.width,
+                    tile.requested_client.height,
+                ))
+                .to_i32_round(),
+            );
+            self.space.map_element(
+                window.clone(),
+                smithay::utils::Point::<f64, smithay::utils::Logical>::from((
+                    tile.tile.x + border,
+                    tile.tile.y + border,
+                ))
+                .to_i32_round(),
+                snapshot.focused_window == Some(*identity),
+            );
             if let Some(toplevel) = window.toplevel() {
-                toplevel.with_pending_state(|pending| {
-                    pending.size = Some(mode.size.to_logical(1));
-                    let _newly_set = pending.states.set(xdg_toplevel::State::Fullscreen);
-                });
-                if toplevel.is_initial_configure_sent() {
-                    let _serial = toplevel.send_pending_configure();
+                Self::configure_layout_window(toplevel, tile, snapshot.focused_window == Some(*identity));
+            }
+        }
+        self.sync_window_focus();
+    }
+
+    fn configure_layout_window(
+        toplevel: &ToplevelSurface,
+        tile: &tehuti_core::layout::TileView,
+        focused: bool,
+    ) {
+        toplevel.with_pending_state(|pending| {
+            pending.size = Some(
+                smithay::utils::Size::<f64, smithay::utils::Logical>::from((
+                    tile.requested_client.width,
+                    tile.requested_client.height,
+                ))
+                .to_i32_round(),
+            );
+            for (state, enabled) in [
+                (xdg_toplevel::State::Fullscreen, tile.fullscreen_requested),
+                (xdg_toplevel::State::Activated, focused),
+            ] {
+                if enabled {
+                    let _changed = pending.states.set(state);
+                } else {
+                    let _changed = pending.states.unset(state);
                 }
             }
+        });
+        if toplevel.is_initial_configure_sent() {
+            let _serial = toplevel.send_pending_configure();
+        }
+    }
+
+    fn remove_layout_window(&mut self, identity: tehuti_core::layout::WindowId, close: bool) {
+        if let Some(index) = self
+            .layout_windows
+            .iter()
+            .position(|(window_id, _)| *window_id == identity)
+        {
+            let (_, window) = self.layout_windows.remove(index);
+            if let Some(toplevel) = window.toplevel() {
+                if close {
+                    toplevel.send_close();
+                }
+                let _effect = self
+                    .windows
+                    .step(tehuti_core::windows::Input::Unmap(toplevel.wl_surface().clone()));
+            }
+            self.space.unmap_elem(&window);
+            if let Err(error) = self.layout.remove_window(identity) {
+                tracing::warn!(%error, "window removal failed");
+            }
+            self.place_layout();
         }
     }
 
@@ -918,7 +1043,12 @@ impl Compositor {
     }
 
     fn sync_window_focus(&mut self) {
-        let focus = self.windows.focus().cloned();
+        let identity = self.layout.snapshot().focused_window;
+        let focus = self
+            .layout_windows
+            .iter()
+            .find(|(window_id, _)| Some(*window_id) == identity)
+            .and_then(|(_, window)| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()));
         self.keyboard
             .clone()
             .set_focus(self, focus.clone(), SERIAL_COUNTER.next_serial());
@@ -961,12 +1091,15 @@ impl Compositor {
         }
     }
 
-    fn window_for_root(&self, root: &WlSurface) -> Option<&Window> {
-        self.space.elements().find(|window| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == root)
-        })
+    fn window_for_root(&self, root: &WlSurface) -> Option<&LayoutWindow> {
+        self.layout_windows
+            .iter()
+            .map(|(_, window)| window)
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == root)
+            })
     }
 }
 
@@ -1085,10 +1218,20 @@ impl XdgShellHandler for Compositor {
         let _effect = self
             .windows
             .step(tehuti_core::windows::Input::Map(surface.wl_surface().clone()));
-        self.space
-            .map_element(Window::new_wayland_window(surface), (0, 0), true);
         self.fill_output();
-        self.sync_window_focus();
+        let identity = tehuti_core::layout::WindowId(self.next_window);
+        self.next_window = self.next_window.saturating_add(1);
+        match self
+            .layout
+            .add_window(identity, tehuti_core::layout::WindowRules::default())
+        {
+            Ok(()) => {
+                self.layout_windows
+                    .push((identity, LayoutWindow::new(Window::new_wayland_window(surface))));
+                self.place_layout();
+            }
+            Err(error) => tracing::warn!(%error, "window layout failed"),
+        }
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
@@ -1100,15 +1243,14 @@ impl XdgShellHandler for Compositor {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        let previous_focus = self.windows.focus().cloned();
-        let _effect = self
-            .windows
-            .step(tehuti_core::windows::Input::Unmap(surface.wl_surface().clone()));
-        if let Some(window) = self.window_for_root(surface.wl_surface()).cloned() {
-            self.space.unmap_elem(&window);
-        }
-        if self.windows.focus() != previous_focus.as_ref() {
-            self.sync_window_focus();
+        let identity = self.layout_windows.iter().find_map(|(identity, window)| {
+            window
+                .toplevel()
+                .filter(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+                .map(|_| *identity)
+        });
+        if let Some(identity) = identity {
+            self.remove_layout_window(identity, false);
         }
     }
 

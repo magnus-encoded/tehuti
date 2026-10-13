@@ -212,7 +212,7 @@ impl MappingAction {
             Self::Secret { secret } => Action::SecretRequest {
                 reference: secret.clone(),
             },
-            Self::Layout { .. } => layout_mapping_todo(),
+            Self::Layout { layout } => Action::Layout { action: *layout },
         }
     }
 }
@@ -291,11 +291,6 @@ pub enum LayoutAction {
     MoveColumnToWorkspaceUp,
     ToggleFullscreen,
     MaximizeColumn,
-}
-
-#[expect(clippy::todo, reason = "test-first stub; implemented in #52")]
-fn layout_mapping_todo() -> Action {
-    todo!("#52: map a layout mapping to Action::Layout")
 }
 
 mod plugin;

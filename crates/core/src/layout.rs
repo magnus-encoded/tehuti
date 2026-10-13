@@ -211,10 +211,23 @@ pub enum Command {
 }
 
 /// The layout command a context's tiling action stands for.
-#[expect(clippy::todo, reason = "test-first stub; implemented in #52")]
 #[must_use]
-pub fn command_for(action: tehuti_protocol::LayoutAction) -> Command {
-    todo!("#52: map {action:?} to Command")
+pub const fn command_for(action: tehuti_protocol::LayoutAction) -> Command {
+    match action {
+        tehuti_protocol::LayoutAction::FocusColumnLeft => Command::FocusColumnLeft,
+        tehuti_protocol::LayoutAction::FocusColumnRight => Command::FocusColumnRight,
+        tehuti_protocol::LayoutAction::FocusWindowUp => Command::FocusWindowUp,
+        tehuti_protocol::LayoutAction::FocusWindowDown => Command::FocusWindowDown,
+        tehuti_protocol::LayoutAction::MoveColumnLeft => Command::MoveColumnLeft,
+        tehuti_protocol::LayoutAction::MoveColumnRight => Command::MoveColumnRight,
+        tehuti_protocol::LayoutAction::SwitchPresetColumnWidth => Command::SwitchPresetColumnWidth,
+        tehuti_protocol::LayoutAction::FocusWorkspaceDown => Command::FocusWorkspaceDown,
+        tehuti_protocol::LayoutAction::FocusWorkspaceUp => Command::FocusWorkspaceUp,
+        tehuti_protocol::LayoutAction::MoveColumnToWorkspaceDown => Command::MoveColumnToWorkspaceDown,
+        tehuti_protocol::LayoutAction::MoveColumnToWorkspaceUp => Command::MoveColumnToWorkspaceUp,
+        tehuti_protocol::LayoutAction::ToggleFullscreen => Command::ToggleFullscreen,
+        tehuti_protocol::LayoutAction::MaximizeColumn => Command::MaximizeColumn,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
