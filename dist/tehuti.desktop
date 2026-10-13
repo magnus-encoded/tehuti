@@ -2,5 +2,6 @@
 Name=Tehuti
 Comment=Controller-driven Wayland session
 Exec=/usr/local/bin/tehuti-session
+TryExec=/usr/local/bin/tehuti-session
 Type=Application
 DesktopNames=Tehuti

@@ -28,6 +28,12 @@ impl State {
         }
     }
 
+    /// Cancels controller holds when the device disconnects or the seat pauses.
+    pub const fn controller_disconnected(&mut self) {
+        self.guide_held = None;
+        self.start_held = false;
+    }
+
     /// Plugin decisions still awaiting a reply, expiry or plugin exit.
     #[must_use]
     pub const fn pending_decisions(&self) -> usize {

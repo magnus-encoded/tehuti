@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class SessionTests(unittest.TestCase):
-    def run_session(self, statuses, times=None, plasma=True, missing_binary=False):
+    def run_session(self, statuses, times=None, plasma=True, missing_binary=False,
+                    plasma_statuses=None, date_failure=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bin_dir = root / 'bin'
@@ -28,11 +29,19 @@ mv "$STATUSES.next" "$STATUSES"
 exit "$status"
 ''')
             if plasma:
+                (root / 'plasma-statuses').write_text(
+                    '\n'.join(map(str, plasma_statuses if plasma_statuses is not None else [0] * 5)) + '\n')
                 stub('startplasma-wayland', '''echo plasma >>"$TRACE"
-count=$(wc -l <"$TRACE")
-[ "$count" -lt 9 ] || kill -TERM "$PPID"
+read -r status <"$PLASMA_STATUSES"
+[ -n "$status" ] || { kill -TERM "$PPID"; exit 0; }
+sed '1d' "$PLASMA_STATUSES" >"$PLASMA_STATUSES.next"
+mv "$PLASMA_STATUSES.next" "$PLASMA_STATUSES"
+exit "$status"
 ''')
-            stub('sleep', ':\n')
+            stub('sleep', 'echo "sleep $*" >>"$TRACE"\n')
+            if date_failure:
+                (bin_dir / 'date').unlink()
+                stub('date', 'exit 1\n')
             if times:
                 (bin_dir / 'date').unlink()
                 stub('date', '''read -r now <"$TIMES"
@@ -45,6 +54,7 @@ echo "$now"
             env = dict(os.environ, PATH=str(bin_dir),
                        XDG_STATE_HOME=str(root), TRACE=str(root / 'trace'),
                        STATUSES=str(root / 'statuses'), TIMES=str(root / 'times'),
+                       PLASMA_STATUSES=str(root / 'plasma-statuses'),
                        TEHUTI_BINARY=str(bin_dir / ('absent' if missing_binary else 'tehuti')))
             result = subprocess.run(['/bin/sh', str(ROOT / 'dist/tehuti-session')],
                                     env=env, timeout=5, capture_output=True)
@@ -83,9 +93,14 @@ echo "$now"
                 self.assertEqual(trace, ['tehuti', 'plasma', 'tehuti'])
 
     def test_three_recent_failures_stay_in_plasma(self):
-        _, trace, log = self.run_session([1, 1, 1, 21], [100, 130, 160])
-        self.assertEqual(trace.count('tehuti'), 3)
-        self.assertEqual(trace[-3:], ['plasma'] * 3)
+        code, trace, log = self.run_session(
+            [1, 1, 1, 21], [100, 130, 160], plasma_statuses=[0, 0, 1, 1])
+        self.assertEqual(code, -15)
+        self.assertEqual(trace, ['tehuti', 'plasma', 'tehuti', 'plasma',
+                                 'tehuti', 'plasma', 'sleep 3', 'plasma',
+                                 'sleep 3', 'plasma'])
+        self.assertEqual(log.count('Tehuti exited with status 1'), 3)
+        self.assertEqual(log.count('Plasma exited with status 1'), 2)
         self.assertIn('staying in Plasma', log)
 
     def test_old_failure_does_not_lock_plasma(self):
@@ -96,12 +111,35 @@ echo "$now"
     def test_missing_plasma_retries_tehuti(self):
         code, trace, log = self.run_session([20, 21], plasma=False)
         self.assertEqual(code, 0)
-        self.assertEqual(trace, ['tehuti', 'tehuti'])
+        self.assertEqual(trace, ['tehuti', 'sleep 3', 'tehuti'])
         self.assertIn('missing; restarting Tehuti', log)
 
     def test_start_failure_opens_plasma(self):
-        _, trace, _ = self.run_session([], missing_binary=True)
-        self.assertEqual(set(trace), {'plasma'})
+        code, trace, log = self.run_session([], missing_binary=True)
+        self.assertEqual(code, -15)
+        self.assertEqual(trace.count('plasma'), 6)
+        self.assertEqual(log.count('Tehuti exited with status 127'), 6)
+        self.assertIn('/bin/absent', log)
+
+    def test_plasma_failure_delays_retry(self):
+        code, trace, log = self.run_session([20, 21], plasma_statuses=[7])
+        self.assertEqual(code, 0)
+        self.assertEqual(trace, ['tehuti', 'plasma', 'sleep 3', 'tehuti'])
+        self.assertIn('Plasma exited with status 7', log)
+
+    def test_logout_after_lock_resets_failure_count(self):
+        code, trace, log = self.run_session(
+            [1, 1, 1, 1, 21], [100, 110, 120, 130])
+        self.assertEqual(code, 0)
+        self.assertEqual(trace, ['tehuti', 'plasma'] * 4 + ['tehuti'])
+        self.assertEqual(log.count('staying in Plasma'), 1)
+        self.assertEqual(log.count('Tehuti exited with status 1'), 4)
+
+    def test_failed_clock_does_not_end_session(self):
+        code, trace, log = self.run_session([1, 21], date_failure=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(trace, ['tehuti', 'plasma', 'tehuti'])
+        self.assertIn('Tehuti exited with status 1', log)
 
 
 if __name__ == '__main__':

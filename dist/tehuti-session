@@ -14,9 +14,10 @@ while :; do
     if [ "$stay_in_plasma" = false ]; then
         status=0
         XDG_CURRENT_DESKTOP=Tehuti XDG_SESSION_DESKTOP=Tehuti "$binary" "$contexts" "$@" || status=$?
+        echo "Tehuti exited with status $status"
         [ "$status" -ne 21 ] || exit 0
         if [ "$status" -ne 20 ]; then
-            now=$(date +%s)
+            now=$(date +%s) || now=0
             recent=''
             count=0
             for failed_at in $failures; do
@@ -35,7 +36,13 @@ while :; do
     if plasma=$(command -v startplasma-wayland); then
         status=0
         XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE "$plasma" || status=$?
-        if [ "$stay_in_plasma" = true ] || [ "$status" -ne 0 ]; then
+        echo "Plasma exited with status $status"
+        if [ "$status" -eq 0 ]; then
+            if [ "$stay_in_plasma" = true ]; then
+                failures=''
+                stay_in_plasma=false
+            fi
+        else
             sleep 3
         fi
     else

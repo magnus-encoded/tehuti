@@ -15,16 +15,18 @@ The launcher logs to `~/.local/state/tehuti/session.log`, or beneath
 `XDG_STATE_HOME` when set. `TEHUTI_BINARY` and `TEHUTI_CONTEXT_DIRECTORY` can
 select another user binary and context directory. A start failure starts Plasma; the reason is in `~/.local/state/tehuti/session.log`.
 
-Hold Guide+Start together for three seconds to switch to Plasma in the same
-login (Tehuti exit status 20). Plasma logout returns to Tehuti. Bind
+For emergency escape, hold Guide+Start together for three seconds to switch to
+Plasma in the same login (Tehuti exit status 20). Start alone follows the app mapping; the hold
+counts only while both buttons are down. Plasma logout returns to Tehuti. Bind
 `dist/tehuti-switch` to a KDE shortcut or controller button; it calls
 `qdbus org.kde.Shutdown /Shutdown logout`. If qdbus is missing, use Plasma's
 built-in Log Out action. Ctrl+Alt+Backspace ends the login (exit status 21).
 Ctrl+Alt+F1 through Ctrl+Alt+F12 switch VTs through libseat.
 
 Phone SSH `pkill -TERM tehuti`, start failures and crashes also start Plasma.
-Three failures within 60 seconds keep the session in Plasma, restarting Plasma
-when it exits. Missing `startplasma-wayland` logs a message and retries Tehuti
+Three failures within 60 seconds keep the session in Plasma. A non-zero Plasma
+exit restarts Plasma after a delay; a successful logout clears the failure
+count and retries Tehuti. Missing `startplasma-wayland` logs a message and retries Tehuti
 with a delay. Children receive SIGTERM, then SIGKILL after a 200 ms grace period.
 
 Without a host display, libseat opens the seat's primary GPU and DRM uses the

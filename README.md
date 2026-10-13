@@ -8,16 +8,18 @@ Run `scripts/try` from a terminal in your desktop. It builds Tehuti, sets up the
 speech venv on first run (in `~/.cache/tehuti-speech-venv`), then opens a window
 with a foot terminal inside. Tehuti takes the controller exclusively while it runs.
 
-**Switch:** hold Guide (the home button) and Start together for three seconds.
-This releases the controller. In the Tehuti login session, it starts Plasma in
-the same login. Logging out of Plasma starts Tehuti again. Bind
+**Emergency escape:** hold Guide (the home button) and Start together for three seconds.
+Start alone follows the app mapping. The hold counts only while both buttons
+are down. The emergency escape releases the controller. In the Tehuti login
+session, it starts Plasma in the same login. Logging out of Plasma starts Tehuti again. Bind
 `dist/tehuti-switch` to a KDE shortcut or controller button to do this. It uses
 `qdbus org.kde.Shutdown /Shutdown logout`; if qdbus is missing, bind Plasma's
 built-in Log Out action instead.
 
 Ctrl+Alt+Backspace in Tehuti ends the login session. Start failures and crashes
 open Plasma too, as does phone SSH `pkill -TERM tehuti`. Three Tehuti failures
-within 60 seconds keep the session in Plasma, including after Plasma exits.
+within 60 seconds keep the session in Plasma until a successful Plasma logout
+clears the failure count and retries Tehuti.
 If `startplasma-wayland` is missing from PATH, the launcher logs the problem
 and retries Tehuti with a delay.
 

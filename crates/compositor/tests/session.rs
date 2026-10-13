@@ -27,7 +27,7 @@ mod tests {
         assert_eq!(status.code(), Some(0), "only explicit logout ends the login");
         let log = fs::read_to_string(home.path().join(".local/state/tehuti/session.log"))?;
         let expected = format!(
-            "Tehuti\nTehuti\nwayland\nunset\nunset\n{}/.config/tehuti\napplication with spaces\n",
+            "Tehuti\nTehuti\nwayland\nunset\nunset\n{}/.config/tehuti\napplication with spaces\nTehuti exited with status 21\n",
             home.path().display()
         );
         assert_eq!(log, expected, "session environment, arguments and log location");
@@ -53,7 +53,10 @@ mod tests {
         assert!(output.status.success(), "fake compositor exits successfully");
         assert_eq!(
             fs::read_to_string(home.path().join("state/tehuti/session.log"))?,
-            format!("{}/config/tehuti\n", home.path().display()),
+            format!(
+                "{}/config/tehuti\nTehuti exited with status 21\n",
+                home.path().display()
+            ),
             "XDG directories determine context and log paths"
         );
         assert!(

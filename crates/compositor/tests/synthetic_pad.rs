@@ -42,6 +42,35 @@ mod synthetic_pad {
         xdg_wm_base::{self, XdgWmBase},
     };
 
+    #[test]
+    fn disconnect_and_seat_pause_cancel_escape_before_reconnect() {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        for first in [ButtonName::Guide, ButtonName::Start] {
+            for name in [ButtonName::Start, ButtonName::Guide] {
+                compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
+                    name,
+                    state: ButtonState::Pressed,
+                }));
+            }
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_millis(2999),
+            });
+            compositor.controller_input(tehuti_core::controller::Input::Disconnected);
+            compositor.controller_input(tehuti_core::controller::Input::Reconnected);
+            compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
+                name: first,
+                state: ButtonState::Pressed,
+            }));
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_secs(4),
+            });
+            assert!(!compositor.quit_requested());
+            compositor.controller_input(tehuti_core::controller::Input::Disconnected);
+            compositor.controller_input(tehuti_core::controller::Input::Reconnected);
+        }
+    }
+
     /// `KEY_ENTER` from linux/input-event-codes.h, as `wl_keyboard.key` reports it.
     const KEY_ENTER: u32 = 28;
 

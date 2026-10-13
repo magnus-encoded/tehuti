@@ -241,6 +241,59 @@ mod step {
         }
     }
 
+    #[test]
+    fn start_alone_reaches_the_app_and_only_joint_hold_counts() {
+        let context =
+            tehuti_protocol::parse_context("app_id = 'test'\n[buttons.start]\nkey = 'space'").unwrap();
+        let (state, _) = step(
+            State::with_contexts(vec![context]),
+            &Event::Focus {
+                app_id: Some("test".into()),
+                title: String::new(),
+            },
+        );
+        let (state, start_actions) = step(state, &start());
+        assert_eq!(start_actions, vec![Action::Key { key: KeyName::Space }]);
+        let (state, solo_actions) = step(state, &tick(4000));
+        assert_eq!(solo_actions, Vec::<Action>::new());
+        let (state, guide_actions) = step(state, &guide(ButtonState::Pressed));
+        assert_eq!(guide_actions, Vec::<Action>::new());
+        let (state, early_actions) = step(state, &tick(2999));
+        assert_eq!(early_actions, Vec::<Action>::new());
+        let (_, quit_actions) = step(state, &tick(1));
+        assert_eq!(quit_actions, vec![Action::Quit]);
+    }
+
+    #[test]
+    fn controller_disconnect_clears_both_holds_and_elapsed_time() {
+        for first in [ButtonName::Guide, ButtonName::Start] {
+            let mut state = State::new();
+            for event in [guide(ButtonState::Pressed), start(), tick(2999)] {
+                state = step(state, &event).0;
+            }
+            state.controller_disconnected();
+            let (state, _) = step(
+                state,
+                &Event::Button {
+                    name: first,
+                    state: ButtonState::Pressed,
+                },
+            );
+            let (state, reconnect_actions) = step(state, &tick(4000));
+            assert_eq!(reconnect_actions, Vec::<Action>::new());
+            let second = if first == ButtonName::Guide {
+                start()
+            } else {
+                guide(ButtonState::Pressed)
+            };
+            let (state, _) = step(state, &second);
+            let (state, fresh_early_actions) = step(state, &tick(2999));
+            assert_eq!(fresh_early_actions, Vec::<Action>::new());
+            let (_, fresh_quit_actions) = step(state, &tick(1));
+            assert_eq!(fresh_quit_actions, vec![Action::Quit]);
+        }
+    }
+
     fn start() -> Event {
         Event::Button {
             name: ButtonName::Start,
