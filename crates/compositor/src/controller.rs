@@ -41,10 +41,15 @@ pub fn open_grabbed() -> Option<EvdevPad> {
 ///
 /// Virtual devices, such as uinput pads made by
 /// other tools, report `BUS_VIRTUAL` or live under `/sys/devices/virtual`.
+/// UHID devices also live there, but `BlueZ` uses UHID for real Bluetooth pads,
+/// so `/sys/devices/virtual/misc/uhid` counts as physical.
 /// An unknown sysfs path counts as physical so a sysfs-less system still finds pads.
 #[must_use]
 pub fn is_physical(bus: evdev::BusType, sysfs: Option<&std::path::Path>) -> bool {
-    bus != evdev::BusType::BUS_VIRTUAL && !sysfs.is_some_and(|path| path.starts_with("/sys/devices/virtual"))
+    bus != evdev::BusType::BUS_VIRTUAL
+        && !sysfs.is_some_and(|path| {
+            path.starts_with("/sys/devices/virtual") && !path.starts_with("/sys/devices/virtual/misc/uhid")
+        })
 }
 
 /// Device operations needed to acquire exclusive, nonblocking input.
@@ -197,6 +202,11 @@ mod tests {
         assert!(!is_physical(BusType::BUS_VIRTUAL, Some(usb)), "virtual bus");
         assert!(is_physical(BusType::BUS_USB, Some(usb)), "real Xbox pad");
         assert!(is_physical(BusType::BUS_BLUETOOTH, None), "no sysfs");
+        let uhid = Path::new("/sys/devices/virtual/misc/uhid/0005:045E:0B13.0003/input/input30/event21");
+        assert!(
+            is_physical(BusType::BUS_BLUETOOTH, Some(uhid)),
+            "Bluetooth pad via BlueZ UHID"
+        );
     }
 
     #[test]

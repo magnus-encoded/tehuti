@@ -104,6 +104,15 @@ mod context {
     }
 
     #[test]
+    fn decomposed_accents_match_composed_ones() {
+        let context =
+            parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"caf\u{e9}\" = { key = 'enter' }").unwrap();
+        assert!(context.speech_action("Cafe\u{301}.").is_some());
+        assert!(context.speech_action("cafe").is_none());
+        assert_eq!(tehuti_protocol::normalize_phrase("cafe\u{301}"), "caf\u{e9}");
+    }
+
+    #[test]
     fn text_rejects_nul_at_construction_and_deserialization() {
         assert!(tehuti_protocol::Text::new("a\0b".into()).is_err());
         let source = r#"app_id = 'test'

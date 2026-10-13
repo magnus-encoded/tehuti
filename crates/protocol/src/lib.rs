@@ -273,12 +273,18 @@ pub use plugin::*;
 /// "Front. Center." matches "front center".
 ///
 /// Apostrophes inside words are kept, with the typographic forms (’ and ʼ) folded to '. Any other character that is
-/// not alphanumeric, including Unicode punctuation, separates words.
+/// not alphanumeric or a combining mark, including Unicode punctuation, separates
+/// words. Text is NFC-normalized first so decomposed accents match composed ones.
 #[must_use]
 pub fn normalize_phrase(phrase: &str) -> String {
+    use unicode_normalization::{UnicodeNormalization as _, char::is_combining_mark};
     phrase
+        .nfc()
+        .collect::<String>()
         .replace(['\u{2019}', '\u{2bc}'], "'")
-        .split(|character: char| !character.is_alphanumeric() && character != '\'')
+        .split(|character: char| {
+            !character.is_alphanumeric() && !is_combining_mark(character) && character != '\''
+        })
         .map(|word| word.trim_matches('\''))
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()

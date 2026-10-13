@@ -17,7 +17,8 @@ Speech: hold Share to record, release to transcribe. Set `TEHUTI_NO_SPEECH=1` to
 - South: Enter. East: Backspace. West: Space. Select: Escape.
 - D-pad: arrow keys. North: types `ls -la`. Start: shows a notice.
 - Say "Hello" to type `echo hello from Tehuti`, "Enter" for Enter, "Clear" to type `clear`.
-  Phrases must match Whisper's output exactly, including the final period.
+  Matching ignores case and punctuation (Unicode included), folds typographic apostrophes
+  to `'` and compares NFC-normalized text, so "Hello." and "hello" are the same phrase.
 
 `examples/plugins/east-to-tab` remaps East to Tab, only for apps with app id `test`.
 Try it with `target/release/tehuti examples foot -- bash --norc --noprofile` (a plain shell keeps the demo predictable).
