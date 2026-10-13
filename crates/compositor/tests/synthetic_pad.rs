@@ -337,7 +337,7 @@ mod synthetic_pad {
     }
 
     #[test]
-    fn sidecar_transcript_reaches_client_and_unmatched_speech_shows_notice() {
+    fn sidecar_transcript_reaches_client() {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_contexts(vec![
@@ -390,12 +390,22 @@ mod synthetic_pad {
             vec![(15, KeyState::Pressed), (15, KeyState::Released)],
             "released speech executes focused mapping once"
         );
+    }
+
+    #[test]
+    fn unmatched_speech_shows_no_speech_mapping_overlay() {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.handle(&Event::Speech {
             text: tehuti_protocol::Text::new("unknown".into()).unwrap(),
         });
         assert!(
             compositor.speech_notice_visible(),
             "unmatched speech produces a visible notice"
+        );
+        assert_eq!(
+            compositor.visible_notice_text().as_deref(),
+            Some("NO SPEECH MAPPING")
         );
     }
 
