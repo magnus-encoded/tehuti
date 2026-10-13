@@ -10,7 +10,7 @@ The user has no physical keyboard or mouse, only an Xbox controller and voice. W
 
 This recommendation is pending the owner's decision; nothing here is approved yet.
 
-Build the OSK **inside the compositor** as a core-owned overlay. Use a **dual-stick split QWERTY selection keyboard**: the left stick selects keys on the left half and the right stick on the right half. Each bumper commits the key under its stick. Word completion on the D-pad is proposed as an optional extra; no study has tested it on a controller. Deliver text through the compositor's existing **text-input-v3** path, which already has the keymap-tap fallback. Do not expose `zwp_input_method_v2` or `zwp_virtual_keyboard_v1` in the first version.
+Build the OSK **inside the compositor** as a core-owned overlay. Use a **dual-stick split QWERTY selection keyboard**: the left stick selects keys on the left half and the right stick on the right half. Each bumper commits the key under its stick. Word completion on the D-pad is proposed as an optional extra. Sandnes and Aubert's controller method already used trie-based word prediction [4], but this D-pad interface and its separate speed benefit are unvalidated. Deliver text through the compositor's existing **text-input-v3** path, which already has the keymap-tap fallback. Do not expose `zwp_input_method_v2` or `zwp_virtual_keyboard_v1` in the first version.
 
 Why:
 
@@ -41,7 +41,7 @@ Scores run from 0 (fails) to 3 (best).
 | D. Radial / EdgeWrite-style gestures | 2. Joystick EdgeWrite 6.40 WPM against 6.17 for the selection keyboard and 4.43 for date stamp [10] | 1. About twice the error rate of dual-stick QWERTY [1] | 3 | 3 | 2. Gesture alphabet must be learned | 11 |
 | E. External OSK client (squeekboard, wvkbd) | 0. Touch and pointer designs, not built for controllers [11][12] | 1. Not measured | 0. Needs a pointer or touch | 1. Needs input-method-v2 or virtual-keyboard-v1 exposed | 0. Both are GPL-3.0 [11][12] | 2 |
 
-Word completion is not a separate layout; it could apply to A to D. None of the sources above measures word completion on a controller, so D-pad completion is an unvalidated proposal. Build it only as an optional extra, and measure it before relying on it. Raw speed and error rates come from studies of different populations, so compare scores across rows loosely [1][2][4].
+Word completion is not a separate layout; it could apply to A to D. Sandnes and Aubert's controller method used trie-based word prediction [4], but no source measures the proposed D-pad completion interface or its separate speed benefit, so both are unvalidated. Build it only as an optional extra, and measure it before relying on it. Raw speed and error rates come from studies of different populations, so compare scores across rows loosely [1][2][4].
 
 Steam's daisywheel splits the alphabet into eight groups of four. The stick picks a group and a face button picks the letter [3]. Early reviewers found it hard to use quickly [3], which matches the slow start TwoStick showed [2].
 
