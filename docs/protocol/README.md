@@ -161,8 +161,9 @@ The selected plugin runs before the active context. An empty, invalid, missing
 or late reply releases the context or fallback actions captured when the
 request was dispatched, exactly once. Replies cannot complete other requests,
 and duplicate or stale replies cannot act on later input. A focus notification
-invalidates all pending decisions, including when focus leaves and returns,
-so captured actions never reach another destination. If no plugin qualifies,
+settles all pending decisions as declines, releasing their captured actions once
+in arrival order before updating the active context for later events. Replies
+for these settled requests are stale and release nothing. If no plugin qualifies,
 normal context routing applies. Global mappings and the escape chord take priority.
 
 ## Actions
@@ -212,8 +213,8 @@ Every action requires its matching manifest permission: `key`, `text`, or
 `quit`. The core rejects the entire batch if any action lacks permission or
 uses a core-only action. No action in a rejected batch is delivered. Permissions restrict
 protocol actions; they do not sandbox the process or restrict its OS access.
-Unsolicited actions target focus when applied. A focus change invalidates pending
-request decisions and their fallback actions.
+Unsolicited actions target focus when applied. A focus change settles pending
+request decisions as declines and releases their fallback actions once.
 
 Secret references are objects shaped as `{"entry":"mail"}`. A core context
 may bind one to a controller button; the compositor asks for fresh confirmation

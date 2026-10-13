@@ -45,8 +45,9 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
         return (state, actions, false);
     }
     if let Event::Focus { app_id, .. } = event {
-        state.pending.clear();
+        let actions = plugin::expire(&mut state, core::time::Duration::MAX);
         state.focused_app_id.clone_from(app_id);
+        return (state, actions, false);
     }
     if let Some(actions) = escape_chord(&mut state, event) {
         return (state, actions, false);
