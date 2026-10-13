@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Build Tehuti and run it nested in the current desktop with a foot terminal.
+# Hold Guide for three seconds to quit and release the controller.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+root=$(pwd)
+
+cargo build --release --locked -p tehuti
+
+venv=${TEHUTI_SPEECH_VENV:-$HOME/.cache/tehuti-speech-venv}
+if [ "${TEHUTI_NO_SPEECH:-}" = "" ]; then
+    if [ ! -x "$venv/bin/python" ]; then
+        python3 -m venv "$venv"
+        "$venv/bin/pip" install -r sidecars/speech/requirements.txt
+    fi
+    wrapper=$(mktemp -t tehuti-speech.XXXXXX)
+    trap 'rm -f "$wrapper"' EXIT
+    printf '#!/bin/sh\nexec "%s/bin/python" "%s/sidecars/speech/speech.py"\n' "$venv" "$root" >"$wrapper"
+    chmod +x "$wrapper"
+    export TEHUTI_SPEECH_SIDECAR=$wrapper
+fi
+
+RUST_LOG=${RUST_LOG:-info} target/release/tehuti "$root/examples" foot

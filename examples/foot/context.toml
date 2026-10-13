@@ -1,0 +1,20 @@
+# Buttons and spoken phrases for a foot terminal (app id "foot").
+app_id = "foot"
+
+[buttons]
+south = { key = "enter" }
+east = { key = "backspace" }
+west = { key = "space" }
+north = { text = "ls -la" }
+dpad_up = { key = "up" }
+dpad_down = { key = "down" }
+dpad_left = { key = "left" }
+dpad_right = { key = "right" }
+select = { key = "escape" }
+start = { notify = "Tehuti is listening to this controller" }
+
+# Whisper capitalises and punctuates, so phrases match its exact output.
+[speech]
+"Hello." = { text = "echo hello from Tehuti" }
+"Enter." = { key = "enter" }
+"Clear." = { text = "clear" }
