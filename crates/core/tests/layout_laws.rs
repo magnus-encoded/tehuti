@@ -458,6 +458,18 @@ mod layout_laws {
             .collect()
     }
 
+    /// Whether another column besides the focused one is fully visible, so centring an expanded
+    /// focused column could push it out of view (the NW.11 [confirm] case).
+    fn displaces_on_centring(snap: &Snapshot) -> bool {
+        let (Some(output), Some(workspace)) = (focused_output(snap), focused_workspace(snap)) else {
+            return false;
+        };
+        workspace.columns.iter().enumerate().any(|(index, column)| {
+            Some(index) != workspace.focused_column
+                && column_rect(column).is_some_and(|tile| fully_visible(tile, output.working_area))
+        })
+    }
+
     // NS: the strip of columns.
 
     proptest! {
@@ -775,8 +787,7 @@ mod layout_laws {
             geometry in geometry_strategy(),
             ops in ops_strategy(),
         ) {
-            // The spec does not rank NW.11 against NV.2 centring; that case is [confirm] under NW.11.
-            prop_assume!(config.center_focused_column != CenterFocusedColumn::Always);
+            let always = config.center_focused_column == CenterFocusedColumn::Always;
             let mut world = World::single(config, geometry)?;
             world.run(&ops)?;
             let before = world.snap();
@@ -787,6 +798,8 @@ mod layout_laws {
                 .filter(|column| column_rect(column).is_some_and(|tile| fully_visible(tile, output.working_area)))
                 .filter_map(|column| column.tiles.first().map(|tile| tile.window)).collect();
             prop_assume!(focused_tile(&before).is_some_and(|tile| visible.contains(&tile.window)));
+            // NW.11 [confirm]: under "always" only the case where centring would displace another visible column is open.
+            prop_assume!(!always || visible.len() == 1);
             world.apply(Command::ExpandColumnToAvailableWidth);
             let after = world.snap();
             let widths: f64 = visible.iter().filter_map(|window| tile_of(&after, *window)).map(|tile| tile.tile.width).sum();
@@ -1115,13 +1128,27 @@ mod layout_laws {
         fn nf_12_consuming_resizes_the_window_at_once(
             config in config_strategy(),
             geometry in geometry_strategy(),
+            host_width in 0.1_f64..0.45,
+            guest_width in 0.55_f64..0.95,
         ) {
-            let mut world = World::single(config, geometry)?;
-            world.stack(2)?;
-            let column = focused_column(&world.snap()).cloned().ok_or_else(|| TestCaseError::fail("no column"))?;
-            prop_assume!(column.tiles.len() == 2 && column.display == ColumnDisplay::Normal);
-            prop_assert!(near(column.tiles[0].tile.width, column.tiles[1].tile.width));
-            prop_assert!(near(column.tiles[0].requested_client.width, column.tiles[1].requested_client.width));
+            let mut world = World::single(LayoutConfig { default_column_display: ColumnDisplay::Normal, ..config }, geometry)?;
+            let host = world.open()?;
+            world.apply(Command::SetColumnWidth(SizeChange::SetProportion(host_width)));
+            let guest = world.open()?;
+            world.apply(Command::SetColumnWidth(SizeChange::SetProportion(guest_width)));
+            let before = world.snap();
+            let host_tile = tile_of(&before, host).cloned().ok_or_else(|| TestCaseError::fail("host lost"))?;
+            let guest_tile = tile_of(&before, guest).cloned().ok_or_else(|| TestCaseError::fail("guest lost"))?;
+            prop_assert!(!near(host_tile.tile.width, guest_tile.tile.width));
+            world.focus_column(0);
+            world.apply(Command::ConsumeWindowIntoColumn);
+            let snap = world.snap();
+            let column = focused_column(&snap).cloned().ok_or_else(|| TestCaseError::fail("no column"))?;
+            prop_assert_eq!(column.tiles.iter().map(|tile| tile.window).collect::<Vec<_>>(), vec![host, guest]);
+            let consumed = tile_of(&snap, guest).cloned().ok_or_else(|| TestCaseError::fail("guest lost"))?;
+            prop_assert!(near(consumed.tile.width, host_tile.tile.width), "tile {} expected {}", consumed.tile.width, host_tile.tile.width);
+            prop_assert!(near(consumed.requested_client.width, host_tile.requested_client.width));
+            prop_assert!(!near(consumed.requested_client.width, guest_tile.requested_client.width));
         }
 
         #[test]
@@ -1219,6 +1246,7 @@ mod layout_laws {
             count in 2_usize..5,
             pick in any::<prop::sample::Index>(),
             target in any::<prop::sample::Index>(),
+            extra in 0_usize..4,
         ) {
             let mut world = World::single(config, geometry)?;
             world.fill_workspaces(count)?;
@@ -1227,9 +1255,18 @@ mod layout_laws {
             prop_assume!(start != target);
             world.apply(Command::FocusWorkspaceAt(start));
             // NWS.8 moves the focused column; an empty workspace (NWS.5 top) has none.
-            let window = world.snap().focused_window.ok_or_else(|| TestCaseError::reject("no focused column"))?;
+            prop_assume!(world.snap().focused_window.is_some());
+            // Stack `extra` more windows into the focused column so it has several members.
+            world.open_many(extra)?;
+            world.focus_column(0);
+            world.apply_times(Command::ConsumeWindowIntoColumn, extra);
+            let members: Vec<WindowId> = focused_column(&world.snap()).map(|column| column.tiles.iter().map(|tile| tile.window).collect()).unwrap_or_default();
+            prop_assert_eq!(members.len(), extra + 1);
             world.apply(Command::MoveColumnToWorkspaceAt(target));
-            prop_assert_eq!(workspace_of(&world.snap(), window).map(|workspace| workspace.workspace), ids.get(target).copied());
+            let snap = world.snap();
+            for window in &members {
+                prop_assert_eq!(workspace_of(&snap, *window).map(|workspace| workspace.workspace), ids.get(target).copied(), "window {:?}", window);
+            }
         }
 
         #[test]
@@ -1457,6 +1494,41 @@ mod layout_laws {
             prop_assert!(kept.iter().all(|workspace| output_of_workspace(&back, *workspace) == Some(OutputId(1))));
             let active = back.outputs.iter().find(|candidate| candidate.output == OutputId(1)).and_then(active_workspace).map(|workspace| workspace.workspace);
             prop_assert_eq!(active, active_workspace(&output).map(|workspace| workspace.workspace));
+        }
+
+        #[test]
+        fn no_5_and_no_7_the_remembered_active_workspace_is_the_one_by_identity(
+            config in config_strategy(),
+            (first, second, horizontal) in pair_strategy(),
+            filled in 2_usize..5,
+            pick in any::<prop::sample::Index>(),
+        ) {
+            let mut world = World::with_outputs(config, &[first, second])?;
+            if world.snap().focused_output != Some(OutputId(1)) {
+                world.apply(Command::FocusMonitor(towards(OutputId(0), horizontal)));
+            }
+            world.fill_workspaces(filled)?;
+            let named = world.layout.add_named_workspace("keep".into(), Some(OutputId(1)))?;
+            // Candidates: every populated workspace plus the empty named one, in output order.
+            let focused = focused_output(&world.snap()).cloned().ok_or_else(|| TestCaseError::fail("no output"))?;
+            let candidates: Vec<usize> = focused.workspaces.iter().enumerate()
+                .filter(|(_, workspace)| !workspace.columns.is_empty() || workspace.workspace == named)
+                .map(|(position, _)| position).collect();
+            let position = candidates[pick.index(candidates.len())];
+            world.apply(Command::FocusWorkspaceAt(position));
+            let before = world.snap();
+            let output = before.outputs.iter().find(|output| output.output == OutputId(1)).cloned().ok_or_else(|| TestCaseError::fail("no output"))?;
+            let remembered = active_workspace(&output).map(|workspace| workspace.workspace);
+            let kept: Vec<WorkspaceId> = output.workspaces.iter().filter(|workspace| !is_empty_unnamed(workspace)).map(|workspace| workspace.workspace).collect();
+            prop_assert!(kept.contains(&named));
+            world.layout.remove_output(OutputId(1))?;
+            let gone = world.snap();
+            prop_assert!(kept.iter().all(|workspace| output_of_workspace(&gone, *workspace) == Some(OutputId(0))), "NWS.6 named survives");
+            world.layout.add_output(OutputId(1), second, None)?;
+            let back = world.snap();
+            prop_assert!(kept.iter().all(|workspace| output_of_workspace(&back, *workspace) == Some(OutputId(1))));
+            let active = back.outputs.iter().find(|candidate| candidate.output == OutputId(1)).and_then(active_workspace).map(|workspace| workspace.workspace);
+            prop_assert_eq!(active, remembered);
         }
 
         #[test]
@@ -1808,31 +1880,50 @@ mod layout_laws {
             let old = workspace.columns.get(target).and_then(column_rect).ok_or_else(|| TestCaseError::reject("last"))?;
             world.apply(if rightward { Command::FocusColumnRight } else { Command::FocusColumnLeft });
             let (tile, working, gaps) = focused_geometry(&world.snap()).ok_or_else(|| TestCaseError::fail("nothing focused"))?;
+            // A column already fully visible is NV.6, which is [confirm].
             prop_assume!(fits(tile, working, gaps) && !fully_visible(old, working));
+            let old_view = workspace.view_offset;
+            let new_view = focused_workspace(&world.snap()).map(|found| found.view_offset).ok_or_else(|| TestCaseError::fail("no workspace"))?;
             prop_assert!(fully_visible(tile, working));
             let right_edge = working.x + working.width;
-            if old.x + old.width > right_edge {
-                prop_assert!(tile.x + tile.width >= right_edge - gaps - EPSILON);
+            // Minimum scroll: the column lands exactly one gap inside the nearest edge.
+            let expected_x = if old.x + old.width > right_edge {
+                right_edge - gaps - old.width
             } else {
-                prop_assert!(tile.x <= working.x + gaps + EPSILON);
-            }
+                working.x + gaps
+            };
+            prop_assert!(near(tile.x, expected_x), "tile at {} expected {}", tile.x, expected_x);
+            prop_assert!(near(new_view - old_view, old.x - expected_x), "view {} -> {}", old_view, new_view);
         }
 
         #[test]
         fn nv_2_always_centres_the_focused_column(
             config in with_center(CenterFocusedColumn::Always),
             geometry in geometry_strategy(),
-            mut ops in ops_strategy(),
+            ops in ops_strategy(),
         ) {
-            // Expanding under "always" is [confirm] in NW.11, so it is left out of this law.
-            ops.retain(|step| !matches!(step, Step::Run(Command::ExpandColumnToAvailableWidth)));
+            // NW.11 [confirm]: only an expansion that leaves another column fully visible may skip
+            // centring, and only until the focused column or its width changes.
             let mut world = World::single(config, geometry)?;
-            world.run(&ops)?;
-            let snap = world.snap();
-            prop_assume!(focused_column(&snap).is_some_and(column_is_normal));
-            let (tile, working, gaps) = focused_geometry(&snap).ok_or_else(|| TestCaseError::reject("nothing focused"))?;
-            prop_assume!(fits(tile, working, gaps));
-            prop_assert!(centred(tile, working));
+            let mut exempt: Option<(Option<WindowId>, Option<PresetSize>)> = None;
+            for step in &ops {
+                let before = world.snap();
+                world.run(core::slice::from_ref(step))?;
+                let snap = world.snap();
+                let key = (snap.focused_window, focused_column(&snap).and_then(|column| column.width));
+                if matches!(step, Step::Run(Command::ExpandColumnToAvailableWidth)) && displaces_on_centring(&before) {
+                    exempt = Some(key);
+                } else if exempt.is_some_and(|held| held != key) {
+                    exempt = None;
+                }
+                if exempt.is_some() || !focused_column(&snap).is_some_and(column_is_normal) {
+                    continue;
+                }
+                let Some((tile, working, gaps)) = focused_geometry(&snap) else { continue };
+                if fits(tile, working, gaps) {
+                    prop_assert!(centred(tile, working), "after {:?}", step);
+                }
+            }
         }
 
         #[test]
@@ -1848,7 +1939,12 @@ mod layout_laws {
                 world.apply(Command::SetColumnWidth(SizeChange::SetProportion(*width)));
             }
             world.focus_column(pick.index(widths.len() - 1));
-            let previous = world.snap().focused_window;
+            let start = world.snap();
+            let previous = start.focused_window;
+            let index = focused_column_index(&start).ok_or_else(|| TestCaseError::fail("no column"))?;
+            let target_before = focused_workspace(&start).and_then(|workspace| workspace.columns.get(index + 1)).and_then(column_rect)
+                .ok_or_else(|| TestCaseError::fail("no right column"))?;
+            let old_view = focused_workspace(&start).map_or(0.0, |workspace| workspace.view_offset);
             world.apply(Command::FocusColumnRight);
             let snap = world.snap();
             let (tile, working, gaps) = focused_geometry(&snap).ok_or_else(|| TestCaseError::fail("nothing focused"))?;
@@ -1856,6 +1952,13 @@ mod layout_laws {
             prop_assume!(fits(tile, working, gaps));
             if 3.0f64.mul_add(gaps, old.width + tile.width) <= working.width + EPSILON {
                 prop_assert!(fully_visible(tile, working) && fully_visible(old, working));
+                // Behaves like "never": the minimum scroll to the right edge (a visible target is NV.6 [confirm]).
+                if !fully_visible(target_before, working) {
+                let expected_x = working.x + working.width - gaps - tile.width;
+                prop_assert!(near(tile.x, expected_x), "tile at {} expected {}", tile.x, expected_x);
+                let new_view = focused_workspace(&snap).map_or(0.0, |workspace| workspace.view_offset);
+                prop_assert!(near(new_view - old_view, target_before.x - expected_x));
+                }
             } else {
                 prop_assert!(centred(tile, working));
             }
@@ -1887,6 +1990,171 @@ mod layout_laws {
             let (tile, working, gaps) = focused_geometry(&snap).ok_or_else(|| TestCaseError::reject("nothing focused"))?;
             prop_assume!(fits(tile, working, gaps));
             prop_assert!(centred(tile, working));
+        }
+    }
+
+    // Detached workspaces and float boundaries (ADR 0001: invalid input never reaches the model).
+
+    #[test]
+    fn removing_a_window_while_every_output_is_gone_succeeds() -> Result<(), LayoutError> {
+        let mut world = World::single(
+            LayoutConfig::default(),
+            geometry_at(0.0, 0.0, 1920.0, 1080.0, 0.0),
+        )?;
+        let kept = world.open()?;
+        let closed = world.open()?;
+        world.layout.remove_output(OutputId(0))?;
+        assert_eq!(world.layout.remove_window(closed), Ok(()));
+        assert_eq!(
+            world.layout.remove_window(closed),
+            Err(LayoutError::UnknownWindow(closed))
+        );
+        world
+            .layout
+            .add_output(OutputId(0), geometry_at(0.0, 0.0, 1920.0, 1080.0, 0.0), None)?;
+        let snap = world.snap();
+        assert!(tile_of(&snap, closed).is_none());
+        assert!(tile_of(&snap, kept).is_some());
+        Ok(())
+    }
+
+    /// Shrunk NV.2 counterexample: after closes, the NN.9 restored view leaves the focused
+    /// column off centre under "always".
+    #[test]
+    fn nv_2_replay_close_restores_a_stale_view_under_always() -> Result<(), LayoutError> {
+        let config = LayoutConfig {
+            gaps: 0.0,
+            center_focused_column: CenterFocusedColumn::Always,
+            ..LayoutConfig::default()
+        };
+        let mut world = World::single(config, geometry_at(0.0, 0.0, 3_179.118_585_605_785, 600.0, 0.0))?;
+        let ops = [
+            Step::Open,
+            Step::Open,
+            Step::Open,
+            Step::Close(0),
+            Step::Open,
+            Step::Close(0),
+            Step::Open,
+            Step::Open,
+            Step::Open,
+            Step::Open,
+            Step::Close(1_192_730_189_438_836_716),
+            Step::Close(10_320_365_627_896_110_324),
+        ];
+        world.run(&ops)?;
+        let snap = world.snap();
+        let (tile, working, _gaps) = focused_geometry(&snap).ok_or(LayoutError::NoOutput)?;
+        assert!(
+            centred(tile, working),
+            "focused tile {tile:?} not centred in {working:?}"
+        );
+        Ok(())
+    }
+
+    fn bad_float() -> impl Strategy<Value = f64> {
+        prop_oneof![
+            Just(f64::NAN),
+            Just(f64::INFINITY),
+            Just(f64::NEG_INFINITY),
+            Just(0.0),
+            (-5000.0_f64..-0.001),
+        ]
+    }
+
+    fn all_finite(snap: &Snapshot) -> bool {
+        snap.outputs.iter().all(|output| {
+            let rect_ok = |rect: Rect| {
+                rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite()
+            };
+            rect_ok(output.working_area)
+                && output
+                    .workspaces
+                    .iter()
+                    .all(|workspace| workspace.view_offset.is_finite())
+                && all_tiles(snap).all(|tile| {
+                    rect_ok(tile.tile)
+                        && tile.requested_client.width.is_finite()
+                        && tile.requested_client.height.is_finite()
+                })
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn output_geometry_with_a_bad_size_is_rejected(
+            bad in bad_float(),
+            on_width in any::<bool>(),
+        ) {
+            let (width, height) = if on_width { (bad, 1080.0) } else { (1920.0, bad) };
+            let mut layout = Layout::new(LayoutConfig::default());
+            prop_assert!(layout.add_output(OutputId(0), geometry_at(0.0, 0.0, width, height, 0.0), None).is_err());
+            prop_assert!(layout.snapshot().outputs.is_empty());
+        }
+
+        #[test]
+        fn struts_that_leave_no_working_width_are_rejected(
+            width in 800.0_f64..3840.0,
+            extra in 0.0_f64..400.0,
+        ) {
+            let struts = Struts { left: width / 2.0, right: width / 2.0 + extra, top: 0.0, bottom: 0.0 };
+            let mut layout = Layout::new(LayoutConfig { struts, ..LayoutConfig::default() });
+            prop_assert!(layout.add_output(OutputId(0), geometry_at(0.0, 0.0, width, 1080.0, 0.0), None).is_err());
+        }
+
+        #[test]
+        fn a_non_finite_or_negative_config_is_rejected(
+            bad in bad_float(),
+            field in 0_u8..4,
+        ) {
+            prop_assume!(!(bad == 0.0 && field < 2), "zero gaps and borders are valid");
+            let mut config = LayoutConfig::default();
+            match field {
+                0 => config.gaps = bad,
+                1 => config.border = bad,
+                2 => config.default_column_width = Some(PresetSize::Proportion(bad)),
+                _ => config.preset_column_widths = vec![PresetSize::Fixed(bad)],
+            }
+            prop_assert!(Layout::try_new(config).is_err());
+        }
+
+        #[test]
+        fn bad_size_changes_leave_the_layout_unchanged_and_finite(
+            bad in bad_float(),
+            ops in ops_strategy(),
+            which in 0_u8..6,
+        ) {
+            let mut world = World::single(LayoutConfig::default(), geometry_at(0.0, 0.0, 1920.0, 1080.0, 0.0))?;
+            world.run(&ops)?;
+            let _window = world.open()?;
+            let before = world.snap();
+            let command = match which {
+                0 => Command::SetColumnWidth(SizeChange::SetProportion(bad)),
+                1 => Command::SetColumnWidth(SizeChange::SetFixed(bad)),
+                2 => Command::SetWindowHeight(SizeChange::SetProportion(bad)),
+                3 => Command::SetWindowHeight(SizeChange::SetFixed(bad)),
+                4 => Command::SetColumnWidth(SizeChange::AdjustFixed(if bad.is_finite() { f64::NAN } else { bad })),
+                _ => Command::SetWindowHeight(SizeChange::AdjustPercent(if bad.is_finite() { f64::NAN } else { bad })),
+            };
+            world.apply(command);
+            let after = world.snap();
+            prop_assert!(all_finite(&after));
+            prop_assert_eq!(after, before);
+        }
+
+        #[test]
+        fn bad_window_rules_are_rejected(
+            bad in bad_float(),
+            which in 0_u8..3,
+        ) {
+            let mut world = World::single(LayoutConfig::default(), geometry_at(0.0, 0.0, 1920.0, 1080.0, 0.0))?;
+            let rules = match which {
+                0 => WindowRules { min_height: Some(bad), ..WindowRules::default() },
+                1 => WindowRules { max_height: Some(bad), ..WindowRules::default() },
+                _ => WindowRules { default_column_width: Some(Some(PresetSize::Fixed(bad))), ..WindowRules::default() },
+            };
+            prop_assert!(world.open_with(rules).is_err());
+            prop_assert!(all_finite(&world.snap()));
         }
     }
 }

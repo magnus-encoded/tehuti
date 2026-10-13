@@ -372,6 +372,18 @@ impl Layout {
             detached: Vec::new(),
         }
     }
+    /// Validating constructor: rejects non-finite or negative gaps and borders, and
+    /// non-finite or non-positive sizes in the default and preset widths and heights.
+    ///
+    /// # Errors
+    /// Returns an error when a float in `config` is out of range.
+    #[expect(
+        clippy::todo,
+        reason = "API stub for a failing boundary law; implementation pending"
+    )]
+    pub fn try_new(_config: LayoutConfig) -> Result<Self, LayoutError> {
+        todo!("validate LayoutConfig floats at the boundary")
+    }
     const fn workspace(&mut self, output: OutputId) -> Workspace {
         let identity = WorkspaceId(self.next_workspace);
         self.next_workspace = self.next_workspace.wrapping_add(1);
