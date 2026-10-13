@@ -1750,10 +1750,7 @@ mod layout_laws {
             world.apply(Command::ToggleFullscreen);
             world.apply(Command::ToggleFullscreen);
             let snap = world.snap();
-            // NV.2 and NV.4 re-centre after the restore; compare views only when neither applies.
-            prop_assume!(!centring_applies(centring, &snap));
-            let after = focused_workspace(&snap).map(|workspace| workspace.view_offset);
-            prop_assert!(matches!((before, after), (Some(before), Some(after)) if near(before, after)));
+            restored_view(centring, &snap, before)?;
         }
     }
 
@@ -1889,10 +1886,10 @@ mod layout_laws {
             prop_assume!(before.is_some_and(|_| world.snap().focused_window.is_some()));
             let window = world.open_with(WindowRules { open_focused: Some(focused), ..WindowRules::default() })?;
             world.close(window)?;
-            // NV.2 and NV.4 re-centre after the restore; compare views only when neither applies.
-            prop_assume!(!centring_applies(centring, &world.snap()));
-            let after = focused_workspace(&world.snap()).map(|workspace| (workspace.workspace, workspace.view_offset));
-            prop_assert!(matches!((before, after), (Some(before), Some(after)) if before.0 == after.0 && near(before.1, after.1)));
+            let snap = world.snap();
+            let after = focused_workspace(&snap).map(|workspace| workspace.workspace);
+            prop_assert_eq!(before.map(|saved| saved.0), after);
+            restored_view(centring, &snap, before.map(|saved| saved.1))?;
         }
     }
 
@@ -1907,6 +1904,36 @@ mod layout_laws {
     /// Whether NV.2 or NV.4 governs the view of the focused workspace in `snap`.
     fn centring_applies((always, single): (bool, bool), snap: &Snapshot) -> bool {
         always || (single && focused_workspace(snap).is_some_and(|workspace| workspace.columns.len() == 1))
+    }
+
+    /// After a restore the view is the centred one when NV.2 or NV.4 applies, else the saved one.
+    fn restored_view(
+        centring: (bool, bool),
+        snap: &Snapshot,
+        saved: Option<f64>,
+    ) -> Result<(), TestCaseError> {
+        if centring_applies(centring, snap) {
+            let geometry = focused_geometry(snap)
+                .filter(|_| focused_column(snap).is_some_and(column_is_normal))
+                .filter(|&(tile, working, gaps)| fits(tile, working, gaps));
+            if let Some((tile, working, _gaps)) = geometry {
+                prop_assert!(
+                    centred(tile, working),
+                    "tile {:?} not centred in {:?}",
+                    tile,
+                    working
+                );
+            }
+        } else {
+            let after = focused_workspace(snap).map(|workspace| workspace.view_offset);
+            prop_assert!(
+                matches!((saved, after), (Some(saved), Some(after)) if near(saved, after)),
+                "view {:?} -> {:?}",
+                saved,
+                after
+            );
+        }
+        Ok(())
     }
 
     proptest! {
