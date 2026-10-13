@@ -6,8 +6,9 @@ mod focus_settles_pending {
 
     use proptest::prelude::*;
     use tehuti_core::{
+        State,
         plugin::{self, Input, RequestKey},
-        step, State,
+        step,
     };
     use tehuti_protocol::{Action, ButtonName, ButtonState, Event, KeyName, Permission, Text};
 
