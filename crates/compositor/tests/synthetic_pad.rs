@@ -468,7 +468,7 @@ mod synthetic_pad {
     }
 
     #[test]
-    fn overdue_plugin_fallback_cannot_cross_a_focus_notification() {
+    fn a_focus_notification_releases_overdue_plugin_fallback_once() {
         check_hanging_plugin_deadline(true);
     }
 
@@ -516,14 +516,11 @@ mod synthetic_pad {
         let delivered = client.join().unwrap();
         assert!(started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET);
         assert!(started.elapsed() >= tehuti_core::plugin::BUTTON_BUDGET);
-        let expected_key = if change_focus { KEY_ENTER } else { 15 };
-        assert_eq!(
-            delivered.keys,
-            vec![
-                (expected_key, KeyState::Pressed),
-                (expected_key, KeyState::Released)
-            ]
-        );
+        let mut expected_keys = vec![(15, KeyState::Pressed), (15, KeyState::Released)];
+        if change_focus {
+            expected_keys.extend([(KEY_ENTER, KeyState::Pressed), (KEY_ENTER, KeyState::Released)]);
+        }
+        assert_eq!(delivered.keys, expected_keys);
     }
 
     fn change_focus_after_deadline(compositor: &mut Compositor, pad: &mut SyntheticPad) {
