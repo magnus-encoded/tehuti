@@ -705,10 +705,7 @@ impl Layout {
             }
         }
         self.normalize();
-        #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
-        if restored_view.is_none()
-            && self.outputs[output].config.center_focused_column == CenterFocusedColumn::Always
-        {
+        if self.must_center(output) {
             self.scroll(output, None, false);
         }
         Ok(())
@@ -940,6 +937,13 @@ impl Layout {
         target.columns.insert(position, moved);
         target.focused = Some(position);
     }
+    #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+    fn must_center(&self, output: usize) -> bool {
+        let output = &self.outputs[output];
+        output.config.center_focused_column == CenterFocusedColumn::Always
+            || output.config.always_center_single_column
+                && output.workspaces[output.active].columns.len() == 1
+    }
     fn scroll(&mut self, output: usize, previous: Option<usize>, center: bool) {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let active = self.outputs[output].active;
@@ -1021,7 +1025,7 @@ impl Layout {
         }
         self.normalize();
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
-        if !restoring_fullscreen
+        if (!restoring_fullscreen || self.must_center(output))
             && (command != Command::ExpandColumnToAvailableWidth
                 || self.outputs[output].config.center_focused_column == CenterFocusedColumn::Always)
             && let Some(current) = self.focused_index()
