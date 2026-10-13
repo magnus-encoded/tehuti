@@ -257,9 +257,24 @@ impl Compositor {
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
         use tehuti_core::speech::{SpeechEffect, speech_step};
+        if let tehuti_core::speech::SpeechInput::Transcript { session, text } = &input {
+            tracing::info!(session, text = text.as_str(), "speech transcript received");
+        }
+        let transcript = matches!(input, tehuti_core::speech::SpeechInput::Transcript { .. });
         let (state, effects) = speech_step(core::mem::take(&mut self.speech_state), input);
         self.speech_state = state;
+        if transcript && effects.is_empty() {
+            tracing::info!("speech transcript dropped for a stale session");
+        }
         for effect in effects {
+            match &effect {
+                SpeechEffect::Start { session } => tracing::info!(session, "speech session started"),
+                SpeechEffect::Stop { session, transcribe } => {
+                    tracing::info!(session, transcribe, "speech session stopped");
+                }
+                SpeechEffect::Speech { .. } => {}
+                SpeechEffect::Failed { session } => tracing::warn!(session, "speech transcription failed"),
+            }
             if let SpeechEffect::Speech { text, .. } = effect {
                 self.handle(&Event::Speech { text });
             } else if let SpeechEffect::Failed { .. } = effect {
@@ -394,6 +409,16 @@ impl Compositor {
             }
         }
         self.core = next;
+        if let Event::Speech { text } = event {
+            match actions.first() {
+                Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
+                    tracing::info!(text = text.as_str(), "speech has no mapping");
+                }
+                Some(action) => tracing::info!(text = text.as_str(), ?action, "speech mapped"),
+                None if route_plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
+                None => tracing::info!(text = text.as_str(), "speech produced no action"),
+            }
+        }
         for action in &actions {
             self.apply(action);
         }

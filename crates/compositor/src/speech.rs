@@ -191,9 +191,15 @@ impl Running {
                         if *byte == b'\n' {
                             if let Some(input) = parse_reply(&self.input) {
                                 if input == SpeechInput::Available {
+                                    tracing::info!("speech sidecar ready");
                                     self.ready = true;
                                 }
                                 inputs.push(input);
+                            } else {
+                                tracing::warn!(
+                                    reply = %String::from_utf8_lossy(&self.input),
+                                    "speech reply ignored: unrecognized"
+                                );
                             }
                             self.input.clear();
                         } else {

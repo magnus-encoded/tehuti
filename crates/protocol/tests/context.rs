@@ -21,6 +21,39 @@ mod context {
             let context = parse_context(&format!("app_id = 'test'\n[buttons.east]\nkey = '{}'", key.0)).unwrap();
             prop_assert_eq!(context.key_for(tehuti_protocol::ButtonName::East).unwrap(), key.1);
         }
+
+        /// Whisper capitalises and punctuates between words as well as at the end.
+        #[test]
+        fn whisper_punctuation_and_case_do_not_block_a_phrase(
+            words in prop::collection::vec("[a-z]{1,8}", 1..5),
+            separators in prop::collection::vec(prop::sample::select(vec![" ", ". ", ", ", "! ", "? ", " - ", "  "]), 4),
+            ending in prop::sample::select(vec!["", ".", "!", "?", "...", " ."]),
+        ) {
+            let mapped = words.join(" ");
+            let mut spoken = String::new();
+            let leading = core::iter::once("").chain(separators.iter().copied());
+            for (separator, word) in leading.zip(&words) {
+                spoken.push_str(separator);
+                let mut letters = word.chars();
+                if let Some(first) = letters.next() {
+                    spoken.extend(first.to_uppercase());
+                    spoken.extend(letters);
+                }
+            }
+            spoken.push_str(ending);
+            let context = parse_context(&format!("app_id = 'test'\n[buttons]\n[speech]\n\"{mapped}\" = {{ key = 'enter' }}")).unwrap();
+            prop_assert!(context.speech_action(&format!(" {spoken}")).is_some(), "{spoken:?} should match {mapped:?}");
+        }
+    }
+
+    #[test]
+    fn transcript_with_inner_punctuation_matches() {
+        let context =
+            parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"Front center.\" = { key = 'enter' }")
+                .unwrap();
+        assert!(context.speech_action("Front. Center.").is_some());
+        assert!(context.speech_action("Front centre.").is_none());
+        assert!(context.speech_action("Don't.").is_none());
     }
 
     #[test]

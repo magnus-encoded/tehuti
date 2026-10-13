@@ -254,11 +254,17 @@ pub enum Action {
 mod plugin;
 pub use plugin::*;
 
-/// Folds case, surrounding whitespace and trailing punctuation so "Hello." matches "hello".
+/// Folds case, whitespace and punctuation between and around words, so Whisper's
+/// "Front. Center." matches "front center". Apostrophes inside words are kept.
 #[must_use]
 pub fn normalize_phrase(phrase: &str) -> String {
     phrase
-        .trim()
-        .trim_end_matches(|character: char| character.is_ascii_punctuation() || character.is_whitespace())
+        .split(|character: char| {
+            character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
+        })
+        .map(|word| word.trim_matches('\''))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
         .to_lowercase()
 }

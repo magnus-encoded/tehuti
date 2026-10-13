@@ -18,6 +18,12 @@ if [ "${TEHUTI_NO_SPEECH:-}" = "" ]; then
         "$venv/bin/pip" install -r sidecars/speech/requirements.txt
         cp sidecars/speech/requirements.txt "$stamp"
     fi
+    # faster-whisper on CUDA needs cuBLAS 12; without it every transcription fails, so use the CPU.
+    if [ "${TEHUTI_SPEECH_DEVICE:-}" = "" ] \
+        && ! "$venv/bin/python" -c 'import ctypes; ctypes.CDLL("libcublas.so.12")' 2>/dev/null; then
+        echo "libcublas.so.12 not found; speech runs on the CPU" >&2
+        export TEHUTI_SPEECH_DEVICE=cpu
+    fi
     wrapper=$(mktemp -t tehuti-speech.XXXXXX)
     trap 'rm -f "$wrapper"' EXIT
     printf '#!/bin/sh\nexec "%s/bin/python" "%s/sidecars/speech/speech.py"\n' "$venv" "$root" >"$wrapper"

@@ -14,7 +14,7 @@ dpad_right = { key = "right" }
 select = { key = "escape" }
 start = { notify = "Tehuti is listening to this controller" }
 
-# Whisper capitalises and punctuates, so phrases match its exact output.
+# Matching ignores case and punctuation, so Whisper's "Hello." and "hello" are the same phrase.
 [speech]
 "Hello." = { text = "echo hello from Tehuti" }
 "Enter." = { key = "enter" }
