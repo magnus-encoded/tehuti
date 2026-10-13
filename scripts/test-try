@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Checks scripts/try's speech setup with stub cargo, python and tehuti binaries.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+mkdir -p "$work/bin"
+printf '#!/bin/sh\nexit 0\n' >"$work/bin/cargo"
+# python3 -m venv DIR creates a venv whose python reports CUDA through $FAKE_CUDA and whose pip logs.
+cat >"$work/bin/python3" <<'STUB'
+#!/bin/sh
+dir=$3
+mkdir -p "$dir/bin"
+cat >"$dir/bin/python" <<'PY'
+#!/bin/sh
+case "$2" in
+*faster_whisper*) exit "$FAKE_CUDA" ;;
+*) exit 0 ;;
+esac
+PY
+printf '#!/bin/sh\necho installed >>"%s/pip.log"\n' "$dir" >"$dir/bin/pip"
+chmod +x "$dir/bin/python" "$dir/bin/pip"
+STUB
+printf '#!/bin/sh\necho "device=${TEHUTI_SPEECH_DEVICE:-}"\n' >"$work/bin/tehuti"
+chmod +x "$work/bin/"*
+
+run() {
+    PATH="$work/bin:$PATH" TEHUTI_BIN="$work/bin/tehuti" TEHUTI_SPEECH_VENV="$work/venv" \
+        TEHUTI_SPEECH_DEVICE= "$root/scripts/try" 2>/dev/null
+}
+fail() {
+    echo "test-try: $1" >&2
+    exit 1
+}
+
+# A recreated venv must reinstall even when a stale stamp survives.
+mkdir -p "$work/venv"
+cp "$root/sidecars/speech/requirements.txt" "$work/venv/.tehuti-requirements"
+FAKE_CUDA=0 run >/dev/null
+[ -s "$work/venv/pip.log" ] || fail "recreated venv did not reinstall requirements"
+
+# CUDA that cannot load a model falls back to the CPU; a working CUDA keeps the default.
+[ "$(FAKE_CUDA=1 run)" = "device=cpu" ] || fail "failed CUDA probe did not select the CPU"
+[ "$(FAKE_CUDA=0 run)" = "device=" ] || fail "working CUDA probe selected the CPU"
+echo "test-try: ok"

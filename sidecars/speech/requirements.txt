@@ -1,2 +1,4 @@
 faster-whisper>=1.2,<2
+# av 19 dropped the metadata_errors argument that faster-whisper 1.2 passes to av.open.
+av>=11,<19
 numpy>=2,<3

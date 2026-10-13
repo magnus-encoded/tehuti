@@ -7,7 +7,7 @@ use std::{
     os::unix::process::CommandExt,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
 };
-use tehuti_core::speech::{SpeechEffect, SpeechInput};
+use tehuti_core::speech::{SpeechEffect, SpeechFailure, SpeechInput};
 use tehuti_protocol::{MAX_MESSAGE_BYTES, Text};
 
 #[derive(Debug)]
@@ -116,7 +116,7 @@ impl SpeechProcess {
             SpeechEffect::Stop { session, transcribe } => {
                 serde_json::json!({"stop": session, "transcribe": transcribe})
             }
-            SpeechEffect::Speech { .. } => return Ok(()),
+            SpeechEffect::Speech { .. } | SpeechEffect::Failed { .. } => return Ok(()),
         };
         let bytes = serde_json::to_vec(&value)?;
         let running = self
@@ -191,9 +191,15 @@ impl Running {
                         if *byte == b'\n' {
                             if let Some(input) = parse_reply(&self.input) {
                                 if input == SpeechInput::Available {
+                                    tracing::info!("speech sidecar ready");
                                     self.ready = true;
                                 }
                                 inputs.push(input);
+                            } else {
+                                tracing::warn!(
+                                    reply = %String::from_utf8_lossy(&self.input),
+                                    "speech reply ignored: unrecognized"
+                                );
                             }
                             self.input.clear();
                         } else {
@@ -222,6 +228,41 @@ fn parse_reply(bytes: &[u8]) -> Option<SpeechInput> {
         return None;
     }
     let session = value.get("session")?.as_u64()?;
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        let reason = if error == "silent" {
+            SpeechFailure::Silent
+        } else {
+            SpeechFailure::Transcription
+        };
+        return Some(SpeechInput::Failed { session, reason });
+    }
     let text = Text::new(value.get("text")?.as_str()?.to_owned()).ok()?;
     Some(SpeechInput::Transcript { session, text })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidecar_error_reply_is_a_failed_transcript() {
+        assert_eq!(
+            parse_reply(br#"{"session": 4, "error": "boom"}"#),
+            Some(SpeechInput::Failed {
+                session: 4,
+                reason: SpeechFailure::Transcription
+            })
+        );
+    }
+
+    #[test]
+    fn sidecar_silent_reply_is_a_silent_failure() {
+        assert_eq!(
+            parse_reply(br#"{"session": 5, "error": "silent"}"#),
+            Some(SpeechInput::Failed {
+                session: 5,
+                reason: SpeechFailure::Silent
+            })
+        );
+    }
 }

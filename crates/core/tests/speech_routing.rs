@@ -36,4 +36,22 @@ mod speech_routing {
             "unmatched speech emits a user notice"
         );
     }
+
+    #[test]
+    fn whisper_casing_whitespace_and_trailing_punctuation_still_match() {
+        let context =
+            parse_context("app_id = 'terminal'\n[buttons]\n[speech]\nhello = { key = 'enter' }").unwrap();
+        for heard in ["Hello.", "  HELLO!  ", "hello?", "hello"] {
+            assert_eq!(
+                context.speech_action(heard),
+                Some(Action::Key { key: KeyName::Enter }),
+                "{heard:?} matches the mapped phrase"
+            );
+        }
+        assert_eq!(
+            context.speech_action("hello there"),
+            None,
+            "other words still differ"
+        );
+    }
 }

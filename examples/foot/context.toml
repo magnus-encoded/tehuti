@@ -1,0 +1,21 @@
+# Buttons and spoken phrases for a foot terminal (app id "foot").
+# scripts/try starts foot with a plain bash so shell prompts and wizards stay out of the demo.
+app_id = "foot"
+
+[buttons]
+south = { key = "enter" }
+east = { key = "backspace" }
+west = { key = "space" }
+north = { text = "ls -la" }
+dpad_up = { key = "up" }
+dpad_down = { key = "down" }
+dpad_left = { key = "left" }
+dpad_right = { key = "right" }
+select = { key = "escape" }
+start = { notify = "Tehuti is listening to this controller" }
+
+# Matching ignores case and punctuation, so Whisper's "Hello." and "hello" are the same phrase.
+[speech]
+"Hello." = { text = "echo hello from Tehuti" }
+"Enter." = { key = "enter" }
+"Clear." = { text = "clear" }

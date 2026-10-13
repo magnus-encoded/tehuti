@@ -43,7 +43,17 @@ Commands and replies are one JSON object per line, capped at 64 KiB:
 {"stop":0,"transcribe":true}
 {"ready":true}
 {"session":0,"text":"confirm"}
+{"session":1,"error":"model failed"}
+{"session":2,"error":"silent"}
 ```
+
+An `error` reply shows SPEECH FAILED instead of NO SPEECH MAPPING. The
+`silent` error shows MIC SILENT: the sidecar sends it without transcribing
+when the capture is empty or its peak sample amplitude is at most 64, such as
+the digital silence of a headset disconnected from its base. Each finished
+capture logs its byte size and peak to stderr at INFO. The compositor logs at
+INFO each mapped key or text it delivers, naming the focused window's app id
+and title.
 
 `transcribe:false` discards audio. Session ids are nonnegative integers.
 The core accepts one transcript for the current released session; stale,

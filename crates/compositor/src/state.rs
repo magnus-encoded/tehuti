@@ -257,11 +257,33 @@ impl Compositor {
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
         use tehuti_core::speech::{SpeechEffect, speech_step};
+        if let tehuti_core::speech::SpeechInput::Transcript { session, text } = &input {
+            tracing::info!(session, text = text.as_str(), "speech transcript received");
+        }
+        let transcript = matches!(input, tehuti_core::speech::SpeechInput::Transcript { .. });
         let (state, effects) = speech_step(core::mem::take(&mut self.speech_state), input);
         self.speech_state = state;
+        if transcript && effects.is_empty() {
+            tracing::info!("speech transcript dropped for a stale session");
+        }
         for effect in effects {
+            match &effect {
+                SpeechEffect::Start { session } => tracing::info!(session, "speech session started"),
+                SpeechEffect::Stop { session, transcribe } => {
+                    tracing::info!(session, transcribe, "speech session stopped");
+                }
+                SpeechEffect::Speech { .. } => {}
+                SpeechEffect::Failed { session, reason } => {
+                    tracing::warn!(session, ?reason, "speech transcription failed");
+                }
+            }
             if let SpeechEffect::Speech { text, .. } = effect {
                 self.handle(&Event::Speech { text });
+            } else if let SpeechEffect::Failed { reason, .. } = effect {
+                self.show_notice(match reason {
+                    tehuti_core::speech::SpeechFailure::Silent => "MIC SILENT",
+                    tehuti_core::speech::SpeechFailure::Transcription => "SPEECH FAILED",
+                });
             } else if let Some(process) = &mut self.speech_process
                 && let Err(error) = process.send(&effect)
             {
@@ -392,6 +414,16 @@ impl Compositor {
             }
         }
         self.core = next;
+        if let Event::Speech { text } = event {
+            match actions.first() {
+                Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
+                    tracing::info!(text = text.as_str(), "speech has no mapping");
+                }
+                Some(action) => tracing::info!(text = text.as_str(), ?action, "speech mapped"),
+                None if route_plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
+                None => tracing::info!(text = text.as_str(), "speech produced no action"),
+            }
+        }
         for action in &actions {
             self.apply(action);
         }
@@ -640,11 +672,26 @@ impl Compositor {
     /// Carries out one action from the core step.
     fn apply(&mut self, action: &Action) {
         match action {
-            Action::Key { key } => self.tap(*key),
+            Action::Key { key } => {
+                self.tap(*key);
+                let (app_id, title) = self.focused_window_label();
+                tracing::info!(?key, ?app_id, ?title, "key delivered to focused window");
+            }
             Action::Text { text } => {
-                if !self.text_input.send(text.as_str()) {
+                let method = if self.text_input.send(text.as_str()) {
+                    "text-input"
+                } else {
                     self.type_text(text.as_str());
-                }
+                    "keys"
+                };
+                let (app_id, title) = self.focused_window_label();
+                tracing::info!(
+                    characters = text.as_str().chars().count(),
+                    method,
+                    ?app_id,
+                    ?title,
+                    "text delivered to focused window"
+                );
             }
             Action::SecretRequest { reference } => {
                 if !self.request_secret_delivery(reference.clone()) {
@@ -670,11 +717,36 @@ impl Compositor {
                 }
             }
             Action::Notice { text } => {
-                let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
-                self.notice_text = Some(text.as_str().into());
-                self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+                self.show_notice(text.as_str());
             }
         }
+    }
+
+    /// App id and title of the window holding keyboard focus, for delivery logs.
+    fn focused_window_label(&self) -> (Option<String>, Option<String>) {
+        self.keyboard
+            .current_focus()
+            .filter(smithay::reexports::wayland_server::Resource::is_alive)
+            .and_then(|focus| {
+                smithay::wayland::compositor::with_states(&focus, |states| {
+                    states
+                        .data_map
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                        .map(|attributes| {
+                            let attributes = attributes
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            (attributes.app_id.clone(), attributes.title.clone())
+                        })
+                })
+            })
+            .unwrap_or((None, None))
+    }
+
+    fn show_notice(&mut self, text: &str) {
+        let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
+        self.notice_text = Some(text.into());
+        self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
     }
 
     fn tap(&mut self, key: KeyName) {

@@ -20,6 +20,16 @@ pub enum SpeechInput {
     Unavailable,
     Available,
     Transcript { session: u64, text: Text },
+    Failed { session: u64, reason: SpeechFailure },
+}
+
+/// Why a released session produced no transcript.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeechFailure {
+    /// The captured audio was empty or digital silence.
+    Silent,
+    /// Transcription itself failed.
+    Transcription,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +37,7 @@ pub enum SpeechEffect {
     Start { session: u64 },
     Stop { session: u64, transcribe: bool },
     Speech { session: u64, text: Text },
+    Failed { session: u64, reason: SpeechFailure },
 }
 
 #[must_use]
@@ -77,6 +88,12 @@ pub fn speech_step(mut state: SpeechState, input: SpeechInput) -> (SpeechState, 
             if state.pending == Some(session) {
                 state.pending = None;
                 effects.push(SpeechEffect::Speech { session, text });
+            }
+        }
+        SpeechInput::Failed { session, reason } => {
+            if state.pending == Some(session) {
+                state.pending = None;
+                effects.push(SpeechEffect::Failed { session, reason });
             }
         }
     }
