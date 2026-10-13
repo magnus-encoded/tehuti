@@ -29,8 +29,11 @@ mod plugins {
 
     impl Harness {
         fn new(manifest: &Manifest, mode: &str, version: u64, encoding: &str) -> Self {
+            Self::with_script(manifest, &plugin_script(mode, version, encoding))
+        }
+
+        fn with_script(manifest: &Manifest, script: &str) -> Self {
             let directory = tempfile::tempdir().unwrap();
-            let script = plugin_script(mode, version, encoding);
             let executable = directory.path().join("plugin.py");
             std::fs::write(&executable, script).unwrap();
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -303,7 +306,14 @@ for line in sys.stdin:
     #[test]
     fn a_late_initialize_reply_is_refused() {
         let mut harness = Harness::new(&manifest(), "slow_initialize", 0, "json");
-        harness.pump_until(|harness| harness.directory.path().join("replied").exists());
+        harness.pump_until(|harness| {
+            harness
+                .received()
+                .iter()
+                .filter(|message| message["method"] == "initialize")
+                .count()
+                >= 2
+        });
         for _attempt in 0..3 {
             harness
                 .event_loop
@@ -333,6 +343,11 @@ for line in sys.stdin:
         harness.ready();
         let process = std::fs::read_to_string(harness.directory.path().join("pid")).unwrap();
         drop(harness);
+        let started = Instant::now();
+        while std::path::Path::new(&format!("/proc/{process}")).exists() {
+            assert!(started.elapsed() < Duration::from_secs(2), "child must be reaped");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(
             !std::path::Path::new(&format!("/proc/{process}")).exists(),
             "the plugin is terminated and reaped with its loop"
@@ -527,6 +542,180 @@ for line in sys.stdin:
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
+        }
+    }
+
+    fn launches(harness: &Harness) -> Vec<u64> {
+        std::fs::read_to_string(harness.directory.path().join("launches"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| line.parse().unwrap())
+            .collect()
+    }
+
+    fn supervision_logs(run: impl FnOnce()) -> String {
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let writer = LogWriter(logs.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        String::from_utf8(logs.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn crashing_processes_restart_with_exponential_backoff_without_input() {
+        let output = supervision_logs(|| {
+            let mut harness = Harness::with_script(&manifest(), include_str!("fixtures/plugins/crash.py"));
+            harness.pump_until(|harness| launches(harness).len() >= 4);
+            let timestamps = launches(&harness);
+            for (pair, minimum) in timestamps.windows(2).zip([100, 200, 400]) {
+                let elapsed = Duration::from_nanos(pair[1].saturating_sub(pair[0]));
+                assert!(
+                    elapsed >= Duration::from_millis(minimum),
+                    "each restart waits for its increasing backoff"
+                );
+            }
+            assert_eq!(
+                harness.compositor.initialized_plugins(),
+                0,
+                "a crashing plugin cannot intercept input"
+            );
+        });
+        assert!(output.contains("plugin restart scheduled"), "crashes are logged");
+        for delay in ["delay_ms=100", "delay_ms=200", "delay_ms=400"] {
+            assert!(output.contains(delay), "restart delay is logged: {delay}");
+        }
+    }
+
+    #[test]
+    fn synthetic_input_keeps_working_during_repeated_crashes_and_restarts() {
+        let output = text_actions(|| {
+            let mut harness = Harness::with_script(&manifest(), include_str!("fixtures/plugins/crash.py"));
+            let mappings = core::iter::once((ButtonName::East, String::from("input"))).collect();
+            harness.compositor.set_contexts(vec![text_context(&mappings)]);
+            harness.send([focus("test")]);
+            for count in 1..=4 {
+                harness.pump_until(|harness| launches(harness).len() >= count);
+                let started = Instant::now();
+                harness.send([button(ButtonName::East)]);
+                assert!(
+                    started.elapsed() < Duration::from_millis(250),
+                    "controller routing cannot wait for a plugin restart"
+                );
+            }
+            harness.send([
+                button(ButtonName::Guide),
+                Event::Tick {
+                    elapsed: Duration::from_secs(3),
+                },
+            ]);
+            assert!(harness.compositor.quit_requested(), "escape survives restarts");
+        });
+        assert_eq!(output, 4, "every controller event reaches its context");
+    }
+
+    #[test]
+    fn hanging_decisions_expire_and_the_process_restarts() {
+        let output = text_actions(|| {
+            let mut harness = Harness::with_script(&manifest(), include_str!("fixtures/plugins/hang.py"));
+            let mappings = core::iter::once((ButtonName::East, String::from("fallback"))).collect();
+            harness.compositor.set_contexts(vec![text_context(&mappings)]);
+            harness.ready();
+            harness.send([button(ButtonName::East)]);
+            harness.pump_until(|harness| launches(harness).len() >= 2);
+            harness.send([
+                button(ButtonName::Guide),
+                Event::Tick {
+                    elapsed: Duration::from_secs(3),
+                },
+            ]);
+            assert!(
+                harness.compositor.quit_requested(),
+                "escape survives a hung plugin"
+            );
+        });
+        assert_eq!(
+            output, 1,
+            "the unanswered decision releases its fallback exactly once"
+        );
+    }
+
+    #[test]
+    fn repeated_garbage_and_invalid_actions_are_logged_contained_and_restarted() {
+        for script in [
+            include_str!("fixtures/plugins/garbage.py"),
+            include_str!("fixtures/plugins/invalid-actions.py"),
+        ] {
+            let output = supervision_logs(|| {
+                let mut configuration = manifest();
+                configuration.permissions.clear();
+                let mut harness = Harness::with_script(&configuration, script);
+                harness.ready();
+                harness.send([button(ButtonName::East)]);
+                harness.pump_until(|harness| launches(harness).len() >= 2);
+                assert!(
+                    !harness.compositor.quit_requested(),
+                    "invalid messages cannot execute actions"
+                );
+            });
+            assert!(
+                output.contains("repeated invalid messages"),
+                "repeated invalid messages are logged before restarting"
+            );
+            assert!(
+                output.contains("delay_ms=100"),
+                "invalid messages use restart backoff"
+            );
+        }
+    }
+
+    #[test]
+    fn stdout_flooding_is_bounded_and_input_keeps_working() {
+        for wire in [
+            "x".repeat(4096),
+            String::from("{\"jsonrpc\":\"2.0\",\"method\":\"actions\",\"params\":{\"actions\":[]}}\n"),
+        ] {
+            let output = supervision_logs(|| {
+                let mut harness =
+                    Harness::with_script(&manifest(), include_str!("fixtures/plugins/flood.py"));
+                std::fs::write(harness.directory.path().join("wire"), &wire).unwrap();
+                harness.ready();
+                harness.send([button(ButtonName::East)]);
+                let started = Instant::now();
+                while launches(&harness).len() < 2 {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(2),
+                        "a continuous flood is terminated rather than drained forever"
+                    );
+                    let dispatched = Instant::now();
+                    harness
+                        .event_loop
+                        .dispatch(Duration::from_millis(5), &mut harness.compositor)
+                        .unwrap();
+                    harness.send([button(ButtonName::South)]);
+                    assert!(
+                        dispatched.elapsed() < Duration::from_millis(250),
+                        "flood callbacks leave time for controller input"
+                    );
+                }
+                harness.send([
+                    button(ButtonName::Guide),
+                    Event::Tick {
+                        elapsed: Duration::from_secs(3),
+                    },
+                ]);
+                assert!(harness.compositor.quit_requested(), "input survives a flood");
+            });
+            assert!(
+                output.contains("plugin stdout flood"),
+                "the byte limit logs the flood"
+            );
+            assert!(
+                output.matches("overlong plugin line dropped").count() <= 4,
+                "only a bounded amount of flood data is parsed before termination"
+            );
         }
     }
 
