@@ -273,12 +273,17 @@ impl Compositor {
                     tracing::info!(session, transcribe, "speech session stopped");
                 }
                 SpeechEffect::Speech { .. } => {}
-                SpeechEffect::Failed { session } => tracing::warn!(session, "speech transcription failed"),
+                SpeechEffect::Failed { session, reason } => {
+                    tracing::warn!(session, ?reason, "speech transcription failed");
+                }
             }
             if let SpeechEffect::Speech { text, .. } = effect {
                 self.handle(&Event::Speech { text });
-            } else if let SpeechEffect::Failed { .. } = effect {
-                self.show_notice("SPEECH FAILED");
+            } else if let SpeechEffect::Failed { reason, .. } = effect {
+                self.show_notice(match reason {
+                    tehuti_core::speech::SpeechFailure::Silent => "MIC SILENT",
+                    tehuti_core::speech::SpeechFailure::Transcription => "SPEECH FAILED",
+                });
             } else if let Some(process) = &mut self.speech_process
                 && let Err(error) = process.send(&effect)
             {
@@ -667,11 +672,26 @@ impl Compositor {
     /// Carries out one action from the core step.
     fn apply(&mut self, action: &Action) {
         match action {
-            Action::Key { key } => self.tap(*key),
+            Action::Key { key } => {
+                self.tap(*key);
+                let (app_id, title) = self.focused_window_label();
+                tracing::info!(?key, ?app_id, ?title, "key delivered to focused window");
+            }
             Action::Text { text } => {
-                if !self.text_input.send(text.as_str()) {
+                let method = if self.text_input.send(text.as_str()) {
+                    "text-input"
+                } else {
                     self.type_text(text.as_str());
-                }
+                    "keys"
+                };
+                let (app_id, title) = self.focused_window_label();
+                tracing::info!(
+                    characters = text.as_str().chars().count(),
+                    method,
+                    ?app_id,
+                    ?title,
+                    "text delivered to focused window"
+                );
             }
             Action::SecretRequest { reference } => {
                 if !self.request_secret_delivery(reference.clone()) {
@@ -700,6 +720,27 @@ impl Compositor {
                 self.show_notice(text.as_str());
             }
         }
+    }
+
+    /// App id and title of the window holding keyboard focus, for delivery logs.
+    fn focused_window_label(&self) -> (Option<String>, Option<String>) {
+        self.keyboard
+            .current_focus()
+            .filter(smithay::reexports::wayland_server::Resource::is_alive)
+            .and_then(|focus| {
+                smithay::wayland::compositor::with_states(&focus, |states| {
+                    states
+                        .data_map
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                        .map(|attributes| {
+                            let attributes = attributes
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            (attributes.app_id.clone(), attributes.title.clone())
+                        })
+                })
+            })
+            .unwrap_or((None, None))
     }
 
     fn show_notice(&mut self, text: &str) {

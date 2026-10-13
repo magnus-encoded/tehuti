@@ -793,8 +793,26 @@ mod synthetic_pad {
         compositor.speech_input(SpeechInput::Available);
         compositor.speech_input(SpeechInput::Press);
         compositor.speech_input(SpeechInput::Release);
-        compositor.speech_input(SpeechInput::Failed { session: 0 });
+        compositor.speech_input(SpeechInput::Failed {
+            session: 0,
+            reason: tehuti_core::speech::SpeechFailure::Transcription,
+        });
         assert_eq!(compositor.visible_notice_text().as_deref(), Some("SPEECH FAILED"));
+    }
+
+    #[test]
+    fn silent_capture_shows_mic_silent_overlay() {
+        use tehuti_core::speech::SpeechInput;
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.speech_input(SpeechInput::Available);
+        compositor.speech_input(SpeechInput::Press);
+        compositor.speech_input(SpeechInput::Release);
+        compositor.speech_input(SpeechInput::Failed {
+            session: 0,
+            reason: tehuti_core::speech::SpeechFailure::Silent,
+        });
+        assert_eq!(compositor.visible_notice_text().as_deref(), Some("MIC SILENT"));
     }
 
     #[test]

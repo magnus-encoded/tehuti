@@ -11,6 +11,12 @@ import wave
 
 MAX_LINE = 65536
 MAX_AUDIO_SECONDS = 60
+SILENCE_PEAK = 64
+
+
+def peak(audio):
+    samples = memoryview(audio[:len(audio) - len(audio) % 2]).cast("h")
+    return max((abs(sample) for sample in samples), default=0)
 
 
 def reply(value):
@@ -81,20 +87,22 @@ class Speech:
             try:
                 clip.seek(0)
                 audio = clip.read()
-                if audio:
-                    with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
-                        with wave.open(recording.name, "wb") as output:
-                            output.setnchannels(1)
-                            output.setsampwidth(2)
-                            output.setframerate(16000)
-                            output.writeframes(audio)
-                        with self.model_lock:
-                            segments, _ = self.model.transcribe(
-                                recording.name, beam_size=5, language="en", vad_filter=True,
-                            )
-                            text = " ".join(segment.text.strip() for segment in segments).strip()
-                else:
-                    text = ""
+                loudest = peak(audio)
+                print(f"INFO speech capture: {len(audio)} bytes, peak {loudest}", file=sys.stderr, flush=True)
+                if loudest <= SILENCE_PEAK:
+                    reply({"session": session, "error": "silent"})
+                    return
+                with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
+                    with wave.open(recording.name, "wb") as output:
+                        output.setnchannels(1)
+                        output.setsampwidth(2)
+                        output.setframerate(16000)
+                        output.writeframes(audio)
+                    with self.model_lock:
+                        segments, _ = self.model.transcribe(
+                            recording.name, beam_size=5, language="en", vad_filter=True,
+                        )
+                        text = " ".join(segment.text.strip() for segment in segments).strip()
                 reply({"session": session, "text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)

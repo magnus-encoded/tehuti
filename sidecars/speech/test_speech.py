@@ -27,7 +27,7 @@ class SpeechTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             recorder = Path(directory) / "pw-record"
-            recorder.write_text("#!/usr/bin/env python3\nimport sys,time,signal\nsignal.signal(signal.SIGINT,lambda *_:sys.exit(0))\nsys.stdout.buffer.write(b'\\x01\\x00'*320)\nsys.stdout.buffer.flush()\ntime.sleep(60)\n")
+            recorder.write_text("#!/usr/bin/env python3\nimport sys,time,signal\nsignal.signal(signal.SIGINT,lambda *_:sys.exit(0))\nsys.stdout.buffer.write(b'\\x00\\x10'*320)\nsys.stdout.buffer.flush()\ntime.sleep(60)\n")
             recorder.chmod(0o700)
             previous_path = os.environ["PATH"]
             os.environ["PATH"] = directory + os.pathsep + previous_path
@@ -45,11 +45,43 @@ class SpeechTests(unittest.TestCase):
                         time.sleep(0.01)
                 self.assertEqual(json.loads(output.getvalue()), {"session": 7, "text": "confirm"})
                 self.assertEqual(model.format, (16000, 1, 2))
-                self.assertEqual(model.samples, b"\x01\x00" * 320)
+                self.assertEqual(model.samples, b"\x00\x10" * 320)
                 self.assertEqual(model.options, {"beam_size": 5, "language": "en", "vad_filter": True})
             finally:
                 speech.close()
                 os.environ["PATH"] = previous_path
+
+    def test_peak_reads_signed_samples(self):
+        self.assertEqual(module.peak(b""), 0)
+        self.assertEqual(module.peak(b"\x01\x00\xff\xff"), 1)
+        self.assertEqual(module.peak(b"\x00\x80"), 32768)
+
+    def test_silent_or_empty_capture_replies_silent_without_transcribing(self):
+        class Model:
+            def transcribe(self, path, **options):
+                raise AssertionError("silent audio must not be transcribed")
+
+        for samples in ["b''", "b'\\x01\\x00'*320"]:
+            with self.subTest(samples=samples), tempfile.TemporaryDirectory() as directory:
+                recorder = Path(directory) / "pw-record"
+                recorder.write_text("#!/usr/bin/env python3\nimport sys,time,signal\nsignal.signal(signal.SIGINT,lambda *_:sys.exit(0))\nsys.stdout.buffer.write(" + samples + ")\nsys.stdout.buffer.flush()\ntime.sleep(60)\n")
+                recorder.chmod(0o700)
+                previous_path = os.environ["PATH"]
+                os.environ["PATH"] = directory + os.pathsep + previous_path
+                speech = module.Speech(Model())
+                output = io.StringIO()
+                try:
+                    with contextlib.redirect_stdout(output):
+                        speech.start(3)
+                        time.sleep(0.1)
+                        speech.stop(3, True)
+                        deadline = time.monotonic() + 3
+                        while not output.getvalue() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                    self.assertEqual(json.loads(output.getvalue()), {"session": 3, "error": "silent"})
+                finally:
+                    speech.close()
+                    os.environ["PATH"] = previous_path
 
     def test_invalid_command_cancels_capture_on_transport_exit(self):
         class Capture:

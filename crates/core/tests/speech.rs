@@ -5,8 +5,20 @@ mod speech {
     use std::collections::BTreeSet;
 
     use proptest::prelude::*;
-    use tehuti_core::speech::{SpeechEffect, SpeechInput, SpeechState, speech_step};
+    use tehuti_core::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState, speech_step};
     use tehuti_protocol::Text;
+
+    #[test]
+    fn failure_reason_reaches_the_effect() {
+        for reason in [SpeechFailure::Silent, SpeechFailure::Transcription] {
+            let mut state = SpeechState::default();
+            for step in [SpeechInput::Available, SpeechInput::Press, SpeechInput::Release] {
+                state = speech_step(state, step).0;
+            }
+            let (_, effects) = speech_step(state, SpeechInput::Failed { session: 0, reason });
+            assert_eq!(effects, vec![SpeechEffect::Failed { session: 0, reason }]);
+        }
+    }
 
     fn input() -> impl Strategy<Value = SpeechInput> {
         prop_oneof![
@@ -17,7 +29,14 @@ mod speech {
             Just(SpeechInput::Unavailable),
             Just(SpeechInput::Available),
             (0u64..100, any::<Text>()).prop_map(|(session, text)| SpeechInput::Transcript { session, text }),
-            (0u64..100).prop_map(|session| SpeechInput::Failed { session }),
+            (0u64..100, proptest::bool::ANY).prop_map(|(session, silent)| SpeechInput::Failed {
+                session,
+                reason: if silent {
+                    SpeechFailure::Silent
+                } else {
+                    SpeechFailure::Transcription
+                },
+            }),
         ]
     }
 
@@ -51,7 +70,7 @@ mod speech {
                             prop_assert!(stopped.insert(session));
                             eligible = transcribe.then_some(session);
                         }
-                        SpeechEffect::Speech { session, .. } | SpeechEffect::Failed { session } => {
+                        SpeechEffect::Speech { session, .. } | SpeechEffect::Failed { session, .. } => {
                             prop_assert_eq!(eligible.take(), Some(session));
                             prop_assert!(delivered.insert(session));
                         }

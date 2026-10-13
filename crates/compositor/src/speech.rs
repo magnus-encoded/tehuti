@@ -7,7 +7,7 @@ use std::{
     os::unix::process::CommandExt,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
 };
-use tehuti_core::speech::{SpeechEffect, SpeechInput};
+use tehuti_core::speech::{SpeechEffect, SpeechFailure, SpeechInput};
 use tehuti_protocol::{MAX_MESSAGE_BYTES, Text};
 
 #[derive(Debug)]
@@ -228,8 +228,13 @@ fn parse_reply(bytes: &[u8]) -> Option<SpeechInput> {
         return None;
     }
     let session = value.get("session")?.as_u64()?;
-    if value.get("error").is_some_and(serde_json::Value::is_string) {
-        return Some(SpeechInput::Failed { session });
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        let reason = if error == "silent" {
+            SpeechFailure::Silent
+        } else {
+            SpeechFailure::Transcription
+        };
+        return Some(SpeechInput::Failed { session, reason });
     }
     let text = Text::new(value.get("text")?.as_str()?.to_owned()).ok()?;
     Some(SpeechInput::Transcript { session, text })
@@ -243,7 +248,21 @@ mod tests {
     fn sidecar_error_reply_is_a_failed_transcript() {
         assert_eq!(
             parse_reply(br#"{"session": 4, "error": "boom"}"#),
-            Some(SpeechInput::Failed { session: 4 })
+            Some(SpeechInput::Failed {
+                session: 4,
+                reason: SpeechFailure::Transcription
+            })
+        );
+    }
+
+    #[test]
+    fn sidecar_silent_reply_is_a_silent_failure() {
+        assert_eq!(
+            parse_reply(br#"{"session": 5, "error": "silent"}"#),
+            Some(SpeechInput::Failed {
+                session: 5,
+                reason: SpeechFailure::Silent
+            })
         );
     }
 }
