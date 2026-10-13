@@ -691,6 +691,117 @@ mod synthetic_pad {
         );
     }
 
+    /// Visible windows sit where the active workspace's tiles say, inside the border,
+    /// to within the rounding to whole logical pixels.
+    #[expect(clippy::float_arithmetic, reason = "layout geometry is in f64 logical pixels")]
+    fn assert_geometry_matches_snapshot(compositor: &Compositor) {
+        let snapshot = compositor.layout_snapshot();
+        let mut expected: Vec<[f64; 4]> = snapshot
+            .outputs
+            .iter()
+            .flat_map(|output| {
+                output.workspaces[output.active_workspace]
+                    .columns
+                    .iter()
+                    .flat_map(move |column| {
+                        column.tiles.iter().map(move |tile| {
+                            [
+                                tile.tile.x + output.border,
+                                tile.tile.y + output.border,
+                                (-2.0_f64).mul_add(output.border, tile.tile.width),
+                                (-2.0_f64).mul_add(output.border, tile.tile.height),
+                            ]
+                        })
+                    })
+            })
+            .collect();
+        let mut actual: Vec<[f64; 4]> = compositor
+            .space
+            .elements()
+            .filter_map(|window| compositor.space.element_geometry(window))
+            .map(|rect| [rect.loc.x, rect.loc.y, rect.size.w, rect.size.h].map(f64::from))
+            .collect();
+        expected.sort_by(|left, right| left.partial_cmp(right).unwrap());
+        actual.sort_by(|left, right| left.partial_cmp(right).unwrap());
+        assert_eq!(actual.len(), expected.len(), "{actual:?} != {expected:?}");
+        for (placed, tile) in actual.iter().zip(&expected) {
+            assert!(
+                placed
+                    .iter()
+                    .zip(tile)
+                    .all(|(placed, tile)| (placed - tile).abs() <= 1.0),
+                "{actual:?} != {expected:?}"
+            );
+        }
+    }
+
+    fn focused_column(compositor: &Compositor) -> (Option<usize>, Option<tehuti_core::layout::WindowId>) {
+        let snapshot = compositor.layout_snapshot();
+        let output = &snapshot.outputs[0];
+        let workspace = &output.workspaces[output.active_workspace];
+        (workspace.focused_column, snapshot.focused_window)
+    }
+
+    #[test]
+    fn layout_actions_place_windows_as_the_layout_model_does() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(
+                "app_id = 'test'\n[buttons]\neast = { layout = 'move-column-left' }\n[speech]\n\
+             'focus left' = { layout = 'focus-column-left' }\nclose = { close = 'focused' }",
+            )
+            .unwrap(),
+        ]);
+        let clients: Vec<_> = (0..3)
+            .map(|_| {
+                let client = start_action_client(&mut display, &mut compositor);
+                assert_geometry_matches_snapshot(&compositor);
+                client
+            })
+            .collect();
+        let (column, window) = focused_column(&compositor);
+        assert_eq!(column, Some(2), "each new window opens a column right of focus");
+        compositor.handle(&Event::Speech {
+            text: tehuti_protocol::Text::new("focus left".into()).unwrap(),
+        });
+        let (left, moved) = focused_column(&compositor);
+        assert_eq!(left, Some(1));
+        assert_ne!(moved, window);
+        assert_geometry_matches_snapshot(&compositor);
+        compositor.handle(&Event::Button {
+            name: ButtonName::East,
+            state: ButtonState::Pressed,
+        });
+        assert_eq!(
+            focused_column(&compositor),
+            (Some(0), moved),
+            "the focused column moved with its window"
+        );
+        let _moved = display.dispatch_clients(&mut compositor).unwrap();
+        display.flush_clients().unwrap();
+        assert_geometry_matches_snapshot(&compositor);
+        for _ in 0..3 {
+            compositor.handle(&Event::Speech {
+                text: tehuti_protocol::Text::new("close".into()).unwrap(),
+            });
+            assert_geometry_matches_snapshot(&compositor);
+        }
+        let began = Instant::now();
+        while !clients.iter().all(thread::JoinHandle::is_finished) {
+            assert!(began.elapsed() < Duration::from_secs(5), "close stalled");
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let snapshot = compositor.layout_snapshot();
+        assert!(
+            snapshot.focused_window.is_none(),
+            "unmapped windows leave the layout"
+        );
+        assert_geometry_matches_snapshot(&compositor);
+    }
+
     fn start_action_client(
         display: &mut Display<Compositor>,
         compositor: &mut Compositor,

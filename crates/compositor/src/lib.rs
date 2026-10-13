@@ -21,3 +21,5 @@ pub mod notice;
 pub mod secret_delivery;
 
 pub mod desktop;
+
+mod layout_window;

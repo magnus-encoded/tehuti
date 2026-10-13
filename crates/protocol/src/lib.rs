@@ -160,7 +160,8 @@ impl Context {
             | MappingAction::Secret { .. }
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
-            | MappingAction::Notify { .. } => None,
+            | MappingAction::Notify { .. }
+            | MappingAction::Layout { .. } => None,
         })
     }
 
@@ -189,6 +190,7 @@ enum MappingAction {
     Launch { launch: Text },
     Close { close: CloseMapping },
     Notify { notify: Text },
+    Layout { layout: LayoutAction },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -210,6 +212,7 @@ impl MappingAction {
             Self::Secret { secret } => Action::SecretRequest {
                 reference: secret.clone(),
             },
+            Self::Layout { layout } => Action::Layout { action: *layout },
         }
     }
 }
@@ -264,6 +267,30 @@ pub enum Action {
     Quit,
     /// Display a notice without changing the focused client.
     Notice { text: Text },
+    /// Change the tiling layout; reserved for the core like `Close`.
+    Layout { action: LayoutAction },
+}
+
+/// A tiling action a context maps to a button or phrase, written in kebab case,
+/// such as `layout = "focus-column-left"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
+pub enum LayoutAction {
+    FocusColumnLeft,
+    FocusColumnRight,
+    FocusWindowUp,
+    FocusWindowDown,
+    MoveColumnLeft,
+    MoveColumnRight,
+    /// Cycles the focused column through the preset widths.
+    SwitchPresetColumnWidth,
+    FocusWorkspaceDown,
+    FocusWorkspaceUp,
+    MoveColumnToWorkspaceDown,
+    MoveColumnToWorkspaceUp,
+    ToggleFullscreen,
+    MaximizeColumn,
 }
 
 mod plugin;
