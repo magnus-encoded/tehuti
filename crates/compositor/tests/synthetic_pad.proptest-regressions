@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 1b18ba6349500a1af720e084915d8467b53a8260dde7dd5b8cfdbbf84f6cf062 # shrinks to characters = ['^']
+cc a1a232b6e83b237e08f4bcb26ae55d978fbe0dd45c15b2aa0da3bb3c3edbf39a # shrinks to commands = [Open, Start, Crash]
+cc 16492a25a641e236268517d06a09ed40a48531b97705bdd9267ae19850f8519e # shrinks to commands = [Open, Connect, Button, Button]

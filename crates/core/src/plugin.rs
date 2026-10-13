@@ -26,6 +26,9 @@ pub enum Input {
         key: RequestKey,
         result: Result<Vec<Action>, String>,
     },
+    Exited {
+        plugin: usize,
+    },
     Tick {
         elapsed: Duration,
     },
@@ -94,11 +97,28 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Action>, Option<Rejec
                 Err(reason) => (state, pending.fallback, Some(Rejection { key, reason })),
             }
         }
+        Input::Exited { plugin } => {
+            let actions = exit(&mut state, plugin);
+            (state, actions, None)
+        }
         Input::Tick { elapsed } => {
             let actions = expire(&mut state, elapsed);
             (state, actions, None)
         }
     }
+}
+
+fn exit(state: &mut State, plugin: usize) -> Vec<Action> {
+    let mut actions = Vec::new();
+    state.pending.retain_mut(|pending| {
+        if pending.key.plugin == plugin {
+            actions.append(&mut pending.fallback);
+            false
+        } else {
+            true
+        }
+    });
+    actions
 }
 
 pub(crate) fn expire(state: &mut State, elapsed: Duration) -> Vec<Action> {

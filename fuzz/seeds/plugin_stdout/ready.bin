@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","id":1,"result":[{"type":"key","key":"enter"}]}
+{"jsonrpc":"2.0","method":"actions","params":{"actions":[]}}
+not json

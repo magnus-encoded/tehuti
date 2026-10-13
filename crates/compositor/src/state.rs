@@ -186,6 +186,12 @@ impl Compositor {
             .map_or(0, crate::plugins::Plugins::initialized_count)
     }
 
+    /// Plugin decisions the core still holds a fallback for.
+    #[must_use]
+    pub const fn pending_plugin_decisions(&self) -> usize {
+        self.core.pending_decisions()
+    }
+
     pub fn set_plugins(&mut self, plugins: crate::plugins::Plugins) {
         self.plugins = Some(plugins);
     }
@@ -265,6 +271,28 @@ impl Compositor {
         }
     }
 
+    pub(crate) fn plugin_exited(&mut self, plugin: usize) {
+        let (next, actions, _) = tehuti_core::plugin::step(
+            core::mem::take(&mut self.core),
+            tehuti_core::plugin::Input::Exited { plugin },
+        );
+        self.core = next;
+        for action in &actions {
+            self.apply_plugin_action(action);
+        }
+    }
+
+    pub(crate) fn supervise_plugins(&mut self) {
+        let exited = self
+            .plugins
+            .as_mut()
+            .map_or_else(Vec::new, crate::plugins::Plugins::supervise);
+        for plugin in exited {
+            self.plugin_exited(plugin);
+        }
+        self.advance_time();
+    }
+
     /// Supplies elapsed wall time to the pure core before input or replies.
     pub fn advance_time(&mut self) {
         let now = Instant::now();
@@ -287,8 +315,16 @@ impl Compositor {
         use tehuti_core::speech::SpeechInput;
         if matches!(event, Event::Tick { .. }) {
             self.previous_tick = Instant::now();
+            self.route_event(event);
         } else if !matches!(event, Event::Focus { .. }) {
             self.advance_time();
+        }
+        let exited = self
+            .plugins
+            .as_mut()
+            .map_or_else(Vec::new, crate::plugins::Plugins::supervise);
+        for plugin in exited {
+            self.plugin_exited(plugin);
         }
         if let Event::Button {
             name: tehuti_protocol::ButtonName::South,
@@ -318,7 +354,9 @@ impl Compositor {
             Event::Focus { .. } => self.speech_input(SpeechInput::Cancel),
             Event::Tick { .. } | Event::Button { .. } | Event::Speech { .. } => {}
         }
-        self.route_event(event);
+        if !matches!(event, Event::Tick { .. }) {
+            self.route_event(event);
+        }
         if matches!(event, Event::Focus { .. }) {
             self.advance_time();
         }

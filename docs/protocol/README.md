@@ -63,8 +63,9 @@ Only version 0 and encoding `json` are supported. The deadline is two seconds
 from session creation, before the request is queued, not from receipt by the
 plugin. A reply received at or after the deadline, or with another version or
 encoding, refuses the session. Refusal is logged; all later messages from that
-session are ignored. The process stays alive until it exits or the compositor
-shuts down. It receives no refusal reply and is never restarted.
+session are ignored. An unsupported version or encoding receives no refusal reply and stays
+inactive until the process exits or the compositor shuts down. An initialization
+timeout terminates the process and schedules a restart.
 
 Before a valid initialize reply, all other valid messages are ignored.
 Malformed replies are dropped; a valid retry can succeed before the deadline.
@@ -300,12 +301,42 @@ Make the program executable and use a shebang. Install its interpreter yourself.
 `start` is `always` (launch during setup) or `on_focus` (launch on the first
 matching focus, then keep running after focus changes). Empty application-id
 lists never match, so an `on_focus` plugin with such a list never starts.
-Each launch is attempted once. Failed or exited processes never restart.
+Once started, a plugin remains supervised after focus changes.
+Failed launches, process exits, stdout EOF and pipe failures schedule a restart.
 
 There is no shutdown message or acknowledgement. On stdout EOF or a pipe
 failure, the session is disabled; an unfinished final line is discarded.
 On compositor teardown, child processes are killed and reaped. Plugins should
 also exit if stdin reaches EOF. Do not rely on a graceful shutdown interval.
+
+## Supervision
+
+The supervisor checks processes every 10 milliseconds, even without input.
+Restart backoff starts at 100 milliseconds, doubles after each failure and
+caps at 30 seconds. It resets after 30 seconds of initialized operation without
+invalid messages. Initialization alone does not reset backoff.
+Each failure logs the executable, reason and restart delay.
+
+A plugin that has not initialized within two seconds is terminated. After
+initialization, a plugin that misses three decisions in a row is restarted with
+backoff. A reply before its decision deadline resets the consecutive miss count.
+The core's shorter decision deadlines still release captured fallback actions
+on time. Idle plugins with no outstanding decisions may stay silent.
+Request ids continue across restarts, so a new process cannot complete an
+earlier process's pending decision.
+
+An isolated malformed or overlong line is dropped independently. Sixteen
+invalid lines or rejected action batches without 30 seconds of healthy
+initialized operation restart the plugin with backoff.
+Valid error replies are declines and do not count as invalid messages.
+
+Each stdout callback reads at most 16 chunks of 4096 bytes. Each process may
+send at most 262,144 bytes in a one-second window beginning at launch or the
+first read after the preceding window expires. Exceeding this limit terminates
+the plugin and schedules a restart. Line storage and the stdin queue each stay
+bounded at 65,536 bytes, and outstanding decisions stay bounded at 256.
+Reads, writes and process status checks do not block. Terminated children are
+reaped outside the compositor loop. The pure core step performs no plugin I/O.
 
 ## Example session
 

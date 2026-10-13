@@ -7,10 +7,11 @@ jobs:
   parsers:
     strategy:
       matrix:
-        target: [context, message, manifest]
+        target: [context, message, manifest, plugin_stdout]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev
       - uses: dtolnay/rust-toolchain@nightly
       - uses: taiki-e/install-action@v2
         with:

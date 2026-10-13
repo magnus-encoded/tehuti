@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 tehuti-protocol = { path = "../crates/protocol" }
+tehuti = { path = "../crates/compositor" }
 
 [workspace]
 members = ["."]
@@ -31,6 +32,13 @@ bench = false
 [[bin]]
 name = "manifest"
 path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plugin_stdout"
+path = "fuzz_targets/plugin_stdout.rs"
 test = false
 doc = false
 bench = false
