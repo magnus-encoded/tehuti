@@ -6,9 +6,8 @@ mod focus_settles_pending {
 
     use proptest::prelude::*;
     use tehuti_core::{
-        State,
         plugin::{self, Input, RequestKey},
-        step,
+        step, State,
     };
     use tehuti_protocol::{Action, ButtonName, ButtonState, Event, KeyName, Permission, Text};
 
@@ -46,18 +45,22 @@ mod focus_settles_pending {
                 plugin: index % 3,
                 request_id: u64::try_from(index).unwrap(),
             };
-            let (event, fallback) = match entry {
-                Some(text) => (
-                    Event::Speech { text: text.clone() },
-                    Action::Notice { text: text.clone() },
-                ),
-                None => (
-                    east(),
-                    Action::Text {
-                        text: east_text.clone(),
-                    },
-                ),
-            };
+            let (event, fallback) = entry.as_ref().map_or_else(
+                || {
+                    (
+                        east(),
+                        Action::Text {
+                            text: east_text.clone(),
+                        },
+                    )
+                },
+                |text| {
+                    (
+                        Event::Speech { text: text.clone() },
+                        Action::Notice { text: text.clone() },
+                    )
+                },
+            );
             let (next, actions, rejection) = plugin::step(
                 state,
                 Input::Request {
@@ -113,9 +116,9 @@ mod focus_settles_pending {
             prop_assert_eq!(&focus_actions, &timeout_actions);
             prop_assert_eq!(&focus_actions, &fallbacks, "each fallback once, in arrival order");
             for event in future {
-                let (next_focused, a) = step(focused, &event);
-                let (next_after, b) = step(after, &event);
-                prop_assert_eq!(a, b);
+                let (next_focused, focused_actions) = step(focused, &event);
+                let (next_after, after_actions) = step(after, &event);
+                prop_assert_eq!(focused_actions, after_actions);
                 focused = next_focused;
                 after = next_after;
             }
@@ -129,14 +132,14 @@ mod focus_settles_pending {
         ) {
             let (state, keys, _) = pending(&east_text, &series);
             let (mut state, _) = step(state, &focus("other"));
-            let (next, timed, _) = plugin::step(state, Input::Tick { elapsed: Duration::from_millis(elapsed) });
+            let (after_tick, timed, _) = plugin::step(state, Input::Tick { elapsed: Duration::from_millis(elapsed) });
             prop_assert!(timed.is_empty(), "settled decisions cannot time out again");
-            state = next;
+            state = after_tick;
             for key in keys {
                 for result in [Ok(Vec::new()), Ok(vec![Action::Key { key: KeyName::Enter }])] {
-                    let (next, late, _) = plugin::step(state, Input::Reply { key, result });
+                    let (after_reply, late, _) = plugin::step(state, Input::Reply { key, result });
                     prop_assert!(late.is_empty(), "a late reply after focus releases nothing");
-                    state = next;
+                    state = after_reply;
                 }
             }
         }
