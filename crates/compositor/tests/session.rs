@@ -5,30 +5,26 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
     #[test]
-    fn launcher_sets_session_environment_and_preserves_exit_status() -> Result<(), Box<dyn core::error::Error>>
-    {
+    fn launcher_sets_session_environment_and_ends_on_logout() -> Result<(), Box<dyn core::error::Error>> {
         let home = tempfile::tempdir()?;
         let fake = home.path().join("fake compositor");
         fs::write(
             &fake,
-            "#!/bin/sh\nprintf '%s\\n' \"$XDG_CURRENT_DESKTOP\" \"$XDG_SESSION_DESKTOP\" \"$XDG_SESSION_TYPE\" \"${WAYLAND_DISPLAY-unset}\" \"${DISPLAY-unset}\" \"$1\" \"$2\"\nexit 7\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$XDG_CURRENT_DESKTOP\" \"$XDG_SESSION_DESKTOP\" \"$XDG_SESSION_TYPE\" \"${WAYLAND_DISPLAY-unset}\" \"${DISPLAY-unset}\" \"$1\" \"$2\"\nexit 21\n",
         )?;
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))?;
+        std::os::unix::fs::symlink("/bin/mkdir", home.path().join("mkdir"))?;
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let status = Command::new(root.join("dist/tehuti-session"))
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", home.path())
             .env("HOME", home.path())
             .env("TEHUTI_BINARY", fake)
             .env("WAYLAND_DISPLAY", "host")
             .env("DISPLAY", ":0")
             .arg("application with spaces")
             .status()?;
-        assert_eq!(
-            status.code(),
-            Some(7),
-            "the login manager receives the compositor status"
-        );
+        assert_eq!(status.code(), Some(0), "only explicit logout ends the login");
         let log = fs::read_to_string(home.path().join(".local/state/tehuti/session.log"))?;
         let expected = format!(
             "Tehuti\nTehuti\nwayland\nunset\nunset\n{}/.config/tehuti\napplication with spaces\n",
@@ -41,12 +37,16 @@ mod tests {
     #[test]
     fn launcher_respects_user_config_and_state_directories() -> Result<(), Box<dyn core::error::Error>> {
         let home = tempfile::tempdir()?;
+        std::os::unix::fs::symlink("/bin/mkdir", home.path().join("mkdir"))?;
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let fake = home.path().join("fake");
+        fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$1\"\nexit 21\n")?;
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))?;
         let output = Command::new(root.join("dist/tehuti-session"))
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", home.path())
             .env("HOME", home.path())
-            .env("TEHUTI_BINARY", "/bin/echo")
+            .env("TEHUTI_BINARY", fake)
             .env("XDG_STATE_HOME", home.path().join("state"))
             .env("XDG_CONFIG_HOME", home.path().join("config"))
             .output()?;

@@ -835,6 +835,10 @@ mod synthetic_pad {
             name: ButtonName::Guide,
             state: ButtonState::Pressed,
         });
+        pad.push(Event::Button {
+            name: ButtonName::Start,
+            state: ButtonState::Pressed,
+        });
         pad.push(Event::Tick {
             elapsed: Duration::from_millis(2999),
         });
@@ -1208,6 +1212,10 @@ else:
         });
         pad.push(Event::Button {
             name: ButtonName::Guide,
+            state: ButtonState::Pressed,
+        });
+        pad.push(Event::Button {
+            name: ButtonName::Start,
             state: ButtonState::Pressed,
         });
         route(compositor, pad).unwrap();

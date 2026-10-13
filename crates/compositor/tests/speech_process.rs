@@ -54,6 +54,13 @@ mod speech_process {
                 state: ButtonState::Pressed,
             },
         );
+        let (state, _) = step(
+            state,
+            &Event::Button {
+                name: ButtonName::Start,
+                state: ButtonState::Pressed,
+            },
+        );
         let (_, actions) = step(
             state,
             &Event::Tick {
@@ -198,6 +205,10 @@ mod speech_process {
             },
             Event::Button {
                 name: ButtonName::Guide,
+                state: ButtonState::Pressed,
+            },
+            Event::Button {
+                name: ButtonName::Start,
                 state: ButtonState::Pressed,
             },
             Event::Tick {

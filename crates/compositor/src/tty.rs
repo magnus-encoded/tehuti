@@ -97,7 +97,7 @@ pub(crate) fn insert(
             UdevEvent::Changed { device_id: changed } | UdevEvent::Removed { device_id: changed }
                 if changed == device_id =>
             {
-                warn!("DRM device changed; returning to login manager");
+                warn!("DRM device changed; switching to Plasma");
                 device_stop.stop();
             }
             UdevEvent::Added { .. } | UdevEvent::Changed { .. } | UdevEvent::Removed { .. } => {}
@@ -138,7 +138,10 @@ fn insert_keyboard(event_loop: &EventLoop<LoopData>, tty: &Rc<RefCell<Tty>>) -> 
                     .keyboard
                     .key(key, event.state() == KeyState::Pressed);
                 match escape {
-                    Some(tehuti::backend::Escape::Stop) => keyboard_stop.stop(),
+                    Some(tehuti::backend::Escape::Stop) => {
+                        data.log_out = true;
+                        keyboard_stop.stop();
+                    }
                     Some(tehuti::backend::Escape::ChangeVt(number)) => {
                         if let Err(error) = keyboard_tty.borrow_mut().session.change_vt(number) {
                             warn!(%error, "VT switch failed");

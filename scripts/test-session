@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Exercise session switching with isolated executables."""
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+class SessionTests(unittest.TestCase):
+    def run_session(self, statuses, times=None, plasma=True, missing_binary=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            for name in ['mkdir', 'sed', 'mv', 'wc', 'date']:
+                (bin_dir / name).symlink_to('/bin/' + name)
+            def stub(name, body):
+                path = bin_dir / name
+                path.write_text('#!/bin/sh\n' + body)
+                path.chmod(0o755)
+            stub('tehuti', '''echo tehuti >>"$TRACE"
+read -r status <"$STATUSES"
+sed '1d' "$STATUSES" >"$STATUSES.next"
+mv "$STATUSES.next" "$STATUSES"
+exit "$status"
+''')
+            if plasma:
+                stub('startplasma-wayland', '''echo plasma >>"$TRACE"
+count=$(wc -l <"$TRACE")
+[ "$count" -lt 9 ] || kill -TERM "$PPID"
+''')
+            stub('sleep', ':\n')
+            if times:
+                (bin_dir / 'date').unlink()
+                stub('date', '''read -r now <"$TIMES"
+sed '1d' "$TIMES" >"$TIMES.next"
+mv "$TIMES.next" "$TIMES"
+echo "$now"
+''')
+            (root / 'statuses').write_text('\n'.join(map(str, statuses)) + '\n')
+            (root / 'times').write_text('\n'.join(map(str, times or [])) + '\n')
+            env = dict(os.environ, PATH=str(bin_dir),
+                       XDG_STATE_HOME=str(root), TRACE=str(root / 'trace'),
+                       STATUSES=str(root / 'statuses'), TIMES=str(root / 'times'),
+                       TEHUTI_BINARY=str(bin_dir / ('absent' if missing_binary else 'tehuti')))
+            result = subprocess.run(['/bin/sh', str(ROOT / 'dist/tehuti-session')],
+                                    env=env, timeout=5, capture_output=True)
+            trace = (root / 'trace').read_text().splitlines()
+            log = (root / 'tehuti/session.log').read_text()
+            return result.returncode, trace, log
+
+    def test_switch_helper_requests_plasma_logout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            qdbus = root / 'qdbus'
+            qdbus.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >"$TRACE"\n')
+            qdbus.chmod(0o755)
+            env = dict(os.environ, PATH=str(root), TRACE=str(root / 'trace'))
+            result = subprocess.run(['/bin/sh', str(ROOT / 'dist/tehuti-switch')],
+                                    env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual((root / 'trace').read_text().splitlines(),
+                             ['org.kde.Shutdown', '/Shutdown', 'logout'])
+            qdbus.unlink()
+            result = subprocess.run(['/bin/sh', str(ROOT / 'dist/tehuti-switch')],
+                                    env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(b'Plasma Log Out shortcut', result.stderr)
+
+    def test_switch_returns_and_logout_ends_login(self):
+        code, trace, _ = self.run_session([20, 21])
+        self.assertEqual(code, 0)
+        self.assertEqual(trace, ['tehuti', 'plasma', 'tehuti'])
+
+    def test_crash_and_term_open_plasma(self):
+        for status in [1, 139, 143, 0]:
+            with self.subTest(status=status):
+                code, trace, _ = self.run_session([status, 21])
+                self.assertEqual(code, 0)
+                self.assertEqual(trace, ['tehuti', 'plasma', 'tehuti'])
+
+    def test_three_recent_failures_stay_in_plasma(self):
+        _, trace, log = self.run_session([1, 1, 1, 21], [100, 130, 160])
+        self.assertEqual(trace.count('tehuti'), 3)
+        self.assertEqual(trace[-3:], ['plasma'] * 3)
+        self.assertIn('staying in Plasma', log)
+
+    def test_old_failure_does_not_lock_plasma(self):
+        code, trace, _ = self.run_session([1, 1, 1, 21], [100, 130, 161])
+        self.assertEqual(code, 0)
+        self.assertEqual(trace.count('tehuti'), 4)
+
+    def test_missing_plasma_retries_tehuti(self):
+        code, trace, log = self.run_session([20, 21], plasma=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(trace, ['tehuti', 'tehuti'])
+        self.assertIn('missing; restarting Tehuti', log)
+
+    def test_start_failure_opens_plasma(self):
+        _, trace, _ = self.run_session([], missing_binary=True)
+        self.assertEqual(set(trace), {'plasma'})
+
+
+if __name__ == '__main__':
+    unittest.main()

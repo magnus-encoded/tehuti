@@ -216,7 +216,7 @@ for line in sys.stdin:
             // The most permissive core: every button it would route to any live plugin.
             let mut core = tehuti_core::State::with_contexts(contexts);
             let mut routable = Vec::new();
-            let chord = [button(ButtonName::Guide), Event::Tick { elapsed: Duration::from_secs(3) }];
+            let chord = [button(ButtonName::Guide), button(ButtonName::Start), Event::Tick { elapsed: Duration::from_secs(3) }];
             for event in core::iter::once(focus("test")).chain(events.iter().cloned()).chain(chord.iter().cloned()) {
                 let (next, _, sent) = tehuti_core::step_with_plugin(core, &event, true);
                 core = next;
@@ -324,6 +324,7 @@ for line in sys.stdin:
         );
         harness.send([
             button(ButtonName::Guide),
+            button(ButtonName::Start),
             Event::Tick {
                 elapsed: Duration::from_secs(3),
             },
@@ -602,6 +603,7 @@ for line in sys.stdin:
             }
             harness.send([
                 button(ButtonName::Guide),
+                button(ButtonName::Start),
                 Event::Tick {
                     elapsed: Duration::from_secs(3),
                 },
@@ -629,6 +631,7 @@ for line in sys.stdin:
             harness.pump_until(|harness| launches(harness).len() >= 2);
             harness.send([
                 button(ButtonName::Guide),
+                button(ButtonName::Start),
                 Event::Tick {
                     elapsed: Duration::from_secs(3),
                 },
@@ -704,6 +707,7 @@ for line in sys.stdin:
                 }
                 harness.send([
                     button(ButtonName::Guide),
+                    button(ButtonName::Start),
                     Event::Tick {
                         elapsed: Duration::from_secs(3),
                     },
@@ -746,6 +750,7 @@ for line in sys.stdin:
                 );
                 harness.send([
                     button(ButtonName::Guide),
+                    button(ButtonName::Start),
                     Event::Tick {
                         elapsed: Duration::from_secs(3),
                     },

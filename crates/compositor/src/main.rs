@@ -8,7 +8,11 @@ mod nested;
 mod tty;
 
 use core::{error::Error, time::Duration};
-use std::{os::fd::AsFd, process::Command, sync::Arc};
+use std::{
+    os::fd::AsFd,
+    process::{Command, ExitCode},
+    sync::Arc,
+};
 
 use smithay::{
     reexports::{
@@ -34,9 +38,22 @@ pub(crate) struct LoopData {
     discovery: controller::Discovery,
     discovery_epoch: std::time::Instant,
     seat_active: bool,
+    log_out: bool,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+impl LoopData {
+    fn exit_code(&self) -> ExitCode {
+        ExitCode::from(if self.log_out {
+            21
+        } else if self.compositor.quit_requested() {
+            20
+        } else {
+            1
+        })
+    }
+}
+
+fn main() -> Result<ExitCode, Box<dyn Error>> {
     tracing_subscriber::fmt::init();
     let mut application = std::env::args_os().skip(1);
     let context_directory = application
@@ -94,8 +111,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         discovery,
         discovery_epoch: std::time::Instant::now(),
         seat_active: true,
+        log_out: false,
     };
-    run(&mut event_loop, &mut data, child)
+    run(&mut event_loop, &mut data, child)?;
+    Ok(data.exit_code())
 }
 
 fn run(

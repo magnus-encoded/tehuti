@@ -147,6 +147,14 @@ mod tests {
             }),
         );
         let _press_output = forward(&mut core, &press);
+        let (session, start_press) = controller::step(
+            session,
+            Input::Event(Event::Button {
+                name: ButtonName::Start,
+                state: ButtonState::Pressed,
+            }),
+        );
+        let _start_output = forward(&mut core, &start_press);
         let (_, disconnect) = controller::step(session, Input::Disconnected);
         let _disconnect_output = forward(&mut core, &disconnect);
         let (_, actions) = tehuti_core::step(

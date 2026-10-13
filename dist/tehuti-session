@@ -1,7 +1,5 @@
 #!/bin/sh
 set -eu
-export XDG_CURRENT_DESKTOP=Tehuti
-export XDG_SESSION_DESKTOP=Tehuti
 export XDG_SESSION_TYPE=wayland
 unset WAYLAND_DISPLAY DISPLAY
 state_dir=${XDG_STATE_HOME:-"$HOME/.local/state"}/tehuti
@@ -10,4 +8,39 @@ mkdir -p "$state_dir"
 exec >>"$state_dir/session.log" 2>&1
 binary=${TEHUTI_BINARY:-"$HOME/.local/bin/tehuti"}
 contexts=${TEHUTI_CONTEXT_DIRECTORY:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/tehuti"}
-exec "$binary" "$contexts" "$@"
+failures=''
+stay_in_plasma=false
+while :; do
+    if [ "$stay_in_plasma" = false ]; then
+        status=0
+        XDG_CURRENT_DESKTOP=Tehuti XDG_SESSION_DESKTOP=Tehuti "$binary" "$contexts" "$@" || status=$?
+        [ "$status" -ne 21 ] || exit 0
+        if [ "$status" -ne 20 ]; then
+            now=$(date +%s)
+            recent=''
+            count=0
+            for failed_at in $failures; do
+                if [ "$((now - failed_at))" -le 60 ]; then
+                    recent="$recent $failed_at"
+                    count=$((count + 1))
+                fi
+            done
+            failures="$recent $now"
+            if [ "$count" -ge 2 ]; then
+                stay_in_plasma=true
+                echo 'Tehuti failed three times within 60 seconds; staying in Plasma'
+            fi
+        fi
+    fi
+    if plasma=$(command -v startplasma-wayland); then
+        status=0
+        XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE "$plasma" || status=$?
+        if [ "$stay_in_plasma" = true ] || [ "$status" -ne 0 ]; then
+            sleep 3
+        fi
+    else
+        echo 'startplasma-wayland missing; restarting Tehuti'
+        stay_in_plasma=false
+        sleep 3
+    fi
+done
