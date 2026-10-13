@@ -296,7 +296,8 @@ mod synthetic_pad {
         Close,
         Start,
         Crash,
-        Hang,
+        Hang(usize),
+        Hold,
         Button,
         Text,
         Settle,
@@ -310,7 +311,8 @@ mod synthetic_pad {
             Just(Command::Close),
             Just(Command::Start),
             Just(Command::Crash),
-            Just(Command::Hang),
+            (1usize..4).prop_map(Command::Hang),
+            Just(Command::Hold),
             Just(Command::Button),
             Just(Command::Text),
             Just(Command::Settle),
@@ -318,12 +320,19 @@ mod synthetic_pad {
     }
 
     #[derive(Default)]
-    struct Reference {
+    struct ControllerReference {
         connected: bool,
+        held: bool,
+    }
+
+    #[derive(Default)]
+    struct Reference {
+        controller: ControllerReference,
         windows: Vec<usize>,
         focus: Option<usize>,
         next_window: usize,
         taps: usize,
+        misses: Vec<usize>,
         started: bool,
         backoff: Duration,
         /// The focused window as last announced to the plugin host, which only sees focus once started.
@@ -333,8 +342,11 @@ mod synthetic_pad {
     impl Reference {
         fn apply(&mut self, command: &Command) {
             match command {
-                Command::Connect => self.connected = true,
-                Command::Disconnect => self.connected = false,
+                Command::Connect => self.controller.connected = true,
+                Command::Disconnect => {
+                    self.controller.connected = false;
+                    self.controller.held = false;
+                }
                 Command::Open => {
                     self.windows.push(self.next_window);
                     self.focus = Some(self.next_window);
@@ -352,14 +364,25 @@ mod synthetic_pad {
                         }
                     }
                 }
-                Command::Button if self.connected && self.focus.is_some() => {
-                    self.taps = self.taps.saturating_add(1);
+                Command::Button if self.controller.connected => {
+                    self.taps = self
+                        .taps
+                        .saturating_add(usize::from(!self.controller.held && self.focus.is_some()));
+                    self.controller.held = false;
                 }
-                Command::Text | Command::Hang if self.focus.is_some() => {
+                Command::Hold if self.controller.connected && !self.controller.held => {
+                    self.controller.held = true;
+                    self.taps = self.taps.saturating_add(usize::from(self.focus.is_some()));
+                }
+                Command::Hang(batch) if self.focus.is_some() => self.taps = self.taps.saturating_add(*batch),
+                Command::Text if self.focus.is_some() => {
                     self.taps = self.taps.saturating_add(1);
                 }
                 Command::Start => {
                     self.started = true;
+                    if self.misses.is_empty() {
+                        self.misses.push(0);
+                    }
                     if self.backoff.is_zero() {
                         self.backoff = Duration::from_millis(100);
                     }
@@ -369,7 +392,12 @@ mod synthetic_pad {
                         self.taps = self.taps.saturating_add(1);
                     }
                 }
-                Command::Crash | Command::Hang | Command::Button | Command::Text | Command::Settle => {}
+                Command::Crash
+                | Command::Hang(_)
+                | Command::Hold
+                | Command::Button
+                | Command::Text
+                | Command::Settle => {}
             }
         }
     }
@@ -418,26 +446,40 @@ mod synthetic_pad {
                                 surface.destroy();
                             }
                         }
-                        Command::Connect | Command::Disconnect | Command::Start | Command::Crash | Command::Hang | Command::Button | Command::Text | Command::Settle => {}
+                        Command::Connect | Command::Disconnect | Command::Start | Command::Crash | Command::Hang(_) | Command::Hold | Command::Button | Command::Text | Command::Settle => {}
                     }
                     let _roundtrip = queue.roundtrip(&mut app).unwrap();
                     let focus = app.focused.as_ref().and_then(|surface_id| ids.iter().position(|candidate| candidate == surface_id));
-                    reports.send((windows.len(), focus, app.keys.len())).unwrap();
+                    reports.send((windows.len(), focus, app.keys.clone())).unwrap();
                 }
             });
             let mut model = Reference::default();
             let mut pad = None;
             let mut installed = false;
             let mut session = 0_u64;
+            let commands = [Command::Connect, Command::Open, Command::Hold, Command::Disconnect, Command::Start, Command::Open, Command::Hang(3), Command::Hang(2), Command::Hang(1)]
+                .into_iter().chain(commands).chain([Command::Disconnect]);
             for command in commands {
+                let requests = if model.started && model.plugin_focus && model.focus.is_some() {
+                    match command {
+                        Command::Hang(batch) => batch,
+                        Command::Button if model.controller.connected => 1,
+                        Command::Disconnect if model.controller.held => 1,
+                        Command::Connect | Command::Disconnect | Command::Open | Command::Close | Command::Start | Command::Crash | Command::Hold | Command::Button | Command::Text | Command::Settle => 0,
+                    }
+                } else { 0 };
                 model.apply(&command);
                 match &command {
-                    Command::Connect => pad = Some(SyntheticPad::default()),
+                    Command::Connect => {
+                        compositor.controller_input(tehuti_core::controller::Input::Reconnected);
+                        pad = Some(SyntheticPad::default());
+                    },
                     Command::Disconnect => {
                         if let Some(mut source) = pad.take() {
                             tehuti::input::InputSource::release(&mut source).unwrap();
                             prop_assert!(source.is_released());
                         }
+                        compositor.controller_input(tehuti_core::controller::Input::Disconnected);
                         compositor.speech_input(tehuti_core::speech::SpeechInput::Disconnected);
                     }
                     Command::Start if !installed => {
@@ -473,16 +515,28 @@ mod synthetic_pad {
                         }
                         prop_assert!(Instant::now() >= earliest, "restart respects model backoff");
                         prop_assert_ne!(std::fs::read_to_string(directory.path().join("pid")).unwrap(), pid);
+                        model.misses.fill(0);
                         model.backoff = model.backoff.saturating_mul(2).min(Duration::from_secs(30));
                     }
-                    Command::Hang => compositor.handle(&Event::Button {
-                        name: ButtonName::East, state: ButtonState::Pressed,
-                    }),
+                    Command::Hang(batch) => {
+                        for _ in 0..*batch {
+                            compositor.handle(&Event::Button { name: ButtonName::East, state: ButtonState::Pressed });
+                        }
+                    }
+                    Command::Hold => {
+                        if let Some(source) = &mut pad {
+                            for name in [ButtonName::South, ButtonName::Guide] {
+                                source.push(Event::Button { name, state: ButtonState::Pressed });
+                            }
+                            route(&mut compositor, source).unwrap();
+                        }
+                    }
                     Command::Button => {
                         if let Some(source) = &mut pad {
                             for state in [ButtonState::Pressed, ButtonState::Released] {
                                 source.push(Event::Button { name: ButtonName::South, state });
                             }
+                            source.push(Event::Button { name: ButtonName::Guide, state: ButtonState::Released });
                             route(&mut compositor, source).unwrap();
                         }
                     }
@@ -504,9 +558,36 @@ mod synthetic_pad {
                     Command::Open | Command::Close | Command::Start | Command::Crash | Command::Settle => {}
                 }
                 prop_assert_eq!(compositor.initialized_plugins(), usize::from(model.started));
-                compositor.handle(&Event::Tick { elapsed: Duration::from_secs(3) });
-                prop_assert_eq!(compositor.pending_plugin_decisions(), 0, "every decision settles");
-                compositor.handle(&Event::Tick { elapsed: Duration::from_secs(3) });
+                prop_assert_eq!(compositor.pending_plugin_decisions(), requests, "requests remain pending before expiry");
+                if requests > 0 {
+                    let pid = std::fs::read_to_string(directory.path().join("pid")).unwrap();
+                    thread::sleep(tehuti_core::plugin::BUTTON_BUDGET.saturating_add(Duration::from_millis(10)));
+                    model.misses[0] = model.misses[0].saturating_add(1);
+                    compositor.handle(&Event::Tick { elapsed: tehuti_core::plugin::BUTTON_BUDGET.saturating_add(Duration::from_millis(10)) });
+                    prop_assert_eq!(compositor.pending_plugin_decisions(), 0, "every decision settles");
+                    if model.misses[0] == 3 {
+                        prop_assert_eq!(compositor.initialized_plugins(), 0, "three expiry batches stop the plugin");
+                        let failed = Instant::now();
+                        while failed.elapsed() < model.backoff.saturating_sub(Duration::from_millis(20)) {
+                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
+                            prop_assert_eq!(compositor.initialized_plugins(), 0, "restart waits for backoff");
+                        }
+                        while compositor.initialized_plugins() == 0 {
+                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
+                            prop_assert!(failed.elapsed() < model.backoff.saturating_add(Duration::from_secs(5)));
+                        }
+                        prop_assert_ne!(std::fs::read_to_string(directory.path().join("pid")).unwrap(), pid);
+                        model.misses[0] = 0;
+                        model.backoff = model.backoff.saturating_mul(2).min(Duration::from_secs(30));
+                    } else {
+                        prop_assert_eq!(compositor.initialized_plugins(), 1, "fewer than three expiry batches keep the plugin alive");
+                        prop_assert_eq!(std::fs::read_to_string(directory.path().join("pid")).unwrap(), pid);
+                    }
+                }
+                if !model.controller.held {
+                    compositor.handle(&Event::Tick { elapsed: Duration::from_secs(3) });
+                    prop_assert!(!compositor.quit_requested(), "disconnect drains held Guide before its quit deadline");
+                }
                 send.send(command).unwrap();
                 let started = Instant::now();
                 let snapshot = loop {
@@ -517,7 +598,16 @@ mod synthetic_pad {
                     prop_assert!(started.elapsed() < Duration::from_secs(5), "client progresses despite plugins");
                     thread::yield_now();
                 };
-                prop_assert_eq!(snapshot, (model.windows.len(), model.focus, model.taps.saturating_mul(2)));
+                prop_assert_eq!((snapshot.0, snapshot.1, snapshot.2.len()), (model.windows.len(), model.focus, model.taps.saturating_mul(2)));
+                let mut held_keys = std::collections::HashSet::new();
+                for (key, state) in snapshot.2 {
+                    match state {
+                        KeyState::Pressed => prop_assert!(held_keys.insert(key), "duplicate press"),
+                        KeyState::Released => prop_assert!(held_keys.remove(&key), "release without press"),
+                        KeyState::Repeated | _ => prop_assert!(false, "unexpected key state"),
+                    }
+                }
+                prop_assert!(held_keys.is_empty(), "every forwarded press has exactly one release");
                 prop_assert!(model.focus.is_none_or(|focus| model.windows.contains(&focus)));
             }
             drop(send);
