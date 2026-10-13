@@ -85,7 +85,204 @@ mod synthetic_pad {
         pending_text: String,
         suppress_enable: bool,
         modifiers: (u32, u32, u32),
+        dmabuf_modifiers: Vec<(u32, u64)>,
+        dmabuf_main_device: Vec<u8>,
+        dmabuf_import_result: Option<bool>,
         group: u32,
+    }
+
+    use wayland_protocols::wp::linux_dmabuf::zv1::client::{
+        zwp_linux_buffer_params_v1::{self, ZwpLinuxBufferParamsV1},
+        zwp_linux_dmabuf_feedback_v1::{self, ZwpLinuxDmabufFeedbackV1},
+        zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
+    };
+
+    fn run_dmabuf_client(
+        supports_dmabuf: bool,
+        device: Option<libc::dev_t>,
+        accepts_import: bool,
+    ) -> (Option<u32>, App, u64) {
+        use smithay::backend::allocator::{Format, Fourcc, Modifier};
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let formats = if supports_dmabuf {
+            vec![Format {
+                code: Fourcc::Argb8888,
+                modifier: Modifier::Linear,
+            }]
+        } else {
+            vec![]
+        };
+        let imports = Arc::new(AtomicU64::new(0));
+        let imported = imports.clone();
+        compositor
+            .enable_dmabuf(&display.handle(), formats, device, move |_| {
+                let _previous = imported.fetch_add(1, Ordering::Relaxed);
+                accepts_import
+            })
+            .unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let client_thread = thread::spawn(move || dmabuf_client(client, device));
+        let started = Instant::now();
+        while !client_thread.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "dmabuf client timed out"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let (version, app) = client_thread.join().unwrap();
+        (version, app, imports.load(Ordering::Relaxed))
+    }
+
+    impl Dispatch<ZwpLinuxDmabufV1, ()> for App {
+        fn event(
+            state: &mut Self,
+            _: &ZwpLinuxDmabufV1,
+            event: zwp_linux_dmabuf_v1::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let zwp_linux_dmabuf_v1::Event::Modifier {
+                format,
+                modifier_hi,
+                modifier_lo,
+            } = event
+            {
+                state
+                    .dmabuf_modifiers
+                    .push((format, (u64::from(modifier_hi) << 32) | u64::from(modifier_lo)));
+            }
+        }
+    }
+
+    impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for App {
+        fn event(
+            state: &mut Self,
+            _: &ZwpLinuxDmabufFeedbackV1,
+            event: zwp_linux_dmabuf_feedback_v1::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let zwp_linux_dmabuf_feedback_v1::Event::MainDevice { device } = event {
+                state.dmabuf_main_device = device;
+            }
+        }
+    }
+
+    impl Dispatch<ZwpLinuxBufferParamsV1, ()> for App {
+        fn event(
+            state: &mut Self,
+            _: &ZwpLinuxBufferParamsV1,
+            event: zwp_linux_buffer_params_v1::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            match event {
+                zwp_linux_buffer_params_v1::Event::Failed => state.dmabuf_import_result = Some(false),
+                zwp_linux_buffer_params_v1::Event::Created { buffer } => {
+                    state.dmabuf_import_result = Some(true);
+                    buffer.destroy();
+                }
+                _ => {}
+            }
+        }
+
+        wayland_client::event_created_child!(App, ZwpLinuxBufferParamsV1, [
+            0 => (wayland_client::protocol::wl_buffer::WlBuffer, ())
+        ]);
+    }
+
+    delegate_noop!(App: ignore wayland_client::protocol::wl_buffer::WlBuffer);
+
+    fn dmabuf_client(stream: UnixStream, device: Option<libc::dev_t>) -> (Option<u32>, App) {
+        use std::os::fd::AsFd;
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+        let handle = queue.handle();
+        let version = globals.contents().with_list(|list| {
+            list.iter()
+                .find(|global| global.interface == "zwp_linux_dmabuf_v1")
+                .map(|global| global.version)
+        });
+        let mut app = App::default();
+        if version.is_some() {
+            let dmabuf: ZwpLinuxDmabufV1 = globals.bind(&handle, 3..=3, ()).unwrap();
+            let _formats_roundtrip = queue.roundtrip(&mut app).unwrap();
+            if device.is_some() {
+                let feedback_dmabuf: ZwpLinuxDmabufV1 = globals.bind(&handle, 4..=4, ()).unwrap();
+                let _feedback = feedback_dmabuf.get_default_feedback(&handle, ());
+                let _feedback_roundtrip = queue.roundtrip(&mut app).unwrap();
+            }
+            let file = tempfile::tempfile().unwrap();
+            file.set_len(1024).unwrap();
+            let params = dmabuf.create_params(&handle, ());
+            params.add(file.as_fd(), 0, 0, 64, 0, 0);
+            params.create(
+                16,
+                16,
+                u32::from_le_bytes(*b"AR24"),
+                zwp_linux_buffer_params_v1::Flags::empty(),
+            );
+            let _import_roundtrip = queue.roundtrip(&mut app).unwrap();
+        }
+        (version, app)
+    }
+
+    #[test]
+    fn dmabuf_global_formats_feedback_and_imports_follow_renderer_capabilities() {
+        for (supports_dmabuf, device, accepts_import) in [
+            (false, None, false),
+            (true, None, false),
+            (true, Some(1234), false),
+            (true, Some(1234), true),
+        ] {
+            let (version, app, imports) = run_dmabuf_client(supports_dmabuf, device, accepts_import);
+            assert_eq!(
+                version.is_some(),
+                supports_dmabuf,
+                "only import-capable renderers advertise dmabuf"
+            );
+            if supports_dmabuf {
+                assert_eq!(
+                    app.dmabuf_modifiers,
+                    [(u32::from_le_bytes(*b"AR24"), 0)],
+                    "only renderer formats are advertised"
+                );
+                assert_eq!(
+                    app.dmabuf_import_result,
+                    Some(accepts_import),
+                    "the client receives the renderer's import result"
+                );
+                assert_eq!(imports, 1, "the renderer validates each dmabuf");
+                if let Some(device) = device {
+                    assert!(
+                        version.is_some_and(|version| version >= 4),
+                        "render node enables feedback"
+                    );
+                    assert_eq!(
+                        app.dmabuf_main_device,
+                        device.to_ne_bytes(),
+                        "feedback names the render node"
+                    );
+                } else {
+                    assert_eq!(
+                        version,
+                        Some(3),
+                        "missing render node uses legacy format negotiation"
+                    );
+                }
+            }
+        }
     }
 
     impl Dispatch<WlRegistry, GlobalListContents> for App {
