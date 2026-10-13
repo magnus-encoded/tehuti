@@ -58,7 +58,9 @@ mod focus_settles_pending {
                 |text| {
                     (
                         Event::Speech { text: text.clone() },
-                        Action::Notice { text: text.clone() },
+                        Action::Notice {
+                            text: Text::new("NO SPEECH MAPPING".into()).unwrap(),
+                        },
                     )
                 },
             );

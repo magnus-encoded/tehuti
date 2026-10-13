@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
     }
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
+    compositor.set_launch_socket(socket_name.clone());
     if let Err(error) = insert_controller_watch(&event_loop) {
         warn!(%error, "controller watch unavailable; periodic discovery continues");
     }
