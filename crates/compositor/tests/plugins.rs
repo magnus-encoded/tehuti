@@ -623,11 +623,14 @@ for line in sys.stdin:
             let mappings = core::iter::once((ButtonName::East, String::from("fallback"))).collect();
             harness.compositor.set_contexts(vec![text_context(&mappings)]);
             harness.ready();
-            harness.send([
-                button(ButtonName::East),
-                button(ButtonName::East),
-                button(ButtonName::East),
-            ]);
+            // Misses count per expiry instant, so each decision must expire on its own tick.
+            for _ in 0..3 {
+                harness.send([button(ButtonName::East)]);
+                std::thread::sleep(tehuti_core::plugin::BUTTON_LATENCY_BUDGET);
+                harness.compositor.handle(&Event::Tick {
+                    elapsed: Duration::from_secs(3),
+                });
+            }
             harness.pump_until(|harness| launches(harness).len() >= 2);
             harness.send([
                 button(ButtonName::Guide),

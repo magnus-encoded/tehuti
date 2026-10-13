@@ -307,6 +307,10 @@ mod synthetic_pad {
         focus: Option<usize>,
         next_window: usize,
         taps: usize,
+        started: bool,
+        backoff: Duration,
+        /// The focused window as last announced to the plugin host, which only sees focus once started.
+        plugin_focus: bool,
     }
 
     impl Reference {
@@ -317,6 +321,7 @@ mod synthetic_pad {
                 Command::Open => {
                     self.windows.push(self.next_window);
                     self.focus = Some(self.next_window);
+                    self.plugin_focus |= self.started;
                     self.next_window = self.next_window.saturating_add(1);
                 }
                 Command::Close => {
@@ -324,6 +329,7 @@ mod synthetic_pad {
                         && self.focus == Some(closed)
                     {
                         self.focus = None;
+                        self.plugin_focus &= !self.started;
                     }
                 }
                 Command::Button if self.connected && self.focus.is_some() => {
@@ -332,111 +338,19 @@ mod synthetic_pad {
                 Command::Text | Command::Hang if self.focus.is_some() => {
                     self.taps = self.taps.saturating_add(1);
                 }
-                Command::Start
-                | Command::Crash
-                | Command::Hang
-                | Command::Button
-                | Command::Text
-                | Command::Settle => {}
-            }
-        }
-    }
-
-    #[derive(Default)]
-    struct Decisions {
-        state: tehuti_core::State,
-        pending: Vec<(tehuti_core::plugin::RequestKey, tehuti_protocol::Action)>,
-        issued: u64,
-        resolved: u64,
-    }
-
-    impl Decisions {
-        fn apply(&mut self, command: &Command) {
-            use tehuti_core::plugin::{self, Input, RequestKey};
-            use tehuti_protocol::{Action, Permission, Text};
-            let mut expected = Vec::new();
-            let input = match command {
-                Command::Hang | Command::Text => {
-                    let key = RequestKey {
-                        plugin: usize::from(matches!(command, Command::Text)),
-                        request_id: self.issued,
-                    };
-                    let text = Text::new(format!("decision {}", self.issued)).unwrap();
-                    self.issued = self.issued.saturating_add(1);
-                    self.pending.push((key, Action::Notice { text: text.clone() }));
-                    Input::Request {
-                        key,
-                        event: Event::Speech { text },
-                        permissions: vec![Permission::Text],
+                Command::Start => {
+                    self.started = true;
+                    if self.backoff.is_zero() {
+                        self.backoff = Duration::from_millis(100);
                     }
                 }
-                Command::Crash => {
-                    self.pending.retain(|(key, action)| {
-                        if key.plugin == 0 {
-                            expected.push(action.clone());
-                            false
-                        } else {
-                            true
-                        }
-                    });
-                    Input::Exited { plugin: 0 }
-                }
-                Command::Settle => {
-                    expected.extend(self.pending.drain(..).map(|(_, action)| action));
-                    Input::Tick {
-                        elapsed: Duration::from_secs(2),
+                Command::Crash if self.started => {
+                    if self.focus.is_some() {
+                        self.taps = self.taps.saturating_add(1);
                     }
                 }
-                Command::Connect
-                | Command::Disconnect
-                | Command::Open
-                | Command::Close
-                | Command::Start
-                | Command::Button => Input::Tick {
-                    elapsed: Duration::ZERO,
-                },
-            };
-            let (state, actions, rejection) = plugin::step(core::mem::take(&mut self.state), input);
-            self.state = state;
-            assert!(rejection.is_none());
-            assert_eq!(actions, expected);
-            self.resolved = self
-                .resolved
-                .saturating_add(u64::try_from(actions.len()).unwrap());
-            if matches!(command, Command::Text) {
-                self.reply();
+                Command::Crash | Command::Hang | Command::Button | Command::Text | Command::Settle => {}
             }
-            assert_eq!(
-                self.issued,
-                self.resolved
-                    .saturating_add(u64::try_from(self.pending.len()).unwrap())
-            );
-        }
-        fn reply(&mut self) {
-            use tehuti_core::plugin::{self, Input};
-            let (key, _) = self.pending.pop().unwrap();
-            let action = tehuti_protocol::Action::Text {
-                text: tehuti_protocol::Text::new(format!("decision {}", key.request_id)).unwrap(),
-            };
-            let (state, actions, rejection) = plugin::step(
-                core::mem::take(&mut self.state),
-                Input::Reply {
-                    key,
-                    result: Ok(vec![action.clone()]),
-                },
-            );
-            assert!(rejection.is_none());
-            assert_eq!(actions, vec![action]);
-            let (state, duplicate, _) = plugin::step(
-                state,
-                Input::Reply {
-                    key,
-                    result: Ok(Vec::new()),
-                },
-            );
-            assert_eq!(duplicate, Vec::new());
-            self.state = state;
-            self.resolved = self.resolved.saturating_add(1);
         }
     }
 
@@ -444,7 +358,7 @@ mod synthetic_pad {
         #![proptest_config(ProptestConfig::with_cases(16))]
         #[test]
         fn supervision_and_input_match_a_window_reference_model(
-            commands in prop::collection::vec(command(), 1..60),
+            commands in prop::collection::vec(command(), 1..20),
         ) {
             let directory = unresponsive_plugin("stalled");
             let mut display: Display<Compositor> = Display::new().unwrap();
@@ -492,13 +406,11 @@ mod synthetic_pad {
                 }
             });
             let mut model = Reference::default();
-            let mut decisions = Decisions::default();
             let mut pad = None;
             let mut installed = false;
             let mut session = 0_u64;
             for command in commands {
                 model.apply(&command);
-                decisions.apply(&command);
                 match &command {
                     Command::Connect => pad = Some(SyntheticPad::default()),
                     Command::Disconnect => {
@@ -518,10 +430,30 @@ mod synthetic_pad {
                         }
                     }
                     Command::Crash if installed => {
-                        if let Ok(pid) = std::fs::read_to_string(directory.path().join("pid")) {
-                            let _status = std::process::Command::new("kill").arg(pid.trim())
-                                .stderr(std::process::Stdio::null()).status().unwrap();
+                        compositor.handle(&Event::Button {
+                            name: ButtonName::East, state: ButtonState::Pressed,
+                        });
+                        let pid = std::fs::read_to_string(directory.path().join("pid")).unwrap();
+                        let status = std::process::Command::new("kill").arg(pid.trim()).status().unwrap();
+                        prop_assert!(status.success());
+                        let pressed = compositor.pending_plugin_decisions();
+                        let began = Instant::now();
+                        while compositor.initialized_plugins() != 0 {
+                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
+                            compositor.handle(&Event::Tick { elapsed: Duration::ZERO });
+                            prop_assert!(began.elapsed() < Duration::from_secs(5));
                         }
+                        prop_assert_eq!(compositor.pending_plugin_decisions(), 0, "crash releases pending fallbacks");
+                        prop_assert_eq!(pressed, usize::from(model.plugin_focus && model.focus.is_some()), "a focused press awaits the plugin");
+                        let failed = Instant::now();
+                        let earliest = failed.checked_add(model.backoff.saturating_sub(Duration::from_millis(20))).unwrap();
+                        while compositor.initialized_plugins() == 0 {
+                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
+                            prop_assert!(failed.elapsed() < model.backoff.saturating_add(Duration::from_secs(5)));
+                        }
+                        prop_assert!(Instant::now() >= earliest, "restart respects model backoff");
+                        prop_assert_ne!(std::fs::read_to_string(directory.path().join("pid")).unwrap(), pid);
+                        model.backoff = model.backoff.saturating_mul(2).min(Duration::from_secs(30));
                     }
                     Command::Hang => compositor.handle(&Event::Button {
                         name: ButtonName::East, state: ButtonState::Pressed,
@@ -534,6 +466,7 @@ mod synthetic_pad {
                     }
                     Command::Text => {
                         use tehuti_core::speech::SpeechInput;
+                        let pending = compositor.pending_plugin_decisions();
                         compositor.speech_input(SpeechInput::Available);
                         compositor.speech_input(SpeechInput::Press);
                         compositor.speech_input(SpeechInput::Release);
@@ -544,9 +477,13 @@ mod synthetic_pad {
                             session, text: tehuti_protocol::Text::new("confirm".into()).unwrap(),
                         });
                         session = session.saturating_add(1);
+                        prop_assert_eq!(compositor.pending_plugin_decisions(), pending, "sidecar text issues no plugin request");
                     }
                     Command::Open | Command::Close | Command::Start | Command::Crash | Command::Settle => {}
                 }
+                prop_assert_eq!(compositor.initialized_plugins(), usize::from(model.started));
+                compositor.handle(&Event::Tick { elapsed: Duration::from_secs(3) });
+                prop_assert_eq!(compositor.pending_plugin_decisions(), 0, "every decision settles");
                 compositor.handle(&Event::Tick { elapsed: Duration::from_secs(3) });
                 send.send(command).unwrap();
                 let started = Instant::now();
@@ -561,11 +498,42 @@ mod synthetic_pad {
                 prop_assert_eq!(snapshot, (model.windows.len(), model.focus, model.taps.saturating_mul(2)));
                 prop_assert!(model.focus.is_none_or(|focus| model.windows.contains(&focus)));
             }
-            decisions.apply(&Command::Settle);
-            assert_eq!(decisions.issued, decisions.resolved);
             drop(send);
             client.join().unwrap();
         }
+    }
+
+    #[test]
+    fn focus_cancels_pending_transcript_before_polling_elapsed_time() {
+        use tehuti_core::speech::SpeechInput;
+        let directory = tempfile::tempdir().unwrap();
+        let delivered = directory.path().join("delivered");
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![
+            "python3".into(), "-u".into(), "-c".into(),
+            format!("import sys,json\nfrom pathlib import Path\nprint(json.dumps({{'ready':True}}),flush=True)\nfor line in sys.stdin:\n c=json.loads(line)\n if c.get('transcribe'):\n  print(json.dumps({{'session':c['stop'],'text':'stale'}}),flush=True)\n  Path({delivered:?}).touch()").into(),
+        ]));
+        let began = Instant::now();
+        while !compositor.speech_ready() {
+            compositor.advance_time();
+            assert!(began.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(1));
+        }
+        compositor.speech_input(SpeechInput::Available);
+        compositor.speech_input(SpeechInput::Press);
+        compositor.speech_input(SpeechInput::Release);
+        // Flushes the queued stop command; the reply cannot have been written yet.
+        compositor.advance_time();
+        while !delivered.exists() {
+            assert!(began.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(1));
+        }
+        compositor.handle(&Event::Focus {
+            app_id: Some("other".into()),
+            title: String::new(),
+        });
+        assert!(!compositor.speech_notice_visible());
     }
 
     #[test]

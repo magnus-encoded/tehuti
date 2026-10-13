@@ -172,6 +172,12 @@ impl Compositor {
             .map_or(0, crate::plugins::Plugins::initialized_count)
     }
 
+    /// Plugin decisions the core still holds a fallback for.
+    #[must_use]
+    pub const fn pending_plugin_decisions(&self) -> usize {
+        self.core.pending_decisions()
+    }
+
     pub fn set_plugins(&mut self, plugins: crate::plugins::Plugins) {
         self.plugins = Some(plugins);
     }
@@ -281,7 +287,7 @@ impl Compositor {
         if matches!(event, Event::Tick { .. }) {
             self.previous_tick = Instant::now();
             self.route_event(event);
-        } else {
+        } else if !matches!(event, Event::Focus { .. }) {
             self.advance_time();
         }
         let exited = self
@@ -321,6 +327,9 @@ impl Compositor {
         }
         if !matches!(event, Event::Tick { .. }) {
             self.route_event(event);
+        }
+        if matches!(event, Event::Focus { .. }) {
+            self.advance_time();
         }
         if let Event::Tick { elapsed } = event {
             self.poll_tick(*elapsed);

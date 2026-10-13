@@ -141,7 +141,7 @@ impl Session {
         self.expire_initialize();
         let expired = self.pending.values().filter(|deadline| now >= **deadline).count();
         self.pending.retain(|_, deadline| now < *deadline);
-        self.missed_decisions = self.missed_decisions.saturating_add(expired);
+        self.missed_decisions = self.missed_decisions.saturating_add(usize::from(expired > 0));
         if self.missed_decisions >= 3 {
             self.fail("three consecutive plugin decisions missed");
         }
@@ -1256,9 +1256,8 @@ mod tests {
                 let mut session = session.borrow_mut();
                 if hang {
                     // A request whose deadline has already passed: the plugin never answered.
-                    for request_id in 0..3 {
-                        let _deadline = session.pending.insert(request_id, now);
-                    }
+                    let _deadline = session.pending.insert(0, now);
+                    session.missed_decisions = 2;
                 } else {
                     session.fail("simulated crash");
                 }
@@ -1356,6 +1355,25 @@ mod tests {
                         prop_assert_eq!(starts.borrow()[0], 2);
                     }
                 }
+            }
+
+            #[test]
+            fn simultaneous_expiries_add_one_miss(count in 1_u64..257, misses in 0_usize..2) {
+                let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
+                let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+                let mut plugins = plugins(&succeed, &starts);
+                let now = Instant::now();
+                drop(plugins.supervise_at(now));
+                let session = plugins.entries[0].session.as_ref().unwrap().clone();
+                session.borrow_mut().missed_decisions = misses;
+                for request_id in 0..count {
+                    let _deadline = session.borrow_mut().pending.insert(request_id, now);
+                }
+                prop_assert!(plugins.supervise_at(now).is_empty());
+                prop_assert_eq!(session.borrow().missed_decisions, misses.saturating_add(1));
+                prop_assert_eq!(starts.borrow()[0], 1);
+                prop_assert!(plugins.supervise_at(later(now, 1)).is_empty());
+                prop_assert_eq!(session.borrow().missed_decisions, misses.saturating_add(1));
             }
 
             #[test]

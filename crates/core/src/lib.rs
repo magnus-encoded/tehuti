@@ -25,6 +25,12 @@ impl State {
             pending: Vec::new(),
         }
     }
+
+    /// Plugin decisions still awaiting a reply, expiry or plugin exit.
+    #[must_use]
+    pub const fn pending_decisions(&self) -> usize {
+        self.pending.len()
+    }
 }
 
 /// Advances the core by one event. Performs no I/O.
