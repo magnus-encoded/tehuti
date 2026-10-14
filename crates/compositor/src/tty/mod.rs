@@ -1,5 +1,6 @@
 //! A libseat-owned DRM output with GLES rendering and a pixman fallback.
 
+mod mode;
 mod render;
 
 use crate::LoopData;
@@ -18,7 +19,7 @@ use smithay::{
             EventLoop,
             timer::{TimeoutAction, Timer},
         },
-        drm::control::{Device, connector, framebuffer},
+        drm::control::{Device, Mode, ModeTypeFlags, connector, framebuffer},
         wayland_server::DisplayHandle,
     },
     utils::{DeviceFd, Rectangle, Transform},
@@ -34,6 +35,7 @@ struct Tty {
     surface: DrmSurface,
     device: DrmDevice,
     renderer: render::DrmRendering,
+    remaining_modes: std::collections::VecDeque<Mode>,
     output: Output,
     damage: OutputDamageTracker,
     next: bool,
@@ -234,12 +236,10 @@ fn create_output(
     let device_fd = DrmDeviceFd::new(DeviceFd::from(
         session.open(path, rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC)?,
     ));
-    let (mut device, drm_notifier) = DrmDevice::new(device_fd.clone(), false)?;
-    let surface = connected_surface(&mut device)?;
+    let (mut device, drm_notifier) = DrmDevice::new(device_fd, false)?;
+    let (surface, renderer, remaining_modes) = connected_surface(&mut device)?;
     let mode = surface.pending_mode();
-    info!(?mode, "DRM output mode; frames follow vblank");
-    let mut renderer = render::create(&device_fd, &surface)?;
-    render::advertise(&mut renderer, display, compositor)?;
+
     let output = drm_output(display, mode);
     compositor.space.map_output(&output, (0, 0));
     compositor.output = Some(output.clone());
@@ -252,6 +252,7 @@ fn create_output(
         surface,
         device,
         renderer,
+        remaining_modes,
         damage: OutputDamageTracker::from_output(&output),
         output,
         next: false,
@@ -271,35 +272,107 @@ fn create_libinput(session: &LibSeatSession) -> Result<smithay::reexports::input
     Ok(libinput)
 }
 
-fn connected_surface(device: &mut DrmDevice) -> Result<DrmSurface, Box<dyn Error>> {
+fn connected_surface(
+    device: &mut DrmDevice,
+) -> Result<(DrmSurface, render::DrmRendering, std::collections::VecDeque<Mode>), Box<dyn Error>> {
+    let request = std::env::var("TEHUTI_MODE").ok();
+    let parsed = request.as_deref().and_then(mode::Request::parse);
     let resources = device.resource_handles()?;
-    let mut selected = None;
     for handle in resources.connectors() {
         let connector = device.get_connector(*handle, true)?;
         if connector.state() != connector::State::Connected {
             continue;
         }
-        let Some(mode) = connector.modes().first().copied() else {
-            continue;
-        };
+        let listed: Vec<_> = connector
+            .modes()
+            .iter()
+            .map(|mode| mode::ListedMode {
+                size: mode.size(),
+                refresh: mode.vrefresh(),
+                preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
+            })
+            .collect();
+        let (indices, matched) = mode::ordered(&listed, parsed);
+        if request.is_some() && !matched {
+            warn!(
+                ?request,
+                "TEHUTI_MODE does not match a listed mode; using connector defaults"
+            );
+        }
+        let modes: Vec<_> = indices
+            .into_iter()
+            .filter_map(|index| connector.modes().get(index).copied())
+            .collect();
         for encoder in connector.encoders() {
             let encoder = device.get_encoder(*encoder)?;
-            if let Some(crtc) = resources.filter_crtcs(encoder.possible_crtcs()).first().copied() {
-                selected = Some((crtc, mode, *handle));
-                break;
+            for crtc in resources.filter_crtcs(encoder.possible_crtcs()) {
+                let mut remaining: std::collections::VecDeque<_> = modes.iter().copied().collect();
+                while let Some(mode) = remaining.pop_front() {
+                    let attempt = device
+                        .create_surface(crtc, mode, &[*handle])
+                        .map_err(Box::<dyn Error>::from)
+                        .and_then(|surface| {
+                            render::create(device.device_fd(), &surface).map(|renderer| (surface, renderer))
+                        });
+                    match attempt {
+                        Ok((surface, renderer)) => return Ok((surface, renderer, remaining)),
+                        Err(error) => {
+                            warn!(?mode, %error, "DRM mode initialization failed; trying next listed mode");
+                        }
+                    }
+                }
             }
         }
-        if selected.is_some() {
-            break;
-        }
     }
-    let (crtc, mode, connector) = selected.ok_or("no connected DRM output with a usable mode")?;
-    Ok(device.create_surface(crtc, mode, &[connector])?)
+    Err("no connected DRM output with a usable mode".into())
 }
 
 impl Tty {
+    fn fallback_mode(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
+        while let Some(mode) = self.remaining_modes.pop_front() {
+            let attempt = self
+                .surface
+                .use_mode(mode)
+                .map_err(Box::<dyn Error>::from)
+                .and_then(|()| render::create(self.device.device_fd(), &self.surface));
+            match attempt {
+                Ok(renderer) => {
+                    self.renderer = renderer;
+                    self.output
+                        .change_current_state(Some(mode.into()), None, None, None);
+                    tehuti::scale::apply(
+                        &self.output,
+                        mode.into(),
+                        tehuti::scale::from_env(i32::from(mode.size().0)),
+                    );
+                    self.output.set_preferred(mode.into());
+                    self.damage = OutputDamageTracker::from_output(&self.output);
+                    self.next = false;
+                    data.compositor.fill_output();
+                    return Ok(());
+                }
+                Err(error) => warn!(?mode, %error, "DRM fallback mode initialization failed"),
+            }
+        }
+        Err("all listed DRM modes failed".into())
+    }
+
     fn render(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
         crate::advance_time(data);
+        mode::retry(
+            &mut (self, data),
+            |(tty, data)| tty.render_frame(data),
+            |(tty, data), error| {
+                if !tty.modeset {
+                    return Err(error);
+                }
+                warn!(%error, mode = ?tty.surface.pending_mode(), "DRM modeset failed; trying next listed mode");
+                tty.fallback_mode(data)
+            },
+        )
+    }
+
+    fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
         let started = std::time::Instant::now();
         let (framebuffer, notice_drawn) = render::draw(
             &mut self.renderer,
@@ -309,7 +382,22 @@ impl Tty {
             &data.compositor,
         )?;
         trace!(elapsed = ?started.elapsed(), "DRM frame drawn");
+        let was_modeset = self.modeset;
         submit(&self.surface, framebuffer, &mut self.modeset)?;
+        if was_modeset {
+            if let Err(error) =
+                render::advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor)
+            {
+                warn!(%error, "DRM client format advertisement failed");
+            }
+            let mode = self.surface.pending_mode();
+            info!(
+                width = mode.size().0,
+                height = mode.size().1,
+                refresh_hz = mode.vrefresh(),
+                "DRM output mode; frames follow vblank"
+            );
+        }
         trace!(elapsed = ?started.elapsed(), "DRM frame committed");
         self.pending = true;
         self.next = !self.next;
