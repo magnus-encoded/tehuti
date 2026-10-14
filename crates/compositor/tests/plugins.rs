@@ -179,6 +179,20 @@ for line in sys.stdin:
         tehuti_protocol::parse_context(&source).unwrap()
     }
 
+    /// Holding Guide opens the system menu; Log out is the third row down and South chooses it.
+    fn escape() -> [Event; 6] {
+        [
+            button(ButtonName::Guide),
+            Event::Tick {
+                elapsed: Duration::from_secs(3),
+            },
+            button(ButtonName::DpadDown),
+            button(ButtonName::DpadDown),
+            button(ButtonName::DpadDown),
+            button(ButtonName::South),
+        ]
+    }
+
     fn button(name: ButtonName) -> Event {
         Event::Button {
             name,
@@ -196,7 +210,7 @@ for line in sys.stdin:
             consumes in any::<bool>(),
             configurations in prop::collection::vec((prop::sample::select(vec!["test", "other"]), prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=8)), 0..3),
             events in prop::collection::vec(prop_oneof![
-                (any::<ButtonName>(), any::<ButtonState>()).prop_map(|(name, state)| Event::Button { name, state }),
+                (any::<ButtonName>().prop_filter("Guide would open the menu early", |name| *name != ButtonName::Guide), any::<ButtonState>()).prop_map(|(name, state)| Event::Button { name, state }),
                 (0u64..500).prop_map(|millis| Event::Tick { elapsed: Duration::from_millis(millis) }),
             ], 0..20),
         ) {
@@ -216,7 +230,7 @@ for line in sys.stdin:
             // The most permissive core: every button it would route to any live plugin.
             let mut core = tehuti_core::State::with_contexts(contexts);
             let mut routable = Vec::new();
-            let chord = [button(ButtonName::Guide), button(ButtonName::Start), Event::Tick { elapsed: Duration::from_secs(3) }];
+            let chord = escape();
             for event in core::iter::once(focus("test")).chain(events.iter().cloned()).chain(chord.iter().cloned()) {
                 let (next, _, sent) = tehuti_core::step_with_plugin(core, &event, true);
                 core = next;
@@ -322,13 +336,7 @@ for line in sys.stdin:
             0,
             "late initialize cannot activate a plugin"
         );
-        harness.send([
-            button(ButtonName::Guide),
-            button(ButtonName::Start),
-            Event::Tick {
-                elapsed: Duration::from_secs(3),
-            },
-        ]);
+        harness.send(escape());
         assert!(
             harness.compositor.quit_requested(),
             "input survives initialize timeout"
@@ -601,13 +609,7 @@ for line in sys.stdin:
                     "controller routing cannot wait for a plugin restart"
                 );
             }
-            harness.send([
-                button(ButtonName::Guide),
-                button(ButtonName::Start),
-                Event::Tick {
-                    elapsed: Duration::from_secs(3),
-                },
-            ]);
+            harness.send(escape());
             assert!(harness.compositor.quit_requested(), "escape survives restarts");
         });
         assert_eq!(output, 4, "every controller event reaches its context");
@@ -629,13 +631,7 @@ for line in sys.stdin:
                 });
             }
             harness.pump_until(|harness| launches(harness).len() >= 2);
-            harness.send([
-                button(ButtonName::Guide),
-                button(ButtonName::Start),
-                Event::Tick {
-                    elapsed: Duration::from_secs(3),
-                },
-            ]);
+            harness.send(escape());
             assert!(
                 harness.compositor.quit_requested(),
                 "escape survives a hung plugin"
@@ -705,13 +701,7 @@ for line in sys.stdin:
                         "flood callbacks leave time for controller input"
                     );
                 }
-                harness.send([
-                    button(ButtonName::Guide),
-                    button(ButtonName::Start),
-                    Event::Tick {
-                        elapsed: Duration::from_secs(3),
-                    },
-                ]);
+                harness.send(escape());
                 assert!(harness.compositor.quit_requested(), "input survives a flood");
             });
             assert!(
@@ -748,13 +738,7 @@ for line in sys.stdin:
                     0,
                     "unsupported handshake is refused"
                 );
-                harness.send([
-                    button(ButtonName::Guide),
-                    button(ButtonName::Start),
-                    Event::Tick {
-                        elapsed: Duration::from_secs(3),
-                    },
-                ]);
+                harness.send(escape());
                 assert!(harness.compositor.quit_requested(), "input survives refusal");
             });
             assert!(

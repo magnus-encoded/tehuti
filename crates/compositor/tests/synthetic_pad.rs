@@ -42,32 +42,45 @@ mod synthetic_pad {
         xdg_wm_base::{self, XdgWmBase},
     };
 
+    fn menu_is_open(compositor: &Compositor) -> bool {
+        compositor
+            .visible_notice_text()
+            .is_some_and(|text| text.starts_with("SYSTEM MENU"))
+    }
+
     #[test]
-    fn disconnect_and_seat_pause_cancel_escape_before_reconnect() {
+    fn disconnect_and_seat_pause_cancel_the_hold_and_close_the_menu() {
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
-        for first in [ButtonName::Guide, ButtonName::Start] {
-            for name in [ButtonName::Start, ButtonName::Guide] {
-                compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
-                    name,
-                    state: ButtonState::Pressed,
-                }));
-            }
+        for _round in 0..2 {
+            compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Pressed,
+            }));
             compositor.handle(&Event::Tick {
                 elapsed: Duration::from_millis(2999),
             });
             compositor.controller_input(tehuti_core::controller::Input::Disconnected);
             compositor.controller_input(tehuti_core::controller::Input::Reconnected);
-            compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
-                name: first,
-                state: ButtonState::Pressed,
-            }));
             compositor.handle(&Event::Tick {
                 elapsed: Duration::from_secs(4),
             });
-            assert!(!compositor.quit_requested());
+            assert!(
+                !menu_is_open(&compositor),
+                "the hold does not survive a disconnect"
+            );
+            compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Pressed,
+            }));
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_secs(3),
+            });
+            assert!(menu_is_open(&compositor));
             compositor.controller_input(tehuti_core::controller::Input::Disconnected);
             compositor.controller_input(tehuti_core::controller::Input::Reconnected);
+            assert!(!menu_is_open(&compositor), "a disconnect closes the menu");
+            assert!(!compositor.quit_requested());
         }
     }
 
@@ -1139,15 +1152,12 @@ mod synthetic_pad {
             name: ButtonName::Guide,
             state: ButtonState::Pressed,
         });
-        pad.push(Event::Button {
-            name: ButtonName::Start,
-            state: ButtonState::Pressed,
-        });
         pad.push(Event::Tick {
             elapsed: Duration::from_millis(2999),
         });
         route(&mut compositor, &mut pad).unwrap();
         assert!(!compositor.quit_requested());
+        assert!(!menu_is_open(&compositor));
         assert!(!pad.is_released());
 
         let mut event_loop: EventLoop<()> = EventLoop::try_new().unwrap();
@@ -1155,6 +1165,13 @@ mod synthetic_pad {
         pad.push(Event::Tick {
             elapsed: Duration::from_millis(1),
         });
+        route(&mut compositor, &mut pad).unwrap();
+        assert!(
+            menu_is_open(&compositor),
+            "holding Guide opens the menu, not a quit"
+        );
+        assert!(!compositor.quit_requested());
+        push_log_out_choice(&mut pad);
         let mut iterations = 0;
         event_loop
             .run(Some(Duration::ZERO), &mut (), |()| {
@@ -1166,6 +1183,22 @@ mod synthetic_pad {
             .unwrap();
         assert!(pad.is_released(), "the pad is released before the loop exits");
         assert!(compositor.quit_requested());
+    }
+
+    /// Third row down is Log out; South chooses it.
+    fn push_log_out_choice(pad: &mut SyntheticPad) {
+        for _row in 0..3 {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button {
+                    name: ButtonName::DpadDown,
+                    state,
+                });
+            }
+        }
+        pad.push(Event::Button {
+            name: ButtonName::South,
+            state: ButtonState::Pressed,
+        });
     }
 
     fn load_test_context(compositor: &mut Compositor, text: Option<&str>) {
@@ -1518,12 +1551,9 @@ else:
             name: ButtonName::Guide,
             state: ButtonState::Pressed,
         });
-        pad.push(Event::Button {
-            name: ButtonName::Start,
-            state: ButtonState::Pressed,
-        });
         route(compositor, pad).unwrap();
         let escape_started = Instant::now();
+        let mut chosen = false;
         let mut previous_tick = escape_started;
         let signal = event_loop.get_signal();
         event_loop
@@ -1537,6 +1567,10 @@ else:
                     elapsed: now.duration_since(previous_tick),
                 });
                 previous_tick = now;
+                if !chosen && menu_is_open(compositor) {
+                    chosen = true;
+                    push_log_out_choice(pad);
+                }
                 route(compositor, pad).unwrap();
                 tehuti::input::finish_quit(compositor, pad, &signal).unwrap();
             })

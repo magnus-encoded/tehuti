@@ -18,6 +18,8 @@ pub mod speech;
 
 pub mod notice;
 
+pub mod system;
+
 pub mod secret_delivery;
 
 pub mod desktop;

@@ -151,8 +151,18 @@ impl Nested {
             self.notice = tehuti::notice::notice_buffer(text);
             self.notice_text.clone_from(text);
         }
-        let (confirmation_element_included, output_drew) =
-            self.draw_bound_output(data, visible_notice.is_some(), confirmation_pending);
+        let screenshot = data.compositor.take_screenshot_request();
+        let mut screenshot_result = None;
+        let (confirmation_element_included, output_drew) = self.draw_bound_output(
+            data,
+            visible_notice.is_some(),
+            confirmation_pending,
+            screenshot,
+            &mut screenshot_result,
+        );
+        if let Some(result) = screenshot_result {
+            data.compositor.screenshot_saved(&result);
+        }
         let submit_succeeded = match self
             .backend
             .borrow_mut()
@@ -174,6 +184,8 @@ impl Nested {
         data: &LoopData,
         visible_notice: bool,
         confirmation_pending: bool,
+        screenshot: Option<std::path::PathBuf>,
+        screenshot_result: &mut Option<std::io::Result<()>>,
     ) -> (bool, bool) {
         let mut output_drew = false;
         let mut confirmation_element_included = false;
@@ -221,8 +233,17 @@ impl Nested {
                     &mut self.damage_tracker,
                     BACKGROUND,
                 ) {
-                    Ok(result) if result.damage.is_some() => output_drew = true,
-                    Ok(_) => {}
+                    Ok(result) => {
+                        output_drew = result.damage.is_some();
+                        if let Some(path) = screenshot {
+                            let size = self
+                                .output
+                                .current_mode()
+                                .map_or((0, 0), |mode| (mode.size.w, mode.size.h));
+                            let saved = tehuti::system::capture(renderer, &framebuffer, size, &path);
+                            *screenshot_result = Some(saved);
+                        }
+                    }
                     Err(error) => warn!(?error, "render failed"),
                 }
             }

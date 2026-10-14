@@ -44,7 +44,7 @@ pub(crate) struct LoopData {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
-        ExitCode::from(if self.log_out {
+        ExitCode::from(if self.log_out || self.compositor.log_out_requested() {
             21
         } else if self.compositor.quit_requested() {
             20

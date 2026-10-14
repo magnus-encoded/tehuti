@@ -91,7 +91,9 @@ All names and enum values are case sensitive.
 
 Record (Share) presses and releases control push-to-talk and never reach plugins.
 Guide presses and releases never reach plugins. Holding Guide for three
-seconds requests Quit; releasing early cancels the hold. Other buttons still
+seconds opens the core's system menu; releasing early cancels the hold. While
+the menu is open it takes every button and speech input, and no plugin sees
+any. The d-pad moves, South selects, East or Guide closes. Other buttons still
 route while Guide is held. South presses send Enter and never reach plugins;
 South releases can reach them. Tick is internal and never crosses the wire.
 
@@ -356,8 +358,9 @@ Focus changes to `test` while initialization is pending.
 | Plugin → stdout | `{"jsonrpc":"2.0","method":"actions","params":{"actions":[{"type":"key","key":"space"}]}}` |
 | Core → stdin | `{"jsonrpc":"2.0","method":"focus","params":{"app_id":null,"title":""}}` |
 
-The user holds Guide for three seconds. No Guide or Tick message is sent;
-the core requests Quit and terminates the plugin during teardown.
+The user holds Guide for three seconds and chooses Log out in the system menu.
+No Guide or Tick message is sent; the core requests Quit and terminates the
+plugin during teardown.
 For a runnable button remapping plugin, see
 [east-to-tab.py](../../examples/plugins/east-to-tab.py). No Tehuti library is
 required: use your language's JSON library and line input/output.

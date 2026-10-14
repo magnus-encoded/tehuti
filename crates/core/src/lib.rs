@@ -7,7 +7,8 @@ pub struct State {
     contexts: Vec<Context>,
     focused_app_id: Option<String>,
     guide_held: Option<core::time::Duration>,
-    start_held: bool,
+    menu: Option<menu::Menu>,
+    commands: Vec<menu::Command>,
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
 }
@@ -41,7 +42,8 @@ impl State {
             contexts,
             focused_app_id: None,
             guide_held: None,
-            start_held: false,
+            menu: None,
+            commands: Vec::new(),
             pending: Vec::new(),
             bar: bar::Bar::new(),
         }
@@ -58,10 +60,21 @@ impl State {
         &self.contexts
     }
 
-    /// Cancels controller holds when the device disconnects or the seat pauses.
+    /// Cancels controller holds and closes the system menu when the device disconnects or the seat pauses.
     pub const fn controller_disconnected(&mut self) {
         self.guide_held = None;
-        self.start_held = false;
+        self.menu = None;
+    }
+
+    /// The system menu while it is open.
+    #[must_use]
+    pub const fn menu(&self) -> Option<&menu::Menu> {
+        self.menu.as_ref()
+    }
+
+    /// Takes the system commands the menu chose since the last call.
+    pub fn take_commands(&mut self) -> Vec<menu::Command> {
+        core::mem::take(&mut self.commands)
     }
 
     /// Plugin decisions still awaiting a reply, expiry or plugin exit.
@@ -106,6 +119,11 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         let actions = plugin::expire(&mut state, core::time::Duration::MAX);
         state.focused_app_id.clone_from(app_id);
         return (state, actions, false);
+    }
+    if state.menu.is_some() {
+        let outcome = menu::handle(&mut state.menu, event);
+        state.commands.extend(outcome.commands);
+        return (state, outcome.actions, false);
     }
     if let Some(actions) = escape_chord(&mut state, event) {
         return (state, actions, false);
@@ -191,24 +209,12 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             }
             Some(Vec::new())
         }
-        Event::Button {
-            name: ButtonName::Start,
-            state: button_state,
-        } => {
-            state.start_held = *button_state == ButtonState::Pressed;
-            state.guide_held.as_mut().map(|held| {
-                *held = core::time::Duration::ZERO;
-                Vec::new()
-            })
-        }
         Event::Tick { elapsed } => {
-            if state.start_held
-                && let Some(held) = &mut state.guide_held
-            {
+            if let Some(held) = &mut state.guide_held {
                 *held = held.saturating_add(*elapsed);
                 if *held >= core::time::Duration::from_secs(3) {
                     state.guide_held = None;
-                    return Some(vec![Action::Quit]);
+                    state.menu = Some(menu::Menu::default());
                 }
             }
             Some(Vec::new())
@@ -217,6 +223,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     }
 }
 
+pub mod menu;
 pub mod secret;
 pub mod speech;
 

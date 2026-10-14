@@ -17,7 +17,7 @@ use smithay::{
             gbm::{GbmFramebuffer, framebuffer_from_bo},
         },
         renderer::{
-            Bind, ImportAll, ImportDma, ImportMem, Renderer,
+            Bind, ExportMem, ImportAll, ImportDma, ImportMem, Renderer,
             damage::OutputDamageTracker,
             element::{Kind, memory::MemoryRenderBufferRenderElement},
             gles::GlesRenderer,
@@ -157,13 +157,17 @@ pub(super) fn advertise(
     Ok(())
 }
 
+/// The outcome of a screenshot taken during this frame, if one was requested.
+pub(super) type Saved = Option<std::io::Result<()>>;
+
 pub(super) fn draw(
     rendering: &mut DrmRendering,
     next: bool,
     output: &Output,
     damage: &mut OutputDamageTracker,
     compositor: &Compositor,
-) -> Result<(framebuffer::Handle, bool), Box<dyn Error>> {
+    screenshot: Option<&std::path::Path>,
+) -> Result<(framebuffer::Handle, bool, Saved), Box<dyn Error>> {
     match rendering {
         Rendering::Gles(gpu) => {
             let buffer = gpu
@@ -177,8 +181,9 @@ pub(super) fn draw(
                 output,
                 damage,
                 compositor,
+                screenshot,
             )?;
-            Ok((*buffer.framebuffer.as_ref(), notice))
+            Ok((*buffer.framebuffer.as_ref(), notice.0, notice.1))
         }
         Rendering::Pixman(software) => {
             let buffer = software
@@ -192,8 +197,9 @@ pub(super) fn draw(
                 output,
                 damage,
                 compositor,
+                screenshot,
             )?;
-            Ok((*buffer.framebuffer.as_ref(), notice))
+            Ok((*buffer.framebuffer.as_ref(), notice.0, notice.1))
         }
     }
 }
@@ -205,9 +211,10 @@ fn draw_buffer<R>(
     output: &Output,
     damage: &mut OutputDamageTracker,
     compositor: &Compositor,
-) -> Result<bool, Box<dyn Error>>
+    screenshot: Option<&std::path::Path>,
+) -> Result<(bool, Saved), Box<dyn Error>>
 where
-    R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
+    R: Renderer + ImportAll + ImportMem + ExportMem + Bind<Dmabuf>,
     R::TextureId: Send + Clone + 'static,
     R::Error: 'static,
 {
@@ -248,5 +255,11 @@ where
         [0.0, 0.0, 0.0, 1.0],
     )?;
     frame.sync.wait()?;
-    Ok(notice_included && frame.damage.is_some())
+    let saved = screenshot.map(|path| {
+        let size = output
+            .current_mode()
+            .map_or((0, 0), |mode| (mode.size.w, mode.size.h));
+        tehuti::system::capture(renderer, &target, size, path)
+    });
+    Ok((notice_included && frame.damage.is_some(), saved))
 }

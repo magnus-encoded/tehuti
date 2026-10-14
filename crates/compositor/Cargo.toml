@@ -23,6 +23,7 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 font8x8 = "0.3"
 chrono = "0.4"
+png = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
