@@ -327,7 +327,11 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
-        let since_tick = self.read_clock();
+        let since_tick = if matches!(event, Event::Focus { .. }) {
+            core::time::Duration::ZERO
+        } else {
+            self.read_clock()
+        };
         let input = if let Event::Tick { elapsed } = event {
             DispatchInput::Tick { elapsed: *elapsed }
         } else {
@@ -384,6 +388,11 @@ impl Compositor {
 
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         match effect {
+            DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
+            DispatchEffect::InvalidReply => {
+                tracing::error!("invalid dispatch reply");
+                None
+            }
             DispatchEffect::QueryPlugin(event) => Some(DispatchInput::PluginActive(
                 self.plugins
                     .as_mut()
@@ -447,7 +456,9 @@ impl Compositor {
             DispatchEffect::PluginAction(action) => {
                 self.apply_plugin_action(&action);
             }
-            DispatchEffect::PluginRejected(_)
+            DispatchEffect::ReadClock
+            | DispatchEffect::InvalidReply
+            | DispatchEffect::PluginRejected(_)
             | DispatchEffect::QueryPlugin(_)
             | DispatchEffect::DispatchPlugin { .. }
             | DispatchEffect::Supervise

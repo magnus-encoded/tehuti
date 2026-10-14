@@ -19,11 +19,13 @@ pub enum Input {
     Tick {
         elapsed: Duration,
     },
-    /// A button, speech or focus event, with the time since the previous tick.
+    /// An event with elapsed time for its leading tick; Focus queries time after routing.
     Event {
         event: Event,
         elapsed: Duration,
     },
+    /// Reply to [`Effect::ReadClock`].
+    ClockRead(Duration),
     Speech(SpeechInput),
     PluginReply {
         key: RequestKey,
@@ -51,6 +53,10 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    /// Query: sample time after Focus actions. Reply [`Input::ClockRead`].
+    ReadClock,
+    /// A missing or mismatched query reply aborted the waiting frame.
+    InvalidReply,
     /// Query: is a plugin active for this event? Reply [`Input::PluginActive`].
     QueryPlugin(Event),
     /// Query: hand the event to plugins. Reply [`Input::PluginRequest`].
@@ -98,6 +104,7 @@ pub enum Effect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Task {
+    ReadClock,
     Route(Event),
     Supervise,
     SouthPressed(bool),
@@ -112,6 +119,7 @@ enum Task {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Await {
+    ClockRead,
     PluginActive(Event),
     PluginRequest {
         event: Event,
@@ -183,7 +191,7 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
             Task::Speech(SpeechInput::Cancel),
             Task::Route(event),
         ];
-        tasks.extend(tick_tasks(elapsed));
+        tasks.push(Task::ReadClock);
         return tasks;
     }
     let mut tasks: Vec<Task> = tick_tasks(elapsed).into();
@@ -231,7 +239,8 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             state.core.controller_disconnected();
             return (state, effects);
         }
-        reply @ (Input::PluginActive(_)
+        reply @ (Input::ClockRead(_)
+        | Input::PluginActive(_)
         | Input::PluginRequest(_)
         | Input::Supervised(_)
         | Input::SecretConfirmation(_)
@@ -257,6 +266,11 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
         return;
     };
     match (awaiting, reply) {
+        (Await::ClockRead, Input::ClockRead(elapsed)) => {
+            for task in tick_tasks(elapsed).into_iter().rev() {
+                frame.tasks.push_front(task);
+            }
+        }
         (Await::PluginActive(event), Input::PluginActive(active)) => {
             let (next, actions, route) =
                 crate::step_with_plugin(core::mem::take(&mut state.core), &event, active);
@@ -299,7 +313,10 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 frame.tasks.push_front(Task::Speech(input));
             }
         }
-        (awaiting, _) => frame.awaiting = Some(awaiting),
+        (_, _) => {
+            let _aborted = state.frames.pop();
+            effects.push(Effect::InvalidReply);
+        }
     }
 }
 
@@ -368,6 +385,10 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
         return;
     };
     match task {
+        Task::ReadClock => {
+            effects.push(Effect::ReadClock);
+            frame.awaiting = Some(Await::ClockRead);
+        }
         Task::Route(event) => {
             effects.push(Effect::QueryPlugin(event.clone()));
             frame.awaiting = Some(Await::PluginActive(event));
