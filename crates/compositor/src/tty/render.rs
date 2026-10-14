@@ -209,7 +209,7 @@ where
     let notice = compositor
         .visible_notice_text()
         .map(|text| tehuti::notice::notice_buffer(&text));
-    let elements = notice
+    let mut elements = notice
         .as_ref()
         .map(|buffer| {
             MemoryRenderBufferRenderElement::from_buffer(
@@ -225,6 +225,21 @@ where
         .transpose()?
         .into_iter()
         .collect::<Vec<_>>();
+    let notice_included = !elements.is_empty();
+    if let Some(location) = compositor.cursor_location() {
+        elements.insert(
+            0,
+            MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                location,
+                &tehuti::notice::cursor_buffer(),
+                None,
+                None,
+                None,
+                Kind::Cursor,
+            )?,
+        );
+    }
     let frame = render_output::<_, MemoryRenderBufferRenderElement<R>, _, _>(
         output,
         renderer,
@@ -237,5 +252,5 @@ where
         [0.0, 0.0, 0.0, 1.0],
     )?;
     frame.sync.wait()?;
-    Ok(!elements.is_empty() && frame.damage.is_some())
+    Ok(notice_included && frame.damage.is_some())
 }

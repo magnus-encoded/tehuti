@@ -177,7 +177,7 @@ impl Nested {
         let mut confirmation_element_included = false;
         match self.backend.borrow_mut().bind() {
             Ok((renderer, mut framebuffer)) => {
-                let notices = if visible_notice {
+                let mut notices = if visible_notice {
                     match MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
                         (16.0, 16.0),
@@ -199,6 +199,20 @@ impl Nested {
                 } else {
                     Vec::new()
                 };
+                if let Some(location) = data.compositor.cursor_location() {
+                    match MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        location,
+                        &tehuti::notice::cursor_buffer(),
+                        None,
+                        None,
+                        None,
+                        Kind::Cursor,
+                    ) {
+                        Ok(element) => notices.insert(0, element),
+                        Err(error) => warn!(?error, "cursor render failed"),
+                    }
+                }
                 match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
                     &self.output,
                     renderer,

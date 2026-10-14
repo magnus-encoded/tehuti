@@ -29,7 +29,7 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
         .find_map(|mut device| match grab_nonblocking(&mut device) {
-            Ok(()) => Some(EvdevPad(device)),
+            Ok(()) => Some(EvdevPad(device, [0; 2])),
             Err(error) => {
                 warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
                 None
@@ -102,12 +102,30 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
 
 /// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
 #[derive(Debug)]
-pub struct EvdevPad(Device);
+pub struct EvdevPad(Device, [i32; 2]);
 
 impl EvdevPad {
     #[must_use]
     pub fn name(&self) -> &str {
         self.0.name().unwrap_or("unnamed")
+    }
+    /// Samples the current calibrated stick axes, including a 15 percent deadzone.
+    /// # Errors
+    /// The kernel could not read the controller axis state.
+    pub fn sticks(&self) -> io::Result<tehuti_core::dispatch::Sticks> {
+        use evdev::AbsoluteAxisCode;
+        let mut sticks = tehuti_core::dispatch::Sticks::default();
+        for (axis, info) in self.0.get_absinfo()? {
+            let value = stick_axis(info.value(), info.minimum(), info.maximum());
+            match axis {
+                AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
+                AbsoluteAxisCode::ABS_Y => sticks.left.1 = value,
+                AbsoluteAxisCode::ABS_RX => sticks.right.0 = value,
+                AbsoluteAxisCode::ABS_RY => sticks.right.1 = value,
+                _ => {}
+            }
+        }
+        Ok(sticks)
     }
 }
 
@@ -123,25 +141,71 @@ impl InputSource for EvdevPad {
     }
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
-        drain_device(&mut self.0)
+        drain_device(&mut self.0, &mut self.1)
     }
 }
 
 /// Reads every pending event from `device`. Stops at `WouldBlock`.
-fn drain_device(device: &mut Device) -> io::Result<Vec<Event>> {
+fn drain_device(device: &mut Device, hats: &mut [i32; 2]) -> io::Result<Vec<Event>> {
     match device.fetch_events() {
-        Ok(events) => Ok(events
-            .filter_map(|event| {
-                if let EventSummary::Key(_, code, value) = event.destructure() {
-                    parse_button(code, value)
-                } else {
-                    None
+        Ok(events) => {
+            let mut buttons = Vec::new();
+            for event in events {
+                match event.destructure() {
+                    EventSummary::Key(_, code, value) => buttons.extend(parse_button(code, value)),
+                    EventSummary::AbsoluteAxis(_, axis, value) => {
+                        buttons.extend(hat_buttons(hats, axis, value));
+                    }
+                    EventSummary::Synchronization(..)
+                    | EventSummary::RelativeAxis(..)
+                    | EventSummary::Misc(..)
+                    | EventSummary::Switch(..)
+                    | EventSummary::Led(..)
+                    | EventSummary::Sound(..)
+                    | EventSummary::Repeat(..)
+                    | EventSummary::ForceFeedback(..)
+                    | EventSummary::Power(..)
+                    | EventSummary::ForceFeedbackStatus(..)
+                    | EventSummary::UInput(..)
+                    | EventSummary::Other(..) => {}
                 }
-            })
-            .collect()),
+            }
+            Ok(buttons)
+        }
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Vec::new()),
         Err(error) => Err(error),
     }
+}
+
+fn hat_buttons(hats: &mut [i32; 2], axis: evdev::AbsoluteAxisCode, value: i32) -> Vec<Event> {
+    use evdev::AbsoluteAxisCode;
+    let (index, negative, positive) = match axis {
+        AbsoluteAxisCode::ABS_HAT0X => (0, ButtonName::DpadLeft, ButtonName::DpadRight),
+        AbsoluteAxisCode::ABS_HAT0Y => (1, ButtonName::DpadUp, ButtonName::DpadDown),
+        _ => return Vec::new(),
+    };
+    let Some(previous) = hats.get_mut(index) else {
+        return Vec::new();
+    };
+    let value = value.signum();
+    if *previous == value {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    if *previous != 0 {
+        events.push(Event::Button {
+            name: if *previous < 0 { negative } else { positive },
+            state: ButtonState::Released,
+        });
+    }
+    if value != 0 {
+        events.push(Event::Button {
+            name: if value < 0 { negative } else { positive },
+            state: ButtonState::Pressed,
+        });
+    }
+    *previous = value;
+    events
 }
 
 /// Parses an evdev key event. Autorepeat (value 2) and unknown codes give `None`.
@@ -210,6 +274,60 @@ mod tests {
     }
 
     #[test]
+    fn stick_calibration_handles_deadzone_extremes_and_invalid_ranges() {
+        assert_eq!(stick_axis(0, -32768, 32767), 0);
+        assert_eq!(stick_axis(4000, -32768, 32767), 0);
+        assert_eq!(stick_axis(-32768, -32768, 32767), -1000);
+        assert_eq!(stick_axis(32767, -32768, 32767), 1000);
+        assert_eq!(stick_axis(128, 0, 255), 0);
+        assert_eq!(stick_axis(0, 0, 255), -1000);
+        assert_eq!(stick_axis(255, 0, 255), 1000);
+        assert_eq!(stick_axis(10, 10, 10), 0);
+        assert_eq!(stick_axis(10, 20, 10), 0);
+    }
+
+    #[test]
+    fn hat_axes_press_release_and_reverse_without_stick_buttons() {
+        use evdev::AbsoluteAxisCode;
+        for (axis, negative, positive) in [
+            (
+                AbsoluteAxisCode::ABS_HAT0X,
+                ButtonName::DpadLeft,
+                ButtonName::DpadRight,
+            ),
+            (
+                AbsoluteAxisCode::ABS_HAT0Y,
+                ButtonName::DpadUp,
+                ButtonName::DpadDown,
+            ),
+        ] {
+            let mut hats = [0; 2];
+            let button = |name, state| Event::Button { name, state };
+            assert_eq!(
+                hat_buttons(&mut hats, axis, -1),
+                vec![button(negative, ButtonState::Pressed)]
+            );
+            assert_eq!(hat_buttons(&mut hats, axis, -1), Vec::new());
+            assert_eq!(
+                hat_buttons(&mut hats, axis, 1),
+                vec![
+                    button(negative, ButtonState::Released),
+                    button(positive, ButtonState::Pressed)
+                ]
+            );
+            assert_eq!(
+                hat_buttons(&mut hats, axis, 0),
+                vec![button(positive, ButtonState::Released)]
+            );
+            assert_eq!(hat_buttons(&mut hats, AbsoluteAxisCode::ABS_X, 32767), Vec::new());
+            assert_eq!(
+                hat_buttons(&mut hats, AbsoluteAxisCode::ABS_RX, -32768),
+                Vec::new()
+            );
+        }
+    }
+
+    #[test]
     fn autorepeat_and_unknown_codes_are_dropped() {
         assert_eq!(parse_button(KeyCode::BTN_SOUTH, 2), None, "autorepeat");
         assert_eq!(parse_button(KeyCode::KEY_A, 1), None, "keyboard key");
@@ -262,4 +380,20 @@ pub fn discover(state: Discovery, input: DiscoveryInput) -> (Discovery, Option<D
         }
         (state, _) => (state, None),
     }
+}
+
+fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
+    let range = i64::from(maximum).saturating_sub(i64::from(minimum));
+    if range <= 0 {
+        return 0;
+    }
+    let normalized = (i64::from(value)
+        .saturating_sub(i64::from(minimum))
+        .saturating_mul(2000)
+        .checked_div(range)
+        .unwrap_or_default()
+        .saturating_sub(1000))
+    .clamp(-1000, 1000);
+    let travel = normalized.abs().saturating_sub(150).max(0).saturating_mul(1000) / 850;
+    i16::try_from(travel.saturating_mul(normalized.signum())).unwrap_or_default()
 }

@@ -77,6 +77,7 @@ mod synthetic_pad {
     #[derive(Debug, Default)]
     struct App {
         keys: Vec<(u32, KeyState)>,
+        clicks: Vec<(u32, wayland_client::protocol::wl_pointer::ButtonState)>,
         focused: Option<wayland_client::backend::ObjectId>,
         close_requested: bool,
         text: String,
@@ -460,6 +461,140 @@ mod synthetic_pad {
                 app.close_requested = true;
             }
         }
+    }
+
+    impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for App {
+        fn event(
+            app: &mut Self,
+            _: &wayland_client::protocol::wl_pointer::WlPointer,
+            event: wayland_client::protocol::wl_pointer::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let wayland_client::protocol::wl_pointer::Event::Button {
+                button,
+                state: WEnum::Value(state),
+                ..
+            } = event
+            {
+                app.clicks.push((button, state));
+            }
+        }
+    }
+
+    delegate_noop!(App: ignore wayland_client::protocol::wl_shm::WlShm);
+    delegate_noop!(App: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
+
+    fn run_pointer_client(stream: UnixStream, ready: &mpsc::Sender<()>) -> App {
+        use std::os::fd::AsFd;
+        use wayland_client::protocol::wl_shm::{Format, WlShm};
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+        let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+        let seat: WlSeat = globals.bind(&handle, 1..=5, ()).unwrap();
+        let _pointer = seat.get_pointer(&handle, ());
+        let _keyboard = seat.get_keyboard(&handle, ());
+        let surface = compositor.create_surface(&handle, ());
+        let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
+        let toplevel = xdg_surface.get_toplevel(&handle, ());
+        toplevel.set_app_id("pointer-test".into());
+        surface.commit();
+        let mut app = App::default();
+        let _configured = queue.roundtrip(&mut app).unwrap();
+        let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(1280 * 720 * 4).unwrap();
+        let pool = shm.create_pool(file.as_fd(), 1280 * 720 * 4, &handle, ());
+        let buffer = pool.create_buffer(0, 1280, 720, 1280 * 4, Format::Argb8888, &handle, ());
+        surface.attach(Some(&buffer), 0, 0);
+        surface.commit();
+        let _mapped = queue.roundtrip(&mut app).unwrap();
+        let other_surface = compositor.create_surface(&handle, ());
+        let other_xdg = wm_base.get_xdg_surface(&other_surface, &handle, ());
+        let other_toplevel = other_xdg.get_toplevel(&handle, ());
+        other_toplevel.set_app_id("other-window".into());
+        other_surface.commit();
+        let _other_configured = queue.roundtrip(&mut app).unwrap();
+        other_surface.attach(Some(&buffer), 0, 0);
+        other_surface.commit();
+        let _other_mapped = queue.roundtrip(&mut app).unwrap();
+        assert_eq!(
+            app.focused,
+            Some(wayland_client::Proxy::id(&other_surface)),
+            "new window starts focused"
+        );
+        ready.send(()).unwrap();
+        while app.clicks.len() < 2 {
+            let _events = queue.blocking_dispatch(&mut app).unwrap();
+        }
+        let _finished = queue.roundtrip(&mut app).unwrap();
+        assert_eq!(
+            app.focused,
+            Some(wayland_client::Proxy::id(&surface)),
+            "click focuses the window under the pointer"
+        );
+        app
+    }
+
+    #[test]
+    fn mouse_mode_click_reaches_the_surface_under_the_pointer() {
+        use wayland_client::protocol::wl_pointer::ButtonState as PointerState;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || run_pointer_client(client, &sender));
+        let began = Instant::now();
+        let mut sent = false;
+        while !client.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "pointer client timed out"
+            );
+            let _events = display.dispatch_clients(&mut compositor).unwrap();
+            if !sent && receiver.try_recv().is_ok() {
+                let mut pad = SyntheticPad::default();
+                pad.push(Event::Button {
+                    name: ButtonName::Select,
+                    state: ButtonState::Pressed,
+                });
+                pad.push(Event::Tick {
+                    elapsed: Duration::from_secs(2),
+                });
+                pad.push(Event::Button {
+                    name: ButtonName::Select,
+                    state: ButtonState::Released,
+                });
+                for state in [ButtonState::Pressed, ButtonState::Released] {
+                    pad.push(Event::Button {
+                        name: ButtonName::South,
+                        state,
+                    });
+                }
+                route(&mut compositor, &mut pad).unwrap();
+                assert!(
+                    compositor.cursor_location().is_some(),
+                    "mouse mode draws a cursor"
+                );
+                assert_eq!(compositor.visible_notice_text().as_deref(), Some("MOUSE MODE"));
+                sent = true;
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let app = client.join().unwrap();
+        assert_eq!(
+            app.clicks,
+            vec![(0x110, PointerState::Pressed), (0x110, PointerState::Released)]
+        );
+        assert!(app.keys.is_empty(), "A clicks instead of sending Enter");
     }
 
     /// Opens one toplevel and returns every key it receives once it has seen one full key tap.

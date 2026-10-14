@@ -29,6 +29,15 @@ The escape chord consumes every Guide press and release before context routing.
 A context mapping on Guide never fires. Holding Guide for three seconds emits
 Quit once; releasing it before then cancels the hold.
 
+Holding View (Select) for two seconds toggles mouse mode once per hold. A shorter
+press sends its normal mapping on release. Left stick moves the pointer with
+more speed at larger deflections; right stick scrolls. South (A) holds the left
+mouse button for dragging, East (B) holds the right button. Other controller
+buttons are consumed in mouse mode. Clicks focus the window under the pointer.
+A cursor and “Mouse mode” notice show the mode. Exiting mouse mode or losing
+the controller releases held mouse buttons. Holding Guide for three seconds
+still quits in mouse mode.
+
 Speech phrases map to the same key or text actions:
 
 ```toml
