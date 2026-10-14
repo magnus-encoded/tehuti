@@ -80,6 +80,8 @@ pub enum Effect {
     ResetSecretFocus,
     /// Carries out an action from routing.
     Apply(Action),
+    /// A system operation the menu chose.
+    System(crate::menu::Command),
     /// Carries out a plugin decision or its fallback, unless quitting.
     PluginAction(Action),
     PluginRejected(Rejection),
@@ -180,7 +182,7 @@ const fn tick_tasks(elapsed: Duration) -> [Task; 4] {
     ]
 }
 
-fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
+fn event_tasks(event: Event, elapsed: Duration, menu_open: bool) -> Vec<Task> {
     if let Event::Tick { elapsed: tick } = event {
         return tick_tasks(tick).into();
     }
@@ -197,6 +199,11 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
     let mut tasks: Vec<Task> = tick_tasks(elapsed).into();
     tasks.push(Task::Supervise);
     match event {
+        // While the menu is open, presses belong to it alone; releases still unwind held state.
+        Event::Button {
+            name: ButtonName::Record | ButtonName::South,
+            state: ButtonState::Pressed,
+        } if menu_open => tasks.push(Task::Route(event)),
         Event::Button {
             name: ButtonName::Record,
             state,
@@ -224,7 +231,7 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
-        Input::Event { event, elapsed } => event_tasks(event, elapsed),
+        Input::Event { event, elapsed } => event_tasks(event, elapsed, state.core.menu().is_some()),
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
         Input::PluginReply { key, result } => {
@@ -275,6 +282,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             let (next, actions, route) =
                 crate::step_with_plugin(core::mem::take(&mut state.core), &event, active);
             state.core = next;
+            effects.extend(state.core.take_commands().into_iter().map(Effect::System));
             effects.push(Effect::DispatchPlugin {
                 event: event.clone(),
                 route,

@@ -77,6 +77,10 @@ pub struct Compositor {
     previous_tick: Instant,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    log_out_requested: bool,
+    system: Box<dyn crate::system::Executor>,
+    home: Option<std::path::PathBuf>,
+    screenshot_request: Option<std::path::PathBuf>,
     speech_process: Option<crate::speech::SpeechProcess>,
     secret_gate: tehuti_core::secret::SecretConfirmationGate,
     secret_provider: Option<RedactedSecretProvider>,
@@ -142,6 +146,10 @@ impl Compositor {
             previous_tick: Instant::now(),
             plugins: None,
             quit_requested: false,
+            log_out_requested: false,
+            system: Box::new(crate::system::Real),
+            home: std::env::var_os("HOME").map(std::path::PathBuf::from),
+            screenshot_request: None,
             speech_process: None,
             secret_gate: tehuti_core::secret::SecretConfirmationGate::new(),
             secret_provider: Some(RedactedSecretProvider(Box::new(
@@ -265,7 +273,11 @@ impl Compositor {
 
     #[must_use]
     pub fn visible_notice_text(&self) -> Option<String> {
-        self.secret_confirmation_text()
+        self.dispatch
+            .core()
+            .menu()
+            .map(tehuti_core::menu::Menu::text)
+            .or_else(|| self.secret_confirmation_text())
             .or_else(|| {
                 self.secret_notice_until
                     .is_some_and(|until| Instant::now() < until)
@@ -423,6 +435,7 @@ impl Compositor {
             | DispatchEffect::SouthPressed(_)
             | DispatchEffect::ResetSecretFocus
             | DispatchEffect::Apply(_)
+            | DispatchEffect::System(_)
             | DispatchEffect::PluginAction(_)
             | DispatchEffect::PluginRejected(_)
             | DispatchEffect::Handle(_)
@@ -453,6 +466,7 @@ impl Compositor {
             DispatchEffect::Apply(action) => {
                 self.apply(&action);
             }
+            DispatchEffect::System(command) => self.run_system(command),
             DispatchEffect::PluginAction(action) => {
                 self.apply_plugin_action(&action);
             }
@@ -510,6 +524,79 @@ impl Compositor {
     #[must_use]
     pub const fn quit_requested(&self) -> bool {
         self.quit_requested
+    }
+
+    /// The menu asked to end the login session (exit status 21) rather than restart Tehuti.
+    #[must_use]
+    pub const fn log_out_requested(&self) -> bool {
+        self.log_out_requested
+    }
+
+    /// Replaces the system executor; tests use a fake so nothing real runs.
+    pub fn set_system_executor(&mut self, executor: Box<dyn crate::system::Executor>) {
+        self.system = executor;
+    }
+
+    /// Sets the home directory that screenshots are saved under.
+    pub fn set_home(&mut self, home: Option<std::path::PathBuf>) {
+        self.home = home;
+    }
+
+    /// Carries out a command chosen in the system menu.
+    fn run_system(&mut self, command: tehuti_core::menu::Command) {
+        use tehuti_core::menu::Command;
+        match command {
+            Command::Screenshot => {
+                let seconds = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_secs());
+                match &self.home {
+                    Some(home) => {
+                        self.screenshot_request = Some(crate::system::screenshot_path(home, seconds));
+                    }
+                    None => self.show_notice("SCREENSHOT FAILED"),
+                }
+            }
+            Command::Lock => match self.system.locker() {
+                Some(locker) => {
+                    if let Err(error) = self.system.spawn(&locker, &[]) {
+                        tracing::warn!(%error, "locker failed to start");
+                        self.show_notice("LOCK FAILED");
+                    }
+                }
+                None => self.show_notice("LOCK NOT AVAILABLE"),
+            },
+            Command::LogOut => {
+                self.log_out_requested = true;
+                self.apply(&Action::Quit);
+            }
+            Command::Restart => self.apply(&Action::Quit),
+            Command::Reboot => self.spawn_systemctl("reboot", "REBOOT FAILED"),
+            Command::PowerOff => self.spawn_systemctl("poweroff", "POWER OFF FAILED"),
+        }
+    }
+
+    fn spawn_systemctl(&mut self, verb: &str, failure: &str) {
+        if let Err(error) = self.system.spawn("systemctl", &[verb]) {
+            tracing::warn!(%error, verb, "systemctl failed to start");
+            self.show_notice(failure);
+        }
+    }
+
+    /// Takes the pending screenshot request: the file the backend should save the next frame to.
+    pub const fn take_screenshot_request(&mut self) -> Option<std::path::PathBuf> {
+        self.screenshot_request.take()
+    }
+
+    /// Records the outcome of a screenshot the backend captured.
+    pub fn screenshot_saved(&mut self, result: &std::io::Result<()>) {
+        match result {
+            Ok(()) => self.show_notice("SCREENSHOT SAVED"),
+            Err(error) => {
+                tracing::warn!(%error, "screenshot failed");
+                self.show_notice("SCREENSHOT FAILED");
+            }
+        }
     }
 
     /// Requests a one-use controller confirmation for the focused surface.

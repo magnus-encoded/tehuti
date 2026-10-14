@@ -70,6 +70,7 @@ impl World {
                     | Effect::SouthPressed(_)
                     | Effect::ResetSecretFocus
                     | Effect::Apply(_)
+                    | Effect::System(_)
                     | Effect::PluginAction(_)
                     | Effect::PluginRejected(_)
                     | Effect::SpeechFailed { .. }
@@ -469,4 +470,101 @@ fn missing_or_mismatched_reply_aborts_only_the_waiting_frame() {
             state = next;
         }
     }
+}
+
+fn button(name: ButtonName, state: ButtonState) -> Input {
+    Input::Event {
+        event: Event::Button { name, state },
+        elapsed: Duration::from_millis(16),
+    }
+}
+
+fn menu_open(world: &mut World) -> State {
+    let mut state = world.run(State::default(), button(ButtonName::Guide, ButtonState::Pressed));
+    state = world.run(
+        state,
+        Input::Event {
+            event: Event::Tick {
+                elapsed: Duration::from_secs(3),
+            },
+            elapsed: Duration::ZERO,
+        },
+    );
+    assert!(state.core().menu().is_some());
+    world.trace.clear();
+    state
+}
+
+#[test]
+fn choosing_an_item_emits_one_system_effect() {
+    for (downs, command) in [
+        (1, crate::menu::Command::Screenshot),
+        (3, crate::menu::Command::LogOut),
+        (4, crate::menu::Command::Restart),
+        (5, crate::menu::Command::Reboot),
+        (6, crate::menu::Command::PowerOff),
+    ] {
+        let mut world = World::default();
+        let mut state = menu_open(&mut world);
+        for _ in 0..downs {
+            state = world.run(state, button(ButtonName::DpadDown, ButtonState::Pressed));
+        }
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::System(_)))
+        );
+        state = world.run(state, button(ButtonName::South, ButtonState::Pressed));
+        let systems: Vec<_> = world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::System(_)))
+            .collect();
+        assert_eq!(systems, vec![&Effect::System(command)]);
+        assert!(state.core().menu().is_none());
+    }
+}
+
+#[test]
+fn an_open_menu_keeps_south_and_record_from_secrets_and_speech() {
+    let mut world = World {
+        secret_consumes: true,
+        ..World::default()
+    };
+    let state = menu_open(&mut world);
+    for name in [ButtonName::South, ButtonName::Record] {
+        let next = world.run(state.clone(), button(name, ButtonState::Pressed));
+        assert!(
+            !world.trace.iter().any(|effect| matches!(
+                effect,
+                Effect::ConfirmSecret(_) | Effect::SouthPressed(_) | Effect::SpeechCommand(_)
+            )),
+            "{name:?} press reached secrets or speech"
+        );
+        assert!(!world.trace.contains(&Effect::Apply(Action::Key {
+            key: tehuti_protocol::KeyName::Enter
+        })));
+        assert_eq!(next.busy(), 0);
+        world.trace.clear();
+    }
+}
+
+#[test]
+fn close_app_from_the_menu_applies_close_only() {
+    let mut world = World::default();
+    let state = menu_open(&mut world);
+    let _state = world.run(state, button(ButtonName::South, ButtonState::Pressed));
+    let applied: Vec<_> = world
+        .trace
+        .iter()
+        .filter_map(|effect| {
+            if let Effect::Apply(action) = effect {
+                Some(action.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(applied, vec![Action::Close]);
 }

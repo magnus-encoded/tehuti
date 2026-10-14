@@ -15,9 +15,9 @@ The launcher logs to `~/.local/state/tehuti/session.log`, or beneath
 `XDG_STATE_HOME` when set. `TEHUTI_BINARY` and `TEHUTI_CONTEXT_DIRECTORY` can
 select another user binary and context directory. A start failure starts Plasma; the reason is in `~/.local/state/tehuti/session.log`.
 
-For emergency escape, hold Guide+Start together for three seconds to switch to
-Plasma in the same login (Tehuti exit status 20). Start alone follows the app mapping; the hold
-counts only while both buttons are down. Plasma logout returns to Tehuti. Bind
+Hold Guide for three seconds to open the system menu. Log out stops Tehuti with
+exit status 21; Restart Tehuti stops it with exit status 20. Start follows the
+app mapping and never counts toward the hold. Plasma logout returns to Tehuti. Bind
 `dist/tehuti-switch` to a KDE shortcut or controller button; it calls
 `qdbus org.kde.Shutdown /Shutdown logout`. If qdbus is missing, use Plasma's
 built-in Log Out action. Ctrl+Alt+Backspace ends the login (exit status 21).

@@ -287,13 +287,18 @@ fn connected_surface(device: &mut DrmDevice) -> Result<DrmSurface, Box<dyn Error
 
 impl Tty {
     fn render(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
-        let (framebuffer, notice_drawn) = render::draw(
+        let screenshot = data.compositor.take_screenshot_request();
+        let (framebuffer, notice_drawn, saved) = render::draw(
             &mut self.renderer,
             self.next,
             &self.output,
             &mut self.damage,
             &data.compositor,
+            screenshot.as_deref(),
         )?;
+        if let Some(result) = saved {
+            data.compositor.screenshot_saved(&result);
+        }
         submit(&self.surface, framebuffer, &mut self.modeset)?;
         self.pending = true;
         self.next = !self.next;
