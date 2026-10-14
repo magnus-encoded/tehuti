@@ -58,7 +58,7 @@ impl State {
             }
             return true;
         }
-        if !self.active {
+        if !self.active || matches!(name, ButtonName::Record | ButtonName::Guide | ButtonName::Start) {
             return false;
         }
         let click = match name {
