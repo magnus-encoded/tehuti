@@ -1639,7 +1639,7 @@ mod layout_laws {
 
     proptest! {
         #[test]
-        fn nm_1_nm_2_fullscreen_requests_the_output_size_and_stays_in_the_strip(
+        fn nm_1_nm_2_fullscreen_respects_reserved_output_space_and_stays_in_the_strip(
             config in config_strategy(),
             geometry in geometry_strategy(),
             ops in ops_strategy(),
@@ -1653,8 +1653,8 @@ mod layout_laws {
             let tile = tile_of(&snap, window).cloned().ok_or_else(|| TestCaseError::fail("window lost"))?;
             prop_assert_eq!(tile.mode, TileMode::Fullscreen);
             prop_assert!(tile.fullscreen_requested);
-            prop_assert!(near(tile.requested_client.width, geometry.area.width));
-            prop_assert!(near(tile.requested_client.height, geometry.area.height));
+            prop_assert!(near(tile.requested_client.width, geometry.usable.width));
+            prop_assert!(near(tile.requested_client.height, geometry.usable.height));
             prop_assert_eq!(focused_workspace(&snap).map(|workspace| workspace.columns.len()), columns);
         }
 
@@ -1915,9 +1915,8 @@ mod layout_laws {
         if centring_applies(centring, snap) {
             let geometry = focused_geometry(snap)
                 .filter(|_| focused_column(snap).is_some_and(column_is_normal))
-                // A column wider than the working area is left-aligned per NV.1 [confirm]; any narrower
-                // column, even one wider than the gap-inset area, is centred.
-                .filter(|&(tile, working, _gaps)| tile.width <= working.width + EPSILON);
+                // NV.2 centres columns that fit between the edge gaps.
+                .filter(|&(tile, working, gaps)| fits(tile, working, gaps));
             if let Some((tile, working, _gaps)) = geometry {
                 prop_assert!(
                     centred(tile, working),

@@ -46,6 +46,8 @@ pub(crate) struct Pending {
     remaining: Duration,
     fallback: Vec<Action>,
     permissions: Vec<Permission>,
+    speech: bool,
+    bar_generation: u64,
 }
 
 /// Advances plugin routing using only supplied inputs.
@@ -57,7 +59,7 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Action>, Option<Rejec
             event,
             permissions,
         } => {
-            let fallback = crate::active_context(&state, &event)
+            let fallback: Vec<Action> = crate::active_context(&state, &event)
                 .or_else(|| crate::fallback(&event))
                 .into_iter()
                 .collect();
@@ -71,6 +73,9 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Action>, Option<Rejec
                 .count()
                 >= 256
             {
+                if matches!(event, Event::Speech { .. }) {
+                    state.bar.resolve(&fallback);
+                }
                 return (state, fallback, None);
             }
             let remaining = if matches!(event, Event::Speech { .. }) {
@@ -83,20 +88,12 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Action>, Option<Rejec
                 remaining,
                 fallback,
                 permissions,
+                speech: matches!(event, Event::Speech { .. }),
+                bar_generation: state.bar.generation,
             });
             (state, Vec::new(), None)
         }
-        Input::Reply { key, result } => {
-            let Some(index) = state.pending.iter().position(|pending| pending.key == key) else {
-                return (state, Vec::new(), None);
-            };
-            let pending = state.pending.remove(index);
-            match result.and_then(|actions| validate_actions(actions, &pending.permissions)) {
-                Ok(actions) if !actions.is_empty() => (state, actions, None),
-                Ok(_) => (state, pending.fallback, None),
-                Err(reason) => (state, pending.fallback, Some(Rejection { key, reason })),
-            }
-        }
+        Input::Reply { key, result } => reply(state, key, result),
         Input::Exited { plugin } => {
             let actions = exit(&mut state, plugin);
             (state, actions, None)
@@ -112,6 +109,9 @@ fn exit(state: &mut State, plugin: usize) -> Vec<Action> {
     let mut actions = Vec::new();
     state.pending.retain_mut(|pending| {
         if pending.key.plugin == plugin {
+            if pending.speech && pending.bar_generation == state.bar.generation {
+                state.bar.resolve(&pending.fallback);
+            }
             actions.append(&mut pending.fallback);
             false
         } else {
@@ -126,6 +126,9 @@ pub(crate) fn expire(state: &mut State, elapsed: Duration) -> Vec<Action> {
     state.pending.retain_mut(|pending| {
         pending.remaining = pending.remaining.saturating_sub(elapsed);
         if pending.remaining.is_zero() {
+            if pending.speech && pending.bar_generation == state.bar.generation {
+                state.bar.resolve(&pending.fallback);
+            }
             actions.append(&mut pending.fallback);
             false
         } else {
@@ -158,4 +161,25 @@ pub fn validate_actions(actions: Vec<Action>, permissions: &[Permission]) -> Res
         }
     }
     Ok(actions)
+}
+
+fn reply(
+    mut state: State,
+    key: RequestKey,
+    result: Result<Vec<Action>, String>,
+) -> (State, Vec<Action>, Option<Rejection>) {
+    let Some(index) = state.pending.iter().position(|pending| pending.key == key) else {
+        return (state, Vec::new(), None);
+    };
+    let pending = state.pending.remove(index);
+    let (mut next, actions, rejection) =
+        match result.and_then(|actions| validate_actions(actions, &pending.permissions)) {
+            Ok(actions) if !actions.is_empty() => (state, actions, None),
+            Ok(_) => (state, pending.fallback, None),
+            Err(reason) => (state, pending.fallback, Some(Rejection { key, reason })),
+        };
+    if pending.speech && pending.bar_generation == next.bar.generation {
+        next.bar.resolve(&actions);
+    }
+    (next, actions, rejection)
 }

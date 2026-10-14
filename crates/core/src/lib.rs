@@ -9,9 +9,27 @@ pub struct State {
     guide_held: Option<core::time::Duration>,
     start_held: bool,
     pending: Vec<plugin::Pending>,
+    bar: bar::Bar,
 }
 
 impl State {
+    #[must_use]
+    pub const fn bar(&self) -> &bar::Bar {
+        &self.bar
+    }
+
+    pub fn capture(
+        &mut self,
+        state: speech::SpeechState,
+        input: speech::SpeechInput,
+    ) -> (speech::SpeechState, Vec<speech::SpeechEffect>) {
+        let fresh_press = !state.held;
+        let observation = input.clone();
+        let (next, effects) = speech::speech_step(state, input);
+        self.bar.capture(&observation, &effects, fresh_press);
+        (next, effects)
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -25,6 +43,7 @@ impl State {
             guide_held: None,
             start_held: false,
             pending: Vec::new(),
+            bar: bar::Bar::new(),
         }
     }
 
@@ -62,6 +81,20 @@ pub fn step(state: State, event: &Event) -> (State, Vec<Action>) {
 /// Routes to a plugin in place of the active context after higher layers consume input.
 #[must_use]
 pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Action>, bool) {
+    if !matches!(event, Event::Focus { .. }) {
+        state.bar.event(event);
+    }
+    let (mut next, actions, routed) = route(state, event, plugin_active);
+    if matches!(event, Event::Focus { .. }) {
+        next.bar.event(event);
+    }
+    if matches!(event, Event::Speech { .. }) && !routed {
+        next.bar.resolve(&actions);
+    }
+    (next, actions, routed)
+}
+
+fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Action>, bool) {
     if let Event::Tick { elapsed } = event {
         let mut actions = plugin::expire(&mut state, *elapsed);
         if let Some(mut chord_actions) = escape_chord(&mut state, event) {
@@ -196,3 +229,5 @@ pub mod controller;
 pub mod windows;
 
 pub mod layout;
+
+pub mod bar;

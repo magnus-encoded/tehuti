@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
 use crate::plugin::{Rejection, RequestKey};
-use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState, speech_step};
+use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
@@ -418,6 +418,7 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
         }
         Task::Speech(input) => speech(state, input, effects),
         Task::SpeechEffect(effect) => match effect {
+            SpeechEffect::Interim { .. } => {}
             SpeechEffect::Speech { text, .. } => effects.push(Effect::Handle(Event::Speech { text })),
             SpeechEffect::Failed { session, reason } => {
                 effects.push(Effect::SpeechFailed { session, reason });
@@ -436,7 +437,7 @@ fn speech(state: &mut State, input: SpeechInput, effects: &mut Vec<Effect>) {
     } else {
         None
     };
-    let (next, speech) = speech_step(core::mem::take(&mut state.speech), input);
+    let (next, speech) = state.core.capture(core::mem::take(&mut state.speech), input);
     state.speech = next;
     if let Some((session, text)) = transcript {
         effects.push(Effect::TranscriptReceived {

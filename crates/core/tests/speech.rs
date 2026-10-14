@@ -28,6 +28,7 @@ mod speech {
             Just(SpeechInput::Disconnected),
             Just(SpeechInput::Unavailable),
             Just(SpeechInput::Available),
+            (0u64..100, any::<Text>()).prop_map(|(session, text)| SpeechInput::Interim { session, text }),
             (0u64..100, any::<Text>()).prop_map(|(session, text)| SpeechInput::Transcript { session, text }),
             (0u64..100, proptest::bool::ANY).prop_map(|(session, silent)| SpeechInput::Failed {
                 session,
@@ -59,6 +60,7 @@ mod speech {
                 state = next;
                 for effect in emitted {
                     match effect {
+                        SpeechEffect::Interim { session, .. } => { prop_assert_eq!(active, Some(session)); }
                         SpeechEffect::Start { session } => {
                             prop_assert!(active.is_none());
                             prop_assert!(started.insert(session));

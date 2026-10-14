@@ -56,3 +56,17 @@ or parse, Tehuti keeps the contexts it had and shows a notice naming the file an
 the start of the error; the full error goes to the log. A reload leaves held
 buttons and a speech session in progress untouched. Plugins are not reloaded;
 they restart as processes.
+
+## Voice bar
+
+Every output has a 32 logical pixel bar along its bottom edge. Client windows,
+including fullscreen windows, stay above it. The compositor draws it without
+creating a focusable surface. The left chip names the focused application id,
+or Desktop when no window has focus. A listening chip appears while Record is
+held; interim text replaces it as transcription previews arrive. Release shows
+Transcribing, then the routed action becomes a result chip. Results and errors
+clear after three seconds. Focus changes cancel capture and clear voice feedback.
+
+The clock sits at the right edge. Context, live text, results and errors use
+different dark backgrounds with chevron edges. Text and bar height follow the
+output scale. Existing notices keep their overlay and focus behaviour.

@@ -470,3 +470,67 @@ fn missing_or_mismatched_reply_aborts_only_the_waiting_frame() {
         }
     }
 }
+
+#[test]
+fn voice_bar_follows_capture_routing_and_expiry_through_dispatch() {
+    let mut world = World::default();
+    let mut state = world.run(State::default(), Input::Speech(SpeechInput::Available));
+    state = world.run(state, Input::Speech(SpeechInput::Press));
+    assert_eq!(state.core().bar().segments()[1].text, "Listening…");
+    let preview = Text::new("hello".into()).unwrap();
+    world.trace.clear();
+    state = world.run(
+        state,
+        Input::Speech(SpeechInput::Interim {
+            session: 0,
+            text: preview.clone(),
+        }),
+    );
+    assert_eq!(state.core().bar().segments()[1].text, "hello");
+    assert!(world.trace.is_empty(), "previews stay in core");
+    state = world.run(state, Input::Speech(SpeechInput::Release));
+    assert_eq!(state.core().bar().segments()[1].text, "Transcribing…");
+    state = world.run(
+        state,
+        Input::Speech(SpeechInput::Transcript {
+            session: 0,
+            text: preview,
+        }),
+    );
+    assert_eq!(state.core().bar().segments()[1].text, "No speech mapping");
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: crate::bar::RESULT_LIFETIME,
+        },
+    );
+    assert_eq!(state.core().bar().segments().len(), 1);
+}
+
+#[test]
+fn focus_clears_voice_bar_and_rejects_old_capture_through_dispatch() {
+    let mut world = World::default();
+    let mut state = world.run(State::default(), Input::Speech(SpeechInput::Available));
+    state = world.run(state, Input::Speech(SpeechInput::Press));
+    state = world.run(
+        state,
+        Input::Event {
+            event: focus("new"),
+            elapsed: Duration::ZERO,
+        },
+    );
+    state = world.run(
+        state,
+        Input::Speech(SpeechInput::Interim {
+            session: 0,
+            text: Text::new("stale".into()).unwrap(),
+        }),
+    );
+    assert_eq!(
+        state.core().bar().segments(),
+        vec![crate::bar::Segment {
+            text: "new".into(),
+            tone: crate::bar::Tone::Context,
+        }]
+    );
+}

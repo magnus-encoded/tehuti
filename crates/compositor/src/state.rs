@@ -376,6 +376,7 @@ impl Compositor {
                 tracing::info!(session, transcribe, "speech session stopped");
             }
             tehuti_core::speech::SpeechEffect::Speech { .. }
+            | tehuti_core::speech::SpeechEffect::Interim { .. }
             | tehuti_core::speech::SpeechEffect::Failed { .. } => {}
         }
         self.speech_process.as_mut().is_none_or(|process| {
@@ -879,7 +880,16 @@ impl Compositor {
         self.layout.snapshot()
     }
 
+    #[must_use]
+    pub const fn voice_bar(&self) -> &tehuti_core::bar::Bar {
+        self.dispatch.core().bar()
+    }
+
     /// Updates the layout to the output's logical size and configures its windows.
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "reserve the bar in logical output coordinates"
+    )]
     pub fn fill_output(&mut self) {
         use tehuti_core::layout::{OutputGeometry, OutputId, Rect};
         let size = self.output.as_ref().and_then(|output| {
@@ -903,7 +913,13 @@ impl Compositor {
                 height: size.h,
             },
         );
-        let geometry = OutputGeometry { area, usable: area };
+        let geometry = OutputGeometry {
+            area,
+            usable: Rect {
+                height: (area.height - f64::from(tehuti_core::bar::HEIGHT)).max(1.0),
+                ..area
+            },
+        };
         let result = if self.layout.snapshot().outputs.is_empty() {
             self.layout.add_output(OutputId(0), geometry, None)
         } else {

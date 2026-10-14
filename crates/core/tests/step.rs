@@ -127,7 +127,10 @@ mod step {
                 let (next_routed, routed_actions, sent) = tehuti_core::step_with_plugin(routed, &event, active);
                 let (next_plain, plain_actions) = step(plain, &event);
                 let (next_bare, bare_actions) = step(bare, &event);
-                prop_assert_eq!(&next_routed, &next_plain, "routing to a plugin never changes core state");
+                let focus_event = Event::Focus { app_id: focus.clone(), title: String::new() };
+                let routed_control = step(next_routed.clone(), &focus_event).0;
+                let plain_control = step(next_plain.clone(), &focus_event).0;
+                prop_assert_eq!(routed_control, plain_control, "routing preserves focus, contexts and controller holds after voice feedback clears");
                 if sent {
                     prop_assert!(routed_actions.is_empty(), "an event sent to a plugin never also reaches the context layer");
                     prop_assert!(!bare_actions.iter().any(|action| matches!(action, Action::Key { .. } | Action::Quit)), "only events no layer above the context consumed reach a plugin");

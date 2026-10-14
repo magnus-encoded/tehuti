@@ -105,7 +105,9 @@ impl SpeechProcess {
             SpeechEffect::Stop { session, transcribe } => {
                 serde_json::json!({"stop": session, "transcribe": transcribe})
             }
-            SpeechEffect::Speech { .. } | SpeechEffect::Failed { .. } => return Ok(()),
+            SpeechEffect::Interim { .. } | SpeechEffect::Speech { .. } | SpeechEffect::Failed { .. } => {
+                return Ok(());
+            }
         };
         let bytes = serde_json::to_vec(&value)?;
         let running = self
@@ -225,6 +227,12 @@ fn parse_reply(bytes: &[u8]) -> Option<SpeechInput> {
         };
         return Some(SpeechInput::Failed { session, reason });
     }
+    if let Some(text) = value.get("interim").and_then(serde_json::Value::as_str) {
+        return Some(SpeechInput::Interim {
+            session,
+            text: Text::new(text.to_owned()).ok()?,
+        });
+    }
     let text = Text::new(value.get("text")?.as_str()?.to_owned()).ok()?;
     Some(SpeechInput::Transcript { session, text })
 }
@@ -232,6 +240,19 @@ fn parse_reply(bytes: &[u8]) -> Option<SpeechInput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interim_reply_preserves_text_and_rejects_invalid_boundaries() {
+        assert_eq!(
+            parse_reply(br#"{"session":7,"interim":"Live Words"}"#),
+            Some(SpeechInput::Interim {
+                session: 7,
+                text: Text::new("Live Words".into()).unwrap()
+            })
+        );
+        assert_eq!(parse_reply(br#"{"session":7,"interim":"bad\u0000"}"#), None);
+        assert_eq!(parse_reply(br#"{"session":7,"interim":"hi","extra":true}"#), None);
+    }
 
     #[test]
     fn sidecar_error_reply_is_a_failed_transcript() {

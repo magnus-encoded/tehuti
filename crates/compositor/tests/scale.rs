@@ -80,7 +80,12 @@ mod scale {
         compositor.space.map_output(&output, (0, 0));
         compositor.output = Some(output);
         compositor.fill_output();
-        let area = compositor.layout_snapshot().outputs[0].geometry.area;
+        let geometry = compositor.layout_snapshot().outputs[0].geometry;
+        let area = geometry.area;
+        assert_eq!(
+            geometry.usable.height, 1048.0,
+            "the bar reserves 32 logical pixels"
+        );
         assert_eq!(
             (area.x, area.y, area.width, area.height),
             (0.0, 0.0, 1920.0, 1080.0)
