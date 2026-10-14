@@ -1,5 +1,7 @@
 //! Integer output scale from `TEHUTI_SCALE`, applied to a Smithay output.
 
+use std::ffi::OsStr;
+
 use smithay::{
     output::{Mode, Output, Scale},
     utils::{Logical, Physical, Size},
@@ -18,15 +20,21 @@ pub const fn default_scale(mode_width: i32) -> i32 {
 ///
 /// # Errors
 ///
-/// Returns the default scale and a warning when the value is not a positive integer.
-pub fn choose(value: Option<&str>, mode_width: i32) -> Result<i32, (i32, String)> {
+/// Returns the default scale and a warning when the value is not a positive
+/// integer, including when it is not valid Unicode.
+pub fn choose(value: Option<&OsStr>, mode_width: i32) -> Result<i32, (i32, String)> {
     let fallback = default_scale(mode_width);
-    match value.map(|text| (text, text.trim().parse::<i32>())) {
-        None => Ok(fallback),
-        Some((_, Ok(scale))) if scale > 0 => Ok(scale),
-        Some((text, _)) => Err((
+    let Some(value) = value else {
+        return Ok(fallback);
+    };
+    match value.to_str().map(|text| text.trim().parse::<i32>()) {
+        Some(Ok(scale)) if scale > 0 => Ok(scale),
+        _ => Err((
             fallback,
-            format!("TEHUTI_SCALE={text:?} is not a positive integer; using {fallback}"),
+            format!(
+                "TEHUTI_SCALE=\"{}\" is not a positive integer; using {fallback}",
+                value.display()
+            ),
         )),
     }
 }
@@ -34,7 +42,7 @@ pub fn choose(value: Option<&str>, mode_width: i32) -> Result<i32, (i32, String)
 /// Reads `TEHUTI_SCALE`, warning and falling back to the default on invalid values.
 #[must_use]
 pub fn from_env(mode_width: i32) -> i32 {
-    let value = std::env::var("TEHUTI_SCALE").ok();
+    let value = std::env::var_os("TEHUTI_SCALE");
     choose(value.as_deref(), mode_width).unwrap_or_else(|(scale, warning)| {
         tracing::warn!("{warning}");
         scale

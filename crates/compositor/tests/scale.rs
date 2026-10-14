@@ -17,8 +17,8 @@ mod scale {
 
     #[test]
     fn valid_values_override_the_default() {
-        assert_eq!(scale::choose(Some("1"), 3840), Ok(1));
-        assert_eq!(scale::choose(Some("3"), 1920), Ok(3));
+        assert_eq!(scale::choose(Some("1".as_ref()), 3840), Ok(1));
+        assert_eq!(scale::choose(Some("3".as_ref()), 1920), Ok(3));
         assert_eq!(scale::choose(None, 3840), Ok(2));
     }
 
@@ -31,10 +31,19 @@ mod scale {
             ("1.5", 1920, 1),
             ("", 3840, 2),
         ] {
-            let (scale, warning) = scale::choose(Some(value), width).unwrap_err();
+            let (scale, warning) = scale::choose(Some(value.as_ref()), width).unwrap_err();
             assert_eq!(scale, fallback, "{value}");
             assert!(warning.contains("TEHUTI_SCALE"), "{warning}");
         }
+    }
+
+    #[test]
+    fn non_unicode_values_fall_back_with_a_warning() {
+        use std::os::unix::ffi::OsStrExt;
+        let value = std::ffi::OsStr::from_bytes(b"2\xff");
+        let (scale, warning) = scale::choose(Some(value), 3840).unwrap_err();
+        assert_eq!(scale, 2);
+        assert!(warning.contains("TEHUTI_SCALE"), "{warning}");
     }
 
     proptest! {
