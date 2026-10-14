@@ -684,6 +684,30 @@ proptest! {
     }
 
     #[test]
+    fn full_stick_motion_does_not_depend_on_tick_partition(
+        contexts in arbitrary_contexts(),
+        parts in prop::collection::vec(1_u64..900_000, 2..80),
+        negative in prop::bool::ANY,
+    ) {
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let axis = if negative { -1000 } else { 1000 };
+        let state = world.run(state, Input::Sticks(Sticks { left: (axis, 0), right: (0, 0) }));
+        let mut split = state.clone();
+        world.trace.clear();
+        for nanos in &parts {
+            split = world.run(split, Input::Tick { elapsed: Duration::from_nanos(*nanos) });
+        }
+        let split_distance: i64 = world.trace.iter().filter_map(|effect| if let Effect::MovePointer { x, y: 0 } = effect { Some(i64::from(*x)) } else { None }).sum();
+        world.trace.clear();
+        let _state = world.run(state, Input::Tick { elapsed: Duration::from_nanos(parts.iter().sum()) });
+        let whole_distance: i64 = world.trace.iter().filter_map(|effect| if let Effect::MovePointer { x, y: 0 } = effect { Some(i64::from(*x)) } else { None }).sum();
+        prop_assert_ne!(whole_distance, 0, "a held stick moves between submillisecond wakeups");
+        prop_assert_eq!(split_distance, whole_distance, "input wakeups cannot change pointer speed");
+    }
+
+    #[test]
     fn stick_motion_is_precise_at_small_deflections_and_accelerates(
         contexts in arbitrary_contexts(),
         small in 1_i16..400,

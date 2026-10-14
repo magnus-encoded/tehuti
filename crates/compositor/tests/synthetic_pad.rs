@@ -740,6 +740,43 @@ mod synthetic_pad {
         route(compositor, &mut pad).unwrap();
     }
 
+    proptest! {
+        #[test]
+        #[expect(clippy::float_arithmetic, reason = "compares Smithay pointer coordinates")]
+        fn held_stick_moves_uniformly_at_frame_boundaries(
+            frame_nanos in prop::sample::select(vec![16_666_667_u64, 6_944_444]),
+            wakeups in prop::collection::vec(1_u64..900_000, 1..8),
+            negative in prop::bool::ANY,
+        ) {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            toggle_pointer_mode(&mut compositor);
+            compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+                left: (if negative { -1000 } else { 1000 }, 0),
+                right: (0, 0),
+            });
+            let sign = if negative { -1.0 } else { 1.0 };
+            let expected = Duration::from_nanos(frame_nanos).as_secs_f64() * 1000.0 * sign;
+            for frame in 0..6 {
+                let before = compositor.cursor_location().unwrap();
+                let mut elapsed = 0_u64;
+                if frame % 2 == 0 {
+                    for nanos in &wakeups {
+                        compositor.handle(&Event::Tick { elapsed: Duration::from_nanos(*nanos) });
+                        elapsed = elapsed.saturating_add(*nanos);
+                    }
+                }
+                compositor.handle(&Event::Tick {
+                    elapsed: Duration::from_nanos(frame_nanos.saturating_sub(elapsed)),
+                });
+                let after = compositor.cursor_location().unwrap();
+                prop_assert!((after.0 - before.0 - expected).abs() < 0.000_001,
+                    "each frame covers the same distance despite intervening input wakeups");
+                prop_assert!((after.1 - before.1).abs() < f64::EPSILON, "horizontal motion keeps y fixed");
+            }
+        }
+    }
+
     #[test]
     fn right_stick_scroll_targets_keyboard_focus_and_mouse_mode_targets_pointer_focus() {
         for mouse_mode in [false, true] {

@@ -25,7 +25,7 @@ use smithay::{
 };
 use std::rc::Rc;
 use tehuti::state::Compositor;
-use tracing::warn;
+use tracing::{info, trace, warn};
 
 struct Tty {
     keyboard: tehuti::backend::EscapeKeyboard,
@@ -63,8 +63,19 @@ pub(crate) fn insert(
     let flip_stop = event_loop.get_signal();
     let _drm_token = event_loop
         .handle()
-        .insert_source(drm_notifier, move |event, _, _| match event {
-            DrmEvent::VBlank(_) => flip_tty.borrow_mut().pending = false,
+        .insert_source(drm_notifier, move |event, _, data| match event {
+            DrmEvent::VBlank(metadata) => {
+                trace!(?metadata, "DRM vblank");
+                let mut backend = flip_tty.borrow_mut();
+                backend.pending = false;
+                if data.seat_active
+                    && backend.device.is_active()
+                    && let Err(error) = backend.render(data)
+                {
+                    warn!(%error, "DRM frame failed");
+                    flip_stop.stop();
+                }
+            }
             DrmEvent::Error(error) => {
                 warn!(%error, "DRM event failed");
                 flip_stop.stop();
@@ -226,6 +237,7 @@ fn create_output(
     let (mut device, drm_notifier) = DrmDevice::new(device_fd.clone(), false)?;
     let surface = connected_surface(&mut device)?;
     let mode = surface.pending_mode();
+    info!(?mode, "DRM output mode; frames follow vblank");
     let mut renderer = render::create(&device_fd, &surface)?;
     render::advertise(&mut renderer, display, compositor)?;
     let output = drm_output(display, mode);
@@ -287,6 +299,8 @@ fn connected_surface(device: &mut DrmDevice) -> Result<DrmSurface, Box<dyn Error
 
 impl Tty {
     fn render(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
+        crate::advance_time(data);
+        let started = std::time::Instant::now();
         let screenshot = data.compositor.take_screenshot_request();
         let (framebuffer, notice_drawn, saved) = render::draw(
             &mut self.renderer,
@@ -299,7 +313,9 @@ impl Tty {
         if let Some(result) = saved {
             data.compositor.screenshot_saved(&result);
         }
+        trace!(elapsed = ?started.elapsed(), "DRM frame drawn");
         submit(&self.surface, framebuffer, &mut self.modeset)?;
+        trace!(elapsed = ?started.elapsed(), "DRM frame committed");
         self.pending = true;
         self.next = !self.next;
         if notice_drawn && data.compositor.secret_confirmation_text().is_some() {
