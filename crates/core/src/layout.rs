@@ -993,8 +993,16 @@ impl Layout {
             || config.always_center_single_column
                 && self.outputs[output].workspaces[active].columns.len() == 1;
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+        let fullscreen = {
+            let focused = &self.outputs[output].workspaces[active].columns[column];
+            focused.tiles[focused.focused].mode == TileMode::Fullscreen
+        };
+        #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let view = &mut self.outputs[output].workspaces[active].view;
-        if width > working.width.sub(2.0_f64.mul(config.gaps)) {
+        if fullscreen {
+            // The tile starts at the output edge, so neighbours are fully off screen.
+            *view = working.x.add(position);
+        } else if width > working.width.sub(2.0_f64.mul(config.gaps)) {
             *view = position.sub(config.gaps);
         } else if centered {
             *view = position.add(width.div(2.0_f64)).sub(working.width.div(2.0_f64));
@@ -1906,6 +1914,9 @@ impl Output {
         }
     }
     fn column_width(&self, column: &Column) -> f64 {
+        if column.tiles.iter().any(|tile| tile.mode == TileMode::Fullscreen) {
+            return self.geometry.area.width;
+        }
         column
             .width
             .map_or_else(

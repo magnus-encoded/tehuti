@@ -1637,7 +1637,68 @@ mod layout_laws {
 
     // NM: fullscreen and maximize.
 
+    fn on_screen(rect: Rect, geometry: OutputGeometry) -> bool {
+        rect.x < geometry.area.width
+            && rect.x + rect.width > 0.0
+            && rect.y < geometry.area.height
+            && rect.y + rect.height > 0.0
+    }
+
+    #[test]
+    fn fullscreen_left_column_puts_the_right_column_off_screen() -> Result<(), TestCaseError> {
+        let geometry = OutputGeometry {
+            area: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 600.0,
+            },
+            usable: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 600.0,
+            },
+        };
+        let mut world = World::single(LayoutConfig::default(), geometry)?;
+        let left = world.open()?;
+        let right = world.open()?;
+        world.focus_column(0);
+        world.apply(Command::ToggleFullscreen);
+        let snap = world.snap();
+        let covering = tile_of(&snap, left).ok_or_else(|| TestCaseError::fail("left lost"))?;
+        prop_assert!(near(covering.tile.x, 0.0) && near(covering.tile.width, 1000.0));
+        let other = tile_of(&snap, right).ok_or_else(|| TestCaseError::fail("right lost"))?;
+        prop_assert!(!on_screen(other.tile, geometry));
+        world.apply(Command::ToggleFullscreen);
+        let restored = world.snap();
+        prop_assert!(tile_of(&restored, right).is_some_and(|tile| on_screen(tile.tile, geometry)));
+        Ok(())
+    }
+
     proptest! {
+        #[test]
+        fn nm_12_a_fullscreen_tile_is_the_only_visible_tile_on_its_output(
+            config in config_strategy(),
+            geometry in geometry_strategy(),
+            ops in ops_strategy(),
+        ) {
+            let mut world = World::single(config, geometry)?;
+            world.run(&ops)?;
+            let window = world.open()?;
+            world.apply(Command::ToggleFullscreen);
+            let snap = world.snap();
+            for output in &snap.outputs {
+                for workspace in output.workspaces.iter().skip(output.active_workspace).take(1) {
+                    for tile in workspace.columns.iter().flat_map(|column| &column.tiles) {
+                        if tile.mode != TileMode::MaximizedToEdges {
+                            prop_assert_eq!(on_screen(tile.tile, geometry), tile.window == window);
+                        }
+                    }
+                }
+            }
+        }
+
         #[test]
         fn nm_1_nm_2_fullscreen_requests_the_output_size_and_stays_in_the_strip(
             config in config_strategy(),
