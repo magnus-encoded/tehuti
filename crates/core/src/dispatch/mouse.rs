@@ -101,8 +101,8 @@ impl State {
                 effects.push(Effect::MouseMode(self.active));
             }
         }
+        let millis = i32::try_from(elapsed.as_millis().min(100)).unwrap_or(100);
         if self.active {
-            let millis = i32::try_from(elapsed.as_millis().min(100)).unwrap_or(100);
             let motion = |axis: i16| {
                 let axis = i32::from(axis).clamp(-1000, 1000);
                 axis.saturating_mul(axis.abs()).saturating_mul(millis)
@@ -114,19 +114,20 @@ impl State {
                     y: motion(y),
                 });
             }
-            let (scroll_x, scroll_y) = self.sticks.right;
-            if scroll_x != 0 || scroll_y != 0 {
-                effects.push(Effect::Scroll {
-                    x: i32::from(scroll_x)
-                        .clamp(-1000, 1000)
-                        .saturating_mul(millis)
-                        .saturating_mul(250),
-                    y: i32::from(scroll_y)
-                        .clamp(-1000, 1000)
-                        .saturating_mul(millis)
-                        .saturating_mul(250),
-                });
-            }
+        }
+        let (scroll_x, scroll_y) = self.sticks.right;
+        let scroll_x = if self.active { scroll_x } else { 0 };
+        if scroll_x != 0 || scroll_y != 0 {
+            effects.push(Effect::Scroll {
+                x: i32::from(scroll_x)
+                    .clamp(-1000, 1000)
+                    .saturating_mul(millis)
+                    .saturating_mul(250),
+                y: i32::from(scroll_y)
+                    .clamp(-1000, 1000)
+                    .saturating_mul(millis)
+                    .saturating_mul(250),
+            });
         }
     }
 

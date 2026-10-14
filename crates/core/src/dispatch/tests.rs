@@ -627,6 +627,47 @@ proptest! {
     }
 }
 
+proptest! {
+    #[test]
+    fn right_stick_scrolls_only_vertically_outside_mouse_mode(
+        contexts in arbitrary_contexts(),
+        left in (any::<i16>(), any::<i16>()),
+        right in (any::<i16>(), prop_oneof![Just(0_i16), any::<i16>()]),
+    ) {
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), Input::Sticks(Sticks { left, right }));
+        world.trace.clear();
+        let _state = world.run(state, Input::Tick { elapsed: Duration::from_millis(10) });
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::MovePointer { .. })), "normal mode keeps the pointer still");
+        let scrolls: Vec<_> = world.trace.iter().filter_map(|effect| {
+            if let Effect::Scroll { x, y } = effect { Some((*x, *y)) } else { None }
+        }).collect();
+        if right.1 == 0 {
+            prop_assert!(scrolls.is_empty());
+        } else {
+            prop_assert_eq!(scrolls.len(), 1);
+            prop_assert_eq!(scrolls[0].0, 0);
+            prop_assert_eq!(scrolls[0].1.signum(), i32::from(right.1).signum());
+        }
+    }
+
+    #[test]
+    fn right_stick_click_keeps_its_context_binding_while_scrolling(
+        mut contexts in arbitrary_contexts(),
+        vertical in 1_i16..1001,
+    ) {
+        contexts.insert(0, tehuti_protocol::parse_context("app_id = 'mouse-test'\n[buttons.right_stick]\nkey = 'tab'").unwrap());
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), Input::Sticks(Sticks { left: (0, 0), right: (0, vertical) }));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_millis(10) });
+        prop_assert!(world.trace.iter().any(|effect| matches!(effect, Effect::Scroll { .. })), "vertical deflection scrolls");
+        world.trace.clear();
+        let state = world.run(state, pad_button(ButtonName::RightStick, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(ButtonName::RightStick, ButtonState::Released));
+        prop_assert!(world.trace.contains(&Effect::Apply(Action::Key { key: tehuti_protocol::KeyName::Tab })), "stick click sends the context key");
+    }
+}
+
 #[test]
 fn entering_mouse_mode_cancels_recording_before_record_release_is_swallowed() {
     let mut world = World::default();
