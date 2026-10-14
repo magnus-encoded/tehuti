@@ -28,7 +28,6 @@ use smithay::{
             pixman::PixmanRenderer,
         },
     },
-    desktop::space::render_output,
     output::Output,
     reexports::{drm::control::framebuffer, wayland_server::DisplayHandle},
 };
@@ -240,17 +239,8 @@ where
             )?,
         );
     }
-    let frame = render_output::<_, MemoryRenderBufferRenderElement<R>, _, _>(
-        output,
-        renderer,
-        &mut target,
-        1.0,
-        0,
-        [&compositor.space],
-        &elements,
-        damage,
-        [0.0, 0.0, 0.0, 1.0],
-    )?;
+    let frame =
+        tehuti::wallpaper::render_output(output, renderer, &mut target, compositor, &elements, damage)?;
     frame.sync.wait()?;
     Ok(notice_included && frame.damage.is_some())
 }
