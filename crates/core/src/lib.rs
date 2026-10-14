@@ -166,11 +166,9 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         if text.as_str().trim().is_empty() {
             return None;
         }
-        return state
-            .contexts
-            .iter()
-            .find(|context| Some(context.app_id()) == state.focused_app_id.as_deref())
+        return focused_context(state)
             .and_then(|context| context.speech_action(text.as_str()))
+            .or_else(|| global_context(state).and_then(|context| context.speech_action(text.as_str())))
             .or_else(|| {
                 tehuti_protocol::Text::new("NO SPEECH MAPPING".into())
                     .ok()
@@ -184,11 +182,23 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
     else {
         return None;
     };
+    focused_context(state)
+        .and_then(|context| context.action_for(*name))
+        .or_else(|| global_context(state).and_then(|context| context.action_for(*name)))
+}
+
+/// App id of the global context, whose mappings apply wherever the focused context has none.
+pub const GLOBAL_APP_ID: &str = "*";
+
+fn focused_context(state: &State) -> Option<&Context> {
     state
         .contexts
         .iter()
         .find(|context| Some(context.app_id()) == state.focused_app_id.as_deref())
-        .and_then(|context| context.action_for(*name))
+}
+
+fn global_context(state: &State) -> Option<&Context> {
+    state.contexts.iter().find(|context| context.app_id() == GLOBAL_APP_ID)
 }
 
 const fn fallback(_event: &Event) -> Option<Action> {
