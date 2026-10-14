@@ -594,7 +594,7 @@ mod synthetic_pad {
             vec![(
                 wayland_client::Proxy::id(target),
                 wayland_client::protocol::wl_pointer::Axis::VerticalScroll,
-                2.5
+                7.5
             )]
         );
         assert_eq!(app.focused, Some(wayland_client::Proxy::id(other_surface)));

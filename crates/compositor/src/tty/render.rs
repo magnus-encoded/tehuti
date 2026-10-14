@@ -243,7 +243,7 @@ where
     if let Some(element) = bar.element(renderer, output, compositor.voice_bar(), &clock)? {
         elements.push(element);
     }
-    if let Some(location) = compositor.cursor_location() {
+    if let Some(location) = compositor.cursor_on(output) {
         elements.insert(
             0,
             MemoryRenderBufferRenderElement::from_buffer(
