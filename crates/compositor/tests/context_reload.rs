@@ -4,7 +4,7 @@
 mod context_reload {
     use core::time::Duration;
     use proptest::prelude::*;
-    use smithay::reexports::wayland_server::Display;
+    use smithay::reexports::{calloop, wayland_server::Display};
     use std::time::Instant;
     use tehuti::{
         contexts::{self, DEBOUNCE, Debounce},
@@ -65,6 +65,129 @@ mod context_reload {
         write(directory.path(), "broken", "app_id = ");
         write(directory.path(), "one", "app_id = 'one'\n[buttons]");
         assert_eq!(contexts::load(directory.path()).len(), 1);
+    }
+
+    #[test]
+    fn unreadable_directories_fail_the_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "one", "app_id = 'one'\n[buttons]");
+        std::os::unix::fs::symlink("loop", directory.path().join("loop")).unwrap();
+        let error = contexts::try_load(directory.path()).unwrap_err();
+        assert_eq!(error.path, directory.path().join("loop"));
+        assert!(contexts::try_load(&directory.path().join("missing")).is_err());
+        assert_eq!(
+            contexts::load(directory.path()).len(),
+            0,
+            "startup logs the listing error"
+        );
+    }
+
+    #[test]
+    fn toml_errors_keep_location_and_message() {
+        let error = tehuti_protocol::parse_context("app_id = 'one'\n[buttons]\nsouth = { key = 'nope' }")
+            .unwrap_err();
+        let short = contexts::short_error(&error);
+        assert!(short.starts_with("L3 C"), "{short} from {error}");
+        assert!(short.len() > "L3 C9 ".len(), "{short} from {error}");
+        assert!(short.chars().count() <= 40);
+        assert_eq!(contexts::short_error("plain failure\nmore"), "plain failure");
+    }
+
+    #[test]
+    fn only_context_files_and_top_level_directories_are_relevant() {
+        assert!(contexts::relevant(Some(b"context.toml"), false, true));
+        assert!(contexts::relevant(Some(b"context.toml"), false, false));
+        assert!(contexts::relevant(Some(b"foot"), true, true));
+        assert!(!contexts::relevant(Some(b"foot"), true, false));
+        assert!(!contexts::relevant(Some(b"context.toml.swp"), false, false));
+        assert!(!contexts::relevant(Some(b"notes.txt"), false, true));
+        assert!(!contexts::relevant(None, true, true));
+    }
+
+    struct Looped {
+        watch: Option<contexts::ContextWatch>,
+    }
+
+    fn dispatch_until(
+        event_loop: &mut calloop::EventLoop<'static, Looped>,
+        looped: &mut Looped,
+        limit: Duration,
+        mut done: impl FnMut(&mut Looped) -> bool,
+    ) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < limit {
+            event_loop.dispatch(Duration::from_millis(20), looped).unwrap();
+            if done(looped) {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn a_file_write_reloads_through_the_event_loop() {
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "one", "app_id = 'one'\n[buttons]");
+        let mut event_loop: calloop::EventLoop<'static, Looped> = calloop::EventLoop::try_new().unwrap();
+        let watch =
+            contexts::ContextWatch::insert(&event_loop.handle(), directory.path(), |looped: &mut Looped| {
+                looped.watch.as_mut()
+            })
+            .unwrap();
+        let mut looped = Looped { watch: Some(watch) };
+        std::fs::write(directory.path().join("notes.txt"), "ignored").unwrap();
+        let far = || Instant::now().checked_add(DEBOUNCE).unwrap();
+        assert!(
+            !dispatch_until(
+                &mut event_loop,
+                &mut looped,
+                Duration::from_millis(500),
+                |looped| { looped.watch.as_mut().unwrap().poll(far()).is_some() }
+            ),
+            "unrelated files do not reload"
+        );
+        write(directory.path(), "one", "app_id = 'renamed'\n[buttons]");
+        let mut reloaded = None;
+        assert!(dispatch_until(
+            &mut event_loop,
+            &mut looped,
+            Duration::from_secs(5),
+            |looped| {
+                reloaded = looped.watch.as_mut().unwrap().poll(far());
+                reloaded.is_some()
+            }
+        ));
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.reload_contexts(reloaded.unwrap());
+        assert_eq!(app_ids(&compositor), ["renamed"]);
+    }
+
+    #[test]
+    fn a_speech_session_survives_a_reload() {
+        use tehuti_core::speech::SpeechInput;
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "one", "app_id = 'one'\n[buttons]");
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(contexts::load(directory.path()));
+        compositor.speech_input(SpeechInput::Available);
+        compositor.speech_input(SpeechInput::Press);
+        compositor.reload_contexts(contexts::try_load(directory.path()));
+        compositor.speech_input(SpeechInput::Release);
+        assert_eq!(
+            compositor.visible_notice_text().as_deref(),
+            Some("CONTEXTS RELOADED")
+        );
+        compositor.speech_input(SpeechInput::Transcript {
+            session: 0,
+            text: tehuti_protocol::Text::new("unmapped".into()).unwrap(),
+        });
+        assert_eq!(
+            compositor.visible_notice_text().as_deref(),
+            Some("NO SPEECH MAPPING"),
+            "the transcript for the session started before the reload is delivered"
+        );
     }
 
     #[test]

@@ -1,10 +1,13 @@
 //! Loads independent context files, containing failures to each file.
 
+use core::mem::MaybeUninit;
 use core::time::Duration;
+use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, generic::Generic};
 use std::{
     io::{self, Read},
     os::{fd::OwnedFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
+    rc::Rc,
     time::Instant,
 };
 
@@ -18,8 +21,12 @@ use tehuti_protocol::{Context, parse_context};
 /// A broken file is skipped with a warning so startup always gets the valid contexts.
 #[must_use]
 pub fn load(directory: &Path) -> Vec<Context> {
+    let paths = context_paths(directory).unwrap_or_else(|error| {
+        tracing::warn!(%error, "context directory unavailable");
+        Vec::new()
+    });
     let mut contexts = Vec::new();
-    for path in context_paths(directory) {
+    for path in paths {
         match load_one(&path) {
             Ok(Some(context)) => contexts.push(context),
             Ok(None) => {}
@@ -36,7 +43,7 @@ pub fn load(directory: &Path) -> Vec<Context> {
 /// Names the first file that cannot be read or parsed.
 pub fn try_load(directory: &Path) -> Result<Vec<Context>, LoadError> {
     let mut contexts = Vec::new();
-    for path in context_paths(directory) {
+    for path in context_paths(directory)? {
         if let Some(context) = load_one(&path)? {
             contexts.push(context);
         }
@@ -53,39 +60,56 @@ pub struct LoadError {
 }
 
 impl LoadError {
-    /// Two short notice lines: the file, then the start of the error.
+    /// Two short notice lines: the file, then the error location and message.
     #[must_use]
     pub fn notice(&self) -> String {
         let file = self.path.parent().and_then(Path::file_name).map_or_else(
             || self.path.display().to_string(),
             |name| format!("{}/context.toml", name.display()),
         );
-        let first_line = self.message.lines().next().unwrap_or_default();
-        format!(
-            "CONTEXT ERROR {file}\n{}",
-            first_line.chars().take(40).collect::<String>()
-        )
+        format!("CONTEXT ERROR {file}\n{}", short_error(&self.message))
     }
 }
 
-fn context_paths(directory: &Path) -> Vec<PathBuf> {
-    let entries = match std::fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) => {
-            tracing::warn!(?directory, %error, "context directory unavailable");
-            return Vec::new();
-        }
+/// Condenses a TOML error to `L<line> C<column> <message>`, at most 40 characters.
+///
+/// TOML errors put the location on the first line, a source excerpt with `|` gutters
+/// next, and the message after it. Other errors keep their first line.
+#[must_use]
+pub fn short_error(message: &str) -> String {
+    let mut lines = message.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or_default();
+    let location = first.split_once(" at line ").and_then(|(_, rest)| {
+        let (line, column) = rest.split_once(", column ")?;
+        Some(format!("L{line} C{column}"))
+    });
+    let detail = lines
+        .find(|line| !line.contains('|'))
+        .filter(|_| location.is_some())
+        .unwrap_or(first);
+    let text = location.map_or_else(|| detail.to_owned(), |location| format!("{location} {detail}"));
+    text.chars().take(40).collect()
+}
+
+/// The candidate `context.toml` paths, sorted. Any directory read error fails the listing.
+fn context_paths(directory: &Path) -> Result<Vec<PathBuf>, LoadError> {
+    let failed = |path: &Path, error: &io::Error| LoadError {
+        path: path.to_path_buf(),
+        message: error.to_string(),
     };
+    let entries = std::fs::read_dir(directory).map_err(|error| failed(directory, &error))?;
     let mut paths = vec![directory.join("context.toml")];
     for entry in entries {
-        match entry {
-            Ok(entry) if entry.path().is_dir() => paths.push(entry.path().join("context.toml")),
+        let path = entry.map_err(|error| failed(directory, &error))?.path();
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => paths.push(path.join("context.toml")),
             Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "context directory entry skipped"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(failed(&path, &error)),
         }
     }
     paths.sort();
-    paths
+    Ok(paths)
 }
 
 fn load_one(path: &Path) -> Result<Option<Context>, LoadError> {
@@ -125,39 +149,110 @@ impl Debounce {
     }
 }
 
-/// Watches the context directory and its child directories for context edits.
-///
-/// # Errors
-///
-/// Fails when inotify is unavailable or the directory cannot be watched.
-pub fn watch(directory: &Path) -> io::Result<OwnedFd> {
-    use rustix::fs::inotify;
-    let watcher = inotify::init(inotify::CreateFlags::NONBLOCK | inotify::CreateFlags::CLOEXEC)?;
-    rewatch(&watcher, directory)?;
-    Ok(watcher)
+/// A watch on the context directory with its debounced reload schedule.
+#[derive(Debug)]
+pub struct ContextWatch {
+    directory: PathBuf,
+    watcher: Rc<OwnedFd>,
+    top: i32,
+    debounce: Debounce,
 }
 
-/// Adds watches for the directory and any child directory, including new ones.
-///
-/// # Errors
-///
-/// Fails when the top directory cannot be watched.
-pub fn rewatch(watcher: &OwnedFd, directory: &Path) -> io::Result<()> {
-    use rustix::fs::inotify;
-    let flags = inotify::WatchFlags::CLOSE_WRITE
-        | inotify::WatchFlags::CREATE
-        | inotify::WatchFlags::DELETE
-        | inotify::WatchFlags::MOVED_TO
-        | inotify::WatchFlags::MOVED_FROM;
-    let _watch = inotify::add_watch(watcher, directory, flags)?;
-    for path in context_paths(directory) {
-        if let Some(parent) = path.parent().filter(|parent| *parent != directory)
-            && let Err(error) = inotify::add_watch(watcher, parent, flags)
-        {
-            tracing::warn!(?parent, %error, "context directory not watched");
+const WATCH_FLAGS: rustix::fs::inotify::WatchFlags = rustix::fs::inotify::WatchFlags::CLOSE_WRITE
+    .union(rustix::fs::inotify::WatchFlags::CREATE)
+    .union(rustix::fs::inotify::WatchFlags::DELETE)
+    .union(rustix::fs::inotify::WatchFlags::MOVED_TO)
+    .union(rustix::fs::inotify::WatchFlags::MOVED_FROM);
+
+/// Whether an inotify event can change the loaded contexts: a `context.toml`
+/// anywhere watched, or a directory appearing or vanishing in the top directory.
+#[must_use]
+pub fn relevant(name: Option<&[u8]>, is_directory: bool, in_top: bool) -> bool {
+    name == Some(b"context.toml".as_slice()) || (is_directory && in_top && name.is_some())
+}
+
+impl ContextWatch {
+    /// Watches the directory and its child directories, and adds the watch to the event loop.
+    /// `watch` finds this value in the loop data once the caller stores it there.
+    ///
+    /// # Errors
+    ///
+    /// Fails when inotify is unavailable, the directory cannot be watched, or the
+    /// source cannot join the loop.
+    pub fn insert<D: 'static>(
+        handle: &LoopHandle<'static, D>,
+        directory: &Path,
+        watch: fn(&mut D) -> Option<&mut Self>,
+    ) -> Result<Self, Box<dyn core::error::Error>> {
+        use rustix::fs::inotify;
+        let watcher = Rc::new(inotify::init(
+            inotify::CreateFlags::NONBLOCK | inotify::CreateFlags::CLOEXEC,
+        )?);
+        let top = inotify::add_watch(&*watcher, directory, WATCH_FLAGS)?;
+        let context_watch = Self {
+            directory: directory.to_path_buf(),
+            watcher: Rc::clone(&watcher),
+            top,
+            debounce: Debounce::default(),
+        };
+        context_watch.watch_children();
+        let _token = handle.insert_source(
+            Generic::new(watcher, Interest::READ, Mode::Level),
+            move |_, watcher, data| {
+                let Some(found) = watch(data) else {
+                    return Ok(PostAction::Remove);
+                };
+                Ok(found.read_events(watcher))
+            },
+        )?;
+        Ok(context_watch)
+    }
+
+    fn read_events(&mut self, watcher: &OwnedFd) -> PostAction {
+        let mut buffer = [MaybeUninit::<u8>::uninit(); 4096];
+        let mut reader = rustix::fs::inotify::Reader::new(watcher, &mut buffer);
+        loop {
+            match reader.next() {
+                Ok(event) => {
+                    let is_directory = event.events().contains(rustix::fs::inotify::ReadFlags::ISDIR);
+                    let name = event.file_name().map(core::ffi::CStr::to_bytes);
+                    if relevant(name, is_directory, event.wd() == self.top) {
+                        self.debounce.changed(Instant::now());
+                    }
+                }
+                Err(rustix::io::Errno::WOULDBLOCK | rustix::io::Errno::INTR) => return PostAction::Continue,
+                Err(error) => {
+                    tracing::warn!(%error, "context watch failed; contexts reload only on restart");
+                    return PostAction::Remove;
+                }
+            }
         }
     }
-    Ok(())
+
+    fn watch_children(&self) {
+        let paths = match context_paths(&self.directory) {
+            Ok(paths) => paths,
+            Err(error) => {
+                tracing::warn!(%error, "context directories not watched");
+                return;
+            }
+        };
+        for path in paths {
+            if let Some(parent) = path.parent().filter(|parent| *parent != self.directory)
+                && let Err(error) = rustix::fs::inotify::add_watch(&*self.watcher, parent, WATCH_FLAGS)
+            {
+                tracing::warn!(?parent, %error, "context directory not watched");
+            }
+        }
+    }
+
+    /// The reload result once a burst of edits has gone quiet, else `None`.
+    pub fn poll(&mut self, now: Instant) -> Option<Result<Vec<Context>, LoadError>> {
+        self.debounce.due(now).then(|| {
+            self.watch_children();
+            try_load(&self.directory)
+        })
+    }
 }
 
 fn read_context(path: &Path) -> io::Result<String> {
