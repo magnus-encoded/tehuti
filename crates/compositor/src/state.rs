@@ -984,6 +984,13 @@ impl Compositor {
                 .to_i32_round(),
                 snapshot.focused_window == Some(*identity),
             );
+            // Space only reports output entry once a buffer gives the window a
+            // view. Clients such as mpv size their first buffer from the output
+            // scale they learn on entry, so announce it before the first
+            // configure instead of after the first (wrongly scaled) frame.
+            if let (Some(output), Some(toplevel)) = (&self.output, window.toplevel()) {
+                output.enter(toplevel.wl_surface());
+            }
             if let Some(toplevel) = window.toplevel() {
                 Self::configure_layout_window(toplevel, tile, snapshot.focused_window == Some(*identity));
             }
