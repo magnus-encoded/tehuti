@@ -15,6 +15,7 @@ type Deferred = (Output, Rectangle<i32, Logical>);
 pub struct LayoutWindow {
     window: Window,
     size: Rc<Cell<Size<i32, Logical>>>,
+    size_held: Rc<Cell<bool>>,
     /// Output overlaps reported while the surface had no buffer yet.
     deferred: Rc<RefCell<Vec<Deferred>>>,
 }
@@ -24,14 +25,28 @@ impl LayoutWindow {
         Self {
             window,
             size: Rc::new(Cell::new(Size::default())),
+            size_held: Rc::new(Cell::new(false)),
             deferred: Rc::new(RefCell::new(Vec::new())),
         }
+    }
+
+    pub fn layout_size(&self) -> Size<i32, Logical> {
+        self.size.get()
+    }
+
+    /// Whether the size hint in the first configure is being withheld.
+    pub fn size_held(&self) -> bool {
+        self.size_held.get()
+    }
+
+    pub fn hold_size(&self, held: bool) {
+        self.size_held.set(held);
     }
 
     /// Smithay's output tracking sends `wl_surface.leave` for a surface that
     /// has no buffer yet, which would undo the early enter that clients such
     /// as mpv need to size their first buffer. Hold overlaps back until mapped.
-    fn mapped(&self) -> bool {
+    pub fn mapped(&self) -> bool {
         self.window.toplevel().is_some_and(|toplevel| {
             smithay::backend::renderer::utils::with_renderer_surface_state(toplevel.wl_surface(), |state| {
                 state.buffer().is_some()

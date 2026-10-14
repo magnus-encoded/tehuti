@@ -996,7 +996,12 @@ impl Compositor {
                 Self::announce_scale(output, toplevel.wl_surface());
             }
             if let Some(toplevel) = window.toplevel() {
-                Self::configure_layout_window(toplevel, tile, snapshot.focused_window == Some(*identity));
+                Self::configure_layout_window(
+                    toplevel,
+                    tile,
+                    snapshot.focused_window == Some(*identity),
+                    !window.size_held(),
+                );
             }
         }
         self.sync_window_focus();
@@ -1006,6 +1011,7 @@ impl Compositor {
         toplevel: &ToplevelSurface,
         tile: &tehuti_core::layout::TileView,
         focused: bool,
+        send: bool,
     ) {
         toplevel.with_pending_state(|pending| {
             pending.size = Some(
@@ -1026,7 +1032,7 @@ impl Compositor {
                 }
             }
         });
-        if toplevel.is_initial_configure_sent() {
+        if send && toplevel.is_initial_configure_sent() {
             let _serial = toplevel.send_pending_configure();
         }
     }
@@ -1266,10 +1272,16 @@ impl CompositorHandler for Compositor {
         }
         if let Some(window) = self.window_for_root(&root) {
             window.on_commit();
-            if let Some(toplevel) = window.toplevel()
-                && !toplevel.is_initial_configure_sent()
-            {
-                let _serial = toplevel.send_configure();
+            if let Some(toplevel) = window.toplevel() {
+                if !toplevel.is_initial_configure_sent() {
+                    window.hold_size(true);
+                    toplevel.with_pending_state(|pending| pending.size = None);
+                    let _serial = toplevel.send_configure();
+                    toplevel.with_pending_state(|pending| pending.size = Some(window.layout_size()));
+                } else if window.size_held() && window.mapped() {
+                    window.hold_size(false);
+                    let _serial = toplevel.send_pending_configure();
+                }
             }
         }
     }
