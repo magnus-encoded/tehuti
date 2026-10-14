@@ -634,9 +634,9 @@ proptest! {
     }
 
     #[test]
-    fn mouse_mode_swallows_every_button_before_plugins_and_mappings(
+    fn mouse_mode_swallows_pointer_buttons_before_plugins_and_mappings(
         contexts in arbitrary_contexts(),
-        name in prop::sample::select(vec![ButtonName::South, ButtonName::East, ButtonName::West, ButtonName::North, ButtonName::Record, ButtonName::Guide, ButtonName::Start, ButtonName::LeftBumper, ButtonName::RightBumper, ButtonName::DpadUp, ButtonName::DpadDown, ButtonName::DpadLeft, ButtonName::DpadRight, ButtonName::LeftStick, ButtonName::RightStick]),
+        name in prop::sample::select(vec![ButtonName::South, ButtonName::East, ButtonName::West, ButtonName::North, ButtonName::LeftBumper, ButtonName::RightBumper, ButtonName::DpadUp, ButtonName::DpadDown, ButtonName::DpadLeft, ButtonName::DpadRight, ButtonName::LeftStick, ButtonName::RightStick]),
         plugin_active in prop::bool::ANY,
     ) {
         let mut world = World { plugin_active, ..World::default() };
@@ -725,8 +725,91 @@ proptest! {
     }
 }
 
+proptest! {
+    #[test]
+    fn right_stick_scrolls_only_vertically_outside_mouse_mode(
+        contexts in arbitrary_contexts(),
+        left in (any::<i16>(), any::<i16>()),
+        right in (any::<i16>(), prop_oneof![Just(0_i16), any::<i16>()]),
+    ) {
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), Input::Sticks(Sticks { left, right }));
+        world.trace.clear();
+        let _state = world.run(state, Input::Tick { elapsed: Duration::from_millis(10) });
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::MovePointer { .. })), "normal mode keeps the pointer still");
+        let scrolls: Vec<_> = world.trace.iter().filter_map(|effect| {
+            if let Effect::Scroll { x, y } = effect { Some((*x, *y)) } else { None }
+        }).collect();
+        if right.1 == 0 {
+            prop_assert!(scrolls.is_empty());
+        } else {
+            prop_assert_eq!(scrolls.len(), 1);
+            prop_assert_eq!(scrolls[0].0, 0);
+            prop_assert_eq!(scrolls[0].1.signum(), i32::from(right.1).signum());
+        }
+    }
+
+    #[test]
+    fn right_stick_click_keeps_its_context_binding_while_scrolling(
+        mut contexts in arbitrary_contexts(),
+        vertical in 1_i16..1001,
+    ) {
+        contexts.insert(0, tehuti_protocol::parse_context("app_id = 'mouse-test'\n[buttons.right_stick]\nkey = 'tab'").unwrap());
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), Input::Sticks(Sticks { left: (0, 0), right: (0, vertical) }));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_millis(10) });
+        prop_assert!(world.trace.iter().any(|effect| matches!(effect, Effect::Scroll { .. })), "vertical deflection scrolls");
+        world.trace.clear();
+        let state = world.run(state, pad_button(ButtonName::RightStick, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(ButtonName::RightStick, ButtonState::Released));
+        prop_assert!(world.trace.contains(&Effect::Apply(Action::Key { key: tehuti_protocol::KeyName::Tab })), "stick click sends the context key");
+    }
+}
+
+proptest! {
+    #[test]
+    fn record_starts_and_transcribes_capture_in_mouse_mode(
+        contexts in arbitrary_contexts(),
+        plugin_active in prop::bool::ANY,
+    ) {
+        let mut world = World { plugin_active, ..World::default() };
+        let state = world.run(configured_mouse(contexts), Input::Speech(SpeechInput::Available));
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        world.trace.clear();
+        let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(ButtonName::Record, ButtonState::Released));
+        let commands: Vec<_> = world.trace.iter().filter_map(|effect| {
+            if let Effect::SpeechCommand(command) = effect { Some(command.clone()) } else { None }
+        }).collect();
+        prop_assert_eq!(commands, vec![SpeechEffect::Start { session: 0 }, SpeechEffect::Stop { session: 0, transcribe: true }]);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Click { .. })), "Record never clicks");
+    }
+
+    #[test]
+    fn guide_and_start_reach_normal_dispatch_in_mouse_mode(
+        contexts in arbitrary_contexts(),
+        plugin_active in prop::bool::ANY,
+        name in prop::sample::select(vec![ButtonName::Guide, ButtonName::Start]),
+    ) {
+        let mut world = World { plugin_active, ..World::default() };
+        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        world.trace.clear();
+        let state = world.run(state, pad_button(name, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(name, ButtonState::Released));
+        let buttons: Vec<_> = world.trace.iter().filter_map(|effect| {
+            if let Effect::QueryPlugin(event @ Event::Button { .. }) = effect { Some(event.clone()) } else { None }
+        }).collect();
+        prop_assert_eq!(buttons, vec![Event::Button { name, state: ButtonState::Pressed }, Event::Button { name, state: ButtonState::Released }]);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Click { .. })), "Guide and Start never click");
+    }
+}
+
 #[test]
-fn entering_mouse_mode_cancels_recording_before_record_release_is_swallowed() {
+fn entering_mouse_mode_cancels_recording_and_a_later_release_does_not_restart_it() {
     let mut world = World::default();
     let state = world.run(State::default(), Input::Speech(SpeechInput::Available));
     let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
@@ -755,7 +838,7 @@ fn entering_mouse_mode_cancels_recording_before_record_release_is_swallowed() {
             .trace
             .iter()
             .any(|effect| matches!(effect, Effect::SpeechCommand(_))),
-        "swallowed release cannot restart capture"
+        "release after cancellation cannot restart capture"
     );
 }
 

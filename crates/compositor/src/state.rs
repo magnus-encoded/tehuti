@@ -358,13 +358,43 @@ impl Compositor {
     )]
     fn pointer_scroll(&mut self, x: i32, y: i32) {
         use smithay::backend::input::{Axis, AxisSource};
-        self.move_pointer();
+        if self.mouse_mode {
+            self.move_pointer();
+        } else {
+            let Some(surface) = self.keyboard.current_focus() else {
+                return;
+            };
+            let Some(window) = self.window_for_root(&surface) else {
+                return;
+            };
+            let geometry = window.geometry();
+            if geometry.size.w <= 0 || geometry.size.h <= 0 {
+                return;
+            }
+            let location = (
+                f64::from(geometry.loc.x) + f64::from(geometry.size.w) / 2.0,
+                f64::from(geometry.loc.y) + f64::from(geometry.size.h) / 2.0,
+            )
+                .into();
+            let event = smithay::input::pointer::MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: self.pointer_time(),
+            };
+            self.pointer
+                .clone()
+                .motion(self, Some((surface, (0.0, 0.0).into())), &event);
+            self.pointer.clone().frame(self);
+        }
         let frame = smithay::input::pointer::AxisFrame::new(self.pointer_time())
             .source(AxisSource::Continuous)
             .value(Axis::Horizontal, f64::from(x) / 1_000_000.0)
             .value(Axis::Vertical, f64::from(y) / 1_000_000.0);
         self.pointer.clone().axis(self, frame);
         self.pointer.clone().frame(self);
+        if !self.mouse_mode {
+            self.move_pointer();
+        }
     }
     fn pointer_click(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
         self.move_pointer();
