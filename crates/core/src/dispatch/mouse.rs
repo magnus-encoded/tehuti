@@ -102,11 +102,11 @@ impl State {
             }
         }
         let millis = i32::try_from(elapsed.as_millis().min(100)).unwrap_or(100);
+        let motion = |axis: i16| {
+            let axis = i32::from(axis).clamp(-1000, 1000);
+            axis.saturating_mul(axis.abs()).saturating_mul(millis)
+        };
         if self.active {
-            let motion = |axis: i16| {
-                let axis = i32::from(axis).clamp(-1000, 1000);
-                axis.saturating_mul(axis.abs()).saturating_mul(millis)
-            };
             let (x, y) = self.sticks.left;
             if x != 0 || y != 0 {
                 effects.push(Effect::MovePointer {
@@ -119,14 +119,8 @@ impl State {
         let scroll_x = if self.active { scroll_x } else { 0 };
         if scroll_x != 0 || scroll_y != 0 {
             effects.push(Effect::Scroll {
-                x: i32::from(scroll_x)
-                    .clamp(-1000, 1000)
-                    .saturating_mul(millis)
-                    .saturating_mul(250),
-                y: i32::from(scroll_y)
-                    .clamp(-1000, 1000)
-                    .saturating_mul(millis)
-                    .saturating_mul(250),
+                x: motion(scroll_x) / 4 * 3,
+                y: motion(scroll_y) / 4 * 3,
             });
         }
     }
