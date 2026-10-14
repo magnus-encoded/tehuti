@@ -23,6 +23,10 @@ mod output_enter {
             wl_surface::{self, WlSurface},
         },
     };
+    use wayland_protocols::wp::fractional_scale::v1::client::{
+        wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+        wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+    };
     use wayland_protocols::xdg::shell::client::{
         xdg_surface::{self, XdgSurface},
         xdg_toplevel::{self, XdgToplevel},
@@ -32,6 +36,8 @@ mod output_enter {
     #[derive(Default)]
     struct App {
         order: Vec<&'static str>,
+        buffer_scale: Option<i32>,
+        fractional: Option<u32>,
     }
 
     impl Dispatch<WlRegistry, GlobalListContents> for App {
@@ -99,26 +105,46 @@ mod output_enter {
             if matches!(event, wl_surface::Event::Enter { .. }) {
                 app.order.push("enter");
             }
+            if let wl_surface::Event::PreferredBufferScale { factor } = event {
+                app.buffer_scale = Some(factor);
+            }
         }
     }
+    impl Dispatch<WpFractionalScaleV1, ()> for App {
+        fn event(
+            app: &mut Self,
+            _: &WpFractionalScaleV1,
+            event: wp_fractional_scale_v1::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+                app.fractional = Some(scale);
+            }
+        }
+    }
+    delegate_noop!(App: ignore WpFractionalScaleManagerV1);
     delegate_noop!(App: ignore WlCompositor);
     delegate_noop!(App: ignore WlOutput);
 
-    fn client(stream: UnixStream) -> Vec<&'static str> {
+    fn client(stream: UnixStream) -> App {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
-        let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+        let compositor: WlCompositor = globals.bind(&handle, 6..=6, ()).unwrap();
+        let manager: WpFractionalScaleManagerV1 = globals.bind(&handle, 1..=1, ()).unwrap();
         let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
         let _output: WlOutput = globals.bind(&handle, 1..=4, ()).unwrap();
         let surface = compositor.create_surface(&handle, ());
+        let _fractional = manager.get_fractional_scale(&surface, &handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let _toplevel = xdg_surface.get_toplevel(&handle, ());
         surface.commit();
         let mut app = App::default();
         let _first = queue.roundtrip(&mut app).unwrap();
         let _second = queue.roundtrip(&mut app).unwrap();
-        app.order
+        app
     }
 
     #[test]
@@ -156,7 +182,10 @@ mod output_enter {
             display.flush_clients().unwrap();
             thread::sleep(Duration::from_millis(1));
         }
-        let order = thread.join().unwrap();
+        let app = thread.join().unwrap();
+        let order = app.order;
+        assert_eq!(app.buffer_scale, Some(2));
+        assert_eq!(app.fractional, Some(240));
         assert_eq!(order.first(), Some(&"enter"), "{order:?}");
         assert!(order.contains(&"configure"), "{order:?}");
     }
