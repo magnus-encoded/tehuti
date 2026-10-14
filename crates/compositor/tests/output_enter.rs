@@ -105,6 +105,9 @@ mod output_enter {
             if matches!(event, wl_surface::Event::Enter { .. }) {
                 app.order.push("enter");
             }
+            if matches!(event, wl_surface::Event::Leave { .. }) {
+                app.order.push("leave");
+            }
             if let wl_surface::Event::PreferredBufferScale { factor } = event {
                 app.buffer_scale = Some(factor);
             }
@@ -179,6 +182,7 @@ mod output_enter {
         while !thread.is_finished() {
             assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
             let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            compositor.space.refresh();
             display.flush_clients().unwrap();
             thread::sleep(Duration::from_millis(1));
         }
@@ -187,6 +191,7 @@ mod output_enter {
         assert_eq!(app.buffer_scale, Some(2));
         assert_eq!(app.fractional, Some(240));
         assert_eq!(order.first(), Some(&"enter"), "{order:?}");
+        assert!(!order.contains(&"leave"), "{order:?}");
         assert!(order.contains(&"configure"), "{order:?}");
     }
 }
