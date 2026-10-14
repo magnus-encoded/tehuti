@@ -298,6 +298,64 @@ mod synthetic_pad {
         }
     }
 
+    use wayland_protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
+
+    delegate_noop!(App: ignore WpViewporter);
+    delegate_noop!(App: ignore WpViewport);
+
+    fn viewporter_client(stream: UnixStream) -> Result<(), String> {
+        let connection = Connection::from_socket(stream).map_err(|error| error.to_string())?;
+        let (globals, mut queue) =
+            registry_queue_init::<App>(&connection).map_err(|error| error.to_string())?;
+        let handle = queue.handle();
+        let compositor: WlCompositor = globals
+            .bind(&handle, 1..=4, ())
+            .map_err(|error| error.to_string())?;
+        let viewporter: WpViewporter = globals
+            .bind(&handle, 1..=1, ())
+            .map_err(|error| error.to_string())?;
+        let mut app = App::default();
+        let surface = compositor.create_surface(&handle, ());
+        let viewport = viewporter.get_viewport(&surface, &handle, ());
+        viewport.set_source(0.0, 0.0, 8.0, 8.0);
+        viewport.set_destination(32, 32);
+        surface.commit();
+        let _first = queue.roundtrip(&mut app).map_err(|error| error.to_string())?;
+        viewport.set_destination(-5, -5);
+        queue
+            .roundtrip(&mut app)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn viewporter_is_advertised_and_rejects_invalid_destinations() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let client_thread = thread::spawn(move || viewporter_client(client));
+        let started = Instant::now();
+        while !client_thread.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "viewporter client timed out"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let result = client_thread.join().unwrap();
+        let error = result.expect_err("negative destination is a protocol error, binding itself succeeded");
+        assert!(
+            error.contains("viewport") || error.contains("Protocol"),
+            "{error}"
+        );
+    }
+
     impl Dispatch<WlRegistry, GlobalListContents> for App {
         fn event(
             _: &mut Self,

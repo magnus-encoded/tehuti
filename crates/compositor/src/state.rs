@@ -7,7 +7,7 @@ use crate::layout_window::LayoutWindow;
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
-    delegate_xdg_shell,
+    delegate_viewporter, delegate_xdg_shell,
     desktop::{Space, Window},
     input::{
         Seat, SeatHandler, SeatState,
@@ -36,6 +36,7 @@ use smithay::{
         },
         shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
         shm::{ShmHandler, ShmState},
+        viewporter::ViewporterState,
     },
 };
 use tehuti_core::dispatch::{Effect as DispatchEffect, Input as DispatchInput};
@@ -103,6 +104,7 @@ pub struct Compositor {
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
     shm_state: ShmState,
+    _viewporter_state: ViewporterState,
     pub(crate) dmabuf: crate::rendering::DmabufSupport,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
@@ -174,6 +176,7 @@ impl Compositor {
             surfaces: CompositorState::new::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             shm_state: ShmState::new::<Self>(display, vec![]),
+            _viewporter_state: ViewporterState::new::<Self>(display),
             dmabuf: crate::rendering::DmabufSupport::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
@@ -1436,6 +1439,7 @@ impl OutputHandler for Compositor {}
 
 delegate_compositor!(Compositor);
 delegate_shm!(Compositor);
+delegate_viewporter!(Compositor);
 delegate_xdg_shell!(Compositor);
 delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
