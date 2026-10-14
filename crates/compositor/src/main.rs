@@ -54,8 +54,18 @@ impl LoopData {
     }
 }
 
+fn initialize_tracing() {
+    tracing_subscriber::fmt()
+        .with_max_level(if std::env::var_os("TEHUTI_TIMING").is_some() {
+            tracing::Level::TRACE
+        } else {
+            tracing::Level::INFO
+        })
+        .init();
+}
+
 fn main() -> Result<ExitCode, Box<dyn Error>> {
-    tracing_subscriber::fmt::init();
+    initialize_tracing();
     let mut application = std::env::args_os().skip(1);
     let context_directory = application
         .next()
