@@ -21,7 +21,7 @@ use tehuti_protocol::{Context, parse_context};
 /// A broken file is skipped with a warning so startup always gets the valid contexts.
 #[must_use]
 pub fn load(directory: &Path) -> Vec<Context> {
-    let paths = context_paths(directory).unwrap_or_else(|error| {
+    let paths = context_paths(directory, false).unwrap_or_else(|error| {
         tracing::warn!(%error, "context directory unavailable");
         Vec::new()
     });
@@ -43,7 +43,7 @@ pub fn load(directory: &Path) -> Vec<Context> {
 /// Names the first file that cannot be read or parsed.
 pub fn try_load(directory: &Path) -> Result<Vec<Context>, LoadError> {
     let mut contexts = Vec::new();
-    for path in context_paths(directory)? {
+    for path in context_paths(directory, true)? {
         if let Some(context) = load_one(&path)? {
             contexts.push(context);
         }
@@ -92,7 +92,7 @@ pub fn short_error(message: &str) -> String {
 }
 
 /// The candidate `context.toml` paths, sorted. Any directory read error fails the listing.
-fn context_paths(directory: &Path) -> Result<Vec<PathBuf>, LoadError> {
+fn context_paths(directory: &Path, strict: bool) -> Result<Vec<PathBuf>, LoadError> {
     let failed = |path: &Path, error: &io::Error| LoadError {
         path: path.to_path_buf(),
         message: error.to_string(),
@@ -100,12 +100,21 @@ fn context_paths(directory: &Path) -> Result<Vec<PathBuf>, LoadError> {
     let entries = std::fs::read_dir(directory).map_err(|error| failed(directory, &error))?;
     let mut paths = vec![directory.join("context.toml")];
     for entry in entries {
-        let path = entry.map_err(|error| failed(directory, &error))?.path();
-        match std::fs::metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => paths.push(path.join("context.toml")),
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(failed(&path, &error)),
+        let listed = entry
+            .map_err(|error| failed(directory, &error))
+            .and_then(|entry| {
+                let path = entry.path();
+                match std::fs::metadata(&path) {
+                    Ok(metadata) if metadata.is_dir() => Ok(Some(path.join("context.toml"))),
+                    Ok(_) => Ok(None),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                    Err(error) => Err(failed(&path, &error)),
+                }
+            });
+        match listed {
+            Ok(path) => paths.extend(path),
+            Err(error) if !strict => tracing::warn!(%error, "context directory entry skipped"),
+            Err(error) => return Err(error),
         }
     }
     paths.sort();
@@ -164,11 +173,13 @@ const WATCH_FLAGS: rustix::fs::inotify::WatchFlags = rustix::fs::inotify::WatchF
     .union(rustix::fs::inotify::WatchFlags::MOVED_TO)
     .union(rustix::fs::inotify::WatchFlags::MOVED_FROM);
 
-/// Whether an inotify event can change the loaded contexts: a `context.toml`
-/// anywhere watched, or a directory appearing or vanishing in the top directory.
+/// Whether an inotify event can change the loaded contexts.
+///
+/// That is a `context.toml` anywhere watched, a directory appearing or vanishing in
+/// the top directory, or a queue overflow, after which any change may have been lost.
 #[must_use]
-pub fn relevant(name: Option<&[u8]>, is_directory: bool, in_top: bool) -> bool {
-    name == Some(b"context.toml".as_slice()) || (is_directory && in_top && name.is_some())
+pub fn relevant(name: Option<&[u8]>, is_directory: bool, in_top: bool, overflow: bool) -> bool {
+    overflow || name == Some(b"context.toml".as_slice()) || (is_directory && in_top && name.is_some())
 }
 
 impl ContextWatch {
@@ -216,7 +227,10 @@ impl ContextWatch {
                 Ok(event) => {
                     let is_directory = event.events().contains(rustix::fs::inotify::ReadFlags::ISDIR);
                     let name = event.file_name().map(core::ffi::CStr::to_bytes);
-                    if relevant(name, is_directory, event.wd() == self.top) {
+                    let overflow = event
+                        .events()
+                        .contains(rustix::fs::inotify::ReadFlags::QUEUE_OVERFLOW);
+                    if relevant(name, is_directory, event.wd() == self.top, overflow) {
                         self.debounce.changed(Instant::now());
                     }
                 }
@@ -230,7 +244,7 @@ impl ContextWatch {
     }
 
     fn watch_children(&self) {
-        let paths = match context_paths(&self.directory) {
+        let paths = match context_paths(&self.directory, false) {
             Ok(paths) => paths,
             Err(error) => {
                 tracing::warn!(%error, "context directories not watched");

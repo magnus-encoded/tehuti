@@ -16,6 +16,13 @@ mod context_reload {
         std::fs::write(directory.join(name).join("context.toml"), source).unwrap();
     }
 
+    fn app_ids_of(contexts: &[tehuti_protocol::Context]) -> Vec<String> {
+        contexts
+            .iter()
+            .map(|context| context.app_id().to_owned())
+            .collect()
+    }
+
     fn app_ids(compositor: &Compositor) -> Vec<String> {
         compositor
             .contexts()
@@ -76,9 +83,9 @@ mod context_reload {
         assert_eq!(error.path, directory.path().join("loop"));
         assert!(contexts::try_load(&directory.path().join("missing")).is_err());
         assert_eq!(
-            contexts::load(directory.path()).len(),
-            0,
-            "startup logs the listing error"
+            app_ids_of(&contexts::load(directory.path())),
+            ["one"],
+            "startup skips the bad entry and keeps valid contexts"
         );
     }
 
@@ -95,13 +102,22 @@ mod context_reload {
 
     #[test]
     fn only_context_files_and_top_level_directories_are_relevant() {
-        assert!(contexts::relevant(Some(b"context.toml"), false, true));
-        assert!(contexts::relevant(Some(b"context.toml"), false, false));
-        assert!(contexts::relevant(Some(b"foot"), true, true));
-        assert!(!contexts::relevant(Some(b"foot"), true, false));
-        assert!(!contexts::relevant(Some(b"context.toml.swp"), false, false));
-        assert!(!contexts::relevant(Some(b"notes.txt"), false, true));
-        assert!(!contexts::relevant(None, true, true));
+        assert!(contexts::relevant(Some(b"context.toml"), false, true, false));
+        assert!(contexts::relevant(Some(b"context.toml"), false, false, false));
+        assert!(contexts::relevant(Some(b"foot"), true, true, false));
+        assert!(!contexts::relevant(Some(b"foot"), true, false, false));
+        assert!(!contexts::relevant(
+            Some(b"context.toml.swp"),
+            false,
+            false,
+            false
+        ));
+        assert!(!contexts::relevant(Some(b"notes.txt"), false, true, false));
+        assert!(!contexts::relevant(None, true, true, false));
+        assert!(
+            contexts::relevant(None, false, false, true),
+            "an overflow reloads everything"
+        );
     }
 
     struct Looped {
