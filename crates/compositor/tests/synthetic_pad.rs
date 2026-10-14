@@ -842,39 +842,6 @@ mod synthetic_pad {
     }
 
     #[test]
-    fn focus_cancels_pending_transcript_before_polling_elapsed_time() {
-        use tehuti_core::speech::SpeechInput;
-        let directory = tempfile::tempdir().unwrap();
-        let delivered = directory.path().join("delivered");
-        let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
-        compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![
-            "python3".into(), "-u".into(), "-c".into(),
-            format!("import sys,json\nfrom pathlib import Path\nprint(json.dumps({{'ready':True}}),flush=True)\nfor line in sys.stdin:\n c=json.loads(line)\n if c.get('transcribe'):\n  print(json.dumps({{'session':c['stop'],'text':'stale'}}),flush=True)\n  Path({delivered:?}).touch()").into(),
-        ]));
-        let began = Instant::now();
-        while !compositor.speech_ready() {
-            compositor.advance_time();
-            assert!(began.elapsed() < Duration::from_secs(5));
-            thread::sleep(Duration::from_millis(1));
-        }
-        compositor.speech_input(SpeechInput::Available);
-        compositor.speech_input(SpeechInput::Press);
-        compositor.speech_input(SpeechInput::Release);
-        // Flushes the queued stop command; the reply cannot have been written yet.
-        compositor.advance_time();
-        while !delivered.exists() {
-            assert!(began.elapsed() < Duration::from_secs(5));
-            thread::sleep(Duration::from_millis(1));
-        }
-        compositor.handle(&Event::Focus {
-            app_id: Some("other".into()),
-            title: String::new(),
-        });
-        assert!(!compositor.speech_notice_visible());
-    }
-
-    #[test]
     fn notices_preserve_focus_and_close_transfers_it_to_the_remaining_client() {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();

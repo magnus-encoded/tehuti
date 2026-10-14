@@ -3,6 +3,8 @@
 | Term | Meaning |
 | --- | --- |
 | Step | The pure function `step(state, event) -> (state, actions)`. It performs no I/O; time, plugin replies and effect outcomes arrive as events. The test seam of the core. |
+| Dispatch | The pure function `dispatch::step(state, input) -> (state, effects)` that fixes the order of routing work for one tick, button, speech or focus input. It calls the step, the plugin step and the speech step. |
+| Effect | Work dispatch asks the compositor to carry out. A query effect waits for its reply input before dispatch continues. |
 | Layer | One stage of input routing. The escape chord runs first, then the global layer, the active context and the fallback; consumption stops routing. |
 | Global layer | The fixed mapping that applies in every application. It maps South (A) to an Enter tap. |
 | Consumed | An event handled by a layer, with or without an action. Later layers never see it. |
