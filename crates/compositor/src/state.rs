@@ -38,6 +38,7 @@ use smithay::{
         shm::{ShmHandler, ShmState},
     },
 };
+use tehuti_core::dispatch::{Effect as DispatchEffect, Input as DispatchInput};
 use tehuti_protocol::{Action, Event, KeyName};
 
 struct RedactedSecretProvider(Box<dyn tehuti_core::secret::SecretProvider>);
@@ -72,11 +73,10 @@ pub struct Compositor {
     pub start_time: Instant,
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
-    core: tehuti_core::State,
+    dispatch: tehuti_core::dispatch::State,
     previous_tick: Instant,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
-    speech_state: tehuti_core::speech::SpeechState,
     speech_process: Option<crate::speech::SpeechProcess>,
     secret_gate: tehuti_core::secret::SecretConfirmationGate,
     secret_provider: Option<RedactedSecretProvider>,
@@ -138,11 +138,10 @@ impl Compositor {
             start_time: Instant::now(),
             space: Space::default(),
             output: None,
-            core: tehuti_core::State::new(),
+            dispatch: tehuti_core::dispatch::State::default(),
             previous_tick: Instant::now(),
             plugins: None,
             quit_requested: false,
-            speech_state: tehuti_core::speech::SpeechState::default(),
             speech_process: None,
             secret_gate: tehuti_core::secret::SecretConfirmationGate::new(),
             secret_provider: Some(RedactedSecretProvider(Box::new(
@@ -186,13 +185,13 @@ impl Compositor {
 
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, contexts: Vec<tehuti_protocol::Context>) {
-        self.core = tehuti_core::State::with_contexts(contexts);
+        *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
     }
 
     /// The installed contexts, in priority order.
     #[must_use]
     pub fn contexts(&self) -> &[tehuti_protocol::Context] {
-        self.core.contexts()
+        self.dispatch.core().contexts()
     }
 
     /// Applies a context reload. A failed reload keeps the current set and names the file.
@@ -203,7 +202,7 @@ impl Compositor {
         match reload {
             Ok(contexts) => {
                 tracing::info!(count = contexts.len(), "contexts reloaded");
-                self.core.replace_contexts(contexts);
+                self.dispatch.core_mut().replace_contexts(contexts);
                 self.show_notice("CONTEXTS RELOADED");
             }
             Err(error) => {
@@ -223,7 +222,7 @@ impl Compositor {
     /// Plugin decisions the core still holds a fallback for.
     #[must_use]
     pub const fn pending_plugin_decisions(&self) -> usize {
-        self.core.pending_decisions()
+        self.dispatch.core().pending_decisions()
     }
 
     pub fn set_plugins(&mut self, plugins: crate::plugins::Plugins) {
@@ -245,15 +244,7 @@ impl Compositor {
         key: tehuti_core::plugin::RequestKey,
         result: Result<Vec<Action>, String>,
     ) -> Option<tehuti_core::plugin::Rejection> {
-        let (next, actions, rejection) = tehuti_core::plugin::step(
-            core::mem::take(&mut self.core),
-            tehuti_core::plugin::Input::Reply { key, result },
-        );
-        self.core = next;
-        for action in &actions {
-            self.apply_plugin_action(action);
-        }
-        rejection
+        self.dispatch(DispatchInput::PluginReply { key, result })
     }
 
     pub fn set_speech(&mut self, process: crate::speech::SpeechProcess) {
@@ -290,52 +281,11 @@ impl Compositor {
     }
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
-        use tehuti_core::speech::{SpeechEffect, speech_step};
-        if let tehuti_core::speech::SpeechInput::Transcript { session, text } = &input {
-            tracing::info!(session, text = text.as_str(), "speech transcript received");
-        }
-        let transcript = matches!(input, tehuti_core::speech::SpeechInput::Transcript { .. });
-        let (state, effects) = speech_step(core::mem::take(&mut self.speech_state), input);
-        self.speech_state = state;
-        if transcript && effects.is_empty() {
-            tracing::info!("speech transcript dropped for a stale session");
-        }
-        for effect in effects {
-            match &effect {
-                SpeechEffect::Start { session } => tracing::info!(session, "speech session started"),
-                SpeechEffect::Stop { session, transcribe } => {
-                    tracing::info!(session, transcribe, "speech session stopped");
-                }
-                SpeechEffect::Speech { .. } => {}
-                SpeechEffect::Failed { session, reason } => {
-                    tracing::warn!(session, ?reason, "speech transcription failed");
-                }
-            }
-            if let SpeechEffect::Speech { text, .. } = effect {
-                self.handle(&Event::Speech { text });
-            } else if let SpeechEffect::Failed { reason, .. } = effect {
-                self.show_notice(match reason {
-                    tehuti_core::speech::SpeechFailure::Silent => "MIC SILENT",
-                    tehuti_core::speech::SpeechFailure::Transcription => "SPEECH FAILED",
-                });
-            } else if let Some(process) = &mut self.speech_process
-                && let Err(error) = process.send(&effect)
-            {
-                tracing::warn!(%error, "speech command failed");
-                self.speech_input(tehuti_core::speech::SpeechInput::Unavailable);
-            }
-        }
+        let _rejection = self.dispatch(DispatchInput::Speech(input));
     }
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
-        let (next, actions, _) = tehuti_core::plugin::step(
-            core::mem::take(&mut self.core),
-            tehuti_core::plugin::Input::Exited { plugin },
-        );
-        self.core = next;
-        for action in &actions {
-            self.apply_plugin_action(action);
-        }
+        let _rejection = self.dispatch(DispatchInput::PluginExited { plugin });
     }
 
     pub(crate) fn supervise_plugins(&mut self) {
@@ -351,15 +301,13 @@ impl Compositor {
 
     /// Supplies elapsed wall time to the pure core before input or replies.
     pub fn advance_time(&mut self) {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.previous_tick);
-        self.previous_tick = now;
-        self.handle(&Event::Tick { elapsed });
+        let elapsed = self.read_clock();
+        let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
         if matches!(input, tehuti_core::controller::Input::Disconnected) {
-            self.core.controller_disconnected();
+            let _rejection = self.dispatch(DispatchInput::ControllerDisconnected);
         }
         let (next, events) =
             tehuti_core::controller::step(core::mem::take(&mut self.controller_session), input);
@@ -369,114 +317,167 @@ impl Compositor {
         }
     }
 
-    /// Runs one event through the core step and carries out the resulting actions.
+    /// Reads the clock once and returns the time since the previous read.
+    fn read_clock(&mut self) -> core::time::Duration {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.previous_tick);
+        self.previous_tick = now;
+        elapsed
+    }
+
+    /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
-        use tehuti_core::speech::SpeechInput;
-        if matches!(event, Event::Tick { .. }) {
-            self.previous_tick = Instant::now();
-            self.route_event(event);
-        } else if !matches!(event, Event::Focus { .. }) {
-            self.advance_time();
-        }
-        let exited = self
-            .plugins
-            .as_mut()
-            .map_or_else(Vec::new, crate::plugins::Plugins::supervise);
-        for plugin in exited {
-            self.plugin_exited(plugin);
-        }
-        if let Event::Button {
-            name: tehuti_protocol::ButtonName::South,
-            state,
-        } = event
-        {
-            self.secret_confirmation.south_pressed = *state == tehuti_protocol::ButtonState::Pressed;
-        }
-        if matches!(event, Event::Focus { .. }) {
-            self.reset_secret_confirmation_for_focus();
-        }
-        match event {
-            Event::Button {
-                name: tehuti_protocol::ButtonName::Record,
-                state,
-            } => {
-                self.speech_input(match state {
-                    tehuti_protocol::ButtonState::Pressed => SpeechInput::Press,
-                    tehuti_protocol::ButtonState::Released => SpeechInput::Release,
-                });
-                return;
+        let since_tick = self.read_clock();
+        let input = if let Event::Tick { elapsed } = event {
+            DispatchInput::Tick { elapsed: *elapsed }
+        } else {
+            DispatchInput::Event {
+                event: event.clone(),
+                elapsed: since_tick,
             }
-            Event::Button {
-                name: tehuti_protocol::ButtonName::South,
-                state,
-            } if self.handle_secret_confirmation_button(*state) => return,
-            Event::Focus { .. } => self.speech_input(SpeechInput::Cancel),
-            Event::Tick { .. } | Event::Button { .. } | Event::Speech { .. } => {}
-        }
-        if !matches!(event, Event::Tick { .. }) {
-            self.route_event(event);
-        }
-        if matches!(event, Event::Focus { .. }) {
-            self.advance_time();
-        }
-        if let Event::Tick { elapsed } = event {
-            self.poll_tick(*elapsed);
-        }
+        };
+        let _rejection = self.dispatch(input);
     }
 
-    fn route_event(&mut self, event: &Event) {
-        let active = self.plugins.as_mut().is_some_and(|plugins| plugins.active(event));
-        let (mut next, mut actions, route_plugin) =
-            tehuti_core::step_with_plugin(core::mem::take(&mut self.core), event, active);
-        let request = self
-            .plugins
-            .as_mut()
-            .and_then(|plugins| plugins.dispatch(event, route_plugin));
-        if route_plugin {
-            if let Some((key, permissions)) = request {
-                let (state, mut routed, _) = tehuti_core::plugin::step(
-                    next,
-                    tehuti_core::plugin::Input::Request {
-                        key,
-                        event: event.clone(),
-                        permissions,
-                    },
-                );
-                next = state;
-                actions.append(&mut routed);
-            } else {
-                let (state, mut fallback) = tehuti_core::step(next, event);
-                next = state;
-                actions.append(&mut fallback);
-            }
-        }
-        self.core = next;
-        if let Event::Speech { text } = event {
-            match actions.first() {
-                Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
-                    tracing::info!(text = text.as_str(), "speech has no mapping");
+    /// Feeds one input and every reply it asks for until its frame finishes.
+    fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        let depth = self.dispatch.busy();
+        let mut input = input;
+        let mut rejection = None;
+        loop {
+            let (next, effects) = tehuti_core::dispatch::step(core::mem::take(&mut self.dispatch), input);
+            self.dispatch = next;
+            let mut reply = DispatchInput::Resume;
+            for effect in effects {
+                if let DispatchEffect::PluginRejected(rejected) = effect {
+                    rejection = Some(rejected);
+                } else if let Some(answer) = self.run_effect(effect) {
+                    reply = answer;
                 }
-                Some(action) => tracing::info!(text = text.as_str(), ?action, "speech mapped"),
-                None if route_plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
-                None => tracing::info!(text = text.as_str(), "speech produced no action"),
             }
-        }
-        for action in &actions {
-            self.apply(action);
+            if self.dispatch.busy() <= depth {
+                return rejection;
+            }
+            input = reply;
         }
     }
 
-    fn poll_tick(&mut self, elapsed: core::time::Duration) {
-        let inputs = self
-            .speech_process
-            .as_mut()
-            .map_or_else(Vec::new, |process| process.poll(elapsed));
-        for input in inputs {
-            self.speech_input(input);
+    /// Sends a start or stop to the speech sidecar; `false` when it fails.
+    fn send_speech_command(&mut self, command: &tehuti_core::speech::SpeechEffect) -> bool {
+        match command {
+            tehuti_core::speech::SpeechEffect::Start { session } => {
+                tracing::info!(session, "speech session started");
+            }
+            tehuti_core::speech::SpeechEffect::Stop { session, transcribe } => {
+                tracing::info!(session, transcribe, "speech session stopped");
+            }
+            tehuti_core::speech::SpeechEffect::Speech { .. }
+            | tehuti_core::speech::SpeechEffect::Failed { .. } => {}
         }
-        self.poll_secret_lookup();
-        self.poll_launchers();
-        self.desktop_entries.poll();
+        self.speech_process.as_mut().is_none_or(|process| {
+            process
+                .send(command)
+                .inspect_err(|error| tracing::warn!(%error, "speech command failed"))
+                .is_ok()
+        })
+    }
+
+    fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
+        match effect {
+            DispatchEffect::QueryPlugin(event) => Some(DispatchInput::PluginActive(
+                self.plugins
+                    .as_mut()
+                    .is_some_and(|plugins| plugins.active(&event)),
+            )),
+            DispatchEffect::DispatchPlugin { event, route } => Some(DispatchInput::PluginRequest(
+                self.plugins
+                    .as_mut()
+                    .and_then(|plugins| plugins.dispatch(&event, route)),
+            )),
+            DispatchEffect::Supervise => Some(DispatchInput::Supervised(
+                self.plugins
+                    .as_mut()
+                    .map_or_else(Vec::new, crate::plugins::Plugins::supervise),
+            )),
+            DispatchEffect::ConfirmSecret(state) => Some(DispatchInput::SecretConfirmation(
+                self.handle_secret_confirmation_button(state),
+            )),
+            DispatchEffect::SpeechCommand(command) => {
+                Some(DispatchInput::SpeechSent(self.send_speech_command(&command)))
+            }
+            DispatchEffect::PollSpeech(elapsed) => Some(DispatchInput::SpeechPolled(
+                self.speech_process
+                    .as_mut()
+                    .map_or_else(Vec::new, |process| process.poll(elapsed)),
+            )),
+            effect @ (DispatchEffect::PollSources
+            | DispatchEffect::SouthPressed(_)
+            | DispatchEffect::ResetSecretFocus
+            | DispatchEffect::Apply(_)
+            | DispatchEffect::PluginAction(_)
+            | DispatchEffect::PluginRejected(_)
+            | DispatchEffect::Handle(_)
+            | DispatchEffect::SpeechFailed { .. }
+            | DispatchEffect::TranscriptReceived { .. }
+            | DispatchEffect::SpeechRouted { .. }) => {
+                self.carry_out(effect);
+                None
+            }
+        }
+    }
+
+    /// Runs an effect that needs no reply; `run_effect` answers the queries.
+    fn carry_out(&mut self, effect: DispatchEffect) {
+        use tehuti_core::speech::SpeechFailure;
+        match effect {
+            DispatchEffect::PollSources => {
+                self.poll_secret_lookup();
+                self.poll_launchers();
+                self.desktop_entries.poll();
+            }
+            DispatchEffect::SouthPressed(pressed) => {
+                self.secret_confirmation.south_pressed = pressed;
+            }
+            DispatchEffect::ResetSecretFocus => {
+                self.reset_secret_confirmation_for_focus();
+            }
+            DispatchEffect::Apply(action) => {
+                self.apply(&action);
+            }
+            DispatchEffect::PluginAction(action) => {
+                self.apply_plugin_action(&action);
+            }
+            DispatchEffect::PluginRejected(_)
+            | DispatchEffect::QueryPlugin(_)
+            | DispatchEffect::DispatchPlugin { .. }
+            | DispatchEffect::Supervise
+            | DispatchEffect::ConfirmSecret(_)
+            | DispatchEffect::SpeechCommand(_)
+            | DispatchEffect::PollSpeech(_) => {}
+            DispatchEffect::Handle(event) => {
+                self.handle(&event);
+            }
+            DispatchEffect::SpeechFailed { session, reason } => {
+                tracing::warn!(session, ?reason, "speech transcription failed");
+                self.show_notice(match reason {
+                    SpeechFailure::Silent => "MIC SILENT",
+                    SpeechFailure::Transcription => "SPEECH FAILED",
+                });
+            }
+            DispatchEffect::TranscriptReceived {
+                session,
+                text,
+                admitted,
+            } => {
+                tracing::info!(session, text = text.as_str(), "speech transcript received");
+                if !admitted {
+                    tracing::info!("speech transcript dropped for a stale session");
+                }
+            }
+            DispatchEffect::SpeechRouted { text, first, plugin } => {
+                log_speech_route(&text, first.as_ref(), plugin);
+            }
+        }
     }
 
     fn reset_secret_confirmation_for_focus(&mut self) {
@@ -1325,3 +1326,14 @@ delegate_xdg_shell!(Compositor);
 delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
 delegate_output!(Compositor);
+
+fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin: bool) {
+    match first {
+        Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
+            tracing::info!(text = text.as_str(), "speech has no mapping");
+        }
+        Some(action) => tracing::info!(text = text.as_str(), ?action, "speech mapped"),
+        None if plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
+        None => tracing::info!(text = text.as_str(), "speech produced no action"),
+    }
+}
