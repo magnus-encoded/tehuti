@@ -199,6 +199,7 @@ impl Nested {
                 } else {
                     Vec::new()
                 };
+                add_settings(renderer, &data.compositor, &self.output, &mut notices);
                 if let Some(location) = data.compositor.cursor_on(&self.output) {
                     match MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
@@ -232,5 +233,18 @@ impl Nested {
             Err(error) => warn!(?error, "bind failed"),
         }
         (confirmation_element_included, output_drew)
+    }
+}
+
+fn add_settings(
+    renderer: &mut GlesRenderer,
+    compositor: &Compositor,
+    output: &Output,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    match tehuti::settings::element(renderer, compositor, output) {
+        Ok(Some(element)) => elements.insert(0, element),
+        Ok(None) => {}
+        Err(error) => warn!(?error, "settings render failed"),
     }
 }

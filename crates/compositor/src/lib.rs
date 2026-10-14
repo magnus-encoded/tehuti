@@ -31,3 +31,7 @@ pub mod shutdown;
 pub mod rendering;
 
 pub mod scale;
+
+pub mod settings;
+
+pub mod display_mode_store;

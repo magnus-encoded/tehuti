@@ -77,6 +77,7 @@ pub struct Compositor {
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
+    settings_display: crate::settings::Display,
     previous_tick: Instant,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
@@ -146,6 +147,7 @@ impl Compositor {
             space: Space::default(),
             output: None,
             dispatch: tehuti_core::dispatch::State::default(),
+            settings_display: crate::settings::Display::default(),
             previous_tick: Instant::now(),
             plugins: None,
             quit_requested: false,
@@ -555,8 +557,39 @@ impl Compositor {
         })
     }
 
+    #[must_use]
+    pub fn settings_buffer(&self) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
+        self.settings_display.artwork.borrow_mut().buffer(self.settings())
+    }
+
+    pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
+        let _rejection = self.dispatch(DispatchInput::DisplayModes { modes, current });
+    }
+
+    pub fn display_mode_applied(&mut self, current: Option<usize>) {
+        self.advance_time();
+        let _rejection = self.dispatch(DispatchInput::ModeApplied(current));
+    }
+
+    pub fn take_settings_request(&mut self) -> Option<(usize, bool)> {
+        self.settings_display.requests.pop_front()
+    }
+
+    #[must_use]
+    pub const fn settings(&self) -> &tehuti_core::dispatch::Settings {
+        self.dispatch.settings()
+    }
+
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         match effect {
+            DispatchEffect::SettingsMode(index) => {
+                self.settings_display.requests.push_back((index, false));
+                None
+            }
+            DispatchEffect::PersistMode(index) => {
+                self.settings_display.requests.push_back((index, true));
+                None
+            }
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
                 tracing::error!("invalid dispatch reply");
@@ -637,7 +670,9 @@ impl Compositor {
             DispatchEffect::PluginAction(action) => {
                 self.apply_plugin_action(&action);
             }
-            DispatchEffect::ReadClock
+            DispatchEffect::SettingsMode(_)
+            | DispatchEffect::PersistMode(_)
+            | DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
             | DispatchEffect::PluginRejected(_)
             | DispatchEffect::QueryPlugin(_)
@@ -661,10 +696,7 @@ impl Compositor {
                 text,
                 admitted,
             } => {
-                tracing::info!(session, text = text.as_str(), "speech transcript received");
-                if !admitted {
-                    tracing::info!("speech transcript dropped for a stale session");
-                }
+                log_transcript(session, &text, admitted);
             }
             DispatchEffect::SpeechRouted { text, first, plugin } => {
                 log_speech_route(&text, first.as_ref(), plugin);
@@ -1527,5 +1559,12 @@ fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin
         Some(action) => tracing::info!(text = text.as_str(), ?action, "speech mapped"),
         None if plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
         None => tracing::info!(text = text.as_str(), "speech produced no action"),
+    }
+}
+
+fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
+    tracing::info!(session, text = text.as_str(), "speech transcript received");
+    if !admitted {
+        tracing::info!("speech transcript dropped for a stale session");
     }
 }

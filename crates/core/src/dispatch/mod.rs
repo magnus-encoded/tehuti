@@ -10,6 +10,9 @@ use std::collections::VecDeque;
 
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
+mod settings;
+pub use settings::Settings;
+
 mod mouse;
 pub use mouse::{PointerButton, Sticks};
 
@@ -18,6 +21,11 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState, speec
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    DisplayModes {
+        modes: Vec<String>,
+        current: usize,
+    },
+    ModeApplied(Option<usize>),
     /// Elapsed wall time since the previous tick.
     Tick {
         elapsed: Duration,
@@ -57,6 +65,8 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    SettingsMode(usize),
+    PersistMode(usize),
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
         x: i32,
@@ -164,6 +174,7 @@ pub struct State {
     speech: SpeechState,
     mouse: mouse::State,
     frames: Vec<Frame>,
+    settings: Settings,
 }
 
 impl State {
@@ -174,6 +185,7 @@ impl State {
             speech: SpeechState::default(),
             mouse: mouse::State::default(),
             frames: Vec::new(),
+            settings: Settings::default(),
         }
     }
 
@@ -184,6 +196,11 @@ impl State {
 
     pub const fn core_mut(&mut self) -> &mut crate::State {
         &mut self.core
+    }
+
+    #[must_use]
+    pub const fn settings(&self) -> &Settings {
+        &self.settings
     }
 
     /// Frames still waiting for replies or resumption.
@@ -227,6 +244,14 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
+        Input::DisplayModes { modes, current } => {
+            state.settings.configure(modes, current);
+            return (state, effects);
+        }
+        Input::ModeApplied(current) => {
+            state.settings.applied(current, &mut effects);
+            return (state, effects);
+        }
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
         Input::Event { event, elapsed } => event_tasks(event, elapsed),
         Input::Speech(input) => vec![Task::Speech(input)],
@@ -400,17 +425,15 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
         }
         Task::Controller(event) => controller(state, event, effects),
         Task::Route(event) => {
-            if let Event::Tick { elapsed } = event {
-                state.mouse.tick(elapsed, effects);
-                if effects
-                    .iter()
-                    .any(|effect| matches!(effect, Effect::MouseMode(_)))
-                {
-                    frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
-                }
+            if settings_event(state, &event, effects) {
+                return;
             }
+            route_tick(state, &event, effects);
+            let Some(route_frame) = state.frames.last_mut() else {
+                return;
+            };
             effects.push(Effect::QueryPlugin(event.clone()));
-            frame.awaiting = Some(Await::PluginActive(event));
+            route_frame.awaiting = Some(Await::PluginActive(event));
         }
         Task::Supervise => {
             effects.push(Effect::Supervise);
@@ -449,7 +472,36 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
     }
 }
 
+fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    let was_open = state.settings.open;
+    let consumed = state.settings.event(event, effects);
+    if !was_open && state.settings.open {
+        state.mouse.disconnect(effects);
+        effects.push(Effect::ResetSecretFocus);
+    }
+    consumed
+}
+
+fn route_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
+    if let Event::Tick { elapsed } = event {
+        state.settings.tick(*elapsed, effects);
+        if !state.settings.open {
+            state.mouse.tick(*elapsed, effects);
+        }
+        if effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::MouseMode(_)))
+            && let Some(frame) = state.frames.last_mut()
+        {
+            frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
+        }
+    }
+}
+
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if settings_event(state, &event, effects) {
+        return;
+    }
     let Some(frame) = state.frames.last_mut() else {
         return;
     };
