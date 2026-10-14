@@ -50,16 +50,20 @@ mod focus_settles_pending {
                 || {
                     (
                         east(),
-                        Action::Text {
+                        Some(Action::Text {
                             text: east_text.clone(),
-                        },
+                        }),
                     )
                 },
                 |text| {
                     (
                         Event::Speech { text: text.clone() },
-                        Action::Notice {
-                            text: Text::new("NO SPEECH MAPPING".into()).unwrap(),
+                        if text.as_str().trim().is_empty() {
+                            None
+                        } else {
+                            Some(Action::Notice {
+                                text: Text::new("NO SPEECH MAPPING".into()).unwrap(),
+                            })
                         },
                     )
                 },
@@ -76,7 +80,7 @@ mod focus_settles_pending {
             assert!(rejection.is_none(), "valid requests are accepted");
             state = next;
             keys.push(key);
-            fallbacks.push(fallback);
+            fallbacks.extend(fallback);
         }
         (state, keys, fallbacks)
     }

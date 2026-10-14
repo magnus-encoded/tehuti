@@ -28,6 +28,17 @@ impl State {
         }
     }
 
+    /// Swaps the contexts and keeps focus, held buttons and pending plugin decisions.
+    pub fn replace_contexts(&mut self, contexts: Vec<Context>) {
+        self.contexts = contexts;
+    }
+
+    /// The installed contexts, in priority order.
+    #[must_use]
+    pub fn contexts(&self) -> &[Context] {
+        &self.contexts
+    }
+
     /// Cancels controller holds when the device disconnects or the seat pauses.
     pub const fn controller_disconnected(&mut self) {
         self.guide_held = None;
@@ -101,6 +112,9 @@ const fn global_layer(event: &Event) -> Option<Action> {
 
 fn active_context(state: &State, event: &Event) -> Option<Action> {
     if let Event::Speech { text } = event {
+        if text.as_str().trim().is_empty() {
+            return None;
+        }
         return state
             .contexts
             .iter()

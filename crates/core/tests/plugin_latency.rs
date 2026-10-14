@@ -18,6 +18,14 @@ mod plugin_latency {
         }
     }
 
+    fn speech_fallback(text: &Text) -> Vec<Action> {
+        if text.as_str().trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![unmapped_notice()]
+        }
+    }
+
     fn speech(text: Text) -> Event {
         Event::Speech { text }
     }
@@ -180,6 +188,7 @@ mod plugin_latency {
                 tehuti_protocol::parse_context(&format!("app_id = '{app_id}'\n[buttons]\n")).unwrap()
             }).collect();
             let key = RequestKey { plugin: 0, request_id: 1 };
+            let fallback = speech_fallback(&text);
             let pending = request(State::with_contexts(contexts), key, speech(text));
             let (mut declined, decline_actions, rejection) = plugin::step(pending.clone(), Input::Reply {
                 key,
@@ -190,7 +199,7 @@ mod plugin_latency {
             });
             prop_assert!(rejection.is_none());
             prop_assert!(expiry_rejection.is_none());
-            prop_assert_eq!(&decline_actions, &vec![unmapped_notice()]);
+            prop_assert_eq!(&decline_actions, &fallback);
             prop_assert_eq!(expiry_actions, decline_actions);
             for event in future {
                 let (next_declined, declined_actions) = step(declined, &event);
@@ -207,11 +216,12 @@ mod plugin_latency {
             prefix in prop::collection::vec(any::<KeyName>(), 0..20),
         ) {
             let key = RequestKey { plugin: 0, request_id: 1 };
+            let fallback = speech_fallback(&text);
             let pending = request(State::new(), key, speech(text.clone()));
             let mut actions: Vec<_> = prefix.into_iter().map(|name| Action::Key { key: name }).collect();
             actions.push(Action::Text { text });
             let (resolved, delivered, rejection) = plugin::step(pending, Input::Reply { key, result: Ok(actions) });
-            prop_assert_eq!(delivered, vec![unmapped_notice()]);
+            prop_assert_eq!(delivered, fallback);
             prop_assert!(rejection.as_ref().is_some_and(|rejected| rejected.key == key && rejected.reason.contains("text")), "a denied action names its request and reason");
             let (_, repeated, _) = plugin::step(resolved, Input::Reply {
                 key,
@@ -231,6 +241,7 @@ mod plugin_latency {
             let new = RequestKey { plugin: plugin_index, request_id: first_id.saturating_add(1) };
             let state = request(State::new(), old, speech(first));
             let (state, _, _) = plugin::step(state, Input::Tick { elapsed: Duration::from_secs(2) });
+            let fallback = speech_fallback(&second);
             let state = request(state, new, speech(second));
             let (state, late, _) = plugin::step(state, Input::Reply {
                 key: old,
@@ -238,7 +249,7 @@ mod plugin_latency {
             });
             prop_assert!(late.is_empty(), "late replies cannot deliver or release another event");
             let (_, delivered, _) = plugin::step(state, Input::Reply { key: new, result: Ok(Vec::new()) });
-            prop_assert_eq!(delivered, vec![unmapped_notice()]);
+            prop_assert_eq!(delivered, fallback);
         }
     }
 }

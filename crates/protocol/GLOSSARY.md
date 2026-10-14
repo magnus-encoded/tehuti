@@ -15,3 +15,4 @@
 | Speech | Validated transcription text routed to the focused context or subscribed plugin. |
 | Record | The Share button, KEY_RECORD, reserved for push-to-talk. |
 | Notice | A core action displaying unmatched speech feedback without changing focus. |
+| Unmatched speech | A transcript with no phrase mapping. A context may opt into typing it with a trailing space through `unmatched_speech = "type"`. |

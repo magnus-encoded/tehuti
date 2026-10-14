@@ -83,9 +83,11 @@ pub(crate) fn insert(
     );
     let _global = output.create_global::<Compositor>(display);
     output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
+    tehuti::scale::apply(&output, mode, tehuti::scale::from_env(mode.size.w));
     output.set_preferred(mode);
     compositor.space.map_output(&output, (0, 0));
     compositor.output = Some(output.clone());
+    compositor.fill_output();
 
     let mut nested = Nested {
         backend,
@@ -109,7 +111,8 @@ impl Nested {
                     size: *size,
                     refresh: REFRESH_MILLIHERTZ,
                 };
-                self.output.change_current_state(Some(mode), None, None, None);
+                let scale = self.output.current_scale().integer_scale();
+                tehuti::scale::apply(&self.output, mode, scale);
                 data.compositor.fill_output();
             }
             WinitEvent::Redraw => self.redraw(data),

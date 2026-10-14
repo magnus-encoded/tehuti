@@ -33,6 +33,11 @@ and retries Tehuti with a delay.
 
 Speech: hold Share to record, release to transcribe. Set `TEHUTI_NO_SPEECH=1` to skip it.
 
+Scale: `TEHUTI_SCALE` sets the integer output scale, for example `TEHUTI_SCALE=2`.
+Without it, modes wider than 2560 pixels use 2 and others use 1. Invalid values
+(0, negative or not a whole number) log a warning and use that default. The
+nested window honours it too.
+
 `examples/foot/context.toml` (foot terminal):
 
 - South: Enter. East: Backspace. West: Space. Select: Escape.

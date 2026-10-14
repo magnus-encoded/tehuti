@@ -189,6 +189,30 @@ impl Compositor {
         self.core = tehuti_core::State::with_contexts(contexts);
     }
 
+    /// The installed contexts, in priority order.
+    #[must_use]
+    pub fn contexts(&self) -> &[tehuti_protocol::Context] {
+        self.core.contexts()
+    }
+
+    /// Applies a context reload. A failed reload keeps the current set and names the file.
+    pub fn reload_contexts(
+        &mut self,
+        reload: Result<Vec<tehuti_protocol::Context>, crate::contexts::LoadError>,
+    ) {
+        match reload {
+            Ok(contexts) => {
+                tracing::info!(count = contexts.len(), "contexts reloaded");
+                self.core.replace_contexts(contexts);
+                self.show_notice("CONTEXTS RELOADED");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "context reload failed; keeping the current contexts");
+                self.show_notice(&error.notice());
+            }
+        }
+    }
+
     #[must_use]
     pub fn initialized_plugins(&self) -> usize {
         self.plugins

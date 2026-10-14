@@ -2,6 +2,7 @@
 """Capture on core commands; return transcription without delivering input."""
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -12,6 +13,24 @@ import wave
 MAX_LINE = 65536
 MAX_AUDIO_SECONDS = 60
 SILENCE_PEAK = 64
+
+
+HALLUCINATION = re.compile(
+    r"(thank you|thanks)( so much| very much)?( for watching| for listening)?"
+    r"( and)?( (bye|goodbye|bye bye|see you))*|(bye|goodbye|bye bye)( bye)*"
+    r"|you|please subscribe.*|(like and )?subscribe.*"
+    r"|see you (next time|in the next video)|subtitles by .*"
+    r"|(amara|transcription by) .*|the end"
+)
+
+
+def transcript(segments):
+    text = " ".join(
+        segment.text.strip() for segment in segments
+        if not (segment.no_speech_prob > 0.6 and segment.avg_logprob < -1.0)
+    ).strip()
+    normalized = " ".join(re.sub(r"[.!?,'\"]", "", text.lower()).replace("-", " ").split())
+    return "" if HALLUCINATION.fullmatch(normalized) else text
 
 
 def peak(audio):
@@ -102,7 +121,7 @@ class Speech:
                         segments, _ = self.model.transcribe(
                             recording.name, beam_size=5, language="en", vad_filter=True,
                         )
-                        text = " ".join(segment.text.strip() for segment in segments).strip()
+                        text = transcript(segments)
                 reply({"session": session, "text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)

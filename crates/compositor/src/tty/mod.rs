@@ -187,20 +187,8 @@ fn insert_seat(
     Ok(())
 }
 
-fn create_output(
-    mut session: LibSeatSession,
-    path: &std::path::Path,
-    display: &DisplayHandle,
-    compositor: &mut Compositor,
-) -> Result<(Tty, smithay::backend::drm::DrmDeviceNotifier), Box<dyn Error>> {
-    let device_fd = DrmDeviceFd::new(DeviceFd::from(
-        session.open(path, rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC)?,
-    ));
-    let (mut device, drm_notifier) = DrmDevice::new(device_fd.clone(), false)?;
-    let surface = connected_surface(&mut device)?;
-    let mode = surface.pending_mode();
-    let mut renderer = render::create(&device_fd, &surface)?;
-    render::advertise(&mut renderer, display, compositor)?;
+/// The DRM output at its mode and `TEHUTI_SCALE`, advertised to clients.
+fn drm_output(display: &DisplayHandle, mode: smithay::reexports::drm::control::Mode) -> Output {
     let output = Output::new(
         "tehuti-drm".into(),
         PhysicalProperties {
@@ -217,9 +205,33 @@ fn create_output(
         None,
         Some((0, 0).into()),
     );
+    tehuti::scale::apply(
+        &output,
+        mode.into(),
+        tehuti::scale::from_env(i32::from(mode.size().0)),
+    );
     output.set_preferred(mode.into());
+    output
+}
+
+fn create_output(
+    mut session: LibSeatSession,
+    path: &std::path::Path,
+    display: &DisplayHandle,
+    compositor: &mut Compositor,
+) -> Result<(Tty, smithay::backend::drm::DrmDeviceNotifier), Box<dyn Error>> {
+    let device_fd = DrmDeviceFd::new(DeviceFd::from(
+        session.open(path, rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC)?,
+    ));
+    let (mut device, drm_notifier) = DrmDevice::new(device_fd.clone(), false)?;
+    let surface = connected_surface(&mut device)?;
+    let mode = surface.pending_mode();
+    let mut renderer = render::create(&device_fd, &surface)?;
+    render::advertise(&mut renderer, display, compositor)?;
+    let output = drm_output(display, mode);
     compositor.space.map_output(&output, (0, 0));
     compositor.output = Some(output.clone());
+    compositor.fill_output();
     let libinput = create_libinput(&session)?;
     let tty = Tty {
         keyboard: tehuti::backend::EscapeKeyboard::default(),
