@@ -113,3 +113,20 @@ const fn glyph(character: char) -> [u8; 7] {
         _ => [0; 7],
     }
 }
+
+#[must_use]
+pub fn cursor_buffer() -> MemoryRenderBuffer {
+    let mut pixels = vec![0_u8; 24 * 24 * 4];
+    for y in 0_usize..24 {
+        for x in 0_usize..24 {
+            if x <= y / 2 && y < 20 {
+                let color = if x == 0 || x == y / 2 || y == 19 { 0 } else { 255 };
+                let offset = y.saturating_mul(24).saturating_add(x).saturating_mul(4);
+                if let Some(pixel) = pixels.get_mut(offset..offset.saturating_add(4)) {
+                    pixel.copy_from_slice(&[color, color, color, 255]);
+                }
+            }
+        }
+    }
+    MemoryRenderBuffer::from_slice(&pixels, Fourcc::Argb8888, (24, 24), 1, Transform::Normal, None)
+}

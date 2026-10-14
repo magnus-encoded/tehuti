@@ -109,6 +109,24 @@ impl EvdevPad {
     pub fn name(&self) -> &str {
         self.0.name().unwrap_or("unnamed")
     }
+    /// Samples the current calibrated stick axes, including a 15 percent deadzone.
+    /// # Errors
+    /// The kernel could not read the controller axis state.
+    pub fn sticks(&self) -> io::Result<tehuti_core::dispatch::Sticks> {
+        use evdev::AbsoluteAxisCode;
+        let mut sticks = tehuti_core::dispatch::Sticks::default();
+        for (axis, info) in self.0.get_absinfo()? {
+            let value = stick_axis(info.value(), info.minimum(), info.maximum());
+            match axis {
+                AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
+                AbsoluteAxisCode::ABS_Y => sticks.left.1 = value,
+                AbsoluteAxisCode::ABS_RX => sticks.right.0 = value,
+                AbsoluteAxisCode::ABS_RY => sticks.right.1 = value,
+                _ => {}
+            }
+        }
+        Ok(sticks)
+    }
 }
 
 impl AsFd for EvdevPad {
@@ -324,6 +342,19 @@ mod tests {
     }
 
     #[test]
+    fn stick_calibration_handles_deadzone_extremes_and_invalid_ranges() {
+        assert_eq!(stick_axis(0, -32768, 32767), 0);
+        assert_eq!(stick_axis(4000, -32768, 32767), 0);
+        assert_eq!(stick_axis(-32768, -32768, 32767), -1000);
+        assert_eq!(stick_axis(32767, -32768, 32767), 1000);
+        assert_eq!(stick_axis(128, 0, 255), 0);
+        assert_eq!(stick_axis(0, 0, 255), -1000);
+        assert_eq!(stick_axis(255, 0, 255), 1000);
+        assert_eq!(stick_axis(10, 10, 10), 0);
+        assert_eq!(stick_axis(10, 20, 10), 0);
+    }
+
+    #[test]
     fn autorepeat_and_unknown_codes_are_dropped() {
         assert_eq!(parse_button(KeyCode::BTN_SOUTH, 2), None, "autorepeat");
         assert_eq!(parse_button(KeyCode::KEY_A, 1), None, "keyboard key");
@@ -376,4 +407,20 @@ pub fn discover(state: Discovery, input: DiscoveryInput) -> (Discovery, Option<D
         }
         (state, _) => (state, None),
     }
+}
+
+fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
+    let range = i64::from(maximum).saturating_sub(i64::from(minimum));
+    if range <= 0 {
+        return 0;
+    }
+    let normalized = (i64::from(value)
+        .saturating_sub(i64::from(minimum))
+        .saturating_mul(2000)
+        .checked_div(range)
+        .unwrap_or_default()
+        .saturating_sub(1000))
+    .clamp(-1000, 1000);
+    let travel = normalized.abs().saturating_sub(150).max(0).saturating_mul(1000) / 850;
+    i16::try_from(travel.saturating_mul(normalized.signum())).unwrap_or_default()
 }

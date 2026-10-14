@@ -200,6 +200,65 @@ for line in sys.stdin:
         }
     }
 
+    fn dispatched_plugin_events(
+        contexts: Vec<tehuti_protocol::Context>,
+        events: impl IntoIterator<Item = Event>,
+    ) -> Vec<Event> {
+        use tehuti_core::dispatch::{Effect, Input, State, step};
+        let mut state = State::new(tehuti_core::State::with_contexts(contexts));
+        let mut routed = Vec::new();
+        for event in events {
+            let mut input = Input::Event {
+                event,
+                elapsed: Duration::ZERO,
+            };
+            loop {
+                let (next, effects) = step(state, input);
+                state = next;
+                input = Input::Resume;
+                for effect in effects {
+                    match effect {
+                        Effect::QueryPlugin(_) => input = Input::PluginActive(true),
+                        Effect::DispatchPlugin {
+                            event: dispatched,
+                            route,
+                        } => {
+                            if route {
+                                routed.push(dispatched);
+                            }
+                            input = Input::PluginRequest(None);
+                        }
+                        Effect::ReadClock => input = Input::ClockRead(Duration::ZERO),
+                        Effect::Supervise => input = Input::Supervised(vec![]),
+                        Effect::ConfirmSecret(_) => input = Input::SecretConfirmation(false),
+                        Effect::SpeechCommand(_) => input = Input::SpeechSent(true),
+                        Effect::PollSpeech(_) => input = Input::SpeechPolled(vec![]),
+                        Effect::InvalidReply => panic!("valid dispatch replies"),
+                        Effect::MovePointer { .. }
+                        | Effect::Scroll { .. }
+                        | Effect::Click { .. }
+                        | Effect::MouseMode(_)
+                        | Effect::System(_)
+                        | Effect::PollSources
+                        | Effect::SouthPressed(_)
+                        | Effect::ResetSecretFocus
+                        | Effect::Apply(_)
+                        | Effect::PluginAction(_)
+                        | Effect::PluginRejected(_)
+                        | Effect::Handle(_)
+                        | Effect::SpeechFailed { .. }
+                        | Effect::TranscriptReceived { .. }
+                        | Effect::SpeechRouted { .. } => {}
+                    }
+                }
+                if state.busy() == 0 {
+                    break;
+                }
+            }
+        }
+        routed
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(16))]
         #[test]
@@ -227,15 +286,9 @@ for line in sys.stdin:
             if starts {
                 harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1 && harness.directory.path().join("replied").exists());
             }
-            // The most permissive core: every button it would route to any live plugin.
-            let mut core = tehuti_core::State::with_contexts(contexts);
-            let mut routable = Vec::new();
-            let chord = escape();
-            for event in core::iter::once(focus("test")).chain(events.iter().cloned()).chain(chord.iter().cloned()) {
-                let (next, _, sent) = tehuti_core::step_with_plugin(core, &event, true);
-                core = next;
-                if sent { routable.push(event); }
-            }
+            // The menu escape, then Guide and Start, which still quits inside mouse mode.
+            let chord: Vec<Event> = escape().into_iter().chain([button(ButtonName::Guide), button(ButtonName::Start), Event::Tick { elapsed: Duration::from_secs(3) }]).collect();
+            let routable = dispatched_plugin_events(contexts, core::iter::once(focus("test")).chain(events.iter().cloned()).chain(chord.iter().cloned()));
             prop_assert!(!harness.compositor.quit_requested(), "no reply is read before the loop dispatches");
             harness.send(events);
             harness.send(chord);
@@ -264,9 +317,8 @@ for line in sys.stdin:
         ) {
             let event = Event::Button { name, state: button_state };
             let contexts = vec![context("test", &mappings)];
-            let (core, _, _) = tehuti_core::step_with_plugin(tehuti_core::State::with_contexts(contexts.clone()), &focus("test"), true);
-            let (_, _, routed) = tehuti_core::step_with_plugin(core, &event, true);
-            prop_assume!(routed, "only a routed button gets a reply");
+            let routed = dispatched_plugin_events(contexts.clone(), [focus("test"), event.clone()]);
+            prop_assume!(routed.contains(&event), "only a dispatched button gets a reply");
             let mut configuration = manifest();
             configuration.permissions = permissions;
             let mut harness = Harness::new(&configuration, "slow", 0, "json");

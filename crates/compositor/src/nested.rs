@@ -222,6 +222,20 @@ impl Nested {
                     Ok(None) => {}
                     Err(error) => warn!(?error, "bar render failed"),
                 }
+                if let Some(location) = data.compositor.cursor_location() {
+                    match MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        location,
+                        &tehuti::notice::cursor_buffer(),
+                        None,
+                        None,
+                        None,
+                        Kind::Cursor,
+                    ) {
+                        Ok(element) => notices.insert(0, element),
+                        Err(error) => warn!(?error, "cursor render failed"),
+                    }
+                }
                 match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
                     &self.output,
                     renderer,

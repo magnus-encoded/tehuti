@@ -23,6 +23,20 @@ impl World {
         self.run_at_depth(state, input, depth)
     }
 
+    fn close_focus(&mut self, state: State) -> State {
+        if let Some(event) = self.close_focus.take() {
+            self.run(
+                state,
+                Input::Event {
+                    event,
+                    elapsed: Duration::from_secs(9),
+                },
+            )
+        } else {
+            state
+        }
+    }
+
     fn run_at_depth(&mut self, state: State, input: Input, depth: usize) -> State {
         let (mut state, mut effects) = step(state, input);
         loop {
@@ -56,17 +70,13 @@ impl World {
                         );
                     }
                     Effect::Apply(Action::Close) | Effect::PluginAction(Action::Close) => {
-                        if let Some(event) = self.close_focus.take() {
-                            state = self.run(
-                                state,
-                                Input::Event {
-                                    event,
-                                    elapsed: Duration::from_secs(9),
-                                },
-                            );
-                        }
+                        state = self.close_focus(state);
                     }
-                    Effect::PollSources
+                    Effect::MovePointer { .. }
+                    | Effect::Scroll { .. }
+                    | Effect::Click { .. }
+                    | Effect::MouseMode(_)
+                    | Effect::PollSources
                     | Effect::SouthPressed(_)
                     | Effect::ResetSecretFocus
                     | Effect::Apply(_)
@@ -567,4 +577,240 @@ fn close_app_from_the_menu_applies_close_only() {
         })
         .collect();
     assert_eq!(applied, vec![Action::Close]);
+}
+
+fn configured_mouse(contexts: Vec<tehuti_protocol::Context>) -> State {
+    let app = contexts[0].app_id().to_owned();
+    configured(contexts, &app)
+}
+
+fn pad_button(name: ButtonName, state: ButtonState) -> Input {
+    Input::Event {
+        event: Event::Button { name, state },
+        elapsed: Duration::ZERO,
+    }
+}
+
+proptest! {
+    #[test]
+    fn view_waits_for_release_and_short_presses_keep_the_mapping(
+        mut contexts in arbitrary_contexts(),
+        duration in 0_u64..2000,
+        key in prop::sample::select(vec!["tab", "space", "escape"]),
+    ) {
+        contexts.insert(0, tehuti_protocol::parse_context(&format!("app_id = 'mouse-test'\n[buttons.select]\nkey = '{key}'")).unwrap());
+        let expected_key = match key { "tab" => tehuti_protocol::KeyName::Tab, "space" => tehuti_protocol::KeyName::Space, _ => tehuti_protocol::KeyName::Escape };
+        let expected = vec![Action::Key { key: expected_key }];
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_millis(duration) });
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::MouseMode(_) | Effect::DispatchPlugin { event: Event::Button { name: ButtonName::Select, .. }, .. })), "View is deferred");
+        world.trace.clear();
+        let _state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        let actual: Vec<_> = world.trace.into_iter().filter_map(|effect| if let Effect::Apply(action) = effect { Some(action) } else { None }).collect();
+        prop_assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn each_hold_toggles_once_independent_of_tick_partition(
+        contexts in arbitrary_contexts(),
+        early in 0_u64..2000,
+        late in 0_u64..10000,
+        holds in 1_usize..8,
+    ) {
+        let mut world = World::default();
+        let mut state = configured_mouse(contexts);
+        for index in 0..holds {
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+            world.trace.clear();
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(early) });
+            prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::MouseMode(_))));
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(2000_u64.saturating_sub(early)) });
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(late) });
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+            let toggles: Vec<_> = world.trace.iter().filter(|effect| matches!(effect, Effect::MouseMode(_))).cloned().collect();
+            prop_assert_eq!(toggles, vec![Effect::MouseMode(index % 2 == 0)]);
+        }
+    }
+
+    #[test]
+    fn mouse_mode_swallows_every_button_before_plugins_and_mappings(
+        contexts in arbitrary_contexts(),
+        name in prop::sample::select(vec![ButtonName::South, ButtonName::East, ButtonName::West, ButtonName::North, ButtonName::Record, ButtonName::Guide, ButtonName::Start, ButtonName::LeftBumper, ButtonName::RightBumper, ButtonName::DpadUp, ButtonName::DpadDown, ButtonName::DpadLeft, ButtonName::DpadRight, ButtonName::LeftStick, ButtonName::RightStick]),
+        plugin_active in prop::bool::ANY,
+    ) {
+        let mut world = World { plugin_active, ..World::default() };
+        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        world.trace.clear();
+        let state = world.run(state, pad_button(name, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(name, ButtonState::Released));
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::SpeechCommand(_) | Effect::ConfirmSecret(_) | Effect::QueryPlugin(Event::Button { .. }) | Effect::DispatchPlugin { event: Event::Button { .. }, .. })), "mouse buttons stay in core");
+        let clicks: Vec<_> = world.trace.into_iter().filter(|effect| matches!(effect, Effect::Click { .. })).collect();
+        let button = match name { ButtonName::South => Some(PointerButton::Left), ButtonName::East => Some(PointerButton::Right), ButtonName::North | ButtonName::West | ButtonName::LeftBumper | ButtonName::RightBumper | ButtonName::Select | ButtonName::Record | ButtonName::Start | ButtonName::Guide | ButtonName::LeftStick | ButtonName::RightStick | ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight => None };
+        let expected = button.map_or_else(Vec::new, |button| vec![Effect::Click { button, pressed: true }, Effect::Click { button, pressed: false }]);
+        prop_assert_eq!(clicks, expected);
+    }
+}
+
+proptest! {
+    #[test]
+    fn exit_and_disconnect_balance_drag_buttons(
+        contexts in arbitrary_contexts(),
+        disconnect in prop::bool::ANY,
+        right in prop::bool::ANY,
+    ) {
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        let name = if right { ButtonName::East } else { ButtonName::South };
+        let button = if right { PointerButton::Right } else { PointerButton::Left };
+        let state = world.run(state, pad_button(name, ButtonState::Pressed));
+        world.trace.clear();
+        let state = if disconnect {
+            world.run(state, Input::ControllerDisconnected)
+        } else {
+            let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+            world.run(state, Input::Tick { elapsed: Duration::from_secs(2) })
+        };
+        let clicks: Vec<_> = world.trace.iter().filter(|effect| matches!(effect, Effect::Click { .. })).cloned().collect();
+        prop_assert_eq!(clicks, vec![Effect::Click { button, pressed: false }]);
+        prop_assert!(world.trace.contains(&Effect::MouseMode(false)));
+        world.trace.clear();
+        let _state = world.run(state, Input::Tick { elapsed: Duration::from_secs(20) });
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Click { .. } | Effect::MouseMode(_))), "cleanup happens once");
+    }
+
+    #[test]
+    fn stick_motion_is_precise_at_small_deflections_and_accelerates(
+        contexts in arbitrary_contexts(),
+        small in 1_i16..400,
+        large in 600_i16..1001,
+        negative in prop::bool::ANY,
+    ) {
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let mut state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let mut distances = Vec::new();
+        for axis in [small, large] {
+            let axis = if negative { axis.saturating_neg() } else { axis };
+            state = world.run(state, Input::Sticks(Sticks { left: (axis, 0), right: (0, axis) }));
+            world.trace.clear();
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(10) });
+            let motion = world.trace.iter().find_map(|effect| if let Effect::MovePointer { x, y: 0 } = effect { Some(*x) } else { None }).unwrap();
+            prop_assert_eq!(motion.signum(), if negative { -1 } else { 1 });
+            prop_assert!(world.trace.iter().any(|effect| matches!(effect, Effect::Scroll { x: 0, y } if y.signum() == motion.signum())), "right stick scrolls independently");
+            distances.push(motion.abs());
+        }
+        prop_assert!(distances[0] < distances[1]);
+        prop_assert!(distances[0] < 1_600_000, "small deflections move less than two pixels per tick");
+    }
+
+    #[test]
+    fn disconnect_cancels_a_pending_short_view_mapping(
+        mut contexts in arbitrary_contexts(),
+        elapsed in 0_u64..2000,
+    ) {
+        contexts.insert(0, tehuti_protocol::parse_context("app_id = 'mouse-test'\n[buttons.select]\nkey = 'tab'").unwrap());
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_millis(elapsed) });
+        let state = world.run(state, Input::ControllerDisconnected);
+        world.trace.clear();
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        let _state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::MouseMode(_))));
+    }
+}
+
+#[test]
+fn entering_mouse_mode_cancels_recording_before_record_release_is_swallowed() {
+    let mut world = World::default();
+    let state = world.run(State::default(), Input::Speech(SpeechInput::Available));
+    let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
+    let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+    world.trace.clear();
+    let state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(2),
+        },
+    );
+    assert!(
+        world.trace.iter().any(|effect| matches!(
+            effect,
+            Effect::SpeechCommand(SpeechEffect::Stop {
+                transcribe: false,
+                ..
+            })
+        )),
+        "entering mouse mode stops capture"
+    );
+    world.trace.clear();
+    let _state = world.run(state, pad_button(ButtonName::Record, ButtonState::Released));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SpeechCommand(_))),
+        "swallowed release cannot restart capture"
+    );
+}
+
+#[test]
+fn escape_still_quits_when_view_toggles_mouse_mode_during_the_chord() {
+    let mut world = World::default();
+    let mut state = State::default();
+    for name in [ButtonName::Select, ButtonName::Guide, ButtonName::Start] {
+        state = world.run(state, pad_button(name, ButtonState::Pressed));
+    }
+    let state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(3),
+        },
+    );
+    assert!(
+        world.trace.contains(&Effect::MouseMode(true)),
+        "View reaches its threshold"
+    );
+    assert!(state.core().menu().is_some(), "the system menu stays available");
+}
+
+#[test]
+fn the_guide_hold_remains_reserved_inside_mouse_mode() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        pad_button(ButtonName::Select, ButtonState::Pressed),
+    );
+    let state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(2),
+        },
+    );
+    let mut state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+    world.trace.clear();
+    for name in [ButtonName::Guide] {
+        state = world.run(state, pad_button(name, ButtonState::Pressed));
+    }
+    let state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(3),
+        },
+    );
+    assert!(state.core().menu().is_some(), "holding Guide opens the system menu");
+    assert_eq!(
+        world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Apply(_)))
+            .collect::<Vec<_>>(),
+        Vec::<&Effect>::new(),
+        "the menu hold never sends keys to the app"
+    );
 }

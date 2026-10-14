@@ -316,5 +316,15 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
 }
 
 fn advance_time(data: &mut LoopData) {
+    if let Some(pad) = &data.controller {
+        match pad.sticks() {
+            Ok(sticks) => data.compositor.sample_sticks(sticks),
+            Err(error) => {
+                data.compositor
+                    .sample_sticks(tehuti_core::dispatch::Sticks::default());
+                warn!(%error, "controller stick sample failed");
+            }
+        }
+    }
     data.compositor.advance_time();
 }
