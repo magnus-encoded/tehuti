@@ -1222,7 +1222,12 @@ impl Compositor {
                 Self::announce_scale(output, toplevel.wl_surface());
             }
             if let Some(toplevel) = window.toplevel() {
-                Self::configure_layout_window(toplevel, tile, snapshot.focused_window == Some(*identity));
+                Self::configure_layout_window(
+                    toplevel,
+                    tile,
+                    snapshot.focused_window == Some(*identity),
+                    !window.size_held(),
+                );
             }
         }
         self.sync_window_focus();
@@ -1232,6 +1237,7 @@ impl Compositor {
         toplevel: &ToplevelSurface,
         tile: &tehuti_core::layout::TileView,
         focused: bool,
+        send: bool,
     ) {
         toplevel.with_pending_state(|pending| {
             pending.size = Some(
@@ -1252,7 +1258,7 @@ impl Compositor {
                 }
             }
         });
-        if toplevel.is_initial_configure_sent() {
+        if send && toplevel.is_initial_configure_sent() {
             let _serial = toplevel.send_pending_configure();
         }
     }
@@ -1492,13 +1498,40 @@ impl CompositorHandler for Compositor {
         }
         if let Some(window) = self.window_for_root(&root) {
             window.on_commit();
-            if let Some(toplevel) = window.toplevel()
-                && !toplevel.is_initial_configure_sent()
-            {
-                let _serial = toplevel.send_configure();
+            if let Some(toplevel) = window.toplevel() {
+                if !toplevel.is_initial_configure_sent() {
+                    if withholds_initial_size(toplevel) {
+                        // mpv 0.41 stores a first-configure size as device
+                        // pixels although it is logical, then divides it by the
+                        // scale. Offer no size until it has mapped; its later
+                        // configures are converted correctly.
+                        window.hold_size(true);
+                        toplevel.with_pending_state(|pending| pending.size = None);
+                        let _serial = toplevel.send_configure();
+                        toplevel.with_pending_state(|pending| pending.size = Some(window.layout_size()));
+                    } else {
+                        let _serial = toplevel.send_configure();
+                    }
+                } else if window.size_held() && window.mapped() {
+                    window.hold_size(false);
+                    let _serial = toplevel.send_pending_configure();
+                }
             }
         }
     }
+}
+
+/// Clients whose first-configure size handling breaks at an output scale above 1.
+fn withholds_initial_size(toplevel: &ToplevelSurface) -> bool {
+    smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .is_some_and(|data| {
+                data.lock()
+                    .is_ok_and(|data| data.app_id.as_deref() == Some("mpv"))
+            })
+    })
 }
 
 impl FractionalScaleHandler for Compositor {
