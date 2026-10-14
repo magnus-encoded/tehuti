@@ -1,36 +1,24 @@
-//! A libseat-owned DRM output rendered into linear buffers through Pixman.
+//! A libseat-owned DRM output with GLES rendering and a pixman fallback.
+
+mod render;
 
 use crate::LoopData;
 use core::cell::RefCell;
 use core::{error::Error, time::Duration};
 use smithay::{
     backend::{
-        allocator::{
-            Allocator, Fourcc, Modifier,
-            dmabuf::{AsDmabuf, Dmabuf},
-            dumb::{DumbAllocator, DumbBuffer},
-        },
-        drm::{
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmSurface, PlaneConfig, PlaneState,
-            dumb::{DumbFramebuffer, framebuffer_from_dumb_buffer},
-        },
-        renderer::{
-            Bind,
-            damage::OutputDamageTracker,
-            element::{Kind, memory::MemoryRenderBufferRenderElement},
-            pixman::PixmanRenderer,
-        },
+        drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmSurface, PlaneConfig, PlaneState},
+        renderer::damage::OutputDamageTracker,
         session::{Event, Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent, primary_gpu},
     },
-    desktop::space::render_output,
     output::{Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
             EventLoop,
             timer::{TimeoutAction, Timer},
         },
-        drm::control::{Device, connector},
+        drm::control::{Device, connector, framebuffer},
         wayland_server::DisplayHandle,
     },
     utils::{DeviceFd, Rectangle, Transform},
@@ -39,20 +27,13 @@ use std::rc::Rc;
 use tehuti::state::Compositor;
 use tracing::warn;
 
-struct Scanout {
-    framebuffer: DumbFramebuffer,
-    dmabuf: Dmabuf,
-    _buffer: DumbBuffer,
-}
-
 struct Tty {
     keyboard: tehuti::backend::EscapeKeyboard,
     session: LibSeatSession,
     libinput: smithay::reexports::input::Libinput,
     surface: DrmSurface,
     device: DrmDevice,
-    buffers: [Scanout; 2],
-    renderer: PixmanRenderer,
+    renderer: render::DrmRendering,
     output: Output,
     damage: OutputDamageTracker,
     next: bool,
@@ -218,22 +199,8 @@ fn create_output(
     let (mut device, drm_notifier) = DrmDevice::new(device_fd.clone(), false)?;
     let surface = connected_surface(&mut device)?;
     let mode = surface.pending_mode();
-    let mut allocator = DumbAllocator::new(device_fd.clone());
-    let mut allocate = || -> Result<Scanout, Box<dyn Error>> {
-        let (width, height) = mode.size();
-        let buffer = allocator.create_buffer(
-            u32::from(width),
-            u32::from(height),
-            Fourcc::Argb8888,
-            &[Modifier::Linear],
-        )?;
-        Ok(Scanout {
-            framebuffer: framebuffer_from_dumb_buffer(&device_fd, &buffer, true)?,
-            dmabuf: buffer.export()?,
-            _buffer: buffer,
-        })
-    };
-    let buffers = [allocate()?, allocate()?];
+    let mut renderer = render::create(&device_fd, &surface)?;
+    render::advertise(&mut renderer, display, compositor)?;
     let output = Output::new(
         "tehuti-drm".into(),
         PhysicalProperties {
@@ -260,8 +227,7 @@ fn create_output(
         libinput,
         surface,
         device,
-        buffers,
-        renderer: PixmanRenderer::new()?,
+        renderer,
         damage: OutputDamageTracker::from_output(&output),
         output,
         next: false,
@@ -309,47 +275,17 @@ fn connected_surface(device: &mut DrmDevice) -> Result<DrmSurface, Box<dyn Error
 
 impl Tty {
     fn render(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
-        let buffer = self
-            .buffers
-            .get_mut(usize::from(self.next))
-            .ok_or("missing scanout buffer")?;
-        let mut target = self.renderer.bind(&mut buffer.dmabuf)?;
-        let notice = data
-            .compositor
-            .visible_notice_text()
-            .map(|text| tehuti::notice::notice_buffer(&text));
-        let elements = notice
-            .as_ref()
-            .map(|notice_buffer| {
-                MemoryRenderBufferRenderElement::from_buffer(
-                    &mut self.renderer,
-                    (16.0, 16.0),
-                    notice_buffer,
-                    None,
-                    None,
-                    None,
-                    Kind::Unspecified,
-                )
-            })
-            .transpose()?
-            .into_iter()
-            .collect::<Vec<_>>();
-        let _rendered = render_output::<_, MemoryRenderBufferRenderElement<PixmanRenderer>, _, _>(
-            &self.output,
+        let (framebuffer, notice_drawn) = render::draw(
             &mut self.renderer,
-            &mut target,
-            1.0,
-            0,
-            [&data.compositor.space],
-            &elements,
+            self.next,
+            &self.output,
             &mut self.damage,
-            [0.0, 0.0, 0.0, 1.0],
+            &data.compositor,
         )?;
-        drop(target);
-        submit(&self.surface, &buffer.framebuffer, &mut self.modeset)?;
+        submit(&self.surface, framebuffer, &mut self.modeset)?;
         self.pending = true;
         self.next = !self.next;
-        if !elements.is_empty() && data.compositor.secret_confirmation_text().is_some() {
+        if notice_drawn && data.compositor.secret_confirmation_text().is_some() {
             data.compositor.note_secret_confirmation_frame_submitted();
         }
         for window in data.compositor.space.elements() {
@@ -368,23 +304,10 @@ impl Tty {
 
 fn submit(
     surface: &DrmSurface,
-    framebuffer: &DumbFramebuffer,
+    framebuffer: framebuffer::Handle,
     modeset: &mut bool,
 ) -> Result<(), Box<dyn Error>> {
-    let mode = surface.pending_mode();
-    let (width, height) = mode.size();
-    let plane = PlaneState {
-        handle: surface.plane(),
-        config: Some(PlaneConfig {
-            src: Rectangle::from_size((f64::from(width), f64::from(height)).into()),
-            dst: Rectangle::from_size((i32::from(width), i32::from(height)).into()),
-            transform: Transform::Normal,
-            alpha: 1.0,
-            damage_clips: None,
-            fb: *framebuffer.as_ref(),
-            fence: None,
-        }),
-    };
+    let plane = plane(surface, framebuffer);
     if *modeset {
         surface.commit([plane], true)?;
         *modeset = false;
@@ -392,4 +315,21 @@ fn submit(
         surface.page_flip([plane], true)?;
     }
     Ok(())
+}
+
+fn plane(surface: &DrmSurface, framebuffer: framebuffer::Handle) -> PlaneState<'_> {
+    let mode = surface.pending_mode();
+    let (width, height) = mode.size();
+    PlaneState {
+        handle: surface.plane(),
+        config: Some(PlaneConfig {
+            src: Rectangle::from_size((f64::from(width), f64::from(height)).into()),
+            dst: Rectangle::from_size((i32::from(width), i32::from(height)).into()),
+            transform: Transform::Normal,
+            alpha: 1.0,
+            damage_clips: None,
+            fb: framebuffer,
+            fence: None,
+        }),
+    }
 }

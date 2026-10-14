@@ -4,6 +4,12 @@
 
 A desktop environment you drive with a game controller and your voice.
 
+The login session renders on the DRM GPU through GBM/EGL and GLES. If GPU
+initialization or scanout setup fails, Tehuti logs the reason and automatically
+uses CPU pixman rendering with shared-memory clients. GPU rendering supports
+client dma-bufs in both the login session and nested mode, including render-node
+feedback when EGL exposes it. Legacy `wl_drm` is enabled when EGL supports it.
+
 ## Try it
 
 Run `scripts/try` from a terminal in your desktop. It builds Tehuti, sets up the

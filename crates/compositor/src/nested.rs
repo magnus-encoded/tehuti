@@ -1,11 +1,13 @@
 //! The winit backend: a window in the host desktop that Tehuti renders its output into.
 //! Host keyboard and pointer input on this window is ignored; only the controller drives Tehuti.
 
-use core::{error::Error, time::Duration};
+use core::{cell::RefCell, error::Error, time::Duration};
+use std::rc::Rc;
 
 use smithay::{
     backend::{
         renderer::{
+            ImportDma,
             damage::OutputDamageTracker,
             element::{
                 Kind,
@@ -33,7 +35,7 @@ const REFRESH_MILLIHERTZ: i32 = 60_000;
 const BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 struct Nested {
-    backend: WinitGraphicsBackend<GlesRenderer>,
+    backend: Rc<RefCell<WinitGraphicsBackend<GlesRenderer>>>,
     output: Output,
     damage_tracker: OutputDamageTracker,
     stop: LoopSignal,
@@ -50,11 +52,26 @@ pub(crate) fn insert(
     display: &DisplayHandle,
     compositor: &mut Compositor,
 ) -> Result<(), Box<dyn Error>> {
-    let (backend, winit_source) = winit::init::<GlesRenderer>()?;
+    let (mut backend, winit_source) = winit::init::<GlesRenderer>()?;
     let mode = Mode {
         size: backend.window_size(),
         refresh: REFRESH_MILLIHERTZ,
     };
+    let (formats, render_device) = tehuti::rendering::client_formats(backend.renderer(), display);
+    let backend = Rc::new(RefCell::new(backend));
+    let importer = backend.clone();
+    compositor.enable_dmabuf(
+        display,
+        formats.iter().copied(),
+        render_device,
+        move |dmabuf| match importer.borrow_mut().renderer().import_dmabuf(dmabuf, None) {
+            Ok(_) => true,
+            Err(error) => {
+                warn!(%error, "nested client dmabuf import failed");
+                false
+            }
+        },
+    )?;
     let output = Output::new(
         "tehuti".to_owned(),
         PhysicalProperties {
@@ -102,7 +119,7 @@ impl Nested {
     }
 
     fn redraw(&mut self, data: &mut LoopData) {
-        let size = self.backend.window_size();
+        let size = self.backend.borrow().window_size();
         self.render_frame(data, size);
         let elapsed = data.compositor.start_time.elapsed();
         let output = &self.output;
@@ -113,7 +130,7 @@ impl Nested {
         if let Err(error) = data.display.flush_clients() {
             warn!(%error, "flush failed");
         }
-        self.backend.window().request_redraw();
+        self.backend.borrow().window().request_redraw();
     }
 
     fn render_frame(
@@ -131,7 +148,11 @@ impl Nested {
         }
         let (confirmation_element_included, output_drew) =
             self.draw_bound_output(data, visible_notice.is_some(), confirmation_pending);
-        let submit_succeeded = match self.backend.submit(Some(&[Rectangle::from_size(size)])) {
+        let submit_succeeded = match self
+            .backend
+            .borrow_mut()
+            .submit(Some(&[Rectangle::from_size(size)]))
+        {
             Ok(()) => true,
             Err(error) => {
                 warn!(?error, "submit failed");
@@ -151,7 +172,7 @@ impl Nested {
     ) -> (bool, bool) {
         let mut output_drew = false;
         let mut confirmation_element_included = false;
-        match self.backend.bind() {
+        match self.backend.borrow_mut().bind() {
             Ok((renderer, mut framebuffer)) => {
                 let notices = if visible_notice {
                     match MemoryRenderBufferRenderElement::from_buffer(
