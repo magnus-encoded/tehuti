@@ -199,7 +199,7 @@ impl Nested {
                 } else {
                     Vec::new()
                 };
-                if let Some(location) = data.compositor.cursor_location() {
+                if let Some(location) = data.compositor.cursor_on(&self.output) {
                     match MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
                         location,

@@ -119,8 +119,8 @@ impl State {
         let scroll_x = if self.active { scroll_x } else { 0 };
         if scroll_x != 0 || scroll_y != 0 {
             effects.push(Effect::Scroll {
-                x: motion(scroll_x) / 4 * 3,
-                y: motion(scroll_y) / 4 * 3,
+                x: motion(scroll_x).saturating_div(4).saturating_mul(3),
+                y: motion(scroll_y).saturating_div(4).saturating_mul(3),
             });
         }
     }

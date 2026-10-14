@@ -226,7 +226,7 @@ where
         .into_iter()
         .collect::<Vec<_>>();
     let notice_included = !elements.is_empty();
-    if let Some(location) = compositor.cursor_location() {
+    if let Some(location) = compositor.cursor_on(output) {
         elements.insert(
             0,
             MemoryRenderBufferRenderElement::from_buffer(

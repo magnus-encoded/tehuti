@@ -419,6 +419,16 @@ impl Compositor {
             .then_some((self.pointer_location.x, self.pointer_location.y))
     }
 
+    /// Where to draw the cursor on `output`, in its physical pixels.
+    #[must_use]
+    pub fn cursor_on(
+        &self,
+        output: &smithay::output::Output,
+    ) -> Option<smithay::utils::Point<f64, smithay::utils::Physical>> {
+        let scale = output.current_scale().fractional_scale();
+        self.mouse_mode.then(|| self.pointer_location.to_physical(scale))
+    }
+
     fn pointer_time(&self) -> u32 {
         u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
     }
