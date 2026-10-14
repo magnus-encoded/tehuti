@@ -65,7 +65,7 @@ pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
     )
 }
 
-const fn glyph(character: char) -> [u8; 7] {
+pub(crate) const fn glyph(character: char) -> [u8; 7] {
     match character {
         'N' => [17, 25, 25, 21, 19, 19, 17],
         'O' => [14, 17, 17, 17, 17, 17, 14],
@@ -91,6 +91,7 @@ const fn glyph(character: char) -> [u8; 7] {
         'K' => [17, 18, 20, 24, 20, 18, 17],
         'J' => [7, 2, 2, 2, 2, 18, 12],
         'Q' => [14, 17, 17, 17, 21, 18, 13],
+        'X' => [17, 17, 10, 4, 10, 17, 17],
         'Z' => [31, 1, 2, 4, 8, 16, 31],
         '0' => [14, 17, 19, 21, 25, 17, 14],
         '1' => [4, 12, 4, 4, 4, 4, 14],

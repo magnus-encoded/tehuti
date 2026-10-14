@@ -198,7 +198,10 @@ fn focused_context(state: &State) -> Option<&Context> {
 }
 
 fn global_context(state: &State) -> Option<&Context> {
-    state.contexts.iter().find(|context| context.app_id() == GLOBAL_APP_ID)
+    state
+        .contexts
+        .iter()
+        .find(|context| context.app_id() == GLOBAL_APP_ID)
 }
 
 const fn fallback(_event: &Event) -> Option<Action> {

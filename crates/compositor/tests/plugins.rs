@@ -234,7 +234,9 @@ for line in sys.stdin:
                         Effect::SpeechCommand(_) => input = Input::SpeechSent(true),
                         Effect::PollSpeech(_) => input = Input::SpeechPolled(vec![]),
                         Effect::InvalidReply => panic!("valid dispatch replies"),
-                        Effect::MovePointer { .. }
+                        Effect::SettingsMode(_)
+                        | Effect::PersistMode(_)
+                        | Effect::MovePointer { .. }
                         | Effect::Scroll { .. }
                         | Effect::Click { .. }
                         | Effect::MouseMode(_)

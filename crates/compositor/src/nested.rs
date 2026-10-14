@@ -213,29 +213,13 @@ impl Nested {
                 } else {
                     Vec::new()
                 };
-                let clock = chrono::Local::now().format("%H:%M").to_string();
-                match self
-                    .bar
-                    .element(renderer, &self.output, data.compositor.voice_bar(), &clock)
-                {
-                    Ok(Some(element)) => notices.push(element),
-                    Ok(None) => {}
-                    Err(error) => warn!(?error, "bar render failed"),
-                }
-                if let Some(location) = data.compositor.cursor_on(&self.output) {
-                    match MemoryRenderBufferRenderElement::from_buffer(
-                        renderer,
-                        location,
-                        &tehuti::notice::cursor_buffer(),
-                        None,
-                        None,
-                        None,
-                        Kind::Cursor,
-                    ) {
-                        Ok(element) => notices.insert(0, element),
-                        Err(error) => warn!(?error, "cursor render failed"),
-                    }
-                }
+                add_overlays(
+                    &mut self.bar,
+                    &self.output,
+                    renderer,
+                    &data.compositor,
+                    &mut notices,
+                );
                 match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
                     &self.output,
                     renderer,
@@ -250,10 +234,7 @@ impl Nested {
                     Ok(result) => {
                         output_drew = result.damage.is_some();
                         if let Some(path) = screenshot {
-                            let size = self
-                                .output
-                                .current_mode()
-                                .map_or((0, 0), |mode| (mode.size.w, mode.size.h));
+                            let size = output_size(&self.output);
                             let saved = tehuti::system::capture(renderer, &framebuffer, size, &path);
                             *screenshot_result = Some(saved);
                         }
@@ -265,4 +246,53 @@ impl Nested {
         }
         (confirmation_element_included, output_drew)
     }
+}
+
+fn add_settings(
+    renderer: &mut GlesRenderer,
+    compositor: &Compositor,
+    output: &Output,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    match tehuti::settings::element(renderer, compositor, output) {
+        Ok(Some(element)) => elements.insert(0, element),
+        Ok(None) => {}
+        Err(error) => warn!(?error, "settings render failed"),
+    }
+}
+
+fn add_overlays(
+    bar: &mut tehuti::bar::Buffer,
+    output: &Output,
+    renderer: &mut GlesRenderer,
+    compositor: &Compositor,
+    notices: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    let clock = chrono::Local::now().format("%H:%M").to_string();
+    match bar.element(renderer, output, compositor.voice_bar(), &clock) {
+        Ok(Some(element)) => notices.push(element),
+        Ok(None) => {}
+        Err(error) => warn!(?error, "bar render failed"),
+    }
+    add_settings(renderer, compositor, output, notices);
+    if let Some(location) = compositor.cursor_on(output) {
+        match MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            location,
+            &tehuti::notice::cursor_buffer(),
+            None,
+            None,
+            None,
+            Kind::Cursor,
+        ) {
+            Ok(element) => notices.insert(0, element),
+            Err(error) => warn!(?error, "cursor render failed"),
+        }
+    }
+}
+
+fn output_size(output: &Output) -> (i32, i32) {
+    output
+        .current_mode()
+        .map_or((0, 0), |mode| (mode.size.w, mode.size.h))
 }

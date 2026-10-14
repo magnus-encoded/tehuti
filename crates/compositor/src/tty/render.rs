@@ -239,9 +239,9 @@ where
         .into_iter()
         .collect::<Vec<_>>();
     let notice_included = !elements.is_empty();
-    let clock = chrono::Local::now().format("%H:%M").to_string();
-    if let Some(element) = bar.element(renderer, output, compositor.voice_bar(), &clock)? {
-        elements.push(element);
+    add_bar(renderer, bar, compositor, output, &mut elements)?;
+    if let Some(element) = tehuti::settings::element(renderer, compositor, output)? {
+        elements.insert(0, element);
     }
     if let Some(location) = compositor.cursor_on(output) {
         elements.insert(
@@ -276,4 +276,22 @@ where
         tehuti::system::capture(renderer, &target, size, path)
     });
     Ok((notice_included && frame.damage.is_some(), saved))
+}
+
+fn add_bar<R>(
+    renderer: &mut R,
+    bar: &mut tehuti::bar::Buffer,
+    compositor: &Compositor,
+    output: &Output,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) -> Result<(), R::Error>
+where
+    R: Renderer + ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
+    let clock = chrono::Local::now().format("%H:%M").to_string();
+    if let Some(element) = bar.element(renderer, output, compositor.voice_bar(), &clock)? {
+        elements.push(element);
+    }
+    Ok(())
 }

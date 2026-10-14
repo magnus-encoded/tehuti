@@ -58,6 +58,24 @@ pub(super) fn ordered(modes: &[ListedMode], request: Option<Request>) -> (Vec<us
     (indices, matched.is_some())
 }
 
+pub(super) fn ordered_with_saved(
+    modes: &[ListedMode],
+    request: Option<Request>,
+    saved: Option<Request>,
+) -> (Vec<usize>, bool) {
+    let (mut indices, matched) = ordered(modes, request);
+    if let Some(index) = saved.and_then(|saved| {
+        modes
+            .iter()
+            .position(|mode| mode.size == saved.size && mode.refresh == saved.refresh)
+    }) && (!matched || indices.first() != Some(&index))
+    {
+        indices.retain(|candidate| *candidate != index);
+        indices.insert(usize::from(matched), index);
+    }
+    (indices, matched)
+}
+
 pub(super) fn retry<State, Value, Error>(
     state: &mut State,
     mut attempt: impl FnMut(&mut State) -> Result<Value, Error>,
@@ -73,7 +91,7 @@ pub(super) fn retry<State, Value, Error>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ListedMode, Request, ordered, retry};
+    use super::{ListedMode, Request, ordered, ordered_with_saved, retry};
     use proptest::prelude::*;
 
     const MODES: [ListedMode; 4] = [
@@ -145,6 +163,25 @@ mod tests {
         assert_eq!(
             ordered(&modes, Request::parse("1280x720@120")),
             (vec![2, 1, 0], true)
+        );
+    }
+
+    #[test]
+    fn saved_mode_precedes_preferred_but_environment_override_wins() {
+        let saved = Request::parse("3840x2160@60");
+        assert_eq!(ordered_with_saved(&MODES, None, saved).0, [0, 3, 2, 1]);
+        assert_eq!(
+            ordered_with_saved(&MODES, Request::parse("3840x2160@144"), saved).0,
+            [2, 0, 3, 1]
+        );
+        assert_eq!(ordered_with_saved(&MODES, saved, saved).0, [0, 3, 2, 1]);
+        assert_eq!(
+            ordered_with_saved(&MODES, None, Request::parse("3840x2160@90")).0,
+            [3, 2, 0, 1]
+        );
+        assert_eq!(
+            ordered_with_saved(&MODES, None, Request::parse("1280x720@60")).0,
+            [3, 2, 0, 1]
         );
     }
 
