@@ -558,8 +558,14 @@ impl Compositor {
     }
 
     #[must_use]
-    pub fn settings_buffer(&self) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
-        self.settings_display.artwork.borrow_mut().buffer(self.settings())
+    pub fn settings_buffer(
+        &self,
+        size: (i32, i32),
+    ) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
+        self.settings_display
+            .artwork
+            .borrow_mut()
+            .buffer(self.settings(), size)
     }
 
     pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {

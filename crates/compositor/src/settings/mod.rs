@@ -15,11 +15,11 @@ pub(crate) struct Display {
 
 #[derive(Debug, Default)]
 pub struct Artwork {
-    cached: Option<(Settings, MemoryRenderBuffer)>,
+    cached: Option<(Settings, (i32, i32), MemoryRenderBuffer)>,
 }
 
 impl Artwork {
-    pub fn buffer(&mut self, settings: &Settings) -> Option<MemoryRenderBuffer> {
+    pub fn buffer(&mut self, settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffer> {
         if !settings.open {
             self.cached = None;
             return None;
@@ -32,10 +32,14 @@ impl Artwork {
                     .saturating_mul(100),
             )
         });
-        if self.cached.as_ref().is_none_or(|(previous, _)| *previous != key) {
-            self.cached = buffer(&key).map(|buffer| (key, buffer));
+        if self
+            .cached
+            .as_ref()
+            .is_none_or(|(previous, previous_size, _)| *previous != key || *previous_size != size)
+        {
+            self.cached = buffer(&key, size).map(|buffer| (key, size, buffer));
         }
-        self.cached.as_ref().map(|(_, buffer)| buffer.clone())
+        self.cached.as_ref().map(|(_, _, buffer)| buffer.clone())
     }
 }
 
@@ -50,10 +54,10 @@ where
     R: smithay::backend::renderer::Renderer + smithay::backend::renderer::ImportMem,
     R::TextureId: Send + Clone + 'static,
 {
-    let Some(buffer) = compositor.settings_buffer() else {
+    let Some(mode) = output.current_mode() else {
         return Ok(None);
     };
-    let Some(mode) = output.current_mode() else {
+    let Some(buffer) = compositor.settings_buffer((mode.size.w, mode.size.h)) else {
         return Ok(None);
     };
     smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
@@ -61,7 +65,9 @@ where
         (0.0, 0.0),
         &buffer,
         None,
-        Some(smithay::utils::Rectangle::from_size((1280.0, 720.0).into())),
+        Some(smithay::utils::Rectangle::from_size(
+            (f64::from(mode.size.w), f64::from(mode.size.h)).into(),
+        )),
         Some(crate::scale::logical_size(
             mode.size,
             output.current_scale().integer_scale(),
@@ -77,47 +83,10 @@ const CYAN: [u8; 4] = [240, 218, 64, 255];
 const AMBER: [u8; 4] = [56, 184, 255, 255];
 const WHITE: [u8; 4] = [244, 240, 225, 255];
 
-struct Canvas(Vec<u8>);
+mod canvas;
+use canvas::Canvas;
 
 impl Canvas {
-    fn rectangle(&mut self, x: usize, y: usize, width: usize, height: usize, color: [u8; 4]) {
-        for row in y..y.saturating_add(height).min(HEIGHT) {
-            for column in x..x.saturating_add(width).min(WIDTH) {
-                let offset = row.saturating_mul(WIDTH).saturating_add(column).saturating_mul(4);
-                if let Some(pixel) = self.0.get_mut(offset..offset.saturating_add(4)) {
-                    pixel.copy_from_slice(&color);
-                }
-            }
-        }
-    }
-
-    fn text(&mut self, x: usize, y: usize, text: &str, scale: usize, color: [u8; 4]) {
-        for (letter, character) in text.chars().enumerate() {
-            for (row, bits) in crate::notice::glyph(character.to_ascii_uppercase())
-                .iter()
-                .enumerate()
-            {
-                for column in 0..5usize {
-                    if bits
-                        & (16_u8
-                            .checked_shr(u32::try_from(column).unwrap_or_default())
-                            .unwrap_or_default())
-                        != 0
-                    {
-                        self.rectangle(
-                            x.saturating_add(letter.saturating_mul(6).saturating_mul(scale))
-                                .saturating_add(column.saturating_mul(scale)),
-                            y.saturating_add(row.saturating_mul(scale)),
-                            scale,
-                            scale,
-                            color,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     fn contents(&mut self, settings: &Settings) {
         if settings.display {
             let first = settings.selected.saturating_sub(2);
@@ -149,31 +118,8 @@ impl Canvas {
         }
     }
 
-    #[expect(clippy::float_arithmetic, reason = "countdown arc uses polar coordinates")]
     fn ring(&mut self, remaining: Duration) {
-        let fraction = remaining.as_secs_f64() / 15.0;
-        for y in 0_i32..180 {
-            for x in 0_i32..180 {
-                let delta_x = f64::from(x.saturating_sub(90));
-                let delta_y = f64::from(y.saturating_sub(90));
-                let radius = delta_x.hypot(delta_y);
-                if (74.0..=82.0).contains(&radius) {
-                    let angle = (delta_x.atan2(-delta_y) + core::f64::consts::TAU) % core::f64::consts::TAU;
-                    let color = if angle / core::f64::consts::TAU <= fraction {
-                        AMBER
-                    } else {
-                        [42, 51, 54, 255]
-                    };
-                    self.rectangle(
-                        1000usize.saturating_add(usize::try_from(x).unwrap_or_default()),
-                        460usize.saturating_add(usize::try_from(y).unwrap_or_default()),
-                        1,
-                        1,
-                        color,
-                    );
-                }
-            }
-        }
+        self.countdown(remaining);
         self.text(
             1060,
             535,
@@ -188,11 +134,11 @@ impl Canvas {
 }
 
 #[must_use]
-pub fn buffer(settings: &Settings) -> Option<MemoryRenderBuffer> {
+pub fn buffer(settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffer> {
     if !settings.open {
         return None;
     }
-    let mut canvas = Canvas(vec![0; WIDTH.saturating_mul(HEIGHT).saturating_mul(4)]);
+    let mut canvas = Canvas::new(size)?;
     canvas.rectangle(0, 0, WIDTH, HEIGHT, [20, 14, 8, 235]);
     canvas.rectangle(48, 52, 6, 80, CYAN);
     canvas.text(80, 54, "TEHUTI / SYSTEM", 3, CYAN);
@@ -217,9 +163,9 @@ pub fn buffer(settings: &Settings) -> Option<MemoryRenderBuffer> {
         canvas.text(80, 656, "D-PAD: MOVE   SOUTH: APPLY   EAST: BACK", 3, CYAN);
     }
     Some(MemoryRenderBuffer::from_slice(
-        &canvas.0,
+        &canvas.pixels,
         Fourcc::Argb8888,
-        (1280, 720),
+        size,
         1,
         Transform::Normal,
         None,
@@ -236,6 +182,58 @@ mod tests {
         utils::{Rectangle, Transform},
     };
     use tehuti_protocol::{Event, Text};
+
+    #[test]
+    fn native_artwork_has_smooth_text_and_countdown_edges() -> Result<(), Box<dyn core::error::Error>> {
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.configure_display_modes(vec!["1920x1080@60".into(), "3840x2160@60".into()], 0);
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        for name in [
+            tehuti_protocol::ButtonName::South,
+            tehuti_protocol::ButtonName::DpadDown,
+            tehuti_protocol::ButtonName::South,
+        ] {
+            compositor.handle(&Event::Button {
+                name,
+                state: tehuti_protocol::ButtonState::Pressed,
+            });
+        }
+        compositor.display_mode_applied(Some(1));
+        let mut artwork = compositor
+            .settings_buffer((1920, 1080))
+            .ok_or("artwork unavailable")?;
+        artwork.render().draw(|pixels| {
+            let text_colors: std::collections::HashSet<_> = pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    (138..210).contains(&index.saturating_div(1920))
+                        && (120..650).contains(&index.checked_rem(1920).unwrap_or_default())
+                })
+                .map(|(_, pixel)| pixel.to_vec())
+                .collect();
+            assert!(text_colors.len() > 30, "font edges have fractional coverage");
+            let ring_colors: std::collections::HashSet<_> = pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    (690..960).contains(&index.saturating_div(1920))
+                        && (1500..1770).contains(&index.checked_rem(1920).unwrap_or_default())
+                })
+                .map(|(_, pixel)| pixel.to_vec())
+                .collect();
+            assert!(ring_colors.len() > 30, "countdown edges have fractional coverage");
+            Ok::<_, Box<dyn core::error::Error>>(Vec::new())
+        })?;
+        Ok(())
+    }
 
     #[test]
     fn settings_fill_the_output_at_each_integer_scale() -> Result<(), Box<dyn core::error::Error>> {
@@ -270,7 +268,7 @@ mod tests {
                 element.geometry(f64::from(scale).into()),
                 Rectangle::from_size(size.into())
             );
-            assert_eq!(element.src().size, (1280.0, 720.0).into());
+            assert_eq!(element.src().size, (f64::from(size.0), f64::from(size.1)).into());
         }
         Ok(())
     }
