@@ -243,19 +243,6 @@ impl Nested {
     }
 }
 
-fn add_settings(
-    renderer: &mut GlesRenderer,
-    compositor: &Compositor,
-    output: &Output,
-    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
-) {
-    match tehuti::settings::element(renderer, compositor, output) {
-        Ok(Some(element)) => elements.insert(0, element),
-        Ok(None) => {}
-        Err(error) => warn!(?error, "settings render failed"),
-    }
-}
-
 fn add_overlays(
     bar: &mut tehuti::bar::Buffer,
     output: &Output,
@@ -269,7 +256,6 @@ fn add_overlays(
         Ok(None) => {}
         Err(error) => warn!(?error, "bar render failed"),
     }
-    add_settings(renderer, compositor, output, notices);
     if let Some(location) = compositor.cursor_on(output) {
         match MemoryRenderBufferRenderElement::from_buffer(
             renderer,

@@ -477,6 +477,9 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
 }
 
 fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if state.core.menu().is_some() {
+        return false;
+    }
     let was_open = state.settings.open;
     let consumed = state.settings.event(event, effects);
     if !was_open && state.settings.open {

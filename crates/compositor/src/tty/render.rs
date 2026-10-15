@@ -239,9 +239,6 @@ where
         .collect::<Vec<_>>();
     let notice_included = !elements.is_empty();
     add_bar(renderer, bar, compositor, output, &mut elements)?;
-    if let Some(element) = tehuti::settings::element(renderer, compositor, output)? {
-        elements.insert(0, element);
-    }
     if let Some(location) = compositor.cursor_on(output) {
         elements.insert(
             0,
