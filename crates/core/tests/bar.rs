@@ -24,6 +24,40 @@ mod tests {
         .0
     }
 
+    fn chip_after_focus(app_id: &str, title: &str) -> String {
+        let state = step(
+            State::default(),
+            &Event::Focus {
+                app_id: Some(app_id.into()),
+                title: title.into(),
+            },
+        )
+        .0;
+        state.bar().segments()[0].text.clone()
+    }
+
+    #[test]
+    fn agent_windows_show_the_agent_name() {
+        assert_eq!(chip_after_focus("kitty", "Claude"), "Claude");
+        assert_eq!(chip_after_focus("kitty", "Codex"), "Codex");
+    }
+
+    #[test]
+    fn work_on_windows_show_the_project_name() {
+        assert_eq!(chip_after_focus("kitty", "Claude: budmo"), "budmo");
+        assert_eq!(
+            chip_after_focus("kitty", "Codex: comment-review"),
+            "comment-review"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn other_titles_keep_the_app_id(app_id in "[a-z]{1,8}", title in "[a-z ~/]{0,12}") {
+            prop_assert_eq!(chip_after_focus(&app_id, &title), app_id);
+        }
+    }
+
     fn feedback(state: &State) -> Option<Segment> {
         state.bar().segments().get(1).cloned()
     }
