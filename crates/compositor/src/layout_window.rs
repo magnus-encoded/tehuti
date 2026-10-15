@@ -47,12 +47,17 @@ impl LayoutWindow {
     }
 
     pub fn mapped(&self) -> bool {
-        self.window.toplevel().is_some_and(|toplevel| {
-            smithay::backend::renderer::utils::with_renderer_surface_state(toplevel.wl_surface(), |state| {
+        use smithay::wayland::seat::WaylandFocus;
+        self.window.wl_surface().is_some_and(|surface| {
+            smithay::backend::renderer::utils::with_renderer_surface_state(surface.as_ref(), |state| {
                 state.buffer().is_some()
             })
             .unwrap_or(false)
         })
+    }
+
+    pub fn client_size(&self) -> Size<i32, Logical> {
+        self.window.geometry().size
     }
 
     pub fn set_size(&self, size: Size<i32, Logical>) {

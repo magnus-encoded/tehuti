@@ -17,7 +17,7 @@ serde_json = "1"
 rustix = { version = "1", features = ["fs", "process"] }
 libc = "0.2"
 evdev = "0.13"
-smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_drm", "backend_gbm", "renderer_multi", "use_system_lib", "backend_udev", "backend_session_libseat", "renderer_pixman", "wayland_frontend", "desktop", "renderer_gl"] }
+smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_drm", "backend_gbm", "renderer_multi", "use_system_lib", "backend_udev", "backend_session_libseat", "renderer_pixman", "wayland_frontend", "desktop", "renderer_gl", "xwayland"] }
 tehuti-core = { path = "../core" }
 tehuti-protocol = { path = "../protocol" }
 thiserror = "2.0.21"

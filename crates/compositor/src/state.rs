@@ -1,6 +1,8 @@
 //! Smithay state and protocol handlers for one output and its tiling layout.
 
 use std::time::Instant;
+#[path = "x11.rs"]
+mod x11;
 
 use crate::layout_window::LayoutWindow;
 
@@ -24,6 +26,7 @@ use smithay::{
         },
     },
     utils::{SERIAL_COUNTER, Serial},
+    wayland::seat::WaylandFocus,
     wayland::{
         buffer::BufferHandler,
         compositor::{
@@ -44,6 +47,12 @@ use tehuti_core::dispatch::{Effect as DispatchEffect, Input as DispatchInput};
 use tehuti_protocol::{Action, Event, KeyName};
 
 struct RedactedSecretProvider(Box<dyn tehuti_core::secret::SecretProvider>);
+
+impl Default for RedactedSecretProvider {
+    fn default() -> Self {
+        Self(Box::new(tehuti_core::secret::DenySecretProvider))
+    }
+}
 
 impl core::fmt::Debug for RedactedSecretProvider {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -106,6 +115,8 @@ pub struct Compositor {
     layout: tehuti_core::layout::Layout,
     layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
     next_window: u64,
+    floating: x11::Floating,
+    pub(crate) x11: crate::xwayland::State,
     windows: tehuti_core::windows::Windows<WlSurface>,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
@@ -163,9 +174,7 @@ impl Compositor {
             screenshot_request: None,
             speech_process: None,
             secret_gate: tehuti_core::secret::SecretConfirmationGate::new(),
-            secret_provider: Some(RedactedSecretProvider(Box::new(
-                tehuti_core::secret::DenySecretProvider,
-            ))),
+            secret_provider: Some(RedactedSecretProvider::default()),
             secret_lookup: None,
             secret_focus_generation: 0,
             secret_surface_id: 0,
@@ -181,6 +190,8 @@ impl Compositor {
             layout: tehuti_core::layout::Layout::new(tehuti_core::layout::LayoutConfig::default()),
             layout_windows: Vec::new(),
             next_window: 0,
+            floating: x11::Floating::default(),
+            x11: crate::xwayland::State::new(display),
             windows: tehuti_core::windows::Windows::new(),
             surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
@@ -425,10 +436,17 @@ impl Compositor {
                 .find(|(_, candidate)| candidate == window)
                 .map(|(identity, _)| *identity);
             if let Some(identity) = identity {
+                self.floating.focus = None;
                 if let Err(error) = self.layout.focus_window(identity) {
                     tracing::warn!(%error, "pointer focus failed");
                 }
                 self.place_layout();
+            } else if !window
+                .x11_surface()
+                .is_some_and(smithay::xwayland::X11Surface::is_override_redirect)
+            {
+                self.floating.focus = Some(window.clone());
+                self.sync_window_focus();
             }
         }
         let event = smithay::input::pointer::ButtonEvent {
@@ -1108,7 +1126,16 @@ impl Compositor {
             }
             Action::Launch { desktop_entry } => self.launch_application(desktop_entry),
             Action::Close => {
-                if let Some(identity) = self.layout.snapshot().focused_window {
+                if let Some(window) = self.floating.focus.clone() {
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.send_close();
+                    }
+                    if let Some(x11) = window.x11_surface()
+                        && let Err(error) = x11.close()
+                    {
+                        tracing::warn!(%error, "X11 close failed");
+                    }
+                } else if let Some(identity) = self.layout.snapshot().focused_window {
                     self.remove_layout_window(identity, true);
                 }
             }
@@ -1224,6 +1251,7 @@ impl Compositor {
     }
 
     fn apply_layout(&mut self, action: tehuti_protocol::LayoutAction) {
+        self.floating.focus = None;
         self.layout.apply(tehuti_core::layout::command_for(action));
         self.place_layout();
     }
@@ -1339,10 +1367,8 @@ impl Compositor {
             // view. Clients such as mpv size their first buffer from the output
             // scale they learn on entry, so announce it before the first
             // configure instead of after the first (wrongly scaled) frame.
-            if let (Some(output), Some(toplevel)) = (&self.output, window.toplevel()) {
-                output.enter(toplevel.wl_surface());
-                Self::announce_scale(output, toplevel.wl_surface());
-            }
+            self.enter_window_output(window);
+            Self::configure_x11(window, &self.space, tile);
             if let Some(toplevel) = window.toplevel() {
                 Self::configure_layout_window(
                     toplevel,
@@ -1352,7 +1378,15 @@ impl Compositor {
                 );
             }
         }
+        self.place_floating();
         self.sync_window_focus();
+    }
+
+    fn enter_window_output(&self, window: &LayoutWindow) {
+        if let (Some(output), Some(toplevel)) = (&self.output, window.toplevel()) {
+            output.enter(toplevel.wl_surface());
+            Self::announce_scale(output, toplevel.wl_surface());
+        }
     }
 
     fn configure_layout_window(
@@ -1404,6 +1438,12 @@ impl Compositor {
                 let _effect = self
                     .windows
                     .step(tehuti_core::windows::Input::Unmap(toplevel.wl_surface().clone()));
+            }
+            if close
+                && let Some(x11) = window.x11_surface()
+                && let Err(error) = x11.close()
+            {
+                tracing::warn!(%error, "X11 close failed");
             }
             self.space.unmap_elem(&window);
             if let Err(error) = self.layout.remove_window(identity) {
@@ -1474,14 +1514,28 @@ impl Compositor {
 
     fn sync_window_focus(&mut self) {
         let identity = self.layout.snapshot().focused_window;
-        let focus = self
+        let tiled = self
             .layout_windows
             .iter()
             .find(|(window_id, _)| Some(*window_id) == identity)
-            .and_then(|(_, window)| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()));
+            .map(|(_, window)| window.clone());
+        let selected = self.floating.focus.clone().or(tiled);
+        self.activate_window(selected.as_ref());
+        let focus = selected
+            .as_ref()
+            .and_then(|window| window.wl_surface().map(std::borrow::Cow::into_owned));
+        let changed = self.keyboard.current_focus() != focus;
         self.keyboard
             .clone()
             .set_focus(self, focus.clone(), SERIAL_COUNTER.next_serial());
+        if changed && let Some(x11) = selected.as_ref().and_then(|window| window.x11_surface()) {
+            if let Some(manager) = self.x11.manager.as_mut()
+                && let Err(error) = manager.raise_window(x11)
+            {
+                tracing::warn!(%error, "X11 raise failed");
+            }
+            self.focus_x11(x11);
+        }
         if let Some(window) = focus
             .as_ref()
             .and_then(|surface| self.window_for_root(surface))
@@ -1489,6 +1543,8 @@ impl Compositor {
         {
             if let Some(toplevel) = window.toplevel() {
                 self.update_focus(toplevel);
+            } else if let Some(x11) = window.x11_surface() {
+                self.update_x11_title(x11);
             }
         } else {
             self.handle(&Event::Focus {
@@ -1525,10 +1581,11 @@ impl Compositor {
         self.layout_windows
             .iter()
             .map(|(_, window)| window)
+            .chain(self.floating.windows.iter())
             .find(|window| {
                 window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == root)
+                    .wl_surface()
+                    .is_some_and(|surface| surface.as_ref() == root)
             })
     }
 }
@@ -1603,6 +1660,9 @@ impl CompositorHandler for Compositor {
     fn client_compositor_state<'client>(&self, client: &'client Client) -> &'client CompositorClientState {
         static FALLBACK: std::sync::LazyLock<CompositorClientState> =
             std::sync::LazyLock::new(CompositorClientState::default);
+        if let Some(data) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &data.compositor_state;
+        }
         client
             .get_data::<ClientState>()
             .map_or(&*FALLBACK, |data| &data.compositor_state)
@@ -1623,6 +1683,7 @@ impl CompositorHandler for Compositor {
         while let Some(parent) = get_parent(&root) {
             root = parent;
         }
+        self.reclassify_wayland(&root);
         if let Some(window) = self.window_for_root(&root) {
             window.on_commit();
             if let Some(toplevel) = window.toplevel() {
@@ -1645,6 +1706,7 @@ impl CompositorHandler for Compositor {
                 }
             }
         }
+        self.place_floating();
     }
 }
 
@@ -1732,6 +1794,7 @@ impl XdgShellHandler for Compositor {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        self.remove_floating(surface.wl_surface());
         let identity = self.layout_windows.iter().find_map(|(identity, window)| {
             window
                 .toplevel()
@@ -1740,6 +1803,22 @@ impl XdgShellHandler for Compositor {
         });
         if let Some(identity) = identity {
             self.remove_layout_window(identity, false);
+        }
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        if let Some(window) = self.window_for_root(surface.wl_surface()).cloned() {
+            self.request_fullscreen(&window, true);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_root(surface.wl_surface()).cloned() {
+            self.request_fullscreen(&window, false);
         }
     }
 
