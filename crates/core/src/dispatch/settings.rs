@@ -12,10 +12,21 @@ enum Status {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum View {
+    #[default]
+    Home,
+    Display,
+    Wallpaper,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     pub open: bool,
-    pub display: bool,
+    pub view: View,
+    pub section: usize,
+    pub wallpapers: Vec<String>,
+    pub wallpaper_current: Option<usize>,
     pub selected: usize,
     pub current: usize,
     pub modes: Vec<String>,
@@ -110,8 +121,8 @@ impl Settings {
         if self.status == Status::Switching {
             if *name == ButtonName::East {
                 self.cancel_preview = true;
-                if self.display {
-                    self.display = false;
+                if self.view == View::Display {
+                    self.view = View::Home;
                 } else {
                     self.open = false;
                 }
@@ -129,7 +140,30 @@ impl Settings {
             self.revert(effects);
         }
         self.open = !self.open;
-        self.display = false;
+        self.view = View::Home;
+    }
+
+    fn apply(&mut self, effects: &mut Vec<Effect>) {
+        if self.remaining.take().is_some() {
+            self.previous = None;
+            effects.push(Effect::PersistMode(self.current));
+        } else if self.view == View::Wallpaper {
+            if self.selected < self.wallpapers.len() {
+                self.wallpaper_current = Some(self.selected);
+                effects.push(Effect::Wallpaper(self.selected));
+            }
+        } else if self.view == View::Home && self.section == 1 {
+            self.view = View::Wallpaper;
+            self.selected = self.wallpaper_current.unwrap_or_default();
+        } else if self.view == View::Home {
+            self.view = View::Display;
+            self.selected = self.current;
+        } else if self.selected != self.current && !self.modes.is_empty() {
+            self.cancel_preview = false;
+            self.previous = Some(self.current);
+            self.status = Status::Switching;
+            effects.push(Effect::SettingsMode(self.selected));
+        }
     }
 
     fn button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
@@ -137,34 +171,33 @@ impl Settings {
             ButtonName::East => {
                 if self.remaining.is_some() {
                     self.revert(effects);
-                } else if self.display {
-                    self.display = false;
+                } else if self.view != View::Home {
+                    self.view = View::Home;
                 } else {
                     self.open = false;
                 }
             }
             ButtonName::South => {
-                if self.remaining.take().is_some() {
-                    self.previous = None;
-                    effects.push(Effect::PersistMode(self.current));
-                } else if !self.display {
-                    self.display = true;
-                    self.selected = self.current;
-                } else if self.selected != self.current && !self.modes.is_empty() {
-                    self.cancel_preview = false;
-                    self.previous = Some(self.current);
-                    self.status = Status::Switching;
-                    effects.push(Effect::SettingsMode(self.selected));
-                }
+                self.apply(effects);
             }
             ButtonName::DpadUp | ButtonName::DpadLeft if self.remaining.is_none() => {
-                self.selected = self.selected.saturating_sub(1);
+                if self.view == View::Home {
+                    self.section = self.section.saturating_sub(1);
+                } else {
+                    self.selected = self.selected.saturating_sub(1);
+                }
             }
             ButtonName::DpadDown | ButtonName::DpadRight if self.remaining.is_none() => {
-                self.selected = self
-                    .selected
-                    .saturating_add(1)
-                    .min(self.modes.len().saturating_sub(1));
+                if self.view == View::Home {
+                    self.section = 1;
+                } else {
+                    let count = if self.view == View::Wallpaper {
+                        self.wallpapers.len()
+                    } else {
+                        self.modes.len()
+                    };
+                    self.selected = self.selected.saturating_add(1).min(count.saturating_sub(1));
+                }
             }
             ButtonName::North
             | ButtonName::West

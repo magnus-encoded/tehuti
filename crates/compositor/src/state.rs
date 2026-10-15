@@ -80,6 +80,7 @@ pub struct Compositor {
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
     settings_display: crate::settings::Display,
+    pub(crate) wallpapers: core::cell::RefCell<crate::wallpaper::Collection>,
     previous_tick: Instant,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
@@ -143,16 +144,16 @@ impl Compositor {
         let keymap = Self::keymap()?;
         let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         let text_keys = text_keys(&keymap);
-        let pointer = seat.add_pointer();
         let mut compositor = Self {
             start_time: Instant::now(),
-            pointer,
+            pointer: seat.add_pointer(),
             pointer_location: (100.0, 100.0).into(),
             mouse_mode: false,
             space: Space::default(),
             output: None,
             dispatch: tehuti_core::dispatch::State::default(),
             settings_display: crate::settings::Display::default(),
+            wallpapers: core::cell::RefCell::new(crate::wallpaper::Collection::from_env()),
             previous_tick: Instant::now(),
             plugins: None,
             quit_requested: false,
@@ -196,8 +197,15 @@ impl Compositor {
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
         };
-        compositor.install_keymap(&keymap)?;
+        compositor.initialize_settings(&keymap)?;
         Ok(compositor)
+    }
+
+    fn initialize_settings(&mut self, keymap: &xkb::Keymap) -> Result<(), SetupError> {
+        let names = self.wallpapers.borrow().names();
+        let current = self.wallpapers.borrow().current;
+        let _rejection = self.dispatch(DispatchInput::Wallpapers { names, current });
+        self.install_keymap(keymap)
     }
 
     fn keymap() -> Result<xkb::Keymap, SetupError> {
@@ -653,7 +661,8 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
-            effect @ (DispatchEffect::MovePointer { .. }
+            effect @ (DispatchEffect::Wallpaper(_)
+            | DispatchEffect::MovePointer { .. }
             | DispatchEffect::Scroll { .. }
             | DispatchEffect::Click { .. }
             | DispatchEffect::MouseMode(_)
@@ -678,6 +687,7 @@ impl Compositor {
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::Wallpaper(index) => self.apply_wallpaper(index),
             DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
             DispatchEffect::Scroll { x, y } => self.pointer_scroll(x, y),
             DispatchEffect::Click { button, pressed } => self.pointer_click(button, pressed),
@@ -686,11 +696,7 @@ impl Compositor {
                 self.show_notice(if active { "MOUSE MODE" } else { "MOUSE MODE OFF" });
                 self.move_pointer();
             }
-            DispatchEffect::PollSources => {
-                self.poll_secret_lookup();
-                self.poll_launchers();
-                self.desktop_entries.poll();
-            }
+            DispatchEffect::PollSources => self.poll_sources(),
             DispatchEffect::SouthPressed(pressed) => {
                 self.secret_confirmation.south_pressed = pressed;
             }
@@ -736,6 +742,18 @@ impl Compositor {
                 log_speech_route(&text, first.as_ref(), plugin);
             }
         }
+    }
+
+    fn apply_wallpaper(&self, index: usize) {
+        if let Err(error) = self.wallpapers.borrow_mut().select(index) {
+            tracing::warn!(%error, "wallpaper selection persistence failed");
+        }
+    }
+
+    fn poll_sources(&mut self) {
+        self.poll_secret_lookup();
+        self.poll_launchers();
+        self.desktop_entries.poll();
     }
 
     fn reset_secret_confirmation_for_focus(&mut self) {

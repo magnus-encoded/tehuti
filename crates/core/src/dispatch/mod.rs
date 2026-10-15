@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
 mod settings;
-pub use settings::Settings;
+pub use settings::{Settings, View as SettingsView};
 
 mod mouse;
 pub use mouse::{PointerButton, Sticks};
@@ -24,6 +24,10 @@ pub enum Input {
     DisplayModes {
         modes: Vec<String>,
         current: usize,
+    },
+    Wallpapers {
+        names: Vec<String>,
+        current: Option<usize>,
     },
     ModeApplied(Option<usize>),
     /// Elapsed wall time since the previous tick.
@@ -66,6 +70,7 @@ pub enum Input {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     SettingsMode(usize),
+    Wallpaper(usize),
     PersistMode(usize),
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
@@ -248,6 +253,11 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let tasks: Vec<Task> = match input {
         Input::DisplayModes { modes, current } => {
             state.settings.configure(modes, current);
+            return (state, effects);
+        }
+        Input::Wallpapers { names, current } => {
+            state.settings.wallpapers = names;
+            state.settings.wallpaper_current = current;
             return (state, effects);
         }
         Input::ModeApplied(current) => {

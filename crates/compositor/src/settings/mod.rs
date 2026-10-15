@@ -5,7 +5,7 @@ use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::Transform,
 };
-use tehuti_core::dispatch::Settings;
+use tehuti_core::dispatch::{Settings, SettingsView};
 
 #[derive(Debug, Default)]
 pub(crate) struct Display {
@@ -88,7 +88,30 @@ use canvas::Canvas;
 
 impl Canvas {
     fn contents(&mut self, settings: &Settings) {
-        if settings.display {
+        if settings.view == SettingsView::Wallpaper {
+            let first = settings.selected.saturating_sub(2);
+            for (row, (index, name)) in settings
+                .wallpapers
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(5)
+                .enumerate()
+            {
+                let y = 244usize.saturating_add(row.saturating_mul(64));
+                if index == settings.selected {
+                    self.rectangle(72, y.saturating_sub(12), 1128, 54, [65, 43, 12, 255]);
+                    self.rectangle(72, y.saturating_sub(12), 4, 54, CYAN);
+                }
+                self.text(96, y, &name.to_uppercase(), 4, WHITE);
+                if Some(index) == settings.wallpaper_current {
+                    self.text(900, y.saturating_add(6), "ACTIVE", 2, CYAN);
+                }
+            }
+            if settings.wallpapers.is_empty() {
+                self.text(96, 256, "NO WALLPAPERS AVAILABLE", 3, AMBER);
+            }
+        } else if settings.view == SettingsView::Display {
             let first = settings.selected.saturating_sub(2);
             for (row, (index, mode)) in settings.modes.iter().enumerate().skip(first).take(5).enumerate() {
                 let y = 244usize.saturating_add(row.saturating_mul(64));
@@ -111,10 +134,25 @@ impl Canvas {
                 self.text(96, 256, "NO DRIVER MODES AVAILABLE", 3, AMBER);
             }
         } else {
-            self.rectangle(72, 236, 1128, 76, [65, 43, 12, 255]);
-            self.rectangle(72, 236, 4, 76, CYAN);
-            self.text(96, 256, "DISPLAY", 5, WHITE);
-            self.text(600, 268, "RESOLUTION / REFRESH", 3, CYAN);
+            self.sections(settings);
+        }
+    }
+
+    fn sections(&mut self, settings: &Settings) {
+        for (index, (title, detail)) in [
+            ("DISPLAY", "RESOLUTION / REFRESH"),
+            ("WALLPAPER", "RELEASE COLLECTION"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = 236usize.saturating_add(index.saturating_mul(100));
+            if settings.section == index {
+                self.rectangle(72, y, 1128, 76, [65, 43, 12, 255]);
+                self.rectangle(72, y, 4, 76, CYAN);
+            }
+            self.text(96, y.saturating_add(20), title, 5, WHITE);
+            self.text(600, y.saturating_add(32), detail, 3, CYAN);
         }
     }
 
@@ -145,7 +183,13 @@ pub fn buffer(settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffe
     canvas.text(
         80,
         92,
-        if settings.display { "DISPLAY" } else { "SETTINGS" },
+        if settings.view == SettingsView::Wallpaper {
+            "WALLPAPER"
+        } else if settings.view == SettingsView::Display {
+            "DISPLAY"
+        } else {
+            "SETTINGS"
+        },
         6,
         WHITE,
     );

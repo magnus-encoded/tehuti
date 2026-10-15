@@ -1,7 +1,7 @@
 //! File wallpaper, cached at each output size.
 
 use core::error::Error;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 
 use smithay::{
     backend::{
@@ -82,20 +82,139 @@ impl Wallpaper {
     }
 }
 
-fn wallpaper() -> &'static Mutex<Wallpaper> {
-    static WALLPAPER: std::sync::OnceLock<Mutex<Wallpaper>> = std::sync::OnceLock::new();
-    WALLPAPER.get_or_init(|| {
-        let data = std::env::var_os("XDG_DATA_HOME")
-            .filter(|path| !path.is_empty())
-            .map(std::path::PathBuf::from)
+const CODENAMES: &[&str] = &[
+    "apteribis",
+    "bostrychia",
+    "cercibis",
+    "eudocimus",
+    "geronticus",
+    "lophotibis",
+    "mesembrinibis",
+    "nipponia",
+    "phimosus",
+    "plegadis",
+    "pseudibis",
+    "theristicus",
+    "threskiornis",
+];
+const CURRENT_RELEASE: usize = 0;
+
+#[derive(Debug)]
+pub struct Collection {
+    entries: Vec<(String, image::DynamicImage)>,
+    pub(crate) current: Option<usize>,
+    wallpaper: Wallpaper,
+    store: crate::display_mode_store::Store,
+}
+
+impl Collection {
+    #[must_use]
+    pub fn discover(
+        roots: &[PathBuf],
+        store: crate::display_mode_store::Store,
+        release: usize,
+        all: bool,
+    ) -> Self {
+        let entries: Vec<_> = CODENAMES
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| all || *index <= release)
+            .filter_map(|(_, name)| {
+                roots
+                    .iter()
+                    .find_map(|root| image::open(root.join("wallpapers").join(format!("{name}.png"))).ok())
+                    .map(|image| ((*name).to_owned(), image))
+            })
+            .collect();
+        let saved = store.read().unwrap_or_else(|error| {
+            tracing::warn!(%error, "wallpaper selection unavailable");
+            None
+        });
+        let saved_current = saved
+            .as_ref()
+            .and_then(|saved| entries.iter().position(|(name, _)| name == saved));
+        let legacy = saved_current
+            .is_none()
+            .then(|| {
+                roots
+                    .iter()
+                    .find_map(|root| image::open(root.join("wallpaper.png")).ok())
+            })
+            .flatten();
+        let current = saved_current
             .or_else(|| {
-                std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
-            });
-        let path = data.map(|data| data.join("tehuti/wallpaper.png"));
-        Mutex::new(Wallpaper::load(path.as_deref().unwrap_or_else(|| {
-            std::path::Path::new("/nonexistent/tehuti/wallpaper.png")
-        })))
-    })
+                CODENAMES
+                    .get(release)
+                    .and_then(|default| entries.iter().position(|(name, _)| name == default))
+            })
+            .or_else(|| (!entries.is_empty()).then_some(0));
+        let current = current.filter(|_| legacy.is_none());
+        let image =
+            legacy.or_else(|| current.and_then(|index| entries.get(index).map(|(_, image)| image.clone())));
+        Self {
+            entries,
+            current,
+            wallpaper: Wallpaper {
+                image,
+                buffers: std::collections::HashMap::new(),
+            },
+            store,
+        }
+    }
+
+    #[must_use]
+    pub fn from_env() -> Self {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut roots = Vec::new();
+        if let Some(data) = std::env::var_os("XDG_DATA_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home.as_ref().map(|home| home.join(".local/share")))
+        {
+            roots.push(data.join("tehuti"));
+        }
+        roots.extend(
+            std::env::split_paths(
+                &std::env::var_os("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into()),
+            )
+            .map(|root| root.join("tehuti")),
+        );
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home.map(|home| home.join(".config")))
+            .unwrap_or_else(|| Path::new("/nonexistent").to_path_buf());
+        Self::discover(
+            &roots,
+            crate::display_mode_store::Store::new(config.join("tehuti/wallpaper")),
+            CURRENT_RELEASE,
+            std::env::var("TEHUTI_ALL_WALLPAPERS").is_ok_and(|value| value == "1"),
+        )
+    }
+
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        self.entries.iter().map(|(name, _)| name.clone()).collect()
+    }
+
+    /// # Errors
+    /// Returns an error when the selection cannot be saved or is unavailable.
+    pub fn select(&mut self, index: usize) -> std::io::Result<()> {
+        let (name, image) = self
+            .entries
+            .get(index)
+            .ok_or_else(|| std::io::Error::other("wallpaper unavailable"))?;
+        self.current = Some(index);
+        self.wallpaper.image = Some(image.clone());
+        self.wallpaper.buffers.clear();
+        self.store.write(name)
+    }
+
+    /// # Errors
+    /// Returns an error when output dimensions are not positive.
+    pub fn buffer(&mut self, size: Size<i32, Physical>) -> Result<MemoryRenderBuffer, Box<dyn Error>> {
+        self.wallpaper.buffer(size)
+    }
 }
 
 smithay::backend::renderer::element::render_elements! {
@@ -122,10 +241,7 @@ where
     let size = output
         .current_transform()
         .transform_size(output.current_mode().ok_or("output has no mode")?.size);
-    let buffer = wallpaper()
-        .lock()
-        .map_err(|_| "wallpaper cache poisoned")?
-        .buffer(size)?;
+    let buffer = compositor.wallpapers.borrow_mut().buffer(size)?;
     let background = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
         (0.0, 0.0),

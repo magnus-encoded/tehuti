@@ -72,7 +72,8 @@ impl World {
                     Effect::Apply(Action::Close) | Effect::PluginAction(Action::Close) => {
                         state = self.close_focus(state);
                     }
-                    Effect::SettingsMode(_)
+                    Effect::Wallpaper(_)
+                    | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::MovePointer { .. }
                     | Effect::Scroll { .. }
@@ -980,7 +981,7 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
     let mut world = World::default();
     let mut state = open_display(&mut world);
     assert!(state.settings().open);
-    assert!(state.settings().display);
+    assert_eq!(state.settings().view, super::SettingsView::Display);
     world.trace.clear();
     for _ in 0..5 {
         state = settings_button(&mut world, state, ButtonName::DpadDown);
@@ -1002,7 +1003,7 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
     );
     state = settings_button(&mut world, state, ButtonName::East);
     assert!(state.settings().open);
-    assert!(!state.settings().display);
+    assert_eq!(state.settings().view, super::SettingsView::Home);
     state = settings_button(&mut world, state, ButtonName::East);
     assert!(!state.settings().open);
 }
@@ -1368,4 +1369,40 @@ fn full_stick_ramp_covers_the_same_distance_at_different_tick_rates() {
             "the half-second ramp travels 1440 pixels at every tick rate"
         );
     }
+}
+
+#[test]
+fn wallpaper_section_applies_immediately_and_returns_to_settings() -> Result<(), Box<dyn core::error::Error>>
+{
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Wallpapers {
+            names: vec!["apteribis".into(), "bostrychia".into()],
+            current: Some(0),
+        },
+    );
+    let mut state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        },
+    );
+    for name in [
+        ButtonName::DpadDown,
+        ButtonName::South,
+        ButtonName::DpadDown,
+        ButtonName::South,
+    ] {
+        state = settings_button(&mut world, state, name);
+    }
+    assert_eq!(state.settings().view, super::SettingsView::Wallpaper);
+    assert_eq!(state.settings().wallpaper_current, Some(1));
+    assert!(world.trace.contains(&Effect::Wallpaper(1)));
+    assert_eq!(state.settings().remaining, None);
+    state = settings_button(&mut world, state, ButtonName::East);
+    assert!(state.settings().open);
+    assert_eq!(state.settings().view, super::SettingsView::Home);
+    Ok(())
 }
