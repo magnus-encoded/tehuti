@@ -1104,3 +1104,25 @@ fn settings_button_hints_name_a_and_b_through_navigation_and_confirmation() {
     let state = settings_button(&mut world, state, ButtonName::East);
     assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
 }
+
+proptest! {
+    #[test]
+    fn settings_keeps_speech_commands_and_transcript_mapping(plugin_active in prop::bool::ANY) {
+        let context = tehuti_protocol::parse_context("app_id = 'voice-test'\n[buttons]\n[speech.screenshot]\nnotify = 'capture'").unwrap();
+        let mut world = World { plugin_active, ..World::default() };
+        let state = configured(vec![context], "voice-test");
+        let state = settings_event(&mut world, state, Event::Speech { text: Text::new("pop the hood".into()).unwrap() });
+        let state = world.run(state, Input::Speech(SpeechInput::Available));
+        let state = settings_button(&mut world, state, ButtonName::Record);
+        let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Released));
+        prop_assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Stop { session: 0, transcribe: true })), "record transcribes while settings is open");
+        world.trace.clear();
+        let text = Text::new("Screenshot.".into()).unwrap();
+        let state = world.run(state, Input::Speech(SpeechInput::Transcript { session: 0, text: text.clone() }));
+        let expected = Action::Notice { text: Text::new("capture".into()).unwrap() };
+        prop_assert!(state.settings().open);
+        prop_assert!(world.trace.contains(&Effect::TranscriptReceived { session: 0, text: text.clone(), admitted: true }), "transcript is admitted");
+        prop_assert!(world.trace.contains(&Effect::SpeechRouted { text, first: Some(expected.clone()), plugin: plugin_active }), "transcript is mapped while settings is open");
+        prop_assert!(world.trace.contains(&Effect::Apply(expected)));
+    }
+}

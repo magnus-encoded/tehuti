@@ -99,7 +99,7 @@ impl Settings {
             return false;
         }
         let Event::Button { name, state } = event else {
-            return matches!(event, Event::Speech { .. });
+            return false;
         };
         if matches!(name, ButtonName::Guide | ButtonName::Start | ButtonName::Record) {
             return false;
