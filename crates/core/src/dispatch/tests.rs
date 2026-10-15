@@ -1089,3 +1089,18 @@ fn confirmation_at_the_deadline_cannot_persist_the_expired_preview() {
             .any(|effect| matches!(effect, Effect::PersistMode(_)))
     );
 }
+
+#[test]
+fn settings_button_hints_name_a_and_b_through_navigation_and_confirmation() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    let state = world.run(state, Input::ModeApplied(Some(1)));
+    assert_eq!(state.settings().button_hint(), "A: KEEP THIS MODE");
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+    let state = settings_button(&mut world, state, ButtonName::East);
+    assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+}

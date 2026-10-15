@@ -154,13 +154,13 @@ pub fn buffer(settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffe
     canvas.contents(settings);
     if let Some(remaining) = settings.remaining {
         canvas.ring(remaining);
-        canvas.text(80, 604, "SOUTH: KEEP THIS MODE", 3, AMBER);
+        canvas.text(80, 604, settings.button_hint(), 3, AMBER);
         canvas.text(80, 642, "AUTO REVERT IN 15 SECONDS", 2, WHITE);
     } else {
         if settings.failed() {
             canvas.text(80, 606, "MODE REJECTED / PREVIOUS MODE RESTORED", 2, AMBER);
         }
-        canvas.text(80, 656, "D-PAD: MOVE   SOUTH: APPLY   EAST: BACK", 3, CYAN);
+        canvas.text(80, 656, settings.button_hint(), 3, CYAN);
     }
     Some(MemoryRenderBuffer::from_slice(
         &canvas.pixels,

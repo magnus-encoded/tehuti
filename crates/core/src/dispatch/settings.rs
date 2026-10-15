@@ -27,6 +27,15 @@ pub struct Settings {
 
 impl Settings {
     #[must_use]
+    pub const fn button_hint(&self) -> &'static str {
+        if self.remaining.is_some() {
+            "A: KEEP THIS MODE"
+        } else {
+            "D-PAD: MOVE   A: APPLY   B: BACK"
+        }
+    }
+
+    #[must_use]
     pub fn failed(&self) -> bool {
         self.status == Status::Failed
     }
