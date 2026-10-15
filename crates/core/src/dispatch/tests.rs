@@ -1126,3 +1126,149 @@ proptest! {
         prop_assert!(world.trace.contains(&Effect::Apply(expected)));
     }
 }
+
+fn pointer_mode(world: &mut World) -> State {
+    let state = world.run(
+        State::default(),
+        pad_button(ButtonName::Select, ButtonState::Pressed),
+    );
+    let state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(2),
+        },
+    );
+    world.run(state, pad_button(ButtonName::Select, ButtonState::Released))
+}
+
+#[test]
+fn full_stick_starts_at_two_second_4k_speed_and_ramps_to_one_second_speed() {
+    let mut world = World::default();
+    let mut state = pointer_mode(&mut world);
+    for axis in [1000, -1000] {
+        state = world.run(
+            state,
+            Input::Sticks(Sticks {
+                left: (axis, 0),
+                right: (0, 0),
+            }),
+        );
+        world.trace.clear();
+        state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_millis(1),
+            },
+        );
+        let first = world
+            .trace
+            .iter()
+            .find_map(|effect| {
+                if let Effect::MovePointer { x, .. } = effect {
+                    Some(x.abs())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert!(
+            (1_920_000..1_925_000).contains(&first),
+            "initial speed is about 1920 pixels per second"
+        );
+        for _ in 0..5 {
+            state = world.run(
+                state,
+                Input::Tick {
+                    elapsed: Duration::from_millis(100),
+                },
+            );
+        }
+        world.trace.clear();
+        state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_millis(10),
+            },
+        );
+        assert!(
+            world.trace.contains(&Effect::MovePointer {
+                x: 38_400_000_i32.saturating_mul(i32::from(axis.signum())),
+                y: 0
+            }),
+            "held speed is 3840 pixels per second"
+        );
+        state = world.run(state, Input::Sticks(Sticks::default()));
+    }
+}
+
+#[test]
+fn fine_aiming_keeps_its_existing_speed() {
+    let mut world = World::default();
+    let state = pointer_mode(&mut world);
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (200, 0),
+            right: (0, 0),
+        }),
+    );
+    world.trace.clear();
+    let _state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(10),
+        },
+    );
+    assert!(
+        world.trace.contains(&Effect::MovePointer { x: 400_000, y: 0 }),
+        "fine aiming keeps the existing response"
+    );
+}
+
+#[test]
+fn full_stick_ramp_covers_the_same_distance_at_different_tick_rates() {
+    for millis in [1_u64, 10, 100] {
+        let mut world = World::default();
+        let state = world.run(
+            State::default(),
+            pad_button(ButtonName::Select, ButtonState::Pressed),
+        );
+        let state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_secs(2),
+            },
+        );
+        let mut state = world.run(
+            state,
+            Input::Sticks(Sticks {
+                left: (1000, 0),
+                right: (0, 0),
+            }),
+        );
+        world.trace.clear();
+        for _ in 0..500_u64.saturating_div(millis) {
+            state = world.run(
+                state,
+                Input::Tick {
+                    elapsed: Duration::from_millis(millis),
+                },
+            );
+        }
+        let distance: i64 = world
+            .trace
+            .iter()
+            .filter_map(|effect| {
+                if let Effect::MovePointer { x, y: 0 } = effect {
+                    Some(i64::from(*x))
+                } else {
+                    None
+                }
+            })
+            .sum();
+        assert_eq!(
+            distance, 1_440_000_000,
+            "the half-second ramp travels 1440 pixels at every tick rate"
+        );
+    }
+}

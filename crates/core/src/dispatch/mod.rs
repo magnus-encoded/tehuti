@@ -265,7 +265,7 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             return (state, effects);
         }
         Input::Sticks(sticks) => {
-            state.mouse.sticks = sticks;
+            state.mouse.set_sticks(sticks);
             return (state, effects);
         }
         Input::ControllerDisconnected => {
