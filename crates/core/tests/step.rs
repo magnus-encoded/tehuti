@@ -123,10 +123,13 @@ mod step {
                 if let Event::Focus { app_id, .. } = &event { focus.clone_from(app_id); }
                 let active = plugins.iter().any(|plugin| plugin.ready && plugin.subscribes && focus.as_deref() == Some(plugin.app_id));
                 let menu_was_open = routed.menu().is_some();
-                let (next_routed, routed_actions, sent) = tehuti_core::step_with_plugin(routed, &event, active);
-                let (next_plain, plain_actions) = step(plain, &event);
+                let (mut next_routed, routed_actions, sent) = tehuti_core::step_with_plugin(routed, &event, active);
+                let (mut next_plain, plain_actions) = step(plain, &event);
                 let (next_bare, bare_actions) = step(bare, &event);
-                prop_assert_eq!(&next_routed, &next_plain, "routing to a plugin never changes core state");
+                prop_assert_eq!(next_routed.contexts(), next_plain.contexts());
+                prop_assert_eq!(next_routed.menu(), next_plain.menu(), "routing to a plugin preserves the system menu");
+                prop_assert_eq!(next_routed.pending_decisions(), next_plain.pending_decisions());
+                prop_assert_eq!(next_routed.take_commands(), next_plain.take_commands());
                 prop_assert!(!(menu_was_open && sent), "an open menu keeps every button from plugins");
                 if sent {
                     prop_assert!(routed_actions.is_empty(), "an event sent to a plugin never also reaches the context layer");

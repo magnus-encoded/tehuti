@@ -18,6 +18,7 @@ pub struct Sticks {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct State {
     active: bool,
+    full_hold: Duration,
     hold: Option<Duration>,
     toggled: bool,
     clicks: [bool; 2],
@@ -25,6 +26,13 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn set_sticks(&mut self, sticks: Sticks) {
+        if sticks.left != self.sticks.left {
+            self.full_hold = Duration::ZERO;
+        }
+        self.sticks = sticks;
+    }
+
     pub(super) const fn short_release(&mut self, event: &Event) -> bool {
         if matches!(
             event,
@@ -114,9 +122,30 @@ impl State {
         if self.active {
             let (x, y) = self.sticks.left;
             if x != 0 || y != 0 {
+                let full = x.unsigned_abs().max(y.unsigned_abs()) >= 1000;
+                let start = self.full_hold;
+                self.full_hold = if full {
+                    start.saturating_add(Duration::from_nanos(u64::try_from(nanos).unwrap_or_default()))
+                } else {
+                    Duration::ZERO
+                };
+                let boost = if full {
+                    integrated_boost(self.full_hold).saturating_sub(integrated_boost(start))
+                } else {
+                    i128::from(nanos).saturating_mul(920).saturating_div(1000)
+                };
+                let pointer = |axis: i16| {
+                    let outer = i128::from(axis).abs().clamp(400, 1000).saturating_sub(400);
+                    let extra = outer
+                        .saturating_mul(outer)
+                        .saturating_mul(boost)
+                        .saturating_div(360_000)
+                        .saturating_mul(i128::from(axis.signum()));
+                    i32::try_from(i128::from(motion(axis)).saturating_add(extra)).unwrap_or_default()
+                };
                 effects.push(Effect::MovePointer {
-                    x: motion(x),
-                    y: motion(y),
+                    x: pointer(x),
+                    y: pointer(y),
                 });
             }
         }
@@ -152,4 +181,23 @@ impl State {
         }
         *self = Self::default();
     }
+}
+
+fn integrated_boost(held: Duration) -> i128 {
+    let nanos = i128::try_from(held.as_nanos()).unwrap_or(i128::MAX);
+    let ramp = nanos.min(500_000_000);
+    nanos
+        .saturating_mul(920)
+        .saturating_div(1000)
+        .saturating_add(
+            ramp.saturating_mul(ramp)
+                .saturating_mul(1920)
+                .saturating_div(1_000_000_000_000),
+        )
+        .saturating_add(
+            nanos
+                .saturating_sub(ramp)
+                .saturating_mul(1920)
+                .saturating_div(1000),
+        )
 }
