@@ -249,6 +249,12 @@ fn create_output(
         .iter()
         .position(|candidate| *candidate == mode)
         .unwrap_or_default();
+    if let Some(native) = listed_modes
+        .iter()
+        .find(|candidate| candidate.mode_type().contains(ModeTypeFlags::PREFERRED))
+    {
+        compositor.configure_display_native_size(u32::from(native.size().0), u32::from(native.size().1));
+    }
     compositor.configure_display_modes(listed_modes.iter().map(mode_label).collect(), current);
 
     let output = drm_output(display, mode);

@@ -30,6 +30,8 @@ pub enum Input {
         names: Vec<String>,
         current: Option<usize>,
     },
+    WallpaperLocks(Vec<bool>),
+    DisplayNativeSize(u32, u32),
     ModeApplied(Option<usize>),
     /// Elapsed wall time since the previous tick.
     Tick {
@@ -262,8 +264,15 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             return (state, effects);
         }
         Input::Wallpapers { names, current } => {
-            state.settings.wallpapers = names;
-            state.settings.wallpaper_current = current;
+            state.settings.configure_wallpapers(names, current);
+            return (state, effects);
+        }
+        Input::DisplayNativeSize(width, height) => {
+            state.settings.native_size = (width > 0 && height > 0).then_some((width, height));
+            return (state, effects);
+        }
+        Input::WallpaperLocks(locked) => {
+            state.settings.wallpaper_locked = locked;
             return (state, effects);
         }
         Input::ModeApplied(current) => {
@@ -303,6 +312,10 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             return run(state, effects);
         }
     };
+    enqueue(state, tasks, effects)
+}
+
+fn enqueue(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State, Vec<Effect>) {
     state.frames.push(Frame {
         tasks: tasks.into(),
         awaiting: None,

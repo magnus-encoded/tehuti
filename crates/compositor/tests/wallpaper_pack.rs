@@ -127,7 +127,8 @@ mod archive {
         let roots = [directory.path().to_path_buf()];
         let store = || Store::new(directory.path().join("config/wallpaper"));
         let mut collection = Collection::discover(&roots, store(), 0, false);
-        assert_eq!(collection.names(), ["apteribis"]);
+        assert_eq!(collection.names(), NAMES);
+        assert_eq!(collection.locks().iter().filter(|locked| **locked).count(), 12);
         collection.unlock()?;
         assert_eq!(collection.names(), NAMES);
         collection.select(12)?;
@@ -141,7 +142,7 @@ mod archive {
     }
 
     #[test]
-    fn failed_unlock_does_not_expose_future_wallpapers() -> Result<(), Box<dyn Error>> {
+    fn failed_unlock_keeps_future_wallpapers_locked() -> Result<(), Box<dyn Error>> {
         let directory = tempfile::tempdir()?;
         pack(directory.path(), 91)?;
         let blocked = directory.path().join("blocked");
@@ -153,7 +154,8 @@ mod archive {
             false,
         );
         assert!(collection.unlock().is_err());
-        assert_eq!(collection.names(), ["apteribis"]);
+        assert_eq!(collection.names(), NAMES);
+        assert_eq!(collection.locks().iter().filter(|locked| **locked).count(), 12);
         Ok(())
     }
 }

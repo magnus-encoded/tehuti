@@ -58,10 +58,13 @@ pub struct Settings {
     pub view: View,
     pub section: usize,
     pub wallpapers: Vec<String>,
+    pub wallpaper_locked: Vec<bool>,
+    pub frequency_group: bool,
     pub wallpaper_current: Option<usize>,
     pub selected: usize,
     pub current: usize,
     pub modes: Vec<String>,
+    pub native_size: Option<(u32, u32)>,
     pub remaining: Option<Duration>,
     previous: Option<usize>,
     status: Status,
@@ -69,6 +72,80 @@ pub struct Settings {
 }
 
 impl Settings {
+    #[must_use]
+    pub fn sizes(&self) -> Vec<(u32, u32)> {
+        let mut sizes = Vec::new();
+        for mode in &self.modes {
+            if let Some(size) = mode_size(mode).filter(|size| !sizes.contains(size)) {
+                sizes.push(size);
+            }
+        }
+        sizes
+    }
+
+    #[must_use]
+    pub fn rates(&self) -> Vec<usize> {
+        let size = self.modes.get(self.selected).and_then(|mode| mode_size(mode));
+        self.modes
+            .iter()
+            .enumerate()
+            .filter(|(_, mode)| size.is_some() && mode_size(mode) == size)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn display_move(&mut self, name: ButtonName) {
+        if name == ButtonName::DpadLeft {
+            self.frequency_group = false;
+        } else if name == ButtonName::DpadRight {
+            self.frequency_group = true;
+        } else {
+            let choices = if self.frequency_group {
+                self.rates()
+            } else {
+                self.sizes()
+                    .iter()
+                    .filter_map(|size| self.modes.iter().position(|mode| mode_size(mode) == Some(*size)))
+                    .collect()
+            };
+            let selected_size = self.modes.get(self.selected).and_then(|mode| mode_size(mode));
+            let position = choices
+                .iter()
+                .position(|index| {
+                    if self.frequency_group {
+                        *index == self.selected
+                    } else {
+                        self.modes.get(*index).and_then(|mode| mode_size(mode)) == selected_size
+                    }
+                })
+                .unwrap_or_default();
+            let next = if name == ButtonName::DpadUp {
+                position.saturating_sub(1)
+            } else {
+                position.saturating_add(1).min(choices.len().saturating_sub(1))
+            };
+            if let Some(index) = choices.get(next) {
+                let rate = self
+                    .modes
+                    .get(self.selected)
+                    .and_then(|mode| mode.split_once('@'))
+                    .map(|(_, rate)| rate);
+                self.selected = if self.frequency_group {
+                    *index
+                } else {
+                    let size = self.modes.get(*index).and_then(|mode| mode_size(mode));
+                    self.modes
+                        .iter()
+                        .position(|mode| {
+                            mode_size(mode) == size
+                                && mode.split_once('@').map(|(_, candidate_rate)| candidate_rate) == rate
+                        })
+                        .unwrap_or(*index)
+                };
+            }
+        }
+    }
+
     #[must_use]
     pub const fn button_hint(&self) -> &'static str {
         if self.remaining.is_some() {
@@ -81,6 +158,11 @@ impl Settings {
     #[must_use]
     pub fn failed(&self) -> bool {
         self.status == Status::Failed
+    }
+
+    pub(super) fn configure_wallpapers(&mut self, names: Vec<String>, current: Option<usize>) {
+        self.wallpapers = names;
+        self.wallpaper_current = current;
     }
 
     pub(super) fn configure(&mut self, modes: Vec<String>, current: usize) {
@@ -181,7 +263,9 @@ impl Settings {
             self.previous = None;
             effects.push(Effect::PersistMode(self.current));
         } else if self.view == View::Wallpaper {
-            if self.selected < self.wallpapers.len() {
+            if self.selected < self.wallpapers.len()
+                && !self.wallpaper_locked.get(self.selected).copied().unwrap_or(false)
+            {
                 self.wallpaper_current = Some(self.selected);
                 effects.push(Effect::Wallpaper(self.selected));
             }
@@ -199,6 +283,30 @@ impl Settings {
         }
     }
 
+    fn move_selection(&mut self, name: ButtonName) {
+        if self.view == View::Display {
+            self.display_move(name);
+            return;
+        }
+        let backwards = matches!(name, ButtonName::DpadUp | ButtonName::DpadLeft);
+        if self.view == View::Home {
+            self.section = usize::from(!backwards);
+            return;
+        }
+        let distance = if matches!(name, ButtonName::DpadUp | ButtonName::DpadDown) {
+            4
+        } else {
+            1
+        };
+        self.selected = if backwards {
+            self.selected.saturating_sub(distance)
+        } else {
+            self.selected
+                .saturating_add(distance)
+                .min(self.wallpapers.len().saturating_sub(1))
+        };
+    }
+
     fn button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
         match name {
             ButtonName::East => {
@@ -213,24 +321,10 @@ impl Settings {
             ButtonName::South => {
                 self.apply(effects);
             }
-            ButtonName::DpadUp | ButtonName::DpadLeft if self.remaining.is_none() => {
-                if self.view == View::Home {
-                    self.section = self.section.saturating_sub(1);
-                } else {
-                    self.selected = self.selected.saturating_sub(1);
-                }
-            }
-            ButtonName::DpadDown | ButtonName::DpadRight if self.remaining.is_none() => {
-                if self.view == View::Home {
-                    self.section = 1;
-                } else {
-                    let count = if self.view == View::Wallpaper {
-                        self.wallpapers.len()
-                    } else {
-                        self.modes.len()
-                    };
-                    self.selected = self.selected.saturating_add(1).min(count.saturating_sub(1));
-                }
+            ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight
+                if self.remaining.is_none() =>
+            {
+                self.move_selection(name);
             }
             ButtonName::North
             | ButtonName::West
@@ -248,4 +342,13 @@ impl Settings {
             | ButtonName::DpadRight => {}
         }
     }
+}
+
+fn mode_size(mode: &str) -> Option<(u32, u32)> {
+    let (size, _) = mode.split_once('@')?;
+    let (width, height) = size.split_once('x')?;
+    Some((
+        width.parse().ok().filter(|value| *value > 0)?,
+        height.parse().ok().filter(|value| *value > 0)?,
+    ))
 }

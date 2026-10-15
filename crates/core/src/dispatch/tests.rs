@@ -987,7 +987,7 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
     for _ in 0..5 {
         state = settings_button(&mut world, state, ButtonName::DpadDown);
     }
-    assert_eq!(state.settings().selected, 2);
+    assert_eq!(state.settings().selected, 1);
     state = settings_button(&mut world, state, ButtonName::DpadLeft);
     assert_eq!(state.settings().selected, 1);
     for _ in 0..5 {
@@ -995,7 +995,8 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
     }
     assert_eq!(state.settings().selected, 0);
     state = settings_button(&mut world, state, ButtonName::DpadRight);
-    assert_eq!(state.settings().selected, 1);
+    assert_eq!(state.settings().selected, 0);
+    assert!(state.settings().frequency_group);
     assert!(
         !world
             .trace
@@ -1453,4 +1454,59 @@ fn unlock_phrase_is_consumed_before_plugins_and_contexts_and_can_be_configured()
         assert!(!world.trace.contains(&Effect::UnlockWallpapers));
     }
     Ok(())
+}
+
+#[test]
+fn frequency_choices_follow_size_and_keep_the_available_rate() {
+    let mut world = World::default();
+    let mut state = open_display(&mut world);
+    assert_eq!(state.settings().rates(), [0]);
+    state = settings_button(&mut world, state, ButtonName::DpadRight);
+    state = settings_button(&mut world, state, ButtonName::DpadDown);
+    assert_eq!(state.settings().selected, 0);
+    state = settings_button(&mut world, state, ButtonName::DpadLeft);
+    state = settings_button(&mut world, state, ButtonName::DpadDown);
+    assert_eq!(state.settings().sizes(), [(1920, 1080), (3840, 2160)]);
+    assert_eq!(state.settings().rates(), [1, 2]);
+    state = settings_button(&mut world, state, ButtonName::DpadRight);
+    state = settings_button(&mut world, state, ButtonName::DpadDown);
+    assert_eq!(state.settings().selected, 2);
+    state = settings_button(&mut world, state, ButtonName::DpadLeft);
+    state = settings_button(&mut world, state, ButtonName::DpadUp);
+    assert_eq!(state.settings().selected, 0);
+    assert_eq!(state.settings().rates(), [0]);
+}
+
+#[test]
+fn locked_wallpaper_consumes_apply_without_selecting_until_unlocked() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Wallpapers {
+            names: vec!["apteribis".into(), "bostrychia".into()],
+            current: Some(0),
+        },
+    );
+    let state = world.run(state, Input::WallpaperLocks(vec![false, true]));
+    let mut state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood.".into()).unwrap(),
+        },
+    );
+    for name in [
+        ButtonName::DpadDown,
+        ButtonName::South,
+        ButtonName::DpadRight,
+        ButtonName::South,
+    ] {
+        state = settings_button(&mut world, state, name);
+    }
+    assert_eq!(state.settings().wallpaper_current, Some(0));
+    assert!(!world.trace.contains(&Effect::Wallpaper(1)));
+    state = world.run(state, Input::WallpaperLocks(vec![false, false]));
+    state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().wallpaper_current, Some(1));
+    assert!(world.trace.contains(&Effect::Wallpaper(1)));
 }

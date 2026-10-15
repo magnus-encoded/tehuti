@@ -217,6 +217,8 @@ impl Compositor {
         let names = self.wallpapers.borrow().names();
         let current = self.wallpapers.borrow().current;
         let _rejection = self.dispatch(DispatchInput::Wallpapers { names, current });
+        let locked = self.wallpapers.borrow().locks();
+        let _locks_rejection = self.dispatch(DispatchInput::WallpaperLocks(locked));
         self.install_keymap(keymap)
     }
 
@@ -615,10 +617,15 @@ impl Compositor {
         &self,
         size: (i32, i32),
     ) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
-        self.settings_display
-            .artwork
-            .borrow_mut()
-            .buffer(self.settings(), size)
+        self.settings_display.artwork.borrow_mut().buffer_with_wallpapers(
+            self.settings(),
+            size,
+            &self.wallpapers.borrow(),
+        )
+    }
+
+    pub fn configure_display_native_size(&mut self, width: u32, height: u32) {
+        let _rejection = self.dispatch(DispatchInput::DisplayNativeSize(width, height));
     }
 
     pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
@@ -770,6 +777,8 @@ impl Compositor {
                 let names = self.wallpapers.borrow().names();
                 let current = self.wallpapers.borrow().current;
                 let _rejection = self.dispatch(DispatchInput::Wallpapers { names, current });
+                let locked = self.wallpapers.borrow().locks();
+                let _locks_rejection = self.dispatch(DispatchInput::WallpaperLocks(locked));
                 self.show_notice("ALL WALLPAPERS UNLOCKED");
             }
             Err(error) => {

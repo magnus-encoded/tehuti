@@ -101,7 +101,8 @@ const CURRENT_RELEASE: usize = 0;
 
 #[derive(Debug)]
 pub struct Collection {
-    roots: Vec<PathBuf>,
+    locked: Vec<bool>,
+    thumbnails: Vec<image::RgbaImage>,
     entries: Vec<(String, image::DynamicImage)>,
     pub(crate) current: Option<usize>,
     wallpaper: Wallpaper,
@@ -125,14 +126,26 @@ impl Collection {
             })
             .as_deref()
             == Some("1");
-        let entries = load_entries(roots, release, all || unlocked);
+        let entries = load_entries(roots, release, true);
+        let locked = entry_locks(&entries, release, all || unlocked);
+        let thumbnails = entries
+            .iter()
+            .map(|(_, image)| {
+                image
+                    .resize_to_fill(240, 135, image::imageops::FilterType::Lanczos3)
+                    .to_rgba8()
+            })
+            .collect();
         let saved = store.read().unwrap_or_else(|error| {
             tracing::warn!(%error, "wallpaper selection unavailable");
             None
         });
-        let saved_current = saved
-            .as_ref()
-            .and_then(|saved| entries.iter().position(|(name, _)| name == saved));
+        let saved_current = saved.as_ref().and_then(|saved| {
+            entries
+                .iter()
+                .position(|(name, _)| name == saved)
+                .filter(|index| !locked.get(*index).copied().unwrap_or(true))
+        });
         let legacy = saved_current
             .is_none()
             .then(|| {
@@ -147,12 +160,13 @@ impl Collection {
                     .get(release)
                     .and_then(|default| entries.iter().position(|(name, _)| name == default))
             })
-            .or_else(|| (!entries.is_empty()).then_some(0));
+            .or_else(|| locked.iter().position(|locked| !locked));
         let current = current.filter(|_| legacy.is_none());
         let image =
             legacy.or_else(|| current.and_then(|index| entries.get(index).map(|(_, image)| image.clone())));
         Self {
-            roots: roots.to_vec(),
+            locked,
+            thumbnails,
             entries,
             current,
             wallpaper: Wallpaper {
@@ -197,12 +211,24 @@ impl Collection {
     /// Returns an error when the permanent unlock cannot be saved.
     pub fn unlock(&mut self) -> std::io::Result<()> {
         self.store.sibling("wallpapers-unlocked").write("1")?;
-        let selected = self
-            .current
-            .and_then(|index| self.entries.get(index).map(|(name, _)| name.clone()));
-        self.entries = load_entries(&self.roots, CURRENT_RELEASE, true);
-        self.current = selected.and_then(|name| self.entries.iter().position(|(entry, _)| entry == &name));
+        self.locked.fill(false);
         Ok(())
+    }
+
+    #[must_use]
+    pub fn locks(&self) -> Vec<bool> {
+        self.locked.clone()
+    }
+
+    #[must_use]
+    pub fn thumbnails(&self) -> &[image::RgbaImage] {
+        &self.thumbnails
+    }
+
+    #[must_use]
+    pub fn version(&self, index: usize) -> Option<usize> {
+        let (name, _) = self.entries.get(index)?;
+        CODENAMES.iter().position(|entry| *entry == name)
     }
 
     #[must_use]
@@ -213,6 +239,9 @@ impl Collection {
     /// # Errors
     /// Returns an error when the selection cannot be saved or is unavailable.
     pub fn select(&mut self, index: usize) -> std::io::Result<()> {
+        if self.locked.get(index).copied().unwrap_or(true) {
+            return Err(std::io::Error::other("wallpaper locked"));
+        }
         let (name, image) = self
             .entries
             .get(index)
@@ -228,6 +257,19 @@ impl Collection {
     pub fn buffer(&mut self, size: Size<i32, Physical>) -> Result<MemoryRenderBuffer, Box<dyn Error>> {
         self.wallpaper.buffer(size)
     }
+}
+
+fn entry_locks(entries: &[(String, image::DynamicImage)], release: usize, unlocked: bool) -> Vec<bool> {
+    entries
+        .iter()
+        .map(|(name, _)| {
+            !unlocked
+                && CODENAMES
+                    .iter()
+                    .position(|entry| *entry == name)
+                    .is_some_and(|index| index > release)
+        })
+        .collect()
 }
 
 fn load_entries(roots: &[PathBuf], release: usize, all: bool) -> Vec<(String, image::DynamicImage)> {

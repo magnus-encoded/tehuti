@@ -205,7 +205,7 @@ mod collection {
     }
 
     #[test]
-    fn release_default_and_gradual_unlock_ignore_future_images() -> Result<(), Box<dyn Error>> {
+    fn release_default_shows_locked_future_thumbnails() -> Result<(), Box<dyn Error>> {
         let directory = tempfile::tempdir()?;
         for (name, color) in [
             ("apteribis", 10),
@@ -219,8 +219,18 @@ mod collection {
         let roots = [directory.path().to_path_buf()];
         let store = || Store::new(directory.path().join("selection"));
         let mut first = Collection::discover(&roots, store(), 0, false);
-        assert_eq!(first.names(), ["apteribis"]);
+        assert_eq!(first.names().len(), 5);
+        assert_eq!(first.locks(), [false, true, true, true, true]);
+        assert_eq!(first.thumbnails().len(), 5);
+        assert_eq!(first.thumbnails()[4].dimensions(), (240, 135));
+        assert_eq!(first.version(4), Some(4));
+        assert!(first.select(4).is_err());
+        let thumbnail = first.thumbnails()[4].as_ptr();
+        first.unlock()?;
+        assert_eq!(first.locks(), [false; 5]);
+        assert_eq!(first.thumbnails()[4].as_ptr(), thumbnail);
         assert_eq!(red(&mut first)?, 10);
+        std::fs::remove_file(directory.path().join("wallpapers-unlocked"))?;
         let mut fourth = Collection::discover(&roots, store(), 4, false);
         assert_eq!(
             fourth.names(),
