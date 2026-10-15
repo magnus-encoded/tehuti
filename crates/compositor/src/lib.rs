@@ -38,3 +38,4 @@ pub mod bar;
 pub mod settings;
 
 pub mod display_mode_store;
+pub mod wallpaper;

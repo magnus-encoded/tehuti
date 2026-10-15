@@ -17,7 +17,6 @@ use smithay::{
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
-    desktop::space::render_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{EventLoop, LoopSignal},
@@ -32,7 +31,6 @@ use tehuti::state::Compositor;
 use crate::LoopData;
 
 const REFRESH_MILLIHERTZ: i32 = 60_000;
-const BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 struct Nested {
     backend: Rc<RefCell<WinitGraphicsBackend<GlesRenderer>>>,
@@ -220,16 +218,13 @@ impl Nested {
                     &data.compositor,
                     &mut notices,
                 );
-                match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
+                match tehuti::wallpaper::render_output(
                     &self.output,
                     renderer,
                     &mut framebuffer,
-                    1.0,
-                    0,
-                    [&data.compositor.space],
+                    &data.compositor,
                     &notices,
                     &mut self.damage_tracker,
-                    BACKGROUND,
                 ) {
                     Ok(result) => {
                         output_drew = result.damage.is_some();
