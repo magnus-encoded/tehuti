@@ -39,3 +39,6 @@ pub mod settings;
 
 pub mod display_mode_store;
 pub mod wallpaper;
+
+pub mod child_environment;
+pub mod xwayland;

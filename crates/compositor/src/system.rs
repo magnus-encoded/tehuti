@@ -6,7 +6,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
 };
 
 /// Runs system programs on behalf of the menu.
@@ -27,7 +27,7 @@ pub struct Real;
 
 impl Executor for Real {
     fn spawn(&mut self, program: &str, args: &[&str]) -> io::Result<()> {
-        let mut child = Command::new(program)
+        let mut child = crate::child_environment::command(program)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
