@@ -20,8 +20,40 @@ pub enum View {
     Wallpaper,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phrases {
+    settings: String,
+    unlock_wallpapers: String,
+}
+
+impl Default for Phrases {
+    fn default() -> Self {
+        Self {
+            settings: "pop the hood".into(),
+            unlock_wallpapers: "birds of a feather".into(),
+        }
+    }
+}
+
+impl Phrases {
+    /// # Errors
+    /// Rejects empty phrases and phrases that normalize to the same words.
+    pub fn new(settings: &str, unlock_wallpapers: &str) -> Result<Self, String> {
+        let settings = tehuti_protocol::normalize_phrase(settings);
+        let unlock_wallpapers = tehuti_protocol::normalize_phrase(unlock_wallpapers);
+        if settings.is_empty() || unlock_wallpapers.is_empty() || settings == unlock_wallpapers {
+            return Err("voice phrases must contain words and be distinct".into());
+        }
+        Ok(Self {
+            settings,
+            unlock_wallpapers,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
+    pub(super) phrases: Phrases,
     pub open: bool,
     pub view: View,
     pub section: usize,
@@ -96,15 +128,16 @@ impl Settings {
     }
 
     pub(super) fn event(&mut self, event: &Event, effects: &mut Vec<Effect>) -> bool {
-        if let Event::Speech { text } = event
-            && text
-                .as_str()
-                .trim()
-                .trim_end_matches('.')
-                .eq_ignore_ascii_case("pop the hood")
-        {
-            self.toggle(effects);
-            return true;
+        if let Event::Speech { text } = event {
+            let phrase = tehuti_protocol::normalize_phrase(text.as_str());
+            if phrase == self.phrases.unlock_wallpapers {
+                effects.push(Effect::UnlockWallpapers);
+                return true;
+            }
+            if phrase == self.phrases.settings {
+                self.toggle(effects);
+                return true;
+            }
         }
         if !self.open {
             return false;

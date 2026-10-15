@@ -82,7 +82,7 @@ impl Wallpaper {
     }
 }
 
-const CODENAMES: &[&str] = &[
+pub(crate) const CODENAMES: &[&str] = &[
     "apteribis",
     "bostrychia",
     "cercibis",
@@ -101,6 +101,7 @@ const CURRENT_RELEASE: usize = 0;
 
 #[derive(Debug)]
 pub struct Collection {
+    roots: Vec<PathBuf>,
     entries: Vec<(String, image::DynamicImage)>,
     pub(crate) current: Option<usize>,
     wallpaper: Wallpaper,
@@ -115,17 +116,16 @@ impl Collection {
         release: usize,
         all: bool,
     ) -> Self {
-        let entries: Vec<_> = CODENAMES
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| all || *index <= release)
-            .filter_map(|(_, name)| {
-                roots
-                    .iter()
-                    .find_map(|root| image::open(root.join("wallpapers").join(format!("{name}.png"))).ok())
-                    .map(|image| ((*name).to_owned(), image))
+        let unlocked = store
+            .sibling("wallpapers-unlocked")
+            .read()
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "wallpaper unlock unavailable");
+                None
             })
-            .collect();
+            .as_deref()
+            == Some("1");
+        let entries = load_entries(roots, release, all || unlocked);
         let saved = store.read().unwrap_or_else(|error| {
             tracing::warn!(%error, "wallpaper selection unavailable");
             None
@@ -152,6 +152,7 @@ impl Collection {
         let image =
             legacy.or_else(|| current.and_then(|index| entries.get(index).map(|(_, image)| image.clone())));
         Self {
+            roots: roots.to_vec(),
             entries,
             current,
             wallpaper: Wallpaper {
@@ -192,6 +193,18 @@ impl Collection {
         )
     }
 
+    /// # Errors
+    /// Returns an error when the permanent unlock cannot be saved.
+    pub fn unlock(&mut self) -> std::io::Result<()> {
+        self.store.sibling("wallpapers-unlocked").write("1")?;
+        let selected = self
+            .current
+            .and_then(|index| self.entries.get(index).map(|(name, _)| name.clone()));
+        self.entries = load_entries(&self.roots, CURRENT_RELEASE, true);
+        self.current = selected.and_then(|name| self.entries.iter().position(|(entry, _)| entry == &name));
+        Ok(())
+    }
+
     #[must_use]
     pub fn names(&self) -> Vec<String> {
         self.entries.iter().map(|(name, _)| name.clone()).collect()
@@ -215,6 +228,40 @@ impl Collection {
     pub fn buffer(&mut self, size: Size<i32, Physical>) -> Result<MemoryRenderBuffer, Box<dyn Error>> {
         self.wallpaper.buffer(size)
     }
+}
+
+fn load_entries(roots: &[PathBuf], release: usize, all: bool) -> Vec<(String, image::DynamicImage)> {
+    let packs: Vec<_> = roots
+        .iter()
+        .map(|root| {
+            let path = root.join("wallpapers.pak");
+            match crate::wallpaper_pack::Pack::read(&path) {
+                Ok(pack) => Some(pack),
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        tracing::warn!(%error, path = %path.display(), "wallpaper pack unavailable");
+                    }
+                    None
+                }
+            }
+        })
+        .collect();
+    CODENAMES
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| all || *index <= release)
+        .filter_map(|(_, name)| {
+            roots
+                .iter()
+                .zip(&packs)
+                .find_map(|(root, pack)| {
+                    pack.as_ref()
+                        .and_then(|pack| pack.image(name))
+                        .or_else(|| image::open(root.join("wallpapers").join(format!("{name}.png"))).ok())
+                })
+                .map(|image| ((*name).to_owned(), image))
+        })
+        .collect()
 }
 
 smithay::backend::renderer::element::render_elements! {

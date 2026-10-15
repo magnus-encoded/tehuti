@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
 mod settings;
-pub use settings::{Settings, View as SettingsView};
+pub use settings::{Phrases, Settings, View as SettingsView};
 
 mod mouse;
 pub use mouse::{PointerButton, Sticks};
@@ -21,6 +21,7 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    Phrases(Phrases),
     DisplayModes {
         modes: Vec<String>,
         current: usize,
@@ -71,6 +72,7 @@ pub enum Input {
 pub enum Effect {
     SettingsMode(usize),
     Wallpaper(usize),
+    UnlockWallpapers,
     PersistMode(usize),
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
@@ -251,6 +253,10 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
+        Input::Phrases(phrases) => {
+            state.settings.phrases = phrases;
+            return (state, effects);
+        }
         Input::DisplayModes { modes, current } => {
             state.settings.configure(modes, current);
             return (state, effects);

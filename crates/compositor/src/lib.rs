@@ -39,3 +39,7 @@ pub mod settings;
 
 pub mod display_mode_store;
 pub mod wallpaper;
+
+pub mod wallpaper_pack;
+
+pub mod phrases;

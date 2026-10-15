@@ -1,5 +1,6 @@
 [package]
 name = "tehuti"
+default-run = "tehuti"
 version = "0.0.0"
 description = "Tehuti compositor: the Smithay edge around the core step"
 edition.workspace = true

@@ -72,7 +72,8 @@ impl World {
                     Effect::Apply(Action::Close) | Effect::PluginAction(Action::Close) => {
                         state = self.close_focus(state);
                     }
-                    Effect::Wallpaper(_)
+                    Effect::UnlockWallpapers
+                    | Effect::Wallpaper(_)
                     | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::MovePointer { .. }
@@ -1404,5 +1405,52 @@ fn wallpaper_section_applies_immediately_and_returns_to_settings() -> Result<(),
     state = settings_button(&mut world, state, ButtonName::East);
     assert!(state.settings().open);
     assert_eq!(state.settings().view, super::SettingsView::Home);
+    Ok(())
+}
+
+#[test]
+fn unlock_phrase_is_consumed_before_plugins_and_contexts_and_can_be_configured() -> Result<(), String> {
+    for (phrases, accepted, rejected) in [
+        (
+            super::Phrases::default(),
+            "BIRDS, of a feather!",
+            "birds of feather",
+        ),
+        (
+            super::Phrases::new("settings", "all art")?,
+            "All art.",
+            "birds of a feather",
+        ),
+    ] {
+        let mut world = World::default();
+        let state = world.run(State::default(), Input::Phrases(phrases));
+        let state = settings_event(
+            &mut world,
+            state,
+            Event::Speech {
+                text: Text::new(accepted.into())?,
+            },
+        );
+        assert!(world.trace.contains(&Effect::UnlockWallpapers));
+        assert!(!world.trace.iter().any(|effect| matches!(
+            effect,
+            Effect::QueryPlugin(Event::Speech { .. })
+                | Effect::DispatchPlugin {
+                    event: Event::Speech { .. },
+                    ..
+                }
+                | Effect::SpeechRouted { .. }
+                | Effect::Apply(_)
+        )));
+        world.trace.clear();
+        let _state = settings_event(
+            &mut world,
+            state,
+            Event::Speech {
+                text: Text::new(rejected.into())?,
+            },
+        );
+        assert!(!world.trace.contains(&Effect::UnlockWallpapers));
+    }
     Ok(())
 }

@@ -202,6 +202,7 @@ impl Compositor {
     }
 
     fn initialize_settings(&mut self, keymap: &xkb::Keymap) -> Result<(), SetupError> {
+        let _phrase_rejection = self.dispatch(DispatchInput::Phrases(crate::phrases::from_env()));
         let names = self.wallpapers.borrow().names();
         let current = self.wallpapers.borrow().current;
         let _rejection = self.dispatch(DispatchInput::Wallpapers { names, current });
@@ -622,12 +623,10 @@ impl Compositor {
 
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         match effect {
-            DispatchEffect::SettingsMode(index) => {
-                self.settings_display.requests.push_back((index, false));
-                None
-            }
-            DispatchEffect::PersistMode(index) => {
-                self.settings_display.requests.push_back((index, true));
+            DispatchEffect::SettingsMode(index) | DispatchEffect::PersistMode(index) => {
+                self.settings_display
+                    .requests
+                    .push_back((index, matches!(effect, DispatchEffect::PersistMode(_))));
                 None
             }
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
@@ -661,7 +660,8 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
-            effect @ (DispatchEffect::Wallpaper(_)
+            effect @ (DispatchEffect::UnlockWallpapers
+            | DispatchEffect::Wallpaper(_)
             | DispatchEffect::MovePointer { .. }
             | DispatchEffect::Scroll { .. }
             | DispatchEffect::Click { .. }
@@ -687,6 +687,7 @@ impl Compositor {
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::UnlockWallpapers => self.unlock_wallpapers(),
             DispatchEffect::Wallpaper(index) => self.apply_wallpaper(index),
             DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
             DispatchEffect::Scroll { x, y } => self.pointer_scroll(x, y),
@@ -740,6 +741,22 @@ impl Compositor {
             }
             DispatchEffect::SpeechRouted { text, first, plugin } => {
                 log_speech_route(&text, first.as_ref(), plugin);
+            }
+        }
+    }
+
+    fn unlock_wallpapers(&mut self) {
+        let result = self.wallpapers.borrow_mut().unlock();
+        match result {
+            Ok(()) => {
+                let names = self.wallpapers.borrow().names();
+                let current = self.wallpapers.borrow().current;
+                let _rejection = self.dispatch(DispatchInput::Wallpapers { names, current });
+                self.show_notice("ALL WALLPAPERS UNLOCKED");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "wallpaper unlock persistence failed");
+                self.show_notice("WALLPAPER UNLOCK FAILED");
             }
         }
     }
