@@ -1334,9 +1334,14 @@ impl Compositor {
                 ))
                 .to_i32_round(),
             );
+            let tiled = tile.mode != tehuti_core::layout::TileMode::Fullscreen;
             for (state, enabled) in [
                 (xdg_toplevel::State::Fullscreen, tile.fullscreen_requested),
                 (xdg_toplevel::State::Activated, focused),
+                (xdg_toplevel::State::TiledLeft, tiled),
+                (xdg_toplevel::State::TiledRight, tiled),
+                (xdg_toplevel::State::TiledTop, tiled),
+                (xdg_toplevel::State::TiledBottom, tiled),
             ] {
                 if enabled {
                     let _changed = pending.states.set(state);
