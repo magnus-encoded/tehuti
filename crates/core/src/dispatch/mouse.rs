@@ -85,6 +85,12 @@ impl State {
             | ButtonName::DpadUp
             | ButtonName::DpadDown
             | ButtonName::DpadLeft
+            | ButtonName::GuideTap
+            | ButtonName::KeyboardPtt
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4
             | ButtonName::DpadRight => None,
         };
         if let Some((index, button)) = click {

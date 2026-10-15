@@ -49,6 +49,24 @@ mod synthetic_pad {
     }
 
     #[test]
+    fn meta_tap_opens_and_closes_the_controller_system_menu() {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.physical_key(125, true);
+        assert!(!menu_is_open(&compositor));
+        compositor.physical_key(125, false);
+        assert!(menu_is_open(&compositor));
+        compositor.physical_key(126, true);
+        compositor.physical_key(126, false);
+        assert!(!menu_is_open(&compositor));
+        compositor.physical_key(125, true);
+        compositor.physical_key(30, true);
+        compositor.physical_key(30, false);
+        compositor.physical_key(125, false);
+        assert!(!menu_is_open(&compositor));
+    }
+
+    #[test]
     fn disconnect_and_seat_pause_cancel_the_hold_and_close_the_menu() {
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();

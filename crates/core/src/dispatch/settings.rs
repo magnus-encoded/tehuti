@@ -227,7 +227,10 @@ impl Settings {
         let Event::Button { name, state } = event else {
             return false;
         };
-        if matches!(name, ButtonName::Guide | ButtonName::Start | ButtonName::Record) {
+        if matches!(
+            name,
+            ButtonName::Guide | ButtonName::GuideTap | ButtonName::Start | ButtonName::Record
+        ) {
             return false;
         }
         if *state == ButtonState::Released {
@@ -339,6 +342,12 @@ impl Settings {
             | ButtonName::DpadUp
             | ButtonName::DpadDown
             | ButtonName::DpadLeft
+            | ButtonName::GuideTap
+            | ButtonName::KeyboardPtt
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4
             | ButtonName::DpadRight => {}
         }
     }

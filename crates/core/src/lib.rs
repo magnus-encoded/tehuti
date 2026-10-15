@@ -133,10 +133,9 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     }
     if matches!(
         event,
-        Event::Button {
-            name: ButtonName::Record,
-            ..
-        }
+        Event::Button { name, .. }
+            if *name == ButtonName::KeyboardPtt || global_context(&state)
+                .map_or(*name == ButtonName::Record, |context| context.push_to_talk(*name))
     ) {
         return (state, Vec::new(), false);
     }
@@ -210,6 +209,15 @@ const fn fallback(_event: &Event) -> Option<Action> {
 
 fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     match event {
+        Event::Button {
+            name: ButtonName::GuideTap,
+            state: button_state,
+        } => {
+            if *button_state == ButtonState::Pressed {
+                state.menu = Some(menu::Menu::default());
+            }
+            Some(Vec::new())
+        }
         Event::Button {
             name: ButtonName::Guide,
             state: button_state,

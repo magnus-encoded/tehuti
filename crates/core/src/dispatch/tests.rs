@@ -652,7 +652,7 @@ proptest! {
         let _state = world.run(state, pad_button(name, ButtonState::Released));
         prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::SpeechCommand(_) | Effect::ConfirmSecret(_) | Effect::QueryPlugin(Event::Button { .. }) | Effect::DispatchPlugin { event: Event::Button { .. }, .. })), "mouse buttons stay in core");
         let clicks: Vec<_> = world.trace.into_iter().filter(|effect| matches!(effect, Effect::Click { .. })).collect();
-        let button = match name { ButtonName::South => Some(PointerButton::Left), ButtonName::East => Some(PointerButton::Right), ButtonName::North | ButtonName::West | ButtonName::LeftBumper | ButtonName::RightBumper | ButtonName::Select | ButtonName::Record | ButtonName::Start | ButtonName::Guide | ButtonName::LeftStick | ButtonName::RightStick | ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight => None };
+        let button = match name { ButtonName::South => Some(PointerButton::Left), ButtonName::East => Some(PointerButton::Right), ButtonName::North | ButtonName::West | ButtonName::LeftBumper | ButtonName::RightBumper | ButtonName::Select | ButtonName::Record | ButtonName::Start | ButtonName::Guide | ButtonName::LeftStick | ButtonName::RightStick | ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::GuideTap | ButtonName::KeyboardPtt | ButtonName::Paddle1 | ButtonName::Paddle2 | ButtonName::Paddle3 | ButtonName::Paddle4 | ButtonName::DpadRight => None };
         let expected = button.map_or_else(Vec::new, |button| vec![Effect::Click { button, pressed: true }, Effect::Click { button, pressed: false }]);
         prop_assert_eq!(clicks, expected);
     }
@@ -1509,4 +1509,82 @@ fn locked_wallpaper_consumes_apply_without_selecting_until_unlocked() {
     state = settings_button(&mut world, state, ButtonName::South);
     assert_eq!(state.settings().wallpaper_current, Some(1));
     assert!(world.trace.contains(&Effect::Wallpaper(1)));
+}
+
+#[test]
+fn start_ptt_setting_replaces_its_binding_only_when_listed() {
+    for (setting, enabled) in [("['record', 'start']", true), ("['record']", false)] {
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = '*'\npush_to_talk = {setting}\n[buttons]\nstart = {{ key = 'enter' }}"
+        ))
+        .unwrap();
+        let mut world = World::default();
+        let state = State::new(crate::State::with_contexts(vec![context]));
+        let state = world.run(state, Input::Speech(SpeechInput::Available));
+        let state = world.run(state, button(ButtonName::Start, ButtonState::Pressed));
+        let _state = world.run(state, button(ButtonName::Start, ButtonState::Released));
+        let commands: Vec<_> = world
+            .trace
+            .iter()
+            .filter_map(|effect| {
+                if let Effect::SpeechCommand(command) = effect {
+                    Some(command.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if enabled {
+            assert_eq!(
+                commands,
+                vec![
+                    SpeechEffect::Start { session: 0 },
+                    SpeechEffect::Stop {
+                        session: 0,
+                        transcribe: true
+                    }
+                ]
+            );
+        } else {
+            assert_eq!(commands, Vec::<SpeechEffect>::new());
+        }
+        assert_eq!(
+            world.trace.contains(&Effect::Apply(Action::Key {
+                key: tehuti_protocol::KeyName::Enter
+            })),
+            !enabled
+        );
+    }
+}
+
+#[test]
+fn keyboard_ptt_obeys_the_menu_rule() {
+    let mut world = World::default();
+    let state = menu_open(&mut world);
+    let _state = world.run(state, button(ButtonName::KeyboardPtt, ButtonState::Pressed));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SpeechCommand(_)))
+    );
+}
+
+#[test]
+fn keyboard_ptt_captures_with_controller_ptt_disabled() {
+    let context = tehuti_protocol::parse_context("app_id = '*'\npush_to_talk = []\n[buttons]").unwrap();
+    let mut world = World::default();
+    let state = State::new(crate::State::with_contexts(vec![context]));
+    let state = world.run(state, Input::Speech(SpeechInput::Available));
+    let state = world.run(state, button(ButtonName::KeyboardPtt, ButtonState::Pressed));
+    let _state = world.run(state, button(ButtonName::KeyboardPtt, ButtonState::Released));
+    assert!(
+        world
+            .trace
+            .contains(&Effect::SpeechCommand(SpeechEffect::Start { session: 0 }))
+    );
+    assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Stop {
+        session: 0,
+        transcribe: true
+    })));
 }
