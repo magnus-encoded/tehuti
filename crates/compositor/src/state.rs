@@ -485,6 +485,11 @@ impl Compositor {
         self.osk.open
     }
 
+    #[must_use]
+    pub fn osk_draft(&self) -> Option<&str> {
+        self.osk.draft()
+    }
+
     pub(crate) fn osk_cursor_rectangle(&self, scale: i32) -> Option<(i32, i32)> {
         let (_, y, _, cursor_height) = self.text_input.cursor()?;
         let offset = self
@@ -599,10 +604,18 @@ impl Compositor {
                 tracing::subscriber::NoSubscriber::default(),
                 || match effect {
                     crate::osk::Effect::Text(text) => {
-                        let _method = self.deliver_text(text);
+                        if self.osk.draft().is_some() {
+                            self.osk.insert_draft(text);
+                        } else {
+                            let _method = self.deliver_text(text);
+                        }
                     }
-                    crate::osk::Effect::Backspace => self.tap(KeyName::Backspace),
-                    crate::osk::Effect::Enter => self.tap(KeyName::Enter),
+                    crate::osk::Effect::Backspace => {
+                        if !self.osk.backspace_draft() {
+                            self.tap(KeyName::Backspace);
+                        }
+                    }
+                    crate::osk::Effect::Enter => self.commit_draft(),
                     crate::osk::Effect::Consumed => {}
                 },
             );
@@ -818,10 +831,10 @@ impl Compositor {
                 text,
                 admitted,
             } => {
-                log_transcript(session, &text, admitted);
+                log_transcript(session, &text, admitted, self.osk.open);
             }
             DispatchEffect::SpeechRouted { text, first, plugin } => {
-                log_speech_route(&text, first.as_ref(), plugin);
+                log_speech_route(&text, first.as_ref(), plugin, self.osk.open);
             }
         }
     }
@@ -1161,11 +1174,19 @@ impl Compositor {
         match action {
             Action::Keyboard => self.open_keyboard(),
             Action::Key { key } => {
+                if *key == KeyName::Enter && self.osk.open {
+                    self.commit_draft();
+                    return;
+                }
                 self.tap(*key);
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(?key, ?app_id, ?title, "key delivered to focused window");
             }
             Action::Text { text } => {
+                if self.osk.open {
+                    self.osk.insert_draft(text.as_str());
+                    return;
+                }
                 let method = self.deliver_text(text.as_str());
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(
@@ -1257,6 +1278,15 @@ impl Compositor {
                 |_, _, _| FilterResult::Forward,
             );
         }
+    }
+
+    fn commit_draft(&mut self) {
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+            if let Some(draft) = self.osk.take_draft() {
+                let _method = self.deliver_text(&draft);
+            }
+            self.tap(KeyName::Enter);
+        });
     }
 
     fn deliver_text(&mut self, text: &str) -> &'static str {
@@ -1865,7 +1895,7 @@ impl XdgShellHandler for Compositor {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if self.text_input.forget_surface(surface.wl_surface()) {
-            self.osk.open = false;
+            self.osk.close();
         }
         self.remove_floating(surface.wl_surface());
         let identity = self.layout_windows.iter().find_map(|(identity, window)| {
@@ -1913,7 +1943,7 @@ impl SeatHandler for Compositor {
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         self.text_input.focus(focused.cloned());
-        self.osk.open = false;
+        self.osk.close();
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
@@ -1942,7 +1972,10 @@ delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
 delegate_output!(Compositor);
 
-fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin: bool) {
+fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin: bool, osk_open: bool) {
+    if osk_open {
+        return;
+    }
     match first {
         Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
             tracing::info!(text = text.as_str(), "speech has no mapping");
@@ -1953,7 +1986,10 @@ fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin
     }
 }
 
-fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
+fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool, osk_open: bool) {
+    if osk_open {
+        return;
+    }
     tracing::info!(session, text = text.as_str(), "speech transcript received");
     if !admitted {
         tracing::info!("speech transcript dropped for a stale session");

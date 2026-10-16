@@ -5,26 +5,28 @@ use tehuti_protocol::{ButtonName, ButtonState};
 
 const LETTERS: [[&str; 20]; 2] = [
     [
-        "q", "w", "e", "r", "t", "a", "s", "d", "f", "g", "z", "x", "c", "v", "b", " ", " ", " ", " ", " ",
+        "q", "w", "e", "r", "t", "a", "s", "d", "f", "g", "z", "x", "c", "v", "b", ".", "/", ":", "-", "_",
     ],
     [
-        "y", "u", "i", "o", "p", "h", "j", "k", "l", "'", "n", "m", ",", ".", "?", " ", " ", " ", " ", " ",
+        "y", "u", "i", "o", "p", "h", "j", "k", "l", "'", "n", "m", ",", ".", "?", ".com", " ", " ", " ", " ",
     ],
 ];
 const CAPITALS: [[&str; 20]; 2] = [
     [
-        "Q", "W", "E", "R", "T", "A", "S", "D", "F", "G", "Z", "X", "C", "V", "B", " ", " ", " ", " ", " ",
+        "Q", "W", "E", "R", "T", "A", "S", "D", "F", "G", "Z", "X", "C", "V", "B", ".", "/", ":", "-", "_",
     ],
     [
-        "Y", "U", "I", "O", "P", "H", "J", "K", "L", "\"", "N", "M", ";", ":", "!", " ", " ", " ", " ", " ",
+        "Y", "U", "I", "O", "P", "H", "J", "K", "L", "\"", "N", "M", ";", ":", "!", ".com", " ", " ", " ",
+        " ",
     ],
 ];
 const SYMBOLS: [[&str; 20]; 2] = [
     [
-        "1", "2", "3", "4", "5", "!", "@", "#", "$", "%", "(", ")", "[", "]", "{", " ", " ", " ", " ", " ",
+        "1", "2", "3", "4", "5", "!", "@", "#", "$", "%", "(", ")", "[", "]", "{", ".", "/", ":", "-", "_",
     ],
     [
-        "6", "7", "8", "9", "0", "^", "&", "*", "-", "_", "}", "+", "=", "/", "\\", " ", " ", " ", " ", " ",
+        "6", "7", "8", "9", "0", "^", "&", "*", "-", "_", "}", "+", "=", "/", "\\", ".com", " ", " ", " ",
+        " ",
     ],
 ];
 
@@ -33,7 +35,9 @@ pub struct Keyboard {
     pub open: bool,
     selected: [usize; 2],
     layer: usize,
-    held: [bool; 6],
+    held: [bool; 8],
+    draft: Option<String>,
+    cursor: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,6 +49,67 @@ pub enum Effect {
 }
 
 impl Keyboard {
+    pub fn close(&mut self) {
+        self.open = false;
+        self.draft = None;
+        self.cursor = 0;
+    }
+
+    #[must_use]
+    pub fn draft(&self) -> Option<&str> {
+        self.draft.as_deref()
+    }
+
+    #[must_use]
+    pub const fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn insert_draft(&mut self, text: &str) {
+        let draft = self.draft.get_or_insert_with(String::new);
+        draft.insert_str(self.cursor, text);
+        self.cursor = self.cursor.saturating_add(text.len());
+    }
+
+    pub const fn take_draft(&mut self) -> Option<String> {
+        self.cursor = 0;
+        self.draft.take()
+    }
+
+    pub fn backspace_draft(&mut self) -> bool {
+        let Some(draft) = self.draft.as_mut() else {
+            return false;
+        };
+        let previous = draft
+            .get(..self.cursor)
+            .and_then(|prefix| prefix.char_indices().next_back())
+            .map(|(index, _)| index);
+        if let Some(previous) = previous {
+            draft.replace_range(previous..self.cursor, "");
+            self.cursor = previous;
+        }
+        true
+    }
+
+    fn move_cursor(&mut self, right: bool) {
+        let Some(draft) = &self.draft else {
+            return;
+        };
+        self.cursor = if right {
+            draft
+                .get(self.cursor..)
+                .and_then(|suffix| suffix.chars().next())
+                .map_or(self.cursor, |character| {
+                    self.cursor.saturating_add(character.len_utf8())
+                })
+        } else {
+            draft
+                .get(..self.cursor)
+                .and_then(|prefix| prefix.char_indices().next_back())
+                .map_or(0, |(index, _)| index)
+        };
+    }
+
     pub fn select(&mut self, sticks: Sticks) {
         for (selected, (x, y)) in self.selected.iter_mut().zip([sticks.left, sticks.right]) {
             if x == 0 && y == 0 {
@@ -94,6 +159,8 @@ impl Keyboard {
             ButtonName::North => 3,
             ButtonName::East => 4,
             ButtonName::South => 5,
+            ButtonName::DpadLeft if self.draft.is_some() || state == ButtonState::Released => 6,
+            ButtonName::DpadRight if self.draft.is_some() || state == ButtonState::Released => 7,
             ButtonName::Select
             | ButtonName::Record
             | ButtonName::Start
@@ -124,8 +191,12 @@ impl Keyboard {
                 self.layer = self.layer.saturating_add(1) % 3;
                 Effect::Consumed
             }
+            ButtonName::DpadLeft | ButtonName::DpadRight => {
+                self.move_cursor(name == ButtonName::DpadRight);
+                Effect::Consumed
+            }
             ButtonName::East => {
-                self.open = false;
+                self.close();
                 Effect::Consumed
             }
             ButtonName::Select
@@ -135,9 +206,7 @@ impl Keyboard {
             | ButtonName::LeftStick
             | ButtonName::RightStick
             | ButtonName::DpadUp
-            | ButtonName::DpadDown
-            | ButtonName::DpadLeft
-            | ButtonName::DpadRight => Effect::Consumed,
+            | ButtonName::DpadDown => Effect::Consumed,
         })
     }
 }
@@ -243,19 +312,27 @@ fn draw(
     use smithay::backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer};
     let mut canvas = crate::settings::canvas::Canvas::new(size)?;
     canvas.rectangle(0, 0, 1280, 720, [30, 24, 20, 255]);
+    let mut preview = keyboard.draft().unwrap_or("").to_owned();
+    preview.insert(keyboard.cursor(), '|');
+    let start = preview
+        .get(..keyboard.cursor())
+        .map_or(0, |prefix| prefix.chars().count())
+        .saturating_sub(40);
+    let preview: String = preview.chars().skip(start).take(72).collect();
+    canvas.text(20, 16, &preview, 4, [239, 235, 229, 255]);
     for (half, (keys, selected_index)) in keyboard.keys().iter().zip(keyboard.selected).enumerate() {
         for (index, key) in keys.iter().enumerate() {
             let x = half
                 .saturating_mul(640)
                 .saturating_add((index % 5).saturating_mul(124))
                 .saturating_add(12);
-            let y = (index / 5).saturating_mul(140).saturating_add(12);
+            let y = (index / 5).saturating_mul(110).saturating_add(100);
             let selected = selected_index == index;
             canvas.rectangle(
                 x,
                 y,
                 114,
-                126,
+                96,
                 if selected {
                     [119, 88, 36, 255]
                 } else {
@@ -274,10 +351,11 @@ fn draw(
     canvas.text(
         20,
         600,
-        "LB / RB: type    X: backspace    Y: layer    B: close    A: Enter",
+        "LB/RB: type   X: delete   Y: layer   B: close   A: go",
         4,
         [239, 235, 229, 255],
     );
+    canvas.text(20, 660, "D-pad left/right: draft cursor", 3, [239, 235, 229, 255]);
     Some(MemoryRenderBuffer::from_slice(
         &canvas.pixels,
         Fourcc::Argb8888,

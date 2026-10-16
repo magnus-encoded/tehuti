@@ -204,9 +204,15 @@ keyboard = "open"
 `{"type":"keyboard"}` is reserved for core contexts. Each stick selects a key
 on its QWERTY half; its bumper types it. Neutral keeps the selection. North
 cycles letters, capitals and symbols; West sends Backspace, East closes, and
-South sends Enter. Guide and Record retain their reserved actions. A committed
+South commits a speech draft and sends Enter, shown as "go". Guide and Record retain their reserved actions. A committed
 `disable`, focus loss or text-input destruction closes the keyboard. Ordinary
 text-input commits preserve an East dismissal; an explicit enable reopens it.
+
+Typed speech while the keyboard is open enters a visible draft. Bumpers insert
+at its cursor, D-pad left/right moves by Unicode character, and West deletes
+before the cursor. Enter or South commits once; closing discards the draft.
+Speech commands still execute their mappings. The URL row contains `.`, `/`,
+`:`, `-`, `_` and `.com` on every layer.
 
 The keyboard uses the same text-input-v3 delivery and keymap fallback as `text`.
 Its characters and key taps never enter the log, including unavailable fallback

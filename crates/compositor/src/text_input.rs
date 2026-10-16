@@ -212,7 +212,7 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
         if enabled_committed {
             state.open_keyboard();
         } else if disabled_committed && !state.text_input.enabled() {
-            state.osk.open = false;
+            state.osk.close();
         }
     }
 
@@ -232,7 +232,7 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
             .instances
             .retain(|instance| instance.resource != *resource);
         if enabled && !state.text_input.enabled() {
-            state.osk.open = false;
+            state.osk.close();
         }
     }
 }

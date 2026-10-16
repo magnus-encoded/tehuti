@@ -1942,12 +1942,20 @@ else:
         text_state: ClientTextState,
         plugin: bool,
     ) -> App {
-        exchange_keyboard(app_id, text, text_state, plugin, false)
+        exchange_keyboard(app_id, text, text_state, plugin, false, false)
     }
 
-    fn keyboard_test_pad(plugin: bool, osk: bool) -> SyntheticPad {
+    fn keyboard_test_pad(plugin: bool, osk: bool, draft: bool) -> SyntheticPad {
         let mut pad = SyntheticPad::default();
-        for name in if osk {
+        for name in if draft {
+            vec![
+                ButtonName::DpadLeft,
+                ButtonName::DpadLeft,
+                ButtonName::West,
+                ButtonName::LeftBumper,
+                ButtonName::South,
+            ]
+        } else if osk {
             vec![
                 ButtonName::LeftBumper,
                 ButtonName::RightBumper,
@@ -2001,12 +2009,38 @@ else:
         }
     }
 
+    fn exercise_test_keyboard(
+        compositor: &mut Compositor,
+        pad: &mut SyntheticPad,
+        osk: bool,
+        text_state: ClientTextState,
+        draft: bool,
+    ) {
+        prepare_test_keyboard(compositor, osk, text_state);
+        if draft {
+            compositor.handle(&Event::Speech {
+                text: tehuti_protocol::Text::new("hello".into()).unwrap(),
+            });
+            assert_eq!(compositor.osk_draft(), Some("hello "));
+            compositor.handle(&Event::Speech {
+                text: tehuti_protocol::Text::new("navigate".into()).unwrap(),
+            });
+            assert_eq!(
+                compositor.osk_draft(),
+                Some("hello "),
+                "speech commands preserve the draft"
+            );
+        }
+        route(compositor, pad).unwrap();
+    }
+
     fn exchange_keyboard(
         app_id: &'static str,
         text: Option<&str>,
         text_state: ClientTextState,
         plugin: bool,
         osk: bool,
+        draft: bool,
     ) -> App {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
@@ -2018,7 +2052,7 @@ else:
         load_test_context(&mut compositor, text);
         if osk {
             compositor.set_contexts(vec![
-                tehuti_protocol::parse_context("app_id = 'test'\n[buttons.start]\nkeyboard = 'open'")
+                tehuti_protocol::parse_context("app_id = 'test'\nunmatched_speech = 'type'\n[buttons.start]\nkeyboard = 'open'\n[speech]\n'navigate' = { key = 'tab' }")
                     .unwrap(),
             ]);
         }
@@ -2035,7 +2069,7 @@ else:
         let (ready_sender, ready_receiver) = mpsc::channel();
         let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
 
-        let mut pad = keyboard_test_pad(plugin, osk);
+        let mut pad = keyboard_test_pad(plugin, osk, draft);
         let mut pressed = false;
         let mut client_ready = false;
         let started = Instant::now();
@@ -2048,8 +2082,7 @@ else:
             event_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
             client_ready |= ready_receiver.try_recv().is_ok();
             if !pressed && client_ready && (!plugin || compositor.initialized_plugins() == 1) {
-                prepare_test_keyboard(&mut compositor, osk, text_state);
-                route(&mut compositor, &mut pad).unwrap();
+                exercise_test_keyboard(&mut compositor, &mut pad, osk, text_state, draft);
                 pressed = true;
             }
             display.flush_clients().unwrap();
@@ -2162,7 +2195,7 @@ else:
                 .with_writer(move || writer.clone())
                 .finish();
             let app = tracing::subscriber::with_default(subscriber, || {
-                exchange_keyboard("test", None, text_state, false, true)
+                exchange_keyboard("test", None, text_state, false, true, false)
             });
             if matches!(text_state, ClientTextState::Enabled) {
                 assert_eq!(app.text, "qpQ");
@@ -2181,6 +2214,34 @@ else:
                 "Handling keystroke",
                 "sym=",
             ] {
+                assert!(!output.contains(forbidden), "{output}");
+            }
+        }
+    }
+
+    #[test]
+    fn speech_draft_is_edited_by_pad_then_committed_to_text_input_or_keymap() {
+        for text_state in [ClientTextState::Enabled, ClientTextState::Absent] {
+            let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let writer = LogWriter(logs.clone());
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(move || writer.clone())
+                .finish();
+            let app = tracing::subscriber::with_default(subscriber, || {
+                exchange_keyboard("test", None, text_state, false, true, true)
+            });
+            if matches!(text_state, ClientTextState::Enabled) {
+                assert_eq!(app.text, "helqo ");
+                assert_eq!(app.keyboard_text, "\t\r");
+            } else {
+                assert_eq!(app.text, "");
+                assert_eq!(app.keyboard_text, "\thelqo \r");
+            }
+            let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+            for forbidden in ["hello", "helqo", "sym=\"h\"", "sym=\"q\""] {
                 assert!(!output.contains(forbidden), "{output}");
             }
         }

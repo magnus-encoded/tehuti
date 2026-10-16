@@ -49,7 +49,7 @@ mod tests {
                     left: (-1000, 1000),
                     right: (1000, 1000),
                 },
-                " ",
+                ".",
                 " ",
             ),
         ] {
@@ -121,6 +121,39 @@ mod tests {
             Some(Effect::Text("q"))
         );
     }
+    #[test]
+    fn draft_cursor_edits_unicode_and_close_discards_uncommitted_text() {
+        let mut keyboard = Keyboard::default();
+        keyboard.open = true;
+        keyboard.insert_draft("a🦀é");
+        assert_eq!(press(&mut keyboard, ButtonName::DpadLeft), Some(Effect::Consumed));
+        assert!(keyboard.backspace_draft());
+        assert_eq!(keyboard.draft(), Some("aé"));
+        keyboard.insert_draft("/");
+        assert_eq!(keyboard.draft(), Some("a/é"));
+        for _ in 0..8 {
+            let _effect = press(&mut keyboard, ButtonName::DpadRight);
+        }
+        keyboard.insert_draft(".com");
+        assert_eq!(keyboard.take_draft().as_deref(), Some("a/é.com"));
+        assert!(!keyboard.backspace_draft());
+        keyboard.insert_draft("discard");
+        keyboard.close();
+        assert_eq!(keyboard.draft(), None);
+        assert_eq!(keyboard.cursor(), 0);
+    }
+
+    #[test]
+    fn every_layer_has_the_url_row() {
+        let mut keyboard = Keyboard::default();
+        keyboard.open = true;
+        for _ in 0..3 {
+            assert_eq!(&keyboard.keys()[0][15..], &[".", "/", ":", "-", "_"]);
+            assert_eq!(keyboard.keys()[1][15], ".com");
+            let _effect = press(&mut keyboard, ButtonName::North);
+        }
+    }
+
     #[test]
     fn artwork_rasterizes_vector_edges_at_each_native_mode() -> Result<(), Box<dyn core::error::Error>> {
         let mut keyboard = Keyboard::default();
