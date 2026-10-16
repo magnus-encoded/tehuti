@@ -58,7 +58,7 @@ mod step {
             let mut source = format!("app_id = {}\n[buttons]\n", toml::Value::String(app_id.clone()));
             for (button, key) in mappings {
                 if button != name {
-                    writeln!(source, "[buttons.{}]\nkey = '{}'", button_name(button), format!("{key:?}").to_lowercase()).unwrap();
+                    writeln!(source, "[buttons.{}]\nkey = {}", button_name(button), toml::Value::try_from(key).unwrap()).unwrap();
                 }
             }
             writeln!(source, "[buttons.{}]\ntext = {}", button_name(name), toml::Value::String(text.as_str().into())).unwrap();
@@ -170,9 +170,9 @@ mod step {
         for (button, key) in mappings {
             write!(
                 source,
-                "[buttons.{}]\nkey = '{}'\n",
+                "[buttons.{}]\nkey = {}\n",
                 button_name(*button),
-                format!("{key:?}").to_lowercase()
+                toml::Value::try_from(key).unwrap()
             )
             .unwrap();
         }

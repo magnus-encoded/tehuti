@@ -110,6 +110,30 @@ pub enum KeyName {
     Down,
     Left,
     Right,
+    #[serde(rename = "f1")]
+    Function1,
+    #[serde(rename = "f2")]
+    Function2,
+    #[serde(rename = "f3")]
+    Function3,
+    #[serde(rename = "f4")]
+    Function4,
+    #[serde(rename = "f5")]
+    Function5,
+    #[serde(rename = "f6")]
+    Function6,
+    #[serde(rename = "f7")]
+    Function7,
+    #[serde(rename = "f8")]
+    Function8,
+    #[serde(rename = "f9")]
+    Function9,
+    #[serde(rename = "f10")]
+    Function10,
+    PageUp,
+    PageDown,
+    Home,
+    End,
 }
 
 impl KeyName {
@@ -125,6 +149,20 @@ impl KeyName {
             Self::Down => 108,
             Self::Left => 105,
             Self::Right => 106,
+            Self::Function1 => 59,
+            Self::Function2 => 60,
+            Self::Function3 => 61,
+            Self::Function4 => 62,
+            Self::Function5 => 63,
+            Self::Function6 => 64,
+            Self::Function7 => 65,
+            Self::Function8 => 66,
+            Self::Function9 => 67,
+            Self::Function10 => 68,
+            Self::PageUp => 104,
+            Self::PageDown => 109,
+            Self::Home => 102,
+            Self::End => 107,
         }
     }
 }
@@ -136,9 +174,52 @@ pub struct Context {
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, MappingAction>,
     unmatched_speech: Option<UnmatchedSpeech>,
+    sticks: std::collections::HashMap<StickDirection, MappingAction>,
+}
+
+/// A stick direction beyond half travel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StickDirection {
+    LeftUp,
+    LeftDown,
+    LeftLeft,
+    LeftRight,
+    RightUp,
+    RightDown,
+    RightLeft,
+    RightRight,
 }
 
 impl Context {
+    /// Whether the context owns stick motion instead of pointer and scroll motion.
+    #[must_use]
+    pub fn maps_sticks(&self) -> bool {
+        !self.sticks.is_empty()
+    }
+
+    /// Actions for deflected directions, repeated by the host while held.
+    #[must_use]
+    pub fn stick_actions(&self, left: (i16, i16), right: (i16, i16)) -> Vec<Action> {
+        use StickDirection::{
+            LeftDown, LeftLeft, LeftRight, LeftUp, RightDown, RightLeft, RightRight, RightUp,
+        };
+        [
+            (left.1 < -500, LeftUp),
+            (left.1 > 500, LeftDown),
+            (left.0 < -500, LeftLeft),
+            (left.0 > 500, LeftRight),
+            (right.1 < -500, RightUp),
+            (right.1 > 500, RightDown),
+            (right.0 < -500, RightLeft),
+            (right.0 > 500, RightRight),
+        ]
+        .into_iter()
+        .filter(|(active, _)| *active)
+        .filter_map(|(_, direction)| self.sticks.get(&direction).map(MappingAction::action))
+        .collect()
+    }
+
     #[must_use]
     pub fn app_id(&self) -> &str {
         &self.app_id
@@ -192,6 +273,8 @@ struct ContextFile {
     speech: std::collections::HashMap<String, MappingAction>,
     #[serde(default)]
     unmatched_speech: Option<UnmatchedSpeech>,
+    #[serde(default)]
+    sticks: std::collections::HashMap<StickDirection, MappingAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -260,6 +343,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         buttons: context.buttons,
         speech,
         unmatched_speech: context.unmatched_speech,
+        sticks: context.sticks,
     })
 }
 

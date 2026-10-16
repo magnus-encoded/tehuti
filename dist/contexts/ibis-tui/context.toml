@@ -1,0 +1,24 @@
+app_id = "ibis-tui"
+unmatched_speech = "type"
+
+[buttons]
+south = { key = "f1" }
+east = { key = "f2" }
+west = { key = "f3" }
+north = { key = "f4" }
+left_bumper = { key = "f5" }
+right_bumper = { key = "f6" }
+dpad_up = { key = "up" }
+dpad_down = { key = "down" }
+dpad_left = { key = "left" }
+dpad_right = { key = "right" }
+
+[sticks]
+left_up = { key = "f7" }
+left_down = { key = "f8" }
+left_left = { key = "f9" }
+left_right = { key = "f10" }
+right_up = { key = "page_up" }
+right_down = { key = "page_down" }
+right_left = { key = "home" }
+right_right = { key = "end" }

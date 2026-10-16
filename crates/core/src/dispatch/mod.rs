@@ -522,7 +522,12 @@ fn route_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
     if let Event::Tick { elapsed } = event {
         state.settings.tick(*elapsed, effects);
         if !state.settings.open {
-            state.mouse.tick(*elapsed, effects);
+            if let Some(context) = crate::focused_context(&state.core).filter(|context| context.maps_sticks())
+            {
+                state.mouse.context_tick(context, *elapsed, effects);
+            } else {
+                state.mouse.tick(*elapsed, effects);
+            }
         }
         if effects
             .iter()

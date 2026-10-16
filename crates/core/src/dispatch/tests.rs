@@ -1510,3 +1510,96 @@ fn locked_wallpaper_consumes_apply_without_selecting_until_unlocked() {
     assert_eq!(state.settings().wallpaper_current, Some(1));
     assert!(world.trace.contains(&Effect::Wallpaper(1)));
 }
+
+#[test]
+fn context_sticks_repeat_keys_and_stop_on_focus_change() {
+    use tehuti_protocol::KeyName;
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'mouse-test'\n[buttons]\n[sticks]\nleft_up = { key = 'up' }\nright_down = { key = 'down' }",
+    )
+    .unwrap();
+    let tick = || Input::Tick {
+        elapsed: Duration::from_millis(180),
+    };
+    let mut world = World::default();
+    let state = world.run(
+        configured_mouse(vec![context]),
+        Input::Sticks(Sticks {
+            left: (0, -1000),
+            right: (0, 1000),
+        }),
+    );
+    world.trace.clear();
+    let state = world.run(state, tick());
+    assert!(
+        world
+            .trace
+            .contains(&Effect::Apply(Action::Key { key: KeyName::Up })),
+        "left stick sends its mapped key"
+    );
+    assert!(
+        world
+            .trace
+            .contains(&Effect::Apply(Action::Key { key: KeyName::Down })),
+        "right stick sends its mapped key"
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Scroll { .. })),
+        "mapped sticks do not also scroll"
+    );
+    let state = world.run(
+        state,
+        Input::Event {
+            event: Event::Focus {
+                app_id: None,
+                title: String::new(),
+            },
+            elapsed: Duration::ZERO,
+        },
+    );
+    world.trace.clear();
+    let _state = world.run(state, tick());
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(Action::Key { .. }))),
+        "keys stop when the app loses focus"
+    );
+}
+
+#[test]
+fn context_sticks_keep_the_mouse_mode_exit_hold() {
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'mouse-test'\n[buttons]\nsouth = { key = 'enter' }\n[sticks]\nleft_up = { key = 'up' }",
+    )
+    .unwrap();
+    let mut world = World::default();
+    let mut state = configured_mouse(vec![context]);
+    for active in [true, false] {
+        state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+        world.trace.clear();
+        state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_secs(2),
+            },
+        );
+        assert!(
+            world.trace.contains(&Effect::MouseMode(active)),
+            "View still toggles mouse mode in a stick context"
+        );
+        state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+    }
+    world.trace.clear();
+    let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+    assert!(
+        world.trace.contains(&Effect::Apply(Action::Key {
+            key: tehuti_protocol::KeyName::Enter
+        })),
+        "pad mappings work after leaving mouse mode"
+    );
+}
