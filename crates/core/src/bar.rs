@@ -184,6 +184,7 @@ impl Bar {
                 Action::SecretRequest { .. } => ("Confirm secret".into(), Tone::Result),
                 Action::Close => ("Closed".into(), Tone::Result),
                 Action::Layout { .. } => ("Layout".into(), Tone::Result),
+                Action::Keyboard => ("Keyboard".into(), Tone::Result),
                 Action::Quit => ("Quitting".into(), Tone::Result),
             };
             self.result(&text, tone);

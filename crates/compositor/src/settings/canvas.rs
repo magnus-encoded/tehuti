@@ -6,8 +6,12 @@ use fontdue::{
     layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
 };
 
-pub(super) struct Canvas {
-    pub(super) pixels: Vec<u8>,
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "shared coverage canvas remains internal to the compositor"
+)]
+pub(crate) struct Canvas {
+    pub(crate) pixels: Vec<u8>,
     width: usize,
     height: usize,
     scale: (f32, f32),
@@ -26,7 +30,7 @@ pub(super) struct Canvas {
     reason = "coverage rasterisation uses fractional physical pixels"
 )]
 impl Canvas {
-    pub(super) fn new(size: (i32, i32)) -> Option<Self> {
+    pub(crate) fn new(size: (i32, i32)) -> Option<Self> {
         let width = usize::try_from(size.0).ok().filter(|value| *value > 0)?;
         let height = usize::try_from(size.1).ok().filter(|value| *value > 0)?;
         let length = width.checked_mul(height)?.checked_mul(4)?;
@@ -63,7 +67,7 @@ impl Canvas {
         }
     }
 
-    pub(super) fn rectangle(&mut self, x: usize, y: usize, width: usize, height: usize, color: [u8; 4]) {
+    pub(crate) fn rectangle(&mut self, x: usize, y: usize, width: usize, height: usize, color: [u8; 4]) {
         let left = x as f32 * self.scale.0;
         let top = y as f32 * self.scale.1;
         let right = x.saturating_add(width) as f32 * self.scale.0;
@@ -77,7 +81,7 @@ impl Canvas {
         }
     }
 
-    pub(super) fn text(&mut self, x: usize, y: usize, text: &str, scale: usize, color: [u8; 4]) {
+    pub(crate) fn text(&mut self, x: usize, y: usize, text: &str, scale: usize, color: [u8; 4]) {
         let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
         layout.reset(&LayoutSettings {
             x: x as f32 * self.scale.0,
@@ -101,7 +105,7 @@ impl Canvas {
         }
     }
 
-    pub(super) fn thumbnail(&mut self, x: usize, y: usize, image: &image::RgbaImage, locked: bool) {
+    pub(crate) fn thumbnail(&mut self, x: usize, y: usize, image: &image::RgbaImage, locked: bool) {
         for row in
             (y as f32 * self.scale.1) as usize..((y.saturating_add(135)) as f32 * self.scale.1) as usize
         {
@@ -128,7 +132,7 @@ impl Canvas {
         }
     }
 
-    pub(super) fn wave(&mut self, x: usize, y: usize, hertz: f32) {
+    pub(crate) fn wave(&mut self, x: usize, y: usize, hertz: f32) {
         let wavelength = 2400.0 / hertz.clamp(1.0, 1000.0);
         for column in 0..150 {
             let offset = (column as f32 / wavelength * core::f32::consts::TAU).sin() * 10.0;
@@ -142,7 +146,7 @@ impl Canvas {
         }
     }
 
-    pub(super) fn countdown(&mut self, remaining: Duration) {
+    pub(crate) fn countdown(&mut self, remaining: Duration) {
         let fraction = remaining.as_secs_f32() / 15.0;
         let pixel_width = 1.0 / self.scale.0.min(self.scale.1);
         for row in (460.0 * self.scale.1) as usize..(640.0 * self.scale.1) as usize {

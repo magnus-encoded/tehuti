@@ -88,6 +88,8 @@ pub struct Compositor {
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
+    pub(crate) osk: crate::osk::Keyboard,
+    pub(crate) osk_artwork: core::cell::RefCell<crate::osk::Artwork>,
     settings_display: crate::settings::Display,
     pub(crate) wallpapers: core::cell::RefCell<crate::wallpaper::Collection>,
     previous_tick: Instant,
@@ -145,16 +147,20 @@ pub enum SetupError {
 }
 
 impl Compositor {
+    fn new_seat(display: &DisplayHandle) -> (SeatState<Self>, Seat<Self>) {
+        let mut state = SeatState::new();
+        let seat = state.new_wl_seat(display, "tehuti");
+        (state, seat)
+    }
+
     /// Creates the Wayland globals and a seat with one keyboard.
     ///
     /// # Errors
     /// The keyboard keymap fails to load or the desktop entry worker cannot start.
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
-        let mut seat_state = SeatState::new();
-        let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
+        let (seat_state, mut seat) = Self::new_seat(display);
         let keymap = Self::keymap()?;
         let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
-        let text_keys = text_keys(&keymap);
         let mut compositor = Self {
             start_time: Instant::now(),
             pointer: seat.add_pointer(),
@@ -163,6 +169,8 @@ impl Compositor {
             space: Space::default(),
             output: None,
             dispatch: tehuti_core::dispatch::State::default(),
+            osk: crate::osk::Keyboard::default(),
+            osk_artwork: core::cell::RefCell::default(),
             settings_display: crate::settings::Display::default(),
             wallpapers: core::cell::RefCell::new(crate::wallpaper::Collection::from_env()),
             previous_tick: Instant::now(),
@@ -205,7 +213,7 @@ impl Compositor {
             keyboard,
             controller_session: tehuti_core::controller::State::default(),
             seat,
-            text_keys,
+            text_keys: text_keys(&keymap),
             text_input: crate::text_input::TextInput::new(display),
         };
         compositor.initialize_settings(&keymap)?;
@@ -365,6 +373,7 @@ impl Compositor {
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
         if matches!(input, tehuti_core::controller::Input::Disconnected) {
+            self.osk = crate::osk::Keyboard::default();
             let _rejection = self.dispatch(DispatchInput::ControllerDisconnected);
         }
         let (next, events) =
@@ -467,8 +476,36 @@ impl Compositor {
         self.pointer.clone().button(self, &event);
         self.pointer.clone().frame(self);
     }
+    pub(crate) fn open_keyboard(&mut self) {
+        self.osk.open = true;
+        let _rejection = self.dispatch(DispatchInput::Sticks(tehuti_core::dispatch::Sticks::default()));
+    }
+
+    pub const fn osk_open(&self) -> bool {
+        self.osk.open
+    }
+
+    pub(crate) fn osk_cursor_rectangle(&self, scale: i32) -> Option<(i32, i32)> {
+        let (_, y, _, cursor_height) = self.text_input.cursor()?;
+        let offset = self
+            .keyboard
+            .current_focus()
+            .and_then(|focus| self.window_for_root(&focus))
+            .and_then(|window| self.space.element_location(window))
+            .map_or(0, |location| location.y);
+        Some((
+            y.saturating_add(offset).saturating_mul(scale),
+            cursor_height.max(1).saturating_mul(scale),
+        ))
+    }
+
     pub fn sample_sticks(&mut self, sticks: tehuti_core::dispatch::Sticks) {
-        let _rejection = self.dispatch(DispatchInput::Sticks(sticks));
+        if self.osk.open {
+            self.osk.select(sticks);
+            let _rejection = self.dispatch(DispatchInput::Sticks(tehuti_core::dispatch::Sticks::default()));
+        } else {
+            let _rejection = self.dispatch(DispatchInput::Sticks(sticks));
+        }
     }
 
     #[must_use]
@@ -552,6 +589,25 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if let Event::Button { name, state } = event
+            && self.secret_confirmation_label.is_none()
+            && !self.settings().open
+            && self.dispatch.core().menu().is_none()
+            && let Some(effect) = self.osk.button(*name, *state)
+        {
+            tracing::subscriber::with_default(
+                tracing::subscriber::NoSubscriber::default(),
+                || match effect {
+                    crate::osk::Effect::Text(text) => {
+                        let _method = self.deliver_text(text);
+                    }
+                    crate::osk::Effect::Backspace => self.tap(KeyName::Backspace),
+                    crate::osk::Effect::Enter => self.tap(KeyName::Enter),
+                    crate::osk::Effect::Consumed => {}
+                },
+            );
+            return;
+        }
         let since_tick = if matches!(event, Event::Focus { .. }) {
             core::time::Duration::ZERO
         } else {
@@ -1103,18 +1159,14 @@ impl Compositor {
     /// Carries out one action from the core step.
     fn apply(&mut self, action: &Action) {
         match action {
+            Action::Keyboard => self.open_keyboard(),
             Action::Key { key } => {
                 self.tap(*key);
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(?key, ?app_id, ?title, "key delivered to focused window");
             }
             Action::Text { text } => {
-                let method = if self.text_input.send(text.as_str()) {
-                    "text-input"
-                } else {
-                    self.type_text(text.as_str());
-                    "keys"
-                };
+                let method = self.deliver_text(text.as_str());
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(
                     characters = text.as_str().chars().count(),
@@ -1204,6 +1256,15 @@ impl Compositor {
                 time,
                 |_, _, _| FilterResult::Forward,
             );
+        }
+    }
+
+    fn deliver_text(&mut self, text: &str) -> &'static str {
+        if self.text_input.send(text) {
+            "text-input"
+        } else {
+            self.type_text(text);
+            "keys"
         }
     }
 
@@ -1803,6 +1864,9 @@ impl XdgShellHandler for Compositor {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        if self.text_input.forget_surface(surface.wl_surface()) {
+            self.osk.open = false;
+        }
         self.remove_floating(surface.wl_surface());
         let identity = self.layout_windows.iter().find_map(|(identity, window)| {
             window
@@ -1849,6 +1913,7 @@ impl SeatHandler for Compositor {
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         self.text_input.focus(focused.cloned());
+        self.osk.open = false;
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}

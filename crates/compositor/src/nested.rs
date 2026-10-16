@@ -256,6 +256,11 @@ fn add_overlays(
         Ok(None) => {}
         Err(error) => warn!(?error, "bar render failed"),
     }
+    match tehuti::osk::element(renderer, compositor, output) {
+        Ok(Some(element)) => notices.insert(0, element),
+        Ok(None) => {}
+        Err(error) => warn!(?error, "keyboard render failed"),
+    }
     if let Some(location) = compositor.cursor_on(output) {
         match MemoryRenderBufferRenderElement::from_buffer(
             renderer,

@@ -8,7 +8,7 @@ The user has no physical keyboard or mouse, only an Xbox controller and voice. W
 
 ## Recommendation
 
-This recommendation is pending the owner's decision; nothing here is approved yet.
+The owner approved the compositor-owned dual-stick keyboard and existing text delivery path for #55. Word completion is deferred to #114.
 
 Build the OSK **inside the compositor** as a core-owned overlay. Use a **dual-stick split QWERTY selection keyboard**: the left stick selects keys on the left half and the right stick on the right half. Each bumper commits the key under its stick. Word completion on the D-pad is proposed as an optional extra. Sandnes and Aubert's controller method already used trie-based word prediction [4], but this D-pad interface and its separate speed benefit are unvalidated. Deliver text through the compositor's existing **text-input-v3** path, which already has the keymap-tap fallback. Do not expose `zwp_input_method_v2` or `zwp_virtual_keyboard_v1` in the first version.
 

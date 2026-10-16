@@ -167,7 +167,8 @@ impl Context {
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
             | MappingAction::Notify { .. }
-            | MappingAction::Layout { .. } => None,
+            | MappingAction::Layout { .. }
+            | MappingAction::Keyboard { .. } => None,
         })
     }
 
@@ -205,12 +206,19 @@ enum MappingAction {
     Close { close: CloseMapping },
     Notify { notify: Text },
     Layout { layout: LayoutAction },
+    Keyboard { keyboard: KeyboardMapping },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum CloseMapping {
     #[serde(rename = "focused")]
     Focused,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum KeyboardMapping {
+    #[serde(rename = "open")]
+    Open,
 }
 
 impl MappingAction {
@@ -226,6 +234,7 @@ impl MappingAction {
             Self::Secret { secret } => Action::SecretRequest {
                 reference: secret.clone(),
             },
+            Self::Keyboard { .. } => Action::Keyboard,
             Self::Layout { layout } => Action::Layout { action: *layout },
         }
     }
@@ -268,6 +277,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 pub enum Action {
+    /// Open the compositor-owned on-screen keyboard.
+    Keyboard,
     /// Launch an installed desktop entry.
     Launch { desktop_entry: Text },
     /// Close the focused client and focus the most recently mapped remaining window.

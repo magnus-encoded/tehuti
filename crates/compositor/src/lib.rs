@@ -45,3 +45,5 @@ pub mod wallpaper_pack;
 pub mod child_environment;
 pub mod phrases;
 pub mod xwayland;
+
+pub mod osk;

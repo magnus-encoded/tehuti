@@ -276,6 +276,9 @@ where
     R: Renderer + ImportMem,
     R::TextureId: Send + Clone + 'static,
 {
+    if let Some(element) = tehuti::osk::element(renderer, compositor, output)? {
+        elements.push(element);
+    }
     let clock = chrono::Local::now().format("%H:%M").to_string();
     if let Some(element) = bar.element(renderer, output, compositor.voice_bar(), &clock)? {
         elements.push(element);

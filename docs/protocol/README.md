@@ -193,6 +193,29 @@ JSON escapes. Text-input commits split at character boundaries into at most
 logs them; a newline becomes Enter. Without a focused client, key and text
 actions have no effect.
 
+The compositor keyboard opens when the focused text-input-v3 client commits
+`enable`, or through a context mapping:
+
+```toml
+[buttons.left_stick]
+keyboard = "open"
+```
+
+`{"type":"keyboard"}` is reserved for core contexts. Each stick selects a key
+on its QWERTY half; its bumper types it. Neutral keeps the selection. North
+cycles letters, capitals and symbols; West sends Backspace, East closes, and
+South sends Enter. Guide and Record retain their reserved actions. A committed
+`disable`, focus loss or text-input destruction closes the keyboard. Ordinary
+text-input commits preserve an East dismissal; an explicit enable reopens it.
+
+The keyboard uses the same text-input-v3 delivery and keymap fallback as `text`.
+Its characters and key taps never enter the log, including unavailable fallback
+characters. Vector keys and font outlines rasterize with coverage at the output
+mode's resolution. The overlay sits above the powerline bar and moves to the top
+when the client's committed cursor rectangle overlaps it. Completion providers
+in #114 can consume the keyboard's text effects at commit rate; completion is
+not implemented.
+
 Contexts can launch an installed desktop entry, close the focused window, or
 show an overlay notice. Both pressed-button and exact phrase mappings accept
 these TOML values:

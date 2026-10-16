@@ -1942,29 +1942,20 @@ else:
         text_state: ClientTextState,
         plugin: bool,
     ) -> App {
-        let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
-        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
-        if plugin {
-            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
-            compositor.set_plugins(tehuti::plugins::install(&event_loop, &directory, |state| state).unwrap());
-        }
-        load_test_context(&mut compositor, text);
-        if plugin {
-            compositor.set_contexts(vec![
-                tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
-            ]);
-        }
-        let (server_end, client_end) = UnixStream::pair().unwrap();
-        let _client = display
-            .handle()
-            .insert_client(server_end, Arc::new(ClientState::default()))
-            .unwrap();
-        let (ready_sender, ready_receiver) = mpsc::channel();
-        let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
+        exchange_keyboard(app_id, text, text_state, plugin, false)
+    }
 
+    fn keyboard_test_pad(plugin: bool, osk: bool) -> SyntheticPad {
         let mut pad = SyntheticPad::default();
-        for name in if plugin {
+        for name in if osk {
+            vec![
+                ButtonName::LeftBumper,
+                ButtonName::RightBumper,
+                ButtonName::North,
+                ButtonName::LeftBumper,
+                ButtonName::South,
+            ]
+        } else if plugin {
             vec![ButtonName::East]
         } else {
             vec![ButtonName::East, ButtonName::Start, ButtonName::South]
@@ -1978,6 +1969,73 @@ else:
                 state: ButtonState::Released,
             });
         }
+        pad
+    }
+
+    fn prepare_test_keyboard(compositor: &mut Compositor, osk: bool, text_state: ClientTextState) {
+        if osk {
+            if matches!(text_state, ClientTextState::Enabled) {
+                assert!(compositor.osk_open(), "focused enabled input opens the keyboard");
+            } else {
+                assert!(!compositor.osk_open());
+                compositor.handle(&Event::Button {
+                    name: ButtonName::Start,
+                    state: ButtonState::Pressed,
+                });
+                assert!(
+                    compositor.osk_open(),
+                    "context mapping opens the fallback keyboard"
+                );
+            }
+            compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+                left: (-1000, -1000),
+                right: (1000, -1000),
+            });
+        } else if compositor.osk_open() {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                compositor.handle(&Event::Button {
+                    name: ButtonName::East,
+                    state,
+                });
+            }
+        }
+    }
+
+    fn exchange_keyboard(
+        app_id: &'static str,
+        text: Option<&str>,
+        text_state: ClientTextState,
+        plugin: bool,
+        osk: bool,
+    ) -> App {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        if plugin {
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+            compositor.set_plugins(tehuti::plugins::install(&event_loop, &directory, |state| state).unwrap());
+        }
+        load_test_context(&mut compositor, text);
+        if osk {
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context("app_id = 'test'\n[buttons.start]\nkeyboard = 'open'")
+                    .unwrap(),
+            ]);
+        }
+        if plugin {
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
+            ]);
+        }
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
+
+        let mut pad = keyboard_test_pad(plugin, osk);
         let mut pressed = false;
         let mut client_ready = false;
         let started = Instant::now();
@@ -1990,6 +2048,7 @@ else:
             event_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
             client_ready |= ready_receiver.try_recv().is_ok();
             if !pressed && client_ready && (!plugin || compositor.initialized_plugins() == 1) {
+                prepare_test_keyboard(&mut compositor, osk, text_state);
                 route(&mut compositor, &mut pad).unwrap();
                 pressed = true;
             }
@@ -1998,6 +2057,133 @@ else:
         }
 
         client.join().unwrap()
+    }
+
+    #[test]
+    fn osk_follows_committed_text_input_lifecycle_and_east_stays_closed() {
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let (ack_sender, ack_receiver) = mpsc::channel();
+        let worker = thread::spawn(move || osk_lifecycle_client(client, &sender, &ack_receiver));
+        let start = Instant::now();
+        let mut stages = 0;
+        while !worker.is_finished() {
+            assert!(start.elapsed() < Duration::from_secs(10));
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            if let Ok((expected, rule)) = receiver.try_recv() {
+                assert_eq!(compositor.osk_open(), expected, "{rule}");
+                if stages == 0 {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        compositor.handle(&Event::Button {
+                            name: ButtonName::East,
+                            state,
+                        });
+                    }
+                    assert!(!compositor.osk_open());
+                }
+                stages += 1;
+                ack_sender.send(()).unwrap();
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        worker.join().unwrap();
+        assert_eq!(stages, 9);
+    }
+
+    fn osk_lifecycle_client(
+        stream: UnixStream,
+        sender: &mpsc::Sender<(bool, &'static str)>,
+        ack: &mpsc::Receiver<()>,
+    ) {
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+        let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+        let seat: WlSeat = globals.bind(&handle, 1..=1, ()).unwrap();
+        let manager: ZwpTextInputManagerV3 = globals.bind(&handle, 1..=1, ()).unwrap();
+        let input = manager.get_text_input(&seat, &handle, ());
+        let surface = compositor.create_surface(&handle, ());
+        let shell = wm_base.get_xdg_surface(&surface, &handle, ());
+        let toplevel = shell.get_toplevel(&handle, ());
+        toplevel.set_app_id("osk-lifecycle".into());
+        surface.commit();
+        let mut app = App::default();
+        let mut check = |expected, rule| {
+            for _ in 0..3 {
+                let _dispatched = queue.roundtrip(&mut app).unwrap();
+            }
+            sender.send((expected, rule)).unwrap();
+            ack.recv_timeout(Duration::from_secs(5)).unwrap();
+        };
+        check(true, "focused enable opens");
+        input.commit();
+        check(false, "ordinary commit preserves East dismissal");
+        input.enable();
+        input.commit();
+        check(true, "explicit enable reopens");
+        input.disable();
+        check(true, "disable waits for commit");
+        input.commit();
+        check(false, "committed disable closes");
+        input.enable();
+        input.commit();
+        check(true, "reenable opens");
+        input.destroy();
+        check(false, "destroy closes");
+        let _replacement = manager.get_text_input(&seat, &handle, ());
+        check(true, "replacement focused instance opens");
+        toplevel.destroy();
+        shell.destroy();
+        surface.destroy();
+        check(false, "focus loss closes");
+    }
+
+    #[test]
+    fn osk_bumpers_deliver_to_text_input_and_keymap_clients_without_logging_keys() {
+        for text_state in [
+            ClientTextState::Enabled,
+            ClientTextState::Absent,
+            ClientTextState::Disabled,
+        ] {
+            let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let writer = LogWriter(logs.clone());
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(move || writer.clone())
+                .finish();
+            let app = tracing::subscriber::with_default(subscriber, || {
+                exchange_keyboard("test", None, text_state, false, true)
+            });
+            if matches!(text_state, ClientTextState::Enabled) {
+                assert_eq!(app.text, "qpQ");
+                assert_eq!(app.keyboard_text, "\r");
+            } else {
+                assert_eq!(app.text, "");
+                assert_eq!(app.keyboard_text, "qpQ\r");
+            }
+            let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+            for forbidden in [
+                "qpQ",
+                "character=",
+                "key delivered",
+                "text delivered",
+                "text character unavailable",
+                "Handling keystroke",
+                "sym=",
+            ] {
+                assert!(!output.contains(forbidden), "{output}");
+            }
+        }
     }
 
     proptest! {
@@ -2313,6 +2499,14 @@ else:
             started,
         );
 
+        assert!(compositor.osk_open());
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            compositor.handle(&Event::Button {
+                name: ButtonName::East,
+                state,
+            });
+        }
+        assert!(!compositor.osk_open());
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {
