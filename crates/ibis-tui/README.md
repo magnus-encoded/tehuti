@@ -19,8 +19,7 @@ travel and replace pointer/scroll motion while the app has focus.
 Install from this checkout:
 
 ```sh
-install -Dm755 /home/magnus/Projects/tehuti/.worktrees/.target-shared/release/ibis-tui ~/.local/bin/ibis-tui
-install -Dm755 /home/magnus/Projects/tehuti/.worktrees/.target-shared/release/tehuti ~/.local/bin/tehuti
+install -Dm755 "${CARGO_TARGET_DIR:-target}"/release/ibis-tui ~/.local/bin/ibis-tui
 install -Dm644 dist/contexts/ibis-tui/context.toml ~/.config/tehuti/ibis-tui/context.toml
 install -Dm644 dist/applications/ibis-tui.desktop ~/.local/share/applications/ibis-tui.desktop
 ```
@@ -33,7 +32,7 @@ local `commands` branch until a release exists.
 Add this entry to the global context's existing `[speech]` table (app id `*`):
 
 ```toml
-"New command" = { launch = "kitty --class ibis-tui --title Ibis ibis-tui" }
+"New command" = { launch = "ibis-tui.desktop" }
 ```
 
 The app context's unmatched speech takes precedence over global speech, so
