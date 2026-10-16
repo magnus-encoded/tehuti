@@ -1,0 +1,39 @@
+{
+  "program": "cat",
+  "summary": "concatenate files and print on the standard output",
+  "order": [
+    "option",
+    "operand"
+  ],
+  "moves": [
+    {
+      "key": "-n",
+      "summary": "number all output lines",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-A",
+      "summary": "show non-printing characters, tabs and line ends",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "file",
+      "summary": "file to print",
+      "takes": "path",
+      "group": "operand",
+      "operand": true,
+      "required": false,
+      "repeat": true
+    }
+  ]
+}

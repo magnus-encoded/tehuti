@@ -1,0 +1,29 @@
+{
+  "program": "head",
+  "summary": "output the first part of files",
+  "order": [
+    "option",
+    "operand"
+  ],
+  "moves": [
+    {
+      "key": "-n",
+      "summary": "print the first this many lines",
+      "takes": "integer",
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "file",
+      "summary": "file to read",
+      "takes": "path",
+      "group": "operand",
+      "operand": true,
+      "required": false,
+      "repeat": true
+    }
+  ]
+}

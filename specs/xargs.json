@@ -1,0 +1,59 @@
+{
+  "program": "xargs",
+  "summary": "build and run command lines from standard input",
+  "order": [
+    "option",
+    "command"
+  ],
+  "moves": [
+    {
+      "key": "-0",
+      "summary": "input items are separated by NUL, not whitespace",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-n",
+      "summary": "use at most this many arguments per command line",
+      "takes": "integer",
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-I",
+      "summary": "replace this string in the command with each input item",
+      "takes": "string",
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-r",
+      "summary": "do not run the command if the input is empty",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "command",
+      "summary": "the command to run on the input items",
+      "takes": "command",
+      "group": "command",
+      "operand": true,
+      "required": false,
+      "repeat": false
+    }
+  ]
+}

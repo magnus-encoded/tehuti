@@ -1,0 +1,49 @@
+{
+  "program": "wc",
+  "summary": "print line, word and byte counts",
+  "order": [
+    "option",
+    "operand"
+  ],
+  "moves": [
+    {
+      "key": "-l",
+      "summary": "print the line count",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-w",
+      "summary": "print the word count",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-c",
+      "summary": "print the byte count",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "file",
+      "summary": "file to count",
+      "takes": "path",
+      "group": "operand",
+      "operand": true,
+      "required": false,
+      "repeat": true
+    }
+  ]
+}

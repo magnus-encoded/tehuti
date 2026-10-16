@@ -1,0 +1,129 @@
+{
+  "program": "grep",
+  "summary": "print lines that match patterns",
+  "order": [
+    "option",
+    "pattern",
+    "operand"
+  ],
+  "moves": [
+    {
+      "key": "pattern",
+      "summary": "the pattern to search for",
+      "takes": "regex",
+      "group": "pattern",
+      "operand": true,
+      "required": true,
+      "repeat": false
+    },
+    {
+      "key": "file",
+      "summary": "file or directory to search",
+      "takes": "path",
+      "group": "operand",
+      "operand": true,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-n",
+      "summary": "prefix each line with its line number",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-i",
+      "summary": "ignore case",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-v",
+      "summary": "select non-matching lines",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-c",
+      "summary": "print only a count of matching lines",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-l",
+      "summary": "print only names of files with matches",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-r",
+      "summary": "search directories recursively",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-w",
+      "summary": "match whole words only",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-E",
+      "summary": "pattern is an extended regular expression",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-F",
+      "summary": "pattern is a fixed string, not a regex",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "--include",
+      "summary": "search only files whose name matches the glob",
+      "takes": "glob",
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    }
+  ]
+}

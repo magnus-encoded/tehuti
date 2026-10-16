@@ -1,0 +1,32 @@
+{
+  "mutation_scope": "pure step function",
+  "mutation_test_threads": 1,
+  "mutants_caught": 14,
+  "mutants_unviable": 2,
+  "mutants_survived": 0,
+  "fuzz_target": "parsers",
+  "fuzz_seconds": 31,
+  "fuzz_inputs": 91194,
+  "fuzz_crashes": 0,
+  "fuzz_compiler_mode": "installed stable compiler with RUSTC_BOOTSTRAP=1, sanitizer none",
+  "haiku_driver_change": "padterm renamed to ibis-commands-ctl",
+  "haiku_arguments": "--model haiku --runs 2",
+  "haiku_passed": 14,
+  "haiku_episodes": 14,
+  "prototype_rust_files_inputs": [
+    13,
+    13
+  ],
+  "rust_files_inputs": [
+    4,
+    4
+  ],
+  "prototype_todo_count_inputs": [
+    31,
+    31
+  ],
+  "todo_count_inputs": [
+    13,
+    19
+  ]
+}

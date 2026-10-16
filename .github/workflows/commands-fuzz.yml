@@ -1,0 +1,22 @@
+name: ibis-commands-fuzz
+on:
+  push:
+    branches: [commands]
+  pull_request:
+  schedule:
+    - cron: '19 3 * * *'
+jobs:
+  parsers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo fuzz run --fuzz-dir fuzz parsers -- -max_total_time=60
+  step-mutations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-mutants --locked
+      - run: cargo mutants -p ibis-commands --file src/machine.rs --re 'in step|replace step'

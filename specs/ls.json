@@ -1,0 +1,49 @@
+{
+  "program": "ls",
+  "summary": "list directory contents",
+  "order": [
+    "option",
+    "operand"
+  ],
+  "moves": [
+    {
+      "key": "-l",
+      "summary": "long listing format",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-a",
+      "summary": "include entries starting with .",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-S",
+      "summary": "sort by file size, largest first",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "file",
+      "summary": "file or directory to list",
+      "takes": "path",
+      "group": "operand",
+      "operand": true,
+      "required": false,
+      "repeat": true
+    }
+  ]
+}

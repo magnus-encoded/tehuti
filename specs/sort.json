@@ -1,0 +1,49 @@
+{
+  "program": "sort",
+  "summary": "sort lines of text",
+  "order": [
+    "option",
+    "operand"
+  ],
+  "moves": [
+    {
+      "key": "-n",
+      "summary": "compare by numeric value",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-r",
+      "summary": "reverse the result",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-u",
+      "summary": "output only unique lines",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "file",
+      "summary": "file to sort",
+      "takes": "path",
+      "group": "operand",
+      "operand": true,
+      "required": false,
+      "repeat": true
+    }
+  ]
+}

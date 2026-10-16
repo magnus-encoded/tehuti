@@ -1,0 +1,154 @@
+{
+  "program": "find",
+  "summary": "search for files in a directory hierarchy",
+  "order": [
+    "option",
+    "path",
+    "expression"
+  ],
+  "moves": [
+    {
+      "key": "path",
+      "summary": "where to search (starting point)",
+      "takes": "path",
+      "group": "path",
+      "operand": true,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-name",
+      "summary": "base of file name matches shell pattern",
+      "takes": "glob",
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-iname",
+      "summary": "like -name, but the match is case insensitive",
+      "takes": "glob",
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-type",
+      "summary": "file is of type",
+      "takes": "enum",
+      "group": "expression",
+      "values": {
+        "f": "regular file",
+        "d": "directory",
+        "l": "symbolic link"
+      },
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-path",
+      "summary": "whole path matches shell pattern",
+      "takes": "glob",
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-maxdepth",
+      "summary": "descend at most this many levels",
+      "takes": "integer",
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-mtime",
+      "summary": "modified this many days ago (+n more, -n less)",
+      "takes": "string",
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-size",
+      "summary": "file uses this much space, e.g. +1M",
+      "takes": "string",
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-empty",
+      "summary": "file is empty",
+      "takes": null,
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-not",
+      "summary": "negate the next test",
+      "takes": null,
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-o",
+      "summary": "or: either side matches",
+      "takes": null,
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-print0",
+      "summary": "print the full file name followed by a NUL byte",
+      "takes": null,
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-delete",
+      "summary": "delete the files found",
+      "takes": null,
+      "group": "expression",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    },
+    {
+      "key": "-L",
+      "summary": "follow symbolic links",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": true
+    }
+  ]
+}
