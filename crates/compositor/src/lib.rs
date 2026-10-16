@@ -31,3 +31,5 @@ pub mod shutdown;
 pub mod rendering;
 
 pub mod scale;
+
+pub mod bar;

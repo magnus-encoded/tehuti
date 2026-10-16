@@ -1809,9 +1809,9 @@ impl Tile {
             TileMode::Normal | TileMode::WindowedFullscreen => normal,
             TileMode::Fullscreen => Rect {
                 x: normal.x,
-                y: 0.0_f64,
-                width: geometry.area.width,
-                height: geometry.area.height,
+                y: geometry.usable.y.sub(geometry.area.y),
+                width: geometry.usable.width,
+                height: geometry.usable.height,
             },
             TileMode::MaximizedToEdges => Rect {
                 x: geometry.usable.x.sub(geometry.area.x),

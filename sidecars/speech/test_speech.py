@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import time
+import threading
 import types
 import unittest
 import wave
@@ -50,6 +51,58 @@ class SpeechTests(unittest.TestCase):
             finally:
                 speech.close()
                 os.environ["PATH"] = previous_path
+
+    def test_live_preview_emits_text_while_record_is_held(self):
+        class Model:
+            def transcribe(self, path, **options):
+                return iter([types.SimpleNamespace(text="Live Words", no_speech_prob=0, avg_logprob=0)]), None
+
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = Path(directory) / "pw-record"
+            recorder.write_text("#!/usr/bin/env python3\nimport sys,time,signal\nsignal.signal(signal.SIGINT,lambda *_:sys.exit(0))\nsys.stdout.buffer.write(b'\\x00\\x10'*16000)\nsys.stdout.buffer.flush()\ntime.sleep(60)\n")
+            recorder.chmod(0o700)
+            previous_path = os.environ["PATH"]
+            os.environ["PATH"] = directory + os.pathsep + previous_path
+            speech = module.Speech(Model())
+            output = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(output):
+                    speech.start(9)
+                    deadline = time.monotonic() + 3
+                    while not output.getvalue() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertEqual(json.loads(output.getvalue()), {"session": 9, "interim": "Live Words"})
+                    self.assertIsNone(speech.capture.poll(), "preview leaves capture running")
+                    speech.stop(9, True)
+                    while len(output.getvalue().splitlines()) < 2 and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                self.assertEqual(json.loads(output.getvalue().splitlines()[-1]), {"session": 9, "text": "Live Words"})
+            finally:
+                speech.close()
+                os.environ["PATH"] = previous_path
+
+    def test_cancelled_inflight_preview_is_dropped_and_preview_work_is_bounded(self):
+        started, finish = threading.Event(), threading.Event()
+
+        class Model:
+            def transcribe(self, path, **options):
+                started.set()
+                finish.wait(3)
+                return iter([types.SimpleNamespace(text="old", no_speech_prob=0, avg_logprob=0)]), None
+
+        speech = module.Speech(Model())
+        capture = object()
+        speech.capture = capture
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            speech.interim(0, b"\x00\x10" * 16000, capture)
+            self.assertTrue(started.wait(3))
+            self.assertFalse(speech.interims.acquire(blocking=False), "at most one preview transcribes")
+            speech.capture = None
+            finish.set()
+            self.assertTrue(speech.interims.acquire(timeout=3), "preview releases its budget")
+            speech.interims.release()
+        self.assertEqual(output.getvalue(), "", "cancelled capture cannot publish a preview")
 
     def test_hallucinated_whole_transcripts_are_empty(self):
         for text in [

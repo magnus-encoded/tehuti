@@ -41,6 +41,7 @@ struct Nested {
     stop: LoopSignal,
     notice: MemoryRenderBuffer,
     notice_text: String,
+    bar: tehuti::bar::Buffer,
 }
 
 #[expect(
@@ -96,6 +97,7 @@ pub(crate) fn insert(
         stop: event_loop.get_signal(),
         notice: tehuti::notice::speech_notice_buffer(),
         notice_text: "NO SPEECH MAPPING".into(),
+        bar: tehuti::bar::Buffer::default(),
     };
     let _winit_token = event_loop
         .handle()
@@ -177,7 +179,7 @@ impl Nested {
         let mut confirmation_element_included = false;
         match self.backend.borrow_mut().bind() {
             Ok((renderer, mut framebuffer)) => {
-                let notices = if visible_notice {
+                let mut notices = if visible_notice {
                     match MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
                         (16.0, 16.0),
@@ -199,6 +201,15 @@ impl Nested {
                 } else {
                     Vec::new()
                 };
+                let clock = chrono::Local::now().format("%H:%M").to_string();
+                match self
+                    .bar
+                    .element(renderer, &self.output, data.compositor.voice_bar(), &clock)
+                {
+                    Ok(Some(element)) => notices.push(element),
+                    Ok(None) => {}
+                    Err(error) => warn!(?error, "bar render failed"),
+                }
                 match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
                     &self.output,
                     renderer,

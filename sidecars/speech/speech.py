@@ -12,6 +12,7 @@ import wave
 
 MAX_LINE = 65536
 MAX_AUDIO_SECONDS = 60
+INTERIM_BYTES = 16000 * 2
 SILENCE_PEAK = 64
 
 
@@ -50,6 +51,7 @@ class Speech:
         self.session = None
         self.model_lock = threading.Lock()
         self.transcriptions = threading.BoundedSemaphore(2)
+        self.interims = threading.BoundedSemaphore(1)
 
     def start(self, session):
         if self.capture is not None:
@@ -64,17 +66,58 @@ class Speech:
 
         def drain():
             remaining = MAX_AUDIO_SECONDS * 16000 * 2
+            audio = bytearray()
+            next_interim = INTERIM_BYTES
             while remaining:
-                chunk = capture.stdout.read(min(4096, remaining))
+                chunk = capture.stdout.read1(min(4096, remaining))
                 if not chunk:
                     break
                 clip.write(chunk)
                 remaining -= len(chunk)
+                audio.extend(chunk)
+                if len(audio) >= next_interim:
+                    self.interim(session, bytes(audio), capture)
+                    next_interim = len(audio) + INTERIM_BYTES
             if remaining == 0 and capture.poll() is None:
                 capture.send_signal(signal.SIGINT)
 
         self.reader = threading.Thread(target=drain, daemon=True)
         self.reader.start()
+
+    def transcribe_audio(self, audio):
+        with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
+            with wave.open(recording.name, "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(16000)
+                output.writeframes(audio)
+            segments, _ = self.model.transcribe(
+                recording.name, beam_size=5, language="en", vad_filter=True,
+            )
+            return transcript(segments)
+
+    def interim(self, session, audio, capture):
+        if not self.interims.acquire(blocking=False):
+            return
+
+        def finish():
+            try:
+                if self.capture is not capture or peak(audio) <= SILENCE_PEAK:
+                    return
+                if not self.model_lock.acquire(blocking=False):
+                    return
+                try:
+                    text = self.transcribe_audio(audio)
+                finally:
+                    self.model_lock.release()
+                if self.capture is capture and text:
+                    reply({"session": session, "interim": text})
+            except Exception as error:
+                print(f"interim transcription failed: {error}", file=sys.stderr)
+            finally:
+                self.interims.release()
+
+        threading.Thread(target=finish, daemon=True).start()
 
     def stop(self, session, transcribe):
         if self.capture is None or session != self.session:
@@ -111,17 +154,8 @@ class Speech:
                 if loudest <= SILENCE_PEAK:
                     reply({"session": session, "error": "silent"})
                     return
-                with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
-                    with wave.open(recording.name, "wb") as output:
-                        output.setnchannels(1)
-                        output.setsampwidth(2)
-                        output.setframerate(16000)
-                        output.writeframes(audio)
-                    with self.model_lock:
-                        segments, _ = self.model.transcribe(
-                            recording.name, beam_size=5, language="en", vad_filter=True,
-                        )
-                        text = transcript(segments)
+                with self.model_lock:
+                    text = self.transcribe_audio(audio)
                 reply({"session": session, "text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)

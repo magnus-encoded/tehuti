@@ -41,6 +41,7 @@ pub(super) struct Scanout<Buffer, Framebuffer> {
     framebuffer: Framebuffer,
     dmabuf: Dmabuf,
     _buffer: Buffer,
+    bar: tehuti::bar::Buffer,
 }
 
 pub(super) struct Gpu {
@@ -92,6 +93,7 @@ fn create_gpu(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Gpu, Box<
                 framebuffer,
                 dmabuf,
                 _buffer: buffer,
+                bar: tehuti::bar::Buffer::default(),
             })
         };
         match allocate().and_then(|first| allocate().map(|second| [first, second])) {
@@ -121,6 +123,7 @@ fn create_software(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Soft
             framebuffer: framebuffer_from_dumb_buffer(device_fd, &buffer, true)?,
             dmabuf: buffer.export()?,
             _buffer: buffer,
+            bar: tehuti::bar::Buffer::default(),
         })
     };
     Ok(Software {
@@ -170,6 +173,7 @@ pub(super) fn draw(
             let notice = draw_buffer(
                 gpu.device.borrow_mut().renderer_mut(),
                 &mut buffer.dmabuf,
+                &mut buffer.bar,
                 output,
                 damage,
                 compositor,
@@ -184,6 +188,7 @@ pub(super) fn draw(
             let notice = draw_buffer(
                 &mut software.renderer,
                 &mut buffer.dmabuf,
+                &mut buffer.bar,
                 output,
                 damage,
                 compositor,
@@ -196,6 +201,7 @@ pub(super) fn draw(
 fn draw_buffer<R>(
     renderer: &mut R,
     dmabuf: &mut Dmabuf,
+    bar: &mut tehuti::bar::Buffer,
     output: &Output,
     damage: &mut OutputDamageTracker,
     compositor: &Compositor,
@@ -209,7 +215,7 @@ where
     let notice = compositor
         .visible_notice_text()
         .map(|text| tehuti::notice::notice_buffer(&text));
-    let elements = notice
+    let mut elements = notice
         .as_ref()
         .map(|buffer| {
             MemoryRenderBufferRenderElement::from_buffer(
@@ -225,6 +231,11 @@ where
         .transpose()?
         .into_iter()
         .collect::<Vec<_>>();
+    let notice_included = !elements.is_empty();
+    let clock = chrono::Local::now().format("%H:%M").to_string();
+    if let Some(element) = bar.element(renderer, output, compositor.voice_bar(), &clock)? {
+        elements.push(element);
+    }
     let frame = render_output::<_, MemoryRenderBufferRenderElement<R>, _, _>(
         output,
         renderer,
@@ -237,5 +248,5 @@ where
         [0.0, 0.0, 0.0, 1.0],
     )?;
     frame.sync.wait()?;
-    Ok(!elements.is_empty() && frame.damage.is_some())
+    Ok(notice_included && frame.damage.is_some())
 }

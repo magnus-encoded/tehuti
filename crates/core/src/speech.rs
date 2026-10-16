@@ -5,7 +5,7 @@ use tehuti_protocol::Text;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SpeechState {
     available: bool,
-    held: bool,
+    pub(crate) held: bool,
     next_session: u64,
     recording: Option<u64>,
     pending: Option<u64>,
@@ -19,6 +19,7 @@ pub enum SpeechInput {
     Disconnected,
     Unavailable,
     Available,
+    Interim { session: u64, text: Text },
     Transcript { session: u64, text: Text },
     Failed { session: u64, reason: SpeechFailure },
 }
@@ -36,6 +37,7 @@ pub enum SpeechFailure {
 pub enum SpeechEffect {
     Start { session: u64 },
     Stop { session: u64, transcribe: bool },
+    Interim { session: u64, text: Text },
     Speech { session: u64, text: Text },
     Failed { session: u64, reason: SpeechFailure },
 }
@@ -84,18 +86,35 @@ pub fn speech_step(mut state: SpeechState, input: SpeechInput) -> (SpeechState, 
             }
         }
         SpeechInput::Available => state.available = true,
-        SpeechInput::Transcript { session, text } => {
-            if state.pending == Some(session) {
-                state.pending = None;
-                effects.push(SpeechEffect::Speech { session, text });
+        SpeechInput::Interim { session, text } => {
+            if state.recording == Some(session) {
+                effects.push(SpeechEffect::Interim { session, text });
             }
         }
-        SpeechInput::Failed { session, reason } => {
-            if state.pending == Some(session) {
-                state.pending = None;
-                effects.push(SpeechEffect::Failed { session, reason });
+        SpeechInput::Transcript { .. } | SpeechInput::Failed { .. } => {
+            if let Some(effect) = final_effect(&mut state, input) {
+                effects.push(effect);
             }
         }
     }
     (state, effects)
+}
+
+fn final_effect(state: &mut SpeechState, input: SpeechInput) -> Option<SpeechEffect> {
+    let (session, effect) = match input {
+        SpeechInput::Transcript { session, text } => (session, SpeechEffect::Speech { session, text }),
+        SpeechInput::Failed { session, reason } => (session, SpeechEffect::Failed { session, reason }),
+        SpeechInput::Press
+        | SpeechInput::Release
+        | SpeechInput::Cancel
+        | SpeechInput::Disconnected
+        | SpeechInput::Unavailable
+        | SpeechInput::Available
+        | SpeechInput::Interim { .. } => return None,
+    };
+    if state.pending != Some(session) {
+        return None;
+    }
+    state.pending = None;
+    Some(effect)
 }
