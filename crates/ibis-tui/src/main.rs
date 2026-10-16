@@ -5,8 +5,9 @@
 use core::error::Error;
 use core::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ibis_commands::{Effect, Environment, Input, Screen, State, specs, step};
+use ibis_commands::{Environment, Input, Screen, State, specs, step};
 use ibis_tui::InputLine;
+use ibis_tui::agent::{Session, Socket, socket_path};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
@@ -120,21 +121,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     let mut state = State::new(cwd.to_string_lossy().into_owned(), specs()?);
     (state, _) = step(state, Input::Environment(environment(&cwd)));
+    let mut socket = Socket::bind(&socket_path(
+        std::env::var_os("IBIS_TUI_SOCKET"),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    )?)?;
     let mut terminal = ratatui::try_init()?;
-    let result = session(&mut terminal, state, &cwd);
+    let result = session(&mut terminal, state, &cwd, &mut socket);
     ratatui::restore();
     result
 }
 
 fn session(
     terminal: &mut ratatui::DefaultTerminal,
-    mut state: State,
+    initial: State,
     cwd: &Path,
+    socket: &mut Socket,
 ) -> Result<(), Box<dyn Error>> {
+    let mut session = Session::new(initial, cwd.to_owned());
     let mut line = InputLine::default();
     let mut last_key = Instant::now();
     let mut scroll = 0_u16;
     loop {
+        let previous_history = session.state().history().len();
+        socket.poll(&mut session)?;
+        if session.state().history().len() != previous_history {
+            scroll = history_lines(session.state());
+        }
+        let state = session.state();
         let _frame = terminal.draw(|frame| draw(frame, &state.screen(), line.text(), scroll))?;
         let input = if event::poll(Duration::from_millis(50))? {
             match event::read()? {
@@ -143,7 +156,7 @@ fn session(
                     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                         return Ok(());
                     }
-                    if scroll_key(key.code, &mut scroll, &state) {
+                    if scroll_key(key.code, &mut scroll, state) {
                         None
                     } else {
                         line.key(key)
@@ -160,20 +173,10 @@ fn session(
             line.quiet(last_key.elapsed())
         };
         if let Some(input) = input {
-            let effects;
-            (state, effects) = step(state, input);
-            for Effect::Run(invocation) in effects {
-                let (exit, output) =
-                    ibis_tui::run(&invocation, cwd).unwrap_or_else(|error| (126, error.to_string()));
-                scroll = history_lines(&state);
-                (state, _) = step(
-                    state,
-                    Input::Completed {
-                        invocation,
-                        exit,
-                        output,
-                    },
-                );
+            let history = session.state().history().len();
+            session.input(input);
+            if session.state().history().len() != history {
+                scroll = history_lines(session.state());
             }
         }
     }

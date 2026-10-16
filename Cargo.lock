@@ -939,6 +939,7 @@ dependencies = [
  "crossterm",
  "ibis-commands",
  "ratatui",
+ "serde_json",
  "tehuti-protocol",
  "tempfile",
 ]

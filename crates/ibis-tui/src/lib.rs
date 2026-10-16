@@ -3,6 +3,8 @@
     reason = "Ratatui requires older rustix and unicode-width alongside workspace dependencies; its macros also use syn 3"
 )]
 //! Terminal input and command execution for the Ibis builder.
+pub mod agent;
+
 use core::time::Duration;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ibis_commands::{Button, Input, ReadyInvocation};

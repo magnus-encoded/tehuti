@@ -226,17 +226,24 @@ impl Context {
     }
 
     #[must_use]
-    pub fn speech_action(&self, phrase: &str) -> Option<Action> {
-        let wanted = normalize_phrase(phrase);
+    pub fn speech_phrase_action(&self, phrase: &str) -> Option<Action> {
         if phrase.trim().is_empty() {
             return None;
         }
-        self.speech.get(&wanted).map(MappingAction::action).or_else(|| {
-            let UnmatchedSpeech::Type = self.unmatched_speech?;
-            Text::new(format!("{phrase} "))
-                .ok()
-                .map(|text| Action::Text { text })
-        })
+        self.speech
+            .get(&normalize_phrase(phrase))
+            .map(MappingAction::action)
+    }
+
+    #[must_use]
+    pub fn unmatched_speech_action(&self, phrase: &str) -> Option<Action> {
+        if phrase.trim().is_empty() {
+            return None;
+        }
+        let UnmatchedSpeech::Type = self.unmatched_speech?;
+        Text::new(format!("{phrase} "))
+            .ok()
+            .map(|text| Action::Text { text })
     }
 
     #[must_use]

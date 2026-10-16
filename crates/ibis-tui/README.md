@@ -35,6 +35,16 @@ Add this entry to the global context's existing `[speech]` table (app id `*`):
 "New command" = { launch = "ibis-tui.desktop" }
 ```
 
-The app context's unmatched speech takes precedence over global speech, so
-inside Ibis, use Y for a new builder. Context reload follows the normal Tehuti
-configuration workflow.
+Focused phrases take precedence over global phrases. Unmatched speech types
+into Ibis after both phrase tables have been checked. Context reload follows
+the normal Tehuti configuration workflow.
+
+The agent socket listens at `$XDG_RUNTIME_DIR/ibis-tui.sock`; `IBIS_TUI_SOCKET`
+overrides the path. Startup removes stale sockets and refuses an active socket.
+Each JSON line is an argument array using the `ibis-commands-ctl` verbs:
+`["screen"]`, `["press", "Y"]`, `["say", "echo hello"]`, `["type", "hello"]`,
+or `["reset"]`. Press accepts multiple buttons. Replies are JSON objects with
+`screen` containing the CLI screen text, or `error` for an invalid request.
+Inputs use the terminal's command runner; reset restores the initial builder
+and environment. Connections support multiple lines. Requests are limited to
+64 KiB, with at most 16 clients; incomplete lines do not block terminal input.
