@@ -128,24 +128,35 @@ impl EvdevPad {
         Ok(sticks)
     }
 
-    /// Fingerprints the kernel's view of held keys and axis positions.
+    /// Fingerprints the kernel's view of held keys and D-pad hat positions.
     ///
     /// The kernel updates this state even when no event reaches our file descriptor,
     /// so a changing fingerprint without routed events means our read path is dead.
     /// # Errors
     /// The kernel could not read the controller state, as when the node is gone.
     pub fn activity(&self) -> io::Result<u64> {
-        use core::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for key in &self.0.get_key_state()? {
-            key.code().hash(&mut hasher);
-        }
-        for (axis, info) in self.0.get_absinfo()? {
-            axis.0.hash(&mut hasher);
-            info.value().hash(&mut hasher);
-        }
-        Ok(hasher.finish())
+        let keys: Vec<_> = self.0.get_key_state()?.iter().map(KeyCode::code).collect();
+        let axes: Vec<_> = self
+            .0
+            .get_absinfo()?
+            .map(|(axis, info)| (axis.0, info.value()))
+            .collect();
+        Ok(fingerprint(&keys, &axes))
     }
+}
+
+/// Hashes held keys and hat axes. Sticks and triggers are left out: they drift
+/// without yielding routed events, so hashing them made an idle pad look dead.
+fn fingerprint(keys: &[u16], axes: &[(u16, i32)]) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    keys.hash(&mut hasher);
+    for (axis, value) in axes {
+        if *axis == AbsoluteAxisCode::ABS_HAT0X.0 || *axis == AbsoluteAxisCode::ABS_HAT0Y.0 {
+            (axis, value).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 impl AsFd for EvdevPad {
@@ -304,6 +315,18 @@ mod tests {
         ) {
             let answered: Vec<_> = series.into_iter().map(|(step, print)| (step, print, true)).collect();
             prop_assert!(run_watch(&answered).iter().all(|verdict| *verdict == WatchVerdict::Healthy));
+        }
+
+        #[test]
+        fn stick_and_trigger_drift_leaves_the_fingerprint_unchanged(
+            keys in prop::collection::vec(any::<u16>(), 0..8),
+            hat in (-1_i32..=1, -1_i32..=1),
+            drift in prop::collection::vec((0_u16..6, any::<i32>()), 1..12),
+        ) {
+            let hats = [(AbsoluteAxisCode::ABS_HAT0X.0, hat.0), (AbsoluteAxisCode::ABS_HAT0Y.0, hat.1)];
+            let mut drifted = drift;
+            drifted.extend(hats);
+            prop_assert_eq!(super::fingerprint(&keys, &hats), super::fingerprint(&keys, &drifted));
         }
 
         #[test]
