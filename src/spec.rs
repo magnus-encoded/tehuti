@@ -52,6 +52,7 @@ pub fn specs() -> Result<Vec<CommandSpec>, serde_json::Error> {
         include_str!("../specs/head.json"),
         include_str!("../specs/ls.json"),
         include_str!("../specs/cd.json"),
+        include_str!("../specs/ip.json"),
     ]
     .into_iter()
     .map(serde_json::from_str)

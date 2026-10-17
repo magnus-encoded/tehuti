@@ -1,0 +1,100 @@
+{
+  "program": "ip",
+  "summary": "show routing, devices and addresses",
+  "order": [
+    "option",
+    "object"
+  ],
+  "moves": [
+    {
+      "key": "-br",
+      "summary": "brief, one line per object",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": false
+    },
+    {
+      "key": "-4",
+      "summary": "IPv4 only",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": false
+    },
+    {
+      "key": "-6",
+      "summary": "IPv6 only",
+      "takes": null,
+      "group": "option",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": false
+    },
+    {
+      "key": "addr",
+      "summary": "show protocol addresses",
+      "takes": null,
+      "group": "object",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": false
+    },
+    {
+      "key": "a",
+      "summary": "addresses (short for addr)",
+      "takes": null,
+      "group": "object",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": false
+    },
+    {
+      "key": "link",
+      "summary": "show network devices",
+      "takes": null,
+      "group": "object",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": false
+    },
+    {
+      "key": "route",
+      "summary": "show the routing table",
+      "takes": null,
+      "group": "object",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": false
+    },
+    {
+      "key": "r",
+      "summary": "routes (short for route)",
+      "takes": null,
+      "group": "object",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": false
+    },
+    {
+      "key": "neigh",
+      "summary": "show neighbour (ARP/NDP) entries",
+      "takes": null,
+      "group": "object",
+      "values": null,
+      "operand": false,
+      "required": false,
+      "repeat": false
+    }
+  ]
+}

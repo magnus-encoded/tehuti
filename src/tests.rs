@@ -109,7 +109,11 @@ fn environment_rejects_nul_and_empty_program_names() -> Result<(), serde_json::E
 fn stage_navigation_cleans_empty_stages_and_undo_restores_them() -> Result<(), serde_json::Error> {
     let (mut state, _) = step(State::new("/tmp".into(), specs()?), Input::Press(Button::New));
     (state, _) = step(state, Input::Press(Button::Down));
-    assert_eq!(state.screen().list.len(), 9, "browse offers all bundled programs");
+    assert_eq!(
+        state.screen().list.len(),
+        10,
+        "browse offers all bundled programs"
+    );
     assert_eq!(
         state.screen().list.first().map(|entry| entry.value.as_str()),
         Some("find"),
@@ -248,4 +252,29 @@ fn join_folder_resolves_lexically() {
     assert_eq!(join_folder("/a/b", "/etc/./x/.."), "/etc", "absolute");
     assert_eq!(join_folder("/", "../.."), "/", "root stays root");
     assert_eq!(join_folder("/a", "b/c/"), "/a/b/c", "relative");
+}
+
+#[test]
+fn ip_spec_offers_objects_and_family_flags() -> Result<(), serde_json::Error> {
+    let (mut state, _) = step(State::new("/tmp".into(), specs()?), Input::Press(Button::New));
+    (state, _) = step(state, Input::Type("ip".into()));
+    (state, _) = step(state, Input::Say("a".into()));
+    (state, _) = step(state, Input::Press(Button::Accept));
+    assert_eq!(state.draft.preview(), "ip a", "saying a gives ip a");
+    (state, _) = step(state, Input::Press(Button::New));
+    (state, _) = step(state, Input::Type("ip -br -4 route".into()));
+    assert_eq!(
+        state.draft.preview(),
+        "ip -br -4 route",
+        "typed ip parses into spec moves"
+    );
+    let ip_spec = specs()?.into_iter().find(|spec| spec.program == "ip");
+    let keys: Vec<_> = ip_spec
+        .iter()
+        .flat_map(|spec| spec.moves.iter().map(|entry| entry.key.as_str()))
+        .collect();
+    for key in ["addr", "a", "link", "route", "r", "neigh", "-br", "-4", "-6"] {
+        assert!(keys.contains(&key), "ip offers {key}");
+    }
+    Ok(())
 }
