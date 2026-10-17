@@ -2,7 +2,7 @@
 //!
 //! It runs beside calloop and reads no compositor state. Twice a pad-only owner
 //! was locked out by a loop that spun but swallowed input, so this thread
-//! polls the Guide key state on a duplicate of the grabbed pad fd and watches a
+//! polls the Guide key state on its own ungrabbed open of the pad and watches a
 //! heartbeat the main loop bumps. Either a 5 s Guide hold or 10 s without a
 //! heartbeat exits the process with [`RESTART_STATUS`].
 
@@ -103,8 +103,8 @@ impl Escape {
         let _previous = self.heartbeat.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Hands the escape thread a duplicate of the grabbed pad, or `None` when it is dropped.
-    /// The duplicate must be cleared on drop, or it keeps the old grab alive.
+    /// Hands the escape thread an ungrabbed handle on the pad, or `None` when it is dropped.
+    /// It must not share the grabbed handle: `EVIOCGKEY` flushes that client's queued key events.
     pub fn set_pad(&self, pad: Option<Device>) {
         *self.pad.lock().unwrap_or_else(PoisonError::into_inner) = pad;
     }

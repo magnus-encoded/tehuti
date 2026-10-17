@@ -254,11 +254,7 @@ fn insert_controller(
     };
     info!(name = device.name(), "controller grabbed");
     let controller_fd = device.as_fd().try_clone_to_owned()?;
-    match device
-        .as_fd()
-        .try_clone_to_owned()
-        .and_then(evdev::Device::from_fd)
-    {
+    match device.open_probe() {
         Ok(watched) => escape.set_pad(Some(watched)),
         Err(error) => warn!(%error, "escape thread cannot watch the pad; heartbeat escape only"),
     }

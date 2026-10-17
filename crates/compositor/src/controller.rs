@@ -22,14 +22,19 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                 .and_then(|node| std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok());
             is_physical(device.input_id().bus_type(), sysfs.as_deref())
         })
-        .map(|(_, device)| device)
-        .filter(|device| {
+        .filter(|(_, device)| {
             device
                 .supported_keys()
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
-        .find_map(|mut device| match grab_nonblocking(&mut device) {
-            Ok(()) => Some(EvdevPad(device, DpadHat::default())),
+        .find_map(|(path, mut device)| match grab_nonblocking(&mut device) {
+            Ok(()) => match Device::open(&path) {
+                Ok(probe) => Some(EvdevPad(device, DpadHat::default(), probe, path)),
+                Err(error) => {
+                    warn!(%error, name = device.name().unwrap_or("unnamed"), "controller probe open failed; skipping it");
+                    None
+                }
+            },
             Err(error) => {
                 warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
                 None
@@ -101,8 +106,12 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
 }
 
 /// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
+///
+/// State queries go through a second, ungrabbed open of the node: the kernel
+/// flushes a client's queued key events on `EVIOCGKEY`, so asking the grabbed
+/// handle which keys are held silently discarded every button press.
 #[derive(Debug)]
-pub struct EvdevPad(Device, DpadHat);
+pub struct EvdevPad(Device, DpadHat, Device, std::path::PathBuf);
 
 impl EvdevPad {
     #[must_use]
@@ -115,7 +124,7 @@ impl EvdevPad {
     pub fn sticks(&self) -> io::Result<tehuti_core::dispatch::Sticks> {
         use evdev::AbsoluteAxisCode;
         let mut sticks = tehuti_core::dispatch::Sticks::default();
-        for (axis, info) in self.0.get_absinfo()? {
+        for (axis, info) in self.2.get_absinfo()? {
             let value = stick_axis(info.value(), info.minimum(), info.maximum());
             match axis {
                 AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
@@ -135,9 +144,9 @@ impl EvdevPad {
     /// # Errors
     /// The kernel could not read the controller state, as when the node is gone.
     pub fn activity(&self) -> io::Result<u64> {
-        let keys: Vec<_> = self.0.get_key_state()?.iter().map(KeyCode::code).collect();
+        let keys: Vec<_> = self.2.get_key_state()?.iter().map(KeyCode::code).collect();
         let axes: Vec<_> = self
-            .0
+            .2
             .get_absinfo()?
             .map(|(axis, info)| (axis.0, info.value()))
             .collect();
@@ -159,6 +168,16 @@ fn fingerprint(keys: &[u16], axes: &[(u16, i32)]) -> u64 {
     hasher.finish()
 }
 
+impl EvdevPad {
+    /// Opens another ungrabbed handle for a watcher that queries key state.
+    ///
+    /// # Errors
+    /// The node could not be opened, as when the pad is gone.
+    pub fn open_probe(&self) -> io::Result<Device> {
+        Device::open(&self.3)
+    }
+}
+
 impl AsFd for EvdevPad {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
@@ -178,9 +197,21 @@ impl InputSource for EvdevPad {
 /// Reads every pending event from `device`. Stops at `WouldBlock`.
 fn drain_device(device: &mut Device, hat: &mut DpadHat) -> io::Result<Vec<Event>> {
     match device.fetch_events() {
-        Ok(events) => Ok(events
-            .flat_map(|event| hat.translate(&event.destructure()))
-            .collect()),
+        Ok(events) => {
+            let raw: Vec<_> = events.collect();
+            let routed: Vec<Event> = raw
+                .iter()
+                .flat_map(|event| hat.translate(&event.destructure()))
+                .collect();
+            let keys = raw
+                .iter()
+                .filter(|event| matches!(event.destructure(), EventSummary::Key(..)))
+                .count();
+            if keys > 0 || !routed.is_empty() {
+                tracing::debug!(raw = raw.len(), keys, routed = routed.len(), "pad read");
+            }
+            Ok(routed)
+        }
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Vec::new()),
         Err(error) => Err(error),
     }
