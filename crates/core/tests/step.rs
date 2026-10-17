@@ -39,7 +39,7 @@ mod step {
 
         #[test]
         fn each_a_press_sends_one_enter_and_nothing_else_reaches_the_client(
-            events in prop::collection::vec(any::<Event>().prop_filter("no clock: a hold would open the menu", |event| !matches!(event, Event::Tick { .. })), 0..200),
+            events in prop::collection::vec(any::<Event>().prop_filter("menu stays closed", |event| !matches!(event, Event::Tick { .. } | Event::Button { name: ButtonName::GuideTap, state: ButtonState::Pressed })), 0..200),
         ) {
             let a_presses = events.iter().filter(|event| **event == A_PRESSED).count();
             let keys: Vec<_> = run(&events).into_iter().filter(|action| matches!(action, Action::Key { .. })).collect();
@@ -52,7 +52,7 @@ mod step {
         fn context_text_preserves_unicode_when_its_mapping_fires(
             text in any::<tehuti_protocol::Text>(),
             app_id in "[a-z]{1,30}",
-            name in any::<ButtonName>().prop_filter("context-routed button", |name| !matches!(name, ButtonName::South | ButtonName::Guide | ButtonName::Record)),
+            name in any::<ButtonName>().prop_filter("context-routed button", |name| !matches!(name, ButtonName::South | ButtonName::Guide | ButtonName::GuideTap | ButtonName::Record | ButtonName::KeyboardPtt)),
             mappings in prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15),
         ) {
             let mut source = format!("app_id = {}\n[buttons]\n", toml::Value::String(app_id.clone()));

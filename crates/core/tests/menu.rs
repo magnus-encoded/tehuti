@@ -106,7 +106,7 @@ mod menu {
         }
 
         #[test]
-        fn east_and_guide_close_without_effect(presses in navigation(), closer in prop_oneof![Just(ButtonName::East), Just(ButtonName::Guide)]) {
+        fn east_and_guide_close_without_effect(presses in navigation(), closer in prop_oneof![Just(ButtonName::East), Just(ButtonName::Guide), Just(ButtonName::GuideTap)]) {
             let (state, _) = moved(&presses);
             let (mut state, actions) = step(state, &press(closer));
             prop_assert!(state.menu().is_none());
@@ -117,7 +117,7 @@ mod menu {
         #[test]
         fn while_open_every_other_input_is_consumed_and_changes_nothing(
             events in prop::collection::vec(any::<Event>().prop_filter("not a menu control", |event| !matches!(event,
-                Event::Button { name: ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::South | ButtonName::East | ButtonName::Guide, state: ButtonState::Pressed })), 0..80),
+                Event::Button { name: ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::South | ButtonName::East | ButtonName::Guide | ButtonName::GuideTap, state: ButtonState::Pressed })), 0..80),
             plugin_active in any::<bool>(),
         ) {
             let mut state = opened();

@@ -539,7 +539,43 @@ fn route_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
     }
 }
 
+fn push_to_talk(state: &State, event: &Event) -> bool {
+    let Event::Button { name, .. } = event else {
+        return false;
+    };
+    *name == ButtonName::KeyboardPtt
+        || state
+            .core
+            .contexts()
+            .iter()
+            .find(|context| context.app_id() == crate::GLOBAL_APP_ID)
+            .map_or(*name == ButtonName::Record, |context| context.push_to_talk(*name))
+}
+
+fn route_push_to_talk(state: &mut State, event: Event) {
+    let Event::Button { state: button, .. } = event else {
+        return;
+    };
+    let menu_open = state.core.menu().is_some();
+    if let Some(frame) = state.frames.last_mut() {
+        frame
+            .tasks
+            .push_front(if menu_open && button == ButtonState::Pressed {
+                Task::Route(event)
+            } else {
+                Task::Speech(match button {
+                    ButtonState::Pressed => SpeechInput::Press,
+                    ButtonState::Released => SpeechInput::Release,
+                })
+            });
+    }
+}
+
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if push_to_talk(state, &event) {
+        route_push_to_talk(state, event);
+        return;
+    }
     if settings_event(state, &event, effects) {
         return;
     }
@@ -566,16 +602,9 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     match event {
         // While the menu is open, presses belong to it alone; releases still unwind held state.
         Event::Button {
-            name: ButtonName::Record | ButtonName::South,
+            name: ButtonName::South,
             state: ButtonState::Pressed,
         } if menu_open => frame.tasks.push_front(Task::Route(event)),
-        Event::Button {
-            name: ButtonName::Record,
-            state: button,
-        } => frame.tasks.push_front(Task::Speech(match button {
-            ButtonState::Pressed => SpeechInput::Press,
-            ButtonState::Released => SpeechInput::Release,
-        })),
         Event::Button {
             name: ButtonName::South,
             state: button,

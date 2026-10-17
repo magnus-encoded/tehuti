@@ -173,4 +173,32 @@ text = "a\u0000b"
             );
         }
     }
+
+    #[test]
+    fn shipped_contexts_parse() -> Result<(), Box<dyn core::error::Error>> {
+        let contexts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dist/contexts");
+        let mut count = 0;
+        for entry in std::fs::read_dir(contexts)? {
+            let path = entry?.path().join("context.toml");
+            if path.is_file() {
+                let source = std::fs::read_to_string(&path)?;
+                let _context = tehuti_protocol::parse_context(&source)
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                count += 1;
+            }
+        }
+        assert!(count > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn global_context_accepts_record_and_start_push_to_talk() -> Result<(), String> {
+        use tehuti_protocol::ButtonName;
+        let context = tehuti_protocol::parse_context(
+            "app_id = '*'\npush_to_talk = [\"record\", \"start\"]\n[buttons]",
+        )?;
+        assert!(context.push_to_talk(ButtonName::Record));
+        assert!(context.push_to_talk(ButtonName::Start));
+        Ok(())
+    }
 }

@@ -172,7 +172,13 @@ impl DpadHat {
     )]
     pub fn translate(&mut self, event: &EventSummary) -> Vec<Event> {
         match *event {
-            EventSummary::Key(_, code, value) => parse_button(code, value).into_iter().collect(),
+            EventSummary::Key(_, code, value) => {
+                let button = parse_button(code, value);
+                if parse_button(code, 1).is_none() {
+                    tracing::debug!(code = code.code(), ?code, value, "unmapped controller key");
+                }
+                button.into_iter().collect()
+            }
             EventSummary::AbsoluteAxis(_, AbsoluteAxisCode::ABS_HAT0X, value) => Self::step(
                 &mut self.horizontal,
                 value,
@@ -230,6 +236,10 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
         KeyCode::KEY_RECORD => ButtonName::Record,
         KeyCode::BTN_START => ButtonName::Start,
         KeyCode::BTN_MODE => ButtonName::Guide,
+        KeyCode(0x225) | KeyCode::BTN_TRIGGER_HAPPY5 => ButtonName::Paddle1,
+        KeyCode(0x227) | KeyCode::BTN_TRIGGER_HAPPY6 => ButtonName::Paddle2,
+        KeyCode(0x224) | KeyCode::BTN_TRIGGER_HAPPY7 => ButtonName::Paddle3,
+        KeyCode(0x226) | KeyCode::BTN_TRIGGER_HAPPY8 => ButtonName::Paddle4,
         KeyCode::BTN_THUMBL => ButtonName::LeftStick,
         KeyCode::BTN_THUMBR => ButtonName::RightStick,
         KeyCode::BTN_DPAD_UP => ButtonName::DpadUp,
@@ -244,6 +254,30 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elite_guide_and_paddles_map_kernel_codes() {
+        for (code, name) in [
+            (KeyCode::BTN_MODE, ButtonName::Guide),
+            (KeyCode(0x225), ButtonName::Paddle1),
+            (KeyCode(0x227), ButtonName::Paddle2),
+            (KeyCode(0x224), ButtonName::Paddle3),
+            (KeyCode(0x226), ButtonName::Paddle4),
+            (KeyCode::BTN_TRIGGER_HAPPY5, ButtonName::Paddle1),
+            (KeyCode::BTN_TRIGGER_HAPPY6, ButtonName::Paddle2),
+            (KeyCode::BTN_TRIGGER_HAPPY7, ButtonName::Paddle3),
+            (KeyCode::BTN_TRIGGER_HAPPY8, ButtonName::Paddle4),
+        ] {
+            let mut pad = DpadHat::default();
+            for (value, state) in [(1, ButtonState::Pressed), (0, ButtonState::Released)] {
+                let event = evdev::InputEvent::new(evdev::EventType::KEY.0, code.code(), value);
+                assert_eq!(
+                    pad.translate(&event.destructure()),
+                    vec![Event::Button { name, state }]
+                );
+            }
+        }
+    }
 
     #[test]
     fn south_button_press_is_a_pressed() {

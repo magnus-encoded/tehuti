@@ -273,7 +273,7 @@ for line in sys.stdin:
             consumes in any::<bool>(),
             configurations in prop::collection::vec((prop::sample::select(vec!["test", "other"]), prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=8)), 0..3),
             events in prop::collection::vec(prop_oneof![
-                (any::<ButtonName>().prop_filter("Guide would open the menu early", |name| *name != ButtonName::Guide), any::<ButtonState>()).prop_map(|(name, state)| Event::Button { name, state }),
+                (any::<ButtonName>().prop_filter("Guide would open the menu early", |name| !matches!(name, ButtonName::Guide | ButtonName::GuideTap)), any::<ButtonState>()).prop_map(|(name, state)| Event::Button { name, state }),
                 (0u64..500).prop_map(|millis| Event::Tick { elapsed: Duration::from_millis(millis) }),
             ], 0..20),
         ) {

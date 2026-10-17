@@ -66,6 +66,12 @@ pub enum ButtonName {
     RightBumper,
     Select,
     Record,
+    KeyboardPtt,
+    GuideTap,
+    Paddle1,
+    Paddle2,
+    Paddle3,
+    Paddle4,
     Start,
     Guide,
     LeftStick,
@@ -175,6 +181,8 @@ pub struct Context {
     speech: std::collections::HashMap<String, MappingAction>,
     unmatched_speech: Option<UnmatchedSpeech>,
     sticks: std::collections::HashMap<StickDirection, MappingAction>,
+    push_to_talk: Vec<ButtonName>,
+    keyboard_push_to_talk: u16,
 }
 
 /// A stick direction beyond half travel.
@@ -218,6 +226,16 @@ impl Context {
         .filter(|(active, _)| *active)
         .filter_map(|(_, direction)| self.sticks.get(&direction).map(MappingAction::action))
         .collect()
+    }
+
+    #[must_use]
+    pub fn push_to_talk(&self, button: ButtonName) -> bool {
+        self.push_to_talk.contains(&button)
+    }
+
+    #[must_use]
+    pub const fn keyboard_push_to_talk(&self) -> u16 {
+        self.keyboard_push_to_talk
     }
 
     #[must_use]
@@ -271,6 +289,14 @@ enum UnmatchedSpeech {
     Type,
 }
 
+fn default_push_to_talk() -> Vec<ButtonName> {
+    vec![ButtonName::Record]
+}
+
+const fn default_keyboard_push_to_talk() -> u16 {
+    119
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContextFile {
@@ -282,6 +308,10 @@ struct ContextFile {
     unmatched_speech: Option<UnmatchedSpeech>,
     #[serde(default)]
     sticks: std::collections::HashMap<StickDirection, MappingAction>,
+    #[serde(default = "default_push_to_talk")]
+    push_to_talk: Vec<ButtonName>,
+    #[serde(default = "default_keyboard_push_to_talk")]
+    keyboard_push_to_talk: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -331,6 +361,12 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     if context.app_id.trim().is_empty() {
         return Err("app_id must not be empty".into());
     }
+    if context.keyboard_push_to_talk == 0
+        || context.keyboard_push_to_talk > 767
+        || matches!(context.keyboard_push_to_talk, 125 | 126)
+    {
+        return Err("keyboard_push_to_talk must be an evdev key code from 1 to 767 other than Meta".into());
+    }
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
     for (mapped, action) in context.speech {
         let normalized = normalize_phrase(&mapped);
@@ -346,6 +382,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         }
     }
     Ok(Context {
+        push_to_talk: context.push_to_talk,
+        keyboard_push_to_talk: context.keyboard_push_to_talk,
         app_id: context.app_id,
         buttons: context.buttons,
         speech,

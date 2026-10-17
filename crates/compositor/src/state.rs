@@ -87,6 +87,7 @@ pub struct Compositor {
     mouse_mode: bool,
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
+    physical_keyboard: crate::keyboard::Keyboard,
     dispatch: tehuti_core::dispatch::State,
     settings_display: crate::settings::Display,
     pub(crate) wallpapers: core::cell::RefCell<crate::wallpaper::Collection>,
@@ -154,7 +155,6 @@ impl Compositor {
         let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
         let keymap = Self::keymap()?;
         let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
-        let text_keys = text_keys(&keymap);
         let mut compositor = Self {
             start_time: Instant::now(),
             pointer: seat.add_pointer(),
@@ -162,6 +162,7 @@ impl Compositor {
             mouse_mode: false,
             space: Space::default(),
             output: None,
+            physical_keyboard: crate::keyboard::Keyboard::default(),
             dispatch: tehuti_core::dispatch::State::default(),
             settings_display: crate::settings::Display::default(),
             wallpapers: core::cell::RefCell::new(crate::wallpaper::Collection::from_env()),
@@ -205,7 +206,7 @@ impl Compositor {
             keyboard,
             controller_session: tehuti_core::controller::State::default(),
             seat,
-            text_keys,
+            text_keys: text_keys(&keymap),
             text_input: crate::text_input::TextInput::new(display),
         };
         compositor.initialize_settings(&keymap)?;
@@ -1186,6 +1187,48 @@ impl Compositor {
         let evdev_code = key.evdev_code();
         let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
         self.tap_keycode(keycode);
+    }
+
+    pub fn physical_key(&mut self, key: u32, pressed: bool) {
+        let ptt = self
+            .dispatch
+            .core()
+            .contexts()
+            .iter()
+            .find(|context| context.app_id() == tehuti_core::GLOBAL_APP_ID)
+            .map_or(119, |context| u32::from(context.keyboard_push_to_talk()));
+        let outputs = self.physical_keyboard.key(key, pressed, ptt);
+        self.keyboard_outputs(outputs);
+    }
+
+    pub fn reset_physical_keyboard(&mut self) {
+        let outputs = self.physical_keyboard.reset();
+        self.keyboard_outputs(outputs);
+    }
+
+    fn keyboard_outputs(&mut self, outputs: Vec<crate::keyboard::Output>) {
+        for output in outputs {
+            match output {
+                crate::keyboard::Output::Button(event) => self.handle(&event),
+                crate::keyboard::Output::Key(code, down) => {
+                    let keyboard = self.keyboard.clone();
+                    let time = self.millis_since_start();
+                    let state = if down {
+                        smithay::backend::input::KeyState::Pressed
+                    } else {
+                        smithay::backend::input::KeyState::Released
+                    };
+                    let _forwarded: Option<()> = keyboard.input(
+                        self,
+                        Keycode::new(code.saturating_add(XKB_KEYCODE_OFFSET)),
+                        state,
+                        SERIAL_COUNTER.next_serial(),
+                        time,
+                        |_, _, _| FilterResult::Forward,
+                    );
+                }
+            }
+        }
     }
 
     fn tap_keycode(&mut self, keycode: Keycode) {
