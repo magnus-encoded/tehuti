@@ -5,7 +5,7 @@ use std::{
     os::fd::{AsFd, BorrowedFd},
 };
 
-use evdev::{Device, EventSummary, KeyCode};
+use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode};
 use tehuti_protocol::{ButtonName, ButtonState, Event};
 use tracing::warn;
 
@@ -29,7 +29,7 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
         .find_map(|mut device| match grab_nonblocking(&mut device) {
-            Ok(()) => Some(EvdevPad(device)),
+            Ok(()) => Some(EvdevPad(device, DpadHat::default())),
             Err(error) => {
                 warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
                 None
@@ -102,12 +102,30 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
 
 /// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
 #[derive(Debug)]
-pub struct EvdevPad(Device);
+pub struct EvdevPad(Device, DpadHat);
 
 impl EvdevPad {
     #[must_use]
     pub fn name(&self) -> &str {
         self.0.name().unwrap_or("unnamed")
+    }
+    /// Samples the current calibrated stick axes, including a 15 percent deadzone.
+    /// # Errors
+    /// The kernel could not read the controller axis state.
+    pub fn sticks(&self) -> io::Result<tehuti_core::dispatch::Sticks> {
+        use evdev::AbsoluteAxisCode;
+        let mut sticks = tehuti_core::dispatch::Sticks::default();
+        for (axis, info) in self.0.get_absinfo()? {
+            let value = stick_axis(info.value(), info.minimum(), info.maximum());
+            match axis {
+                AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
+                AbsoluteAxisCode::ABS_Y => sticks.left.1 = value,
+                AbsoluteAxisCode::ABS_RX => sticks.right.0 = value,
+                AbsoluteAxisCode::ABS_RY => sticks.right.1 = value,
+                _ => {}
+            }
+        }
+        Ok(sticks)
     }
 }
 
@@ -123,24 +141,74 @@ impl InputSource for EvdevPad {
     }
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
-        drain_device(&mut self.0)
+        drain_device(&mut self.0, &mut self.1)
     }
 }
 
 /// Reads every pending event from `device`. Stops at `WouldBlock`.
-fn drain_device(device: &mut Device) -> io::Result<Vec<Event>> {
+fn drain_device(device: &mut Device, hat: &mut DpadHat) -> io::Result<Vec<Event>> {
     match device.fetch_events() {
         Ok(events) => Ok(events
-            .filter_map(|event| {
-                if let EventSummary::Key(_, code, value) = event.destructure() {
-                    parse_button(code, value)
-                } else {
-                    None
-                }
-            })
+            .flat_map(|event| hat.translate(&event.destructure()))
             .collect()),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Vec::new()),
         Err(error) => Err(error),
+    }
+}
+
+/// Turns the d-pad hat axes (`ABS_HAT0X`, `ABS_HAT0Y`) into d-pad button events,
+/// as the Xbox Series pad reports its d-pad that way.
+#[derive(Debug, Default)]
+pub struct DpadHat {
+    horizontal: i32,
+    vertical: i32,
+}
+
+impl DpadHat {
+    /// Translates one evdev event: keys parse as buttons, hat axes as d-pad presses and releases.
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "only keys and the d-pad hat axes matter; every other event kind is ignored"
+    )]
+    pub fn translate(&mut self, event: &EventSummary) -> Vec<Event> {
+        match *event {
+            EventSummary::Key(_, code, value) => parse_button(code, value).into_iter().collect(),
+            EventSummary::AbsoluteAxis(_, AbsoluteAxisCode::ABS_HAT0X, value) => Self::step(
+                &mut self.horizontal,
+                value,
+                ButtonName::DpadLeft,
+                ButtonName::DpadRight,
+            ),
+            EventSummary::AbsoluteAxis(_, AbsoluteAxisCode::ABS_HAT0Y, value) => Self::step(
+                &mut self.vertical,
+                value,
+                ButtonName::DpadUp,
+                ButtonName::DpadDown,
+            ),
+            _ => Vec::new(),
+        }
+    }
+
+    fn step(held: &mut i32, value: i32, negative: ButtonName, positive: ButtonName) -> Vec<Event> {
+        let next = value.signum();
+        let name_of = |direction: i32| match direction {
+            -1 => Some(negative),
+            1 => Some(positive),
+            _ => None,
+        };
+        let previous = core::mem::replace(held, next);
+        if previous == next {
+            return Vec::new();
+        }
+        let released = name_of(previous).map(|name| Event::Button {
+            name,
+            state: ButtonState::Released,
+        });
+        let pressed = name_of(next).map(|name| Event::Button {
+            name,
+            state: ButtonState::Pressed,
+        });
+        released.into_iter().chain(pressed).collect()
     }
 }
 
@@ -189,6 +257,70 @@ mod tests {
         );
     }
 
+    fn hat(axis: AbsoluteAxisCode, value: i32) -> EventSummary {
+        evdev::InputEvent::new(evdev::EventType::ABSOLUTE.0, axis.0, value).destructure()
+    }
+
+    fn button(name: ButtonName, state: ButtonState) -> Event {
+        Event::Button { name, state }
+    }
+
+    #[test]
+    fn hat_axes_press_and_release_dpad_buttons() {
+        let mut pad = DpadHat::default();
+        let x = AbsoluteAxisCode::ABS_HAT0X;
+        let y = AbsoluteAxisCode::ABS_HAT0Y;
+        assert_eq!(
+            pad.translate(&hat(x, -1)),
+            [button(ButtonName::DpadLeft, ButtonState::Pressed)]
+        );
+        assert_eq!(
+            pad.translate(&hat(x, 0)),
+            [button(ButtonName::DpadLeft, ButtonState::Released)]
+        );
+        assert_eq!(
+            pad.translate(&hat(y, -1)),
+            [button(ButtonName::DpadUp, ButtonState::Pressed)]
+        );
+        assert_eq!(
+            pad.translate(&hat(y, 0)),
+            [button(ButtonName::DpadUp, ButtonState::Released)]
+        );
+        assert_eq!(
+            pad.translate(&hat(y, 1)),
+            [button(ButtonName::DpadDown, ButtonState::Pressed)]
+        );
+        assert_eq!(pad.translate(&hat(y, 1)), [], "repeated value is not a new press");
+        assert_eq!(
+            pad.translate(&hat(y, 0)),
+            [button(ButtonName::DpadDown, ButtonState::Released)]
+        );
+        assert_eq!(pad.translate(&hat(x, 0)), [], "release without press");
+    }
+
+    #[test]
+    fn hat_direct_flip_releases_old_then_presses_new() {
+        let mut pad = DpadHat::default();
+        let x = AbsoluteAxisCode::ABS_HAT0X;
+        drop(pad.translate(&hat(x, -1)));
+        assert_eq!(
+            pad.translate(&hat(x, 1)),
+            [
+                button(ButtonName::DpadLeft, ButtonState::Released),
+                button(ButtonName::DpadRight, ButtonState::Pressed)
+            ]
+        );
+    }
+
+    #[test]
+    fn dpad_key_buttons_still_work_through_translate() {
+        let key = evdev::InputEvent::new(evdev::EventType::KEY.0, KeyCode::BTN_DPAD_UP.0, 1).destructure();
+        assert_eq!(
+            DpadHat::default().translate(&key),
+            [button(ButtonName::DpadUp, ButtonState::Pressed)]
+        );
+    }
+
     #[test]
     fn virtual_devices_are_not_physical() {
         use evdev::BusType;
@@ -207,6 +339,19 @@ mod tests {
             is_physical(BusType::BUS_BLUETOOTH, Some(uhid)),
             "Bluetooth pad via BlueZ UHID"
         );
+    }
+
+    #[test]
+    fn stick_calibration_handles_deadzone_extremes_and_invalid_ranges() {
+        assert_eq!(stick_axis(0, -32768, 32767), 0);
+        assert_eq!(stick_axis(4000, -32768, 32767), 0);
+        assert_eq!(stick_axis(-32768, -32768, 32767), -1000);
+        assert_eq!(stick_axis(32767, -32768, 32767), 1000);
+        assert_eq!(stick_axis(128, 0, 255), 0);
+        assert_eq!(stick_axis(0, 0, 255), -1000);
+        assert_eq!(stick_axis(255, 0, 255), 1000);
+        assert_eq!(stick_axis(10, 10, 10), 0);
+        assert_eq!(stick_axis(10, 20, 10), 0);
     }
 
     #[test]
@@ -262,4 +407,20 @@ pub fn discover(state: Discovery, input: DiscoveryInput) -> (Discovery, Option<D
         }
         (state, _) => (state, None),
     }
+}
+
+fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
+    let range = i64::from(maximum).saturating_sub(i64::from(minimum));
+    if range <= 0 {
+        return 0;
+    }
+    let normalized = (i64::from(value)
+        .saturating_sub(i64::from(minimum))
+        .saturating_mul(2000)
+        .checked_div(range)
+        .unwrap_or_default()
+        .saturating_sub(1000))
+    .clamp(-1000, 1000);
+    let travel = normalized.abs().saturating_sub(150).max(0).saturating_mul(1000) / 850;
+    i16::try_from(travel.saturating_mul(normalized.signum())).unwrap_or_default()
 }

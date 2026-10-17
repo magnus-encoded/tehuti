@@ -51,7 +51,7 @@ mod tests {
             let (next, actions) = tehuti_core::step(core::mem::take(core), event);
             *core = next;
             for action in actions {
-                if let Action::Key { key } = action {
+                if let Action::Key { key, .. } = action {
                     output.extend(controller::key_tap().map(|state| (key, state)));
                 }
             }

@@ -8,7 +8,7 @@ pub fn launch(entry_id: &str, socket: &std::ffi::OsStr) -> Result<std::process::
     if entry_id.is_empty() || entry_id.starts_with('-') || entry_id.contains('/') || entry_id.contains('\0') {
         return Err("invalid desktop entry id".into());
     }
-    std::process::Command::new("gtk-launch")
+    crate::child_environment::command("gtk-launch")
         .arg(entry_id)
         .env("WAYLAND_DISPLAY", socket)
         .stdin(std::process::Stdio::null())

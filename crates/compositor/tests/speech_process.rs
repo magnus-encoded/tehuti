@@ -45,7 +45,13 @@ mod speech_process {
                 },
             );
             state = next;
-            assert_eq!(actions, vec![Action::Key { key: KeyName::Enter }]);
+            assert_eq!(
+                actions,
+                vec![Action::Key {
+                    key: KeyName::Enter,
+                    mods: Vec::new()
+                }]
+            );
         }
         let (state, _) = step(
             state,
@@ -54,20 +60,14 @@ mod speech_process {
                 state: ButtonState::Pressed,
             },
         );
-        let (state, _) = step(
-            state,
-            &Event::Button {
-                name: ButtonName::Start,
-                state: ButtonState::Pressed,
-            },
-        );
-        let (_, actions) = step(
+        let (state, actions) = step(
             state,
             &Event::Tick {
                 elapsed: Duration::from_secs(3),
             },
         );
-        assert_eq!(actions, vec![Action::Quit]);
+        assert_eq!(actions, Vec::<Action>::new());
+        assert!(state.menu().is_some(), "the hold opens the system menu");
         assert!(
             began.elapsed() < Duration::from_secs(2),
             "speech polling blocked controller input"
@@ -173,6 +173,19 @@ mod speech_process {
         std::fs::remove_file(marker).unwrap();
     }
 
+    /// Third row down is Log out; each press needs its release for the session layer, including the earlier South.
+    fn log_out_choice() -> Vec<Event> {
+        let button = |name, state| Event::Button { name, state };
+        let mut events = Vec::new();
+        for _row in 0..3 {
+            events.push(button(ButtonName::DpadDown, ButtonState::Pressed));
+            events.push(button(ButtonName::DpadDown, ButtonState::Released));
+        }
+        events.push(button(ButtonName::South, ButtonState::Released));
+        events.push(button(ButtonName::South, ButtonState::Pressed));
+        events
+    }
+
     #[test]
     fn compositor_escape_works_while_speech_child_never_reads_commands() {
         use smithay::reexports::wayland_server::Display;
@@ -207,14 +220,13 @@ mod speech_process {
                 name: ButtonName::Guide,
                 state: ButtonState::Pressed,
             },
-            Event::Button {
-                name: ButtonName::Start,
-                state: ButtonState::Pressed,
-            },
             Event::Tick {
                 elapsed: Duration::from_secs(3),
             },
         ] {
+            pad.push(event);
+        }
+        for event in log_out_choice() {
             pad.push(event);
         }
         let began = Instant::now();

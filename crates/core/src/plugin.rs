@@ -147,6 +147,7 @@ pub fn validate_actions(actions: Vec<Action>, permissions: &[Permission]) -> Res
         let (name, permission) = match action {
             Action::Key { .. } => ("key", Some(Permission::Key)),
             Action::Text { .. } => ("text", Some(Permission::Text)),
+            Action::Keyboard => ("keyboard", None),
             Action::Quit => ("quit", Some(Permission::Quit)),
             Action::SecretRequest { .. } => ("secret_request", None),
             Action::Launch { .. } => ("launch", None),

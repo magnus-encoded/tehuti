@@ -1,5 +1,6 @@
 [package]
 name = "tehuti"
+default-run = "tehuti"
 version = "0.0.0"
 description = "Tehuti compositor: the Smithay edge around the core step"
 edition.workspace = true
@@ -10,12 +11,13 @@ publish = false
 workspace = true
 
 [dependencies]
+fontdue = { version = "0.9", default-features = false, features = ["std"] }
 signal-hook = "0.3"
 serde_json = "1"
 rustix = { version = "1", features = ["fs", "process"] }
 libc = "0.2"
 evdev = "0.13"
-smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_drm", "backend_gbm", "renderer_multi", "use_system_lib", "backend_udev", "backend_session_libseat", "renderer_pixman", "wayland_frontend", "desktop", "renderer_gl"] }
+smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_drm", "backend_gbm", "renderer_multi", "use_system_lib", "backend_udev", "backend_session_libseat", "renderer_pixman", "wayland_frontend", "desktop", "renderer_gl", "xwayland"] }
 tehuti-core = { path = "../core" }
 tehuti-protocol = { path = "../protocol" }
 thiserror = "2.0.21"
@@ -23,6 +25,8 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 font8x8 = "0.3"
 chrono = "0.4"
+png = "0.18"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -30,4 +34,4 @@ proptest = "1"
 tehuti-protocol = { path = "../protocol", features = ["arbitrary"] }
 toml = "1.1"
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }

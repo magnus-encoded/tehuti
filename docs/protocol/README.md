@@ -91,7 +91,9 @@ All names and enum values are case sensitive.
 
 Record (Share) presses and releases control push-to-talk and never reach plugins.
 Guide presses and releases never reach plugins. Holding Guide for three
-seconds requests Quit; releasing early cancels the hold. Other buttons still
+seconds opens the core's system menu; releasing early cancels the hold. While
+the menu is open it takes every button and speech input, and no plugin sees
+any. The d-pad moves, South selects, East or Guide closes. Other buttons still
 route while Guide is held. South presses send Enter and never reach plugins;
 South releases can reach them. Tick is internal and never crosses the wire.
 
@@ -115,7 +117,7 @@ accepted or stale. If a pending decision contains an invalid action, it replies
 with `error` code -32602 and releases that event's captured fallback:
 
 ```json
-{"jsonrpc":"2.0","id":42,"error":{"code":-32602,"message":"action 0 (key): unknown variant `Tab`"}}
+{"jsonrpc":"2.0","id":42,"error":{"code":-32602,"message":"action 0 (key): unknown variant `Hyper`"}}
 ```
 
 Action submissions share the event deadline and exactly-once handling of legacy
@@ -176,9 +178,25 @@ Key actions press and release one key in the currently focused Wayland client:
 {"type":"key","key":"tab"}
 ```
 
-Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, in lowercase. Text delivers Unicode through enabled text-input-v3,
-with keyboard taps as fallback:
+Keys are `a`–`z`, `0`–`9`, `minus`, `equal`, `left_bracket`,
+`right_bracket`, `semicolon`, `apostrophe`, `grave`, `comma`, `period`,
+`slash`, `backslash`, `f1`–`f12`, `home`, `end`, `page_up`, `page_down`,
+`insert`, `delete`, `enter`, `escape`, `space`, `tab`, `backspace`,
+`up`, `down`, `left`, and `right`. Capitalized key labels such as `Left` and
+`F5` are accepted too. Optional `mods` holds `ctrl`, `alt`, `shift`, or `super`
+while the key is tapped, then releases them:
+
+```json
+{"type":"key","key":"l","mods":["ctrl"]}
+```
+
+Keys and modifiers resolve through the active XKB keymap. A shortcut whose
+keysym is absent has no effect. Context mappings use the same fields, for
+example `{ key = "left", mods = ["alt"] }`. The shipped Firefox context maps
+East to Back, North to the address bar, and the bumpers to previous/next tab;
+speech commands are "new tab", "reload", and "close tab".
+
+Text delivers Unicode through enabled text-input-v3, with keyboard taps as fallback:
 
 ```json
 {"type":"text","text":"Hello ✓"}
@@ -190,6 +208,35 @@ JSON escapes. Text-input commits split at character boundaries into at most
 4000 bytes. Keyboard fallback skips characters absent from the keymap and
 logs them; a newline becomes Enter. Without a focused client, key and text
 actions have no effect.
+
+The compositor keyboard opens when the focused text-input-v3 client commits
+`enable`, or through a context mapping:
+
+```toml
+[buttons.left_stick]
+keyboard = "open"
+```
+
+`{"type":"keyboard"}` is reserved for core contexts. Each stick selects a key
+on its QWERTY half; its bumper types it. Neutral keeps the selection. North
+cycles letters, capitals and symbols; West sends Backspace, East closes, and
+South commits a speech draft and sends Enter, shown as "go". Guide and Record retain their reserved actions. A committed
+`disable`, focus loss or text-input destruction closes the keyboard. Ordinary
+text-input commits preserve an East dismissal; an explicit enable reopens it.
+
+Typed speech while the keyboard is open enters a visible draft. Bumpers insert
+at its cursor, D-pad left/right moves by Unicode character, and West deletes
+before the cursor. Enter or South commits once; closing discards the draft.
+Speech commands still execute their mappings. The URL row contains `.`, `/`,
+`:`, `-`, `_` and `.com` on every layer.
+
+The keyboard uses the same text-input-v3 delivery and keymap fallback as `text`.
+Its characters and key taps never enter the log, including unavailable fallback
+characters. Vector keys and font outlines rasterize with coverage at the output
+mode's resolution. The overlay sits above the powerline bar and moves to the top
+when the client's committed cursor rectangle overlaps it. Completion providers
+in #114 can consume the keyboard's text effects at commit rate; completion is
+not implemented.
 
 Contexts can launch an installed desktop entry, close the focused window, or
 show an overlay notice. Both pressed-button and exact phrase mappings accept
@@ -356,8 +403,9 @@ Focus changes to `test` while initialization is pending.
 | Plugin → stdout | `{"jsonrpc":"2.0","method":"actions","params":{"actions":[{"type":"key","key":"space"}]}}` |
 | Core → stdin | `{"jsonrpc":"2.0","method":"focus","params":{"app_id":null,"title":""}}` |
 
-The user holds Guide for three seconds. No Guide or Tick message is sent;
-the core requests Quit and terminates the plugin during teardown.
+The user holds Guide for three seconds and chooses Log out in the system menu.
+No Guide or Tick message is sent; the core requests Quit and terminates the
+plugin during teardown.
 For a runnable button remapping plugin, see
 [east-to-tab.py](../../examples/plugins/east-to-tab.py). No Tehuti library is
 required: use your language's JSON library and line input/output.

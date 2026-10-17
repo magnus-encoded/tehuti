@@ -42,32 +42,45 @@ mod synthetic_pad {
         xdg_wm_base::{self, XdgWmBase},
     };
 
+    fn menu_is_open(compositor: &Compositor) -> bool {
+        compositor
+            .visible_notice_text()
+            .is_some_and(|text| text.starts_with("SYSTEM MENU"))
+    }
+
     #[test]
-    fn disconnect_and_seat_pause_cancel_escape_before_reconnect() {
+    fn disconnect_and_seat_pause_cancel_the_hold_and_close_the_menu() {
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
-        for first in [ButtonName::Guide, ButtonName::Start] {
-            for name in [ButtonName::Start, ButtonName::Guide] {
-                compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
-                    name,
-                    state: ButtonState::Pressed,
-                }));
-            }
+        for _round in 0..2 {
+            compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Pressed,
+            }));
             compositor.handle(&Event::Tick {
                 elapsed: Duration::from_millis(2999),
             });
             compositor.controller_input(tehuti_core::controller::Input::Disconnected);
             compositor.controller_input(tehuti_core::controller::Input::Reconnected);
-            compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
-                name: first,
-                state: ButtonState::Pressed,
-            }));
             compositor.handle(&Event::Tick {
                 elapsed: Duration::from_secs(4),
             });
-            assert!(!compositor.quit_requested());
+            assert!(
+                !menu_is_open(&compositor),
+                "the hold does not survive a disconnect"
+            );
+            compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Pressed,
+            }));
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_secs(3),
+            });
+            assert!(menu_is_open(&compositor));
             compositor.controller_input(tehuti_core::controller::Input::Disconnected);
             compositor.controller_input(tehuti_core::controller::Input::Reconnected);
+            assert!(!menu_is_open(&compositor), "a disconnect closes the menu");
+            assert!(!compositor.quit_requested());
         }
     }
 
@@ -77,6 +90,13 @@ mod synthetic_pad {
     #[derive(Debug, Default)]
     struct App {
         keys: Vec<(u32, KeyState)>,
+        clicks: Vec<(u32, wayland_client::protocol::wl_pointer::ButtonState)>,
+        pointer_focused: Option<wayland_client::backend::ObjectId>,
+        axes: Vec<(
+            wayland_client::backend::ObjectId,
+            wayland_client::protocol::wl_pointer::Axis,
+            f64,
+        )>,
         focused: Option<wayland_client::backend::ObjectId>,
         close_requested: bool,
         text: String,
@@ -85,6 +105,7 @@ mod synthetic_pad {
         pending_text: String,
         suppress_enable: bool,
         modifiers: (u32, u32, u32),
+        key_modifiers: Vec<(u32, u32)>,
         dmabuf_modifiers: Vec<(u32, u64)>,
         dmabuf_main_device: Vec<u8>,
         dmabuf_import_result: Option<bool>,
@@ -285,6 +306,64 @@ mod synthetic_pad {
         }
     }
 
+    use wayland_protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
+
+    delegate_noop!(App: ignore WpViewporter);
+    delegate_noop!(App: ignore WpViewport);
+
+    fn viewporter_client(stream: UnixStream) -> Result<(), String> {
+        let connection = Connection::from_socket(stream).map_err(|error| error.to_string())?;
+        let (globals, mut queue) =
+            registry_queue_init::<App>(&connection).map_err(|error| error.to_string())?;
+        let handle = queue.handle();
+        let compositor: WlCompositor = globals
+            .bind(&handle, 1..=4, ())
+            .map_err(|error| error.to_string())?;
+        let viewporter: WpViewporter = globals
+            .bind(&handle, 1..=1, ())
+            .map_err(|error| error.to_string())?;
+        let mut app = App::default();
+        let surface = compositor.create_surface(&handle, ());
+        let viewport = viewporter.get_viewport(&surface, &handle, ());
+        viewport.set_source(0.0, 0.0, 8.0, 8.0);
+        viewport.set_destination(32, 32);
+        surface.commit();
+        let _first = queue.roundtrip(&mut app).map_err(|error| error.to_string())?;
+        viewport.set_destination(-5, -5);
+        queue
+            .roundtrip(&mut app)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn viewporter_is_advertised_and_rejects_invalid_destinations() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let client_thread = thread::spawn(move || viewporter_client(client));
+        let started = Instant::now();
+        while !client_thread.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "viewporter client timed out"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let result = client_thread.join().unwrap();
+        let error = result.expect_err("negative destination is a protocol error, binding itself succeeded");
+        assert!(
+            error.contains("viewport") || error.contains("Protocol"),
+            "{error}"
+        );
+    }
+
     impl Dispatch<WlRegistry, GlobalListContents> for App {
         fn event(
             _: &mut Self,
@@ -378,6 +457,7 @@ mod synthetic_pad {
                 app.keys.push((key, state));
                 if state == KeyState::Pressed {
                     use smithay::input::keyboard::xkb;
+                    app.key_modifiers.push((key, app.modifiers.0));
                     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
                     let keymap = xkb::Keymap::new_from_string(
                         &context,
@@ -459,6 +539,297 @@ mod synthetic_pad {
             ) {
                 app.close_requested = true;
             }
+        }
+    }
+
+    impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for App {
+        fn event(
+            app: &mut Self,
+            _: &wayland_client::protocol::wl_pointer::WlPointer,
+            event: wayland_client::protocol::wl_pointer::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            use wayland_client::protocol::wl_pointer::Event as PointerEvent;
+            if let PointerEvent::Enter { surface, .. } = &event {
+                app.pointer_focused = Some(wayland_client::Proxy::id(surface));
+            }
+            if matches!(&event, PointerEvent::Leave { .. }) {
+                app.pointer_focused = None;
+            }
+            if let PointerEvent::Axis {
+                axis: WEnum::Value(axis),
+                value,
+                ..
+            } = &event
+            {
+                app.axes.push((
+                    app.pointer_focused.clone().expect("axis has pointer focus"),
+                    *axis,
+                    *value,
+                ));
+            }
+            if let wayland_client::protocol::wl_pointer::Event::Button {
+                button,
+                state: WEnum::Value(state),
+                ..
+            } = event
+            {
+                app.clicks.push((button, state));
+            }
+        }
+    }
+
+    delegate_noop!(App: ignore wayland_client::protocol::wl_shm::WlShm);
+    delegate_noop!(App: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
+
+    fn assert_pointer_scroll_target(
+        app: &App,
+        surface: &WlSurface,
+        other_surface: &WlSurface,
+        mouse_mode: bool,
+    ) {
+        let target = if mouse_mode { surface } else { other_surface };
+        assert_eq!(
+            app.axes,
+            vec![(
+                wayland_client::Proxy::id(target),
+                wayland_client::protocol::wl_pointer::Axis::VerticalScroll,
+                7.5
+            )]
+        );
+        assert_eq!(app.focused, Some(wayland_client::Proxy::id(other_surface)));
+        assert_eq!(app.pointer_focused, Some(wayland_client::Proxy::id(surface)));
+    }
+
+    fn run_pointer_client(
+        stream: UnixStream,
+        ready: &mpsc::Sender<()>,
+        scroll_mouse_mode: Option<bool>,
+    ) -> App {
+        use std::os::fd::AsFd;
+        use wayland_client::protocol::wl_shm::{Format, WlShm};
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+        let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+        let seat: WlSeat = globals.bind(&handle, 1..=5, ()).unwrap();
+        let _pointer = seat.get_pointer(&handle, ());
+        let _keyboard = seat.get_keyboard(&handle, ());
+        let surface = compositor.create_surface(&handle, ());
+        let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
+        let toplevel = xdg_surface.get_toplevel(&handle, ());
+        toplevel.set_app_id("pointer-test".into());
+        surface.commit();
+        let mut app = App::default();
+        let _configured = queue.roundtrip(&mut app).unwrap();
+        let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(1280 * 720 * 4).unwrap();
+        let pool = shm.create_pool(file.as_fd(), 1280 * 720 * 4, &handle, ());
+        let buffer = pool.create_buffer(0, 1280, 720, 1280 * 4, Format::Argb8888, &handle, ());
+        surface.attach(Some(&buffer), 0, 0);
+        surface.commit();
+        let _mapped = queue.roundtrip(&mut app).unwrap();
+        let other_surface = compositor.create_surface(&handle, ());
+        let other_xdg = wm_base.get_xdg_surface(&other_surface, &handle, ());
+        let other_toplevel = other_xdg.get_toplevel(&handle, ());
+        other_toplevel.set_app_id("other-window".into());
+        other_surface.commit();
+        let _other_configured = queue.roundtrip(&mut app).unwrap();
+        other_surface.attach(Some(&buffer), 0, 0);
+        other_surface.commit();
+        let _other_mapped = queue.roundtrip(&mut app).unwrap();
+        assert_eq!(
+            app.focused,
+            Some(wayland_client::Proxy::id(&other_surface)),
+            "new window starts focused"
+        );
+        ready.send(()).unwrap();
+        while if scroll_mouse_mode.is_some() {
+            app.axes.is_empty()
+        } else {
+            app.clicks.len() < 2
+        } {
+            let _events = queue.blocking_dispatch(&mut app).unwrap();
+        }
+        let _finished = queue.roundtrip(&mut app).unwrap();
+        if let Some(mouse_mode) = scroll_mouse_mode {
+            assert_pointer_scroll_target(&app, &surface, &other_surface, mouse_mode);
+            return app;
+        }
+        assert_eq!(
+            app.focused,
+            Some(wayland_client::Proxy::id(&surface)),
+            "click focuses the window under the pointer"
+        );
+        app
+    }
+
+    #[test]
+    fn mouse_mode_click_reaches_the_surface_under_the_pointer() {
+        use wayland_client::protocol::wl_pointer::ButtonState as PointerState;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || run_pointer_client(client, &sender, None));
+        let began = Instant::now();
+        let mut sent = false;
+        while !client.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "pointer client timed out"
+            );
+            let _events = display.dispatch_clients(&mut compositor).unwrap();
+            if !sent && receiver.try_recv().is_ok() {
+                let mut pad = SyntheticPad::default();
+                pad.push(Event::Button {
+                    name: ButtonName::Select,
+                    state: ButtonState::Pressed,
+                });
+                pad.push(Event::Tick {
+                    elapsed: Duration::from_secs(2),
+                });
+                pad.push(Event::Button {
+                    name: ButtonName::Select,
+                    state: ButtonState::Released,
+                });
+                for state in [ButtonState::Pressed, ButtonState::Released] {
+                    pad.push(Event::Button {
+                        name: ButtonName::South,
+                        state,
+                    });
+                }
+                route(&mut compositor, &mut pad).unwrap();
+                assert!(
+                    compositor.cursor_location().is_some(),
+                    "mouse mode draws a cursor"
+                );
+                assert_eq!(compositor.visible_notice_text().as_deref(), Some("MOUSE MODE"));
+                sent = true;
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let app = client.join().unwrap();
+        assert_eq!(
+            app.clicks,
+            vec![(0x110, PointerState::Pressed), (0x110, PointerState::Released)]
+        );
+        assert!(app.keys.is_empty(), "A clicks instead of sending Enter");
+    }
+
+    fn toggle_pointer_mode(compositor: &mut Compositor) {
+        let mut pad = SyntheticPad::default();
+        pad.push(Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Pressed,
+        });
+        pad.push(Event::Tick {
+            elapsed: Duration::from_secs(2),
+        });
+        pad.push(Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Released,
+        });
+        route(compositor, &mut pad).unwrap();
+    }
+
+    proptest! {
+        #[test]
+        #[expect(clippy::float_arithmetic, reason = "compares Smithay pointer coordinates")]
+        fn fine_stick_moves_uniformly_at_frame_boundaries(
+            frame_nanos in prop::sample::select(vec![16_666_667_u64, 6_944_444]),
+            wakeups in prop::collection::vec(1_u64..900_000, 1..8),
+            negative in prop::bool::ANY,
+        ) {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            toggle_pointer_mode(&mut compositor);
+            compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+                left: (if negative { -200 } else { 200 }, 0),
+                right: (0, 0),
+            });
+            let sign = if negative { -1.0 } else { 1.0 };
+            let expected = Duration::from_nanos(frame_nanos).as_secs_f64() * 40.0 * sign;
+            for frame in 0..6 {
+                let before = compositor.cursor_location().unwrap();
+                let mut elapsed = 0_u64;
+                if frame % 2 == 0 {
+                    for nanos in &wakeups {
+                        compositor.handle(&Event::Tick { elapsed: Duration::from_nanos(*nanos) });
+                        elapsed = elapsed.saturating_add(*nanos);
+                    }
+                }
+                compositor.handle(&Event::Tick {
+                    elapsed: Duration::from_nanos(frame_nanos.saturating_sub(elapsed)),
+                });
+                let after = compositor.cursor_location().unwrap();
+                prop_assert!((after.0 - before.0 - expected).abs() < 0.000_008,
+                    "each frame covers the same distance despite intervening input wakeups");
+                prop_assert!((after.1 - before.1).abs() < f64::EPSILON, "horizontal motion keeps y fixed");
+            }
+        }
+    }
+
+    #[test]
+    fn right_stick_scroll_targets_keyboard_focus_and_mouse_mode_targets_pointer_focus() {
+        for mouse_mode in [false, true] {
+            let mut display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let (server, client) = UnixStream::pair().unwrap();
+            let _client = display
+                .handle()
+                .insert_client(server, Arc::new(ClientState::default()))
+                .unwrap();
+            let (sender, receiver) = mpsc::channel();
+            let client = thread::spawn(move || run_pointer_client(client, &sender, Some(mouse_mode)));
+            let began = Instant::now();
+            let mut sent = false;
+            while !client.is_finished() {
+                assert!(
+                    began.elapsed() < Duration::from_secs(5),
+                    "scroll client timed out"
+                );
+                let _events = display.dispatch_clients(&mut compositor).unwrap();
+                if !sent && receiver.try_recv().is_ok() {
+                    let mut pad = SyntheticPad::default();
+                    toggle_pointer_mode(&mut compositor);
+                    let cursor = compositor.cursor_location();
+                    if !mouse_mode {
+                        toggle_pointer_mode(&mut compositor);
+                    }
+                    compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+                        left: (0, 0),
+                        right: (0, 1000),
+                    });
+                    pad.push(Event::Tick {
+                        elapsed: Duration::from_millis(10),
+                    });
+                    route(&mut compositor, &mut pad).unwrap();
+                    compositor.sample_sticks(tehuti_core::dispatch::Sticks::default());
+                    if !mouse_mode {
+                        assert_eq!(compositor.cursor_location(), None);
+                        toggle_pointer_mode(&mut compositor);
+                    }
+                    assert_eq!(
+                        compositor.cursor_location(),
+                        cursor,
+                        "scroll preserves cursor position"
+                    );
+                    sent = true;
+                }
+                display.flush_clients().unwrap();
+                thread::sleep(Duration::from_millis(1));
+            }
+            let _app = client.join().unwrap();
         }
     }
 
@@ -1139,15 +1510,12 @@ mod synthetic_pad {
             name: ButtonName::Guide,
             state: ButtonState::Pressed,
         });
-        pad.push(Event::Button {
-            name: ButtonName::Start,
-            state: ButtonState::Pressed,
-        });
         pad.push(Event::Tick {
             elapsed: Duration::from_millis(2999),
         });
         route(&mut compositor, &mut pad).unwrap();
         assert!(!compositor.quit_requested());
+        assert!(!menu_is_open(&compositor));
         assert!(!pad.is_released());
 
         let mut event_loop: EventLoop<()> = EventLoop::try_new().unwrap();
@@ -1155,6 +1523,13 @@ mod synthetic_pad {
         pad.push(Event::Tick {
             elapsed: Duration::from_millis(1),
         });
+        route(&mut compositor, &mut pad).unwrap();
+        assert!(
+            menu_is_open(&compositor),
+            "holding Guide opens the menu, not a quit"
+        );
+        assert!(!compositor.quit_requested());
+        push_log_out_choice(&mut pad);
         let mut iterations = 0;
         event_loop
             .run(Some(Duration::ZERO), &mut (), |()| {
@@ -1166,6 +1541,22 @@ mod synthetic_pad {
             .unwrap();
         assert!(pad.is_released(), "the pad is released before the loop exits");
         assert!(compositor.quit_requested());
+    }
+
+    /// Third row down is Log out; South chooses it.
+    fn push_log_out_choice(pad: &mut SyntheticPad) {
+        for _row in 0..3 {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button {
+                    name: ButtonName::DpadDown,
+                    state,
+                });
+            }
+        }
+        pad.push(Event::Button {
+            name: ButtonName::South,
+            state: ButtonState::Pressed,
+        });
     }
 
     fn load_test_context(compositor: &mut Compositor, text: Option<&str>) {
@@ -1518,12 +1909,9 @@ else:
             name: ButtonName::Guide,
             state: ButtonState::Pressed,
         });
-        pad.push(Event::Button {
-            name: ButtonName::Start,
-            state: ButtonState::Pressed,
-        });
         route(compositor, pad).unwrap();
         let escape_started = Instant::now();
+        let mut chosen = false;
         let mut previous_tick = escape_started;
         let signal = event_loop.get_signal();
         event_loop
@@ -1537,6 +1925,10 @@ else:
                     elapsed: now.duration_since(previous_tick),
                 });
                 previous_tick = now;
+                if !chosen && menu_is_open(compositor) {
+                    chosen = true;
+                    push_log_out_choice(pad);
+                }
                 route(compositor, pad).unwrap();
                 tehuti::input::finish_quit(compositor, pad, &signal).unwrap();
             })
@@ -1552,29 +1944,28 @@ else:
         text_state: ClientTextState,
         plugin: bool,
     ) -> App {
-        let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
-        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
-        if plugin {
-            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
-            compositor.set_plugins(tehuti::plugins::install(&event_loop, &directory, |state| state).unwrap());
-        }
-        load_test_context(&mut compositor, text);
-        if plugin {
-            compositor.set_contexts(vec![
-                tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
-            ]);
-        }
-        let (server_end, client_end) = UnixStream::pair().unwrap();
-        let _client = display
-            .handle()
-            .insert_client(server_end, Arc::new(ClientState::default()))
-            .unwrap();
-        let (ready_sender, ready_receiver) = mpsc::channel();
-        let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
+        exchange_keyboard(app_id, text, text_state, plugin, false, false)
+    }
 
+    fn keyboard_test_pad(plugin: bool, osk: bool, draft: bool) -> SyntheticPad {
         let mut pad = SyntheticPad::default();
-        for name in if plugin {
+        for name in if draft {
+            vec![
+                ButtonName::DpadLeft,
+                ButtonName::DpadLeft,
+                ButtonName::West,
+                ButtonName::LeftBumper,
+                ButtonName::South,
+            ]
+        } else if osk {
+            vec![
+                ButtonName::LeftBumper,
+                ButtonName::RightBumper,
+                ButtonName::North,
+                ButtonName::LeftBumper,
+                ButtonName::South,
+            ]
+        } else if plugin {
             vec![ButtonName::East]
         } else {
             vec![ButtonName::East, ButtonName::Start, ButtonName::South]
@@ -1588,6 +1979,99 @@ else:
                 state: ButtonState::Released,
             });
         }
+        pad
+    }
+
+    fn prepare_test_keyboard(compositor: &mut Compositor, osk: bool, text_state: ClientTextState) {
+        if osk {
+            if matches!(text_state, ClientTextState::Enabled) {
+                assert!(compositor.osk_open(), "focused enabled input opens the keyboard");
+            } else {
+                assert!(!compositor.osk_open());
+                compositor.handle(&Event::Button {
+                    name: ButtonName::Start,
+                    state: ButtonState::Pressed,
+                });
+                assert!(
+                    compositor.osk_open(),
+                    "context mapping opens the fallback keyboard"
+                );
+            }
+            compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+                left: (-1000, -1000),
+                right: (1000, -1000),
+            });
+        } else if compositor.osk_open() {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                compositor.handle(&Event::Button {
+                    name: ButtonName::East,
+                    state,
+                });
+            }
+        }
+    }
+
+    fn exercise_test_keyboard(
+        compositor: &mut Compositor,
+        pad: &mut SyntheticPad,
+        osk: bool,
+        text_state: ClientTextState,
+        draft: bool,
+    ) {
+        prepare_test_keyboard(compositor, osk, text_state);
+        if draft {
+            compositor.handle(&Event::Speech {
+                text: tehuti_protocol::Text::new("hello".into()).unwrap(),
+            });
+            assert_eq!(compositor.osk_draft(), Some("hello "));
+            compositor.handle(&Event::Speech {
+                text: tehuti_protocol::Text::new("navigate".into()).unwrap(),
+            });
+            assert_eq!(
+                compositor.osk_draft(),
+                Some("hello "),
+                "speech commands preserve the draft"
+            );
+        }
+        route(compositor, pad).unwrap();
+    }
+
+    fn exchange_keyboard(
+        app_id: &'static str,
+        text: Option<&str>,
+        text_state: ClientTextState,
+        plugin: bool,
+        osk: bool,
+        draft: bool,
+    ) -> App {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        if plugin {
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+            compositor.set_plugins(tehuti::plugins::install(&event_loop, &directory, |state| state).unwrap());
+        }
+        load_test_context(&mut compositor, text);
+        if osk {
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context("app_id = 'test'\nunmatched_speech = 'type'\n[buttons.start]\nkeyboard = 'open'\n[speech]\n'navigate' = { key = 'tab' }")
+                    .unwrap(),
+            ]);
+        }
+        if plugin {
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
+            ]);
+        }
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
+
+        let mut pad = keyboard_test_pad(plugin, osk, draft);
         let mut pressed = false;
         let mut client_ready = false;
         let started = Instant::now();
@@ -1600,7 +2084,7 @@ else:
             event_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
             client_ready |= ready_receiver.try_recv().is_ok();
             if !pressed && client_ready && (!plugin || compositor.initialized_plugins() == 1) {
-                route(&mut compositor, &mut pad).unwrap();
+                exercise_test_keyboard(&mut compositor, &mut pad, osk, text_state, draft);
                 pressed = true;
             }
             display.flush_clients().unwrap();
@@ -1608,6 +2092,339 @@ else:
         }
 
         client.join().unwrap()
+    }
+
+    #[test]
+    fn osk_follows_committed_text_input_lifecycle_and_east_stays_closed() {
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let (ack_sender, ack_receiver) = mpsc::channel();
+        let worker = thread::spawn(move || osk_lifecycle_client(client, &sender, &ack_receiver));
+        let start = Instant::now();
+        let mut stages = 0;
+        while !worker.is_finished() {
+            assert!(start.elapsed() < Duration::from_secs(10));
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            if let Ok((expected, rule)) = receiver.try_recv() {
+                assert_eq!(compositor.osk_open(), expected, "{rule}");
+                if stages == 0 {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        compositor.handle(&Event::Button {
+                            name: ButtonName::East,
+                            state,
+                        });
+                    }
+                    assert!(!compositor.osk_open());
+                }
+                stages += 1;
+                ack_sender.send(()).unwrap();
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        worker.join().unwrap();
+        assert_eq!(stages, 9);
+    }
+
+    fn osk_lifecycle_client(
+        stream: UnixStream,
+        sender: &mpsc::Sender<(bool, &'static str)>,
+        ack: &mpsc::Receiver<()>,
+    ) {
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+        let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+        let seat: WlSeat = globals.bind(&handle, 1..=1, ()).unwrap();
+        let manager: ZwpTextInputManagerV3 = globals.bind(&handle, 1..=1, ()).unwrap();
+        let input = manager.get_text_input(&seat, &handle, ());
+        let surface = compositor.create_surface(&handle, ());
+        let shell = wm_base.get_xdg_surface(&surface, &handle, ());
+        let toplevel = shell.get_toplevel(&handle, ());
+        toplevel.set_app_id("osk-lifecycle".into());
+        surface.commit();
+        let mut app = App::default();
+        let mut check = |expected, rule| {
+            for _ in 0..3 {
+                let _dispatched = queue.roundtrip(&mut app).unwrap();
+            }
+            sender.send((expected, rule)).unwrap();
+            ack.recv_timeout(Duration::from_secs(5)).unwrap();
+        };
+        check(true, "focused enable opens");
+        input.commit();
+        check(false, "ordinary commit preserves East dismissal");
+        input.enable();
+        input.commit();
+        check(true, "explicit enable reopens");
+        input.disable();
+        check(true, "disable waits for commit");
+        input.commit();
+        check(false, "committed disable closes");
+        input.enable();
+        input.commit();
+        check(true, "reenable opens");
+        input.destroy();
+        check(false, "destroy closes");
+        let _replacement = manager.get_text_input(&seat, &handle, ());
+        check(true, "replacement focused instance opens");
+        toplevel.destroy();
+        shell.destroy();
+        surface.destroy();
+        check(false, "focus loss closes");
+    }
+
+    #[test]
+    fn osk_bumpers_deliver_to_text_input_and_keymap_clients_without_logging_keys() {
+        for text_state in [
+            ClientTextState::Enabled,
+            ClientTextState::Absent,
+            ClientTextState::Disabled,
+        ] {
+            let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let writer = LogWriter(logs.clone());
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(move || writer.clone())
+                .finish();
+            let app = tracing::subscriber::with_default(subscriber, || {
+                exchange_keyboard("test", None, text_state, false, true, false)
+            });
+            if matches!(text_state, ClientTextState::Enabled) {
+                assert_eq!(app.text, "qpQ");
+                assert_eq!(app.keyboard_text, "\r");
+            } else {
+                assert_eq!(app.text, "");
+                assert_eq!(app.keyboard_text, "qpQ\r");
+            }
+            let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+            for forbidden in [
+                "qpQ",
+                "character=",
+                "key delivered",
+                "text delivered",
+                "text character unavailable",
+                "Handling keystroke",
+                "sym=",
+            ] {
+                assert!(!output.contains(forbidden), "{output}");
+            }
+        }
+    }
+
+    fn exchange_shortcuts(
+        context: tehuti_protocol::Context,
+        buttons: &[ButtonName],
+        phrases: &[&str],
+    ) -> App {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![context]);
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker =
+            thread::spawn(move || run_client(client_end, "firefox", ClientTextState::Absent, &sender));
+        let mut sent = false;
+        let began = Instant::now();
+        while !worker.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "shortcut delivery stalled"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            if !sent && receiver.try_recv().is_ok() {
+                sent = true;
+                for &name in buttons {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        compositor.handle(&Event::Button { name, state });
+                    }
+                }
+                for &phrase in phrases {
+                    compositor.handle(&Event::Speech {
+                        text: tehuti_protocol::Text::new(phrase.into()).unwrap(),
+                    });
+                }
+                compositor.handle(&Event::Button {
+                    name: ButtonName::South,
+                    state: ButtonState::Pressed,
+                });
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        worker.join().unwrap()
+    }
+
+    #[test]
+    fn firefox_shortcuts_hold_modifiers_during_keys_and_release_everything() {
+        if std::env::var_os("TEHUTI_SHORTCUT_LAYOUT_TEST").is_none() {
+            for variant in ["", "dvorak"] {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "synthetic_pad::firefox_shortcuts_hold_modifiers_during_keys_and_release_everything",
+                        "--test-threads=1",
+                    ])
+                    .env("TEHUTI_SHORTCUT_LAYOUT_TEST", variant)
+                    .env("XKB_DEFAULT_LAYOUT", "us")
+                    .env("XKB_DEFAULT_VARIANT", variant)
+                    .env(
+                        "XKB_DEFAULT_OPTIONS",
+                        if variant.is_empty() { "" } else { "ctrl:swapcaps" },
+                    )
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "shortcut delivery failed for {variant}");
+            }
+            return;
+        }
+        let dvorak = std::env::var("TEHUTI_SHORTCUT_LAYOUT_TEST").unwrap() == "dvorak";
+        let app = exchange_shortcuts(
+            tehuti_protocol::parse_context(include_str!("../../../dist/contexts/firefox/context.toml"))
+                .unwrap(),
+            &[
+                ButtonName::East,
+                ButtonName::North,
+                ButtonName::LeftBumper,
+                ButtonName::RightBumper,
+            ],
+            &["new tab", "reload", "close tab"],
+        );
+        let targets: Vec<_> = app
+            .key_modifiers
+            .into_iter()
+            .filter(|(key, _)| ![29, 42, 56, 58, 125].contains(key))
+            .collect();
+        assert_eq!(
+            targets,
+            vec![
+                (105, 8),
+                (if dvorak { 25 } else { 38 }, 4),
+                (15, 5),
+                (15, 4),
+                (if dvorak { 37 } else { 20 }, 4),
+                (63, 0),
+                (if dvorak { 51 } else { 17 }, 4),
+                (28, 0)
+            ]
+        );
+        assert_eq!(app.modifiers, (0, 0, 0));
+        let mut held = std::collections::HashSet::new();
+        for (key, state) in app.keys {
+            if state == KeyState::Pressed {
+                assert!(held.insert(key));
+            } else {
+                assert!(held.remove(&key));
+            }
+        }
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn native_shortcuts_parse_and_deliver_exact_press_release_sequences() {
+        let shortcuts: &[(&str, &[i32])] = &[
+            (r#"{ key = "left", mods = ["alt"] }"#, &[56, 105, -105, -56]),
+            (r#"{ key = "right", mods = ["alt"] }"#, &[56, 106, -106, -56]),
+            (r#"{ key = "0", mods = ["ctrl"] }"#, &[29, 11, -11, -29]),
+            (r#"{ key = "equal", mods = ["ctrl"] }"#, &[29, 13, -13, -29]),
+            (r#"{ key = "minus", mods = ["ctrl"] }"#, &[29, 12, -12, -29]),
+            (r#"{ key = "f", mods = ["ctrl"] }"#, &[29, 33, -33, -29]),
+            (r#"{ key = "l", mods = ["ctrl"] }"#, &[29, 38, -38, -29]),
+            (r#"{ key = "t", mods = ["ctrl"] }"#, &[29, 20, -20, -29]),
+            (r#"{ key = "w", mods = ["ctrl"] }"#, &[29, 17, -17, -29]),
+            (r#"{ key = "tab", mods = ["ctrl"] }"#, &[29, 15, -15, -29]),
+            (
+                r#"{ key = "tab", mods = ["ctrl", "shift"] }"#,
+                &[29, 42, 15, -15, -42, -29],
+            ),
+            (r#"{ key = "tab", mods = ["shift"] }"#, &[42, 15, -15, -42]),
+            (r#"{ key = "home" }"#, &[102, -102]),
+            (r#"{ key = "end" }"#, &[107, -107]),
+            (r#"{ key = "page_up" }"#, &[104, -104]),
+            (r#"{ key = "page_down" }"#, &[109, -109]),
+            (r#"{ key = "f5" }"#, &[63, -63]),
+            (
+                r#"{ key = "d", mods = ["ctrl", "alt", "shift"] }"#,
+                &[29, 56, 42, 32, -32, -42, -56, -29],
+            ),
+            (r#"{ key = "a", mods = ["super"] }"#, &[125, 30, -30, -125]),
+            (r#"{ key = "insert" }"#, &[110, -110]),
+            (r#"{ key = "delete" }"#, &[111, -111]),
+            (
+                r#"{ key = "tab", mods = ["shift", "ctrl", "ctrl"] }"#,
+                &[29, 42, 15, -15, -42, -29],
+            ),
+        ];
+        let mut source = String::from("app_id = 'firefox'\n[buttons]\n[speech]\n");
+        let phrases: Vec<_> = shortcuts
+            .iter()
+            .enumerate()
+            .map(|(index, (mapping, _))| {
+                let phrase = format!("shortcut {index}");
+                source.push_str(&format!("{phrase:?} = {mapping}\n"));
+                phrase
+            })
+            .collect();
+        let phrases: Vec<_> = phrases.iter().map(String::as_str).collect();
+        let app = exchange_shortcuts(tehuti_protocol::parse_context(&source).unwrap(), &[], &phrases);
+        let expected: Vec<_> = shortcuts
+            .iter()
+            .flat_map(|(_, events)| events.iter())
+            .chain([&28, &-28])
+            .map(|code| {
+                (
+                    code.unsigned_abs(),
+                    if *code > 0 {
+                        KeyState::Pressed
+                    } else {
+                        KeyState::Released
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(app.keys, expected);
+        assert_eq!(app.modifiers, (0, 0, 0), "all modifiers are released");
+    }
+
+    #[test]
+    fn speech_draft_is_edited_by_pad_then_committed_to_text_input_or_keymap() {
+        for text_state in [ClientTextState::Enabled, ClientTextState::Absent] {
+            let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let writer = LogWriter(logs.clone());
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(move || writer.clone())
+                .finish();
+            let app = tracing::subscriber::with_default(subscriber, || {
+                exchange_keyboard("test", None, text_state, false, true, true)
+            });
+            if matches!(text_state, ClientTextState::Enabled) {
+                assert_eq!(app.text, "helqo ");
+                assert_eq!(app.keyboard_text, "\t\r");
+            } else {
+                assert_eq!(app.text, "");
+                assert_eq!(app.keyboard_text, "\thelqo \r");
+            }
+            let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+            for forbidden in ["hello", "helqo", "sym=\"h\"", "sym=\"q\""] {
+                assert!(!output.contains(forbidden), "{output}");
+            }
+        }
     }
 
     proptest! {
@@ -1923,6 +2740,14 @@ else:
             started,
         );
 
+        assert!(compositor.osk_open());
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            compositor.handle(&Event::Button {
+                name: ButtonName::East,
+                state,
+            });
+        }
+        assert!(!compositor.osk_open());
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {

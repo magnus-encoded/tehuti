@@ -1,13 +1,15 @@
 //! Smithay state and protocol handlers for one output and its tiling layout.
 
 use std::time::Instant;
+#[path = "x11.rs"]
+mod x11;
 
 use crate::layout_window::LayoutWindow;
 
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
-    delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_fractional_scale, delegate_output, delegate_seat,
+    delegate_shm, delegate_viewporter, delegate_xdg_shell,
     desktop::{Space, Window},
     input::{
         Seat, SeatHandler, SeatState,
@@ -24,11 +26,13 @@ use smithay::{
         },
     },
     utils::{SERIAL_COUNTER, Serial},
+    wayland::seat::WaylandFocus,
     wayland::{
         buffer::BufferHandler,
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface,
         },
+        fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale},
         output::{OutputHandler, OutputManagerState},
         selection::{
             SelectionHandler,
@@ -36,12 +40,19 @@ use smithay::{
         },
         shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
         shm::{ShmHandler, ShmState},
+        viewporter::ViewporterState,
     },
 };
 use tehuti_core::dispatch::{Effect as DispatchEffect, Input as DispatchInput};
 use tehuti_protocol::{Action, Event, KeyName};
 
 struct RedactedSecretProvider(Box<dyn tehuti_core::secret::SecretProvider>);
+
+impl Default for RedactedSecretProvider {
+    fn default() -> Self {
+        Self(Box::new(tehuti_core::secret::DenySecretProvider))
+    }
+}
 
 impl core::fmt::Debug for RedactedSecretProvider {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -71,12 +82,23 @@ const XKB_KEYCODE_OFFSET: u32 = 8;
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
+    pointer: smithay::input::pointer::PointerHandle<Self>,
+    pointer_location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    mouse_mode: bool,
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
+    pub(crate) osk: crate::osk::Keyboard,
+    pub(crate) osk_artwork: core::cell::RefCell<crate::osk::Artwork>,
+    settings_display: crate::settings::Display,
+    pub(crate) wallpapers: core::cell::RefCell<crate::wallpaper::Collection>,
     previous_tick: Instant,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    log_out_requested: bool,
+    system: Box<dyn crate::system::Executor>,
+    home: Option<std::path::PathBuf>,
+    screenshot_request: Option<std::path::PathBuf>,
     speech_process: Option<crate::speech::SpeechProcess>,
     secret_gate: tehuti_core::secret::SecretConfirmationGate,
     secret_provider: Option<RedactedSecretProvider>,
@@ -95,10 +117,14 @@ pub struct Compositor {
     layout: tehuti_core::layout::Layout,
     layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
     next_window: u64,
+    floating: x11::Floating,
+    pub(crate) x11: crate::xwayland::State,
     windows: tehuti_core::windows::Windows<WlSurface>,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
     shm_state: ShmState,
+    _viewporter_state: ViewporterState,
+    _fractional_scale_state: FractionalScaleManagerState,
     pub(crate) dmabuf: crate::rendering::DmabufSupport,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
@@ -106,6 +132,7 @@ pub struct Compositor {
     keyboard: KeyboardHandle<Self>,
     controller_session: tehuti_core::controller::State,
     seat: Seat<Self>,
+    shortcut_keycodes: Vec<(Keycode, u32)>,
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
 }
@@ -121,32 +148,41 @@ pub enum SetupError {
 }
 
 impl Compositor {
+    fn new_seat(display: &DisplayHandle) -> (SeatState<Self>, Seat<Self>) {
+        let mut state = SeatState::new();
+        let seat = state.new_wl_seat(display, "tehuti");
+        (state, seat)
+    }
+
     /// Creates the Wayland globals and a seat with one keyboard.
     ///
     /// # Errors
     /// The keyboard keymap fails to load or the desktop entry worker cannot start.
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
-        let mut seat_state = SeatState::new();
-        let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
-        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap =
-            xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
-                .ok_or(SetupError::KeymapCompilation)?;
+        let (seat_state, mut seat) = Self::new_seat(display);
         let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
-        let text_keys = text_keys(&keymap);
         let mut compositor = Self {
             start_time: Instant::now(),
+            pointer: seat.add_pointer(),
+            pointer_location: (100.0, 100.0).into(),
+            mouse_mode: false,
             space: Space::default(),
             output: None,
             dispatch: tehuti_core::dispatch::State::default(),
+            osk: crate::osk::Keyboard::default(),
+            osk_artwork: core::cell::RefCell::default(),
+            settings_display: crate::settings::Display::default(),
+            wallpapers: core::cell::RefCell::new(crate::wallpaper::Collection::from_env()),
             previous_tick: Instant::now(),
             plugins: None,
             quit_requested: false,
+            log_out_requested: false,
+            system: Box::new(crate::system::Real),
+            home: std::env::var_os("HOME").map(std::path::PathBuf::from),
+            screenshot_request: None,
             speech_process: None,
             secret_gate: tehuti_core::secret::SecretConfirmationGate::new(),
-            secret_provider: Some(RedactedSecretProvider(Box::new(
-                tehuti_core::secret::DenySecretProvider,
-            ))),
+            secret_provider: Some(RedactedSecretProvider::default()),
             secret_lookup: None,
             secret_focus_generation: 0,
             secret_surface_id: 0,
@@ -162,10 +198,14 @@ impl Compositor {
             layout: tehuti_core::layout::Layout::new(tehuti_core::layout::LayoutConfig::default()),
             layout_windows: Vec::new(),
             next_window: 0,
+            floating: x11::Floating::default(),
+            x11: crate::xwayland::State::new(display),
             windows: tehuti_core::windows::Windows::new(),
-            surfaces: CompositorState::new::<Self>(display),
+            surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             shm_state: ShmState::new::<Self>(display, vec![]),
+            _viewporter_state: ViewporterState::new::<Self>(display),
+            _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
             dmabuf: crate::rendering::DmabufSupport::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
@@ -173,14 +213,43 @@ impl Compositor {
             keyboard,
             controller_session: tehuti_core::controller::State::default(),
             seat,
-            text_keys,
+            shortcut_keycodes: Vec::new(),
+            text_keys: std::collections::HashMap::new(),
             text_input: crate::text_input::TextInput::new(display),
         };
-        compositor
-            .keyboard
-            .clone()
-            .set_keymap_from_string(&mut compositor, keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))?;
+        compositor.initialize_settings()?;
         Ok(compositor)
+    }
+
+    fn initialize_settings(&mut self) -> Result<(), SetupError> {
+        let keymap = Self::keymap()?;
+        self.text_keys = text_keys(&keymap);
+        let _phrase_rejection = self.dispatch(DispatchInput::Phrases(crate::phrases::from_env()));
+        let names = self.wallpapers.borrow().names();
+        let current = self.wallpapers.borrow().current;
+        let _rejection = self.dispatch(DispatchInput::Wallpapers { names, current });
+        let locked = self.wallpapers.borrow().locks();
+        let _locks_rejection = self.dispatch(DispatchInput::WallpaperLocks(locked));
+        self.install_keymap(&keymap)
+    }
+
+    fn keymap() -> Result<xkb::Keymap, SetupError> {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+            .ok_or(SetupError::KeymapCompilation)
+    }
+
+    fn install_keymap(&mut self, keymap: &xkb::Keymap) -> Result<(), SetupError> {
+        self.keyboard
+            .clone()
+            .set_keymap_from_string(self, keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))?;
+        self.shortcut_keycodes = (keymap.min_keycode().raw()..=keymap.max_keycode().raw())
+            .map(|code| {
+                let keycode = Keycode::new(code);
+                (keycode, keymap.num_layouts_for_key(keycode))
+            })
+            .collect();
+        Ok(())
     }
 
     /// Installs contexts before accepting clients.
@@ -265,7 +334,11 @@ impl Compositor {
 
     #[must_use]
     pub fn visible_notice_text(&self) -> Option<String> {
-        self.secret_confirmation_text()
+        self.dispatch
+            .core()
+            .menu()
+            .map(tehuti_core::menu::Menu::text)
+            .or_else(|| self.secret_confirmation_text())
             .or_else(|| {
                 self.secret_notice_until
                     .is_some_and(|until| Instant::now() < until)
@@ -278,6 +351,7 @@ impl Compositor {
                         .unwrap_or_else(|| "NO SPEECH MAPPING".into())
                 })
             })
+            .or_else(|| self.mouse_mode.then(|| "MOUSE MODE".into()))
     }
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
@@ -302,11 +376,13 @@ impl Compositor {
     /// Supplies elapsed wall time to the pure core before input or replies.
     pub fn advance_time(&mut self) {
         let elapsed = self.read_clock();
+        tracing::trace!(?elapsed, "dispatch tick");
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
         if matches!(input, tehuti_core::controller::Input::Disconnected) {
+            self.osk = crate::osk::Keyboard::default();
             let _rejection = self.dispatch(DispatchInput::ControllerDisconnected);
         }
         let (next, events) =
@@ -315,6 +391,206 @@ impl Compositor {
         for event in events {
             self.handle(&event);
         }
+    }
+
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "Smithay pointer coordinates and axis values use floating point"
+    )]
+    fn pointer_motion(&mut self, x: i32, y: i32) {
+        tracing::trace!(x, y, "mouse dispatch motion");
+        self.pointer_location.x += f64::from(x) / 1_000_000.0;
+        self.pointer_location.y += f64::from(y) / 1_000_000.0;
+        self.move_pointer();
+    }
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "Smithay pointer coordinates and axis values use floating point"
+    )]
+    fn pointer_scroll(&mut self, x: i32, y: i32) {
+        use smithay::backend::input::{Axis, AxisSource};
+        if self.mouse_mode {
+            self.move_pointer();
+        } else {
+            let Some(surface) = self.keyboard.current_focus() else {
+                return;
+            };
+            let Some(window) = self.window_for_root(&surface) else {
+                return;
+            };
+            let geometry = window.geometry();
+            if geometry.size.w <= 0 || geometry.size.h <= 0 {
+                return;
+            }
+            let location = (
+                f64::from(geometry.loc.x) + f64::from(geometry.size.w) / 2.0,
+                f64::from(geometry.loc.y) + f64::from(geometry.size.h) / 2.0,
+            )
+                .into();
+            let event = smithay::input::pointer::MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: self.pointer_time(),
+            };
+            self.pointer
+                .clone()
+                .motion(self, Some((surface, (0.0, 0.0).into())), &event);
+            self.pointer.clone().frame(self);
+        }
+        let frame = smithay::input::pointer::AxisFrame::new(self.pointer_time())
+            .source(AxisSource::Continuous)
+            .value(Axis::Horizontal, f64::from(x) / 1_000_000.0)
+            .value(Axis::Vertical, f64::from(y) / 1_000_000.0);
+        self.pointer.clone().axis(self, frame);
+        self.pointer.clone().frame(self);
+        if !self.mouse_mode {
+            self.move_pointer();
+        }
+    }
+    fn pointer_click(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
+        self.move_pointer();
+        if pressed && let Some((window, _)) = self.space.element_under(self.pointer_location) {
+            let identity = self
+                .layout_windows
+                .iter()
+                .find(|(_, candidate)| candidate == window)
+                .map(|(identity, _)| *identity);
+            if let Some(identity) = identity {
+                self.floating.focus = None;
+                if let Err(error) = self.layout.focus_window(identity) {
+                    tracing::warn!(%error, "pointer focus failed");
+                }
+                self.place_layout();
+            } else if !window
+                .x11_surface()
+                .is_some_and(smithay::xwayland::X11Surface::is_override_redirect)
+            {
+                self.floating.focus = Some(window.clone());
+                self.sync_window_focus();
+            }
+        }
+        let event = smithay::input::pointer::ButtonEvent {
+            serial: SERIAL_COUNTER.next_serial(),
+            time: self.pointer_time(),
+            button: match button {
+                tehuti_core::dispatch::PointerButton::Left => 0x110,
+                tehuti_core::dispatch::PointerButton::Right => 0x111,
+            },
+            state: if pressed {
+                smithay::backend::input::ButtonState::Pressed
+            } else {
+                smithay::backend::input::ButtonState::Released
+            },
+        };
+        self.pointer.clone().button(self, &event);
+        self.pointer.clone().frame(self);
+    }
+    pub(crate) fn open_keyboard(&mut self) {
+        self.osk.open = true;
+        let _rejection = self.dispatch(DispatchInput::Sticks(tehuti_core::dispatch::Sticks::default()));
+    }
+
+    pub const fn osk_open(&self) -> bool {
+        self.osk.open
+    }
+
+    #[must_use]
+    pub fn osk_draft(&self) -> Option<&str> {
+        self.osk.draft()
+    }
+
+    pub(crate) fn osk_cursor_rectangle(&self, scale: i32) -> Option<(i32, i32)> {
+        let (_, y, _, cursor_height) = self.text_input.cursor()?;
+        let offset = self
+            .keyboard
+            .current_focus()
+            .and_then(|focus| self.window_for_root(&focus))
+            .and_then(|window| self.space.element_location(window))
+            .map_or(0, |location| location.y);
+        Some((
+            y.saturating_add(offset).saturating_mul(scale),
+            cursor_height.max(1).saturating_mul(scale),
+        ))
+    }
+
+    pub fn sample_sticks(&mut self, sticks: tehuti_core::dispatch::Sticks) {
+        if self.osk.open {
+            self.osk.select(sticks);
+            let _rejection = self.dispatch(DispatchInput::Sticks(tehuti_core::dispatch::Sticks::default()));
+        } else {
+            let _rejection = self.dispatch(DispatchInput::Sticks(sticks));
+        }
+    }
+
+    #[must_use]
+    pub fn cursor_location(&self) -> Option<(f64, f64)> {
+        self.mouse_mode
+            .then_some((self.pointer_location.x, self.pointer_location.y))
+    }
+
+    /// Where to draw the cursor on `output`, in its physical pixels.
+    #[must_use]
+    pub fn cursor_on(
+        &self,
+        output: &smithay::output::Output,
+    ) -> Option<smithay::utils::Point<f64, smithay::utils::Physical>> {
+        let scale = output.current_scale().fractional_scale();
+        self.mouse_mode.then(|| self.pointer_location.to_physical(scale))
+    }
+
+    fn pointer_time(&self) -> u32 {
+        u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
+    }
+
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "Smithay surface hit testing uses floating point coordinates"
+    )]
+    fn move_pointer(&mut self) {
+        if let Some(output) = &self.output
+            && let Some(geometry) = self.space.output_geometry(output)
+            && geometry.size.w > 0
+            && geometry.size.h > 0
+        {
+            self.pointer_location.x = self.pointer_location.x.clamp(
+                f64::from(geometry.loc.x),
+                f64::from(geometry.loc.x.saturating_add(geometry.size.w).saturating_sub(1)),
+            );
+            self.pointer_location.y = self.pointer_location.y.clamp(
+                f64::from(geometry.loc.y),
+                f64::from(geometry.loc.y.saturating_add(geometry.size.h).saturating_sub(1)),
+            );
+        }
+        let focus = self
+            .space
+            .element_under(self.pointer_location)
+            .and_then(|(window, location)| {
+                window
+                    .surface_under(
+                        (
+                            self.pointer_location.x - f64::from(location.x),
+                            self.pointer_location.y - f64::from(location.y),
+                        ),
+                        smithay::desktop::WindowSurfaceType::ALL,
+                    )
+                    .map(|(surface, offset)| {
+                        (
+                            surface,
+                            (
+                                f64::from(location.x.saturating_add(offset.x)),
+                                f64::from(location.y.saturating_add(offset.y)),
+                            )
+                                .into(),
+                        )
+                    })
+            });
+        let event = smithay::input::pointer::MotionEvent {
+            location: self.pointer_location,
+            serial: SERIAL_COUNTER.next_serial(),
+            time: self.pointer_time(),
+        };
+        self.pointer.clone().motion(self, focus, &event);
+        self.pointer.clone().frame(self);
     }
 
     /// Reads the clock once and returns the time since the previous read.
@@ -327,6 +603,33 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if let Event::Button { name, state } = event
+            && self.secret_confirmation_label.is_none()
+            && !self.settings().open
+            && self.dispatch.core().menu().is_none()
+            && let Some(effect) = self.osk.button(*name, *state)
+        {
+            tracing::subscriber::with_default(
+                tracing::subscriber::NoSubscriber::default(),
+                || match effect {
+                    crate::osk::Effect::Text(text) => {
+                        if self.osk.draft().is_some() {
+                            self.osk.insert_draft(text);
+                        } else {
+                            let _method = self.deliver_text(text);
+                        }
+                    }
+                    crate::osk::Effect::Backspace => {
+                        if !self.osk.backspace_draft() {
+                            self.tap(KeyName::Backspace);
+                        }
+                    }
+                    crate::osk::Effect::Enter => self.commit_draft(),
+                    crate::osk::Effect::Consumed => {}
+                },
+            );
+            return;
+        }
         let since_tick = if matches!(event, Event::Focus { .. }) {
             core::time::Duration::ZERO
         } else {
@@ -387,8 +690,48 @@ impl Compositor {
         })
     }
 
+    #[must_use]
+    pub fn settings_buffer(
+        &self,
+        size: (i32, i32),
+    ) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
+        self.settings_display.artwork.borrow_mut().buffer_with_wallpapers(
+            self.settings(),
+            size,
+            &self.wallpapers.borrow(),
+        )
+    }
+
+    pub fn configure_display_native_size(&mut self, width: u32, height: u32) {
+        let _rejection = self.dispatch(DispatchInput::DisplayNativeSize(width, height));
+    }
+
+    pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
+        let _rejection = self.dispatch(DispatchInput::DisplayModes { modes, current });
+    }
+
+    pub fn display_mode_applied(&mut self, current: Option<usize>) {
+        self.advance_time();
+        let _rejection = self.dispatch(DispatchInput::ModeApplied(current));
+    }
+
+    pub fn take_settings_request(&mut self) -> Option<(usize, bool)> {
+        self.settings_display.requests.pop_front()
+    }
+
+    #[must_use]
+    pub const fn settings(&self) -> &tehuti_core::dispatch::Settings {
+        self.dispatch.settings()
+    }
+
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         match effect {
+            DispatchEffect::SettingsMode(index) | DispatchEffect::PersistMode(index) => {
+                self.settings_display
+                    .requests
+                    .push_back((index, matches!(effect, DispatchEffect::PersistMode(_))));
+                None
+            }
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
                 tracing::error!("invalid dispatch reply");
@@ -420,10 +763,17 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
-            effect @ (DispatchEffect::PollSources
+            effect @ (DispatchEffect::UnlockWallpapers
+            | DispatchEffect::Wallpaper(_)
+            | DispatchEffect::MovePointer { .. }
+            | DispatchEffect::Scroll { .. }
+            | DispatchEffect::Click { .. }
+            | DispatchEffect::MouseMode(_)
+            | DispatchEffect::PollSources
             | DispatchEffect::SouthPressed(_)
             | DispatchEffect::ResetSecretFocus
             | DispatchEffect::Apply(_)
+            | DispatchEffect::System(_)
             | DispatchEffect::PluginAction(_)
             | DispatchEffect::PluginRejected(_)
             | DispatchEffect::Handle(_)
@@ -440,11 +790,17 @@ impl Compositor {
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
-            DispatchEffect::PollSources => {
-                self.poll_secret_lookup();
-                self.poll_launchers();
-                self.desktop_entries.poll();
+            DispatchEffect::UnlockWallpapers => self.unlock_wallpapers(),
+            DispatchEffect::Wallpaper(index) => self.apply_wallpaper(index),
+            DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
+            DispatchEffect::Scroll { x, y } => self.pointer_scroll(x, y),
+            DispatchEffect::Click { button, pressed } => self.pointer_click(button, pressed),
+            DispatchEffect::MouseMode(active) => {
+                self.mouse_mode = active;
+                self.show_notice(if active { "MOUSE MODE" } else { "MOUSE MODE OFF" });
+                self.move_pointer();
             }
+            DispatchEffect::PollSources => self.poll_sources(),
             DispatchEffect::SouthPressed(pressed) => {
                 self.secret_confirmation.south_pressed = pressed;
             }
@@ -454,10 +810,13 @@ impl Compositor {
             DispatchEffect::Apply(action) => {
                 self.apply(&action);
             }
+            DispatchEffect::System(command) => self.run_system(command),
             DispatchEffect::PluginAction(action) => {
                 self.apply_plugin_action(&action);
             }
-            DispatchEffect::ReadClock
+            DispatchEffect::SettingsMode(_)
+            | DispatchEffect::PersistMode(_)
+            | DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
             | DispatchEffect::PluginRejected(_)
             | DispatchEffect::QueryPlugin(_)
@@ -481,15 +840,42 @@ impl Compositor {
                 text,
                 admitted,
             } => {
-                tracing::info!(session, text = text.as_str(), "speech transcript received");
-                if !admitted {
-                    tracing::info!("speech transcript dropped for a stale session");
-                }
+                log_transcript(session, &text, admitted, self.osk.open);
             }
             DispatchEffect::SpeechRouted { text, first, plugin } => {
-                log_speech_route(&text, first.as_ref(), plugin);
+                log_speech_route(&text, first.as_ref(), plugin, self.osk.open);
             }
         }
+    }
+
+    fn unlock_wallpapers(&mut self) {
+        let result = self.wallpapers.borrow_mut().unlock();
+        match result {
+            Ok(()) => {
+                let names = self.wallpapers.borrow().names();
+                let current = self.wallpapers.borrow().current;
+                let _rejection = self.dispatch(DispatchInput::Wallpapers { names, current });
+                let locked = self.wallpapers.borrow().locks();
+                let _locks_rejection = self.dispatch(DispatchInput::WallpaperLocks(locked));
+                self.show_notice("ALL WALLPAPERS UNLOCKED");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "wallpaper unlock persistence failed");
+                self.show_notice("WALLPAPER UNLOCK FAILED");
+            }
+        }
+    }
+
+    fn apply_wallpaper(&self, index: usize) {
+        if let Err(error) = self.wallpapers.borrow_mut().select(index) {
+            tracing::warn!(%error, "wallpaper selection persistence failed");
+        }
+    }
+
+    fn poll_sources(&mut self) {
+        self.poll_secret_lookup();
+        self.poll_launchers();
+        self.desktop_entries.poll();
     }
 
     fn reset_secret_confirmation_for_focus(&mut self) {
@@ -511,6 +897,79 @@ impl Compositor {
     #[must_use]
     pub const fn quit_requested(&self) -> bool {
         self.quit_requested
+    }
+
+    /// The menu asked to end the login session (exit status 21) rather than restart Tehuti.
+    #[must_use]
+    pub const fn log_out_requested(&self) -> bool {
+        self.log_out_requested
+    }
+
+    /// Replaces the system executor; tests use a fake so nothing real runs.
+    pub fn set_system_executor(&mut self, executor: Box<dyn crate::system::Executor>) {
+        self.system = executor;
+    }
+
+    /// Sets the home directory that screenshots are saved under.
+    pub fn set_home(&mut self, home: Option<std::path::PathBuf>) {
+        self.home = home;
+    }
+
+    /// Carries out a command chosen in the system menu.
+    fn run_system(&mut self, command: tehuti_core::menu::Command) {
+        use tehuti_core::menu::Command;
+        match command {
+            Command::Screenshot => {
+                let seconds = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_secs());
+                match &self.home {
+                    Some(home) => {
+                        self.screenshot_request = Some(crate::system::screenshot_path(home, seconds));
+                    }
+                    None => self.show_notice("SCREENSHOT FAILED"),
+                }
+            }
+            Command::Lock => match self.system.locker() {
+                Some(locker) => {
+                    if let Err(error) = self.system.spawn(&locker, &[]) {
+                        tracing::warn!(%error, "locker failed to start");
+                        self.show_notice("LOCK FAILED");
+                    }
+                }
+                None => self.show_notice("LOCK NOT AVAILABLE"),
+            },
+            Command::LogOut => {
+                self.log_out_requested = true;
+                self.apply(&Action::Quit);
+            }
+            Command::Restart => self.apply(&Action::Quit),
+            Command::Reboot => self.spawn_systemctl("reboot", "REBOOT FAILED"),
+            Command::PowerOff => self.spawn_systemctl("poweroff", "POWER OFF FAILED"),
+        }
+    }
+
+    fn spawn_systemctl(&mut self, verb: &str, failure: &str) {
+        if let Err(error) = self.system.spawn("systemctl", &[verb]) {
+            tracing::warn!(%error, verb, "systemctl failed to start");
+            self.show_notice(failure);
+        }
+    }
+
+    /// Takes the pending screenshot request: the file the backend should save the next frame to.
+    pub const fn take_screenshot_request(&mut self) -> Option<std::path::PathBuf> {
+        self.screenshot_request.take()
+    }
+
+    /// Records the outcome of a screenshot the backend captured.
+    pub fn screenshot_saved(&mut self, result: &std::io::Result<()>) {
+        match result {
+            Ok(()) => self.show_notice("SCREENSHOT SAVED"),
+            Err(error) => {
+                tracing::warn!(%error, "screenshot failed");
+                self.show_notice("SCREENSHOT FAILED");
+            }
+        }
     }
 
     /// Requests a one-use controller confirmation for the focused surface.
@@ -722,18 +1181,22 @@ impl Compositor {
     /// Carries out one action from the core step.
     fn apply(&mut self, action: &Action) {
         match action {
-            Action::Key { key } => {
-                self.tap(*key);
+            Action::Keyboard => self.open_keyboard(),
+            Action::Key { key, mods } => {
+                if *key == KeyName::Enter && mods.is_empty() && self.osk.open {
+                    self.commit_draft();
+                    return;
+                }
+                self.tap_with_modifiers(*key, mods);
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(?key, ?app_id, ?title, "key delivered to focused window");
             }
             Action::Text { text } => {
-                let method = if self.text_input.send(text.as_str()) {
-                    "text-input"
-                } else {
-                    self.type_text(text.as_str());
-                    "keys"
-                };
+                if self.osk.open {
+                    self.osk.insert_draft(text.as_str());
+                    return;
+                }
+                let method = self.deliver_text(text.as_str());
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(
                     characters = text.as_str().chars().count(),
@@ -754,7 +1217,16 @@ impl Compositor {
             }
             Action::Launch { desktop_entry } => self.launch_application(desktop_entry),
             Action::Close => {
-                if let Some(identity) = self.layout.snapshot().focused_window {
+                if let Some(window) = self.floating.focus.clone() {
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.send_close();
+                    }
+                    if let Some(x11) = window.x11_surface()
+                        && let Err(error) = x11.close()
+                    {
+                        tracing::warn!(%error, "X11 close failed");
+                    }
+                } else if let Some(identity) = self.layout.snapshot().focused_window {
                     self.remove_layout_window(identity, true);
                 }
             }
@@ -798,22 +1270,89 @@ impl Compositor {
         self.tap_keycode(keycode);
     }
 
-    fn tap_keycode(&mut self, keycode: Keycode) {
+    fn tap_with_modifiers(&mut self, key: KeyName, mods: &[tehuti_protocol::Modifier]) {
+        use tehuti_protocol::Modifier;
+        let key_name = key.keysym_name();
         let keyboard = self.keyboard.clone();
-        for state in tehuti_core::controller::key_tap() {
-            let state = match state {
-                tehuti_protocol::ButtonState::Pressed => smithay::backend::input::KeyState::Pressed,
-                tehuti_protocol::ButtonState::Released => smithay::backend::input::KeyState::Released,
+        let codes = self.shortcut_keycodes.clone();
+        let resolved = keyboard.with_xkb_state(self, |context| {
+            let xkb = context
+                .xkb()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let resolve = |name| {
+                let symbol = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+                codes.iter().find_map(|(code, layouts)| {
+                    let layout =
+                        smithay::input::keyboard::Layout(xkb.active_layout().0.checked_rem(*layouts)?);
+                    xkb.raw_syms_for_key_in_layout(*code, layout)
+                        .contains(&symbol)
+                        .then_some(*code)
+                })
             };
-            let time = self.millis_since_start();
-            let _forwarded: Option<()> = keyboard.input(
-                self,
-                keycode,
-                state,
-                SERIAL_COUNTER.next_serial(),
-                time,
-                |_, _, _| FilterResult::Forward,
-            );
+            let keycode = resolve(key_name)?;
+            let held = [
+                (Modifier::Ctrl, "Control_L"),
+                (Modifier::Alt, "Alt_L"),
+                (Modifier::Shift, "Shift_L"),
+                (Modifier::Super, "Super_L"),
+            ]
+            .into_iter()
+            .filter(|(modifier, _)| mods.contains(modifier))
+            .map(|(_, name)| resolve(name))
+            .collect::<Option<Vec<_>>>()?;
+            Some((keycode, held))
+        });
+        let Some((keycode, held)) = resolved else {
+            tracing::warn!(?key, "shortcut unavailable in active keymap");
+            return;
+        };
+        for code in &held {
+            self.send_keycode(*code, smithay::backend::input::KeyState::Pressed);
+        }
+        self.tap_keycode(keycode);
+        for code in held.iter().rev() {
+            self.send_keycode(*code, smithay::backend::input::KeyState::Released);
+        }
+    }
+
+    fn tap_keycode(&mut self, keycode: Keycode) {
+        for state in [
+            smithay::backend::input::KeyState::Pressed,
+            smithay::backend::input::KeyState::Released,
+        ] {
+            self.send_keycode(keycode, state);
+        }
+    }
+
+    fn send_keycode(&mut self, keycode: Keycode, state: smithay::backend::input::KeyState) {
+        let keyboard = self.keyboard.clone();
+        let time = self.millis_since_start();
+        let _forwarded: Option<()> = keyboard.input(
+            self,
+            keycode,
+            state,
+            SERIAL_COUNTER.next_serial(),
+            time,
+            |_, _, _| FilterResult::Forward,
+        );
+    }
+
+    fn commit_draft(&mut self) {
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+            if let Some(draft) = self.osk.take_draft() {
+                let _method = self.deliver_text(&draft);
+            }
+            self.tap(KeyName::Enter);
+        });
+    }
+
+    fn deliver_text(&mut self, text: &str) -> &'static str {
+        if self.text_input.send(text) {
+            "text-input"
+        } else {
+            self.type_text(text);
+            "keys"
         }
     }
 
@@ -870,6 +1409,7 @@ impl Compositor {
     }
 
     fn apply_layout(&mut self, action: tehuti_protocol::LayoutAction) {
+        self.floating.focus = None;
         self.layout.apply(tehuti_core::layout::command_for(action));
         self.place_layout();
     }
@@ -981,17 +1521,37 @@ impl Compositor {
                 .to_i32_round(),
                 snapshot.focused_window == Some(*identity),
             );
+            // Space only reports output entry once a buffer gives the window a
+            // view. Clients such as mpv size their first buffer from the output
+            // scale they learn on entry, so announce it before the first
+            // configure instead of after the first (wrongly scaled) frame.
+            self.enter_window_output(window);
+            Self::configure_x11(window, &self.space, tile);
             if let Some(toplevel) = window.toplevel() {
-                Self::configure_layout_window(toplevel, tile, snapshot.focused_window == Some(*identity));
+                Self::configure_layout_window(
+                    toplevel,
+                    tile,
+                    snapshot.focused_window == Some(*identity),
+                    !window.size_held(),
+                );
             }
         }
+        self.place_floating();
         self.sync_window_focus();
+    }
+
+    fn enter_window_output(&self, window: &LayoutWindow) {
+        if let (Some(output), Some(toplevel)) = (&self.output, window.toplevel()) {
+            output.enter(toplevel.wl_surface());
+            Self::announce_scale(output, toplevel.wl_surface());
+        }
     }
 
     fn configure_layout_window(
         toplevel: &ToplevelSurface,
         tile: &tehuti_core::layout::TileView,
         focused: bool,
+        send: bool,
     ) {
         toplevel.with_pending_state(|pending| {
             pending.size = Some(
@@ -1001,9 +1561,14 @@ impl Compositor {
                 ))
                 .to_i32_round(),
             );
+            let tiled = tile.mode != tehuti_core::layout::TileMode::Fullscreen;
             for (state, enabled) in [
                 (xdg_toplevel::State::Fullscreen, tile.fullscreen_requested),
                 (xdg_toplevel::State::Activated, focused),
+                (xdg_toplevel::State::TiledLeft, tiled),
+                (xdg_toplevel::State::TiledRight, tiled),
+                (xdg_toplevel::State::TiledTop, tiled),
+                (xdg_toplevel::State::TiledBottom, tiled),
             ] {
                 if enabled {
                     let _changed = pending.states.set(state);
@@ -1012,7 +1577,7 @@ impl Compositor {
                 }
             }
         });
-        if toplevel.is_initial_configure_sent() {
+        if send && toplevel.is_initial_configure_sent() {
             let _serial = toplevel.send_pending_configure();
         }
     }
@@ -1031,6 +1596,12 @@ impl Compositor {
                 let _effect = self
                     .windows
                     .step(tehuti_core::windows::Input::Unmap(toplevel.wl_surface().clone()));
+            }
+            if close
+                && let Some(x11) = window.x11_surface()
+                && let Err(error) = x11.close()
+            {
+                tracing::warn!(%error, "X11 close failed");
             }
             self.space.unmap_elem(&window);
             if let Err(error) = self.layout.remove_window(identity) {
@@ -1101,14 +1672,28 @@ impl Compositor {
 
     fn sync_window_focus(&mut self) {
         let identity = self.layout.snapshot().focused_window;
-        let focus = self
+        let tiled = self
             .layout_windows
             .iter()
             .find(|(window_id, _)| Some(*window_id) == identity)
-            .and_then(|(_, window)| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()));
+            .map(|(_, window)| window.clone());
+        let selected = self.floating.focus.clone().or(tiled);
+        self.activate_window(selected.as_ref());
+        let focus = selected
+            .as_ref()
+            .and_then(|window| window.wl_surface().map(std::borrow::Cow::into_owned));
+        let changed = self.keyboard.current_focus() != focus;
         self.keyboard
             .clone()
             .set_focus(self, focus.clone(), SERIAL_COUNTER.next_serial());
+        if changed && let Some(x11) = selected.as_ref().and_then(|window| window.x11_surface()) {
+            if let Some(manager) = self.x11.manager.as_mut()
+                && let Err(error) = manager.raise_window(x11)
+            {
+                tracing::warn!(%error, "X11 raise failed");
+            }
+            self.focus_x11(x11);
+        }
         if let Some(window) = focus
             .as_ref()
             .and_then(|surface| self.window_for_root(surface))
@@ -1116,6 +1701,8 @@ impl Compositor {
         {
             if let Some(toplevel) = window.toplevel() {
                 self.update_focus(toplevel);
+            } else if let Some(x11) = window.x11_surface() {
+                self.update_x11_title(x11);
             }
         } else {
             self.handle(&Event::Focus {
@@ -1152,10 +1739,11 @@ impl Compositor {
         self.layout_windows
             .iter()
             .map(|(_, window)| window)
+            .chain(self.floating.windows.iter())
             .find(|window| {
                 window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == root)
+                    .wl_surface()
+                    .is_some_and(|surface| surface.as_ref() == root)
             })
     }
 }
@@ -1230,9 +1818,18 @@ impl CompositorHandler for Compositor {
     fn client_compositor_state<'client>(&self, client: &'client Client) -> &'client CompositorClientState {
         static FALLBACK: std::sync::LazyLock<CompositorClientState> =
             std::sync::LazyLock::new(CompositorClientState::default);
+        if let Some(data) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &data.compositor_state;
+        }
         client
             .get_data::<ClientState>()
             .map_or(&*FALLBACK, |data| &data.compositor_state)
+    }
+
+    fn new_surface(&mut self, surface: &WlSurface) {
+        if let Some(output) = &self.output {
+            Self::announce_scale(output, surface);
+        }
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -1244,14 +1841,70 @@ impl CompositorHandler for Compositor {
         while let Some(parent) = get_parent(&root) {
             root = parent;
         }
+        self.reclassify_wayland(&root);
         if let Some(window) = self.window_for_root(&root) {
             window.on_commit();
-            if let Some(toplevel) = window.toplevel()
-                && !toplevel.is_initial_configure_sent()
-            {
-                let _serial = toplevel.send_configure();
+            if let Some(toplevel) = window.toplevel() {
+                if !toplevel.is_initial_configure_sent() {
+                    if withholds_initial_size(toplevel) {
+                        // mpv 0.41 stores a first-configure size as device
+                        // pixels although it is logical, then divides it by the
+                        // scale. Offer no size until it has mapped; its later
+                        // configures are converted correctly.
+                        window.hold_size(true);
+                        toplevel.with_pending_state(|pending| pending.size = None);
+                        let _serial = toplevel.send_configure();
+                        toplevel.with_pending_state(|pending| pending.size = Some(window.layout_size()));
+                    } else {
+                        let _serial = toplevel.send_configure();
+                    }
+                } else if window.size_held() && window.mapped() {
+                    window.hold_size(false);
+                    let _serial = toplevel.send_pending_configure();
+                }
             }
         }
+        self.place_floating();
+    }
+}
+
+/// Clients whose first-configure size handling breaks at an output scale above 1.
+fn withholds_initial_size(toplevel: &ToplevelSurface) -> bool {
+    smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .is_some_and(|data| {
+                data.lock()
+                    .is_ok_and(|data| data.app_id.as_deref() == Some("mpv"))
+            })
+    })
+}
+
+impl FractionalScaleHandler for Compositor {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        if let Some(output) = &self.output {
+            Self::announce_scale(output, &surface);
+        }
+    }
+}
+
+impl Compositor {
+    /// Tell a surface the output's scale, both as an integer
+    /// (`wl_surface.preferred_buffer_scale`) and as `wp_fractional_scale_v1`.
+    fn announce_scale(output: &Output, surface: &WlSurface) {
+        let scale = output.current_scale();
+        smithay::wayland::compositor::with_states(surface, |states| {
+            smithay::wayland::compositor::send_surface_state(
+                surface,
+                states,
+                scale.integer_scale(),
+                output.current_transform(),
+            );
+            with_fractional_scale(states, |fractional| {
+                fractional.set_preferred_scale(scale.fractional_scale());
+            });
+        });
     }
 }
 
@@ -1299,6 +1952,10 @@ impl XdgShellHandler for Compositor {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        if self.text_input.forget_surface(surface.wl_surface()) {
+            self.osk.close();
+        }
+        self.remove_floating(surface.wl_surface());
         let identity = self.layout_windows.iter().find_map(|(identity, window)| {
             window
                 .toplevel()
@@ -1307,6 +1964,22 @@ impl XdgShellHandler for Compositor {
         });
         if let Some(identity) = identity {
             self.remove_layout_window(identity, false);
+        }
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        if let Some(window) = self.window_for_root(surface.wl_surface()).cloned() {
+            self.request_fullscreen(&window, true);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_root(surface.wl_surface()).cloned() {
+            self.request_fullscreen(&window, false);
         }
     }
 
@@ -1328,6 +2001,7 @@ impl SeatHandler for Compositor {
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         self.text_input.focus(focused.cloned());
+        self.osk.close();
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
@@ -1349,12 +2023,17 @@ impl OutputHandler for Compositor {}
 
 delegate_compositor!(Compositor);
 delegate_shm!(Compositor);
+delegate_viewporter!(Compositor);
+delegate_fractional_scale!(Compositor);
 delegate_xdg_shell!(Compositor);
 delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
 delegate_output!(Compositor);
 
-fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin: bool) {
+fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin: bool, osk_open: bool) {
+    if osk_open {
+        return;
+    }
     match first {
         Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
             tracing::info!(text = text.as_str(), "speech has no mapping");
@@ -1362,5 +2041,15 @@ fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin
         Some(action) => tracing::info!(text = text.as_str(), ?action, "speech mapped"),
         None if plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
         None => tracing::info!(text = text.as_str(), "speech produced no action"),
+    }
+}
+
+fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool, osk_open: bool) {
+    if osk_open {
+        return;
+    }
+    tracing::info!(session, text = text.as_str(), "speech transcript received");
+    if !admitted {
+        tracing::info!("speech transcript dropped for a stale session");
     }
 }

@@ -39,11 +39,11 @@ mod step {
 
         #[test]
         fn each_a_press_sends_one_enter_and_nothing_else_reaches_the_client(
-            events in prop::collection::vec(any::<Event>(), 0..200),
+            events in prop::collection::vec(any::<Event>().prop_filter("no clock: a hold would open the menu", |event| !matches!(event, Event::Tick { .. })), 0..200),
         ) {
             let a_presses = events.iter().filter(|event| **event == A_PRESSED).count();
             let keys: Vec<_> = run(&events).into_iter().filter(|action| matches!(action, Action::Key { .. })).collect();
-            prop_assert_eq!(keys, vec![Action::Key { key: KeyName::Enter }; a_presses]);
+            prop_assert_eq!(keys, vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }; a_presses]);
         }
     }
 
@@ -118,19 +118,19 @@ mod step {
             let mut plain = State::with_contexts(contexts);
             let mut bare = State::new();
             let mut focus: Option<String> = None;
-            let mut routed_quits = Vec::new();
-            let mut plain_quits = Vec::new();
-            let series = events.iter().cloned().chain([guide(ButtonState::Pressed), start(), tick(millis)]);
-            for (index, event) in series.enumerate() {
+            let series = events.iter().cloned().chain([guide(ButtonState::Pressed), tick(millis)]);
+            for event in series {
                 if let Event::Focus { app_id, .. } = &event { focus.clone_from(app_id); }
                 let active = plugins.iter().any(|plugin| plugin.ready && plugin.subscribes && focus.as_deref() == Some(plugin.app_id));
-                let (next_routed, routed_actions, sent) = tehuti_core::step_with_plugin(routed, &event, active);
-                let (next_plain, plain_actions) = step(plain, &event);
+                let menu_was_open = routed.menu().is_some();
+                let (mut next_routed, routed_actions, sent) = tehuti_core::step_with_plugin(routed, &event, active);
+                let (mut next_plain, plain_actions) = step(plain, &event);
                 let (next_bare, bare_actions) = step(bare, &event);
-                let focus_event = Event::Focus { app_id: focus.clone(), title: String::new() };
-                let routed_control = step(next_routed.clone(), &focus_event).0;
-                let plain_control = step(next_plain.clone(), &focus_event).0;
-                prop_assert_eq!(routed_control, plain_control, "routing preserves focus, contexts and controller holds after voice feedback clears");
+                prop_assert_eq!(next_routed.contexts(), next_plain.contexts());
+                prop_assert_eq!(next_routed.menu(), next_plain.menu(), "routing to a plugin preserves the system menu");
+                prop_assert_eq!(next_routed.pending_decisions(), next_plain.pending_decisions());
+                prop_assert_eq!(next_routed.take_commands(), next_plain.take_commands());
+                prop_assert!(!(menu_was_open && sent), "an open menu keeps every button from plugins");
                 if sent {
                     prop_assert!(routed_actions.is_empty(), "an event sent to a plugin never also reaches the context layer");
                     prop_assert!(!bare_actions.iter().any(|action| matches!(action, Action::Key { .. } | Action::Quit)), "only events no layer above the context consumed reach a plugin");
@@ -144,14 +144,10 @@ mod step {
                 if matches!(event, Event::Tick { .. }) {
                     prop_assert!(!sent, "Tick never crosses the wire");
                 }
-                routed_quits.extend(routed_actions.iter().filter(|action| **action == Action::Quit).map(|_| index));
-                plain_quits.extend(plain_actions.iter().filter(|action| **action == Action::Quit).map(|_| index));
                 routed = next_routed;
                 plain = next_plain;
                 bare = next_bare;
             }
-            prop_assert_eq!(&routed_quits, &plain_quits, "no plugin set moves or suppresses escape");
-            prop_assert_eq!(routed_quits.last().copied(), events.len().checked_add(2), "holding Guide+Start for three seconds quits under every plugin set");
         }
     }
 
@@ -197,7 +193,7 @@ mod step {
             prop_assert!(focus_actions.is_empty());
             let (_, actions) = step(state, &Event::Button { name, state: button_state });
             if button_state == ButtonState::Pressed && name == ButtonName::South {
-                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter }], "global consumption excludes context and fallback output");
+                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }], "global consumption excludes context and fallback output");
             } else if button_state == ButtonState::Pressed {
                 let mapping = match focused {
                     Some("test") => mappings.get(&name),
@@ -205,7 +201,7 @@ mod step {
                     _ => None,
                 };
                 if let Some(key) = mapping {
-                    prop_assert_eq!(actions, vec![Action::Key { key: *key }], "context consumption excludes fallback output");
+                    prop_assert_eq!(actions, vec![Action::Key { key: *key, mods: Vec::new() }], "context consumption excludes fallback output");
                 } else {
                     prop_assert!(actions.is_empty(), "unmapped presses use the empty fallback");
                 }
@@ -223,29 +219,7 @@ mod step {
     }
 
     #[test]
-    fn both_buttons_must_stay_held_for_three_seconds() {
-        for released in [ButtonName::Guide, ButtonName::Start] {
-            let mut state = State::new();
-            for event in [
-                guide(ButtonState::Pressed),
-                tick(4000),
-                start(),
-                tick(2999),
-                Event::Button {
-                    name: released,
-                    state: ButtonState::Released,
-                },
-                tick(4000),
-            ] {
-                let (next, actions) = step(state, &event);
-                state = next;
-                assert!(!actions.contains(&Action::Quit));
-            }
-        }
-    }
-
-    #[test]
-    fn start_alone_reaches_the_app_and_only_joint_hold_counts() {
+    fn start_reaches_the_app_and_never_counts_toward_the_hold() {
         let context =
             tehuti_protocol::parse_context("app_id = 'test'\n[buttons.start]\nkey = 'space'").unwrap();
         let (state, _) = step(
@@ -256,45 +230,36 @@ mod step {
             },
         );
         let (state, start_actions) = step(state, &start());
-        assert_eq!(start_actions, vec![Action::Key { key: KeyName::Space }]);
-        let (state, solo_actions) = step(state, &tick(4000));
-        assert_eq!(solo_actions, Vec::<Action>::new());
-        let (state, guide_actions) = step(state, &guide(ButtonState::Pressed));
-        assert_eq!(guide_actions, Vec::<Action>::new());
-        let (state, early_actions) = step(state, &tick(2999));
-        assert_eq!(early_actions, Vec::<Action>::new());
-        let (_, quit_actions) = step(state, &tick(1));
-        assert_eq!(quit_actions, vec![Action::Quit]);
+        assert_eq!(
+            start_actions,
+            vec![Action::Key {
+                key: KeyName::Space,
+                mods: Vec::new()
+            }]
+        );
+        let (state, _) = step(state, &tick(4000));
+        assert!(state.menu().is_none(), "Start alone opens nothing");
+        let (state, _) = step(state, &guide(ButtonState::Pressed));
+        let (state, _) = step(state, &tick(2999));
+        assert!(state.menu().is_none());
+        let (state, actions) = step(state, &tick(1));
+        assert_eq!(actions, Vec::<Action>::new());
+        assert!(state.menu().is_some());
     }
 
     #[test]
-    fn controller_disconnect_clears_both_holds_and_elapsed_time() {
-        for first in [ButtonName::Guide, ButtonName::Start] {
-            let mut state = State::new();
-            for event in [guide(ButtonState::Pressed), start(), tick(2999)] {
-                state = step(state, &event).0;
-            }
-            state.controller_disconnected();
-            let (state, _) = step(
-                state,
-                &Event::Button {
-                    name: first,
-                    state: ButtonState::Pressed,
-                },
-            );
-            let (state, reconnect_actions) = step(state, &tick(4000));
-            assert_eq!(reconnect_actions, Vec::<Action>::new());
-            let second = if first == ButtonName::Guide {
-                start()
-            } else {
-                guide(ButtonState::Pressed)
-            };
-            let (state, _) = step(state, &second);
-            let (state, fresh_early_actions) = step(state, &tick(2999));
-            assert_eq!(fresh_early_actions, Vec::<Action>::new());
-            let (_, fresh_quit_actions) = step(state, &tick(1));
-            assert_eq!(fresh_quit_actions, vec![Action::Quit]);
-        }
+    fn controller_disconnect_clears_the_hold_and_closes_the_menu() {
+        let (state, _) = step(State::new(), &guide(ButtonState::Pressed));
+        let (mut state, _) = step(state, &tick(2999));
+        state.controller_disconnected();
+        let (state, _) = step(state, &tick(4000));
+        assert!(state.menu().is_none(), "the hold does not survive a disconnect");
+        let (state, _) = step(state, &guide(ButtonState::Pressed));
+        let (state, _) = step(state, &tick(3000));
+        assert!(state.menu().is_some());
+        let mut state = state;
+        state.controller_disconnected();
+        assert!(state.menu().is_none());
     }
 
     fn start() -> Event {
@@ -312,18 +277,16 @@ mod step {
 
     proptest! {
         #[test]
-        fn every_held_guide_series_quits_once_at_three_seconds(
+        fn every_held_guide_series_opens_the_menu_once_at_three_seconds(
             configurations in prop::collection::vec(
                 prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15), 1..20),
             guide_key in any::<KeyName>(),
             series in prop::collection::vec(
                 (
-                    prop::collection::vec(prop_oneof![
-                        (any::<ButtonName>().prop_filter("Guide stays held", |name| !matches!(name, ButtonName::Guide | ButtonName::Start)), any::<ButtonState>())
-                            .prop_map(|(name, state)| Event::Button { name, state }),
+                    prop::collection::vec(
                         (prop::option::of(prop::sample::select(vec!["test", "other", "unmatched"])), any::<String>())
                             .prop_map(|(app_id, title)| Event::Focus { app_id: app_id.map(str::to_owned), title }),
-                    ], 0..5),
+                        0..3),
                     50u64..=100,
                 ),
                 60..150,
@@ -336,11 +299,9 @@ mod step {
             let (state, _) = step(State::with_contexts(contexts), &Event::Focus {
                 app_id: Some("test".into()), title: String::new(),
             });
-            let (state, press_actions) = step(state, &guide(ButtonState::Pressed));
+            let (mut state, press_actions) = step(state, &guide(ButtonState::Pressed));
             prop_assert!(press_actions.is_empty(), "Guide never fires its context mapping");
-            let (mut state, _) = step(state, &start());
             let mut elapsed = core::time::Duration::ZERO;
-            let mut quits = 0usize;
             for (other_events, millis) in series {
                 for event in other_events.into_iter().chain(core::iter::once(tick(millis))) {
                     if let Event::Tick { elapsed: delta } = &event {
@@ -348,13 +309,12 @@ mod step {
                     }
                     let (next, actions) = step(state, &event);
                     state = next;
-                    quits = quits.checked_add(actions.iter().filter(|action| **action == Action::Quit).count()).unwrap();
-                    prop_assert_eq!(quits, usize::from(elapsed >= core::time::Duration::from_secs(3)),
-                        "every prefix emits no Quit before three seconds and exactly one thereafter");
+                    prop_assert!(!actions.contains(&Action::Quit), "the hold never quits directly");
+                    prop_assert_eq!(state.menu().is_some(), elapsed >= core::time::Duration::from_secs(3),
+                        "the menu is closed before three seconds and open thereafter");
                 }
             }
             prop_assert!(elapsed >= core::time::Duration::from_secs(3));
-            prop_assert_eq!(quits, 1);
         }
 
         #[test]
@@ -363,13 +323,15 @@ mod step {
             mappings in prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15),
         ) {
             let mut state = State::with_contexts(vec![generated_context("test", &mappings)]);
-            for event in [tick(u64::MAX), guide(ButtonState::Pressed), start(), tick(elapsed), guide(ButtonState::Released), tick(u64::MAX), guide(ButtonState::Pressed), tick(2999)] {
+            for event in [tick(u64::MAX), guide(ButtonState::Pressed), tick(elapsed), guide(ButtonState::Released), tick(u64::MAX), guide(ButtonState::Pressed), tick(2999)] {
                 let (next, actions) = step(state, &event);
                 state = next;
                 prop_assert!(actions.is_empty());
+                prop_assert!(state.menu().is_none());
             }
-            let (_, actions) = step(state, &tick(1));
-            prop_assert_eq!(actions, vec![Action::Quit]);
+            let (state, actions) = step(state, &tick(1));
+            prop_assert!(actions.is_empty());
+            prop_assert!(state.menu().is_some());
         }
     }
 
@@ -394,7 +356,13 @@ mod step {
                 state: ButtonState::Pressed,
             },
         );
-        assert_eq!(actions, vec![Action::Key { key: KeyName::Tab }]);
+        assert_eq!(
+            actions,
+            vec![Action::Key {
+                key: KeyName::Tab,
+                mods: Vec::new()
+            }]
+        );
         let (_, unmapped_actions) = step(
             state,
             &Event::Button {
@@ -431,7 +399,10 @@ mod step {
             assert_eq!(
                 actions,
                 if app_id == Some("test") {
-                    vec![Action::Key { key: KeyName::Tab }]
+                    vec![Action::Key {
+                        key: KeyName::Tab,
+                        mods: Vec::new(),
+                    }]
                 } else {
                     vec![]
                 },
@@ -444,7 +415,10 @@ mod step {
     fn pressing_a_sends_enter() {
         assert_eq!(
             run(&[A_PRESSED]),
-            vec![Action::Key { key: KeyName::Enter }],
+            vec![Action::Key {
+                key: KeyName::Enter,
+                mods: Vec::new()
+            }],
             "the global layer maps A to Enter"
         );
     }

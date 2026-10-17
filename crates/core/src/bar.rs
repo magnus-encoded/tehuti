@@ -30,6 +30,29 @@ pub struct Bar {
     pub(crate) generation: u64,
 }
 
+const AGENTS: [&str; 2] = ["Claude", "Codex"];
+
+/// The chip text for a focused window. A window titled by its agent launcher
+/// (`Claude`, or `Claude: <project>`) shows the agent or the project; every
+/// other window shows its app id.
+#[must_use]
+pub fn context_label(app_id: Option<&str>, title: &str) -> Option<String> {
+    for agent in AGENTS {
+        if title == agent {
+            return Some(agent.into());
+        }
+        if let Some(project) = title
+            .strip_prefix(agent)
+            .and_then(|rest| rest.strip_prefix(": "))
+            .map(str::trim)
+            .filter(|project| !project.is_empty())
+        {
+            return Some(project.into());
+        }
+    }
+    app_id.map(Into::into)
+}
+
 impl Bar {
     #[must_use]
     pub const fn new() -> Self {
@@ -53,9 +76,9 @@ impl Bar {
 
     pub(crate) fn event(&mut self, event: &Event) {
         match event {
-            Event::Focus { app_id, .. } => {
+            Event::Focus { app_id, title } => {
                 self.generation = self.generation.saturating_add(1);
-                self.context.clone_from(app_id);
+                self.context = context_label(app_id.as_deref(), title);
                 self.feedback = None;
                 self.remaining = None;
             }
@@ -149,7 +172,7 @@ impl Bar {
         for action in actions {
             let (text, tone) = match action {
                 Action::Text { .. } => ("typed".into(), Tone::Result),
-                Action::Key { key } => (format!("{key:?}"), Tone::Result),
+                Action::Key { key, .. } => (format!("{key:?}"), Tone::Result),
                 Action::Launch { desktop_entry } => (desktop_entry.as_str().into(), Tone::Result),
                 Action::Notice { text } => {
                     if text.as_str() == "NO SPEECH MAPPING" {
@@ -161,6 +184,7 @@ impl Bar {
                 Action::SecretRequest { .. } => ("Confirm secret".into(), Tone::Result),
                 Action::Close => ("Closed".into(), Tone::Result),
                 Action::Layout { .. } => ("Layout".into(), Tone::Result),
+                Action::Keyboard => ("Keyboard".into(), Tone::Result),
                 Action::Quit => ("Quitting".into(), Tone::Result),
             };
             self.result(&text, tone);
