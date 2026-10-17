@@ -11,8 +11,8 @@ use std::time::Instant;
 
 type Result<T> = core::result::Result<T, Box<dyn Error>>;
 
-fn names(root: &Path, relative: &Path, depth: usize, output: &mut Vec<String>) {
-    if depth > 8 || output.len() >= 100_000 {
+fn names(root: &Path, relative: &Path, depth: usize, env: &mut Environment) {
+    if depth > 8 || env.names.len() >= 100_000 {
         return;
     }
     let Ok(entries) = fs::read_dir(root.join(relative)) else {
@@ -20,9 +20,10 @@ fn names(root: &Path, relative: &Path, depth: usize, output: &mut Vec<String>) {
     };
     for entry in entries.flatten() {
         let path = relative.join(entry.file_name());
-        output.push(path.to_string_lossy().into_owned());
+        env.names.push(path.to_string_lossy().into_owned());
         if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            names(root, &path, depth.saturating_add(1), output);
+            env.folders.push(path.to_string_lossy().into_owned());
+            names(root, &path, depth.saturating_add(1), env);
         }
     }
 }
@@ -43,7 +44,7 @@ fn environment(home: &Path) -> Environment {
             }
         }
     }
-    names(home, Path::new(""), 0, &mut env.names);
+    names(home, Path::new(""), 0, &mut env);
     env.programs.sort();
     env.programs.dedup();
     env.names.sort();
@@ -131,7 +132,8 @@ fn main() -> Result<()> {
     };
     let verb = args.first().map_or("screen", String::as_str);
     let inputs = inputs(&args, verb, &mut state, &home)?;
-    (state, _) = step(state, Input::Environment(environment(&home)));
+    let folder = PathBuf::from(state.cwd());
+    (state, _) = step(state, Input::Environment(environment(&folder)));
     let log_path = std::env::var_os("TB_LOG")
         .map_or_else(|| PathBuf::from(format!("{}.log", path.display())), PathBuf::from);
     let mut log = OpenOptions::new().create(true).append(true).open(log_path)?;
@@ -145,8 +147,12 @@ fn main() -> Result<()> {
         writeln!(log, "{event}")?;
         let effects;
         (state, effects) = step(state, input);
-        for Effect::Run(invocation) in effects {
-            let (exit, output) = run(&invocation, &home, &path)?;
+        for effect in effects {
+            let Effect::Run(invocation) = effect else {
+                continue;
+            };
+            let run_folder = PathBuf::from(state.cwd());
+            let (exit, output) = run(&invocation, &run_folder, &path)?;
             (state, _) = step(
                 state,
                 Input::Completed {

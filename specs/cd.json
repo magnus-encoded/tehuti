@@ -1,0 +1,19 @@
+{
+  "program": "cd",
+  "summary": "change the working folder",
+  "builtin": true,
+  "order": [
+    "operand"
+  ],
+  "moves": [
+    {
+      "key": "folder",
+      "summary": "folder to work in",
+      "takes": "folder",
+      "group": "operand",
+      "operand": true,
+      "required": true,
+      "repeat": false
+    }
+  ]
+}

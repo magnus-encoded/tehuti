@@ -6,6 +6,9 @@ pub struct Environment {
     pub programs: Vec<String>,
     /// Paths relative to the working folder, supplied by the host.
     pub names: Vec<String>,
+    /// Folders relative to the working folder, supplied by the host.
+    #[serde(default)]
+    pub folders: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -132,7 +135,8 @@ pub fn read_value(definition: &Move, transcript: Option<&str>, env: &Environment
     let literal = transcript.map(strip_transcript);
     let said = transcript.map(spelled);
     let values = match definition.takes {
-        Some(ValueType::Path) => path_values(transcript, said.as_deref(), env),
+        Some(ValueType::Path) => path_values(transcript, said.as_deref(), &env.names),
+        Some(ValueType::Folder) => folder_values(transcript, said.as_deref(), env),
         Some(ValueType::Enum) => definition
             .values
             .iter()
@@ -260,13 +264,23 @@ fn is_symbol(word: &str) -> bool {
     )
 }
 
-fn path_values(
+fn folder_values(
     transcript: Option<&str>,
     said: Option<&str>,
     env: &Environment,
 ) -> Vec<(String, usize, String)> {
+    let mut folders = vec!["..".to_owned()];
+    folders.extend(env.folders.iter().cloned());
+    path_values(transcript, said, &folders)
+}
+
+fn path_values(
+    transcript: Option<&str>,
+    said: Option<&str>,
+    names: &[String],
+) -> Vec<(String, usize, String)> {
     let mut values: Vec<_> = core::iter::once(".")
-        .chain(env.names.iter().map(String::as_str))
+        .chain(names.iter().map(String::as_str))
         .filter(|name| transcript.is_some() || !name.contains('/'))
         .map(|name| {
             (
@@ -279,7 +293,7 @@ fn path_values(
         })
         .collect();
     if let Some(heard) = said {
-        let exists = heard == "." || env.names.iter().any(|name| name == heard);
+        let exists = heard == "." || names.iter().any(|name| name == heard);
         values.push((
             heard.to_owned(),
             if exists { 100 } else { 50 },

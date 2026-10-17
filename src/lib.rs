@@ -4,7 +4,7 @@ pub mod readers;
 pub mod screen;
 pub mod spec;
 
-pub use machine::{Button, Effect, HistoryRow, Input, State, step};
+pub use machine::{Button, Effect, HistoryRow, Input, State, join_folder, step};
 pub use model::{Draft, ReadyInvocation};
 pub use readers::{
     Candidate, Confidence, Environment, parse_words, read_value, spelled, spoken_words, strip_transcript,

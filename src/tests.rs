@@ -19,7 +19,10 @@ fn speech_cannot_edit_history_or_accept_nul() -> Result<(), serde_json::Error> {
     (state, _) = step(state, Input::Type("cat".into()));
     let effects;
     (state, effects) = step(state, Input::Press(Button::Accept));
-    for Effect::Run(invocation) in effects {
+    for effect in effects {
+        let Effect::Run(invocation) = effect else {
+            continue;
+        };
         (state, _) = step(
             state,
             Input::Completed {
@@ -89,6 +92,7 @@ fn environment_rejects_nul_and_empty_program_names() -> Result<(), serde_json::E
         Input::Environment(Environment {
             programs: vec![String::new(), "bad\0name".into(), "valid".into()],
             names: vec!["bad\0path".into(), "src".into()],
+            folders: vec!["bad\0folder".into(), "src".into()],
         }),
     );
     assert_eq!(
@@ -97,6 +101,7 @@ fn environment_rejects_nul_and_empty_program_names() -> Result<(), serde_json::E
         "only valid executable names enter the reader pool"
     );
     assert_eq!(state.env.names, vec!["src"], "paths cannot contain NUL");
+    assert_eq!(state.env.folders, vec!["src"], "folders cannot contain NUL");
     Ok(())
 }
 
@@ -104,7 +109,7 @@ fn environment_rejects_nul_and_empty_program_names() -> Result<(), serde_json::E
 fn stage_navigation_cleans_empty_stages_and_undo_restores_them() -> Result<(), serde_json::Error> {
     let (mut state, _) = step(State::new("/tmp".into(), specs()?), Input::Press(Button::New));
     (state, _) = step(state, Input::Press(Button::Down));
-    assert_eq!(state.screen().list.len(), 8, "browse offers all bundled programs");
+    assert_eq!(state.screen().list.len(), 9, "browse offers all bundled programs");
     assert_eq!(
         state.screen().list.first().map(|entry| entry.value.as_str()),
         Some("find"),
@@ -186,4 +191,61 @@ proptest::proptest! {
         proptest::prop_assert!(screen.list.iter().any(|entry| entry.value == word), "raw text offered");
         proptest::prop_assert!(screen.list.iter().all(|entry| entry.value != "argument"), "no empty raw hole offered");
     }
+}
+
+#[test]
+fn cd_is_a_builtin_that_changes_the_working_folder() -> Result<(), serde_json::Error> {
+    use crate::Environment;
+    let (mut state, _) = step(State::new("/home/me".into(), specs()?), Input::Press(Button::New));
+    (state, _) = step(
+        state,
+        Input::Environment(Environment {
+            programs: vec!["ls".into()],
+            names: vec!["notes.txt".into(), "src".into()],
+            folders: vec!["src".into()],
+        }),
+    );
+    (state, _) = step(state, Input::Say("cd".into()));
+    assert!(
+        state.screen().list.iter().any(|entry| entry.value == "cd"),
+        "cd is a program candidate though it is not on PATH"
+    );
+    (state, _) = step(state, Input::Press(Button::Accept));
+    (state, _) = step(state, Input::Press(Button::Down));
+    let offered: Vec<_> = state
+        .screen()
+        .list
+        .iter()
+        .map(|entry| entry.value.clone())
+        .collect();
+    assert!(offered.contains(&"src".to_owned()), "folders are offered");
+    assert!(
+        !offered.contains(&"notes.txt".to_owned()),
+        "files are not offered"
+    );
+    (state, _) = step(state, Input::Press(Button::Back));
+    (state, _) = step(state, Input::Say("source".into()));
+    (state, _) = step(state, Input::Type("src".into()));
+    let effects;
+    (state, effects) = step(state, Input::Press(Button::Accept));
+    assert_eq!(
+        effects,
+        vec![Effect::ChangeFolder("/home/me/src".into())],
+        "cd changes the folder instead of spawning"
+    );
+    assert_eq!(
+        state.cwd(),
+        "/home/me/src",
+        "the builder's folder segment follows"
+    );
+    Ok(())
+}
+
+#[test]
+fn join_folder_resolves_lexically() {
+    use crate::join_folder;
+    assert_eq!(join_folder("/a/b", ".."), "/a", "parent");
+    assert_eq!(join_folder("/a/b", "/etc/./x/.."), "/etc", "absolute");
+    assert_eq!(join_folder("/", "../.."), "/", "root stays root");
+    assert_eq!(join_folder("/a", "b/c/"), "/a/b/c", "relative");
 }

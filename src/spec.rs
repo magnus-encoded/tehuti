@@ -11,6 +11,7 @@ pub enum ValueType {
     Enum,
     String,
     Command,
+    Folder,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -29,6 +30,9 @@ pub struct Move {
 pub struct CommandSpec {
     pub program: String,
     pub summary: String,
+    /// Runs inside the builder instead of spawning a child.
+    #[serde(default)]
+    pub builtin: bool,
     pub order: Vec<String>,
     pub moves: Vec<Move>,
 }
@@ -47,6 +51,7 @@ pub fn specs() -> Result<Vec<CommandSpec>, serde_json::Error> {
         include_str!("../specs/sort.json"),
         include_str!("../specs/head.json"),
         include_str!("../specs/ls.json"),
+        include_str!("../specs/cd.json"),
     ]
     .into_iter()
     .map(serde_json::from_str)

@@ -153,6 +153,7 @@ fn describe(definition: &Move) -> String {
         Some(ValueType::Integer) => "A whole number: say or type it.",
         Some(ValueType::Enum) => "Choose a value with speech or DOWN to browse.",
         Some(ValueType::String) => "Text: say or type it.",
+        Some(ValueType::Folder) => "A folder: say its name or DOWN to browse.",
         Some(ValueType::Command) => "A nested command: say its program.",
         None => "A flag; it takes no value.",
     };

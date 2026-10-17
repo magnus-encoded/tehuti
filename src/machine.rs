@@ -56,6 +56,8 @@ pub enum Input {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
     Run(ReadyInvocation),
+    /// A builtin `cd` ran: the host should run later commands in this folder.
+    ChangeFolder(String),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -117,6 +119,12 @@ impl State {
                 .into(),
             env: Environment::default(),
         }
+    }
+
+    /// The builder's working folder, where the host runs commands.
+    #[must_use]
+    pub fn cwd(&self) -> &str {
+        &self.cwd
     }
 
     #[must_use]
@@ -677,9 +685,7 @@ impl State {
                         self.apply(entry.choice.clone());
                     }
                 } else if let Some(invocation) = self.draft.ready() {
-                    self.draft = Draft::default();
-                    self.focus = 0;
-                    return vec![Effect::Run(invocation)];
+                    return self.run_ready(invocation);
                 } else {
                     self.notice = "Not ready: empty slots remain.".into();
                 }
@@ -705,6 +711,56 @@ impl State {
         }
         Vec::new()
     }
+}
+
+impl State {
+    fn run_ready(&mut self, invocation: ReadyInvocation) -> Vec<Effect> {
+        self.draft = Draft::default();
+        self.focus = 0;
+        if let Some(target) = self.builtin_cd(&invocation) {
+            self.cwd = join_folder(&self.cwd, &target);
+            self.notice = format!("Working folder {}.", self.cwd);
+            return vec![Effect::ChangeFolder(self.cwd.clone())];
+        }
+        vec![Effect::Run(invocation)]
+    }
+
+    /// The folder operand when the invocation is exactly one builtin `cd`.
+    fn builtin_cd(&self, invocation: &ReadyInvocation) -> Option<String> {
+        let argv = invocation.argv();
+        let [stage] = argv.as_slice() else {
+            return None;
+        };
+        let (program, operands) = stage.split_first()?;
+        let builtin = self
+            .specs
+            .iter()
+            .any(|spec| spec.builtin && spec.program == *program && program == "cd");
+        match operands {
+            [folder] if builtin => Some(folder.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve `target` against `cwd` lexically; an empty target keeps `cwd`.
+#[must_use]
+pub fn join_folder(cwd: &str, target: &str) -> String {
+    let mut parts: Vec<&str> = if target.starts_with('/') {
+        Vec::new()
+    } else {
+        cwd.split('/').filter(|part| !part.is_empty()).collect()
+    };
+    for part in target.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                let _parent = parts.pop();
+            }
+            name => parts.push(name),
+        }
+    }
+    format!("/{}", parts.join("/"))
 }
 
 /// A spoken or typed raw argument keeps its own text as the value.
@@ -739,7 +795,10 @@ pub(crate) fn valid_value(definition: &Move, value: &str) -> bool {
                 .as_ref()
                 .is_some_and(|values| values.contains_key(value)),
             Some(ValueType::Command) => false,
-            Some(ValueType::Path | ValueType::Glob | ValueType::Regex | ValueType::String) | None => true,
+            Some(
+                ValueType::Path | ValueType::Folder | ValueType::Glob | ValueType::Regex | ValueType::String,
+            )
+            | None => true,
         }
 }
 
@@ -773,6 +832,12 @@ fn parse_stage(words: &[String], specs: &[CommandSpec], env: &Environment, depth
         let value = value.map(|value| {
             if definition.takes == Some(ValueType::Path) {
                 env.names
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(&value))
+                    .cloned()
+                    .unwrap_or(value)
+            } else if definition.takes == Some(ValueType::Folder) {
+                env.folders
                     .iter()
                     .find(|name| name.eq_ignore_ascii_case(&value))
                     .cloned()
@@ -820,6 +885,7 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             env.programs
                 .retain(|name| !name.is_empty() && !name.contains('\0'));
             env.names.retain(|name| !name.contains('\0'));
+            env.folders.retain(|name| !name.contains('\0'));
             state.env = env;
             Vec::new()
         }
@@ -972,7 +1038,8 @@ mod tests {
                     let (undone, _) = step(closed, Input::Press(Button::Back));
                     prop_assert_eq!(&undone.draft, &before.draft, "undo must restore any edit");
                 }
-                for Effect::Run(invocation) in effects {
+                for effect in effects {
+                    let Effect::Run(invocation) = effect else { continue };
                     prop_assert!(invocation.draft().ready().is_some());
                     prop_assert!(before.draft.ready().is_some(), "a draft with a hole cannot run");
                 }
@@ -1005,6 +1072,7 @@ mod tests {
             Input::Environment(Environment {
                 programs: vec![],
                 names: vec!["src".into(), "src/main.rs".into()],
+                folders: vec!["src".into()],
             }),
         );
         (state, _) = step(state, Input::Press(Button::New));
@@ -1079,7 +1147,8 @@ mod tests {
         let effects;
         (state, effects) = step(state, Input::Press(Button::Accept));
         assert!(state.draft.stages.is_empty(), "running clears the builder");
-        for Effect::Run(invocation) in effects {
+        for effect in effects {
+            let Effect::Run(invocation) = effect else { continue };
             (state, _) = step(
                 state,
                 Input::Completed {
@@ -1102,6 +1171,7 @@ mod tests {
         let env = Environment {
             programs: vec!["custom".into()],
             names: vec!["src".into()],
+            folders: Vec::new(),
         };
         (state, _) = step(state, Input::Environment(env.clone()));
         assert_eq!(state.env, env, "environment facts arrive as input");
