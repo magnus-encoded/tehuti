@@ -315,6 +315,22 @@ mod tests {
         }
 
         #[test]
+        fn activity_answered_by_events_never_reopens(
+            changes in prop::collection::vec((1_u64..400, any::<u8>()), 1..64)
+        ) {
+            // Each change is read as events before the next sample sees it.
+            let mut series = Vec::new();
+            let mut previous = 0;
+            for (step, fingerprint) in changes {
+                series.push((0, previous, true));
+                series.push((step, fingerprint, false));
+                series.push((1000, fingerprint, false));
+                previous = fingerprint;
+            }
+            prop_assert!(!run_watch(&series).contains(&WatchVerdict::Reopen));
+        }
+
+        #[test]
         fn activity_without_events_for_the_silence_limit_reopens(
             steps in prop::collection::vec(1_u64..400, 1..64), first in any::<u8>()
         ) {
@@ -561,7 +577,9 @@ pub enum WatchVerdict {
 pub fn watch(mut state: Watchdog, input: WatchInput) -> (Watchdog, WatchVerdict) {
     match input {
         WatchInput::Events => {
+            // The events explain any change up to now, so the next sample sets a new baseline.
             state.unanswered_since = None;
+            state.fingerprint = None;
             (state, WatchVerdict::Healthy)
         }
         WatchInput::Sample { now, fingerprint } => {
