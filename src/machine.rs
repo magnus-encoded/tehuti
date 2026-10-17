@@ -352,7 +352,7 @@ impl State {
         let entries = match self.focused() {
             Some(Segment::Program(address)) => {
                 if let Some(text) = text {
-                    let words = spoken_words(text);
+                    let words = unglue(spoken_words(text), &self.specs);
                     if words.len() > 1
                         && let Some(parsed) = parse_stage(&words, &self.specs, &self.env, 0)
                     {
@@ -791,6 +791,88 @@ pub fn join_folder(cwd: &str, target: &str) -> String {
         }
     }
     format!("/{}", parts.join("/"))
+}
+
+/// Whisper glues spoken flags into one word: "src-name-star.rs".
+/// Split such words where the program's spec knows the flag, and decode
+/// spoken symbol names inside glob values ("star.rs" becomes "*.rs").
+fn unglue(words: Vec<String>, specs: &[CommandSpec]) -> Vec<String> {
+    let Some(spec) = words
+        .first()
+        .and_then(|program| specs.iter().find(|spec| spec.program == *program))
+    else {
+        return words;
+    };
+    let flag = |part: &str| {
+        spec.moves
+            .iter()
+            .find(|entry| !entry.operand && entry.key == format!("-{part}"))
+    };
+    let mut result = Vec::new();
+    let mut glob_next = false;
+    for word in words {
+        let parts: Vec<&str> = word.split('-').collect();
+        let glued = !word.starts_with('-') && parts.iter().skip(1).any(|part| flag(part).is_some());
+        if !glued {
+            result.push(if glob_next {
+                decode_symbols(&word)
+            } else {
+                word.clone()
+            });
+            glob_next = flag(word.trim_start_matches('-'))
+                .is_some_and(|entry| word.starts_with('-') && entry.takes == Some(ValueType::Glob));
+            continue;
+        }
+        let mut pending: Vec<&str> = Vec::new();
+        for (position, part) in parts.into_iter().enumerate() {
+            if let Some(entry) = flag(part).filter(|_| position > 0) {
+                flush_glued(&mut pending, glob_next, &mut result);
+                result.push(entry.key.clone());
+                glob_next = entry.takes == Some(ValueType::Glob);
+            } else {
+                pending.push(part);
+            }
+        }
+        flush_glued(&mut pending, glob_next, &mut result);
+        glob_next = false;
+    }
+    result
+}
+
+fn flush_glued(pending: &mut Vec<&str>, glob: bool, words: &mut Vec<String>) {
+    if !pending.is_empty() {
+        let value = pending.join("-");
+        words.push(if glob { decode_symbols(&value) } else { value });
+        pending.clear();
+    }
+}
+
+fn emit_symbol(word: &mut String, output: &mut String) {
+    if !word.is_empty() {
+        let decoded = spelled(word);
+        output.push_str(if decoded.chars().all(char::is_alphanumeric) {
+            word
+        } else {
+            &decoded
+        });
+        word.clear();
+    }
+}
+
+/// Replace spoken symbol names between punctuation: "star.rs" becomes "*.rs".
+fn decode_symbols(value: &str) -> String {
+    let mut result = String::new();
+    let mut run = String::new();
+    for character in value.chars() {
+        if character.is_alphanumeric() {
+            run.push(character);
+        } else {
+            emit_symbol(&mut run, &mut result);
+            result.push(character);
+        }
+    }
+    emit_symbol(&mut run, &mut result);
+    result
 }
 
 /// A spoken or typed raw argument keeps its own text as the value.

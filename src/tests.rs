@@ -315,3 +315,35 @@ fn typing_over_a_filled_segment_keeps_an_undo() -> Result<(), serde_json::Error>
     );
     Ok(())
 }
+
+#[test]
+fn whisper_glued_flags_split_into_flag_and_glob() -> Result<(), serde_json::Error> {
+    let (mut state, _) = step(State::new("/tmp".into(), specs()?), Input::Press(Button::New));
+    (state, _) = step(state, Input::Say("find src-name-star.rs".into()));
+    (state, _) = step(state, Input::Press(Button::Accept));
+    assert_eq!(
+        state.draft.preview(),
+        "find src -name '*.rs'",
+        "glued speech becomes a flag and a glob"
+    );
+    (state, _) = step(state, Input::Press(Button::New));
+    (state, _) = step(state, Input::Say("find my-project".into()));
+    (state, _) = step(state, Input::Press(Button::Accept));
+    assert_eq!(
+        state.draft.preview(),
+        "find my-project",
+        "hyphens that are not flags stay"
+    );
+    Ok(())
+}
+
+proptest::proptest! {
+    #[test]
+    fn glued_name_flags_always_split(folder in "[a-z]{1,8}", extension in "[a-z]{1,4}") {
+        let (mut state, _) = step(State::new("/tmp".into(), specs().map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?), Input::Press(Button::New));
+        (state, _) = step(state, Input::Say(format!("find {folder}-name-star.{extension}")));
+        (state, _) = step(state, Input::Press(Button::Accept));
+        let argv = state.draft.ready().map(|ready| ready.argv());
+        proptest::prop_assert_eq!(argv, Some(vec![vec!["find".to_owned(), folder, "-name".into(), format!("*.{extension}")]]), "flag and glob are separate words");
+    }
+}
