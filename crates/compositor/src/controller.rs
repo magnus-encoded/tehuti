@@ -127,6 +127,25 @@ impl EvdevPad {
         }
         Ok(sticks)
     }
+
+    /// Fingerprints the kernel's view of held keys and axis positions.
+    ///
+    /// The kernel updates this state even when no event reaches our file descriptor,
+    /// so a changing fingerprint without routed events means our read path is dead.
+    /// # Errors
+    /// The kernel could not read the controller state, as when the node is gone.
+    pub fn activity(&self) -> io::Result<u64> {
+        use core::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for key in &self.0.get_key_state()? {
+            key.code().hash(&mut hasher);
+        }
+        for (axis, info) in self.0.get_absinfo()? {
+            axis.0.hash(&mut hasher);
+            info.value().hash(&mut hasher);
+        }
+        Ok(hasher.finish())
+    }
 }
 
 impl AsFd for EvdevPad {
@@ -254,6 +273,58 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn run_watch(series: &[(u64, u8, bool)]) -> Vec<WatchVerdict> {
+        let mut state = Watchdog::default();
+        let mut now = core::time::Duration::ZERO;
+        let mut verdicts = Vec::new();
+        for &(step_ms, fingerprint, events) in series {
+            now = now.saturating_add(core::time::Duration::from_millis(step_ms));
+            let (next, verdict) = watch(
+                state,
+                WatchInput::Sample {
+                    now,
+                    fingerprint: u64::from(fingerprint),
+                },
+            );
+            state = next;
+            verdicts.push(verdict);
+            if events {
+                state = watch(state, WatchInput::Events).0;
+            }
+        }
+        verdicts
+    }
+
+    proptest! {
+        #[test]
+        fn a_pad_whose_events_keep_arriving_is_never_reopened(
+            series in prop::collection::vec((0_u64..5000, any::<u8>()), 0..64)
+        ) {
+            let answered: Vec<_> = series.into_iter().map(|(step, print)| (step, print, true)).collect();
+            prop_assert!(run_watch(&answered).iter().all(|verdict| *verdict == WatchVerdict::Healthy));
+        }
+
+        #[test]
+        fn an_idle_pad_is_never_reopened(
+            steps in prop::collection::vec(0_u64..5000, 0..64), fingerprint in any::<u8>()
+        ) {
+            let idle: Vec<_> = steps.into_iter().map(|step| (step, fingerprint, false)).collect();
+            prop_assert!(run_watch(&idle).iter().all(|verdict| *verdict == WatchVerdict::Healthy));
+        }
+
+        #[test]
+        fn activity_without_events_for_the_silence_limit_reopens(
+            steps in prop::collection::vec(1_u64..400, 1..64), first in any::<u8>()
+        ) {
+            let mut series = vec![(0, first, false), (0, first.wrapping_add(1), false)];
+            series.extend(steps.iter().map(|step| (*step, first, false)));
+            let elapsed: u64 = steps.iter().sum();
+            let reopened = run_watch(&series).contains(&WatchVerdict::Reopen);
+            prop_assert_eq!(reopened, elapsed >= 1000);
+        }
+    }
 
     #[test]
     fn elite_guide_and_paddles_map_kernel_codes() {
@@ -440,6 +511,75 @@ pub fn discover(state: Discovery, input: DiscoveryInput) -> (Discovery, Option<D
             (Discovery::Attached, Some(DiscoveryEffect::Reconnected))
         }
         (state, _) => (state, None),
+    }
+}
+
+/// How long kernel-side activity may go without a routed event before the pad is re-opened.
+pub const SILENCE_LIMIT: core::time::Duration = core::time::Duration::from_secs(1);
+
+/// Notices a grabbed pad whose kernel state changes while none of its events reach us.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Watchdog {
+    fingerprint: Option<u64>,
+    unanswered_since: Option<core::time::Duration>,
+    reopen: bool,
+}
+
+impl Watchdog {
+    /// Asks the event loop to drop and re-open the pad, as after a failed read.
+    pub const fn request_reopen(&mut self) {
+        self.reopen = true;
+    }
+
+    /// Takes a pending re-open request.
+    pub const fn take_reopen(&mut self) -> bool {
+        core::mem::replace(&mut self.reopen, false)
+    }
+}
+
+/// What the watchdog observes from the event loop.
+#[derive(Debug, Clone, Copy)]
+pub enum WatchInput {
+    /// The pad's activity fingerprint, sampled at `now`.
+    Sample {
+        now: core::time::Duration,
+        fingerprint: u64,
+    },
+    /// At least one event was read from the pad.
+    Events,
+}
+
+/// Whether the pad must be dropped and re-opened.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WatchVerdict {
+    Healthy,
+    Reopen,
+}
+
+/// Advances the watchdog. Performs no I/O.
+#[must_use]
+pub fn watch(mut state: Watchdog, input: WatchInput) -> (Watchdog, WatchVerdict) {
+    match input {
+        WatchInput::Events => {
+            state.unanswered_since = None;
+            (state, WatchVerdict::Healthy)
+        }
+        WatchInput::Sample { now, fingerprint } => {
+            let previous = state.fingerprint.replace(fingerprint);
+            if previous.is_some_and(|previous| previous != fingerprint) {
+                let _first = state.unanswered_since.get_or_insert(now);
+            }
+            let verdict = if !state.reopen
+                && state
+                    .unanswered_since
+                    .is_some_and(|since| now.saturating_sub(since) >= SILENCE_LIMIT)
+            {
+                WatchVerdict::Reopen
+            } else {
+                WatchVerdict::Healthy
+            };
+            (state, verdict)
+        }
     }
 }
 

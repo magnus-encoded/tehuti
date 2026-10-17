@@ -31,6 +31,7 @@ pub(crate) struct LoopData {
     controller: Option<EvdevPad>,
     controller_token: Option<calloop::RegistrationToken>,
     rescan_controller: bool,
+    watchdog: controller::Watchdog,
     discovery: controller::Discovery,
     discovery_epoch: std::time::Instant,
     seat_active: bool,
@@ -117,6 +118,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         controller,
         controller_token,
         rescan_controller: true,
+        watchdog: controller::Watchdog::default(),
         discovery,
         discovery_epoch: std::time::Instant::now(),
         seat_active: true,
@@ -172,6 +174,12 @@ fn initial_discovery(controller: Option<&EvdevPad>, compositor: &mut Compositor)
 fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
     if !data.seat_active || data.compositor.quit_requested() {
         return;
+    }
+    if data.watchdog.take_reopen()
+        && data.controller.is_some()
+        && let Some(token) = drop_controller(data)
+    {
+        handle.remove(token);
     }
     let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
     let (state, effect) = controller::discover(
@@ -309,23 +317,43 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     let Some(device) = data.controller.as_mut() else {
         return PostAction::Remove;
     };
-    match input::route(&mut data.compositor, device) {
-        Ok(()) => PostAction::Continue,
-        Err(error) => {
-            error!(%error, "controller read failed; dropping it");
-            data.controller = None;
-            data.controller_token = None;
-            let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
-            data.discovery = controller::discover(
-                state,
-                controller::DiscoveryInput::Disconnected {
-                    now: data.discovery_epoch.elapsed(),
-                },
+    match input::route_counted(&mut data.compositor, device) {
+        Ok(0) => PostAction::Continue,
+        Ok(_) => {
+            data.watchdog = controller::watch(
+                core::mem::take(&mut data.watchdog),
+                controller::WatchInput::Events,
             )
             .0;
+            PostAction::Continue
+        }
+        Err(error) => {
+            error!(%error, "controller read failed; dropping it");
+            let _token = drop_controller(data);
             PostAction::Remove
         }
     }
+}
+
+/// Forgets the pad, releases everything it held and schedules an immediate rescan.
+/// Returns the stale event source token for the caller to remove.
+fn drop_controller(data: &mut LoopData) -> Option<calloop::RegistrationToken> {
+    data.controller = None;
+    data.watchdog = controller::Watchdog::default();
+    data.compositor
+        .speech_input(tehuti_core::speech::SpeechInput::Disconnected);
+    data.compositor
+        .controller_input(tehuti_core::controller::Input::Disconnected);
+    let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+    data.discovery = controller::discover(
+        state,
+        controller::DiscoveryInput::Disconnected {
+            now: data.discovery_epoch.elapsed(),
+        },
+    )
+    .0;
+    data.rescan_controller = true;
+    data.controller_token.take()
 }
 
 fn advance_time(data: &mut LoopData) {
@@ -335,7 +363,22 @@ fn advance_time(data: &mut LoopData) {
             Err(error) => {
                 data.compositor
                     .sample_sticks(tehuti_core::dispatch::Sticks::default());
-                warn!(%error, "controller stick sample failed");
+                warn!(%error, "controller stick sample failed; re-opening it");
+                data.watchdog.request_reopen();
+            }
+        }
+        if let Ok(fingerprint) = pad.activity() {
+            let (watchdog, verdict) = controller::watch(
+                core::mem::take(&mut data.watchdog),
+                controller::WatchInput::Sample {
+                    now: data.discovery_epoch.elapsed(),
+                    fingerprint,
+                },
+            );
+            data.watchdog = watchdog;
+            if verdict == controller::WatchVerdict::Reopen {
+                warn!("controller state changes but no events arrive; re-opening it");
+                data.watchdog.request_reopen();
             }
         }
     }
