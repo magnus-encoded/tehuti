@@ -10,17 +10,15 @@ use std::path::{Path, PathBuf};
 pub struct Session {
     state: State,
     initial: State,
-    cwd: PathBuf,
 }
 
 impl Session {
     /// Keep the initial environment for resets.
     #[must_use]
-    pub fn new(state: State, cwd: PathBuf) -> Self {
+    pub fn new(state: State) -> Self {
         Self {
             initial: state.clone(),
             state,
-            cwd,
         }
     }
 
@@ -34,17 +32,26 @@ impl Session {
     pub fn input(&mut self, input: Input) {
         let effects;
         (self.state, effects) = step(self.state.clone(), input);
-        for Effect::Run(invocation) in effects {
-            let (exit, output) =
-                crate::run(&invocation, &self.cwd).unwrap_or_else(|error| (126, error.to_string()));
-            (self.state, _) = step(
-                self.state.clone(),
-                Input::Completed {
-                    invocation,
-                    exit,
-                    output,
-                },
-            );
+        for effect in effects {
+            match effect {
+                Effect::Run(invocation) => {
+                    let cwd = PathBuf::from(self.state.cwd());
+                    let (exit, output) =
+                        crate::run(&invocation, &cwd).unwrap_or_else(|error| (126, error.to_string()));
+                    (self.state, _) = step(
+                        self.state.clone(),
+                        Input::Completed {
+                            invocation,
+                            exit,
+                            output,
+                        },
+                    );
+                }
+                Effect::ChangeFolder(folder) => {
+                    let environment = crate::environment(Path::new(&folder));
+                    (self.state, _) = step(self.state.clone(), Input::Environment(environment));
+                }
+            }
         }
     }
 
@@ -209,8 +216,63 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::socket_path;
+    use super::{Session, socket_path};
+    use ibis_commands::{Button, Input, State, specs};
     use std::path::PathBuf;
+
+    #[test]
+    fn cd_moves_later_commands_and_rescans_folders() -> Result<(), Box<dyn core::error::Error>> {
+        let root = std::env::temp_dir().join(format!("ibis-tui-cd-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("inner").join("deeper"))?;
+        let mut state = State::new(root.to_string_lossy().into_owned(), specs()?);
+        (state, _) = ibis_commands::step(state, Input::Environment(crate::environment(&root)));
+        let mut session = Session::new(state);
+        for input in [
+            Input::Press(Button::New),
+            Input::Say("cd".into()),
+            Input::Press(Button::Accept),
+            Input::Press(Button::Down),
+            Input::Type("inner".into()),
+            Input::Press(Button::Accept),
+        ] {
+            session.input(input);
+        }
+        let inner = root.join("inner");
+        assert_eq!(session.state().cwd(), inner.to_string_lossy());
+        for input in [
+            Input::Press(Button::New),
+            Input::Say("cd".into()),
+            Input::Press(Button::Accept),
+            Input::Press(Button::Down),
+        ] {
+            session.input(input);
+        }
+        assert!(
+            session
+                .state()
+                .screen()
+                .list
+                .iter()
+                .any(|entry| entry.value == "deeper"),
+            "folders of the new working folder are offered"
+        );
+        session.input(Input::Press(Button::Back));
+        for input in [
+            Input::Press(Button::New),
+            Input::Say("pwd".into()),
+            Input::Press(Button::Accept),
+            Input::Press(Button::Accept),
+        ] {
+            session.input(input);
+        }
+        let output = session.state().history().last().map(|row| row.output.clone());
+        std::fs::remove_dir_all(&root)?;
+        assert_eq!(
+            output.as_deref().map(str::trim),
+            Some(inner.to_string_lossy().as_ref())
+        );
+        Ok(())
+    }
 
     #[test]
     fn socket_override_precedes_runtime_directory() -> Result<(), std::io::Error> {

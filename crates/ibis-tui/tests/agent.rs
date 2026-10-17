@@ -11,7 +11,7 @@ mod agent {
     use std::os::unix::net::{UnixListener, UnixStream};
 
     fn session() -> Result<Session, Box<dyn Error>> {
-        Ok(Session::new(State::new(".".into(), specs()?), ".".into()))
+        Ok(Session::new(State::new(".".into(), specs()?)))
     }
 
     fn request(

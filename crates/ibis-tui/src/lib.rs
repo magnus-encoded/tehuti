@@ -7,7 +7,7 @@ pub mod agent;
 
 use core::time::Duration;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ibis_commands::{Button, Input, ReadyInvocation};
+use ibis_commands::{Button, Environment, Input, ReadyInvocation};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -94,6 +94,37 @@ impl InputLine {
         };
         button.map(Input::Press)
     }
+}
+
+/// Programs on `PATH`, plus the names and subfolders of `cwd`.
+#[must_use]
+pub fn environment(cwd: &Path) -> Environment {
+    let mut environment = Environment::default();
+    if let Some(paths) = std::env::var_os("PATH") {
+        for path in std::env::split_paths(&paths) {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                environment.programs.extend(
+                    entries
+                        .flatten()
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned()),
+                );
+            }
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(cwd) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().is_dir() {
+                environment.folders.push(name.clone());
+            }
+            environment.names.push(name);
+        }
+    }
+    environment.programs.sort();
+    environment.programs.dedup();
+    environment.names.sort();
+    environment.folders.sort();
+    environment
 }
 
 /// Capture combined output without pipe deadlocks; GNU timeout kills the process group.

@@ -5,7 +5,7 @@
 use core::error::Error;
 use core::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ibis_commands::{Environment, Input, Screen, State, specs, step};
+use ibis_commands::{Input, Screen, State, specs, step};
 use ibis_tui::InputLine;
 use ibis_tui::agent::{Session, Socket, socket_path};
 use ratatui::{
@@ -15,32 +15,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
-use std::{path::Path, time::Instant};
-
-fn environment(cwd: &Path) -> Environment {
-    let mut environment = Environment::default();
-    if let Some(paths) = std::env::var_os("PATH") {
-        for path in std::env::split_paths(&paths) {
-            if let Ok(entries) = std::fs::read_dir(path) {
-                environment.programs.extend(
-                    entries
-                        .flatten()
-                        .map(|entry| entry.file_name().to_string_lossy().into_owned()),
-                );
-            }
-        }
-    }
-    if let Ok(entries) = std::fs::read_dir(cwd) {
-        environment.names.extend(
-            entries
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().into_owned()),
-        );
-    }
-    environment.programs.sort();
-    environment.programs.dedup();
-    environment
-}
+use std::time::Instant;
 
 fn powerline(parts: impl IntoIterator<Item = (String, bool)>) -> Line<'static> {
     let mut spans = Vec::new();
@@ -55,7 +30,7 @@ fn powerline(parts: impl IntoIterator<Item = (String, bool)>) -> Line<'static> {
     Line::from(spans)
 }
 
-fn draw(frame: &mut Frame<'_>, screen: &Screen, pending: &str, scroll: u16) {
+fn draw(frame: &mut Frame<'_>, screen: &Screen, folder: &str, pending: &str, scroll: u16) {
     let [history_area, preview_area, builder_area] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(2), Constraint::Length(10)])
             .areas(frame.area());
@@ -74,8 +49,12 @@ fn draw(frame: &mut Frame<'_>, screen: &Screen, pending: &str, scroll: u16) {
         history_area,
     );
     frame.render_widget(
-        Paragraph::new(format!("$ {}\nsay> {pending}", clean(&screen.preview)))
-            .style(Style::default().fg(Color::Yellow)),
+        Paragraph::new(format!(
+            "{} $ {}\nsay> {pending}",
+            clean(folder),
+            clean(&screen.preview)
+        ))
+        .style(Style::default().fg(Color::Yellow)),
         preview_area,
     );
     let mut builder = vec![powerline(
@@ -120,13 +99,13 @@ fn clean(text: &str) -> String {
 fn main() -> Result<(), Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     let mut state = State::new(cwd.to_string_lossy().into_owned(), specs()?);
-    (state, _) = step(state, Input::Environment(environment(&cwd)));
+    (state, _) = step(state, Input::Environment(ibis_tui::environment(&cwd)));
     let mut socket = Socket::bind(&socket_path(
         std::env::var_os("IBIS_TUI_SOCKET"),
         std::env::var_os("XDG_RUNTIME_DIR"),
     )?)?;
     let mut terminal = ratatui::try_init()?;
-    let result = session(&mut terminal, state, &cwd, &mut socket);
+    let result = session(&mut terminal, state, &mut socket);
     ratatui::restore();
     result
 }
@@ -134,10 +113,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn session(
     terminal: &mut ratatui::DefaultTerminal,
     initial: State,
-    cwd: &Path,
     socket: &mut Socket,
 ) -> Result<(), Box<dyn Error>> {
-    let mut session = Session::new(initial, cwd.to_owned());
+    let mut session = Session::new(initial);
     let mut line = InputLine::default();
     let mut last_key = Instant::now();
     let mut scroll = 0_u16;
@@ -148,7 +126,7 @@ fn session(
             scroll = history_lines(session.state());
         }
         let state = session.state();
-        let _frame = terminal.draw(|frame| draw(frame, &state.screen(), line.text(), scroll))?;
+        let _frame = terminal.draw(|frame| draw(frame, &state.screen(), state.cwd(), line.text(), scroll))?;
         let input = if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
