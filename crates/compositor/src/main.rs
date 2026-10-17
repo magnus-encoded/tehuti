@@ -37,6 +37,7 @@ pub(crate) struct LoopData {
     seat_active: bool,
     log_out: bool,
     context_watch: Option<tehuti::contexts::ContextWatch>,
+    escape: tehuti::escape::Escape,
 }
 
 impl LoopData {
@@ -63,6 +64,7 @@ fn initialize_tracing() {
 
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     initialize_tracing();
+    let escape = tehuti::escape::Escape::spawn()?;
     let mut application = std::env::args_os().skip(1);
     let context_directory = application
         .next()
@@ -73,9 +75,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory)));
-    if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
-        compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
-    }
+    install_speech(&mut compositor);
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
     compositor.set_launch_socket(socket_name.clone());
     if let Err(error) = insert_controller_watch(&event_loop) {
@@ -88,7 +88,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         tehuti::backend::Backend::Nested => nested::insert(&event_loop, &display.handle(), &mut compositor)?,
         tehuti::backend::Backend::Tty => tty::insert(&event_loop, &display.handle(), &mut compositor)?,
     }
-    let attached_controller = insert_controller(&event_loop.handle())?;
+    let attached_controller = insert_controller(&event_loop.handle(), &escape)?;
     let (controller, controller_token) =
         attached_controller.map_or((None, None), |(device, token)| (Some(device), Some(token)));
     let discovery = initial_discovery(controller.as_ref(), &mut compositor);
@@ -124,9 +124,17 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         seat_active: true,
         log_out: false,
         context_watch: insert_context_watch(&event_loop, std::path::Path::new(&context_directory)),
+        escape,
     };
     run(&mut event_loop, &mut data, child, &mut xwayland)?;
     Ok(data.exit_code())
+}
+
+/// Starts the speech sidecar named by `TEHUTI_SPEECH_SIDECAR`, if any.
+fn install_speech(compositor: &mut Compositor) {
+    if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
+        compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
+    }
 }
 
 fn run(
@@ -139,6 +147,7 @@ fn run(
     let signal = event_loop.get_signal();
     let handle = event_loop.handle();
     let result = event_loop.run(Some(Duration::from_millis(10)), data, |data| {
+        data.escape.beat();
         xwayland.dispatch(&data.display.handle(), &mut data.compositor);
         termination.stop_if_requested(&signal);
         advance_time(data);
@@ -191,7 +200,7 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
     );
     data.discovery = state;
     if effect == Some(controller::DiscoveryEffect::Scan) {
-        match insert_controller(handle) {
+        match insert_controller(handle, &data.escape) {
             Ok(Some((device, token))) => {
                 data.controller = Some(device);
                 data.controller_token = Some(token);
@@ -238,12 +247,21 @@ fn insert_wayland_sources(
 
 fn insert_controller(
     handle: &calloop::LoopHandle<'_, LoopData>,
+    escape: &tehuti::escape::Escape,
 ) -> Result<Option<(EvdevPad, calloop::RegistrationToken)>, Box<dyn Error>> {
     let Some(device) = controller::open_grabbed() else {
         return Ok(None);
     };
     info!(name = device.name(), "controller grabbed");
     let controller_fd = device.as_fd().try_clone_to_owned()?;
+    match device
+        .as_fd()
+        .try_clone_to_owned()
+        .and_then(evdev::Device::from_fd)
+    {
+        Ok(watched) => escape.set_pad(Some(watched)),
+        Err(error) => warn!(%error, "escape thread cannot watch the pad; heartbeat escape only"),
+    }
     let controller_token = handle.insert_source(
         Generic::new(controller_fd, Interest::READ, calloop::Mode::Level),
         |_, _, data| Ok(route_controller_input(data)),
@@ -339,6 +357,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
 /// Returns the stale event source token for the caller to remove.
 fn drop_controller(data: &mut LoopData) -> Option<calloop::RegistrationToken> {
     data.controller = None;
+    data.escape.set_pad(None);
     data.watchdog = controller::Watchdog::default();
     data.compositor
         .speech_input(tehuti_core::speech::SpeechInput::Disconnected);

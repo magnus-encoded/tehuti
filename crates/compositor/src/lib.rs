@@ -5,6 +5,7 @@
 )]
 
 pub mod controller;
+pub mod escape;
 pub mod input;
 pub mod state;
 
