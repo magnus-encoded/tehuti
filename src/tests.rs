@@ -278,3 +278,40 @@ fn ip_spec_offers_objects_and_family_flags() -> Result<(), serde_json::Error> {
     }
     Ok(())
 }
+
+#[test]
+fn typed_text_at_plus_fills_the_empty_operand_in_place() -> Result<(), serde_json::Error> {
+    let (mut state, _) = step(State::new("/tmp".into(), specs()?), Input::Press(Button::New));
+    (state, _) = step(state, Input::Type("cd".into()));
+    (state, _) = step(state, Input::Press(Button::Right));
+    (state, _) = step(state, Input::Type("src".into()));
+    assert_eq!(
+        state.draft.preview(),
+        "cd src",
+        "the folder hole is filled, not a raw argument added"
+    );
+    assert!(state.draft.ready().is_some(), "no hole remains");
+    Ok(())
+}
+
+#[test]
+fn typing_over_a_filled_segment_keeps_an_undo() -> Result<(), serde_json::Error> {
+    let (mut state, _) = step(State::new("/tmp".into(), specs()?), Input::Press(Button::New));
+    (state, _) = step(state, Input::Type("cat".into()));
+    (state, _) = step(state, Input::Type("one".into()));
+    (state, _) = step(state, Input::Press(Button::Left));
+    (state, _) = step(state, Input::Type("two".into()));
+    assert_eq!(
+        state.draft.preview(),
+        "cat two",
+        "typing replaces the focused value"
+    );
+    assert!(state.notice.contains("one"), "the notice names the lost value");
+    (state, _) = step(state, Input::Press(Button::Back));
+    assert_eq!(
+        state.draft.preview(),
+        "cat one",
+        "B restores the overwritten value"
+    );
+    Ok(())
+}

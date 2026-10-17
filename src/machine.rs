@@ -490,7 +490,18 @@ impl State {
                 Ok(_) => self.notice = "A program name cannot be empty.".into(),
                 Err(error) => self.notice = error,
             },
-            Some(Segment::Item(address, index)) => self.apply(Choice::Value(address, index, text)),
+            Some(Segment::Item(address, index)) => {
+                let previous = self
+                    .draft
+                    .stage(&address)
+                    .and_then(|stage| stage.items.get(index))
+                    .and_then(|item| item.value.clone());
+                self.apply(Choice::Value(address, index, text));
+                if let Some(previous) = previous {
+                    self.notice = format!("Replaced {previous}; B undoes.");
+                }
+            }
+            Some(Segment::End(address)) if self.fill_hole(&address, &text) => {}
             Some(Segment::End(address)) => {
                 let entry = self
                     .move_entries(&address, None)
@@ -714,6 +725,25 @@ impl State {
 }
 
 impl State {
+    /// Fill the first empty operand that accepts typed text, in place.
+    fn fill_hole(&mut self, address: &Address, text: &str) -> bool {
+        if text.starts_with('-') {
+            return false;
+        }
+        let Some(index) = self.draft.stage(address).and_then(|stage| {
+            stage.items.iter().position(|item| {
+                item.definition.operand
+                    && item.value.is_none()
+                    && item.definition.takes != Some(ValueType::Command)
+                    && valid_value(&item.definition, text)
+            })
+        }) else {
+            return false;
+        };
+        self.apply(Choice::Value(address.clone(), index, text.to_owned()));
+        true
+    }
+
     fn run_ready(&mut self, invocation: ReadyInvocation) -> Vec<Effect> {
         self.draft = Draft::default();
         self.focus = 0;
