@@ -5,7 +5,7 @@ use std::{
     ffi::OsString,
     io::{self, Read, Write},
     os::unix::process::CommandExt,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Stdio},
 };
 use tehuti_core::speech::{SpeechEffect, SpeechFailure, SpeechInput};
 use tehuti_protocol::{MAX_MESSAGE_BYTES, Text};
@@ -58,7 +58,7 @@ impl SpeechProcess {
             .command
             .split_first()
             .ok_or_else(|| io::Error::other("empty speech command"))?;
-        let mut child = Command::new(program)
+        let mut child = crate::child_environment::command(program)
             .args(arguments)
             .process_group(0)
             .stdin(Stdio::piped())

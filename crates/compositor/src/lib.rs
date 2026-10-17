@@ -5,6 +5,7 @@
 )]
 
 pub mod controller;
+pub mod escape;
 pub mod input;
 pub mod state;
 
@@ -17,6 +18,8 @@ pub mod plugins;
 pub mod speech;
 
 pub mod notice;
+
+pub mod system;
 
 pub mod secret_delivery;
 
@@ -33,3 +36,15 @@ pub mod rendering;
 pub mod scale;
 
 pub mod bar;
+pub mod settings;
+
+pub mod display_mode_store;
+pub mod wallpaper;
+
+pub mod wallpaper_pack;
+
+pub mod child_environment;
+pub mod phrases;
+pub mod xwayland;
+
+pub mod keyboard;

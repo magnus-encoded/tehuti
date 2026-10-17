@@ -17,7 +17,7 @@ use smithay::{
             gbm::{GbmFramebuffer, framebuffer_from_bo},
         },
         renderer::{
-            Bind, ImportAll, ImportDma, ImportMem, Renderer,
+            Bind, ExportMem, ImportAll, ImportDma, ImportMem, Renderer,
             damage::OutputDamageTracker,
             element::{Kind, memory::MemoryRenderBufferRenderElement},
             gles::GlesRenderer,
@@ -28,7 +28,6 @@ use smithay::{
             pixman::PixmanRenderer,
         },
     },
-    desktop::space::render_output,
     output::Output,
     reexports::{drm::control::framebuffer, wayland_server::DisplayHandle},
 };
@@ -157,13 +156,17 @@ pub(super) fn advertise(
     Ok(())
 }
 
+/// The outcome of a screenshot taken during this frame, if one was requested.
+pub(super) type Saved = Option<std::io::Result<()>>;
+
 pub(super) fn draw(
     rendering: &mut DrmRendering,
     next: bool,
     output: &Output,
     damage: &mut OutputDamageTracker,
     compositor: &Compositor,
-) -> Result<(framebuffer::Handle, bool), Box<dyn Error>> {
+    screenshot: Option<&std::path::Path>,
+) -> Result<(framebuffer::Handle, bool, Saved), Box<dyn Error>> {
     match rendering {
         Rendering::Gles(gpu) => {
             let buffer = gpu
@@ -177,8 +180,9 @@ pub(super) fn draw(
                 output,
                 damage,
                 compositor,
+                screenshot,
             )?;
-            Ok((*buffer.framebuffer.as_ref(), notice))
+            Ok((*buffer.framebuffer.as_ref(), notice.0, notice.1))
         }
         Rendering::Pixman(software) => {
             let buffer = software
@@ -192,8 +196,9 @@ pub(super) fn draw(
                 output,
                 damage,
                 compositor,
+                screenshot,
             )?;
-            Ok((*buffer.framebuffer.as_ref(), notice))
+            Ok((*buffer.framebuffer.as_ref(), notice.0, notice.1))
         }
     }
 }
@@ -205,9 +210,10 @@ fn draw_buffer<R>(
     output: &Output,
     damage: &mut OutputDamageTracker,
     compositor: &Compositor,
-) -> Result<bool, Box<dyn Error>>
+    screenshot: Option<&std::path::Path>,
+) -> Result<(bool, Saved), Box<dyn Error>>
 where
-    R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
+    R: Renderer + ImportAll + ImportMem + ExportMem + Bind<Dmabuf>,
     R::TextureId: Send + Clone + 'static,
     R::Error: 'static,
 {
@@ -232,21 +238,47 @@ where
         .into_iter()
         .collect::<Vec<_>>();
     let notice_included = !elements.is_empty();
+    add_bar(renderer, bar, compositor, output, &mut elements)?;
+    if let Some(location) = compositor.cursor_on(output) {
+        elements.insert(
+            0,
+            MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                location,
+                &tehuti::notice::cursor_buffer(),
+                None,
+                None,
+                None,
+                Kind::Cursor,
+            )?,
+        );
+    }
+    let frame =
+        tehuti::wallpaper::render_output(output, renderer, &mut target, compositor, &elements, damage)?;
+    frame.sync.wait()?;
+    let saved = screenshot.map(|path| {
+        let size = output
+            .current_mode()
+            .map_or((0, 0), |mode| (mode.size.w, mode.size.h));
+        tehuti::system::capture(renderer, &target, size, path)
+    });
+    Ok((notice_included && frame.damage.is_some(), saved))
+}
+
+fn add_bar<R>(
+    renderer: &mut R,
+    bar: &mut tehuti::bar::Buffer,
+    compositor: &Compositor,
+    output: &Output,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) -> Result<(), R::Error>
+where
+    R: Renderer + ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
     let clock = chrono::Local::now().format("%H:%M").to_string();
     if let Some(element) = bar.element(renderer, output, compositor.voice_bar(), &clock)? {
         elements.push(element);
     }
-    let frame = render_output::<_, MemoryRenderBufferRenderElement<R>, _, _>(
-        output,
-        renderer,
-        &mut target,
-        1.0,
-        0,
-        [&compositor.space],
-        &elements,
-        damage,
-        [0.0, 0.0, 0.0, 1.0],
-    )?;
-    frame.sync.wait()?;
-    Ok(notice_included && frame.damage.is_some())
+    Ok(())
 }
