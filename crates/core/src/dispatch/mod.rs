@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
 mod settings;
-pub use settings::{Phrases, Settings, View as SettingsView};
+pub use settings::{Phrases, Settings, Sink, SinkKind, View as SettingsView};
 
 mod mouse;
 pub use mouse::{PointerButton, Sticks};
@@ -21,6 +21,7 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    AudioSinks(Option<Vec<Sink>>),
     Phrases(Phrases),
     DisplayModes {
         modes: Vec<String>,
@@ -72,6 +73,8 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    AudioRefresh,
+    AudioDefault(u32),
     SettingsMode(usize),
     Wallpaper(usize),
     UnlockWallpapers,
@@ -255,6 +258,10 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
+        Input::AudioSinks(sinks) => {
+            state.settings.configure_audio(sinks);
+            return (state, effects);
+        }
         Input::Phrases(phrases) => {
             state.settings.phrases = phrases;
             return (state, effects);
@@ -284,12 +291,7 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
         Input::PluginReply { key, result } => {
-            let (next, actions, rejection) =
-                crate::plugin::step(state.core, crate::plugin::Input::Reply { key, result });
-            state.core = next;
-            effects.extend(actions.into_iter().map(Effect::PluginAction));
-            effects.extend(rejection.map(Effect::PluginRejected));
-            return (state, effects);
+            return plugin_reply(state, key, result);
         }
         Input::Sticks(sticks) => {
             state.mouse.set_sticks(sticks);
@@ -313,6 +315,19 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
         }
     };
     enqueue(state, tasks, effects)
+}
+
+fn plugin_reply(
+    mut state: State,
+    key: RequestKey,
+    result: Result<Vec<Action>, String>,
+) -> (State, Vec<Effect>) {
+    let (next, actions, rejection) =
+        crate::plugin::step(state.core, crate::plugin::Input::Reply { key, result });
+    state.core = next;
+    let mut effects: Vec<_> = actions.into_iter().map(Effect::PluginAction).collect();
+    effects.extend(rejection.map(Effect::PluginRejected));
+    (state, effects)
 }
 
 fn enqueue(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State, Vec<Effect>) {

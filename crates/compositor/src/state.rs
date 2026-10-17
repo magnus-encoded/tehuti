@@ -571,6 +571,9 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        if let Some(sinks) = self.settings_display.audio.poll() {
+            let _rejection = self.dispatch(DispatchInput::AudioSinks(sinks.ok()));
+        }
         let depth = self.dispatch.busy();
         let mut input = input;
         let mut rejection = None;
@@ -649,12 +652,6 @@ impl Compositor {
 
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         match effect {
-            DispatchEffect::SettingsMode(index) | DispatchEffect::PersistMode(index) => {
-                self.settings_display
-                    .requests
-                    .push_back((index, matches!(effect, DispatchEffect::PersistMode(_))));
-                None
-            }
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
                 tracing::error!("invalid dispatch reply");
@@ -686,7 +683,11 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
-            effect @ (DispatchEffect::UnlockWallpapers
+            effect @ (DispatchEffect::AudioRefresh
+            | DispatchEffect::AudioDefault(_)
+            | DispatchEffect::SettingsMode(_)
+            | DispatchEffect::PersistMode(_)
+            | DispatchEffect::UnlockWallpapers
             | DispatchEffect::Wallpaper(_)
             | DispatchEffect::MovePointer { .. }
             | DispatchEffect::Scroll { .. }
@@ -713,6 +714,10 @@ impl Compositor {
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::AudioRefresh => self.settings_display.audio.request(None),
+            DispatchEffect::AudioDefault(sink_id) => self.settings_display.audio.request(Some(sink_id)),
+            DispatchEffect::SettingsMode(index) => self.settings_display.request_mode(index, false),
+            DispatchEffect::PersistMode(index) => self.settings_display.request_mode(index, true),
             DispatchEffect::UnlockWallpapers => self.unlock_wallpapers(),
             DispatchEffect::Wallpaper(index) => self.apply_wallpaper(index),
             DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
@@ -737,9 +742,7 @@ impl Compositor {
             DispatchEffect::PluginAction(action) => {
                 self.apply_plugin_action(&action);
             }
-            DispatchEffect::SettingsMode(_)
-            | DispatchEffect::PersistMode(_)
-            | DispatchEffect::ReadClock
+            DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
             | DispatchEffect::PluginRejected(_)
             | DispatchEffect::QueryPlugin(_)

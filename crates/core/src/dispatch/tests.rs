@@ -37,6 +37,16 @@ impl World {
         }
     }
 
+    fn run_event(&mut self, state: State, event: Event) -> State {
+        self.run(
+            state,
+            Input::Event {
+                event,
+                elapsed: Duration::ZERO,
+            },
+        )
+    }
+
     fn run_at_depth(&mut self, state: State, input: Input, depth: usize) -> State {
         let (mut state, mut effects) = step(state, input);
         loop {
@@ -61,19 +71,15 @@ impl World {
                         reply = Input::SpeechPolled(self.speech_output.pop_front().unwrap_or_default());
                     }
                     Effect::Handle(event) => {
-                        state = self.run(
-                            state,
-                            Input::Event {
-                                event,
-                                elapsed: Duration::ZERO,
-                            },
-                        );
+                        state = self.run_event(state, event);
                     }
                     Effect::Apply(Action::Close) | Effect::PluginAction(Action::Close) => {
                         state = self.close_focus(state);
                     }
                     Effect::UnlockWallpapers
                     | Effect::Wallpaper(_)
+                    | Effect::AudioRefresh
+                    | Effect::AudioDefault(_)
                     | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::MovePointer { .. }
@@ -1680,4 +1686,61 @@ fn keyboard_ptt_captures_with_controller_ptt_disabled() {
         session: 0,
         transcribe: true
     })));
+}
+
+#[test]
+fn audio_refreshes_on_entry_and_applies_without_a_preview() {
+    let mut world = World::default();
+    let mut state = open_display(&mut world);
+    state = settings_button(&mut world, state, ButtonName::East);
+    for _ in 0..2 {
+        state = settings_button(&mut world, state, ButtonName::DpadDown);
+    }
+    world.trace.clear();
+    state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().view, super::SettingsView::Audio);
+    assert!(world.trace.contains(&Effect::AudioRefresh));
+    assert_eq!(state.settings().sinks, None);
+    state = world.run(
+        state,
+        Input::AudioSinks(Some(vec![
+            super::Sink {
+                sink_id: 52,
+                description: "Headset".into(),
+                kind: super::SinkKind::Headset,
+                is_default: true,
+            },
+            super::Sink {
+                sink_id: 61,
+                description: "HDMI".into(),
+                kind: super::SinkKind::Hdmi,
+                is_default: false,
+            },
+        ])),
+    );
+    state = settings_button(&mut world, state, ButtonName::DpadRight);
+    world.trace.clear();
+    state = settings_button(&mut world, state, ButtonName::South);
+    assert!(world.trace.contains(&Effect::AudioDefault(61)));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SettingsMode(_) | Effect::PersistMode(_)))
+    );
+    assert_eq!(state.settings().remaining, None);
+    state = settings_button(&mut world, state, ButtonName::East);
+    world.trace.clear();
+    state = settings_button(&mut world, state, ButtonName::South);
+    assert!(world.trace.contains(&Effect::AudioRefresh));
+    state = world.run(state, Input::AudioSinks(None));
+    world.trace.clear();
+    state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().sinks, None);
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::AudioDefault(_)))
+    );
 }

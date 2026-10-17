@@ -236,6 +236,8 @@ for line in sys.stdin:
                         Effect::InvalidReply => panic!("valid dispatch replies"),
                         Effect::UnlockWallpapers
                         | Effect::Wallpaper(_)
+                        | Effect::AudioRefresh
+                        | Effect::AudioDefault(_)
                         | Effect::SettingsMode(_)
                         | Effect::PersistMode(_)
                         | Effect::MovePointer { .. }
