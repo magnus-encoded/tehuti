@@ -416,6 +416,12 @@ impl State {
                 break;
             }
             for (position, definition) in stage.moves(&self.specs).into_iter().enumerate() {
+                if definition.key == "argument"
+                    && let Some(entry) = raw_entry(&address, &definition, text)
+                {
+                    scored.push((80, entry));
+                    continue;
+                }
                 let score = move_score(&definition, position, text);
                 let candidate = Candidate {
                     value: definition.key.clone(),
@@ -699,6 +705,19 @@ impl State {
         }
         Vec::new()
     }
+}
+
+/// A spoken or typed raw argument keeps its own text as the value.
+fn raw_entry(address: &Address, definition: &Move, text: Option<&str>) -> Option<Entry> {
+    let value = spelled(text?);
+    (!value.is_empty() && valid_value(definition, &value)).then(|| Entry {
+        candidate: Candidate {
+            value: value.clone(),
+            confidence: crate::Confidence::Medium,
+            note: "raw argument, as heard".into(),
+        },
+        choice: Choice::Operand(address.clone(), definition.clone(), value),
+    })
 }
 
 const fn segment_top(segment: Option<&Segment>) -> Option<usize> {

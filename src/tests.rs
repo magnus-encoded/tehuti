@@ -155,3 +155,35 @@ fn typed_values_obey_their_types_and_spec_group_order() -> Result<(), serde_json
     );
     Ok(())
 }
+
+#[test]
+fn spoken_raw_argument_keeps_its_value() -> Result<(), serde_json::Error> {
+    let (mut state, _) = step(State::new("/tmp".into(), specs()?), Input::Press(Button::New));
+    (state, _) = step(state, Input::Type("unknownprog".into()));
+    (state, _) = step(state, Input::Say("a".into()));
+    assert_eq!(
+        state.screen().list.first().map(|entry| entry.value.as_str()),
+        Some("a"),
+        "the raw candidate is the heard text"
+    );
+    (state, _) = step(state, Input::Press(Button::Accept));
+    assert_eq!(
+        state.draft.preview(),
+        "unknownprog a",
+        "one accept fills the raw argument"
+    );
+    assert!(state.draft.ready().is_some(), "no empty argument hole remains");
+    Ok(())
+}
+
+proptest::proptest! {
+    #[test]
+    fn raw_candidates_carry_the_spoken_text(word in "[a-z]{1,8}") {
+        let (mut state, _) = step(State::new("/tmp".into(), specs().map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?), Input::Press(Button::New));
+        (state, _) = step(state, Input::Type("unknownprog".into()));
+        (state, _) = step(state, Input::Say(word.clone()));
+        let screen = state.screen();
+        proptest::prop_assert!(screen.list.iter().any(|entry| entry.value == word), "raw text offered");
+        proptest::prop_assert!(screen.list.iter().all(|entry| entry.value != "argument"), "no empty raw hole offered");
+    }
+}
