@@ -166,8 +166,14 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
             return None;
         }
         return focused_context(state)
-            .and_then(|context| context.speech_action(text.as_str()))
-            .or_else(|| global_context(state).and_then(|context| context.speech_action(text.as_str())))
+            .and_then(|context| context.speech_phrase_action(text.as_str()))
+            .or_else(|| global_context(state).and_then(|context| context.speech_phrase_action(text.as_str())))
+            .or_else(|| {
+                focused_context(state).and_then(|context| context.unmatched_speech_action(text.as_str()))
+            })
+            .or_else(|| {
+                global_context(state).and_then(|context| context.unmatched_speech_action(text.as_str()))
+            })
             .or_else(|| {
                 tehuti_protocol::Text::new("NO SPEECH MAPPING".into())
                     .ok()
