@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use crate::spec::{CommandSpec, Move, ValueType, raw_move};
 use serde::{Deserialize, Serialize};
 

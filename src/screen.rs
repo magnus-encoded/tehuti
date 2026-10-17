@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use crate::machine::State;
 use crate::model::{Segment, segments};
 use crate::{Candidate, HistoryRow, Move, ValueType};

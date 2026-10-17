@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 #![no_main]
 use ibis_commands::{
     Button, Environment, Input, State, parse_words, read_value, specs, spelled, spoken_words, step,

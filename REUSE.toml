@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MPL-2.0
+# Files without comment syntax (JSON data, the generated lock files).
+version = 1
+
+[[annotations]]
+path = ["specs/**", "validation/**", "Cargo.lock", "fuzz/Cargo.lock", "proptest-regressions/**"]
+SPDX-License-Identifier = "MPL-2.0"

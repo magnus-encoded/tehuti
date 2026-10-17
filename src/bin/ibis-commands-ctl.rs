@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use core::error::Error;
 use core::time::Duration;
 use ibis_commands::{Button, Effect, Environment, Input, ReadyInvocation, State, specs, step};

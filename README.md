@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
 # ibis-commands
 
 `step(state, input)` updates a draft and returns effects without I/O. Supply an
@@ -18,7 +19,7 @@ Run properties with `cargo test -p ibis-commands -- --test-threads=1`.
 Run step mutations with `cargo mutants -p ibis-commands --file src/machine.rs --re 'in step|replace step'`.
 With a nightly toolchain, fuzz the boundary parsers with `cargo fuzz run --fuzz-dir fuzz parsers`.
 
-TODO: The licensing ADR will decide the library licence; the current licence field remains MIT.
+Licensed under the Mozilla Public License 2.0 (MPL-2.0); see `LICENSE`.
 
 Run `scripts/check` for formatting, Clippy and tests.
 

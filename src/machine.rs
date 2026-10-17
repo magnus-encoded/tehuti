@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use crate::model::{Address, Draft, ReadyInvocation, Segment, Stage, segments};
 use crate::readers::{
     Candidate, Environment, parse_words, ranked, read_value, similarity, spelled, spoken_words,

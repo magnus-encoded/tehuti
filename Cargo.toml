@@ -1,10 +1,11 @@
+# SPDX-License-Identifier: MPL-2.0
 [package]
 name = "ibis-commands"
 version = "0.1.0"
 edition.workspace = true
 repository.workspace = true
 description = "Pure command builder and headless agent binding"
-license = "MIT"
+license = "MPL-2.0"
 readme = "README.md"
 keywords = ["terminal", "command", "controller"]
 categories = ["command-line-utilities"]
