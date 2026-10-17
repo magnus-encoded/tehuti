@@ -172,7 +172,7 @@ impl Bar {
         for action in actions {
             let (text, tone) = match action {
                 Action::Text { .. } => ("typed".into(), Tone::Result),
-                Action::Key { key } => (format!("{key:?}"), Tone::Result),
+                Action::Key { key, .. } => (format!("{key:?}"), Tone::Result),
                 Action::Launch { desktop_entry } => (desktop_entry.as_str().into(), Tone::Result),
                 Action::Notice { text } => {
                     if text.as_str() == "NO SPEECH MAPPING" {

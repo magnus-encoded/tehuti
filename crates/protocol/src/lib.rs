@@ -95,38 +95,125 @@ pub enum Event {
     Speech { text: Text },
 }
 
-/// A key the core can send to the focused client.
+macro_rules! key_names {
+    ($(($variant:ident, $name:literal, $code:literal, $keysym:literal, $alias:literal)),+ $(,)?) => {
+        /// A key the core can send to the focused client.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+        #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
+        #[expect(clippy::min_ident_chars, reason = "Variants use keyboard labels")]
+        pub enum KeyName {
+            $(
+                #[serde(rename = $name, alias = $alias)]
+                $variant,
+            )+
+        }
+
+        impl KeyName {
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            #[must_use]
+            pub const fn evdev_code(self) -> u32 {
+                match self {
+                    $(Self::$variant => $code),+
+                }
+            }
+
+            #[must_use]
+            pub const fn keysym_name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $keysym),+
+                }
+            }
+        }
+    };
+}
+
+key_names! {
+    (Escape, "escape", 1, "Escape", "Escape"),
+    (Enter, "enter", 28, "Return", "Enter"),
+    (Space, "space", 57, "space", "Space"),
+    (Tab, "tab", 15, "Tab", "Tab"),
+    (Backspace, "backspace", 14, "BackSpace", "Backspace"),
+    (Up, "up", 103, "Up", "Up"),
+    (Down, "down", 108, "Down", "Down"),
+    (Left, "left", 105, "Left", "Left"),
+    (Right, "right", 106, "Right", "Right"),
+    (A, "a", 30, "a", "A"),
+    (B, "b", 48, "b", "B"),
+    (C, "c", 46, "c", "C"),
+    (D, "d", 32, "d", "D"),
+    (E, "e", 18, "e", "E"),
+    (F, "f", 33, "f", "F"),
+    (G, "g", 34, "g", "G"),
+    (H, "h", 35, "h", "H"),
+    (I, "i", 23, "i", "I"),
+    (J, "j", 36, "j", "J"),
+    (K, "k", 37, "k", "K"),
+    (L, "l", 38, "l", "L"),
+    (M, "m", 50, "m", "M"),
+    (N, "n", 49, "n", "N"),
+    (O, "o", 24, "o", "O"),
+    (P, "p", 25, "p", "P"),
+    (Q, "q", 16, "q", "Q"),
+    (R, "r", 19, "r", "R"),
+    (S, "s", 31, "s", "S"),
+    (T, "t", 20, "t", "T"),
+    (U, "u", 22, "u", "U"),
+    (V, "v", 47, "v", "V"),
+    (W, "w", 17, "w", "W"),
+    (X, "x", 45, "x", "X"),
+    (Y, "y", 21, "y", "Y"),
+    (Z, "z", 44, "z", "Z"),
+    (Digit0, "0", 11, "0", "Digit0"),
+    (Digit1, "1", 2, "1", "Digit1"),
+    (Digit2, "2", 3, "2", "Digit2"),
+    (Digit3, "3", 4, "3", "Digit3"),
+    (Digit4, "4", 5, "4", "Digit4"),
+    (Digit5, "5", 6, "5", "Digit5"),
+    (Digit6, "6", 7, "6", "Digit6"),
+    (Digit7, "7", 8, "7", "Digit7"),
+    (Digit8, "8", 9, "8", "Digit8"),
+    (Digit9, "9", 10, "9", "Digit9"),
+    (Minus, "minus", 12, "minus", "Minus"),
+    (Equal, "equal", 13, "equal", "Equal"),
+    (LeftBracket, "left_bracket", 26, "bracketleft", "LeftBracket"),
+    (RightBracket, "right_bracket", 27, "bracketright", "RightBracket"),
+    (Semicolon, "semicolon", 39, "semicolon", "Semicolon"),
+    (Apostrophe, "apostrophe", 40, "apostrophe", "Apostrophe"),
+    (Grave, "grave", 41, "grave", "Grave"),
+    (Comma, "comma", 51, "comma", "Comma"),
+    (Period, "period", 52, "period", "Period"),
+    (Slash, "slash", 53, "slash", "Slash"),
+    (Backslash, "backslash", 43, "backslash", "Backslash"),
+    (F1, "f1", 59, "F1", "F1"),
+    (F2, "f2", 60, "F2", "F2"),
+    (F3, "f3", 61, "F3", "F3"),
+    (F4, "f4", 62, "F4", "F4"),
+    (F5, "f5", 63, "F5", "F5"),
+    (F6, "f6", 64, "F6", "F6"),
+    (F7, "f7", 65, "F7", "F7"),
+    (F8, "f8", 66, "F8", "F8"),
+    (F9, "f9", 67, "F9", "F9"),
+    (F10, "f10", 68, "F10", "F10"),
+    (F11, "f11", 87, "F11", "F11"),
+    (F12, "f12", 88, "F12", "F12"),
+    (Home, "home", 102, "Home", "Home"),
+    (End, "end", 107, "End", "End"),
+    (PageUp, "page_up", 104, "Prior", "PageUp"),
+    (PageDown, "page_down", 109, "Next", "PageDown"),
+    (Insert, "insert", 110, "Insert", "Insert"),
+    (Delete, "delete", 111, "Delete", "Delete"),
+}
+
+/// A modifier held during a key action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
-pub enum KeyName {
-    Enter,
-    Escape,
-    Space,
-    Tab,
-    Backspace,
-    #[expect(clippy::min_ident_chars, reason = "Up matches the other direction key names")]
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
-impl KeyName {
-    #[must_use]
-    pub const fn evdev_code(self) -> u32 {
-        match self {
-            Self::Enter => 28,
-            Self::Escape => 1,
-            Self::Space => 57,
-            Self::Tab => 15,
-            Self::Backspace => 14,
-            Self::Up => 103,
-            Self::Down => 108,
-            Self::Left => 105,
-            Self::Right => 106,
-        }
-    }
+pub enum Modifier {
+    Ctrl,
+    Alt,
+    Shift,
+    Super,
 }
 
 /// An exact application-id match and its pressed-button mappings.
@@ -161,7 +248,7 @@ impl Context {
     #[must_use]
     pub fn key_for(&self, button: ButtonName) -> Option<KeyName> {
         self.buttons.get(&button).and_then(|action| match action {
-            MappingAction::Key { key } => Some(*key),
+            MappingAction::Key { key, mods } => mods.is_empty().then_some(*key),
             MappingAction::Text { .. }
             | MappingAction::Secret { .. }
             | MappingAction::Launch { .. }
@@ -199,14 +286,32 @@ struct ContextFile {
 #[serde(deny_unknown_fields)]
 #[serde(untagged)]
 enum MappingAction {
-    Key { key: KeyName },
-    Text { text: Text },
-    Secret { secret: SecretReference },
-    Launch { launch: Text },
-    Close { close: CloseMapping },
-    Notify { notify: Text },
-    Layout { layout: LayoutAction },
-    Keyboard { keyboard: KeyboardMapping },
+    Key {
+        key: KeyName,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mods: Vec<Modifier>,
+    },
+    Text {
+        text: Text,
+    },
+    Secret {
+        secret: SecretReference,
+    },
+    Launch {
+        launch: Text,
+    },
+    Close {
+        close: CloseMapping,
+    },
+    Notify {
+        notify: Text,
+    },
+    Layout {
+        layout: LayoutAction,
+    },
+    Keyboard {
+        keyboard: KeyboardMapping,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -229,7 +334,10 @@ impl MappingAction {
             },
             Self::Close { .. } => Action::Close,
             Self::Notify { notify } => Action::Notice { text: notify.clone() },
-            Self::Key { key } => Action::Key { key: *key },
+            Self::Key { key, mods } => Action::Key {
+                key: *key,
+                mods: mods.clone(),
+            },
             Self::Text { text } => Action::Text { text: text.clone() },
             Self::Secret { secret } => Action::SecretRequest {
                 reference: secret.clone(),
@@ -284,7 +392,11 @@ pub enum Action {
     /// Close the focused client and focus the most recently mapped remaining window.
     Close,
     /// Press and release `key` in the focused client.
-    Key { key: KeyName },
+    Key {
+        key: KeyName,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mods: Vec<Modifier>,
+    },
     /// Send Unicode text to the focused client.
     Text { text: Text },
     /// Ask the compositor to confirm delivery of a named secret reference.

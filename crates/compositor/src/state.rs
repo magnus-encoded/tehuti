@@ -132,6 +132,7 @@ pub struct Compositor {
     keyboard: KeyboardHandle<Self>,
     controller_session: tehuti_core::controller::State,
     seat: Seat<Self>,
+    shortcut_keycodes: Vec<(Keycode, u32)>,
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
 }
@@ -159,7 +160,6 @@ impl Compositor {
     /// The keyboard keymap fails to load or the desktop entry worker cannot start.
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
         let (seat_state, mut seat) = Self::new_seat(display);
-        let keymap = Self::keymap()?;
         let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         let mut compositor = Self {
             start_time: Instant::now(),
@@ -213,21 +213,24 @@ impl Compositor {
             keyboard,
             controller_session: tehuti_core::controller::State::default(),
             seat,
-            text_keys: text_keys(&keymap),
+            shortcut_keycodes: Vec::new(),
+            text_keys: std::collections::HashMap::new(),
             text_input: crate::text_input::TextInput::new(display),
         };
-        compositor.initialize_settings(&keymap)?;
+        compositor.initialize_settings()?;
         Ok(compositor)
     }
 
-    fn initialize_settings(&mut self, keymap: &xkb::Keymap) -> Result<(), SetupError> {
+    fn initialize_settings(&mut self) -> Result<(), SetupError> {
+        let keymap = Self::keymap()?;
+        self.text_keys = text_keys(&keymap);
         let _phrase_rejection = self.dispatch(DispatchInput::Phrases(crate::phrases::from_env()));
         let names = self.wallpapers.borrow().names();
         let current = self.wallpapers.borrow().current;
         let _rejection = self.dispatch(DispatchInput::Wallpapers { names, current });
         let locked = self.wallpapers.borrow().locks();
         let _locks_rejection = self.dispatch(DispatchInput::WallpaperLocks(locked));
-        self.install_keymap(keymap)
+        self.install_keymap(&keymap)
     }
 
     fn keymap() -> Result<xkb::Keymap, SetupError> {
@@ -240,6 +243,12 @@ impl Compositor {
         self.keyboard
             .clone()
             .set_keymap_from_string(self, keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))?;
+        self.shortcut_keycodes = (keymap.min_keycode().raw()..=keymap.max_keycode().raw())
+            .map(|code| {
+                let keycode = Keycode::new(code);
+                (keycode, keymap.num_layouts_for_key(keycode))
+            })
+            .collect();
         Ok(())
     }
 
@@ -1173,12 +1182,12 @@ impl Compositor {
     fn apply(&mut self, action: &Action) {
         match action {
             Action::Keyboard => self.open_keyboard(),
-            Action::Key { key } => {
-                if *key == KeyName::Enter && self.osk.open {
+            Action::Key { key, mods } => {
+                if *key == KeyName::Enter && mods.is_empty() && self.osk.open {
                     self.commit_draft();
                     return;
                 }
-                self.tap(*key);
+                self.tap_with_modifiers(*key, mods);
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(?key, ?app_id, ?title, "key delivered to focused window");
             }
@@ -1261,23 +1270,72 @@ impl Compositor {
         self.tap_keycode(keycode);
     }
 
-    fn tap_keycode(&mut self, keycode: Keycode) {
+    fn tap_with_modifiers(&mut self, key: KeyName, mods: &[tehuti_protocol::Modifier]) {
+        use tehuti_protocol::Modifier;
+        let key_name = key.keysym_name();
         let keyboard = self.keyboard.clone();
-        for state in tehuti_core::controller::key_tap() {
-            let state = match state {
-                tehuti_protocol::ButtonState::Pressed => smithay::backend::input::KeyState::Pressed,
-                tehuti_protocol::ButtonState::Released => smithay::backend::input::KeyState::Released,
+        let codes = self.shortcut_keycodes.clone();
+        let resolved = keyboard.with_xkb_state(self, |context| {
+            let xkb = context
+                .xkb()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let resolve = |name| {
+                let symbol = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+                codes.iter().find_map(|(code, layouts)| {
+                    let layout =
+                        smithay::input::keyboard::Layout(xkb.active_layout().0.checked_rem(*layouts)?);
+                    xkb.raw_syms_for_key_in_layout(*code, layout)
+                        .contains(&symbol)
+                        .then_some(*code)
+                })
             };
-            let time = self.millis_since_start();
-            let _forwarded: Option<()> = keyboard.input(
-                self,
-                keycode,
-                state,
-                SERIAL_COUNTER.next_serial(),
-                time,
-                |_, _, _| FilterResult::Forward,
-            );
+            let keycode = resolve(key_name)?;
+            let held = [
+                (Modifier::Ctrl, "Control_L"),
+                (Modifier::Alt, "Alt_L"),
+                (Modifier::Shift, "Shift_L"),
+                (Modifier::Super, "Super_L"),
+            ]
+            .into_iter()
+            .filter(|(modifier, _)| mods.contains(modifier))
+            .map(|(_, name)| resolve(name))
+            .collect::<Option<Vec<_>>>()?;
+            Some((keycode, held))
+        });
+        let Some((keycode, held)) = resolved else {
+            tracing::warn!(?key, "shortcut unavailable in active keymap");
+            return;
+        };
+        for code in &held {
+            self.send_keycode(*code, smithay::backend::input::KeyState::Pressed);
         }
+        self.tap_keycode(keycode);
+        for code in held.iter().rev() {
+            self.send_keycode(*code, smithay::backend::input::KeyState::Released);
+        }
+    }
+
+    fn tap_keycode(&mut self, keycode: Keycode) {
+        for state in [
+            smithay::backend::input::KeyState::Pressed,
+            smithay::backend::input::KeyState::Released,
+        ] {
+            self.send_keycode(keycode, state);
+        }
+    }
+
+    fn send_keycode(&mut self, keycode: Keycode, state: smithay::backend::input::KeyState) {
+        let keyboard = self.keyboard.clone();
+        let time = self.millis_since_start();
+        let _forwarded: Option<()> = keyboard.input(
+            self,
+            keycode,
+            state,
+            SERIAL_COUNTER.next_serial(),
+            time,
+            |_, _, _| FilterResult::Forward,
+        );
     }
 
     fn commit_draft(&mut self) {

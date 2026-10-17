@@ -105,6 +105,7 @@ mod synthetic_pad {
         pending_text: String,
         suppress_enable: bool,
         modifiers: (u32, u32, u32),
+        key_modifiers: Vec<(u32, u32)>,
         dmabuf_modifiers: Vec<(u32, u64)>,
         dmabuf_main_device: Vec<u8>,
         dmabuf_import_result: Option<bool>,
@@ -456,6 +457,7 @@ mod synthetic_pad {
                 app.keys.push((key, state));
                 if state == KeyState::Pressed {
                     use smithay::input::keyboard::xkb;
+                    app.key_modifiers.push((key, app.modifiers.0));
                     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
                     let keymap = xkb::Keymap::new_from_string(
                         &context,
@@ -2217,6 +2219,184 @@ else:
                 assert!(!output.contains(forbidden), "{output}");
             }
         }
+    }
+
+    fn exchange_shortcuts(
+        context: tehuti_protocol::Context,
+        buttons: &[ButtonName],
+        phrases: &[&str],
+    ) -> App {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![context]);
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker =
+            thread::spawn(move || run_client(client_end, "firefox", ClientTextState::Absent, &sender));
+        let mut sent = false;
+        let began = Instant::now();
+        while !worker.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "shortcut delivery stalled"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            if !sent && receiver.try_recv().is_ok() {
+                sent = true;
+                for &name in buttons {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        compositor.handle(&Event::Button { name, state });
+                    }
+                }
+                for &phrase in phrases {
+                    compositor.handle(&Event::Speech {
+                        text: tehuti_protocol::Text::new(phrase.into()).unwrap(),
+                    });
+                }
+                compositor.handle(&Event::Button {
+                    name: ButtonName::South,
+                    state: ButtonState::Pressed,
+                });
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        worker.join().unwrap()
+    }
+
+    #[test]
+    fn firefox_shortcuts_hold_modifiers_during_keys_and_release_everything() {
+        if std::env::var_os("TEHUTI_SHORTCUT_LAYOUT_TEST").is_none() {
+            for variant in ["", "dvorak"] {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "synthetic_pad::firefox_shortcuts_hold_modifiers_during_keys_and_release_everything",
+                        "--test-threads=1",
+                    ])
+                    .env("TEHUTI_SHORTCUT_LAYOUT_TEST", variant)
+                    .env("XKB_DEFAULT_LAYOUT", "us")
+                    .env("XKB_DEFAULT_VARIANT", variant)
+                    .env(
+                        "XKB_DEFAULT_OPTIONS",
+                        if variant.is_empty() { "" } else { "ctrl:swapcaps" },
+                    )
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "shortcut delivery failed for {variant}");
+            }
+            return;
+        }
+        let dvorak = std::env::var("TEHUTI_SHORTCUT_LAYOUT_TEST").unwrap() == "dvorak";
+        let app = exchange_shortcuts(
+            tehuti_protocol::parse_context(include_str!("../../../dist/contexts/firefox/context.toml"))
+                .unwrap(),
+            &[
+                ButtonName::East,
+                ButtonName::North,
+                ButtonName::LeftBumper,
+                ButtonName::RightBumper,
+            ],
+            &["new tab", "reload", "close tab"],
+        );
+        let targets: Vec<_> = app
+            .key_modifiers
+            .into_iter()
+            .filter(|(key, _)| ![29, 42, 56, 58, 125].contains(key))
+            .collect();
+        assert_eq!(
+            targets,
+            vec![
+                (105, 8),
+                (if dvorak { 25 } else { 38 }, 4),
+                (15, 5),
+                (15, 4),
+                (if dvorak { 37 } else { 20 }, 4),
+                (63, 0),
+                (if dvorak { 51 } else { 17 }, 4),
+                (28, 0)
+            ]
+        );
+        assert_eq!(app.modifiers, (0, 0, 0));
+        let mut held = std::collections::HashSet::new();
+        for (key, state) in app.keys {
+            if state == KeyState::Pressed {
+                assert!(held.insert(key));
+            } else {
+                assert!(held.remove(&key));
+            }
+        }
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn native_shortcuts_parse_and_deliver_exact_press_release_sequences() {
+        let shortcuts: &[(&str, &[i32])] = &[
+            (r#"{ key = "left", mods = ["alt"] }"#, &[56, 105, -105, -56]),
+            (r#"{ key = "right", mods = ["alt"] }"#, &[56, 106, -106, -56]),
+            (r#"{ key = "0", mods = ["ctrl"] }"#, &[29, 11, -11, -29]),
+            (r#"{ key = "equal", mods = ["ctrl"] }"#, &[29, 13, -13, -29]),
+            (r#"{ key = "minus", mods = ["ctrl"] }"#, &[29, 12, -12, -29]),
+            (r#"{ key = "f", mods = ["ctrl"] }"#, &[29, 33, -33, -29]),
+            (r#"{ key = "l", mods = ["ctrl"] }"#, &[29, 38, -38, -29]),
+            (r#"{ key = "t", mods = ["ctrl"] }"#, &[29, 20, -20, -29]),
+            (r#"{ key = "w", mods = ["ctrl"] }"#, &[29, 17, -17, -29]),
+            (r#"{ key = "tab", mods = ["ctrl"] }"#, &[29, 15, -15, -29]),
+            (
+                r#"{ key = "tab", mods = ["ctrl", "shift"] }"#,
+                &[29, 42, 15, -15, -42, -29],
+            ),
+            (r#"{ key = "tab", mods = ["shift"] }"#, &[42, 15, -15, -42]),
+            (r#"{ key = "home" }"#, &[102, -102]),
+            (r#"{ key = "end" }"#, &[107, -107]),
+            (r#"{ key = "page_up" }"#, &[104, -104]),
+            (r#"{ key = "page_down" }"#, &[109, -109]),
+            (r#"{ key = "f5" }"#, &[63, -63]),
+            (
+                r#"{ key = "d", mods = ["ctrl", "alt", "shift"] }"#,
+                &[29, 56, 42, 32, -32, -42, -56, -29],
+            ),
+            (r#"{ key = "a", mods = ["super"] }"#, &[125, 30, -30, -125]),
+            (r#"{ key = "insert" }"#, &[110, -110]),
+            (r#"{ key = "delete" }"#, &[111, -111]),
+            (
+                r#"{ key = "tab", mods = ["shift", "ctrl", "ctrl"] }"#,
+                &[29, 42, 15, -15, -42, -29],
+            ),
+        ];
+        let mut source = String::from("app_id = 'firefox'\n[buttons]\n[speech]\n");
+        let phrases: Vec<_> = shortcuts
+            .iter()
+            .enumerate()
+            .map(|(index, (mapping, _))| {
+                let phrase = format!("shortcut {index}");
+                source.push_str(&format!("{phrase:?} = {mapping}\n"));
+                phrase
+            })
+            .collect();
+        let phrases: Vec<_> = phrases.iter().map(String::as_str).collect();
+        let app = exchange_shortcuts(tehuti_protocol::parse_context(&source).unwrap(), &[], &phrases);
+        let expected: Vec<_> = shortcuts
+            .iter()
+            .flat_map(|(_, events)| events.iter())
+            .chain([&28, &-28])
+            .map(|code| {
+                (
+                    code.unsigned_abs(),
+                    if *code > 0 {
+                        KeyState::Pressed
+                    } else {
+                        KeyState::Released
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(app.keys, expected);
+        assert_eq!(app.modifiers, (0, 0, 0), "all modifiers are released");
     }
 
     #[test]

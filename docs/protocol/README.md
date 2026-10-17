@@ -117,7 +117,7 @@ accepted or stale. If a pending decision contains an invalid action, it replies
 with `error` code -32602 and releases that event's captured fallback:
 
 ```json
-{"jsonrpc":"2.0","id":42,"error":{"code":-32602,"message":"action 0 (key): unknown variant `Tab`"}}
+{"jsonrpc":"2.0","id":42,"error":{"code":-32602,"message":"action 0 (key): unknown variant `Hyper`"}}
 ```
 
 Action submissions share the event deadline and exactly-once handling of legacy
@@ -178,9 +178,25 @@ Key actions press and release one key in the currently focused Wayland client:
 {"type":"key","key":"tab"}
 ```
 
-Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, in lowercase. Text delivers Unicode through enabled text-input-v3,
-with keyboard taps as fallback:
+Keys are `a`–`z`, `0`–`9`, `minus`, `equal`, `left_bracket`,
+`right_bracket`, `semicolon`, `apostrophe`, `grave`, `comma`, `period`,
+`slash`, `backslash`, `f1`–`f12`, `home`, `end`, `page_up`, `page_down`,
+`insert`, `delete`, `enter`, `escape`, `space`, `tab`, `backspace`,
+`up`, `down`, `left`, and `right`. Capitalized key labels such as `Left` and
+`F5` are accepted too. Optional `mods` holds `ctrl`, `alt`, `shift`, or `super`
+while the key is tapped, then releases them:
+
+```json
+{"type":"key","key":"l","mods":["ctrl"]}
+```
+
+Keys and modifiers resolve through the active XKB keymap. A shortcut whose
+keysym is absent has no effect. Context mappings use the same fields, for
+example `{ key = "left", mods = ["alt"] }`. The shipped Firefox context maps
+East to Back, North to the address bar, and the bumpers to previous/next tab;
+speech commands are "new tab", "reload", and "close tab".
+
+Text delivers Unicode through enabled text-input-v3, with keyboard taps as fallback:
 
 ```json
 {"type":"text","text":"Hello ✓"}

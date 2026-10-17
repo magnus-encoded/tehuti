@@ -43,7 +43,7 @@ mod step {
         ) {
             let a_presses = events.iter().filter(|event| **event == A_PRESSED).count();
             let keys: Vec<_> = run(&events).into_iter().filter(|action| matches!(action, Action::Key { .. })).collect();
-            prop_assert_eq!(keys, vec![Action::Key { key: KeyName::Enter }; a_presses]);
+            prop_assert_eq!(keys, vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }; a_presses]);
         }
     }
 
@@ -193,7 +193,7 @@ mod step {
             prop_assert!(focus_actions.is_empty());
             let (_, actions) = step(state, &Event::Button { name, state: button_state });
             if button_state == ButtonState::Pressed && name == ButtonName::South {
-                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter }], "global consumption excludes context and fallback output");
+                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }], "global consumption excludes context and fallback output");
             } else if button_state == ButtonState::Pressed {
                 let mapping = match focused {
                     Some("test") => mappings.get(&name),
@@ -201,7 +201,7 @@ mod step {
                     _ => None,
                 };
                 if let Some(key) = mapping {
-                    prop_assert_eq!(actions, vec![Action::Key { key: *key }], "context consumption excludes fallback output");
+                    prop_assert_eq!(actions, vec![Action::Key { key: *key, mods: Vec::new() }], "context consumption excludes fallback output");
                 } else {
                     prop_assert!(actions.is_empty(), "unmapped presses use the empty fallback");
                 }
@@ -230,7 +230,13 @@ mod step {
             },
         );
         let (state, start_actions) = step(state, &start());
-        assert_eq!(start_actions, vec![Action::Key { key: KeyName::Space }]);
+        assert_eq!(
+            start_actions,
+            vec![Action::Key {
+                key: KeyName::Space,
+                mods: Vec::new()
+            }]
+        );
         let (state, _) = step(state, &tick(4000));
         assert!(state.menu().is_none(), "Start alone opens nothing");
         let (state, _) = step(state, &guide(ButtonState::Pressed));
@@ -350,7 +356,13 @@ mod step {
                 state: ButtonState::Pressed,
             },
         );
-        assert_eq!(actions, vec![Action::Key { key: KeyName::Tab }]);
+        assert_eq!(
+            actions,
+            vec![Action::Key {
+                key: KeyName::Tab,
+                mods: Vec::new()
+            }]
+        );
         let (_, unmapped_actions) = step(
             state,
             &Event::Button {
@@ -387,7 +399,10 @@ mod step {
             assert_eq!(
                 actions,
                 if app_id == Some("test") {
-                    vec![Action::Key { key: KeyName::Tab }]
+                    vec![Action::Key {
+                        key: KeyName::Tab,
+                        mods: Vec::new(),
+                    }]
                 } else {
                     vec![]
                 },
@@ -400,7 +415,10 @@ mod step {
     fn pressing_a_sends_enter() {
         assert_eq!(
             run(&[A_PRESSED]),
-            vec![Action::Key { key: KeyName::Enter }],
+            vec![Action::Key {
+                key: KeyName::Enter,
+                mods: Vec::new()
+            }],
             "the global layer maps A to Enter"
         );
     }

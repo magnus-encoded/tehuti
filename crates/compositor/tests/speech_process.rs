@@ -45,7 +45,13 @@ mod speech_process {
                 },
             );
             state = next;
-            assert_eq!(actions, vec![Action::Key { key: KeyName::Enter }]);
+            assert_eq!(
+                actions,
+                vec![Action::Key {
+                    key: KeyName::Enter,
+                    mods: Vec::new()
+                }]
+            );
         }
         let (state, _) = step(
             state,

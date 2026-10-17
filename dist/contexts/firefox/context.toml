@@ -1,0 +1,14 @@
+app_id = "firefox"
+unmatched_speech = "type"
+
+[buttons]
+east = { key = "left", mods = ["alt"] }
+north = { key = "l", mods = ["ctrl"] }
+left_bumper = { key = "tab", mods = ["ctrl", "shift"] }
+right_bumper = { key = "tab", mods = ["ctrl"] }
+start = { keyboard = "open" }
+
+[speech]
+"new tab" = { key = "t", mods = ["ctrl"] }
+"reload" = { key = "f5" }
+"close tab" = { key = "w", mods = ["ctrl"] }

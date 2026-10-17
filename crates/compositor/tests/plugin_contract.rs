@@ -100,7 +100,7 @@ mod contract {
     #[test]
     fn invalid_action_discards_the_whole_line_and_valid_next_line_survives() {
         let body = format!(
-            "{INITIALIZE}\nprint(json.dumps({{'jsonrpc':'2.0','method':'actions','params':{{'actions':[{{'type':'quit'}},{{'type':'key','key':'Tab'}}]}}}}), flush=True)\nprint(json.dumps({{'jsonrpc':'2.0','method':'actions','params':{{'actions':[{{'type':'text','text':'next'}}]}}}}), flush=True)"
+            "{INITIALIZE}\nprint(json.dumps({{'jsonrpc':'2.0','method':'actions','params':{{'actions':[{{'type':'quit'}},{{'type':'key','key':'UnknownKey'}}]}}}}), flush=True)\nprint(json.dumps({{'jsonrpc':'2.0','method':'actions','params':{{'actions':[{{'type':'text','text':'next'}}]}}}}), flush=True)"
         );
         let (quit, logs) = session(&body, &["quit", "text"], "");
         assert!(!quit);

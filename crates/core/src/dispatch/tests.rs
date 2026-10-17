@@ -557,7 +557,8 @@ fn an_open_menu_keeps_south_and_record_from_secrets_and_speech() {
             "{name:?} press reached secrets or speech"
         );
         assert!(!world.trace.contains(&Effect::Apply(Action::Key {
-            key: tehuti_protocol::KeyName::Enter
+            key: tehuti_protocol::KeyName::Enter,
+            mods: Vec::new()
         })));
         assert_eq!(next.busy(), 0);
         world.trace.clear();
@@ -604,7 +605,7 @@ proptest! {
     ) {
         contexts.insert(0, tehuti_protocol::parse_context(&format!("app_id = 'mouse-test'\n[buttons.select]\nkey = '{key}'")).unwrap());
         let expected_key = match key { "tab" => tehuti_protocol::KeyName::Tab, "space" => tehuti_protocol::KeyName::Space, _ => tehuti_protocol::KeyName::Escape };
-        let expected = vec![Action::Key { key: expected_key }];
+        let expected = vec![Action::Key { key: expected_key, mods: Vec::new() }];
         let mut world = World::default();
         let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
         let state = world.run(state, Input::Tick { elapsed: Duration::from_millis(duration) });
@@ -790,7 +791,7 @@ proptest! {
         world.trace.clear();
         let state = world.run(state, pad_button(ButtonName::RightStick, ButtonState::Pressed));
         let _state = world.run(state, pad_button(ButtonName::RightStick, ButtonState::Released));
-        prop_assert!(world.trace.contains(&Effect::Apply(Action::Key { key: tehuti_protocol::KeyName::Tab })), "stick click sends the context key");
+        prop_assert!(world.trace.contains(&Effect::Apply(Action::Key { key: tehuti_protocol::KeyName::Tab, mods: Vec::new() })), "stick click sends the context key");
     }
 }
 

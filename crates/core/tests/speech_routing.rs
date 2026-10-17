@@ -23,7 +23,10 @@ mod speech_routing {
         );
         assert_eq!(
             actions,
-            vec![Action::Key { key: KeyName::Enter }],
+            vec![Action::Key {
+                key: KeyName::Enter,
+                mods: Vec::new()
+            }],
             "focused phrase executes its context action"
         );
         let (_, unmatched_actions) = step(
@@ -45,7 +48,10 @@ mod speech_routing {
         for heard in ["Hello.", "  HELLO!  ", "hello?", "hello"] {
             assert_eq!(
                 context.speech_action(heard),
-                Some(Action::Key { key: KeyName::Enter }),
+                Some(Action::Key {
+                    key: KeyName::Enter,
+                    mods: Vec::new()
+                }),
                 "{heard:?} matches the mapped phrase"
             );
         }
@@ -78,7 +84,13 @@ mod speech_routing {
                 text: Text::new("Confirm!".into()).unwrap(),
             },
         );
-        assert_eq!(actions, vec![Action::Key { key: KeyName::Enter }]);
+        assert_eq!(
+            actions,
+            vec![Action::Key {
+                key: KeyName::Enter,
+                mods: Vec::new()
+            }]
+        );
     }
 
     #[test]
@@ -162,7 +174,7 @@ mod speech_routing {
             );
             let (_, actions) = step(state, &Event::Speech { text: Text::new(utterance.clone()).unwrap() });
             if focused && utterance.trim().eq_ignore_ascii_case(&phrase) {
-                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter }]);
+                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }]);
             } else if focused && enabled {
                 prop_assert_eq!(actions, vec![Action::Text { text: Text::new(format!("{utterance} ")).unwrap() }]);
             } else {
