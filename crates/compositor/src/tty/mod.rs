@@ -1,5 +1,6 @@
 //! A libseat-owned DRM output with GLES rendering and a pixman fallback.
 
+mod frame;
 mod mode;
 mod render;
 
@@ -41,7 +42,7 @@ struct Tty {
     output: Output,
     damage: OutputDamageTracker,
     next: bool,
-    pending: bool,
+    flip: frame::Flip,
     modeset: bool,
 }
 
@@ -71,7 +72,7 @@ pub(crate) fn insert(
             DrmEvent::VBlank(metadata) => {
                 trace!(?metadata, "DRM vblank");
                 let mut backend = flip_tty.borrow_mut();
-                backend.pending = false;
+                backend.flip.released();
                 if data.seat_active
                     && backend.device.is_active()
                     && let Err(error) = backend.render(data)
@@ -183,7 +184,7 @@ fn insert_seat(
                     tty.keyboard = tehuti::backend::EscapeKeyboard::default();
                     tty.libinput.suspend();
                     tty.device.pause();
-                    tty.pending = false;
+                    tty.flip.released();
                 }
                 Event::ActivateSession => match tty.device.activate(true) {
                     Ok(()) => {
@@ -279,7 +280,7 @@ fn create_output(
         damage: OutputDamageTracker::from_output(&output),
         output,
         next: false,
-        pending: false,
+        flip: frame::Flip::default(),
         modeset: true,
     };
     Ok((tty, drm_notifier))
@@ -505,11 +506,21 @@ impl Tty {
     fn render(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
         crate::advance_time(data);
         self.settings_request(data)?;
-        if self.pending {
-            return Ok(());
-        }
-        mode::retry(
-            &mut (self, data),
+        let now = data.compositor.start_time.elapsed();
+        let stalled = match self.flip.tick(now, self.surface.pending_mode().vrefresh()) {
+            frame::Tick::Wait => return Ok(()),
+            frame::Tick::Render => false,
+            frame::Tick::Stalled => {
+                warn!(
+                    mode = ?self.surface.pending_mode(),
+                    "DRM vblank missing for a submitted frame; re-queuing"
+                );
+                self.flip.released();
+                true
+            }
+        };
+        let result = mode::retry(
+            &mut (&mut *self, &mut *data),
             |(tty, data)| tty.render_frame(data),
             |(tty, data), error| {
                 if !tty.modeset {
@@ -518,7 +529,15 @@ impl Tty {
                 warn!(%error, mode = ?tty.surface.pending_mode(), "DRM modeset failed; trying next listed mode");
                 tty.fallback_mode(data)
             },
-        )
+        );
+        match result {
+            Err(error) if stalled => {
+                warn!(%error, "DRM frame re-queue after a lost vblank failed; retrying after the next stall window");
+                self.flip.submitted(now);
+                Ok(())
+            }
+            other => other,
+        }
     }
 
     fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
@@ -553,7 +572,7 @@ impl Tty {
             );
         }
         trace!(elapsed = ?started.elapsed(), "DRM frame committed");
-        self.pending = true;
+        self.flip.submitted(data.compositor.start_time.elapsed());
         self.next = !self.next;
         if notice_drawn && data.compositor.secret_confirmation_text().is_some() {
             data.compositor.note_secret_confirmation_frame_submitted();
@@ -579,10 +598,14 @@ fn submit(
 ) -> Result<(), Box<dyn Error>> {
     let plane = plane(surface, framebuffer);
     if *modeset {
-        surface.commit([plane], true)?;
+        surface
+            .commit([plane], true)
+            .inspect_err(|error| warn!(%error, "DRM modeset commit failed"))?;
         *modeset = false;
     } else {
-        surface.page_flip([plane], true)?;
+        surface
+            .page_flip([plane], true)
+            .inspect_err(|error| warn!(%error, "DRM page flip failed"))?;
     }
     Ok(())
 }
