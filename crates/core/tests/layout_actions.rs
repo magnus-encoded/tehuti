@@ -126,7 +126,7 @@ mod layout_actions {
         assert_eq!(context.key_for(ButtonName::West), None);
         for (action, name, _) in TABLE {
             assert_eq!(
-                context.speech_action(&name.replace('-', " ")),
+                context.speech_phrase_action(&name.replace('-', " ")),
                 Some(Action::Layout { action }),
                 "{name}"
             );

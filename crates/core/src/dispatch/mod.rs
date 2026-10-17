@@ -10,11 +10,30 @@ use std::collections::VecDeque;
 
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
+mod settings;
+pub use settings::{Phrases, Settings, Sink, SinkKind, View as SettingsView};
+
+mod mouse;
+pub use mouse::{PointerButton, Sticks};
+
 use crate::plugin::{Rejection, RequestKey};
 use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    AudioSinks(Option<Vec<Sink>>),
+    Phrases(Phrases),
+    DisplayModes {
+        modes: Vec<String>,
+        current: usize,
+    },
+    Wallpapers {
+        names: Vec<String>,
+        current: Option<usize>,
+    },
+    WallpaperLocks(Vec<bool>),
+    DisplayNativeSize(u32, u32),
+    ModeApplied(Option<usize>),
     /// Elapsed wall time since the previous tick.
     Tick {
         elapsed: Duration,
@@ -35,6 +54,7 @@ pub enum Input {
         plugin: usize,
     },
     ControllerDisconnected,
+    Sticks(Sticks),
     /// Reply to [`Effect::QueryPlugin`].
     PluginActive(bool),
     /// Reply to [`Effect::DispatchPlugin`].
@@ -53,6 +73,27 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    AudioRefresh,
+    AudioDefault(u32),
+    SettingsMode(usize),
+    Wallpaper(usize),
+    UnlockWallpapers,
+    PersistMode(usize),
+    /// Relative motion in millionths of a logical pixel.
+    MovePointer {
+        x: i32,
+        y: i32,
+    },
+    /// Continuous axis distances in millionths of a logical pixel.
+    Scroll {
+        x: i32,
+        y: i32,
+    },
+    Click {
+        button: PointerButton,
+        pressed: bool,
+    },
+    MouseMode(bool),
     /// Query: sample time after Focus actions. Reply [`Input::ClockRead`].
     ReadClock,
     /// A missing or mismatched query reply aborted the waiting frame.
@@ -80,6 +121,8 @@ pub enum Effect {
     ResetSecretFocus,
     /// Carries out an action from routing.
     Apply(Action),
+    /// A system operation the menu chose.
+    System(crate::menu::Command),
     /// Carries out a plugin decision or its fallback, unless quitting.
     PluginAction(Action),
     PluginRejected(Rejection),
@@ -106,6 +149,7 @@ pub enum Effect {
 enum Task {
     ReadClock,
     Route(Event),
+    Controller(Event),
     Supervise,
     SouthPressed(bool),
     ResetSecretFocus,
@@ -142,7 +186,9 @@ struct Frame {
 pub struct State {
     core: crate::State,
     speech: SpeechState,
+    mouse: mouse::State,
     frames: Vec<Frame>,
+    settings: Settings,
 }
 
 impl State {
@@ -151,7 +197,9 @@ impl State {
         Self {
             core,
             speech: SpeechState::default(),
+            mouse: mouse::State::default(),
             frames: Vec::new(),
+            settings: Settings::default(),
         }
     }
 
@@ -162,6 +210,11 @@ impl State {
 
     pub const fn core_mut(&mut self) -> &mut crate::State {
         &mut self.core
+    }
+
+    #[must_use]
+    pub const fn settings(&self) -> &Settings {
+        &self.settings
     }
 
     /// Frames still waiting for replies or resumption.
@@ -196,25 +249,7 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
     }
     let mut tasks: Vec<Task> = tick_tasks(elapsed).into();
     tasks.push(Task::Supervise);
-    match event {
-        Event::Button {
-            name: ButtonName::Record,
-            state,
-        } => tasks.push(Task::Speech(match state {
-            ButtonState::Pressed => SpeechInput::Press,
-            ButtonState::Released => SpeechInput::Release,
-        })),
-        Event::Button {
-            name: ButtonName::South,
-            state,
-        } => {
-            tasks.push(Task::SouthPressed(state == ButtonState::Pressed));
-            tasks.push(Task::ConfirmSecret(state, event));
-        }
-        Event::Button { .. } | Event::Speech { .. } | Event::Focus { .. } | Event::Tick { .. } => {
-            tasks.push(Task::Route(event));
-        }
-    }
+    tasks.push(Task::Controller(event));
     tasks
 }
 
@@ -223,19 +258,47 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
+        Input::AudioSinks(sinks) => {
+            state.settings.configure_audio(sinks);
+            return (state, effects);
+        }
+        Input::Phrases(phrases) => {
+            state.settings.phrases = phrases;
+            return (state, effects);
+        }
+        Input::DisplayModes { modes, current } => {
+            state.settings.configure(modes, current);
+            return (state, effects);
+        }
+        Input::Wallpapers { names, current } => {
+            state.settings.configure_wallpapers(names, current);
+            return (state, effects);
+        }
+        Input::DisplayNativeSize(width, height) => {
+            state.settings.native_size = (width > 0 && height > 0).then_some((width, height));
+            return (state, effects);
+        }
+        Input::WallpaperLocks(locked) => {
+            state.settings.wallpaper_locked = locked;
+            return (state, effects);
+        }
+        Input::ModeApplied(current) => {
+            state.settings.applied(current, &mut effects);
+            return (state, effects);
+        }
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
         Input::Event { event, elapsed } => event_tasks(event, elapsed),
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
         Input::PluginReply { key, result } => {
-            let (next, actions, rejection) =
-                crate::plugin::step(state.core, crate::plugin::Input::Reply { key, result });
-            state.core = next;
-            effects.extend(actions.into_iter().map(Effect::PluginAction));
-            effects.extend(rejection.map(Effect::PluginRejected));
+            return plugin_reply(state, key, result);
+        }
+        Input::Sticks(sticks) => {
+            state.mouse.set_sticks(sticks);
             return (state, effects);
         }
         Input::ControllerDisconnected => {
+            state.mouse.disconnect(&mut effects);
             state.core.controller_disconnected();
             return (state, effects);
         }
@@ -251,6 +314,23 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             return run(state, effects);
         }
     };
+    enqueue(state, tasks, effects)
+}
+
+fn plugin_reply(
+    mut state: State,
+    key: RequestKey,
+    result: Result<Vec<Action>, String>,
+) -> (State, Vec<Effect>) {
+    let (next, actions, rejection) =
+        crate::plugin::step(state.core, crate::plugin::Input::Reply { key, result });
+    state.core = next;
+    let mut effects: Vec<_> = actions.into_iter().map(Effect::PluginAction).collect();
+    effects.extend(rejection.map(Effect::PluginRejected));
+    (state, effects)
+}
+
+fn enqueue(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State, Vec<Effect>) {
     state.frames.push(Frame {
         tasks: tasks.into(),
         awaiting: None,
@@ -275,6 +355,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             let (next, actions, route) =
                 crate::step_with_plugin(core::mem::take(&mut state.core), &event, active);
             state.core = next;
+            effects.extend(state.core.take_commands().into_iter().map(Effect::System));
             effects.push(Effect::DispatchPlugin {
                 event: event.clone(),
                 route,
@@ -389,9 +470,17 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
             effects.push(Effect::ReadClock);
             frame.awaiting = Some(Await::ClockRead);
         }
+        Task::Controller(event) => controller(state, event, effects),
         Task::Route(event) => {
+            if settings_event(state, &event, effects) {
+                return;
+            }
+            route_tick(state, &event, effects);
+            let Some(route_frame) = state.frames.last_mut() else {
+                return;
+            };
             effects.push(Effect::QueryPlugin(event.clone()));
-            frame.awaiting = Some(Await::PluginActive(event));
+            route_frame.awaiting = Some(Await::PluginActive(event));
         }
         Task::Supervise => {
             effects.push(Effect::Supervise);
@@ -428,6 +517,121 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
                 frame.awaiting = Some(Await::SpeechSent);
             }
         },
+    }
+}
+
+fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if state.core.menu().is_some() {
+        return false;
+    }
+    let was_open = state.settings.open;
+    let consumed = state.settings.event(event, effects);
+    if !was_open && state.settings.open {
+        state.mouse.disconnect(effects);
+        effects.push(Effect::ResetSecretFocus);
+    }
+    consumed
+}
+
+fn route_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
+    if let Event::Tick { elapsed } = event {
+        state.settings.tick(*elapsed, effects);
+        if !state.settings.open {
+            if let Some(context) = crate::focused_context(&state.core).filter(|context| context.maps_sticks())
+            {
+                state.mouse.context_tick(context, *elapsed, effects);
+            } else {
+                state.mouse.tick(*elapsed, effects);
+            }
+        }
+        if effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::MouseMode(_)))
+            && let Some(frame) = state.frames.last_mut()
+        {
+            frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
+        }
+    }
+}
+
+fn push_to_talk(state: &State, event: &Event) -> bool {
+    let Event::Button { name, .. } = event else {
+        return false;
+    };
+    *name == ButtonName::KeyboardPtt
+        || state
+            .core
+            .contexts()
+            .iter()
+            .find(|context| context.app_id() == crate::GLOBAL_APP_ID)
+            .map_or(*name == ButtonName::Record, |context| context.push_to_talk(*name))
+}
+
+fn route_push_to_talk(state: &mut State, event: Event) {
+    let Event::Button { state: button, .. } = event else {
+        return;
+    };
+    let menu_open = state.core.menu().is_some();
+    if let Some(frame) = state.frames.last_mut() {
+        frame
+            .tasks
+            .push_front(if menu_open && button == ButtonState::Pressed {
+                Task::Route(event)
+            } else {
+                Task::Speech(match button {
+                    ButtonState::Pressed => SpeechInput::Press,
+                    ButtonState::Released => SpeechInput::Release,
+                })
+            });
+    }
+}
+
+fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if push_to_talk(state, &event) {
+        route_push_to_talk(state, event);
+        return;
+    }
+    if settings_event(state, &event, effects) {
+        return;
+    }
+    let Some(frame) = state.frames.last_mut() else {
+        return;
+    };
+    if state.mouse.short_release(&event) {
+        frame.tasks.push_front(Task::Route(event));
+        frame.tasks.push_front(Task::Route(Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Pressed,
+        }));
+        return;
+    }
+    let menu_open = state.core.menu().is_some();
+    // Mouse mode wins, except while the system menu is open, so the menu can always be dismissed.
+    let passes_mouse = menu_open;
+    if !passes_mouse && state.mouse.button(&event, effects) {
+        if let Some(actions) = crate::escape_chord(&mut state.core, &event) {
+            effects.extend(actions.into_iter().map(Effect::Apply));
+        }
+        return;
+    }
+    match event {
+        // While the menu is open, presses belong to it alone; releases still unwind held state.
+        Event::Button {
+            name: ButtonName::South,
+            state: ButtonState::Pressed,
+        } if menu_open => frame.tasks.push_front(Task::Route(event)),
+        Event::Button {
+            name: ButtonName::South,
+            state: button,
+        } => {
+            frame.tasks.push_front(Task::ConfirmSecret(button, event));
+            frame
+                .tasks
+                .push_front(Task::SouthPressed(button == ButtonState::Pressed));
+        }
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
+            frame.tasks.push_front(Task::Route(event));
+        }
     }
 }
 

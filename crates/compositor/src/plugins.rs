@@ -8,7 +8,7 @@ use std::{
     io::{self, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::Path,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Stdio},
     rc::Rc,
     time::Instant,
 };
@@ -738,7 +738,7 @@ fn read_manifest(path: &Path) -> io::Result<Manifest> {
 }
 
 fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std::process::ChildStdout)> {
-    let child = Command::new(&manifest.executable)
+    let child = crate::child_environment::command(&manifest.executable)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -958,7 +958,7 @@ fn fuzz_session() -> io::Result<Session> {
         start: StartPolicy::Always,
         permissions: vec![Permission::Key, Permission::Text],
     };
-    let mut child = Command::new("sleep")
+    let mut child = crate::child_environment::command("sleep")
         .arg("infinity")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -1092,7 +1092,7 @@ mod tests {
 
         /// A ready session backed by a live child that never writes.
         fn live_session(manifest: &Manifest) -> io::Result<Rc<RefCell<Session>>> {
-            let mut child = Command::new("sleep")
+            let mut child = crate::child_environment::command("sleep")
                 .arg("3600")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())

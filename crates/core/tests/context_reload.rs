@@ -47,17 +47,18 @@ mod context_reload {
         let untouched = held.clone();
         held.replace_contexts(vec![context("tab")]);
         let finish = |state: State| {
-            let (state, _) = step(state, &press(ButtonName::Start));
             step(
                 state,
                 &Event::Tick {
                     elapsed: core::time::Duration::from_secs(3),
                 },
             )
-            .1
+            .0
+            .menu()
+            .cloned()
         };
         let without_reload = finish(untouched);
-        assert!(!without_reload.is_empty(), "the held chord completes");
+        assert!(without_reload.is_some(), "the held hold opens the menu");
         assert_eq!(finish(held), without_reload);
     }
 }

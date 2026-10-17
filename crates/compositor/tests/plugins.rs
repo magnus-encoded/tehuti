@@ -179,11 +179,90 @@ for line in sys.stdin:
         tehuti_protocol::parse_context(&source).unwrap()
     }
 
+    /// Holding Guide opens the system menu; Log out is the third row down and South chooses it.
+    fn escape() -> [Event; 6] {
+        [
+            button(ButtonName::Guide),
+            Event::Tick {
+                elapsed: Duration::from_secs(3),
+            },
+            button(ButtonName::DpadDown),
+            button(ButtonName::DpadDown),
+            button(ButtonName::DpadDown),
+            button(ButtonName::South),
+        ]
+    }
+
     fn button(name: ButtonName) -> Event {
         Event::Button {
             name,
             state: ButtonState::Pressed,
         }
+    }
+
+    fn dispatched_plugin_events(
+        contexts: Vec<tehuti_protocol::Context>,
+        events: impl IntoIterator<Item = Event>,
+    ) -> Vec<Event> {
+        use tehuti_core::dispatch::{Effect, Input, State, step};
+        let mut state = State::new(tehuti_core::State::with_contexts(contexts));
+        let mut routed = Vec::new();
+        for event in events {
+            let mut input = Input::Event {
+                event,
+                elapsed: Duration::ZERO,
+            };
+            loop {
+                let (next, effects) = step(state, input);
+                state = next;
+                input = Input::Resume;
+                for effect in effects {
+                    match effect {
+                        Effect::QueryPlugin(_) => input = Input::PluginActive(true),
+                        Effect::DispatchPlugin {
+                            event: dispatched,
+                            route,
+                        } => {
+                            if route {
+                                routed.push(dispatched);
+                            }
+                            input = Input::PluginRequest(None);
+                        }
+                        Effect::ReadClock => input = Input::ClockRead(Duration::ZERO),
+                        Effect::Supervise => input = Input::Supervised(vec![]),
+                        Effect::ConfirmSecret(_) => input = Input::SecretConfirmation(false),
+                        Effect::SpeechCommand(_) => input = Input::SpeechSent(true),
+                        Effect::PollSpeech(_) => input = Input::SpeechPolled(vec![]),
+                        Effect::InvalidReply => panic!("valid dispatch replies"),
+                        Effect::UnlockWallpapers
+                        | Effect::Wallpaper(_)
+                        | Effect::AudioRefresh
+                        | Effect::AudioDefault(_)
+                        | Effect::SettingsMode(_)
+                        | Effect::PersistMode(_)
+                        | Effect::MovePointer { .. }
+                        | Effect::Scroll { .. }
+                        | Effect::Click { .. }
+                        | Effect::MouseMode(_)
+                        | Effect::System(_)
+                        | Effect::PollSources
+                        | Effect::SouthPressed(_)
+                        | Effect::ResetSecretFocus
+                        | Effect::Apply(_)
+                        | Effect::PluginAction(_)
+                        | Effect::PluginRejected(_)
+                        | Effect::Handle(_)
+                        | Effect::SpeechFailed { .. }
+                        | Effect::TranscriptReceived { .. }
+                        | Effect::SpeechRouted { .. } => {}
+                    }
+                }
+                if state.busy() == 0 {
+                    break;
+                }
+            }
+        }
+        routed
     }
 
     proptest! {
@@ -196,7 +275,7 @@ for line in sys.stdin:
             consumes in any::<bool>(),
             configurations in prop::collection::vec((prop::sample::select(vec!["test", "other"]), prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=8)), 0..3),
             events in prop::collection::vec(prop_oneof![
-                (any::<ButtonName>(), any::<ButtonState>()).prop_map(|(name, state)| Event::Button { name, state }),
+                (any::<ButtonName>().prop_filter("Guide would open the menu early", |name| !matches!(name, ButtonName::Guide | ButtonName::GuideTap)), any::<ButtonState>()).prop_map(|(name, state)| Event::Button { name, state }),
                 (0u64..500).prop_map(|millis| Event::Tick { elapsed: Duration::from_millis(millis) }),
             ], 0..20),
         ) {
@@ -213,15 +292,9 @@ for line in sys.stdin:
             if starts {
                 harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1 && harness.directory.path().join("replied").exists());
             }
-            // The most permissive core: every button it would route to any live plugin.
-            let mut core = tehuti_core::State::with_contexts(contexts);
-            let mut routable = Vec::new();
-            let chord = [button(ButtonName::Guide), button(ButtonName::Start), Event::Tick { elapsed: Duration::from_secs(3) }];
-            for event in core::iter::once(focus("test")).chain(events.iter().cloned()).chain(chord.iter().cloned()) {
-                let (next, _, sent) = tehuti_core::step_with_plugin(core, &event, true);
-                core = next;
-                if sent { routable.push(event); }
-            }
+            // The menu escape, then Guide and Start, which still quits inside mouse mode.
+            let chord: Vec<Event> = escape().into_iter().chain([button(ButtonName::Guide), button(ButtonName::Start), Event::Tick { elapsed: Duration::from_secs(3) }]).collect();
+            let routable = dispatched_plugin_events(contexts, core::iter::once(focus("test")).chain(events.iter().cloned()).chain(chord.iter().cloned()));
             prop_assert!(!harness.compositor.quit_requested(), "no reply is read before the loop dispatches");
             harness.send(events);
             harness.send(chord);
@@ -250,9 +323,8 @@ for line in sys.stdin:
         ) {
             let event = Event::Button { name, state: button_state };
             let contexts = vec![context("test", &mappings)];
-            let (core, _, _) = tehuti_core::step_with_plugin(tehuti_core::State::with_contexts(contexts.clone()), &focus("test"), true);
-            let (_, _, routed) = tehuti_core::step_with_plugin(core, &event, true);
-            prop_assume!(routed, "only a routed button gets a reply");
+            let routed = dispatched_plugin_events(contexts.clone(), [focus("test"), event.clone()]);
+            prop_assume!(routed.contains(&event), "only a dispatched button gets a reply");
             let mut configuration = manifest();
             configuration.permissions = permissions;
             let mut harness = Harness::new(&configuration, "slow", 0, "json");
@@ -322,13 +394,7 @@ for line in sys.stdin:
             0,
             "late initialize cannot activate a plugin"
         );
-        harness.send([
-            button(ButtonName::Guide),
-            button(ButtonName::Start),
-            Event::Tick {
-                elapsed: Duration::from_secs(3),
-            },
-        ]);
+        harness.send(escape());
         assert!(
             harness.compositor.quit_requested(),
             "input survives initialize timeout"
@@ -601,13 +667,7 @@ for line in sys.stdin:
                     "controller routing cannot wait for a plugin restart"
                 );
             }
-            harness.send([
-                button(ButtonName::Guide),
-                button(ButtonName::Start),
-                Event::Tick {
-                    elapsed: Duration::from_secs(3),
-                },
-            ]);
+            harness.send(escape());
             assert!(harness.compositor.quit_requested(), "escape survives restarts");
         });
         assert_eq!(output, 4, "every controller event reaches its context");
@@ -629,13 +689,7 @@ for line in sys.stdin:
                 });
             }
             harness.pump_until(|harness| launches(harness).len() >= 2);
-            harness.send([
-                button(ButtonName::Guide),
-                button(ButtonName::Start),
-                Event::Tick {
-                    elapsed: Duration::from_secs(3),
-                },
-            ]);
+            harness.send(escape());
             assert!(
                 harness.compositor.quit_requested(),
                 "escape survives a hung plugin"
@@ -705,13 +759,7 @@ for line in sys.stdin:
                         "flood callbacks leave time for controller input"
                     );
                 }
-                harness.send([
-                    button(ButtonName::Guide),
-                    button(ButtonName::Start),
-                    Event::Tick {
-                        elapsed: Duration::from_secs(3),
-                    },
-                ]);
+                harness.send(escape());
                 assert!(harness.compositor.quit_requested(), "input survives a flood");
             });
             assert!(
@@ -748,13 +796,7 @@ for line in sys.stdin:
                     0,
                     "unsupported handshake is refused"
                 );
-                harness.send([
-                    button(ButtonName::Guide),
-                    button(ButtonName::Start),
-                    Event::Tick {
-                        elapsed: Duration::from_secs(3),
-                    },
-                ]);
+                harness.send(escape());
                 assert!(harness.compositor.quit_requested(), "input survives refusal");
             });
             assert!(
