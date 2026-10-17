@@ -318,7 +318,7 @@ fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn
             .iter()
             .map(|mode| mode::ListedMode {
                 size: mode.size(),
-                refresh: mode.vrefresh(),
+                refresh: millihertz(mode),
                 preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
             })
             .collect();
@@ -375,7 +375,23 @@ fn saved_mode() -> Option<String> {
 }
 
 fn mode_label(mode: &Mode) -> String {
-    format!("{}x{}@{}", mode.size().0, mode.size().1, mode.vrefresh())
+    format!(
+        "{}x{}@{}",
+        mode.size().0,
+        mode.size().1,
+        mode::rate_label(millihertz(mode))
+    )
+}
+
+/// Exact refresh from the pixel clock; `vrefresh` rounds 29.97 to 30.
+fn millihertz(mode: &Mode) -> u32 {
+    let total = u64::from(mode.hsync().2).saturating_mul(u64::from(mode.vsync().2));
+    u64::from(mode.clock())
+        .saturating_mul(1_000_000)
+        .saturating_add(total >> 1)
+        .checked_div(total)
+        .and_then(|rate| u32::try_from(rate).ok())
+        .unwrap_or_else(|| mode.vrefresh().saturating_mul(1000))
 }
 
 impl Tty {

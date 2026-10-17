@@ -71,6 +71,15 @@ pub struct Settings {
     cancel_preview: bool,
 }
 
+/// Fastest first; a label without a parseable rate sorts last.
+fn rate_of(modes: &[String], index: usize) -> f64 {
+    modes
+        .get(index)
+        .and_then(|mode| mode.split_once('@'))
+        .and_then(|(_, rate)| rate.parse().ok())
+        .unwrap_or(f64::NEG_INFINITY)
+}
+
 impl Settings {
     #[must_use]
     pub fn sizes(&self) -> Vec<(u32, u32)> {
@@ -86,12 +95,15 @@ impl Settings {
     #[must_use]
     pub fn rates(&self) -> Vec<usize> {
         let size = self.modes.get(self.selected).and_then(|mode| mode_size(mode));
-        self.modes
+        let mut rates = self
+            .modes
             .iter()
             .enumerate()
             .filter(|(_, mode)| size.is_some() && mode_size(mode) == size)
             .map(|(index, _)| index)
-            .collect()
+            .collect::<Vec<_>>();
+        rates.sort_by(|left, right| rate_of(&self.modes, *right).total_cmp(&rate_of(&self.modes, *left)));
+        rates
     }
 
     fn display_move(&mut self, name: ButtonName) {

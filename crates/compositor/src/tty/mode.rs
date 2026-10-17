@@ -5,6 +5,7 @@ use core::cmp::Reverse;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ListedMode {
     pub size: (u16, u16),
+    /// Millihertz, so 29.97 and 30 stay distinct.
     pub refresh: u32,
     pub preferred: bool,
 }
@@ -21,9 +22,38 @@ impl Request {
         let (width, height) = size.split_once('x')?;
         let request = Self {
             size: (width.parse().ok()?, height.parse().ok()?),
-            refresh: refresh.parse().ok()?,
+            refresh: millihertz(refresh)?,
         };
         (request.size.0 > 0 && request.size.1 > 0 && request.refresh > 0).then_some(request)
+    }
+}
+
+/// Parses `30`, `29.97` or `23.976` into millihertz.
+fn millihertz(value: &str) -> Option<u32> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty() || fraction.len() > 3 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let digits = u32::try_from(fraction.len()).ok()?;
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        fraction.parse::<u32>().ok()?
+    };
+    whole
+        .parse::<u32>()
+        .ok()?
+        .checked_mul(1000)?
+        .checked_add(fraction.checked_mul(10u32.pow(3_u32.saturating_sub(digits)))?)
+}
+
+/// `30` for whole rates, otherwise two decimals such as `29.97`.
+pub(super) fn rate_label(millihertz: u32) -> String {
+    let hundredths = millihertz.saturating_add(5) / 10;
+    if hundredths.is_multiple_of(100) {
+        format!("{}", hundredths / 100)
+    } else {
+        format!("{}.{:02}", hundredths / 100, hundredths % 100)
     }
 }
 
@@ -65,9 +95,13 @@ pub(super) fn ordered_with_saved(
 ) -> (Vec<usize>, bool) {
     let (mut indices, matched) = ordered(modes, request);
     if let Some(index) = saved.and_then(|saved| {
+        // Labels round to hundredths, so 23.976 is saved as 23.98.
         modes
             .iter()
-            .position(|mode| mode.size == saved.size && mode.refresh == saved.refresh)
+            .enumerate()
+            .filter(|(_, mode)| mode.size == saved.size && mode.refresh.abs_diff(saved.refresh) <= 5)
+            .min_by_key(|(_, mode)| mode.refresh.abs_diff(saved.refresh))
+            .map(|(index, _)| index)
     }) && (!matched || indices.first() != Some(&index))
     {
         indices.retain(|candidate| *candidate != index);
@@ -97,22 +131,22 @@ mod tests {
     const MODES: [ListedMode; 4] = [
         ListedMode {
             size: (3840, 2160),
-            refresh: 60,
+            refresh: 60_000,
             preferred: false,
         },
         ListedMode {
             size: (1920, 1080),
-            refresh: 240,
+            refresh: 240_000,
             preferred: false,
         },
         ListedMode {
             size: (3840, 2160),
-            refresh: 144,
+            refresh: 144_000,
             preferred: false,
         },
         ListedMode {
             size: (3840, 2160),
-            refresh: 120,
+            refresh: 120_000,
             preferred: true,
         },
     ];
@@ -145,17 +179,17 @@ mod tests {
         let modes = [
             ListedMode {
                 size: (3840, 2160),
-                refresh: 144,
+                refresh: 144_000,
                 preferred: false,
             },
             ListedMode {
                 size: (1920, 1080),
-                refresh: 60,
+                refresh: 60_000,
                 preferred: true,
             },
             ListedMode {
                 size: (1280, 720),
-                refresh: 60,
+                refresh: 60_000,
                 preferred: false,
             },
         ];
@@ -186,6 +220,19 @@ mod tests {
     }
 
     #[test]
+    fn fractional_rates_parse_and_label_distinctly() {
+        assert_eq!(super::millihertz("29.97"), Some(29_970));
+        assert_eq!(super::millihertz("23.976"), Some(23_976));
+        assert_eq!(super::millihertz("30"), Some(30_000));
+        assert_eq!(super::rate_label(29_970), "29.97");
+        assert_eq!(super::rate_label(23_976), "23.98");
+        assert_eq!(super::rate_label(30_000), "30");
+        assert_eq!(super::rate_label(59_940), "59.94");
+        let ntsc = Request::parse("3840x2160@29.97").map(|request| request.refresh);
+        assert_eq!(ntsc, Some(29_970));
+    }
+
+    #[test]
     fn malformed_requests_are_rejected() {
         for value in [
             "",
@@ -196,6 +243,8 @@ mod tests {
             "3840x2160@-1",
             "65536x2160@120",
             "3840x2160@120junk",
+            "3840x2160@29.9701",
+            "3840x2160@.5",
         ] {
             assert!(Request::parse(value).is_none(), "accepted {value}");
         }

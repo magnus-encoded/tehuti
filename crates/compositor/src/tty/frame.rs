@@ -86,7 +86,7 @@ mod tests {
     proptest! {
         /// Over any series of ticks, vblanks and elapsed time, the render tick
         /// never goes longer than the stall window without being allowed to draw:
-        /// the event loop can no longer freeze the screen behind a lost flip.
+        /// a lost flip cannot freeze the screen.
         #[test]
         fn rendering_never_waits_past_the_stall_window(
             steps in prop::collection::vec(step(), 0..200),
