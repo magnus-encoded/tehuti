@@ -1,7 +1,10 @@
 //! Controller selection and native-resolution artwork for the compositor keyboard.
 
+use font8x8::UnicodeFonts;
 use tehuti_core::dispatch::Sticks;
 use tehuti_protocol::{ButtonName, ButtonState};
+
+const ROWS: i32 = 5;
 
 const LETTERS: [[&str; 20]; 2] = [
     [
@@ -304,7 +307,10 @@ where
 /// Physical top and height, keeping the keyboard clear of the field when space permits.
 #[must_use]
 pub fn placement(size: (i32, i32), scale: i32, cursor: Option<(i32, i32)>) -> (i32, i32) {
-    let height = (size.0 / 4).min(size.1 / 2).max(1);
+    let row_height = tehuti_core::bar::HEIGHT.saturating_mul(scale.max(1));
+    let height = ROWS
+        .saturating_mul(row_height)
+        .min(size.1.saturating_sub(row_height).max(0));
     let bottom = size
         .1
         .saturating_sub(tehuti_core::bar::HEIGHT.saturating_mul(scale.max(1)))
@@ -322,8 +328,18 @@ fn draw(
     scale: i32,
 ) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
     use smithay::backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer};
-    let mut canvas = crate::settings::canvas::Canvas::new(size)?;
-    canvas.rectangle(0, 0, 1280, 720, [30, 24, 20, 255]);
+    let width = usize::try_from(size.0).ok().filter(|width| *width > 0)?;
+    let height = usize::try_from(size.1).ok().filter(|height| *height > 0)?;
+    let unit = usize::try_from(scale.max(1)).ok()?;
+    let row_height = usize::try_from(tehuti_core::bar::HEIGHT)
+        .ok()?
+        .saturating_mul(unit);
+    let mut canvas = Canvas {
+        width,
+        height,
+        pixels: vec![0; width.checked_mul(height)?.checked_mul(4)?],
+    };
+    canvas.rectangle(0, 0, width, height, [30, 24, 20, 255]);
     let mut preview = keyboard.draft().unwrap_or("").to_owned();
     preview.insert(keyboard.cursor(), '|');
     let start = preview
@@ -331,43 +347,40 @@ fn draw(
         .map_or(0, |prefix| prefix.chars().count())
         .saturating_sub(40);
     let preview: String = preview.chars().skip(start).take(72).collect();
-    canvas.text(20, 16, &preview, 4, [239, 235, 229, 255]);
+    canvas.text(
+        8usize.saturating_mul(unit),
+        0,
+        width,
+        row_height,
+        &preview,
+        unit.saturating_mul(2),
+    );
     for (half, (keys, selected_index)) in keyboard.keys().iter().zip(keyboard.selected).enumerate() {
         for (index, key) in keys.iter().enumerate() {
-            let x = half
-                .saturating_mul(640)
-                .saturating_add((index % 5).saturating_mul(124))
-                .saturating_add(12);
-            let y = (index / 5).saturating_mul(110).saturating_add(100);
-            let selected = selected_index == index;
+            let column = half.saturating_mul(5).saturating_add(index % 5);
+            let left = width.saturating_mul(column) / 10;
+            let right = width.saturating_mul(column.saturating_add(1)) / 10;
+            let top = (index / 5).saturating_add(1).saturating_mul(row_height);
             canvas.rectangle(
-                x,
-                y,
-                114,
-                96,
-                if selected {
+                left.saturating_add(unit),
+                top.saturating_add(unit),
+                right.saturating_sub(left).saturating_sub(unit.saturating_mul(2)),
+                row_height.saturating_sub(unit.saturating_mul(2)),
+                if selected_index == index {
                     [119, 88, 36, 255]
                 } else {
                     [88, 65, 47, 255]
                 },
             );
-            canvas.text(
-                x.saturating_add(25),
-                y.saturating_add(24),
-                if *key == " " { "space" } else { key },
-                if *key == " " { 3 } else { 5 },
-                [239, 235, 229, 255],
-            );
+            let label = if *key == " " { "space" } else { key };
+            let glyph_size = (right.saturating_sub(left) / label.chars().count().saturating_mul(8))
+                .min(unit.saturating_mul(2))
+                .max(1);
+            let text_width = label.chars().count().saturating_mul(8).saturating_mul(glyph_size);
+            let start = left.saturating_add(right.saturating_sub(left).saturating_sub(text_width) / 2);
+            canvas.text(start, top, right, row_height, label, glyph_size);
         }
     }
-    canvas.text(
-        20,
-        600,
-        "LB/RB: type   X: delete   Y: layer   B: close   A: go",
-        4,
-        [239, 235, 229, 255],
-    );
-    canvas.text(20, 660, "D-pad left/right: draft cursor", 3, [239, 235, 229, 255]);
     Some(MemoryRenderBuffer::from_slice(
         &canvas.pixels,
         Fourcc::Argb8888,
@@ -376,4 +389,59 @@ fn draw(
         smithay::utils::Transform::Normal,
         None,
     ))
+}
+
+struct Canvas {
+    width: usize,
+    height: usize,
+    pixels: Vec<u8>,
+}
+
+impl Canvas {
+    fn rectangle(&mut self, x: usize, y: usize, width: usize, height: usize, color: [u8; 4]) {
+        for row in y..y.saturating_add(height).min(self.height) {
+            for column in x..x.saturating_add(width).min(self.width) {
+                let offset = row
+                    .saturating_mul(self.width)
+                    .saturating_add(column)
+                    .saturating_mul(4);
+                if let Some(pixel) = self.pixels.get_mut(offset..offset.saturating_add(4)) {
+                    pixel.copy_from_slice(&color);
+                }
+            }
+        }
+    }
+
+    fn text(&mut self, start: usize, top: usize, end: usize, height: usize, text: &str, size: usize) {
+        let advance = 8usize.saturating_mul(size);
+        let top = top.saturating_add(height.saturating_sub(advance) / 2);
+        for (index, character) in text.chars().enumerate() {
+            let left = start.saturating_add(index.saturating_mul(advance));
+            if left.saturating_add(advance) > end {
+                break;
+            }
+            let glyph = font8x8::BASIC_FONTS
+                .get(character)
+                .or_else(|| font8x8::LATIN_FONTS.get(character))
+                .unwrap_or([255, 129, 129, 129, 129, 129, 129, 255]);
+            for (row, bits) in glyph.into_iter().enumerate() {
+                for column in 0..8usize {
+                    if bits
+                        & (1u8
+                            .checked_shl(u32::try_from(column).unwrap_or_default())
+                            .unwrap_or_default())
+                        != 0
+                    {
+                        self.rectangle(
+                            left.saturating_add(column.saturating_mul(size)),
+                            top.saturating_add(row.saturating_mul(size)),
+                            size,
+                            size,
+                            [239, 235, 229, 255],
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

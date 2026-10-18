@@ -155,37 +155,60 @@ mod tests {
     }
 
     #[test]
-    fn artwork_rasterizes_vector_edges_at_each_native_mode() -> Result<(), Box<dyn core::error::Error>> {
+    fn completion_strip_and_each_key_row_have_bar_height() -> Result<(), Box<dyn core::error::Error>> {
         let mut keyboard = Keyboard::default();
         keyboard.open = true;
         let mut artwork = tehuti::osk::Artwork::default();
-        for (width, height, scale) in [(640, 160, 1), (1920, 480, 1), (3840, 960, 2)] {
+        for (width, height, scale) in [(640, 160, 1), (1920, 160, 1), (3840, 320, 2)] {
             let mut buffer = artwork
                 .buffer(&keyboard, (width, height), scale)
                 .ok_or("no keyboard artwork")?;
             buffer.render().draw(|pixels| {
                 assert_eq!(pixels.len(), usize::try_from(width * height * 4)?);
-                let colors: std::collections::HashSet<_> =
-                    pixels.as_chunks::<4>().0.iter().copied().collect();
-                assert!(
-                    colors.len() > 30,
-                    "vector glyph edges have fractional coverage at {width}x{height}"
-                );
+                let pixel = |x: i32, y: i32| -> Result<&[u8], Box<dyn core::error::Error>> {
+                    let offset = usize::try_from((y * width + x) * 4)?;
+                    Ok(&pixels[offset..offset + 4])
+                };
+                let row_height = 32 * scale;
+                assert_eq!(pixel(2 * scale, row_height - scale)?, &[30, 24, 20, 255]);
+                for row in 1..5 {
+                    assert_eq!(pixel(2 * scale, row * row_height)?, &[30, 24, 20, 255]);
+                    assert_eq!(
+                        pixel(2 * scale, row * row_height + scale)?,
+                        if row == 1 {
+                            &[119, 88, 36, 255]
+                        } else {
+                            &[88, 65, 47, 255]
+                        }
+                    );
+                }
                 Ok::<_, Box<dyn core::error::Error>>(Vec::new())
             })?;
         }
         keyboard.open = false;
-        assert!(artwork.buffer(&keyboard, (1920, 480), 1).is_none());
+        assert!(artwork.buffer(&keyboard, (1920, 160), 1).is_none());
         Ok(())
     }
     #[test]
+    fn keyboard_never_overlaps_the_bar() {
+        for scale in [1, 2] {
+            for output_height in [32, 64, 100, 1080, 2160] {
+                for cursor in [None, Some((900, 24))] {
+                    let (top, height) = tehuti::osk::placement((3840, output_height), scale, cursor);
+                    assert!(top + height <= (output_height - 32 * scale).max(0));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn overlay_sits_above_the_bar_and_avoids_bottom_fields() {
-        assert_eq!(tehuti::osk::placement((1920, 1080), 1, None), (568, 480));
-        assert_eq!(tehuti::osk::placement((1920, 1080), 1, Some((800, 24))), (0, 480));
+        assert_eq!(tehuti::osk::placement((1920, 1080), 1, None), (888, 160));
+        assert_eq!(tehuti::osk::placement((1920, 1080), 1, Some((950, 24))), (0, 160));
         assert_eq!(
             tehuti::osk::placement((1920, 1080), 1, Some((100, 24))),
-            (568, 480)
+            (888, 160)
         );
-        assert_eq!(tehuti::osk::placement((3840, 2160), 2, None), (1136, 960));
+        assert_eq!(tehuti::osk::placement((3840, 2160), 2, None), (1776, 320));
     }
 }

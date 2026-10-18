@@ -47,5 +47,5 @@ pub mod child_environment;
 pub mod phrases;
 pub mod xwayland;
 
-pub mod osk;
 pub mod keyboard;
+pub mod osk;
