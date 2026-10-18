@@ -605,6 +605,14 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if let Event::Button {
+            name,
+            state: tehuti_protocol::ButtonState::Released,
+        } = event
+            && self.osk.release(*name)
+        {
+            return;
+        }
         if let Event::Button { name, state } = event
             && self.secret_confirmation_label.is_none()
             && !self.settings().open

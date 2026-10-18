@@ -154,6 +154,27 @@ impl Keyboard {
             .unwrap_or(" ")
     }
 
+    pub(crate) fn release(&mut self, name: ButtonName) -> bool {
+        if let Some(index) = self.captured.iter().position(|held| *held == name) {
+            self.captured.remove(index);
+            return true;
+        }
+        let index = match name {
+            ButtonName::LeftBumper => Some(0),
+            ButtonName::RightBumper => Some(1),
+            ButtonName::West => Some(2),
+            ButtonName::North => Some(3),
+            ButtonName::East => Some(4),
+            ButtonName::South => Some(5),
+            ButtonName::DpadLeft => Some(6),
+            ButtonName::DpadRight => Some(7),
+            _ => None,
+        };
+        index
+            .and_then(|index| self.held.get_mut(index))
+            .is_some_and(core::mem::take)
+    }
+
     /// Completion providers (#114) can react to committed text at this effect seam.
     pub fn button(&mut self, name: ButtonName, state: ButtonState) -> Option<Effect> {
         if matches!(
@@ -162,10 +183,7 @@ impl Keyboard {
         ) {
             return None;
         }
-        if state == ButtonState::Released
-            && let Some(index) = self.captured.iter().position(|held| *held == name)
-        {
-            self.captured.remove(index);
+        if state == ButtonState::Released && self.release(name) {
             return Some(Effect::Consumed);
         }
         if name == ButtonName::Paddle4 && state == ButtonState::Pressed {
