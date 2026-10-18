@@ -1537,12 +1537,7 @@ mod synthetic_pad {
             });
             if ready && compositor.speech_ready() && !spoken {
                 spoken = true;
-                for state in [ButtonState::Pressed, ButtonState::Released] {
-                    compositor.handle(&Event::Button {
-                        name: ButtonName::Start,
-                        state,
-                    });
-                }
+                tap_button(&mut compositor, ButtonName::Start);
                 assert!(compositor.osk_open());
                 for state in [ButtonState::Pressed, ButtonState::Released] {
                     pad.push(Event::Button {
