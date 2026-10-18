@@ -846,8 +846,7 @@ mod synthetic_pad {
             );
             compositor.output = Some(output);
             compositor.fill_output();
-            let work_height =
-                |compositor: &Compositor| compositor.layout_snapshot().outputs[0].working_area.height;
+            let work_height = |state: &Compositor| state.layout_snapshot().outputs[0].working_area.height;
             assert_eq!(work_height(&compositor), closed_height);
             open_controller_keyboard(&mut compositor);
             assert_eq!(work_height(&compositor), open_height);
