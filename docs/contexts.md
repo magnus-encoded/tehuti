@@ -38,6 +38,12 @@ A cursor and “Mouse mode” notice show the mode. Exiting mouse mode or losing
 the controller releases held mouse buttons. Holding Guide for three seconds
 still opens the system menu in mouse mode.
 
+While the on-screen keyboard is open, it owns both sticks and controller buttons.
+Record and keyboard push-to-talk still record, and Guide keeps its system meaning.
+Paddle 4 hides or restores the keyboard without changing text focus or its draft.
+East closes it, and holding View to leave mouse mode also closes it. Releases of
+buttons captured by the keyboard stay consumed after it closes.
+
 Speech phrases map to the same key or text actions:
 
 ```toml
