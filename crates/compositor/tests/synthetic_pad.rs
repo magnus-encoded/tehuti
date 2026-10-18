@@ -806,6 +806,28 @@ mod synthetic_pad {
         }
     }
 
+    #[test]
+    fn restoring_keyboard_stops_sticks_sampled_while_hidden() {
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        toggle_pointer_mode(&mut compositor);
+        tap_button(&mut compositor, ButtonName::Paddle4);
+        assert!(compositor.osk_open());
+        tap_button(&mut compositor, ButtonName::Paddle4);
+        assert!(!compositor.osk_open());
+        compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+            left: (1000, 1000),
+            right: (1000, 1000),
+        });
+        tap_button(&mut compositor, ButtonName::Paddle4);
+        let cursor = compositor.cursor_location();
+        compositor.handle(&Event::Tick {
+            elapsed: Duration::from_secs(1),
+        });
+        assert!(compositor.osk_open());
+        assert_eq!(compositor.cursor_location(), cursor);
+    }
+
     fn toggle_pointer_mode(compositor: &mut Compositor) {
         let mut pad = SyntheticPad::default();
         pad.push(Event::Button {

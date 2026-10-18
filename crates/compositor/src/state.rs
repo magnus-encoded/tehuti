@@ -604,6 +604,7 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        let keyboard_was_open = self.osk.open;
         if let Event::Button {
             name,
             state: tehuti_protocol::ButtonState::Released,
@@ -619,6 +620,9 @@ impl Compositor {
             && !(*name == tehuti_protocol::ButtonName::Select && self.mouse_mode)
             && let Some(effect) = self.osk.button(*name, *state)
         {
+            if self.osk.open && !keyboard_was_open {
+                self.open_keyboard();
+            }
             tracing::subscriber::with_default(
                 tracing::subscriber::NoSubscriber::default(),
                 || match effect {
