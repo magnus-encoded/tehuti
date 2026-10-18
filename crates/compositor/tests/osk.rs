@@ -140,6 +140,14 @@ mod tests {
     }
 
     #[test]
+    fn paddle_four_keeps_its_mapping_before_a_keyboard_session() {
+        let mut keyboard = Keyboard::default();
+        assert_eq!(keyboard.button(ButtonName::Paddle4, ButtonState::Pressed), None);
+        assert_eq!(keyboard.button(ButtonName::Paddle4, ButtonState::Released), None);
+        assert!(!keyboard.open);
+    }
+
+    #[test]
     fn paddle_four_hides_and_restores_the_keyboard_and_draft() {
         let mut keyboard = Keyboard::default();
         keyboard.open = true;

@@ -36,6 +36,7 @@ const SYMBOLS: [[&str; 20]; 2] = [
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Keyboard {
     pub open: bool,
+    restorable: bool,
     selected: [usize; 2],
     layer: usize,
     captured: Vec<ButtonName>,
@@ -53,6 +54,7 @@ pub enum Effect {
 
 impl Keyboard {
     pub fn close(&mut self) {
+        self.restorable |= self.open;
         self.open = false;
         self.draft = None;
         self.cursor = 0;
@@ -163,6 +165,7 @@ impl Keyboard {
 
     /// Completion providers (#114) can react to committed text at this effect seam.
     pub fn button(&mut self, name: ButtonName, state: ButtonState) -> Option<Effect> {
+        self.restorable |= self.open;
         if matches!(
             name,
             ButtonName::Record | ButtonName::KeyboardPtt | ButtonName::Guide | ButtonName::GuideTap
@@ -175,7 +178,7 @@ impl Keyboard {
         if self.captured.contains(&name) {
             return Some(Effect::Consumed);
         }
-        if name == ButtonName::Paddle4 && state == ButtonState::Pressed {
+        if name == ButtonName::Paddle4 && state == ButtonState::Pressed && self.restorable {
             self.captured.push(name);
             self.open = !self.open;
             return Some(Effect::Consumed);

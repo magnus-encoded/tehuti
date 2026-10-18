@@ -806,13 +806,20 @@ mod synthetic_pad {
         }
     }
 
+    fn open_controller_keyboard(compositor: &mut Compositor) {
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context("app_id = '*'\n[buttons.start]\nkeyboard = 'open'").unwrap(),
+        ]);
+        tap_button(compositor, ButtonName::Start);
+        assert!(compositor.osk_open());
+    }
+
     #[test]
     fn restoring_keyboard_stops_sticks_sampled_while_hidden() {
         let display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         toggle_pointer_mode(&mut compositor);
-        tap_button(&mut compositor, ButtonName::Paddle4);
-        assert!(compositor.osk_open());
+        open_controller_keyboard(&mut compositor);
         tap_button(&mut compositor, ButtonName::Paddle4);
         assert!(!compositor.osk_open());
         compositor.sample_sticks(tehuti_core::dispatch::Sticks {
@@ -1494,8 +1501,10 @@ mod synthetic_pad {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_contexts(vec![
-            tehuti_protocol::parse_context("app_id = 'test'\n[buttons]\n[speech]\nconfirm = { key = 'tab' }")
-                .unwrap(),
+            tehuti_protocol::parse_context(
+                "app_id = 'test'\n[buttons.start]\nkeyboard = 'open'\n[speech]\nconfirm = { key = 'tab' }",
+            )
+            .unwrap(),
         ]);
         let process = tehuti::speech::SpeechProcess::new(vec!["python3".into(), "-u".into(), "-c".into(),
             "import sys,json\nprint(json.dumps({'ready':True}),flush=True)\nfor line in sys.stdin:\n c=json.loads(line)\n if 'stop' in c and c['transcribe']: print(json.dumps({'session':c['stop'],'text':'confirm'}),flush=True)".into()]);
@@ -1530,7 +1539,7 @@ mod synthetic_pad {
                 spoken = true;
                 for state in [ButtonState::Pressed, ButtonState::Released] {
                     compositor.handle(&Event::Button {
-                        name: ButtonName::Paddle4,
+                        name: ButtonName::Start,
                         state,
                     });
                 }
@@ -1614,13 +1623,7 @@ mod synthetic_pad {
         use smithay::reexports::calloop::EventLoop;
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
-        for state in [ButtonState::Pressed, ButtonState::Released] {
-            compositor.handle(&Event::Button {
-                name: ButtonName::Paddle4,
-                state,
-            });
-        }
-        assert!(compositor.osk_open());
+        open_controller_keyboard(&mut compositor);
         let mut pad = SyntheticPad::default();
         pad.push(Event::Button {
             name: ButtonName::Guide,
