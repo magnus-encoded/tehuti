@@ -257,8 +257,8 @@ impl DpadHat {
 
     const fn face_code(&self, code: KeyCode) -> KeyCode {
         match (&self.face_layout, code) {
-            (FaceLayout::Xbox, KeyCode::BTN_X) => KeyCode::BTN_WEST,
-            (FaceLayout::Xbox, KeyCode::BTN_Y) => KeyCode::BTN_NORTH,
+            (FaceLayout::Xbox, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
+            (FaceLayout::Xbox, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
             _ => code,
         }
     }
@@ -460,8 +460,8 @@ mod tests {
     #[test]
     fn vendor_layout_maps_face_buttons_to_physical_positions() {
         for (vendor, code, name) in [
-            (0x045e, KeyCode::BTN_X, ButtonName::West),
-            (0x045e, KeyCode::BTN_Y, ButtonName::North),
+            (0x045e, KeyCode(0x133), ButtonName::West),
+            (0x045e, KeyCode(0x134), ButtonName::North),
             (0x054c, KeyCode::BTN_NORTH, ButtonName::North),
             (0x054c, KeyCode::BTN_WEST, ButtonName::West),
             (0xffff, KeyCode::BTN_NORTH, ButtonName::North),
@@ -479,7 +479,7 @@ mod tests {
         #[test]
         fn vendor_layout_preserves_every_other_raw_key(
             code in any::<u16>().prop_filter("face codes have vendor layouts", |code| {
-                *code != KeyCode::BTN_X.code() && *code != KeyCode::BTN_Y.code()
+                *code != KeyCode::BTN_NORTH.code() && *code != KeyCode::BTN_WEST.code()
             }),
             value in any::<i32>(),
             vendor in any::<u16>(),
