@@ -29,7 +29,7 @@ The escape chord consumes every Guide press and release before context routing.
 A context mapping on Guide never fires. Holding Guide for three seconds opens
 the system menu once; releasing it before then cancels the hold.
 
-Holding View (Select) for two seconds toggles mouse mode once per hold. A shorter
+Double tapping View (Select) within 300 ms toggles mouse mode. A single
 press sends its normal mapping on release. Left stick moves the pointer with
 more speed at larger deflections; right stick scrolls. South (A) holds the left
 mouse button for dragging, East (B) holds the right button. Other controller
@@ -41,7 +41,7 @@ still opens the system menu in mouse mode.
 While the on-screen keyboard is open, it owns both sticks and controller buttons.
 Record and keyboard push-to-talk still record, and Guide keeps its system meaning.
 Paddle 4 hides or restores the keyboard without changing text focus or its draft.
-East closes it, and holding View to leave mouse mode also closes it. Releases of
+East closes it, and double tapping View to leave mouse mode also closes it. Releases of
 buttons captured by the keyboard stay consumed after it closes.
 
 Speech phrases map to the same key or text actions:

@@ -7,8 +7,8 @@ unmatched_speech = "type"
 [buttons]
 south = { key = "enter" }
 east = { key = "backspace" }
-west = { key = "space" }
-north = { text = "ls -la" }
+north = { key = "space" }
+west = { text = "ls -la" }
 dpad_up = { key = "up" }
 dpad_down = { key = "down" }
 dpad_left = { key = "left" }

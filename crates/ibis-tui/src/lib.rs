@@ -241,6 +241,8 @@ mod tests {
             tehuti_protocol::parse_context(include_str!("../../../dist/contexts/ibis-tui/context.toml"))?;
         assert_eq!(context.app_id(), "ibis-tui");
         assert_eq!(context.key_for(ButtonName::South), Some(KeyName::F1));
+        assert_eq!(context.key_for(ButtonName::North), Some(KeyName::F3));
+        assert_eq!(context.key_for(ButtonName::West), Some(KeyName::F4));
         assert_eq!(
             context.stick_actions((0, -1000), (0, 1000)),
             [

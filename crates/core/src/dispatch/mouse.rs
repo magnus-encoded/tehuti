@@ -2,6 +2,8 @@ use super::Effect;
 use core::time::Duration;
 use tehuti_protocol::{ButtonName, ButtonState, Event};
 
+const VIEW_DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(300);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerButton {
     Left,
@@ -22,6 +24,7 @@ pub(super) struct State {
     context_repeat: Duration,
     hold: Option<Duration>,
     toggled: bool,
+    previous_tap: Option<Duration>,
     clicks: [bool; 2],
     pub(super) sticks: Sticks,
 }
@@ -34,18 +37,21 @@ impl State {
         self.sticks = sticks;
     }
 
-    pub(super) const fn short_release(&mut self, event: &Event) -> bool {
+    pub(super) fn short_release(&mut self, event: &Event) -> bool {
         if matches!(
             event,
             Event::Button {
                 name: ButtonName::Select,
                 state: ButtonState::Released
             }
-        ) && self.hold.take().is_some()
-            && !self.toggled
-            && !self.active
+        ) && let Some(held) = self.hold.take()
         {
-            return true;
+            self.previous_tap = if !self.toggled && held <= VIEW_DOUBLE_TAP_WINDOW {
+                Some(held)
+            } else {
+                None
+            };
+            return !self.toggled && !self.active;
         }
         false
     }
@@ -58,7 +64,15 @@ impl State {
             match state {
                 ButtonState::Pressed if self.hold.is_none() => {
                     self.hold = Some(Duration::ZERO);
-                    self.toggled = false;
+                    self.toggled = self
+                        .previous_tap
+                        .take()
+                        .is_some_and(|elapsed| elapsed <= VIEW_DOUBLE_TAP_WINDOW);
+                    if self.toggled {
+                        self.release(effects);
+                        self.active = !self.active;
+                        effects.push(Effect::MouseMode(self.active));
+                    }
                 }
                 ButtonState::Released => {
                     self.hold = None;
@@ -130,11 +144,11 @@ impl State {
     pub(super) fn tick(&mut self, elapsed: Duration, effects: &mut Vec<Effect>) {
         if let Some(hold) = &mut self.hold {
             *hold = hold.saturating_add(elapsed);
-            if !self.toggled && *hold >= Duration::from_secs(2) {
-                self.toggled = true;
-                self.release(effects);
-                self.active = !self.active;
-                effects.push(Effect::MouseMode(self.active));
+        }
+        if let Some(previous) = &mut self.previous_tap {
+            *previous = previous.saturating_add(elapsed);
+            if *previous > VIEW_DOUBLE_TAP_WINDOW {
+                self.previous_tap = None;
             }
         }
         let nanos = i64::try_from(elapsed.as_nanos().min(100_000_000)).unwrap_or(100_000_000);

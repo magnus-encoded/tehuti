@@ -602,11 +602,16 @@ fn pad_button(name: ButtonName, state: ButtonState) -> Input {
     }
 }
 
+fn finish_view_double_tap(world: &mut World, state: State) -> State {
+    let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+    world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed))
+}
+
 proptest! {
     #[test]
     fn view_waits_for_release_and_short_presses_keep_the_mapping(
         mut contexts in arbitrary_contexts(),
-        duration in 0_u64..2000,
+        duration in 0_u64..10000,
         key in prop::sample::select(vec!["tab", "space", "escape"]),
     ) {
         contexts.insert(0, tehuti_protocol::parse_context(&format!("app_id = 'mouse-test'\n[buttons.select]\nkey = '{key}'")).unwrap());
@@ -623,24 +628,26 @@ proptest! {
     }
 
     #[test]
-    fn each_hold_toggles_once_independent_of_tick_partition(
+    fn double_taps_toggle_once_and_slow_second_taps_do_not(
         contexts in arbitrary_contexts(),
-        early in 0_u64..2000,
-        late in 0_u64..10000,
-        holds in 1_usize..8,
+        gap in prop_oneof![Just(0_u64), Just(300), Just(301), 0_u64..1000],
+        split in 0_u64..1000,
     ) {
         let mut world = World::default();
         let mut state = configured_mouse(contexts);
-        for index in 0..holds {
+        for active in [true, false] {
             state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
-            world.trace.clear();
-            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(early) });
-            prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::MouseMode(_))));
-            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(2000_u64.saturating_sub(early)) });
-            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(late) });
             state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+            world.trace.clear();
+            let first = split.min(gap);
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(first) });
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(gap - first) });
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+            state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
             let toggles: Vec<_> = world.trace.iter().filter(|effect| matches!(effect, Effect::MouseMode(_))).cloned().collect();
-            prop_assert_eq!(toggles, vec![Effect::MouseMode(index % 2 == 0)]);
+            let expected = if gap <= 300 { vec![Effect::MouseMode(active)] } else { vec![] };
+            prop_assert_eq!(toggles, expected);
         }
     }
 
@@ -652,7 +659,7 @@ proptest! {
     ) {
         let mut world = World { plugin_active, ..World::default() };
         let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
-        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let state = finish_view_double_tap(&mut world, state);
         let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
         world.trace.clear();
         let state = world.run(state, pad_button(name, ButtonState::Pressed));
@@ -674,7 +681,7 @@ proptest! {
     ) {
         let mut world = World::default();
         let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
-        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let state = finish_view_double_tap(&mut world, state);
         let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
         let name = if right { ButtonName::East } else { ButtonName::South };
         let button = if right { PointerButton::Right } else { PointerButton::Left };
@@ -684,7 +691,7 @@ proptest! {
             world.run(state, Input::ControllerDisconnected)
         } else {
             let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
-            world.run(state, Input::Tick { elapsed: Duration::from_secs(2) })
+            finish_view_double_tap(&mut world, state)
         };
         let clicks: Vec<_> = world.trace.iter().filter(|effect| matches!(effect, Effect::Click { .. })).cloned().collect();
         prop_assert_eq!(clicks, vec![Effect::Click { button, pressed: false }]);
@@ -702,7 +709,7 @@ proptest! {
     ) {
         let mut world = World::default();
         let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
-        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let state = finish_view_double_tap(&mut world, state);
         let axis = if negative { -1000 } else { 1000 };
         let state = world.run(state, Input::Sticks(Sticks { left: (axis, 0), right: (0, 0) }));
         let mut split = state.clone();
@@ -727,7 +734,7 @@ proptest! {
     ) {
         let mut world = World::default();
         let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
-        let mut state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let mut state = finish_view_double_tap(&mut world, state);
         let mut distances = Vec::new();
         for axis in [small, large] {
             let axis = if negative { axis.saturating_neg() } else { axis };
@@ -810,7 +817,7 @@ proptest! {
         let mut world = World { plugin_active, ..World::default() };
         let state = world.run(configured_mouse(contexts), Input::Speech(SpeechInput::Available));
         let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
-        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let state = finish_view_double_tap(&mut world, state);
         let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
         world.trace.clear();
         let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
@@ -830,7 +837,7 @@ proptest! {
     ) {
         let mut world = World { plugin_active, ..World::default() };
         let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
-        let state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
+        let state = finish_view_double_tap(&mut world, state);
         let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
         world.trace.clear();
         let state = world.run(state, pad_button(name, ButtonState::Pressed));
@@ -850,12 +857,7 @@ fn entering_mouse_mode_cancels_recording_and_a_later_release_does_not_restart_it
     let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
     let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
     world.trace.clear();
-    let state = world.run(
-        state,
-        Input::Tick {
-            elapsed: Duration::from_secs(2),
-        },
-    );
+    let state = finish_view_double_tap(&mut world, state);
     assert!(
         world.trace.iter().any(|effect| matches!(
             effect,
@@ -881,6 +883,8 @@ fn entering_mouse_mode_cancels_recording_and_a_later_release_does_not_restart_it
 fn escape_still_quits_when_view_toggles_mouse_mode_during_the_chord() {
     let mut world = World::default();
     let mut state = State::default();
+    state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+    state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
     for name in [ButtonName::Select, ButtonName::Guide, ButtonName::Start] {
         state = world.run(state, pad_button(name, ButtonState::Pressed));
     }
@@ -892,7 +896,7 @@ fn escape_still_quits_when_view_toggles_mouse_mode_during_the_chord() {
     );
     assert!(
         world.trace.contains(&Effect::MouseMode(true)),
-        "View reaches its threshold"
+        "double tapping View toggles mouse mode"
     );
     assert!(state.core().menu().is_some(), "the system menu stays available");
 }
@@ -904,12 +908,7 @@ fn the_guide_hold_remains_reserved_inside_mouse_mode() {
         State::default(),
         pad_button(ButtonName::Select, ButtonState::Pressed),
     );
-    let state = world.run(
-        state,
-        Input::Tick {
-            elapsed: Duration::from_secs(2),
-        },
-    );
+    let state = finish_view_double_tap(&mut world, state);
     let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
     world.trace.clear();
     let state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
@@ -1239,12 +1238,7 @@ fn pointer_mode(world: &mut World) -> State {
         State::default(),
         pad_button(ButtonName::Select, ButtonState::Pressed),
     );
-    let state = world.run(
-        state,
-        Input::Tick {
-            elapsed: Duration::from_secs(2),
-        },
-    );
+    let state = finish_view_double_tap(world, state);
     world.run(state, pad_button(ButtonName::Select, ButtonState::Released))
 }
 
@@ -1340,12 +1334,7 @@ fn full_stick_ramp_covers_the_same_distance_at_different_tick_rates() {
             State::default(),
             pad_button(ButtonName::Select, ButtonState::Pressed),
         );
-        let state = world.run(
-            state,
-            Input::Tick {
-                elapsed: Duration::from_secs(2),
-            },
-        );
+        let state = finish_view_double_tap(&mut world, state);
         let mut state = world.run(
             state,
             Input::Sticks(Sticks {
@@ -1581,7 +1570,7 @@ fn context_sticks_repeat_keys_and_stop_on_focus_change() {
 }
 
 #[test]
-fn context_sticks_keep_the_mouse_mode_exit_hold() {
+fn context_sticks_keep_the_mouse_mode_exit_double_tap() {
     let context = tehuti_protocol::parse_context(
         "app_id = 'mouse-test'\n[buttons]\nsouth = { key = 'enter' }\n[sticks]\nleft_up = { key = 'up' }",
     )
@@ -1591,12 +1580,7 @@ fn context_sticks_keep_the_mouse_mode_exit_hold() {
     for active in [true, false] {
         state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
         world.trace.clear();
-        state = world.run(
-            state,
-            Input::Tick {
-                elapsed: Duration::from_secs(2),
-            },
-        );
+        state = finish_view_double_tap(&mut world, state);
         assert!(
             world.trace.contains(&Effect::MouseMode(active)),
             "View still toggles mouse mode in a stick context"

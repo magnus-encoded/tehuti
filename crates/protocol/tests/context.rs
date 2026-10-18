@@ -12,7 +12,7 @@ mod context {
         assert_eq!(context.app_id(), "firefox");
         for (button, key, mods) in [
             (ButtonName::East, KeyName::Left, vec![Modifier::Alt]),
-            (ButtonName::North, KeyName::L, vec![Modifier::Ctrl]),
+            (ButtonName::West, KeyName::L, vec![Modifier::Ctrl]),
             (
                 ButtonName::LeftBumper,
                 KeyName::Tab,

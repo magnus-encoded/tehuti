@@ -3,7 +3,7 @@ unmatched_speech = "type"
 
 [buttons]
 east = { key = "left", mods = ["alt"] }
-north = { key = "l", mods = ["ctrl"] }
+west = { key = "l", mods = ["ctrl"] }
 left_bumper = { key = "tab", mods = ["ctrl", "shift"] }
 right_bumper = { key = "tab", mods = ["ctrl"] }
 start = { keyboard = "open" }

@@ -768,8 +768,13 @@ mod synthetic_pad {
                     name: ButtonName::Select,
                     state: ButtonState::Pressed,
                 });
-                pad.push(Event::Tick {
-                    elapsed: Duration::from_secs(2),
+                pad.push(Event::Button {
+                    name: ButtonName::Select,
+                    state: ButtonState::Released,
+                });
+                pad.push(Event::Button {
+                    name: ButtonName::Select,
+                    state: ButtonState::Pressed,
                 });
                 pad.push(Event::Button {
                     name: ButtonName::Select,
@@ -893,8 +898,13 @@ mod synthetic_pad {
             name: ButtonName::Select,
             state: ButtonState::Pressed,
         });
-        pad.push(Event::Tick {
-            elapsed: Duration::from_secs(2),
+        pad.push(Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Released,
+        });
+        pad.push(Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Pressed,
         });
         pad.push(Event::Button {
             name: ButtonName::Select,
@@ -2523,7 +2533,7 @@ else:
                 .unwrap(),
             &[
                 ButtonName::East,
-                ButtonName::North,
+                ButtonName::West,
                 ButtonName::LeftBumper,
                 ButtonName::RightBumper,
             ],

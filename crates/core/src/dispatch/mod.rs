@@ -609,6 +609,12 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     // Mouse mode wins, except while the system menu is open, so the menu can always be dismissed.
     let passes_mouse = menu_open;
     if !passes_mouse && state.mouse.button(&event, effects) {
+        if effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::MouseMode(_)))
+        {
+            frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
+        }
         if let Some(actions) = crate::escape_chord(&mut state.core, &event) {
             effects.extend(actions.into_iter().map(Effect::Apply));
         }
