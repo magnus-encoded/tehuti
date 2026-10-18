@@ -61,24 +61,7 @@ impl State {
             return false;
         };
         if *name == ButtonName::Select {
-            match state {
-                ButtonState::Pressed if self.hold.is_none() => {
-                    self.hold = Some(Duration::ZERO);
-                    self.toggled = self
-                        .previous_tap
-                        .take()
-                        .is_some_and(|elapsed| elapsed <= VIEW_DOUBLE_TAP_WINDOW);
-                    if self.toggled {
-                        self.release(effects);
-                        self.active = !self.active;
-                        effects.push(Effect::MouseMode(self.active));
-                    }
-                }
-                ButtonState::Released => {
-                    self.hold = None;
-                }
-                ButtonState::Pressed => {}
-            }
+            self.view_button(*state, effects);
             return true;
         }
         if !self.active || matches!(name, ButtonName::Record | ButtonName::Guide | ButtonName::Start) {
@@ -118,6 +101,27 @@ impl State {
             }
         }
         true
+    }
+
+    fn view_button(&mut self, state: ButtonState, effects: &mut Vec<Effect>) {
+        match state {
+            ButtonState::Pressed if self.hold.is_none() => {
+                self.hold = Some(Duration::ZERO);
+                self.toggled = self
+                    .previous_tap
+                    .take()
+                    .is_some_and(|elapsed| elapsed <= VIEW_DOUBLE_TAP_WINDOW);
+                if self.toggled {
+                    self.release(effects);
+                    self.active = !self.active;
+                    effects.push(Effect::MouseMode(self.active));
+                }
+            }
+            ButtonState::Released => {
+                self.hold = None;
+            }
+            ButtonState::Pressed => {}
+        }
     }
 
     pub(super) fn context_tick(
