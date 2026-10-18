@@ -240,15 +240,17 @@ mod tests {
         let context =
             tehuti_protocol::parse_context(include_str!("../../../dist/contexts/ibis-tui/context.toml"))?;
         assert_eq!(context.app_id(), "ibis-tui");
-        assert_eq!(context.key_for(ButtonName::South), Some(KeyName::Function1));
+        assert_eq!(context.key_for(ButtonName::South), Some(KeyName::F1));
         assert_eq!(
             context.stick_actions((0, -1000), (0, 1000)),
             [
                 Action::Key {
-                    key: KeyName::Function7
+                    key: KeyName::F7,
+                    mods: vec![]
                 },
                 Action::Key {
-                    key: KeyName::PageDown
+                    key: KeyName::PageDown,
+                    mods: vec![]
                 },
             ]
         );

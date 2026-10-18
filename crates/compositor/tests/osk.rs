@@ -89,7 +89,12 @@ mod tests {
         keyboard.open = true;
         assert_eq!(press(&mut keyboard, ButtonName::West), Some(Effect::Backspace));
         assert_eq!(press(&mut keyboard, ButtonName::South), Some(Effect::Enter));
-        for name in [ButtonName::Guide, ButtonName::Record, ButtonName::DpadUp] {
+        for name in [
+            ButtonName::Guide,
+            ButtonName::GuideTap,
+            ButtonName::Record,
+            ButtonName::KeyboardPtt,
+        ] {
             assert_eq!(keyboard.button(name, ButtonState::Pressed), None);
         }
         assert_eq!(press(&mut keyboard, ButtonName::East), Some(Effect::Consumed));
@@ -98,6 +103,48 @@ mod tests {
             keyboard.button(ButtonName::LeftBumper, ButtonState::Pressed),
             None
         );
+    }
+
+    #[test]
+    fn unassigned_buttons_are_consumed_and_their_releases_stay_captured_after_close() {
+        for name in [
+            ButtonName::Select,
+            ButtonName::Start,
+            ButtonName::LeftStick,
+            ButtonName::RightStick,
+            ButtonName::DpadUp,
+            ButtonName::DpadDown,
+            ButtonName::DpadLeft,
+            ButtonName::DpadRight,
+            ButtonName::Paddle1,
+            ButtonName::Paddle2,
+            ButtonName::Paddle3,
+        ] {
+            let mut keyboard = Keyboard::default();
+            keyboard.open = true;
+            assert_eq!(
+                keyboard.button(name, ButtonState::Pressed),
+                Some(Effect::Consumed)
+            );
+            keyboard.close();
+            assert_eq!(
+                keyboard.button(name, ButtonState::Released),
+                Some(Effect::Consumed)
+            );
+            assert_eq!(keyboard.button(name, ButtonState::Pressed), None);
+        }
+    }
+
+    #[test]
+    fn paddle_four_hides_and_restores_the_keyboard_and_draft() {
+        let mut keyboard = Keyboard::default();
+        keyboard.open = true;
+        keyboard.insert_draft("hello");
+        assert_eq!(press(&mut keyboard, ButtonName::Paddle4), Some(Effect::Consumed));
+        assert!(!keyboard.open);
+        assert_eq!(press(&mut keyboard, ButtonName::Paddle4), Some(Effect::Consumed));
+        assert!(keyboard.open);
+        assert_eq!(keyboard.draft(), Some("hello"));
     }
 
     #[test]

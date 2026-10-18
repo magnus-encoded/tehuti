@@ -609,6 +609,7 @@ impl Compositor {
             && self.secret_confirmation_label.is_none()
             && !self.settings().open
             && self.dispatch.core().menu().is_none()
+            && !(*name == tehuti_protocol::ButtonName::Select && self.mouse_mode)
             && let Some(effect) = self.osk.button(*name, *state)
         {
             tracing::subscriber::with_default(

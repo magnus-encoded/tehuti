@@ -1500,6 +1500,13 @@ mod synthetic_pad {
             if ready && compositor.speech_ready() && !spoken {
                 spoken = true;
                 for state in [ButtonState::Pressed, ButtonState::Released] {
+                    compositor.handle(&Event::Button {
+                        name: ButtonName::Paddle4,
+                        state,
+                    });
+                }
+                assert!(compositor.osk_open());
+                for state in [ButtonState::Pressed, ButtonState::Released] {
                     pad.push(Event::Button {
                         name: ButtonName::Record,
                         state,
@@ -1578,6 +1585,13 @@ mod synthetic_pad {
         use smithay::reexports::calloop::EventLoop;
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            compositor.handle(&Event::Button {
+                name: ButtonName::Paddle4,
+                state,
+            });
+        }
+        assert!(compositor.osk_open());
         let mut pad = SyntheticPad::default();
         pad.push(Event::Button {
             name: ButtonName::Guide,
@@ -2085,6 +2099,53 @@ else:
         draft: bool,
     ) {
         prepare_test_keyboard(compositor, osk);
+        if osk {
+            let focus = compositor.layout_snapshot().focused_window;
+            for expected in [false, true] {
+                for state in [ButtonState::Pressed, ButtonState::Released] {
+                    compositor.handle(&Event::Button {
+                        name: ButtonName::Paddle4,
+                        state,
+                    });
+                }
+                assert_eq!(compositor.osk_open(), expected);
+                assert_eq!(compositor.layout_snapshot().focused_window, focus);
+            }
+            for name in [
+                ButtonName::Start,
+                ButtonName::LeftStick,
+                ButtonName::RightStick,
+                ButtonName::DpadUp,
+                ButtonName::DpadDown,
+                ButtonName::Paddle1,
+                ButtonName::Paddle2,
+                ButtonName::Paddle3,
+            ] {
+                compositor.handle(&Event::Button {
+                    name,
+                    state: ButtonState::Pressed,
+                });
+                compositor.handle(&Event::Button {
+                    name: ButtonName::East,
+                    state: ButtonState::Pressed,
+                });
+                compositor.handle(&Event::Button {
+                    name,
+                    state: ButtonState::Released,
+                });
+                compositor.handle(&Event::Button {
+                    name: ButtonName::East,
+                    state: ButtonState::Released,
+                });
+                for state in [ButtonState::Pressed, ButtonState::Released] {
+                    compositor.handle(&Event::Button {
+                        name: ButtonName::Paddle4,
+                        state,
+                    });
+                }
+                assert!(compositor.osk_open());
+            }
+        }
         if draft {
             compositor.handle(&Event::Speech {
                 text: tehuti_protocol::Text::new("hello".into()).unwrap(),
@@ -2182,6 +2243,15 @@ else:
                 if stages == 0 {
                     toggle_pointer_mode(&mut compositor);
                     assert!(compositor.osk_open(), "mouse mode opens focused text input");
+                    for expected in [false, true] {
+                        for state in [ButtonState::Pressed, ButtonState::Released] {
+                            compositor.handle(&Event::Button {
+                                name: ButtonName::Paddle4,
+                                state,
+                            });
+                        }
+                        assert_eq!(compositor.osk_open(), expected);
+                    }
                     toggle_pointer_mode(&mut compositor);
                     assert!(!compositor.osk_open(), "leaving mouse mode closes the keyboard");
                     toggle_pointer_mode(&mut compositor);

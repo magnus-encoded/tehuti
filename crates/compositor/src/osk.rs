@@ -39,6 +39,7 @@ pub struct Keyboard {
     selected: [usize; 2],
     layer: usize,
     held: [bool; 8],
+    captured: Vec<ButtonName>,
     draft: Option<String>,
     cursor: usize,
 }
@@ -155,6 +156,26 @@ impl Keyboard {
 
     /// Completion providers (#114) can react to committed text at this effect seam.
     pub fn button(&mut self, name: ButtonName, state: ButtonState) -> Option<Effect> {
+        if matches!(
+            name,
+            ButtonName::Record | ButtonName::KeyboardPtt | ButtonName::Guide | ButtonName::GuideTap
+        ) {
+            return None;
+        }
+        if state == ButtonState::Released
+            && let Some(index) = self.captured.iter().position(|held| *held == name)
+        {
+            self.captured.remove(index);
+            return Some(Effect::Consumed);
+        }
+        if name == ButtonName::Paddle4 && state == ButtonState::Pressed {
+            if self.captured.contains(&name) {
+                return Some(Effect::Consumed);
+            }
+            self.captured.push(name);
+            self.open = !self.open;
+            return Some(Effect::Consumed);
+        }
         let index = match name {
             ButtonName::LeftBumper => 0,
             ButtonName::RightBumper => 1,
@@ -162,8 +183,8 @@ impl Keyboard {
             ButtonName::North => 3,
             ButtonName::East => 4,
             ButtonName::South => 5,
-            ButtonName::DpadLeft if self.draft.is_some() || state == ButtonState::Released => 6,
-            ButtonName::DpadRight if self.draft.is_some() || state == ButtonState::Released => 7,
+            ButtonName::DpadLeft => 6,
+            ButtonName::DpadRight => 7,
             ButtonName::Select
             | ButtonName::Record
             | ButtonName::Start
@@ -172,18 +193,24 @@ impl Keyboard {
             | ButtonName::RightStick
             | ButtonName::DpadUp
             | ButtonName::DpadDown
-            | ButtonName::DpadLeft
-            | ButtonName::DpadRight
             | ButtonName::KeyboardPtt
             | ButtonName::GuideTap
             | ButtonName::Paddle1
             | ButtonName::Paddle2
             | ButtonName::Paddle3
-            | ButtonName::Paddle4 => return None,
+            | ButtonName::Paddle4 => {
+                if !self.open {
+                    return None;
+                }
+                if state == ButtonState::Pressed && !self.captured.contains(&name) {
+                    self.captured.push(name);
+                }
+                return Some(Effect::Consumed);
+            }
         };
         let held = self.held.get_mut(index)?;
         if state == ButtonState::Released {
-            return core::mem::take(held).then_some(Effect::Consumed);
+            return (core::mem::take(held) || self.open).then_some(Effect::Consumed);
         }
         if !self.open {
             return None;
