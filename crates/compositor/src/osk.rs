@@ -168,7 +168,20 @@ impl Keyboard {
             ButtonName::South => Some(5),
             ButtonName::DpadLeft => Some(6),
             ButtonName::DpadRight => Some(7),
-            _ => None,
+            ButtonName::Select
+            | ButtonName::Record
+            | ButtonName::Start
+            | ButtonName::Guide
+            | ButtonName::LeftStick
+            | ButtonName::RightStick
+            | ButtonName::DpadUp
+            | ButtonName::DpadDown
+            | ButtonName::KeyboardPtt
+            | ButtonName::GuideTap
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4 => None,
         };
         index
             .and_then(|index| self.held.get_mut(index))
