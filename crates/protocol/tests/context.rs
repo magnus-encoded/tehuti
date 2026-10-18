@@ -32,7 +32,10 @@ mod context {
             ("reload", KeyName::F5, vec![]),
             ("close tab", KeyName::W, vec![Modifier::Ctrl]),
         ] {
-            assert_eq!(context.speech_action(phrase), Some(Action::Key { key, mods }));
+            assert_eq!(
+                context.speech_phrase_action(phrase),
+                Some(Action::Key { key, mods })
+            );
         }
     }
 
