@@ -161,7 +161,6 @@ impl Compositor {
     /// The keyboard keymap fails to load or the desktop entry worker cannot start.
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
         let (seat_state, mut seat) = Self::new_seat(display);
-        let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         let mut compositor = Self {
             start_time: Instant::now(),
             pointer: seat.add_pointer(),
@@ -212,7 +211,7 @@ impl Compositor {
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
             data_device_state: DataDeviceState::new::<Self>(display),
-            keyboard,
+            keyboard: seat.add_keyboard(XkbConfig::default(), 200, 25)?,
             controller_session: tehuti_core::controller::State::default(),
             seat,
             shortcut_keycodes: Vec::new(),
@@ -811,16 +810,7 @@ impl Compositor {
             DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
             DispatchEffect::Scroll { x, y } => self.pointer_scroll(x, y),
             DispatchEffect::Click { button, pressed } => self.pointer_click(button, pressed),
-            DispatchEffect::MouseMode(active) => {
-                self.mouse_mode = active;
-                if active && self.text_input.enabled() {
-                    self.open_keyboard();
-                } else if !active {
-                    self.osk.close();
-                }
-                self.show_notice(if active { "MOUSE MODE" } else { "MOUSE MODE OFF" });
-                self.move_pointer();
-            }
+            DispatchEffect::MouseMode(active) => self.set_mouse_mode(active),
             DispatchEffect::PollSources => self.poll_sources(),
             DispatchEffect::SouthPressed(pressed) => {
                 self.secret_confirmation.south_pressed = pressed;
@@ -865,6 +855,17 @@ impl Compositor {
                 log_speech_route(&text, first.as_ref(), plugin, self.osk.open);
             }
         }
+    }
+
+    fn set_mouse_mode(&mut self, active: bool) {
+        self.mouse_mode = active;
+        if active && self.text_input.enabled() {
+            self.open_keyboard();
+        } else if !active {
+            self.osk.close();
+        }
+        self.show_notice(if active { "MOUSE MODE" } else { "MOUSE MODE OFF" });
+        self.move_pointer();
     }
 
     fn unlock_wallpapers(&mut self) {

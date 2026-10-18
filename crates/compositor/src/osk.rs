@@ -38,7 +38,6 @@ pub struct Keyboard {
     pub open: bool,
     selected: [usize; 2],
     layer: usize,
-    held: [bool; 8],
     captured: Vec<ButtonName>,
     draft: Option<String>,
     cursor: usize,
@@ -155,37 +154,11 @@ impl Keyboard {
     }
 
     pub(crate) fn release(&mut self, name: ButtonName) -> bool {
-        if let Some(index) = self.captured.iter().position(|held| *held == name) {
-            self.captured.remove(index);
-            return true;
-        }
-        let index = match name {
-            ButtonName::LeftBumper => Some(0),
-            ButtonName::RightBumper => Some(1),
-            ButtonName::West => Some(2),
-            ButtonName::North => Some(3),
-            ButtonName::East => Some(4),
-            ButtonName::South => Some(5),
-            ButtonName::DpadLeft => Some(6),
-            ButtonName::DpadRight => Some(7),
-            ButtonName::Select
-            | ButtonName::Record
-            | ButtonName::Start
-            | ButtonName::Guide
-            | ButtonName::LeftStick
-            | ButtonName::RightStick
-            | ButtonName::DpadUp
-            | ButtonName::DpadDown
-            | ButtonName::KeyboardPtt
-            | ButtonName::GuideTap
-            | ButtonName::Paddle1
-            | ButtonName::Paddle2
-            | ButtonName::Paddle3
-            | ButtonName::Paddle4 => None,
+        let Some(index) = self.captured.iter().position(|held| *held == name) else {
+            return false;
         };
-        index
-            .and_then(|index| self.held.get_mut(index))
-            .is_some_and(core::mem::take)
+        let _released = self.captured.remove(index);
+        true
     }
 
     /// Completion providers (#114) can react to committed text at this effect seam.
@@ -207,50 +180,18 @@ impl Keyboard {
             self.open = !self.open;
             return Some(Effect::Consumed);
         }
-        let index = match name {
-            ButtonName::LeftBumper => 0,
-            ButtonName::RightBumper => 1,
-            ButtonName::West => 2,
-            ButtonName::North => 3,
-            ButtonName::East => 4,
-            ButtonName::South => 5,
-            ButtonName::DpadLeft => 6,
-            ButtonName::DpadRight => 7,
-            ButtonName::Select
-            | ButtonName::Record
-            | ButtonName::Start
-            | ButtonName::Guide
-            | ButtonName::LeftStick
-            | ButtonName::RightStick
-            | ButtonName::DpadUp
-            | ButtonName::DpadDown
-            | ButtonName::KeyboardPtt
-            | ButtonName::GuideTap
-            | ButtonName::Paddle1
-            | ButtonName::Paddle2
-            | ButtonName::Paddle3
-            | ButtonName::Paddle4 => {
-                if !self.open {
-                    return None;
-                }
-                if state == ButtonState::Pressed && !self.captured.contains(&name) {
-                    self.captured.push(name);
-                }
-                return Some(Effect::Consumed);
-            }
-        };
-        let held = self.held.get_mut(index)?;
-        if state == ButtonState::Released {
-            return (core::mem::take(held) || self.open).then_some(Effect::Consumed);
-        }
-        if *held {
-            return Some(Effect::Consumed);
-        }
         if !self.open {
             return None;
         }
-        *held = true;
-        Some(match name {
+        if state == ButtonState::Released {
+            return Some(Effect::Consumed);
+        }
+        self.captured.push(name);
+        Some(self.press(name))
+    }
+
+    fn press(&mut self, name: ButtonName) -> Effect {
+        match name {
             ButtonName::LeftBumper => Effect::Text(self.key(0)),
             ButtonName::RightBumper => Effect::Text(self.key(1)),
             ButtonName::West => Effect::Backspace,
@@ -281,7 +222,7 @@ impl Keyboard {
             | ButtonName::Paddle2
             | ButtonName::Paddle3
             | ButtonName::Paddle4 => Effect::Consumed,
-        })
+        }
     }
 }
 
@@ -399,21 +340,7 @@ fn draw(
         pixels: vec![0; width.checked_mul(height)?.checked_mul(4)?],
     };
     canvas.rectangle(0, 0, width, height, [30, 24, 20, 255]);
-    let mut preview = keyboard.draft().unwrap_or("").to_owned();
-    preview.insert(keyboard.cursor(), '|');
-    let start = preview
-        .get(..keyboard.cursor())
-        .map_or(0, |prefix| prefix.chars().count())
-        .saturating_sub(40);
-    let preview: String = preview.chars().skip(start).take(72).collect();
-    canvas.text(
-        8usize.saturating_mul(unit),
-        0,
-        width,
-        row_height,
-        &preview,
-        unit.saturating_mul(2),
-    );
+    draw_preview(&mut canvas, keyboard, row_height, unit);
     for (half, (keys, selected_index)) in keyboard.keys().iter().zip(keyboard.selected).enumerate() {
         for (index, key) in keys.iter().enumerate() {
             let column = half.saturating_mul(5).saturating_add(index % 5);
@@ -432,7 +359,10 @@ fn draw(
                 },
             );
             let label = if *key == " " { "space" } else { key };
-            let glyph_size = (right.saturating_sub(left) / label.chars().count().saturating_mul(8))
+            let glyph_size = right
+                .saturating_sub(left)
+                .checked_div(label.chars().count().saturating_mul(8))
+                .unwrap_or_default()
                 .min(unit.saturating_mul(2))
                 .max(1);
             let text_width = label.chars().count().saturating_mul(8).saturating_mul(glyph_size);
@@ -448,6 +378,24 @@ fn draw(
         smithay::utils::Transform::Normal,
         None,
     ))
+}
+
+fn draw_preview(canvas: &mut Canvas, keyboard: &Keyboard, row_height: usize, unit: usize) {
+    let mut preview = keyboard.draft().unwrap_or("").to_owned();
+    preview.insert(keyboard.cursor(), '|');
+    let start = preview
+        .get(..keyboard.cursor())
+        .map_or(0, |prefix| prefix.chars().count())
+        .saturating_sub(40);
+    let preview: String = preview.chars().skip(start).take(72).collect();
+    canvas.text(
+        8usize.saturating_mul(unit),
+        0,
+        canvas.width,
+        row_height,
+        &preview,
+        unit.saturating_mul(2),
+    );
 }
 
 struct Canvas {
