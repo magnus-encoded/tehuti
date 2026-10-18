@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod synthetic_pad {
+    use core::fmt::Write as _;
     use core::{
         sync::atomic::{AtomicU64, Ordering},
         time::Duration,
@@ -797,6 +798,12 @@ mod synthetic_pad {
             vec![(0x110, PointerState::Pressed), (0x110, PointerState::Released)]
         );
         assert!(app.keys.is_empty(), "A clicks instead of sending Enter");
+    }
+
+    fn tap_button(compositor: &mut Compositor, name: ButtonName) {
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            compositor.handle(&Event::Button { name, state });
+        }
     }
 
     fn toggle_pointer_mode(compositor: &mut Compositor) {
@@ -2091,60 +2098,58 @@ else:
         }
     }
 
-    fn exercise_test_keyboard(
-        compositor: &mut Compositor,
-        pad: &mut SyntheticPad,
-        osk: bool,
-        text_state: ClientTextState,
-        draft: bool,
-    ) {
+    fn exercise_keyboard_grab(compositor: &mut Compositor) {
+        let focus = compositor.layout_snapshot().focused_window;
+        for expected in [false, true] {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                compositor.handle(&Event::Button {
+                    name: ButtonName::Paddle4,
+                    state,
+                });
+            }
+            assert_eq!(compositor.osk_open(), expected);
+            assert_eq!(compositor.layout_snapshot().focused_window, focus);
+        }
+        for name in [
+            ButtonName::Start,
+            ButtonName::LeftStick,
+            ButtonName::RightStick,
+            ButtonName::DpadUp,
+            ButtonName::DpadDown,
+            ButtonName::Paddle1,
+            ButtonName::Paddle2,
+            ButtonName::Paddle3,
+        ] {
+            compositor.handle(&Event::Button {
+                name,
+                state: ButtonState::Pressed,
+            });
+            compositor.handle(&Event::Button {
+                name: ButtonName::East,
+                state: ButtonState::Pressed,
+            });
+            compositor.handle(&Event::Button {
+                name,
+                state: ButtonState::Released,
+            });
+            compositor.handle(&Event::Button {
+                name: ButtonName::East,
+                state: ButtonState::Released,
+            });
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                compositor.handle(&Event::Button {
+                    name: ButtonName::Paddle4,
+                    state,
+                });
+            }
+            assert!(compositor.osk_open());
+        }
+    }
+
+    fn exercise_test_keyboard(compositor: &mut Compositor, pad: &mut SyntheticPad, osk: bool, draft: bool) {
         prepare_test_keyboard(compositor, osk);
         if osk {
-            let focus = compositor.layout_snapshot().focused_window;
-            for expected in [false, true] {
-                for state in [ButtonState::Pressed, ButtonState::Released] {
-                    compositor.handle(&Event::Button {
-                        name: ButtonName::Paddle4,
-                        state,
-                    });
-                }
-                assert_eq!(compositor.osk_open(), expected);
-                assert_eq!(compositor.layout_snapshot().focused_window, focus);
-            }
-            for name in [
-                ButtonName::Start,
-                ButtonName::LeftStick,
-                ButtonName::RightStick,
-                ButtonName::DpadUp,
-                ButtonName::DpadDown,
-                ButtonName::Paddle1,
-                ButtonName::Paddle2,
-                ButtonName::Paddle3,
-            ] {
-                compositor.handle(&Event::Button {
-                    name,
-                    state: ButtonState::Pressed,
-                });
-                compositor.handle(&Event::Button {
-                    name: ButtonName::East,
-                    state: ButtonState::Pressed,
-                });
-                compositor.handle(&Event::Button {
-                    name,
-                    state: ButtonState::Released,
-                });
-                compositor.handle(&Event::Button {
-                    name: ButtonName::East,
-                    state: ButtonState::Released,
-                });
-                for state in [ButtonState::Pressed, ButtonState::Released] {
-                    compositor.handle(&Event::Button {
-                        name: ButtonName::Paddle4,
-                        state,
-                    });
-                }
-                assert!(compositor.osk_open());
-            }
+            exercise_keyboard_grab(compositor);
         }
         if draft {
             compositor.handle(&Event::Speech {
@@ -2211,7 +2216,7 @@ else:
             event_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
             client_ready |= ready_receiver.try_recv().is_ok();
             if !pressed && client_ready && (!plugin || compositor.initialized_plugins() == 1) {
-                exercise_test_keyboard(&mut compositor, &mut pad, osk, text_state, draft);
+                exercise_test_keyboard(&mut compositor, &mut pad, osk, draft);
                 pressed = true;
             }
             display.flush_clients().unwrap();
@@ -2239,18 +2244,18 @@ else:
             assert!(start.elapsed() < Duration::from_secs(10));
             let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
             if let Ok((expected, rule)) = receiver.try_recv() {
-                assert_eq!(compositor.osk_open(), expected, "{rule}");
+                assert_eq!(compositor.osk_open(), keyboard_open, "{rule}");
                 if stages == 0 {
                     toggle_pointer_mode(&mut compositor);
                     assert!(compositor.osk_open(), "mouse mode opens focused text input");
-                    for expected in [false, true] {
+                    for keyboard_open in [false, true] {
                         for state in [ButtonState::Pressed, ButtonState::Released] {
                             compositor.handle(&Event::Button {
                                 name: ButtonName::Paddle4,
                                 state,
                             });
                         }
-                        assert_eq!(compositor.osk_open(), expected);
+                        assert_eq!(compositor.osk_open(), keyboard_open);
                     }
                     toggle_pointer_mode(&mut compositor);
                     assert!(!compositor.osk_open(), "leaving mouse mode closes the keyboard");
@@ -2410,8 +2415,7 @@ else:
         worker.join().unwrap()
     }
 
-    #[test]
-    fn firefox_shortcuts_hold_modifiers_during_keys_and_release_everything() {
+    fn run_shortcut_layout_variants() -> bool {
         if std::env::var_os("TEHUTI_SHORTCUT_LAYOUT_TEST").is_none() {
             for variant in ["", "dvorak"] {
                 let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -2431,6 +2435,14 @@ else:
                     .unwrap();
                 assert!(status.success(), "shortcut delivery failed for {variant}");
             }
+            return true;
+        }
+        false
+    }
+
+    #[test]
+    fn firefox_shortcuts_hold_modifiers_during_keys_and_release_everything() {
+        if run_shortcut_layout_variants() {
             return;
         }
         let dvorak = std::env::var("TEHUTI_SHORTCUT_LAYOUT_TEST").unwrap() == "dvorak";
@@ -2475,54 +2487,55 @@ else:
         assert!(held.is_empty());
     }
 
+    const SHORTCUTS: &[(&str, &[i32])] = &[
+        (r#"{ key = "left", mods = ["alt"] }"#, &[56, 105, -105, -56]),
+        (r#"{ key = "right", mods = ["alt"] }"#, &[56, 106, -106, -56]),
+        (r#"{ key = "0", mods = ["ctrl"] }"#, &[29, 11, -11, -29]),
+        (r#"{ key = "equal", mods = ["ctrl"] }"#, &[29, 13, -13, -29]),
+        (r#"{ key = "minus", mods = ["ctrl"] }"#, &[29, 12, -12, -29]),
+        (r#"{ key = "f", mods = ["ctrl"] }"#, &[29, 33, -33, -29]),
+        (r#"{ key = "l", mods = ["ctrl"] }"#, &[29, 38, -38, -29]),
+        (r#"{ key = "t", mods = ["ctrl"] }"#, &[29, 20, -20, -29]),
+        (r#"{ key = "w", mods = ["ctrl"] }"#, &[29, 17, -17, -29]),
+        (r#"{ key = "tab", mods = ["ctrl"] }"#, &[29, 15, -15, -29]),
+        (
+            r#"{ key = "tab", mods = ["ctrl", "shift"] }"#,
+            &[29, 42, 15, -15, -42, -29],
+        ),
+        (r#"{ key = "tab", mods = ["shift"] }"#, &[42, 15, -15, -42]),
+        (r#"{ key = "home" }"#, &[102, -102]),
+        (r#"{ key = "end" }"#, &[107, -107]),
+        (r#"{ key = "page_up" }"#, &[104, -104]),
+        (r#"{ key = "page_down" }"#, &[109, -109]),
+        (r#"{ key = "f5" }"#, &[63, -63]),
+        (
+            r#"{ key = "d", mods = ["ctrl", "alt", "shift"] }"#,
+            &[29, 56, 42, 32, -32, -42, -56, -29],
+        ),
+        (r#"{ key = "a", mods = ["super"] }"#, &[125, 30, -30, -125]),
+        (r#"{ key = "insert" }"#, &[110, -110]),
+        (r#"{ key = "delete" }"#, &[111, -111]),
+        (
+            r#"{ key = "tab", mods = ["shift", "ctrl", "ctrl"] }"#,
+            &[29, 42, 15, -15, -42, -29],
+        ),
+    ];
+
     #[test]
     fn native_shortcuts_parse_and_deliver_exact_press_release_sequences() {
-        let shortcuts: &[(&str, &[i32])] = &[
-            (r#"{ key = "left", mods = ["alt"] }"#, &[56, 105, -105, -56]),
-            (r#"{ key = "right", mods = ["alt"] }"#, &[56, 106, -106, -56]),
-            (r#"{ key = "0", mods = ["ctrl"] }"#, &[29, 11, -11, -29]),
-            (r#"{ key = "equal", mods = ["ctrl"] }"#, &[29, 13, -13, -29]),
-            (r#"{ key = "minus", mods = ["ctrl"] }"#, &[29, 12, -12, -29]),
-            (r#"{ key = "f", mods = ["ctrl"] }"#, &[29, 33, -33, -29]),
-            (r#"{ key = "l", mods = ["ctrl"] }"#, &[29, 38, -38, -29]),
-            (r#"{ key = "t", mods = ["ctrl"] }"#, &[29, 20, -20, -29]),
-            (r#"{ key = "w", mods = ["ctrl"] }"#, &[29, 17, -17, -29]),
-            (r#"{ key = "tab", mods = ["ctrl"] }"#, &[29, 15, -15, -29]),
-            (
-                r#"{ key = "tab", mods = ["ctrl", "shift"] }"#,
-                &[29, 42, 15, -15, -42, -29],
-            ),
-            (r#"{ key = "tab", mods = ["shift"] }"#, &[42, 15, -15, -42]),
-            (r#"{ key = "home" }"#, &[102, -102]),
-            (r#"{ key = "end" }"#, &[107, -107]),
-            (r#"{ key = "page_up" }"#, &[104, -104]),
-            (r#"{ key = "page_down" }"#, &[109, -109]),
-            (r#"{ key = "f5" }"#, &[63, -63]),
-            (
-                r#"{ key = "d", mods = ["ctrl", "alt", "shift"] }"#,
-                &[29, 56, 42, 32, -32, -42, -56, -29],
-            ),
-            (r#"{ key = "a", mods = ["super"] }"#, &[125, 30, -30, -125]),
-            (r#"{ key = "insert" }"#, &[110, -110]),
-            (r#"{ key = "delete" }"#, &[111, -111]),
-            (
-                r#"{ key = "tab", mods = ["shift", "ctrl", "ctrl"] }"#,
-                &[29, 42, 15, -15, -42, -29],
-            ),
-        ];
         let mut source = String::from("app_id = 'firefox'\n[buttons]\n[speech]\n");
-        let phrases: Vec<_> = shortcuts
+        let phrases: Vec<_> = SHORTCUTS
             .iter()
             .enumerate()
             .map(|(index, (mapping, _))| {
                 let phrase = format!("shortcut {index}");
-                source.push_str(&format!("{phrase:?} = {mapping}\n"));
+                writeln!(source, "{phrase:?} = {mapping}").unwrap();
                 phrase
             })
             .collect();
         let phrases: Vec<_> = phrases.iter().map(String::as_str).collect();
         let app = exchange_shortcuts(tehuti_protocol::parse_context(&source).unwrap(), &[], &phrases);
-        let expected: Vec<_> = shortcuts
+        let expected: Vec<_> = SHORTCUTS
             .iter()
             .flat_map(|(_, events)| events.iter())
             .chain([&28, &-28])
@@ -2885,12 +2898,7 @@ else:
         assert!(!compositor.osk_open());
         toggle_pointer_mode(&mut compositor);
         assert!(compositor.osk_open());
-        for state in [ButtonState::Pressed, ButtonState::Released] {
-            compositor.handle(&Event::Button {
-                name: ButtonName::East,
-                state,
-            });
-        }
+        tap_button(&mut compositor, ButtonName::East);
         assert!(!compositor.osk_open());
         toggle_pointer_mode(&mut compositor);
         let mut pad = SyntheticPad::default();
