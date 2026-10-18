@@ -1539,15 +1539,17 @@ fn context_sticks_repeat_keys_and_stop_on_focus_change() {
     world.trace.clear();
     let state = world.run(state, tick());
     assert!(
-        world
-            .trace
-            .contains(&Effect::Apply(Action::Key { key: KeyName::Up })),
+        world.trace.contains(&Effect::Apply(Action::Key {
+            key: KeyName::Up,
+            mods: vec![]
+        })),
         "left stick sends its mapped key"
     );
     assert!(
-        world
-            .trace
-            .contains(&Effect::Apply(Action::Key { key: KeyName::Down })),
+        world.trace.contains(&Effect::Apply(Action::Key {
+            key: KeyName::Down,
+            mods: vec![]
+        })),
         "right stick sends its mapped key"
     );
     assert!(
@@ -1605,7 +1607,8 @@ fn context_sticks_keep_the_mouse_mode_exit_hold() {
     let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
     assert!(
         world.trace.contains(&Effect::Apply(Action::Key {
-            key: tehuti_protocol::KeyName::Enter
+            key: tehuti_protocol::KeyName::Enter,
+            mods: vec![]
         })),
         "pad mappings work after leaving mouse mode"
     );
@@ -1650,7 +1653,8 @@ fn start_ptt_setting_replaces_its_binding_only_when_listed() {
         }
         assert_eq!(
             world.trace.contains(&Effect::Apply(Action::Key {
-                key: tehuti_protocol::KeyName::Enter
+                key: tehuti_protocol::KeyName::Enter,
+                mods: vec![]
             })),
             !enabled
         );
