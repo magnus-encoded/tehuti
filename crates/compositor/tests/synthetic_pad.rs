@@ -2244,7 +2244,7 @@ else:
             assert!(start.elapsed() < Duration::from_secs(10));
             let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
             if let Ok((expected, rule)) = receiver.try_recv() {
-                assert_eq!(compositor.osk_open(), keyboard_open, "{rule}");
+                assert_eq!(compositor.osk_open(), expected, "{rule}");
                 if stages == 0 {
                     toggle_pointer_mode(&mut compositor);
                     assert!(compositor.osk_open(), "mouse mode opens focused text input");
