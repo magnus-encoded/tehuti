@@ -226,7 +226,7 @@ where
         .map(|buffer| {
             MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
-                (16.0, 16.0),
+                (16.0, f64::from(tehuti::notice::TOP)),
                 buffer,
                 None,
                 None,

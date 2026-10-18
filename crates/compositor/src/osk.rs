@@ -322,7 +322,15 @@ pub fn placement(size: (i32, i32), scale: i32, cursor: Option<(i32, i32)>) -> (i
     let overlaps = cursor.is_some_and(|(top, extent)| {
         top < bottom.saturating_add(height) && top.saturating_add(extent) > bottom
     });
-    (if overlaps { 0 } else { bottom }, height)
+    if overlaps {
+        let available = size.1.saturating_sub(row_height).max(0);
+        let badge_bottom = crate::notice::TOP
+            .saturating_add(i32::try_from(crate::notice::HEIGHT).unwrap_or(i32::MAX));
+        let top = badge_bottom.min(available);
+        (top, height.min(available.saturating_sub(top)))
+    } else {
+        (bottom, height)
+    }
 }
 
 fn draw(

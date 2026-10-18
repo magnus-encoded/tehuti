@@ -5,6 +5,9 @@ use smithay::{
     utils::Transform,
 };
 
+pub const TOP: i32 = 16;
+pub const HEIGHT: usize = 64;
+
 /// Most lines a notice draws; the system menu needs a title and eight items.
 const MAX_LINES: usize = 10;
 
@@ -17,7 +20,7 @@ pub fn speech_notice_buffer() -> MemoryRenderBuffer {
 pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
     let width = 512usize;
     let lines = text.lines().take(MAX_LINES).count();
-    let height = lines.saturating_mul(30).saturating_add(4).max(64);
+    let height = lines.saturating_mul(30).saturating_add(4).max(HEIGHT);
     let mut pixels = vec![0u8; width.saturating_mul(height).saturating_mul(4)];
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[32, 32, 32, 255]);
@@ -58,7 +61,7 @@ pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
     MemoryRenderBuffer::from_slice(
         &pixels,
         Fourcc::Argb8888,
-        (512, i32::try_from(height).unwrap_or(64)),
+        (512, i32::try_from(height).unwrap_or_default()),
         1,
         Transform::Normal,
         None,

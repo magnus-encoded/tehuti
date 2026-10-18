@@ -200,7 +200,7 @@ impl Nested {
                 let mut notices = if visible_notice {
                     match MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
-                        (16.0, 16.0),
+                        (16.0, f64::from(tehuti::notice::TOP)),
                         &self.notice,
                         None,
                         None,
