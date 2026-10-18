@@ -924,7 +924,7 @@ dependencies = [
 [[package]]
 name = "ibis-commands"
 version = "0.1.0"
-source = "git+file:///home/magnus/Projects/tehuti?branch=commands#4c9058f1094038f828545376e485590477ce9689"
+source = "git+https://github.com/magnus-encoded/tehuti?rev=4c9058f1094038f828545376e485590477ce9689#4c9058f1094038f828545376e485590477ce9689"
 dependencies = [
  "glob",
  "serde",

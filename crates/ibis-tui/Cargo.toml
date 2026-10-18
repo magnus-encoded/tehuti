@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 # Replace the local commands branch with a released version when available.
-ibis-commands = { git = "file:///home/magnus/Projects/tehuti", branch = "commands" }
+ibis-commands = { git = "https://github.com/magnus-encoded/tehuti", rev = "4c9058f1094038f828545376e485590477ce9689" }
 crossterm = "0.28"
 ratatui = "0.29"
 tempfile = "3"
