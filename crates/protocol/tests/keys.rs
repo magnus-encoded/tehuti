@@ -87,7 +87,7 @@ mod keys {
         assert_eq!(EXPECTED.len(), KeyName::ALL.len());
         let mut keys = HashSet::new();
         let mut codes = HashSet::new();
-        for (name, code) in EXPECTED.iter().copied() {
+        for &(name, code) in EXPECTED {
             let key: KeyName = serde_json::from_value(serde_json::json!(name)).unwrap();
             assert!(keys.insert(key), "duplicate key {name}");
             assert!(codes.insert(key.evdev_code()), "duplicate evdev code for {name}");
