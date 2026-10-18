@@ -804,6 +804,11 @@ impl Compositor {
             DispatchEffect::Click { button, pressed } => self.pointer_click(button, pressed),
             DispatchEffect::MouseMode(active) => {
                 self.mouse_mode = active;
+                if active && self.text_input.enabled() {
+                    self.open_keyboard();
+                } else if !active {
+                    self.osk.close();
+                }
                 self.show_notice(if active { "MOUSE MODE" } else { "MOUSE MODE OFF" });
                 self.move_pointer();
             }

@@ -209,7 +209,7 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
                 _ => tracing::warn!("unsupported text-input request"),
             }
         }
-        if enabled_committed {
+        if enabled_committed && state.mouse_mode {
             state.open_keyboard();
         } else if disabled_committed && !state.text_input.enabled() {
             state.osk.close();

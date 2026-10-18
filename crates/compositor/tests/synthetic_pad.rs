@@ -2055,21 +2055,14 @@ else:
         pad
     }
 
-    fn prepare_test_keyboard(compositor: &mut Compositor, osk: bool, text_state: ClientTextState) {
+    fn prepare_test_keyboard(compositor: &mut Compositor, osk: bool) {
         if osk {
-            if matches!(text_state, ClientTextState::Enabled) {
-                assert!(compositor.osk_open(), "focused enabled input opens the keyboard");
-            } else {
-                assert!(!compositor.osk_open());
-                compositor.handle(&Event::Button {
-                    name: ButtonName::Start,
-                    state: ButtonState::Pressed,
-                });
-                assert!(
-                    compositor.osk_open(),
-                    "context mapping opens the fallback keyboard"
-                );
-            }
+            assert!(!compositor.osk_open());
+            compositor.handle(&Event::Button {
+                name: ButtonName::Start,
+                state: ButtonState::Pressed,
+            });
+            assert!(compositor.osk_open(), "keyboard action opens the keyboard");
             compositor.sample_sticks(tehuti_core::dispatch::Sticks {
                 left: (-1000, -1000),
                 right: (1000, -1000),
@@ -2091,7 +2084,7 @@ else:
         text_state: ClientTextState,
         draft: bool,
     ) {
-        prepare_test_keyboard(compositor, osk, text_state);
+        prepare_test_keyboard(compositor, osk);
         if draft {
             compositor.handle(&Event::Speech {
                 text: tehuti_protocol::Text::new("hello".into()).unwrap(),
@@ -2187,6 +2180,12 @@ else:
             if let Ok((expected, rule)) = receiver.try_recv() {
                 assert_eq!(compositor.osk_open(), expected, "{rule}");
                 if stages == 0 {
+                    toggle_pointer_mode(&mut compositor);
+                    assert!(compositor.osk_open(), "mouse mode opens focused text input");
+                    toggle_pointer_mode(&mut compositor);
+                    assert!(!compositor.osk_open(), "leaving mouse mode closes the keyboard");
+                    toggle_pointer_mode(&mut compositor);
+                    assert!(compositor.osk_open());
                     for state in [ButtonState::Pressed, ButtonState::Released] {
                         compositor.handle(&Event::Button {
                             name: ButtonName::East,
@@ -2231,7 +2230,7 @@ else:
             sender.send((expected, rule)).unwrap();
             ack.recv_timeout(Duration::from_secs(5)).unwrap();
         };
-        check(true, "focused enable opens");
+        check(false, "focused enable alone keeps the keyboard closed");
         input.commit();
         check(false, "ordinary commit preserves East dismissal");
         input.enable();
@@ -2813,6 +2812,8 @@ else:
             started,
         );
 
+        assert!(!compositor.osk_open());
+        toggle_pointer_mode(&mut compositor);
         assert!(compositor.osk_open());
         for state in [ButtonState::Pressed, ButtonState::Released] {
             compositor.handle(&Event::Button {
@@ -2821,6 +2822,7 @@ else:
             });
         }
         assert!(!compositor.osk_open());
+        toggle_pointer_mode(&mut compositor);
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {
