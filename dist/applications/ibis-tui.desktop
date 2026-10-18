@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Ibis
+Exec=kitty --class ibis-tui --title Ibis ibis-tui
+Icon=utilities-terminal
+Categories=System;TerminalEmulator;

@@ -1,4 +1,4 @@
-//! Controller-owned display settings and timed mode confirmation.
+//! Controller-owned settings and timed display mode confirmation.
 
 use super::Effect;
 use core::time::Duration;
@@ -18,6 +18,23 @@ pub enum View {
     Home,
     Display,
     Wallpaper,
+    Audio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkKind {
+    Headset,
+    Hdmi,
+    Speakers,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sink {
+    pub sink_id: u32,
+    pub description: String,
+    pub kind: SinkKind,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +81,7 @@ pub struct Settings {
     pub selected: usize,
     pub current: usize,
     pub modes: Vec<String>,
+    pub sinks: Option<Vec<Sink>>,
     pub native_size: Option<(u32, u32)>,
     pub remaining: Option<Duration>,
     previous: Option<usize>,
@@ -71,7 +89,25 @@ pub struct Settings {
     cancel_preview: bool,
 }
 
+/// Fastest first; a label without a parseable rate sorts last.
+fn rate_of(modes: &[String], index: usize) -> f64 {
+    modes
+        .get(index)
+        .and_then(|mode| mode.split_once('@'))
+        .and_then(|(_, rate)| rate.parse().ok())
+        .unwrap_or(f64::NEG_INFINITY)
+}
+
 impl Settings {
+    pub(super) fn configure_audio(&mut self, sinks: Option<Vec<Sink>>) {
+        if self.view == View::Audio {
+            self.selected = self
+                .selected
+                .min(sinks.as_ref().map_or(0, |items| items.len().saturating_sub(1)));
+        }
+        self.sinks = sinks;
+    }
+
     #[must_use]
     pub fn sizes(&self) -> Vec<(u32, u32)> {
         let mut sizes = Vec::new();
@@ -86,12 +122,15 @@ impl Settings {
     #[must_use]
     pub fn rates(&self) -> Vec<usize> {
         let size = self.modes.get(self.selected).and_then(|mode| mode_size(mode));
-        self.modes
+        let mut rates = self
+            .modes
             .iter()
             .enumerate()
             .filter(|(_, mode)| size.is_some() && mode_size(mode) == size)
             .map(|(index, _)| index)
-            .collect()
+            .collect::<Vec<_>>();
+        rates.sort_by(|left, right| rate_of(&self.modes, *right).total_cmp(&rate_of(&self.modes, *left)));
+        rates
     }
 
     fn display_move(&mut self, name: ButtonName) {
@@ -227,7 +266,10 @@ impl Settings {
         let Event::Button { name, state } = event else {
             return false;
         };
-        if matches!(name, ButtonName::Guide | ButtonName::Start | ButtonName::Record) {
+        if matches!(
+            name,
+            ButtonName::Guide | ButtonName::GuideTap | ButtonName::Start | ButtonName::Record
+        ) {
             return false;
         }
         if *state == ButtonState::Released {
@@ -269,6 +311,15 @@ impl Settings {
                 self.wallpaper_current = Some(self.selected);
                 effects.push(Effect::Wallpaper(self.selected));
             }
+        } else if self.view == View::Audio {
+            if let Some(sink) = self.sinks.as_ref().and_then(|sinks| sinks.get(self.selected)) {
+                effects.push(Effect::AudioDefault(sink.sink_id));
+            }
+        } else if self.view == View::Home && self.section == 2 {
+            self.view = View::Audio;
+            self.selected = 0;
+            self.sinks = None;
+            effects.push(Effect::AudioRefresh);
         } else if self.view == View::Home && self.section == 1 {
             self.view = View::Wallpaper;
             self.selected = self.wallpaper_current.unwrap_or_default();
@@ -288,9 +339,22 @@ impl Settings {
             self.display_move(name);
             return;
         }
+        if self.view == View::Audio {
+            let count = self.sinks.as_ref().map_or(0, Vec::len);
+            self.selected = if matches!(name, ButtonName::DpadUp | ButtonName::DpadLeft) {
+                self.selected.saturating_sub(1)
+            } else {
+                self.selected.saturating_add(1).min(count.saturating_sub(1))
+            };
+            return;
+        }
         let backwards = matches!(name, ButtonName::DpadUp | ButtonName::DpadLeft);
         if self.view == View::Home {
-            self.section = usize::from(!backwards);
+            self.section = if backwards {
+                self.section.saturating_sub(1)
+            } else {
+                self.section.saturating_add(1).min(2)
+            };
             return;
         }
         let distance = if matches!(name, ButtonName::DpadUp | ButtonName::DpadDown) {
@@ -339,6 +403,12 @@ impl Settings {
             | ButtonName::DpadUp
             | ButtonName::DpadDown
             | ButtonName::DpadLeft
+            | ButtonName::GuideTap
+            | ButtonName::KeyboardPtt
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4
             | ButtonName::DpadRight => {}
         }
     }

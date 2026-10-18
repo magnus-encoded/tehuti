@@ -5,6 +5,7 @@
 )]
 
 pub mod controller;
+pub mod escape;
 pub mod input;
 pub mod state;
 
@@ -47,3 +48,4 @@ pub mod phrases;
 pub mod xwayland;
 
 pub mod osk;
+pub mod keyboard;

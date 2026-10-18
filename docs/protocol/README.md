@@ -86,10 +86,13 @@ Button decisions are requests:
 
 States are `pressed` and `released`. Names are `south`, `east`, `north`,
 `west`, `left_bumper`, `right_bumper`, `select`, `record`, `start`, `guide`, `left_stick`,
-`right_stick`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`.
+`right_stick`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`, and
+`paddle1` through `paddle4`. Keyboard gestures use `keyboard_ptt` and `guide_tap`.
 All names and enum values are case sensitive.
 
-Record (Share) presses and releases control push-to-talk and never reach plugins.
+The global context selects PTT buttons with `push_to_talk`, defaulting to
+`["record"]`. Their presses and releases control speech capture and never reach
+plugins while the menu is closed. Keyboard PTT uses the same dispatch path.
 Guide presses and releases never reach plugins. Holding Guide for three
 seconds opens the core's system menu; releasing early cancels the hold. While
 the menu is open it takes every button and speech input, and no plugin sees

@@ -47,7 +47,7 @@ mod speech_routing {
             parse_context("app_id = 'terminal'\n[buttons]\n[speech]\nhello = { key = 'enter' }").unwrap();
         for heard in ["Hello.", "  HELLO!  ", "hello?", "hello"] {
             assert_eq!(
-                context.speech_action(heard),
+                context.speech_phrase_action(heard),
                 Some(Action::Key {
                     key: KeyName::Enter,
                     mods: Vec::new()
@@ -56,11 +56,65 @@ mod speech_routing {
             );
         }
         assert_eq!(
-            context.speech_action("hello there"),
+            context.speech_phrase_action("hello there"),
             None,
             "other words still differ"
         );
     }
+    #[test]
+    fn focused_and_global_phrases_precede_unmatched_typing() {
+        for focused_type in [false, true] {
+            for global_type in [false, true] {
+                let context = |app, enabled, mappings| {
+                    parse_context(&format!(
+                        "app_id = '{app}'\n{}\n[buttons]\n[speech]\n{mappings}",
+                        if enabled { "unmatched_speech = 'type'" } else { "" }
+                    ))
+                    .unwrap()
+                };
+                let state = step(
+                    State::with_contexts(vec![
+                        context("terminal", focused_type, "confirm = { key = 'enter' }"),
+                        context(
+                            "*",
+                            global_type,
+                            "confirm = { key = 'space' }\nglobal = { key = 'space' }",
+                        ),
+                    ]),
+                    &Event::Focus {
+                        app_id: Some("terminal".into()),
+                        title: String::new(),
+                    },
+                )
+                .0;
+                for (phrase, expected) in [
+                    ("Confirm!", Action::Key { key: KeyName::Enter }),
+                    ("Global.", Action::Key { key: KeyName::Space }),
+                    (
+                        "unknown",
+                        if focused_type || global_type {
+                            Action::Text {
+                                text: Text::new("unknown ".into()).unwrap(),
+                            }
+                        } else {
+                            Action::Notice {
+                                text: Text::new("NO SPEECH MAPPING".into()).unwrap(),
+                            }
+                        },
+                    ),
+                ] {
+                    let (_, actions) = step(
+                        state.clone(),
+                        &Event::Speech {
+                            text: Text::new(phrase.into()).unwrap(),
+                        },
+                    );
+                    assert_eq!(actions, vec![expected]);
+                }
+            }
+        }
+    }
+
     fn focused_state(option: &str) -> State {
         let context = parse_context(&format!(
             "app_id = 'terminal'\n{option}\n[buttons]\n[speech]\nconfirm = {{ key = 'enter' }}"

@@ -22,14 +22,19 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                 .and_then(|node| std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok());
             is_physical(device.input_id().bus_type(), sysfs.as_deref())
         })
-        .map(|(_, device)| device)
-        .filter(|device| {
+        .filter(|(_, device)| {
             device
                 .supported_keys()
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
-        .find_map(|mut device| match grab_nonblocking(&mut device) {
-            Ok(()) => Some(EvdevPad(device, DpadHat::default())),
+        .find_map(|(path, mut device)| match grab_nonblocking(&mut device) {
+            Ok(()) => match Device::open(&path) {
+                Ok(probe) => Some(EvdevPad(device, DpadHat::default(), probe, path)),
+                Err(error) => {
+                    warn!(%error, name = device.name().unwrap_or("unnamed"), "controller probe open failed; skipping it");
+                    None
+                }
+            },
             Err(error) => {
                 warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
                 None
@@ -101,8 +106,12 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
 }
 
 /// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
+///
+/// State queries go through a second, ungrabbed open of the node: the kernel
+/// flushes a client's queued key events on `EVIOCGKEY`, so asking the grabbed
+/// handle which keys are held silently discarded every button press.
 #[derive(Debug)]
-pub struct EvdevPad(Device, DpadHat);
+pub struct EvdevPad(Device, DpadHat, Device, std::path::PathBuf);
 
 impl EvdevPad {
     #[must_use]
@@ -115,7 +124,7 @@ impl EvdevPad {
     pub fn sticks(&self) -> io::Result<tehuti_core::dispatch::Sticks> {
         use evdev::AbsoluteAxisCode;
         let mut sticks = tehuti_core::dispatch::Sticks::default();
-        for (axis, info) in self.0.get_absinfo()? {
+        for (axis, info) in self.2.get_absinfo()? {
             let value = stick_axis(info.value(), info.minimum(), info.maximum());
             match axis {
                 AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
@@ -126,6 +135,46 @@ impl EvdevPad {
             }
         }
         Ok(sticks)
+    }
+
+    /// Fingerprints the kernel's view of held keys and D-pad hat positions.
+    ///
+    /// The kernel updates this state even when no event reaches our file descriptor,
+    /// so a changing fingerprint without routed events means our read path is dead.
+    /// # Errors
+    /// The kernel could not read the controller state, as when the node is gone.
+    pub fn activity(&self) -> io::Result<u64> {
+        let keys: Vec<_> = self.2.get_key_state()?.iter().map(KeyCode::code).collect();
+        let axes: Vec<_> = self
+            .2
+            .get_absinfo()?
+            .map(|(axis, info)| (axis.0, info.value()))
+            .collect();
+        Ok(fingerprint(&keys, &axes))
+    }
+}
+
+/// Hashes held keys and hat axes. Sticks and triggers are left out: they drift
+/// without yielding routed events, so hashing them made an idle pad look dead.
+fn fingerprint(keys: &[u16], axes: &[(u16, i32)]) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    keys.hash(&mut hasher);
+    for (axis, value) in axes {
+        if *axis == AbsoluteAxisCode::ABS_HAT0X.0 || *axis == AbsoluteAxisCode::ABS_HAT0Y.0 {
+            (axis, value).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+impl EvdevPad {
+    /// Opens another ungrabbed handle for a watcher that queries key state.
+    ///
+    /// # Errors
+    /// The node could not be opened, as when the pad is gone.
+    pub fn open_probe(&self) -> io::Result<Device> {
+        Device::open(&self.3)
     }
 }
 
@@ -148,9 +197,21 @@ impl InputSource for EvdevPad {
 /// Reads every pending event from `device`. Stops at `WouldBlock`.
 fn drain_device(device: &mut Device, hat: &mut DpadHat) -> io::Result<Vec<Event>> {
     match device.fetch_events() {
-        Ok(events) => Ok(events
-            .flat_map(|event| hat.translate(&event.destructure()))
-            .collect()),
+        Ok(events) => {
+            let raw: Vec<_> = events.collect();
+            let routed: Vec<Event> = raw
+                .iter()
+                .flat_map(|event| hat.translate(&event.destructure()))
+                .collect();
+            let keys = raw
+                .iter()
+                .filter(|event| matches!(event.destructure(), EventSummary::Key(..)))
+                .count();
+            if keys > 0 || !routed.is_empty() {
+                tracing::debug!(raw = raw.len(), keys, routed = routed.len(), "pad read");
+            }
+            Ok(routed)
+        }
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Vec::new()),
         Err(error) => Err(error),
     }
@@ -172,7 +233,13 @@ impl DpadHat {
     )]
     pub fn translate(&mut self, event: &EventSummary) -> Vec<Event> {
         match *event {
-            EventSummary::Key(_, code, value) => parse_button(code, value).into_iter().collect(),
+            EventSummary::Key(_, code, value) => {
+                let button = parse_button(code, value);
+                if parse_button(code, 1).is_none() {
+                    tracing::debug!(code = code.code(), ?code, value, "unmapped controller key");
+                }
+                button.into_iter().collect()
+            }
             EventSummary::AbsoluteAxis(_, AbsoluteAxisCode::ABS_HAT0X, value) => Self::step(
                 &mut self.horizontal,
                 value,
@@ -230,6 +297,10 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
         KeyCode::KEY_RECORD => ButtonName::Record,
         KeyCode::BTN_START => ButtonName::Start,
         KeyCode::BTN_MODE => ButtonName::Guide,
+        KeyCode(0x225) | KeyCode::BTN_TRIGGER_HAPPY5 => ButtonName::Paddle1,
+        KeyCode(0x227) | KeyCode::BTN_TRIGGER_HAPPY6 => ButtonName::Paddle2,
+        KeyCode(0x224) | KeyCode::BTN_TRIGGER_HAPPY7 => ButtonName::Paddle3,
+        KeyCode(0x226) | KeyCode::BTN_TRIGGER_HAPPY8 => ButtonName::Paddle4,
         KeyCode::BTN_THUMBL => ButtonName::LeftStick,
         KeyCode::BTN_THUMBR => ButtonName::RightStick,
         KeyCode::BTN_DPAD_UP => ButtonName::DpadUp,
@@ -244,6 +315,110 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn run_watch(series: &[(u64, u8, bool)]) -> Vec<WatchVerdict> {
+        let mut state = Watchdog::default();
+        let mut now = core::time::Duration::ZERO;
+        let mut verdicts = Vec::new();
+        for &(step_ms, fingerprint, events) in series {
+            now = now.saturating_add(core::time::Duration::from_millis(step_ms));
+            let (next, verdict) = watch(
+                state,
+                WatchInput::Sample {
+                    now,
+                    fingerprint: u64::from(fingerprint),
+                },
+            );
+            state = next;
+            verdicts.push(verdict);
+            if events {
+                state = watch(state, WatchInput::Events).0;
+            }
+        }
+        verdicts
+    }
+
+    proptest! {
+        #[test]
+        fn a_pad_whose_events_keep_arriving_is_never_reopened(
+            series in prop::collection::vec((0_u64..5000, any::<u8>()), 0..64)
+        ) {
+            let answered: Vec<_> = series.into_iter().map(|(step, print)| (step, print, true)).collect();
+            prop_assert!(run_watch(&answered).iter().all(|verdict| *verdict == WatchVerdict::Healthy));
+        }
+
+        #[test]
+        fn stick_and_trigger_drift_leaves_the_fingerprint_unchanged(
+            keys in prop::collection::vec(any::<u16>(), 0..8),
+            hat in (-1_i32..=1, -1_i32..=1),
+            drift in prop::collection::vec((0_u16..6, any::<i32>()), 1..12),
+        ) {
+            let hats = [(AbsoluteAxisCode::ABS_HAT0X.0, hat.0), (AbsoluteAxisCode::ABS_HAT0Y.0, hat.1)];
+            let mut drifted = drift;
+            drifted.extend(hats);
+            prop_assert_eq!(super::fingerprint(&keys, &hats), super::fingerprint(&keys, &drifted));
+        }
+
+        #[test]
+        fn an_idle_pad_is_never_reopened(
+            steps in prop::collection::vec(0_u64..5000, 0..64), fingerprint in any::<u8>()
+        ) {
+            let idle: Vec<_> = steps.into_iter().map(|step| (step, fingerprint, false)).collect();
+            prop_assert!(run_watch(&idle).iter().all(|verdict| *verdict == WatchVerdict::Healthy));
+        }
+
+        #[test]
+        fn activity_answered_by_events_never_reopens(
+            changes in prop::collection::vec((1_u64..400, any::<u8>()), 1..64)
+        ) {
+            // Each change is read as events before the next sample sees it.
+            let mut series = Vec::new();
+            let mut previous = 0;
+            for (step, fingerprint) in changes {
+                series.push((0, previous, true));
+                series.push((step, fingerprint, false));
+                series.push((1000, fingerprint, false));
+                previous = fingerprint;
+            }
+            prop_assert!(!run_watch(&series).contains(&WatchVerdict::Reopen));
+        }
+
+        #[test]
+        fn activity_without_events_for_the_silence_limit_reopens(
+            steps in prop::collection::vec(1_u64..400, 1..64), first in any::<u8>()
+        ) {
+            let mut series = vec![(0, first, false), (0, first.wrapping_add(1), false)];
+            series.extend(steps.iter().map(|step| (*step, first, false)));
+            let elapsed: u64 = steps.iter().sum();
+            let reopened = run_watch(&series).contains(&WatchVerdict::Reopen);
+            prop_assert_eq!(reopened, elapsed >= 1000);
+        }
+    }
+
+    #[test]
+    fn elite_guide_and_paddles_map_kernel_codes() {
+        for (code, name) in [
+            (KeyCode::BTN_MODE, ButtonName::Guide),
+            (KeyCode(0x225), ButtonName::Paddle1),
+            (KeyCode(0x227), ButtonName::Paddle2),
+            (KeyCode(0x224), ButtonName::Paddle3),
+            (KeyCode(0x226), ButtonName::Paddle4),
+            (KeyCode::BTN_TRIGGER_HAPPY5, ButtonName::Paddle1),
+            (KeyCode::BTN_TRIGGER_HAPPY6, ButtonName::Paddle2),
+            (KeyCode::BTN_TRIGGER_HAPPY7, ButtonName::Paddle3),
+            (KeyCode::BTN_TRIGGER_HAPPY8, ButtonName::Paddle4),
+        ] {
+            let mut pad = DpadHat::default();
+            for (value, state) in [(1, ButtonState::Pressed), (0, ButtonState::Released)] {
+                let event = evdev::InputEvent::new(evdev::EventType::KEY.0, code.code(), value);
+                assert_eq!(
+                    pad.translate(&event.destructure()),
+                    vec![Event::Button { name, state }]
+                );
+            }
+        }
+    }
 
     #[test]
     fn south_button_press_is_a_pressed() {
@@ -406,6 +581,77 @@ pub fn discover(state: Discovery, input: DiscoveryInput) -> (Discovery, Option<D
             (Discovery::Attached, Some(DiscoveryEffect::Reconnected))
         }
         (state, _) => (state, None),
+    }
+}
+
+/// How long kernel-side activity may go without a routed event before the pad is re-opened.
+pub const SILENCE_LIMIT: core::time::Duration = core::time::Duration::from_secs(1);
+
+/// Notices a grabbed pad whose kernel state changes while none of its events reach us.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Watchdog {
+    fingerprint: Option<u64>,
+    unanswered_since: Option<core::time::Duration>,
+    reopen: bool,
+}
+
+impl Watchdog {
+    /// Asks the event loop to drop and re-open the pad, as after a failed read.
+    pub const fn request_reopen(&mut self) {
+        self.reopen = true;
+    }
+
+    /// Takes a pending re-open request.
+    pub const fn take_reopen(&mut self) -> bool {
+        core::mem::replace(&mut self.reopen, false)
+    }
+}
+
+/// What the watchdog observes from the event loop.
+#[derive(Debug, Clone, Copy)]
+pub enum WatchInput {
+    /// The pad's activity fingerprint, sampled at `now`.
+    Sample {
+        now: core::time::Duration,
+        fingerprint: u64,
+    },
+    /// At least one event was read from the pad.
+    Events,
+}
+
+/// Whether the pad must be dropped and re-opened.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WatchVerdict {
+    Healthy,
+    Reopen,
+}
+
+/// Advances the watchdog. Performs no I/O.
+#[must_use]
+pub fn watch(mut state: Watchdog, input: WatchInput) -> (Watchdog, WatchVerdict) {
+    match input {
+        WatchInput::Events => {
+            // The events explain any change up to now, so the next sample sets a new baseline.
+            state.unanswered_since = None;
+            state.fingerprint = None;
+            (state, WatchVerdict::Healthy)
+        }
+        WatchInput::Sample { now, fingerprint } => {
+            let previous = state.fingerprint.replace(fingerprint);
+            if previous.is_some_and(|previous| previous != fingerprint) {
+                let _first = state.unanswered_since.get_or_insert(now);
+            }
+            let verdict = if !state.reopen
+                && state
+                    .unanswered_since
+                    .is_some_and(|since| now.saturating_sub(since) >= SILENCE_LIMIT)
+            {
+                WatchVerdict::Reopen
+            } else {
+                WatchVerdict::Healthy
+            };
+            (state, verdict)
+        }
     }
 }
 

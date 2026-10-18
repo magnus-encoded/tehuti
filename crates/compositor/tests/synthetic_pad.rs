@@ -49,6 +49,24 @@ mod synthetic_pad {
     }
 
     #[test]
+    fn meta_tap_opens_and_closes_the_controller_system_menu() {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.physical_key(125, true);
+        assert!(!menu_is_open(&compositor));
+        compositor.physical_key(125, false);
+        assert!(menu_is_open(&compositor));
+        compositor.physical_key(126, true);
+        compositor.physical_key(126, false);
+        assert!(!menu_is_open(&compositor));
+        compositor.physical_key(125, true);
+        compositor.physical_key(30, true);
+        compositor.physical_key(30, false);
+        compositor.physical_key(125, false);
+        assert!(!menu_is_open(&compositor));
+    }
+
+    #[test]
     fn disconnect_and_seat_pause_cancel_the_hold_and_close_the_menu() {
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
@@ -81,6 +99,61 @@ mod synthetic_pad {
             compositor.controller_input(tehuti_core::controller::Input::Reconnected);
             assert!(!menu_is_open(&compositor), "a disconnect closes the menu");
             assert!(!compositor.quit_requested());
+        }
+    }
+
+    /// A pad whose node vanished: every read fails as a removed evdev device does.
+    struct VanishedPad;
+
+    impl tehuti::input::InputSource for VanishedPad {
+        fn drain(&mut self) -> std::io::Result<Vec<Event>> {
+            Err(std::io::Error::from_raw_os_error(libc::ENODEV))
+        }
+
+        fn release(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::from_raw_os_error(libc::ENODEV))
+        }
+    }
+
+    #[test]
+    fn a_pad_dropped_mid_push_to_talk_and_readded_delivers_events_again() {
+        use tehuti_core::speech::SpeechInput;
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.speech_input(SpeechInput::Available);
+        for _round in 0..3 {
+            let mut pad = SyntheticPad::default();
+            pad.push(Event::Button {
+                name: ButtonName::Record,
+                state: ButtonState::Pressed,
+            });
+            route(&mut compositor, &mut pad).unwrap();
+            assert!(route(&mut compositor, &mut VanishedPad).is_err());
+            compositor.controller_input(tehuti_core::controller::Input::Reconnected);
+            let mut readded = SyntheticPad::default();
+            readded.push(Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Pressed,
+            });
+            route(&mut compositor, &mut readded).unwrap();
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_secs(3),
+            });
+            assert!(menu_is_open(&compositor), "the re-added pad drives the menu");
+            readded.push(Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Released,
+            });
+            readded.push(Event::Button {
+                name: ButtonName::East,
+                state: ButtonState::Pressed,
+            });
+            readded.push(Event::Button {
+                name: ButtonName::East,
+                state: ButtonState::Released,
+            });
+            route(&mut compositor, &mut readded).unwrap();
+            assert!(!menu_is_open(&compositor), "the re-added pad closes the menu");
         }
     }
 

@@ -1,5 +1,7 @@
 //! Couch-readable settings artwork.
 
+pub mod audio;
+
 use core::time::Duration;
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
@@ -9,8 +11,15 @@ use tehuti_core::dispatch::{Settings, SettingsView};
 
 #[derive(Debug, Default)]
 pub(crate) struct Display {
+    pub audio: audio::Control,
     pub requests: std::collections::VecDeque<(usize, bool)>,
     pub artwork: core::cell::RefCell<Artwork>,
+}
+
+impl Display {
+    pub(crate) fn request_mode(&mut self, index: usize, persist: bool) {
+        self.requests.push_back((index, persist));
+    }
 }
 
 #[derive(Debug, Default)]
@@ -150,10 +159,74 @@ impl Canvas {
             if settings.wallpapers.is_empty() {
                 self.text(96, 256, "NO WALLPAPERS AVAILABLE", 3, AMBER);
             }
+        } else if settings.view == SettingsView::Audio {
+            self.audio_choices(settings);
         } else if settings.view == SettingsView::Display {
             self.display_choices(settings);
         } else {
             self.sections(settings);
+        }
+    }
+
+    fn audio_choices(&mut self, settings: &Settings) {
+        let Some(sinks) = &settings.sinks else {
+            self.text(96, 256, "Audio control unavailable", 3, AMBER);
+            return;
+        };
+        if sinks.is_empty() {
+            self.text(96, 256, "NO AUDIO OUTPUTS", 3, AMBER);
+        }
+        let first = settings.selected.saturating_sub(2);
+        for (row, (index, sink)) in sinks.iter().enumerate().skip(first).take(3).enumerate() {
+            let y = 236usize.saturating_add(row.saturating_mul(116));
+            self.rectangle(80, y, 1120, 100, [65, 43, 12, 255]);
+            self.outline(
+                80,
+                y,
+                1120,
+                100,
+                if index == settings.selected { CYAN } else { WHITE },
+            );
+            self.sink_icon(104, y.saturating_add(22), sink.kind);
+            let description: String = sink.description.chars().take(44).collect();
+            self.text(200, y.saturating_add(22), &description, 3, WHITE);
+            if sink.is_default {
+                self.text(200, y.saturating_add(62), "DEFAULT", 2, CYAN);
+            }
+        }
+    }
+
+    fn sink_icon(&mut self, x: usize, y: usize, kind: tehuti_core::dispatch::SinkKind) {
+        use tehuti_core::dispatch::SinkKind;
+        match kind {
+            SinkKind::Headset => {
+                self.outline(x, y, 56, 44, CYAN);
+                self.rectangle(x, y.saturating_add(24), 12, 32, CYAN);
+                self.rectangle(x.saturating_add(44), y.saturating_add(24), 12, 32, CYAN);
+                self.rectangle(
+                    x.saturating_add(12),
+                    y.saturating_add(38),
+                    32,
+                    18,
+                    [65, 43, 12, 255],
+                );
+            }
+            SinkKind::Hdmi => {
+                self.outline(x, y, 64, 40, CYAN);
+                self.rectangle(x.saturating_add(28), y.saturating_add(40), 8, 10, CYAN);
+                self.rectangle(x.saturating_add(16), y.saturating_add(50), 32, 4, CYAN);
+            }
+            SinkKind::Speakers => {
+                self.outline(x.saturating_add(10), y, 40, 58, CYAN);
+                self.outline(x.saturating_add(22), y.saturating_add(8), 16, 12, CYAN);
+                self.outline(x.saturating_add(18), y.saturating_add(28), 24, 22, CYAN);
+            }
+            SinkKind::Other => {
+                self.outline(x, y.saturating_add(14), 60, 32, CYAN);
+                for offset in [12, 28, 44] {
+                    self.rectangle(x.saturating_add(offset), y.saturating_add(26), 4, 8, CYAN);
+                }
+            }
         }
     }
 
@@ -272,6 +345,7 @@ impl Canvas {
         for (index, (title, detail)) in [
             ("DISPLAY", "RESOLUTION / REFRESH"),
             ("WALLPAPER", "RELEASE COLLECTION"),
+            ("AUDIO", "OUTPUT DEVICE"),
         ]
         .iter()
         .enumerate()
@@ -323,6 +397,8 @@ fn draw_buffer(
         92,
         if settings.view == SettingsView::Wallpaper {
             "WALLPAPER"
+        } else if settings.view == SettingsView::Audio {
+            "AUDIO"
         } else if settings.view == SettingsView::Display {
             "DISPLAY"
         } else {

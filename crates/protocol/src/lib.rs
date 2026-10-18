@@ -66,6 +66,12 @@ pub enum ButtonName {
     RightBumper,
     Select,
     Record,
+    KeyboardPtt,
+    GuideTap,
+    Paddle1,
+    Paddle2,
+    Paddle3,
+    Paddle4,
     Start,
     Guide,
     LeftStick,
@@ -223,26 +229,88 @@ pub struct Context {
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, MappingAction>,
     unmatched_speech: Option<UnmatchedSpeech>,
+    sticks: std::collections::HashMap<StickDirection, MappingAction>,
+    push_to_talk: Vec<ButtonName>,
+    keyboard_push_to_talk: u16,
+}
+
+/// A stick direction beyond half travel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StickDirection {
+    LeftUp,
+    LeftDown,
+    LeftLeft,
+    LeftRight,
+    RightUp,
+    RightDown,
+    RightLeft,
+    RightRight,
 }
 
 impl Context {
+    /// Whether the context owns stick motion instead of pointer and scroll motion.
+    #[must_use]
+    pub fn maps_sticks(&self) -> bool {
+        !self.sticks.is_empty()
+    }
+
+    /// Actions for deflected directions, repeated by the host while held.
+    #[must_use]
+    pub fn stick_actions(&self, left: (i16, i16), right: (i16, i16)) -> Vec<Action> {
+        use StickDirection::{
+            LeftDown, LeftLeft, LeftRight, LeftUp, RightDown, RightLeft, RightRight, RightUp,
+        };
+        [
+            (left.1 < -500, LeftUp),
+            (left.1 > 500, LeftDown),
+            (left.0 < -500, LeftLeft),
+            (left.0 > 500, LeftRight),
+            (right.1 < -500, RightUp),
+            (right.1 > 500, RightDown),
+            (right.0 < -500, RightLeft),
+            (right.0 > 500, RightRight),
+        ]
+        .into_iter()
+        .filter(|(active, _)| *active)
+        .filter_map(|(_, direction)| self.sticks.get(&direction).map(MappingAction::action))
+        .collect()
+    }
+
+    #[must_use]
+    pub fn push_to_talk(&self, button: ButtonName) -> bool {
+        self.push_to_talk.contains(&button)
+    }
+
+    #[must_use]
+    pub const fn keyboard_push_to_talk(&self) -> u16 {
+        self.keyboard_push_to_talk
+    }
+
     #[must_use]
     pub fn app_id(&self) -> &str {
         &self.app_id
     }
 
     #[must_use]
-    pub fn speech_action(&self, phrase: &str) -> Option<Action> {
-        let wanted = normalize_phrase(phrase);
+    pub fn speech_phrase_action(&self, phrase: &str) -> Option<Action> {
         if phrase.trim().is_empty() {
             return None;
         }
-        self.speech.get(&wanted).map(MappingAction::action).or_else(|| {
-            let UnmatchedSpeech::Type = self.unmatched_speech?;
-            Text::new(format!("{phrase} "))
-                .ok()
-                .map(|text| Action::Text { text })
-        })
+        self.speech
+            .get(&normalize_phrase(phrase))
+            .map(MappingAction::action)
+    }
+
+    #[must_use]
+    pub fn unmatched_speech_action(&self, phrase: &str) -> Option<Action> {
+        if phrase.trim().is_empty() {
+            return None;
+        }
+        let UnmatchedSpeech::Type = self.unmatched_speech?;
+        Text::new(format!("{phrase} "))
+            .ok()
+            .map(|text| Action::Text { text })
     }
 
     #[must_use]
@@ -271,6 +339,14 @@ enum UnmatchedSpeech {
     Type,
 }
 
+fn default_push_to_talk() -> Vec<ButtonName> {
+    vec![ButtonName::Record]
+}
+
+const fn default_keyboard_push_to_talk() -> u16 {
+    119
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContextFile {
@@ -280,6 +356,12 @@ struct ContextFile {
     speech: std::collections::HashMap<String, MappingAction>,
     #[serde(default)]
     unmatched_speech: Option<UnmatchedSpeech>,
+    #[serde(default)]
+    sticks: std::collections::HashMap<StickDirection, MappingAction>,
+    #[serde(default = "default_push_to_talk")]
+    push_to_talk: Vec<ButtonName>,
+    #[serde(default = "default_keyboard_push_to_talk")]
+    keyboard_push_to_talk: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -358,6 +440,12 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     if context.app_id.trim().is_empty() {
         return Err("app_id must not be empty".into());
     }
+    if context.keyboard_push_to_talk == 0
+        || context.keyboard_push_to_talk > 767
+        || matches!(context.keyboard_push_to_talk, 125 | 126)
+    {
+        return Err("keyboard_push_to_talk must be an evdev key code from 1 to 767 other than Meta".into());
+    }
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
     for (mapped, action) in context.speech {
         let normalized = normalize_phrase(&mapped);
@@ -373,10 +461,13 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         }
     }
     Ok(Context {
+        push_to_talk: context.push_to_talk,
+        keyboard_push_to_talk: context.keyboard_push_to_talk,
         app_id: context.app_id,
         buttons: context.buttons,
         speech,
         unmatched_speech: context.unmatched_speech,
+        sticks: context.sticks,
     })
 }
 

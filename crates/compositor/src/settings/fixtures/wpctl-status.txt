@@ -1,0 +1,22 @@
+PipeWire 'pipewire-0' [1.2.7, user@host, cookie:123]
+ └─ Clients:
+        32. WirePlumber [1.2.7, user@host, pid:123]
+Audio
+ ├─ Devices:
+ │      40. Built-in Audio [alsa]
+ │      49. USB Headset [alsa]
+ ├─ Sinks:
+ │  *   52. USB Headset Analog Stereo [vol: 0.60]
+ │      61. HDMI / DisplayPort 2 [vol: 1.00]
+ │      45. Built-in Audio Analog Stereo [vol: 0.75]
+ ├─ Sources:
+ │  *   53. USB Headset Mono [vol: 1.00]
+ ├─ Filters:
+ └─ Streams:
+Video
+ ├─ Sinks:
+ │      88. Camera
+Settings
+ └─ Default Configured Devices:
+         0. Audio/Sink alsa_output.usb
+         1. Audio/Source alsa_input.usb

@@ -170,7 +170,13 @@ impl Keyboard {
             | ButtonName::DpadUp
             | ButtonName::DpadDown
             | ButtonName::DpadLeft
-            | ButtonName::DpadRight => return None,
+            | ButtonName::DpadRight
+            | ButtonName::KeyboardPtt
+            | ButtonName::GuideTap
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4 => return None,
         };
         let held = self.held.get_mut(index)?;
         if state == ButtonState::Released {
@@ -206,7 +212,13 @@ impl Keyboard {
             | ButtonName::LeftStick
             | ButtonName::RightStick
             | ButtonName::DpadUp
-            | ButtonName::DpadDown => Effect::Consumed,
+            | ButtonName::DpadDown
+            | ButtonName::KeyboardPtt
+            | ButtonName::GuideTap
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4 => Effect::Consumed,
         })
     }
 }

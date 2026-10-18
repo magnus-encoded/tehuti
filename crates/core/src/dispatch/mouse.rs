@@ -19,6 +19,7 @@ pub struct Sticks {
 pub(super) struct State {
     active: bool,
     full_hold: Duration,
+    context_repeat: Duration,
     hold: Option<Duration>,
     toggled: bool,
     clicks: [bool; 2],
@@ -85,6 +86,12 @@ impl State {
             | ButtonName::DpadUp
             | ButtonName::DpadDown
             | ButtonName::DpadLeft
+            | ButtonName::GuideTap
+            | ButtonName::KeyboardPtt
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4
             | ButtonName::DpadRight => None,
         };
         if let Some((index, button)) = click {
@@ -97,6 +104,27 @@ impl State {
             }
         }
         true
+    }
+
+    pub(super) fn context_tick(
+        &mut self,
+        context: &tehuti_protocol::Context,
+        elapsed: Duration,
+        effects: &mut Vec<Effect>,
+    ) {
+        let sticks = core::mem::take(&mut self.sticks);
+        self.tick(elapsed, effects);
+        self.sticks = sticks;
+        self.context_repeat = self.context_repeat.saturating_add(elapsed);
+        if self.context_repeat >= Duration::from_millis(180) {
+            self.context_repeat = Duration::ZERO;
+            effects.extend(
+                context
+                    .stick_actions(self.sticks.left, self.sticks.right)
+                    .into_iter()
+                    .map(Effect::Apply),
+            );
+        }
     }
 
     pub(super) fn tick(&mut self, elapsed: Duration, effects: &mut Vec<Effect>) {

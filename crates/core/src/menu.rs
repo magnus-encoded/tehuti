@@ -116,7 +116,7 @@ pub fn handle(menu: &mut Option<Menu>, event: &Event) -> Outcome {
         ButtonName::DpadDown => {
             open.selected = open.selected.saturating_add(1).checked_rem(count).unwrap_or(0);
         }
-        ButtonName::East | ButtonName::Guide => *menu = None,
+        ButtonName::East | ButtonName::Guide | ButtonName::GuideTap => *menu = None,
         ButtonName::South => {
             let item = open.selected();
             *menu = None;
@@ -141,6 +141,11 @@ pub fn handle(menu: &mut Option<Menu>, event: &Event) -> Outcome {
         | ButtonName::LeftStick
         | ButtonName::RightStick
         | ButtonName::DpadLeft
+        | ButtonName::KeyboardPtt
+        | ButtonName::Paddle1
+        | ButtonName::Paddle2
+        | ButtonName::Paddle3
+        | ButtonName::Paddle4
         | ButtonName::DpadRight => {}
     }
     outcome

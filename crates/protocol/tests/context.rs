@@ -100,7 +100,7 @@ mod context {
             }
             spoken.push_str(ending);
             let context = parse_context(&format!("app_id = 'test'\n[buttons]\n[speech]\n\"{mapped}\" = {{ key = 'enter' }}")).unwrap();
-            prop_assert!(context.speech_action(&format!(" {spoken}")).is_some(), "{spoken:?} should match {mapped:?}");
+            prop_assert!(context.speech_phrase_action(&format!(" {spoken}")).is_some(), "{spoken:?} should match {mapped:?}");
         }
     }
 
@@ -109,9 +109,9 @@ mod context {
         let context =
             parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"Front center.\" = { key = 'enter' }")
                 .unwrap();
-        assert!(context.speech_action("Front. Center.").is_some());
-        assert!(context.speech_action("Front centre.").is_none());
-        assert!(context.speech_action("Don't.").is_none());
+        assert!(context.speech_phrase_action("Front. Center.").is_some());
+        assert!(context.speech_phrase_action("Front centre.").is_none());
+        assert!(context.speech_phrase_action("Don't.").is_none());
     }
 
     #[test]
@@ -137,7 +137,7 @@ mod context {
         let context =
             parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"go\" = { key = 'enter' }").unwrap();
         for spoken in ["", "  ", "...", "\u{3002}"] {
-            assert!(context.speech_action(spoken).is_none(), "{spoken:?}");
+            assert!(context.speech_phrase_action(spoken).is_none(), "{spoken:?}");
         }
     }
 
@@ -147,26 +147,26 @@ mod context {
             "app_id = 'foot'\n[buttons]\n[speech]\n\"don't stop\" = { key = 'enter' }\n\"caf\u{e9} ol\u{e9}\" = { key = 'tab' }",
         )
         .unwrap();
-        assert!(context.speech_action("Don\u{2019}t stop.").is_some());
+        assert!(context.speech_phrase_action("Don\u{2019}t stop.").is_some());
         assert!(
             context
-                .speech_action("don\u{2bc}t \u{201c}stop\u{201d}")
+                .speech_phrase_action("don\u{2bc}t \u{201c}stop\u{201d}")
                 .is_some()
         );
         assert!(
             context
-                .speech_action("\u{bf}Caf\u{e9}\u{2014}ol\u{e9}!")
+                .speech_phrase_action("\u{bf}Caf\u{e9}\u{2014}ol\u{e9}!")
                 .is_some()
         );
-        assert!(context.speech_action("dont stop").is_none());
+        assert!(context.speech_phrase_action("dont stop").is_none());
     }
 
     #[test]
     fn decomposed_accents_match_composed_ones() {
         let context =
             parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"caf\u{e9}\" = { key = 'enter' }").unwrap();
-        assert!(context.speech_action("Cafe\u{301}.").is_some());
-        assert!(context.speech_action("cafe").is_none());
+        assert!(context.speech_phrase_action("Cafe\u{301}.").is_some());
+        assert!(context.speech_phrase_action("cafe").is_none());
         assert_eq!(tehuti_protocol::normalize_phrase("cafe\u{301}"), "caf\u{e9}");
     }
 
@@ -175,7 +175,7 @@ mod context {
     fn nfc_applies_after_lowercasing() {
         let context =
             parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }").unwrap();
-        assert!(context.speech_action("J\u{30c}").is_some());
+        assert!(context.speech_phrase_action("J\u{30c}").is_some());
         let error = parse_context(
             "app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }\n\"J\u{30c}\" = { key = 'tab' }",
         )
@@ -230,5 +230,33 @@ text = "a\u0000b"
                 "invalid input must fail: {source}"
             );
         }
+    }
+
+    #[test]
+    fn shipped_contexts_parse() -> Result<(), Box<dyn core::error::Error>> {
+        let contexts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dist/contexts");
+        let mut count = 0;
+        for entry in std::fs::read_dir(contexts)? {
+            let path = entry?.path().join("context.toml");
+            if path.is_file() {
+                let source = std::fs::read_to_string(&path)?;
+                let _context = tehuti_protocol::parse_context(&source)
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                count += 1;
+            }
+        }
+        assert!(count > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn global_context_accepts_record_and_start_push_to_talk() -> Result<(), String> {
+        use tehuti_protocol::ButtonName;
+        let context = tehuti_protocol::parse_context(
+            "app_id = '*'\npush_to_talk = [\"record\", \"start\"]\n[buttons]",
+        )?;
+        assert!(context.push_to_talk(ButtonName::Record));
+        assert!(context.push_to_talk(ButtonName::Start));
+        Ok(())
     }
 }

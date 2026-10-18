@@ -87,6 +87,7 @@ pub struct Compositor {
     mouse_mode: bool,
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
+    physical_keyboard: crate::keyboard::Keyboard,
     dispatch: tehuti_core::dispatch::State,
     pub(crate) osk: crate::osk::Keyboard,
     pub(crate) osk_artwork: core::cell::RefCell<crate::osk::Artwork>,
@@ -168,6 +169,7 @@ impl Compositor {
             mouse_mode: false,
             space: Space::default(),
             output: None,
+            physical_keyboard: crate::keyboard::Keyboard::default(),
             dispatch: tehuti_core::dispatch::State::default(),
             osk: crate::osk::Keyboard::default(),
             osk_artwork: core::cell::RefCell::default(),
@@ -648,6 +650,9 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        if let Some(sinks) = self.settings_display.audio.poll() {
+            let _rejection = self.dispatch(DispatchInput::AudioSinks(sinks.ok()));
+        }
         let depth = self.dispatch.busy();
         let mut input = input;
         let mut rejection = None;
@@ -726,12 +731,6 @@ impl Compositor {
 
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         match effect {
-            DispatchEffect::SettingsMode(index) | DispatchEffect::PersistMode(index) => {
-                self.settings_display
-                    .requests
-                    .push_back((index, matches!(effect, DispatchEffect::PersistMode(_))));
-                None
-            }
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
                 tracing::error!("invalid dispatch reply");
@@ -763,7 +762,11 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
-            effect @ (DispatchEffect::UnlockWallpapers
+            effect @ (DispatchEffect::AudioRefresh
+            | DispatchEffect::AudioDefault(_)
+            | DispatchEffect::SettingsMode(_)
+            | DispatchEffect::PersistMode(_)
+            | DispatchEffect::UnlockWallpapers
             | DispatchEffect::Wallpaper(_)
             | DispatchEffect::MovePointer { .. }
             | DispatchEffect::Scroll { .. }
@@ -790,6 +793,10 @@ impl Compositor {
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::AudioRefresh => self.settings_display.audio.request(None),
+            DispatchEffect::AudioDefault(sink_id) => self.settings_display.audio.request(Some(sink_id)),
+            DispatchEffect::SettingsMode(index) => self.settings_display.request_mode(index, false),
+            DispatchEffect::PersistMode(index) => self.settings_display.request_mode(index, true),
             DispatchEffect::UnlockWallpapers => self.unlock_wallpapers(),
             DispatchEffect::Wallpaper(index) => self.apply_wallpaper(index),
             DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
@@ -814,9 +821,7 @@ impl Compositor {
             DispatchEffect::PluginAction(action) => {
                 self.apply_plugin_action(&action);
             }
-            DispatchEffect::SettingsMode(_)
-            | DispatchEffect::PersistMode(_)
-            | DispatchEffect::ReadClock
+            DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
             | DispatchEffect::PluginRejected(_)
             | DispatchEffect::QueryPlugin(_)
@@ -1268,6 +1273,48 @@ impl Compositor {
         let evdev_code = key.evdev_code();
         let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
         self.tap_keycode(keycode);
+    }
+
+    pub fn physical_key(&mut self, key: u32, pressed: bool) {
+        let ptt = self
+            .dispatch
+            .core()
+            .contexts()
+            .iter()
+            .find(|context| context.app_id() == tehuti_core::GLOBAL_APP_ID)
+            .map_or(119, |context| u32::from(context.keyboard_push_to_talk()));
+        let outputs = self.physical_keyboard.key(key, pressed, ptt);
+        self.keyboard_outputs(outputs);
+    }
+
+    pub fn reset_physical_keyboard(&mut self) {
+        let outputs = self.physical_keyboard.reset();
+        self.keyboard_outputs(outputs);
+    }
+
+    fn keyboard_outputs(&mut self, outputs: Vec<crate::keyboard::Output>) {
+        for output in outputs {
+            match output {
+                crate::keyboard::Output::Button(event) => self.handle(&event),
+                crate::keyboard::Output::Key(code, down) => {
+                    let keyboard = self.keyboard.clone();
+                    let time = self.millis_since_start();
+                    let state = if down {
+                        smithay::backend::input::KeyState::Pressed
+                    } else {
+                        smithay::backend::input::KeyState::Released
+                    };
+                    let _forwarded: Option<()> = keyboard.input(
+                        self,
+                        Keycode::new(code.saturating_add(XKB_KEYCODE_OFFSET)),
+                        state,
+                        SERIAL_COUNTER.next_serial(),
+                        time,
+                        |_, _, _| FilterResult::Forward,
+                    );
+                }
+            }
+        }
     }
 
     fn tap_with_modifiers(&mut self, key: KeyName, mods: &[tehuti_protocol::Modifier]) {
