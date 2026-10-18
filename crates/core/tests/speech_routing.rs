@@ -88,8 +88,20 @@ mod speech_routing {
                 )
                 .0;
                 for (phrase, expected) in [
-                    ("Confirm!", Action::Key { key: KeyName::Enter }),
-                    ("Global.", Action::Key { key: KeyName::Space }),
+                    (
+                        "Confirm!",
+                        Action::Key {
+                            key: KeyName::Enter,
+                            mods: vec![],
+                        },
+                    ),
+                    (
+                        "Global.",
+                        Action::Key {
+                            key: KeyName::Space,
+                            mods: vec![],
+                        },
+                    ),
                     (
                         "unknown",
                         if focused_type || global_type {
