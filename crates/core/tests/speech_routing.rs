@@ -63,6 +63,7 @@ mod speech_routing {
     }
     #[test]
     fn focused_and_global_phrases_precede_unmatched_typing() {
+        let key = |key| Action::Key { key, mods: vec![] };
         for focused_type in [false, true] {
             for global_type in [false, true] {
                 let context = |app, enabled, mappings| {
@@ -88,20 +89,8 @@ mod speech_routing {
                 )
                 .0;
                 for (phrase, expected) in [
-                    (
-                        "Confirm!",
-                        Action::Key {
-                            key: KeyName::Enter,
-                            mods: vec![],
-                        },
-                    ),
-                    (
-                        "Global.",
-                        Action::Key {
-                            key: KeyName::Space,
-                            mods: vec![],
-                        },
-                    ),
+                    ("Confirm!", key(KeyName::Enter)),
+                    ("Global.", key(KeyName::Space)),
                     (
                         "unknown",
                         if focused_type || global_type {
