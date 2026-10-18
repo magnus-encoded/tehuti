@@ -641,7 +641,7 @@ proptest! {
             world.trace.clear();
             let first = split.min(gap);
             state = world.run(state, Input::Tick { elapsed: Duration::from_millis(first) });
-            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(gap - first) });
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(gap.saturating_sub(first)) });
             state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
             state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
             state = world.run(state, Input::Tick { elapsed: Duration::from_secs(2) });
