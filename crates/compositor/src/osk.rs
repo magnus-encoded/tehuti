@@ -199,10 +199,10 @@ impl Keyboard {
         if state == ButtonState::Released && self.release(name) {
             return Some(Effect::Consumed);
         }
+        if self.captured.contains(&name) {
+            return Some(Effect::Consumed);
+        }
         if name == ButtonName::Paddle4 && state == ButtonState::Pressed {
-            if self.captured.contains(&name) {
-                return Some(Effect::Consumed);
-            }
             self.captured.push(name);
             self.open = !self.open;
             return Some(Effect::Consumed);
@@ -243,12 +243,13 @@ impl Keyboard {
         if state == ButtonState::Released {
             return (core::mem::take(held) || self.open).then_some(Effect::Consumed);
         }
+        if *held {
+            return Some(Effect::Consumed);
+        }
         if !self.open {
             return None;
         }
-        if core::mem::replace(held, true) {
-            return Some(Effect::Consumed);
-        }
+        *held = true;
         Some(match name {
             ButtonName::LeftBumper => Effect::Text(self.key(0)),
             ButtonName::RightBumper => Effect::Text(self.key(1)),

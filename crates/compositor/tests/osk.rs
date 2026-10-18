@@ -128,6 +128,10 @@ mod tests {
             );
             keyboard.close();
             assert_eq!(
+                keyboard.button(name, ButtonState::Pressed),
+                Some(Effect::Consumed)
+            );
+            assert_eq!(
                 keyboard.button(name, ButtonState::Released),
                 Some(Effect::Consumed)
             );
