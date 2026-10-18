@@ -84,7 +84,7 @@ pub struct Compositor {
     pub start_time: Instant,
     pointer: smithay::input::pointer::PointerHandle<Self>,
     pointer_location: smithay::utils::Point<f64, smithay::utils::Logical>,
-    mouse_mode: bool,
+    pub(crate) mouse_mode: bool,
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
     physical_keyboard: crate::keyboard::Keyboard,
