@@ -1476,7 +1476,7 @@ fn frequency_choices_follow_size_and_keep_the_available_rate() {
     assert_eq!(state.settings().sizes(), [(1920, 1080), (3840, 2160)]);
     assert_eq!(state.settings().rates(), [2, 1]);
     state = settings_button(&mut world, state, ButtonName::DpadRight);
-    state = settings_button(&mut world, state, ButtonName::DpadDown);
+    state = settings_button(&mut world, state, ButtonName::DpadUp);
     assert_eq!(state.settings().selected, 2);
     state = settings_button(&mut world, state, ButtonName::DpadLeft);
     state = settings_button(&mut world, state, ButtonName::DpadUp);
