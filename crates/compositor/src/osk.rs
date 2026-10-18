@@ -307,30 +307,22 @@ where
     .map(Some)
 }
 
-/// Physical top and height, keeping the keyboard clear of the field when space permits.
+/// Physical top and height, anchored above the bar with room for window contents.
 #[must_use]
-pub fn placement(size: (i32, i32), scale: i32, cursor: Option<(i32, i32)>) -> (i32, i32) {
+pub fn placement(size: (i32, i32), scale: i32, _cursor: Option<(i32, i32)>) -> (i32, i32) {
     let row_height = tehuti_core::bar::HEIGHT.saturating_mul(scale.max(1));
-    let height = ROWS
-        .saturating_mul(row_height)
-        .min(size.1.saturating_sub(row_height).max(0));
+    let height = ROWS.saturating_mul(row_height).min(
+        size.1
+            .saturating_sub(row_height)
+            .saturating_sub(scale.max(1))
+            .max(0),
+    );
     let bottom = size
         .1
         .saturating_sub(tehuti_core::bar::HEIGHT.saturating_mul(scale.max(1)))
         .saturating_sub(height)
         .max(0);
-    let overlaps = cursor.is_some_and(|(top, extent)| {
-        top < bottom.saturating_add(height) && top.saturating_add(extent) > bottom
-    });
-    if overlaps {
-        let available = size.1.saturating_sub(row_height).max(0);
-        let badge_bottom = crate::notice::TOP
-            .saturating_add(i32::try_from(crate::notice::HEIGHT).unwrap_or(i32::MAX));
-        let top = badge_bottom.min(available);
-        (top, height.min(available.saturating_sub(top)))
-    } else {
-        (bottom, height)
-    }
+    (bottom, height)
 }
 
 fn draw(

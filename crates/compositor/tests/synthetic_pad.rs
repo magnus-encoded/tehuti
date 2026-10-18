@@ -815,6 +815,59 @@ mod synthetic_pad {
     }
 
     #[test]
+    fn keyboard_reserves_work_area_until_hidden_closed_or_disconnected() {
+        use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
+
+        for (height, scale, closed_height, open_height) in [
+            (720, 1, 688.0, 528.0),
+            (1440, 2, 688.0, 528.0),
+            (200, 1, 168.0, 8.0),
+            (100, 1, 68.0, 1.0),
+        ] {
+            let display = Display::<Compositor>::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let output = Output::new(
+                "keyboard-test".into(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "Tehuti".into(),
+                    model: "Test".into(),
+                },
+            );
+            output.change_current_state(
+                Some(Mode {
+                    size: (1280, height).into(),
+                    refresh: 60_000,
+                }),
+                None,
+                Some(Scale::Integer(scale)),
+                None,
+            );
+            compositor.output = Some(output);
+            compositor.fill_output();
+            let work_height =
+                |compositor: &Compositor| compositor.layout_snapshot().outputs[0].working_area.height;
+            assert_eq!(work_height(&compositor), closed_height);
+            open_controller_keyboard(&mut compositor);
+            assert_eq!(work_height(&compositor), open_height);
+            tap_button(&mut compositor, ButtonName::Paddle4);
+            assert!(!compositor.osk_open());
+            assert_eq!(work_height(&compositor), closed_height);
+            tap_button(&mut compositor, ButtonName::Paddle4);
+            assert!(compositor.osk_open());
+            assert_eq!(work_height(&compositor), open_height);
+            tap_button(&mut compositor, ButtonName::East);
+            assert!(!compositor.osk_open());
+            assert_eq!(work_height(&compositor), closed_height);
+            open_controller_keyboard(&mut compositor);
+            compositor.controller_input(tehuti_core::controller::Input::Disconnected);
+            assert!(!compositor.osk_open());
+            assert_eq!(work_height(&compositor), closed_height);
+        }
+    }
+
+    #[test]
     fn restoring_keyboard_stops_sticks_sampled_while_hidden() {
         let display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();

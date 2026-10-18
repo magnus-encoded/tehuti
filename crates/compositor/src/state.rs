@@ -384,6 +384,7 @@ impl Compositor {
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
         if matches!(input, tehuti_core::controller::Input::Disconnected) {
             self.osk = crate::osk::Keyboard::default();
+            self.fill_output();
             let _rejection = self.dispatch(DispatchInput::ControllerDisconnected);
         }
         let (next, events) =
@@ -488,7 +489,16 @@ impl Compositor {
     }
     pub(crate) fn open_keyboard(&mut self) {
         self.osk.open = true;
+        self.fill_output();
         let _rejection = self.dispatch(DispatchInput::Sticks(tehuti_core::dispatch::Sticks::default()));
+    }
+
+    pub(crate) fn close_keyboard(&mut self) {
+        let was_open = self.osk.open;
+        self.osk.close();
+        if was_open {
+            self.fill_output();
+        }
     }
 
     pub const fn osk_open(&self) -> bool {
@@ -622,6 +632,8 @@ impl Compositor {
         {
             if self.osk.open && !keyboard_was_open {
                 self.open_keyboard();
+            } else if self.osk.open != keyboard_was_open {
+                self.fill_output();
             }
             tracing::subscriber::with_default(
                 tracing::subscriber::NoSubscriber::default(),
@@ -866,7 +878,7 @@ impl Compositor {
         if active && self.text_input.enabled() {
             self.open_keyboard();
         } else if !active {
-            self.osk.close();
+            self.close_keyboard();
         }
         self.show_notice(if active { "MOUSE MODE" } else { "MOUSE MODE OFF" });
         self.move_pointer();
@@ -1519,10 +1531,27 @@ impl Compositor {
                 height: size.h,
             },
         );
+        let keyboard_height = if self.osk.open {
+            self.output
+                .as_ref()
+                .and_then(|output| {
+                    output.current_mode().map(|mode| {
+                        let (_, height) = crate::osk::placement(
+                            (mode.size.w, mode.size.h),
+                            output.current_scale().integer_scale(),
+                            None,
+                        );
+                        f64::from(height) / output.current_scale().fractional_scale()
+                    })
+                })
+                .unwrap_or_else(|| f64::from(crate::osk::placement((1280, 720), 1, None).1))
+        } else {
+            0.0
+        };
         let geometry = OutputGeometry {
             area,
             usable: Rect {
-                height: (area.height - f64::from(tehuti_core::bar::HEIGHT)).max(1.0),
+                height: (area.height - f64::from(tehuti_core::bar::HEIGHT) - keyboard_height).max(1.0),
                 ..area
             },
         };
@@ -2019,7 +2048,7 @@ impl XdgShellHandler for Compositor {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if self.text_input.forget_surface(surface.wl_surface()) {
-            self.osk.close();
+            self.close_keyboard();
         }
         self.remove_floating(surface.wl_surface());
         let identity = self.layout_windows.iter().find_map(|(identity, window)| {
@@ -2067,7 +2096,7 @@ impl SeatHandler for Compositor {
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         self.text_input.focus(focused.cloned());
-        self.osk.close();
+        self.close_keyboard();
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}

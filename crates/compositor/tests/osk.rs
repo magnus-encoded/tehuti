@@ -261,9 +261,12 @@ mod tests {
     }
 
     #[test]
-    fn overlay_sits_above_the_bar_and_avoids_bottom_fields() {
+    fn keyboard_stays_above_the_bar_for_every_cursor() {
         assert_eq!(tehuti::osk::placement((1920, 1080), 1, None), (888, 160));
-        assert_eq!(tehuti::osk::placement((1920, 1080), 1, Some((950, 24))), (80, 160));
+        assert_eq!(
+            tehuti::osk::placement((1920, 1080), 1, Some((950, 24))),
+            (888, 160)
+        );
         assert_eq!(
             tehuti::osk::placement((1920, 1080), 1, Some((100, 24))),
             (888, 160)
@@ -272,17 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn top_keyboard_clears_the_rendered_mouse_badge() {
-        let badge = tehuti::notice::notice_buffer("MOUSE MODE");
-        for scale in [1, 2, 3] {
-            let (top, height) = tehuti::osk::placement((1920, 1080), scale, Some((900, 24)));
-            assert!(top >= tehuti::notice::TOP + badge.size().h);
-            assert!(height > 0);
-        }
-    }
-
-    #[test]
-    fn top_keyboard_fits_between_badge_and_bar_on_small_screens() {
+    fn bottom_keyboard_fits_on_small_screens() {
         for scale in [1, 2, 3] {
             for output_height in 0..400 {
                 let bar_top = (output_height - 32 * scale).max(0);
@@ -290,9 +283,9 @@ mod tests {
                     tehuti::osk::placement((640, output_height), scale, Some((0, output_height)));
                 assert!(top >= 0);
                 assert!(height >= 0);
-                assert!(top + height <= bar_top);
-                if bar_top >= 80 && height > 0 {
-                    assert!(top >= 80);
+                assert_eq!(top + height, bar_top);
+                if bar_top > 0 {
+                    assert!(top > 0);
                 }
             }
         }
