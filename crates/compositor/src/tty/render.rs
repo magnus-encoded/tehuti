@@ -236,6 +236,20 @@ where
     if let Some(element) = bar.element(renderer, output, compositor.voice_bar(), &clock)? {
         elements.push(element);
     }
+    if let Some(location) = compositor.cursor_location() {
+        elements.insert(
+            0,
+            MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                location,
+                &tehuti::notice::cursor_buffer(),
+                None,
+                None,
+                None,
+                Kind::Cursor,
+            )?,
+        );
+    }
     let frame = render_output::<_, MemoryRenderBufferRenderElement<R>, _, _>(
         output,
         renderer,

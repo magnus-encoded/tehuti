@@ -210,6 +210,7 @@ impl Nested {
                     Ok(None) => {}
                     Err(error) => warn!(?error, "bar render failed"),
                 }
+                append_cursor(renderer, data, &mut notices);
                 match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
                     &self.output,
                     renderer,
@@ -229,5 +230,26 @@ impl Nested {
             Err(error) => warn!(?error, "bind failed"),
         }
         (confirmation_element_included, output_drew)
+    }
+}
+
+fn append_cursor(
+    renderer: &mut GlesRenderer,
+    data: &LoopData,
+    notices: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    if let Some(location) = data.compositor.cursor_location() {
+        match MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            location,
+            &tehuti::notice::cursor_buffer(),
+            None,
+            None,
+            None,
+            Kind::Cursor,
+        ) {
+            Ok(element) => notices.insert(0, element),
+            Err(error) => warn!(?error, "cursor render failed"),
+        }
     }
 }

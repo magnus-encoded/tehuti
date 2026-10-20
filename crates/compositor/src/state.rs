@@ -73,6 +73,9 @@ const XKB_KEYCODE_OFFSET: u32 = 8;
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
+    pointer: smithay::input::pointer::PointerHandle<Self>,
+    pointer_location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    mouse_mode: bool,
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
@@ -138,8 +141,12 @@ impl Compositor {
                 .ok_or(SetupError::KeymapCompilation)?;
         let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         let text_keys = text_keys(&keymap);
+        let pointer = seat.add_pointer();
         let mut compositor = Self {
             start_time: Instant::now(),
+            pointer,
+            pointer_location: (100.0, 100.0).into(),
+            mouse_mode: false,
             space: Space::default(),
             output: None,
             // Agent launchers title windows Claude/Codex[: project]; mirror them until compositor config exists.
@@ -287,6 +294,7 @@ impl Compositor {
                         .unwrap_or_else(|| "NO SPEECH MAPPING".into())
                 })
             })
+            .or_else(|| self.mouse_mode.then(|| "MOUSE MODE".into()))
     }
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
@@ -324,6 +332,125 @@ impl Compositor {
         for event in events {
             self.handle(&event);
         }
+    }
+
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "Smithay pointer coordinates and axis values use floating point"
+    )]
+    fn pointer_motion(&mut self, x: i32, y: i32) {
+        self.pointer_location.x += f64::from(x) / 1_000_000.0;
+        self.pointer_location.y += f64::from(y) / 1_000_000.0;
+        self.move_pointer();
+    }
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "Smithay pointer coordinates and axis values use floating point"
+    )]
+    fn pointer_scroll(&mut self, x: i32, y: i32) {
+        use smithay::backend::input::{Axis, AxisSource};
+        self.move_pointer();
+        let frame = smithay::input::pointer::AxisFrame::new(self.pointer_time())
+            .source(AxisSource::Continuous)
+            .value(Axis::Horizontal, f64::from(x) / 1_000_000.0)
+            .value(Axis::Vertical, f64::from(y) / 1_000_000.0);
+        self.pointer.clone().axis(self, frame);
+        self.pointer.clone().frame(self);
+    }
+    fn pointer_click(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
+        self.move_pointer();
+        if pressed && let Some((window, _)) = self.space.element_under(self.pointer_location) {
+            let identity = self
+                .layout_windows
+                .iter()
+                .find(|(_, candidate)| candidate == window)
+                .map(|(identity, _)| *identity);
+            if let Some(identity) = identity {
+                if let Err(error) = self.layout.focus_window(identity) {
+                    tracing::warn!(%error, "pointer focus failed");
+                }
+                self.place_layout();
+            }
+        }
+        let event = smithay::input::pointer::ButtonEvent {
+            serial: SERIAL_COUNTER.next_serial(),
+            time: self.pointer_time(),
+            button: match button {
+                tehuti_core::dispatch::PointerButton::Left => 0x110,
+                tehuti_core::dispatch::PointerButton::Right => 0x111,
+            },
+            state: if pressed {
+                smithay::backend::input::ButtonState::Pressed
+            } else {
+                smithay::backend::input::ButtonState::Released
+            },
+        };
+        self.pointer.clone().button(self, &event);
+        self.pointer.clone().frame(self);
+    }
+    pub fn sample_sticks(&mut self, sticks: tehuti_core::dispatch::Sticks) {
+        let _rejection = self.dispatch(DispatchInput::Sticks(sticks));
+    }
+
+    #[must_use]
+    pub fn cursor_location(&self) -> Option<(f64, f64)> {
+        self.mouse_mode
+            .then_some((self.pointer_location.x, self.pointer_location.y))
+    }
+
+    fn pointer_time(&self) -> u32 {
+        u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
+    }
+
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "Smithay surface hit testing uses floating point coordinates"
+    )]
+    fn move_pointer(&mut self) {
+        if let Some(output) = &self.output
+            && let Some(geometry) = self.space.output_geometry(output)
+            && geometry.size.w > 0
+            && geometry.size.h > 0
+        {
+            self.pointer_location.x = self.pointer_location.x.clamp(
+                f64::from(geometry.loc.x),
+                f64::from(geometry.loc.x.saturating_add(geometry.size.w).saturating_sub(1)),
+            );
+            self.pointer_location.y = self.pointer_location.y.clamp(
+                f64::from(geometry.loc.y),
+                f64::from(geometry.loc.y.saturating_add(geometry.size.h).saturating_sub(1)),
+            );
+        }
+        let focus = self
+            .space
+            .element_under(self.pointer_location)
+            .and_then(|(window, location)| {
+                window
+                    .surface_under(
+                        (
+                            self.pointer_location.x - f64::from(location.x),
+                            self.pointer_location.y - f64::from(location.y),
+                        ),
+                        smithay::desktop::WindowSurfaceType::ALL,
+                    )
+                    .map(|(surface, offset)| {
+                        (
+                            surface,
+                            (
+                                f64::from(location.x.saturating_add(offset.x)),
+                                f64::from(location.y.saturating_add(offset.y)),
+                            )
+                                .into(),
+                        )
+                    })
+            });
+        let event = smithay::input::pointer::MotionEvent {
+            location: self.pointer_location,
+            serial: SERIAL_COUNTER.next_serial(),
+            time: self.pointer_time(),
+        };
+        self.pointer.clone().motion(self, focus, &event);
+        self.pointer.clone().frame(self);
     }
 
     /// Reads the clock once and returns the time since the previous read.
@@ -429,7 +556,11 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
-            effect @ (DispatchEffect::PollSources
+            effect @ (DispatchEffect::MovePointer { .. }
+            | DispatchEffect::Scroll { .. }
+            | DispatchEffect::Click { .. }
+            | DispatchEffect::MouseMode(_)
+            | DispatchEffect::PollSources
             | DispatchEffect::SouthPressed(_)
             | DispatchEffect::ResetSecretFocus
             | DispatchEffect::Apply(_)
@@ -449,6 +580,14 @@ impl Compositor {
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
+            DispatchEffect::Scroll { x, y } => self.pointer_scroll(x, y),
+            DispatchEffect::Click { button, pressed } => self.pointer_click(button, pressed),
+            DispatchEffect::MouseMode(active) => {
+                self.mouse_mode = active;
+                self.show_notice(if active { "MOUSE MODE" } else { "MOUSE MODE OFF" });
+                self.move_pointer();
+            }
             DispatchEffect::PollSources => {
                 self.poll_secret_lookup();
                 self.poll_launchers();
