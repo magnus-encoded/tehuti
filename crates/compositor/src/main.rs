@@ -126,8 +126,23 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         log_out: false,
         context_watch: insert_context_watch(&event_loop, std::path::Path::new(&context_directory)),
     };
-    run(&mut event_loop, &mut data, child)?;
-    Ok(data.exit_code())
+    let result = run(&mut event_loop, &mut data, child);
+    let code = data.exit_code();
+    shut_down(event_loop, data);
+    result?;
+    Ok(code)
+}
+
+/// The nested renderer unbinds EGL from the `wl_display` when dropped, and the
+/// compositor's dmabuf importer shares that renderer. Both must go while the
+/// display is alive, or the NVIDIA EGL driver frees display state twice.
+fn shut_down(event_loop: EventLoop<LoopData>, data: LoopData) {
+    drop(event_loop);
+    let LoopData {
+        display, compositor, ..
+    } = data;
+    drop(compositor);
+    drop(display);
 }
 
 fn run(
