@@ -93,7 +93,9 @@ mod tests {
     }
 
     fn feedback(state: &State) -> Option<Segment> {
-        state.bar().segments().get(1).cloned()
+        let segments = state.bar().segments();
+        // Context chip first, level chip last; feedback sits between them.
+        (segments.len() == 3).then(|| segments.get(1).cloned()).flatten()
     }
 
     fn segment(text: &str, tone: Tone) -> Segment {
@@ -307,10 +309,16 @@ mod tests {
         let state = focus(state, None);
         assert_eq!(
             state.bar().segments(),
-            vec![Segment {
-                text: "Desktop".into(),
-                tone: Tone::Context
-            }]
+            vec![
+                Segment {
+                    text: "Desktop".into(),
+                    tone: Tone::Context
+                },
+                Segment {
+                    text: "App".into(),
+                    tone: Tone::Context
+                }
+            ]
         );
     }
 
