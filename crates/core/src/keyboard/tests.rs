@@ -205,7 +205,7 @@ fn holding_a_direction_repeats_after_a_delay() {
 }
 
 #[test]
-fn south_types_the_highlighted_key_and_shift_lasts_one_letter() {
+fn shift_toggles_capitals_until_pressed_again() {
     let mut keyboard = opened();
     press(&mut keyboard, ButtonName::South);
     go_to(&mut keyboard, 0, 0);
@@ -213,7 +213,13 @@ fn south_types_the_highlighted_key_and_shift_lasts_one_letter() {
     go_to(&mut keyboard, 0, 2);
     press(&mut keyboard, ButtonName::South);
     press(&mut keyboard, ButtonName::South);
-    assert_eq!(keyboard.draft(), "qWw");
+    assert!(keyboard.shifted());
+    go_to(&mut keyboard, 0, 0);
+    press(&mut keyboard, ButtonName::South);
+    assert!(!keyboard.shifted());
+    go_to(&mut keyboard, 0, 2);
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.draft(), "qWWw");
 }
 
 #[test]
@@ -395,4 +401,111 @@ fn left_stick_click_switches_between_letters_and_symbols() {
     assert!(!keyboard.symbols());
     press(&mut keyboard, ButtonName::South);
     assert_eq!(keyboard.draft(), "1q");
+}
+
+proptest! {
+    #[test]
+    fn symbols_preserve_the_letter_layer(capitals in any::<bool>(), trips in 1usize..8) {
+        let mut keyboard = opened();
+        if capitals {
+            go_to(&mut keyboard, 0, 0);
+            press(&mut keyboard, ButtonName::South);
+        }
+        go_to(&mut keyboard, 0, 1);
+        for _ in 0..trips {
+            press(&mut keyboard, ButtonName::LeftStick);
+            assert!(keyboard.symbols());
+            assert!(!keyboard.shifted());
+            press(&mut keyboard, ButtonName::South);
+            press(&mut keyboard, ButtonName::LeftStick);
+            assert!(!keyboard.symbols());
+            assert_eq!(keyboard.shifted(), capitals);
+            press(&mut keyboard, ButtonName::South);
+        }
+        prop_assert_eq!(keyboard.draft(), (if capitals { "1Q" } else { "1q" }).repeat(trips));
+    }
+}
+
+#[test]
+fn b_resets_capitals_even_when_symbols_are_showing() {
+    for symbols in [false, true] {
+        let mut keyboard = opened();
+        go_to(&mut keyboard, 0, 0);
+        press(&mut keyboard, ButtonName::South);
+        if symbols {
+            press(&mut keyboard, ButtonName::LeftStick);
+        }
+        press(&mut keyboard, ButtonName::East);
+        assert!(!keyboard.shifted());
+        assert!(!keyboard.symbols());
+        keyboard.open();
+        assert!(!keyboard.shifted());
+        press(&mut keyboard, ButtonName::South);
+        assert_eq!(keyboard.draft(), "q");
+        press(&mut keyboard, ButtonName::LeftStick);
+        press(&mut keyboard, ButtonName::LeftStick);
+        assert!(!keyboard.shifted());
+    }
+}
+
+#[test]
+fn field_kinds_choose_base_layouts_and_keep_symbols_available() {
+    for (kind, special) in [
+        (FieldKind::Normal, Key::Char(',')),
+        (FieldKind::Url, Key::Text(".com")),
+        (FieldKind::Email, Key::Char('@')),
+        (FieldKind::Password, Key::Char(',')),
+    ] {
+        let mut keyboard = Keyboard::default();
+        keyboard.set_field_kind(kind, true);
+        keyboard.open();
+        assert!(keyboard.rows()[2].iter().any(|slot| slot.key == special));
+        assert_eq!(keyboard.password_field_active(), kind == FieldKind::Password);
+        for row in keyboard.rows() {
+            assert_eq!(row.iter().map(|slot| u16::from(slot.width)).sum::<u16>(), 28);
+        }
+        if kind == FieldKind::Url {
+            assert!(keyboard.rows()[2].iter().any(|slot| slot.key == Key::Char('/')));
+            go_to(&mut keyboard, 2, 9);
+            press(&mut keyboard, ButtonName::South);
+            assert_eq!(keyboard.draft(), ".com");
+        }
+        press(&mut keyboard, ButtonName::LeftStick);
+        assert!(keyboard.symbols());
+    }
+}
+
+#[test]
+fn password_reveals_only_last_typed_character_for_one_and_a_half_seconds() {
+    let mut keyboard = Keyboard::default();
+    keyboard.set_field_kind(FieldKind::Password, true);
+    keyboard.open();
+    press(&mut keyboard, ButtonName::South);
+    press(&mut keyboard, ButtonName::DpadRight);
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.displayed_draft(), "*w");
+    keyboard.tick(Duration::from_millis(1499));
+    assert_eq!(keyboard.displayed_draft(), "*w");
+    keyboard.tick(Duration::from_millis(1));
+    assert_eq!(keyboard.displayed_draft(), "**");
+    press(&mut keyboard, ButtonName::LeftBumper);
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.displayed_draft(), "*w*");
+    press(&mut keyboard, ButtonName::West);
+    assert_eq!(keyboard.displayed_draft(), "**");
+    keyboard.dictate("ignored");
+    assert_eq!(keyboard.draft(), "qw");
+    assert_eq!(tap(&mut keyboard, ButtonName::Start), Response::Consumed);
+    assert!(!keyboard.is_open());
+    assert!(keyboard.password_field_active());
+}
+
+#[test]
+fn changing_fields_discards_password_and_clears_reveal() {
+    let mut keyboard = opened();
+    keyboard.set_field_kind(FieldKind::Password, true);
+    press(&mut keyboard, ButtonName::South);
+    keyboard.set_field_kind(FieldKind::Normal, true);
+    assert_eq!(keyboard.displayed_draft(), "");
+    assert!(!keyboard.password_field_active());
 }

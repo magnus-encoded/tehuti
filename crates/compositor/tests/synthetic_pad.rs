@@ -104,6 +104,7 @@ mod synthetic_pad {
         keymap_source: String,
         pending_text: String,
         suppress_enable: bool,
+        content_purpose: Option<zwp_text_input_v3::ContentPurpose>,
         modifiers: (u32, u32, u32),
         dmabuf_modifiers: Vec<(u32, u64)>,
         dmabuf_main_device: Vec<u8>,
@@ -495,6 +496,9 @@ mod synthetic_pad {
                 zwp_text_input_v3::Event::Enter { .. } => {
                     if !app.suppress_enable {
                         input.enable();
+                        if let Some(purpose) = app.content_purpose {
+                            input.set_content_type(zwp_text_input_v3::ContentHint::empty(), purpose);
+                        }
                         input.commit();
                     }
                 }
@@ -848,6 +852,17 @@ mod synthetic_pad {
         text_state: ClientTextState,
         ready: &mpsc::Sender<()>,
     ) -> App {
+        let initial_app_id = if app_id == "test" { "other" } else { "test" };
+        run_client_with_app_id(stream, app_id, initial_app_id, text_state, ready)
+    }
+
+    fn run_client_with_app_id(
+        stream: UnixStream,
+        app_id: &str,
+        initial_app_id: &str,
+        text_state: ClientTextState,
+        ready: &mpsc::Sender<()>,
+    ) -> App {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -862,10 +877,16 @@ mod synthetic_pad {
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
         toplevel.set_title("Synthetic-window-title-1234567890".into());
-        let initial_app_id_before_focus_change = if app_id == "test" { "other" } else { "test" };
-        toplevel.set_app_id(initial_app_id_before_focus_change.into());
+        toplevel.set_app_id(initial_app_id.into());
         surface.commit();
-        let mut app = App::default();
+        let mut app = App {
+            content_purpose: if let ClientTextState::Purpose(purpose) = text_state {
+                Some(purpose)
+            } else {
+                None
+            },
+            ..App::default()
+        };
         let _initial_dispatch = queue.roundtrip(&mut app).unwrap();
         toplevel.set_app_id(app_id.into());
         let _focus_dispatch = queue.roundtrip(&mut app).unwrap();
@@ -1607,6 +1628,7 @@ mod synthetic_pad {
 
     #[derive(Clone, Copy)]
     enum ClientTextState {
+        Purpose(zwp_text_input_v3::ContentPurpose),
         Enabled,
         Absent,
         Disabled,
@@ -2329,6 +2351,108 @@ else:
             "one press and release per character, with no Enter"
         );
         assert_eq!(app.text, "", "secret delivery bypasses text-input instances");
+    }
+
+    #[test]
+    fn text_input_enablement_controls_keyboard_opening() {
+        for mode in ["open", "button", "off"] {
+            for text_state in [
+                ClientTextState::Enabled,
+                ClientTextState::Disabled,
+                ClientTextState::Absent,
+                ClientTextState::FocusChanged,
+            ] {
+                let mut display: Display<Compositor> = Display::new().unwrap();
+                let mut compositor = Compositor::new(&display.handle()).unwrap();
+                compositor.set_contexts(vec![
+                    tehuti_protocol::parse_context(&format!(
+                        "app_id = 'test'\n[buttons]\n[keyboard]\non_text_field = '{mode}'"
+                    ))
+                    .unwrap(),
+                ]);
+                let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+                let (server_end, client_end) = UnixStream::pair().unwrap();
+                let _client = display
+                    .handle()
+                    .insert_client(server_end, Arc::new(ClientState::default()))
+                    .unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let client = thread::spawn(move || {
+                    run_client_with_app_id(client_end, "test", "test", text_state, &sender)
+                });
+                let started = Instant::now();
+                dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+                let active = matches!(text_state, ClientTextState::Enabled);
+                if active {
+                    assert_eq!(compositor.on_screen_keyboard().is_open(), mode == "open");
+                }
+                let mut pad = SyntheticPad::default();
+                for name in [ButtonName::East, ButtonName::North] {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        pad.push(Event::Button { name, state });
+                    }
+                }
+                route(&mut compositor, &mut pad).unwrap();
+                assert_eq!(compositor.on_screen_keyboard().is_open(), active && mode != "off");
+                for name in [ButtonName::East, ButtonName::South] {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        pad.push(Event::Button { name, state });
+                    }
+                }
+                route(&mut compositor, &mut pad).unwrap();
+                dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+                let _app = client.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn committed_content_purpose_selects_the_keyboard_layout() {
+        use tehuti_core::keyboard::Key;
+        use zwp_text_input_v3::ContentPurpose;
+        for (purpose, special) in [
+            (ContentPurpose::Normal, Key::Char(',')),
+            (ContentPurpose::Url, Key::Text(".com")),
+            (ContentPurpose::Email, Key::Char('@')),
+            (ContentPurpose::Password, Key::Char(',')),
+            (ContentPurpose::Number, Key::Char(',')),
+        ] {
+            let mut display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+            let (server, client) = UnixStream::pair().unwrap();
+            let _client = display
+                .handle()
+                .insert_client(server, Arc::new(ClientState::default()))
+                .unwrap();
+            let (sender, receiver) = mpsc::channel();
+            let client = thread::spawn(move || {
+                run_client_with_app_id(client, "test", "test", ClientTextState::Purpose(purpose), &sender)
+            });
+            let started = Instant::now();
+            dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+            assert!(
+                compositor.on_screen_keyboard().rows()[2]
+                    .iter()
+                    .any(|slot| slot.key == special)
+            );
+            assert_eq!(
+                compositor.on_screen_keyboard().password_field_active(),
+                purpose == ContentPurpose::Password
+            );
+            let mut pad = SyntheticPad::default();
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button {
+                    name: ButtonName::South,
+                    state,
+                });
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+            let _app = client.join().unwrap();
+            let _disconnected = display.dispatch_clients(&mut compositor).unwrap();
+            assert!(!compositor.on_screen_keyboard().password_field_active());
+        }
     }
 
     #[test]

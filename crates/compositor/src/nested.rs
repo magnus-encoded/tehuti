@@ -17,7 +17,6 @@ use smithay::{
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
-    desktop::space::render_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{EventLoop, LoopSignal},
@@ -32,7 +31,6 @@ use tehuti::state::Compositor;
 use crate::LoopData;
 
 const REFRESH_MILLIHERTZ: i32 = 60_000;
-const BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 struct Nested {
     backend: Rc<RefCell<WinitGraphicsBackend<GlesRenderer>>>,
@@ -90,6 +88,13 @@ pub(crate) fn insert(
     compositor.space.map_output(&output, (0, 0));
     compositor.output = Some(output.clone());
     compositor.fill_output();
+
+    let (ping, source) = smithay::reexports::calloop::ping::make_ping()?;
+    let redraw_backend = backend.clone();
+    let _wallpaper_token = event_loop.handle().insert_source(source, move |(), (), _| {
+        redraw_backend.borrow().window().request_redraw();
+    })?;
+    tehuti::wallpaper::set_redraw_ping(ping)?;
 
     let mut nested = Nested {
         backend,
@@ -214,16 +219,13 @@ impl Nested {
                 }
                 append_keyboard(&mut self.keyboard, &self.output, renderer, data, &mut notices);
                 append_cursor(renderer, data, &self.output, &mut notices);
-                match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
+                match tehuti::wallpaper::render_output(
                     &self.output,
                     renderer,
                     &mut framebuffer,
-                    1.0,
-                    0,
-                    [&data.compositor.space],
+                    &data.compositor,
                     &notices,
                     &mut self.damage_tracker,
-                    BACKGROUND,
                 ) {
                     Ok(result) if result.damage.is_some() => output_drew = true,
                     Ok(_) => {}

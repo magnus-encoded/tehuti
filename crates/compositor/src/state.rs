@@ -128,6 +128,12 @@ pub enum SetupError {
     DesktopEntries(#[from] std::io::Error),
 }
 
+fn default_keymap() -> Result<xkb::Keymap, SetupError> {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+        .ok_or(SetupError::KeymapCompilation)
+}
+
 impl Compositor {
     /// Creates the Wayland globals and a seat with one keyboard.
     ///
@@ -525,7 +531,7 @@ impl Compositor {
     }
 
     /// Feeds one input and every reply it asks for until its frame finishes.
-    fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+    pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
         let depth = self.dispatch.busy();
         let mut input = input;
         let mut rejection = None;
@@ -617,6 +623,10 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
+            DispatchEffect::PasswordSpeechIgnored => {
+                tracing::info!("push-to-talk ignored: password field active");
+                None
+            }
             effect @ (DispatchEffect::MovePointer { .. }
             | DispatchEffect::Scroll { .. }
             | DispatchEffect::Click { .. }
@@ -654,9 +664,7 @@ impl Compositor {
                 self.poll_launchers();
                 self.desktop_entries.poll();
             }
-            DispatchEffect::SouthPressed(pressed) => {
-                self.secret_confirmation.south_pressed = pressed;
-            }
+            DispatchEffect::SouthPressed(pressed) => self.secret_confirmation.south_pressed = pressed,
             DispatchEffect::ResetSecretFocus => {
                 self.reset_secret_confirmation_for_focus();
             }
@@ -666,7 +674,8 @@ impl Compositor {
             DispatchEffect::PluginAction(action) => {
                 self.apply_plugin_action(&action);
             }
-            DispatchEffect::ReadClock
+            DispatchEffect::PasswordSpeechIgnored
+            | DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
             | DispatchEffect::PluginRejected(_)
             | DispatchEffect::QueryPlugin(_)
@@ -1597,6 +1606,11 @@ impl SeatHandler for Compositor {
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         self.text_input.focus(focused.cloned());
+        let _rejection = self.dispatch(DispatchInput::TextField {
+            active: false,
+            changed: false,
+            kind: tehuti_core::keyboard::FieldKind::Normal,
+        });
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
@@ -1634,10 +1648,4 @@ fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin
         None if plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
         None => tracing::info!(text = text.as_str(), "speech produced no action"),
     }
-}
-
-fn default_keymap() -> Result<xkb::Keymap, SetupError> {
-    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-    xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
-        .ok_or(SetupError::KeymapCompilation)
 }

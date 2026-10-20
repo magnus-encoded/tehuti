@@ -19,6 +19,7 @@ pub const ROW_UNITS: u8 = 28;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Char(char),
+    Text(&'static str),
     Shift,
     Symbols,
     Backspace,
@@ -135,6 +136,51 @@ const SYMBOLS: Rows = [
     ],
 ];
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FieldKind {
+    #[default]
+    Normal,
+    Url,
+    Email,
+    Password,
+}
+
+const URL: Rows = [
+    LETTERS[0],
+    LETTERS[1],
+    &[
+        slot(Key::CaretLeft, 4),
+        letter('z'),
+        letter('x'),
+        letter('c'),
+        letter('v'),
+        letter('b'),
+        letter('n'),
+        letter('m'),
+        letter('/'),
+        slot(Key::Text(".com"), 4),
+        slot(Key::CaretRight, 4),
+    ],
+];
+const EMAIL: Rows = [
+    LETTERS[0],
+    LETTERS[1],
+    &[
+        slot(Key::CaretLeft, 4),
+        letter('z'),
+        letter('x'),
+        letter('c'),
+        letter('v'),
+        letter('b'),
+        letter('n'),
+        letter('m'),
+        letter('@'),
+        letter('.'),
+        slot(Key::Space, 4),
+        slot(Key::CaretRight, 2),
+    ],
+];
+
 /// What the caller does with a button after the keyboard has seen it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Response {
@@ -184,14 +230,17 @@ impl Direction {
 enum Layer {
     #[default]
     Letters,
-    /// Capitals for the next letter only.
     Capitals,
-    Symbols,
+    Symbols {
+        capitals: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Keyboard {
     open: bool,
+    field_kind: FieldKind,
+    revealed: Option<(Range<usize>, Duration)>,
     layer: Layer,
     highlight: (usize, usize),
     draft: String,
@@ -216,6 +265,7 @@ impl Keyboard {
         }
         *self = Self {
             open: true,
+            field_kind: self.field_kind,
             highlight: (0, 1),
             captured: core::mem::take(&mut self.captured),
             stick_engaged: self.stick_engaged,
@@ -226,6 +276,7 @@ impl Keyboard {
     /// Closes and discards the draft; releases of buttons it consumed stay consumed.
     pub fn close(&mut self) {
         self.open = false;
+        self.revealed = None;
         self.draft.clear();
         self.caret = 0;
         self.word = None;
@@ -257,6 +308,46 @@ impl Keyboard {
         &self.draft
     }
 
+    /// Updates the committed field purpose; a different field discards the draft.
+    pub fn set_field_kind(&mut self, kind: FieldKind, changed: bool) {
+        if changed || self.field_kind != kind {
+            self.draft.clear();
+            self.caret = 0;
+            self.word = None;
+            self.revealed = None;
+        }
+        self.field_kind = kind;
+        self.clamp_highlight();
+    }
+
+    /// True while the focused text field has password purpose, even with the overlay closed.
+    #[must_use]
+    pub fn password_field_active(&self) -> bool {
+        self.field_kind == FieldKind::Password
+    }
+
+    /// Draft text safe to display, with one mask character per hidden character.
+    #[must_use]
+    pub fn displayed_draft(&self) -> String {
+        if !self.password_field_active() {
+            return self.draft.clone();
+        }
+        self.draft
+            .char_indices()
+            .map(|(index, character)| {
+                if self
+                    .revealed
+                    .as_ref()
+                    .is_some_and(|(range, _)| range.contains(&index))
+                {
+                    character
+                } else {
+                    '*'
+                }
+            })
+            .collect()
+    }
+
     /// Byte offset of the caret in the draft.
     #[must_use]
     pub const fn caret(&self) -> usize {
@@ -282,13 +373,21 @@ impl Keyboard {
 
     #[must_use]
     pub const fn symbols(&self) -> bool {
-        matches!(self.layer, Layer::Symbols)
+        matches!(self.layer, Layer::Symbols { .. })
     }
 
     /// The keys of the current layer, top row first.
     #[must_use]
     pub const fn rows(&self) -> &'static Rows {
-        if self.symbols() { &SYMBOLS } else { &LETTERS }
+        if self.symbols() {
+            &SYMBOLS
+        } else {
+            match self.field_kind {
+                FieldKind::Url => &URL,
+                FieldKind::Email => &EMAIL,
+                FieldKind::Normal | FieldKind::Password => &LETTERS,
+            }
+        }
     }
 
     #[must_use]
@@ -368,10 +467,8 @@ impl Keyboard {
                     character
                 };
                 self.type_text(character.encode_utf8(&mut [0; 4]));
-                if self.shifted() {
-                    self.layer = Layer::Letters;
-                }
             }
+            Some(Key::Text(text)) => self.type_text(text),
             Some(Key::Shift) => {
                 self.layer = if self.shifted() {
                     Layer::Letters
@@ -391,10 +488,11 @@ impl Keyboard {
     }
 
     fn toggle_symbols(&mut self) {
-        self.layer = if self.symbols() {
-            Layer::Letters
-        } else {
-            Layer::Symbols
+        self.layer = match self.layer {
+            Layer::Letters => Layer::Symbols { capitals: false },
+            Layer::Capitals => Layer::Symbols { capitals: true },
+            Layer::Symbols { capitals: false } => Layer::Letters,
+            Layer::Symbols { capitals: true } => Layer::Capitals,
         };
         self.clamp_highlight();
     }
@@ -411,6 +509,12 @@ impl Keyboard {
 
     /// Advances D-pad hold-repeat.
     pub fn tick(&mut self, elapsed: Duration) {
+        if let Some((_, remaining)) = &mut self.revealed {
+            *remaining = remaining.saturating_sub(elapsed);
+            if remaining.is_zero() {
+                self.revealed = None;
+            }
+        }
         let Some((direction, mut remaining)) = self.repeat else {
             return;
         };
@@ -440,6 +544,9 @@ impl Keyboard {
 
     /// Inserts dictated text at the caret, or over the picked word, keeping words apart.
     pub fn dictate(&mut self, text: &str) {
+        if self.password_field_active() {
+            return;
+        }
         let text = text.trim();
         if text.is_empty() {
             return;
@@ -465,9 +572,16 @@ impl Keyboard {
         }
         self.draft.insert_str(self.caret, text);
         self.caret = self.caret.saturating_add(text.len());
+        self.revealed = text.char_indices().next_back().map(|(index, _)| {
+            (
+                self.caret.saturating_sub(text.len()).saturating_add(index)..self.caret,
+                Duration::from_millis(1500),
+            )
+        });
     }
 
     fn backspace(&mut self) {
+        self.revealed = None;
         if let Some(word) = self.word.take() {
             self.draft.replace_range(word.clone(), "");
             self.caret = word.start;
