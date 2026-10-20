@@ -10,6 +10,9 @@ use std::collections::VecDeque;
 
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
+mod mouse;
+pub use mouse::{PointerButton, Sticks};
+
 use crate::plugin::{Rejection, RequestKey};
 use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
@@ -35,6 +38,7 @@ pub enum Input {
         plugin: usize,
     },
     ControllerDisconnected,
+    Sticks(Sticks),
     /// Reply to [`Effect::QueryPlugin`].
     PluginActive(bool),
     /// Reply to [`Effect::DispatchPlugin`].
@@ -53,6 +57,21 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    /// Relative motion in millionths of a logical pixel.
+    MovePointer {
+        x: i32,
+        y: i32,
+    },
+    /// Continuous axis distances in millionths of a logical pixel.
+    Scroll {
+        x: i32,
+        y: i32,
+    },
+    Click {
+        button: PointerButton,
+        pressed: bool,
+    },
+    MouseMode(bool),
     /// Query: sample time after Focus actions. Reply [`Input::ClockRead`].
     ReadClock,
     /// A missing or mismatched query reply aborted the waiting frame.
@@ -106,6 +125,7 @@ pub enum Effect {
 enum Task {
     ReadClock,
     Route(Event),
+    Controller(Event),
     Supervise,
     SouthPressed(bool),
     ResetSecretFocus,
@@ -142,6 +162,7 @@ struct Frame {
 pub struct State {
     core: crate::State,
     speech: SpeechState,
+    mouse: mouse::State,
     frames: Vec<Frame>,
 }
 
@@ -151,6 +172,7 @@ impl State {
         Self {
             core,
             speech: SpeechState::default(),
+            mouse: mouse::State::default(),
             frames: Vec::new(),
         }
     }
@@ -196,25 +218,7 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
     }
     let mut tasks: Vec<Task> = tick_tasks(elapsed).into();
     tasks.push(Task::Supervise);
-    match event {
-        Event::Button {
-            name: ButtonName::Record,
-            state,
-        } => tasks.push(Task::Speech(match state {
-            ButtonState::Pressed => SpeechInput::Press,
-            ButtonState::Released => SpeechInput::Release,
-        })),
-        Event::Button {
-            name: ButtonName::South,
-            state,
-        } => {
-            tasks.push(Task::SouthPressed(state == ButtonState::Pressed));
-            tasks.push(Task::ConfirmSecret(state, event));
-        }
-        Event::Button { .. } | Event::Speech { .. } | Event::Focus { .. } | Event::Tick { .. } => {
-            tasks.push(Task::Route(event));
-        }
-    }
+    tasks.push(Task::Controller(event));
     tasks
 }
 
@@ -235,7 +239,12 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             effects.extend(rejection.map(Effect::PluginRejected));
             return (state, effects);
         }
+        Input::Sticks(sticks) => {
+            state.mouse.sticks = sticks;
+            return (state, effects);
+        }
         Input::ControllerDisconnected => {
+            state.mouse.disconnect(&mut effects);
             state.core.controller_disconnected();
             return (state, effects);
         }
@@ -389,7 +398,18 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
             effects.push(Effect::ReadClock);
             frame.awaiting = Some(Await::ClockRead);
         }
+        Task::Controller(event) => controller(state, event, effects),
         Task::Route(event) => {
+            if let Event::Tick { elapsed } = event
+                && state.mouse.tick(elapsed, effects)
+            {
+                for button in [ButtonState::Released, ButtonState::Pressed] {
+                    frame.tasks.push_front(Task::Route(Event::Button {
+                        name: ButtonName::Select,
+                        state: button,
+                    }));
+                }
+            }
             effects.push(Effect::QueryPlugin(event.clone()));
             frame.awaiting = Some(Await::PluginActive(event));
         }
@@ -428,6 +448,45 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
                 frame.awaiting = Some(Await::SpeechSent);
             }
         },
+    }
+}
+
+fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    let Some(frame) = state.frames.last_mut() else {
+        return;
+    };
+    if state.mouse.button(&event, effects) {
+        if effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::MouseMode(_)))
+        {
+            frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
+        }
+        if let Some(actions) = crate::escape_chord(&mut state.core, &event) {
+            effects.extend(actions.into_iter().map(Effect::Apply));
+        }
+        return;
+    }
+    match event {
+        Event::Button {
+            name: ButtonName::Record,
+            state: button,
+        } => frame.tasks.push_front(Task::Speech(match button {
+            ButtonState::Pressed => SpeechInput::Press,
+            ButtonState::Released => SpeechInput::Release,
+        })),
+        Event::Button {
+            name: ButtonName::South,
+            state: button,
+        } => {
+            frame.tasks.push_front(Task::ConfirmSecret(button, event));
+            frame
+                .tasks
+                .push_front(Task::SouthPressed(button == ButtonState::Pressed));
+        }
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
+            frame.tasks.push_front(Task::Route(event));
+        }
     }
 }
 
