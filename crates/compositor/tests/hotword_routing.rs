@@ -26,7 +26,7 @@ mod hotword_routing {
         let opener = root.join("xdg-open");
         std::fs::write(
             &opener,
-            "#!/bin/sh\nprintf '%s\\n' \"$WAYLAND_DISPLAY\" \"$@\" > \"$TEHUTI_TEST_ROOT/opened\"\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$WAYLAND_DISPLAY\" \"$@\" > \"$TEHUTI_TEST_ROOT/opening\"\n/bin/mv \"$TEHUTI_TEST_ROOT/opening\" \"$TEHUTI_TEST_ROOT/opened\"\n",
         )
         .unwrap();
         std::fs::set_permissions(opener, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -97,10 +97,12 @@ mod hotword_routing {
 from pathlib import Path
 root=Path(os.environ['TEHUTI_TEST_ROOT'])
 print('{"ready":true}',flush=True)
+(root/'ready').touch()
 for line in sys.stdin:
     command=json.loads(line)
     if 'start' in command:
-        (root/'captured').write_text(json.dumps(command['hotwords']))
+        (root/'capturing').write_text(json.dumps(command['hotwords']))
+        (root/'capturing').replace(root/'captured')
     if 'stop' in command:
         (root/'stopped').write_text('done')
 "#;
@@ -110,17 +112,9 @@ for line in sys.stdin:
             "-c".into(),
             source.into(),
         ]));
-        let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
-        loop {
-            tick(&mut compositor);
-            press(&mut compositor, ButtonState::Pressed);
-            if root.join("captured").exists() {
-                break;
-            }
-            press(&mut compositor, ButtonState::Released);
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_for(&mut compositor, &root.join("ready"), 3);
+        tick(&mut compositor);
+        press(&mut compositor, ButtonState::Pressed);
         compositor.reload_contexts(Ok(vec![]));
         std::fs::write(root.join("tehuti/vocabulary.txt"), "Changed\n").unwrap();
         press(&mut compositor, ButtonState::Released);
