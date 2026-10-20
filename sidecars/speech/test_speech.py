@@ -37,7 +37,7 @@ class SpeechTests(unittest.TestCase):
             output = io.StringIO()
             try:
                 with contextlib.redirect_stdout(output):
-                    speech.start(7)
+                    speech.start(7, ["atlas", "browser"])
                     time.sleep(0.1)
                     self.assertIsNone(speech.capture.poll(), "capture remains running while held")
                     speech.stop(7, True)
@@ -47,7 +47,9 @@ class SpeechTests(unittest.TestCase):
                 self.assertEqual(json.loads(output.getvalue()), {"session": 7, "text": "confirm"})
                 self.assertEqual(model.format, (16000, 1, 2))
                 self.assertEqual(model.samples, b"\x00\x10" * 320)
-                self.assertEqual(model.options, {"beam_size": 5, "language": "en", "vad_filter": True})
+                self.assertEqual(model.options, {"beam_size": 5, "language": "en", "vad_filter": True,
+                                                       "initial_prompt": "atlas, browser",
+                                                       "hotwords": "atlas, browser"})
             finally:
                 speech.close()
                 os.environ["PATH"] = previous_path
@@ -165,6 +167,21 @@ class SpeechTests(unittest.TestCase):
                 finally:
                     speech.close()
                     os.environ["PATH"] = previous_path
+
+    def test_start_command_passes_validated_hotwords(self):
+        class Capture:
+            def start(self, session, hotwords):
+                self.started = (session, hotwords)
+            def close(self):
+                pass
+        capture = Capture()
+        with contextlib.redirect_stdout(io.StringIO()):
+            module.run(io.StringIO('{"start":3,"hotwords":["atlas","web browser"]}\n'), capture)
+        self.assertEqual(capture.started, (3, ["atlas", "web browser"]))
+        for words in [[1], [""], ["bad\x00word"], "atlas"]:
+            with self.subTest(words=words), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(ValueError):
+                    module.run(io.StringIO(json.dumps({"start": 3, "hotwords": words}) + "\n"), capture)
 
     def test_invalid_command_cancels_capture_on_transport_exit(self):
         class Capture:

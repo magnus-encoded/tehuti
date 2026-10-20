@@ -149,6 +149,7 @@ pub fn validate_actions(actions: Vec<Action>, permissions: &[Permission]) -> Res
             Action::Text { .. } => ("text", Some(Permission::Text)),
             Action::Quit => ("quit", Some(Permission::Quit)),
             Action::SecretRequest { .. } => ("secret_request", None),
+            Action::OpenPath { .. } => ("open_path", None),
             Action::Launch { .. } => ("launch", None),
             Action::Close => ("close", None),
             Action::Notice { .. } => ("notice", None),

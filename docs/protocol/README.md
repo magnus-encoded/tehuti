@@ -361,3 +361,31 @@ the core requests Quit and terminates the plugin during teardown.
 For a runnable button remapping plugin, see
 [east-to-tab.py](../../examples/plugins/east-to-tab.py). No Tehuti library is
 required: use your language's JSON library and line input/output.
+
+## Context hotwords
+
+`context.toml` accepts `[hotwords]` in application and `app_id = "*"` contexts:
+
+```toml
+[hotwords]
+apps = false
+browser = { app = "firefox.desktop" }
+atlas = { path = "~/Documents/atlas" }
+accept = { action = "confirm" }
+```
+
+Each entry has exactly one target field. `app` names a `.desktop` id, `path`
+names a file or directory for its default handler, and `action` references a
+`[speech]` mapping in the same file. HOME expands `~` and `~/` at load time.
+Explicit names normalize like speech phrases and must contain one word;
+normalized duplicates and unresolved action references reject the context.
+`apps` is reserved for an optional boolean (default true) controlling installed
+`.desktop` Names and GenericNames. Focused hotwords override global hotwords,
+which override the installed set. The focused `apps` switch inherits the global
+value when omitted. Explicit targets survive disabling the built-in set.
+
+Context routing matches a hotword alone or after “open”, before speech mappings
+and unmatched dictation. The effective vocabulary primes Whisper at capture
+start. The core-only `open_path` action carries a validated `path` string;
+plugins cannot submit it. See [contexts](../contexts.md#hotwords) for generator
+flags, merge rules and examples.

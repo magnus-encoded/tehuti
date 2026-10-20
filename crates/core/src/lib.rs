@@ -36,6 +36,7 @@ impl Level {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     contexts: Vec<Context>,
+    app_hotwords: Vec<(String, Action)>,
     focused_app_id: Option<String>,
     guide_held: Option<core::time::Duration>,
     guide_tap: Option<core::time::Duration>,
@@ -72,6 +73,7 @@ impl State {
     pub const fn with_contexts(contexts: Vec<Context>) -> Self {
         Self {
             contexts,
+            app_hotwords: Vec::new(),
             focused_app_id: None,
             guide_held: None,
             guide_tap: None,
@@ -80,6 +82,37 @@ impl State {
             pending: Vec::new(),
             bar: bar::Bar::new(),
         }
+    }
+
+    /// Replaces the installed application names without changing contexts or focus.
+    pub fn set_app_hotwords(&mut self, hotwords: Vec<(String, Action)>) {
+        self.app_hotwords = hotwords;
+    }
+
+    /// Resolves installed apps, then global hotwords, then the focused context.
+    #[must_use]
+    pub fn hotwords(&self) -> std::collections::BTreeMap<String, Action> {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        let local = self
+            .contexts
+            .iter()
+            .find(|context| Some(context.app_id()) == self.focused_app_id.as_deref());
+        let enabled = local
+            .and_then(Context::app_hotwords)
+            .or_else(|| global.and_then(Context::app_hotwords))
+            .unwrap_or(true);
+        let mut words = std::collections::BTreeMap::new();
+        if enabled {
+            for (word, action) in &self.app_hotwords {
+                let _existing = words
+                    .entry(tehuti_protocol::normalize_phrase(word))
+                    .or_insert_with(|| action.clone());
+            }
+        }
+        for context in global.into_iter().chain(local) {
+            words.extend(context.hotwords().clone());
+        }
+        words
     }
 
     /// Resolves per-application keyboard options over the `*` global context.
@@ -229,6 +262,11 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
     if let Event::Speech { text } = event {
         if text.as_str().trim().is_empty() {
             return None;
+        }
+        let normalized = tehuti_protocol::normalize_phrase(text.as_str());
+        let target = normalized.strip_prefix("open ").unwrap_or(&normalized);
+        if let Some(action) = state.hotwords().get(target) {
+            return Some(action.clone());
         }
         return state
             .contexts

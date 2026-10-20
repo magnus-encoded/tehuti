@@ -211,6 +211,9 @@ impl Compositor {
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, contexts: Vec<tehuti_protocol::Context>) {
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
+        self.dispatch
+            .core_mut()
+            .set_app_hotwords(self.desktop_entries.hotwords().to_vec());
     }
 
     /// The installed contexts, in priority order.
@@ -582,9 +585,10 @@ impl Compositor {
             | tehuti_core::speech::SpeechEffect::Interim { .. }
             | tehuti_core::speech::SpeechEffect::Failed { .. } => {}
         }
+        let hotwords: Vec<_> = self.dispatch.core().hotwords().into_keys().collect();
         self.speech_process.as_mut().is_none_or(|process| {
             process
-                .send(command)
+                .send_with_hotwords(command, &hotwords)
                 .inspect_err(|error| tracing::warn!(%error, "speech command failed"))
                 .is_ok()
         })
@@ -662,7 +666,7 @@ impl Compositor {
             DispatchEffect::PollSources => {
                 self.poll_secret_lookup();
                 self.poll_launchers();
-                self.desktop_entries.poll();
+                self.refresh_app_hotwords();
             }
             DispatchEffect::SouthPressed(pressed) => self.secret_confirmation.south_pressed = pressed,
             DispatchEffect::ResetSecretFocus => {
@@ -970,6 +974,7 @@ impl Compositor {
                 self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
                 self.quit_requested = true;
             }
+            Action::OpenPath { path } => self.open_path(path),
             Action::Launch { desktop_entry } => self.launch_application(desktop_entry),
             Action::Close => {
                 if let Some(identity) = self.layout.snapshot().focused_window {
@@ -1276,6 +1281,31 @@ impl Compositor {
                 tracing::warn!(%error, "window removal failed");
             }
             self.place_layout();
+        }
+    }
+
+    fn refresh_app_hotwords(&mut self) {
+        if self.desktop_entries.poll() {
+            self.dispatch
+                .core_mut()
+                .set_app_hotwords(self.desktop_entries.hotwords().to_vec());
+        }
+    }
+
+    fn open_path(&mut self, path: &tehuti_protocol::Text) {
+        let result = self
+            .launch_socket
+            .as_deref()
+            .ok_or_else(|| "no compositor socket".to_owned())
+            .and_then(|socket| {
+                if self.launchers.len() >= 16 {
+                    return Err("too many launchers".into());
+                }
+                crate::desktop::open_path(path.as_str(), socket)
+            });
+        match result {
+            Ok(child) => self.launchers.push(child),
+            Err(error) => tracing::warn!(%error, "path handler failed"),
         }
     }
 

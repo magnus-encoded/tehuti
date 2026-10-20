@@ -31,7 +31,7 @@ mod desktop_cache {
         let mut cache = tehuti::desktop::EntryCache::new().unwrap();
         assert!(cache.entries().iter().any(|entry| entry == "example.desktop"));
         std::fs::remove_dir_all(applications).unwrap();
-        cache.poll();
+        let _updated = cache.poll();
         assert!(cache.entries().iter().any(|entry| entry == "example.desktop"));
     }
 }

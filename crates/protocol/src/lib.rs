@@ -158,9 +158,21 @@ pub struct Context {
     speech: std::collections::HashMap<String, MappingAction>,
     unmatched_speech: Option<UnmatchedSpeech>,
     keyboard: KeyboardConfig,
+    hotwords: std::collections::BTreeMap<String, Action>,
+    app_hotwords: Option<bool>,
 }
 
 impl Context {
+    #[must_use]
+    pub const fn hotwords(&self) -> &std::collections::BTreeMap<String, Action> {
+        &self.hotwords
+    }
+
+    #[must_use]
+    pub const fn app_hotwords(&self) -> Option<bool> {
+        self.app_hotwords
+    }
+
     #[must_use]
     pub const fn keyboard(&self) -> &KeyboardConfig {
         &self.keyboard
@@ -221,6 +233,23 @@ struct ContextFile {
     unmatched_speech: Option<UnmatchedSpeech>,
     #[serde(default)]
     keyboard: KeyboardConfig,
+    #[serde(default)]
+    hotwords: std::collections::BTreeMap<String, Hotword>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum Hotword {
+    Enabled(bool),
+    Target(HotwordTarget),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, untagged)]
+enum HotwordTarget {
+    App { app: Text },
+    Path { path: Text },
+    Action { action: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -290,13 +319,75 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
             ));
         }
     }
+    let (hotwords, app_hotwords) = parse_hotwords(context.hotwords, &speech)?;
     Ok(Context {
         app_id: context.app_id,
         buttons: context.buttons,
         speech,
         unmatched_speech: context.unmatched_speech,
         keyboard: context.keyboard,
+        hotwords,
+        app_hotwords,
     })
+}
+
+type HotwordActions = std::collections::BTreeMap<String, Action>;
+
+fn parse_hotwords(
+    entries: std::collections::BTreeMap<String, Hotword>,
+    speech: &std::collections::HashMap<String, MappingAction>,
+) -> Result<(HotwordActions, Option<bool>), String> {
+    let mut hotwords = std::collections::BTreeMap::new();
+    let mut app_hotwords = None;
+    for (word, target) in entries {
+        let normalized = normalize_phrase(&word);
+        if normalized == "apps" {
+            let Hotword::Enabled(enabled) = target else {
+                return Err("hotwords.apps must be a boolean".into());
+            };
+            if app_hotwords.replace(enabled).is_some() {
+                return Err("duplicate apps switch".into());
+            }
+            continue;
+        }
+        if normalized.split_whitespace().count() != 1 {
+            return Err(format!("hotword {word:?} must be one spoken word"));
+        }
+        let action = match target {
+            Hotword::Target(HotwordTarget::App { app }) => {
+                if !app.as_str().ends_with(".desktop")
+                    || app.as_str().contains('/')
+                    || app.as_str().starts_with('-')
+                {
+                    return Err("hotword app must be a .desktop id".into());
+                }
+                Action::Launch { desktop_entry: app }
+            }
+            Hotword::Target(HotwordTarget::Path { path }) => {
+                if path.as_str().trim().is_empty() {
+                    return Err("hotword path must not be empty".into());
+                }
+                let expanded = if path.as_str() == "~" || path.as_str().starts_with("~/") {
+                    let home = std::env::var("HOME").map_err(|_| "HOME is required for ~ paths")?;
+                    format!("{home}{}", path.as_str().strip_prefix('~').unwrap_or_default())
+                } else {
+                    path.as_str().to_owned()
+                };
+                Action::OpenPath {
+                    path: Text::new(expanded)?,
+                }
+            }
+            Hotword::Target(HotwordTarget::Action { action }) => speech
+                .get(&normalize_phrase(&action))
+                .map(MappingAction::action)
+                .ok_or_else(|| format!("unknown speech action {action:?}"))?,
+            Hotword::Enabled(_) => return Err("only hotwords.apps accepts a boolean".into()),
+        };
+        if hotwords.insert(normalized, action).is_some() {
+            return Err(format!("duplicate normalized hotword {word:?}"));
+        }
+    }
+    Ok((hotwords, app_hotwords))
 }
 
 /// What the core asks its edges to do.
@@ -306,6 +397,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 pub enum Action {
     /// Launch an installed desktop entry.
     Launch { desktop_entry: Text },
+    /// Open a path through its default handler.
+    OpenPath { path: Text },
     /// Close the focused client and focus the most recently mapped remaining window.
     Close,
     /// Press and release `key` in the focused client.

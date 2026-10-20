@@ -92,3 +92,62 @@ button follows normal routing. Mouse mode uses the same button. `"open"` opens
 once per field. After B closes it, ordinary field updates keep it closed until
 the client enables another field. `"off"` disables field opening. Saying
 "keyboard" remains available in every application. See `examples/global/context.toml`.
+
+## Hotwords
+
+A hotword is one spoken word mapped to an application, path, or existing speech
+mapping in the same file. It works alone or after “open”. Installed applications
+supply a built-in set from their `.desktop` Name and GenericName, including names
+with several words. No alias phrases are generated.
+
+```toml
+app_id = "org.example.Editor"
+
+[buttons]
+
+[speech]
+confirm = { key = "enter" }
+
+[hotwords]
+apps = true
+browser = { app = "firefox.desktop" }
+atlas = { path = "~/Documents/atlas" }
+accept = { action = "confirm" }
+```
+
+App targets are `.desktop` ids. Path targets open files or directories through
+their default handler; `~` and `~/` expand using HOME when the context loads.
+Relative paths resolve from the compositor's working directory. Action targets
+name an existing `[speech]` mapping; missing references reject the file.
+Hotwords use the same normalization as speech mappings. Empty names, names with
+several words, duplicate normalized names, and targets with several fields are
+rejected. `apps` is reserved for the built-in set switch.
+
+Hotwords in the first `app_id = "*"` context apply everywhere. The focused
+context overrides matching global hotwords; both override installed app names.
+Other global words remain available. `apps = false` disables the installed set;
+a focused context inherits this switch unless it supplies its own value.
+Explicit app targets still work with the installed set disabled. Hotwords run
+before speech mappings and unmatched dictation in context routing. Plugin speech
+routing and the on-screen keyboard retain their priority.
+
+The effective vocabulary primes Whisper for both interim and final transcription.
+It is captured when Record is pressed, so a reload cannot change an in-flight
+session's vocabulary. Desktop entries refresh every thirty seconds.
+
+Run `python3 scripts/new-context.py` to choose a name, application match and
+starter app or path hotwords. The installed id list marks processes whose names
+match an id as possibly running; the exact window app id remains your input.
+The script creates `~/.config/tehuti/<name>/context.toml` by default
+(or beneath XDG_CONFIG_HOME). It honors TEHUTI_CONTEXT_DIRECTORY and refuses to
+overwrite an existing file. Pass `--contexts-dir` to use the directory supplied
+to `tehuti`.
+
+```sh
+python3 scripts/new-context.py --name atlas --app-id org.example.Editor \
+  --hotword 'atlas=path:~/Documents/atlas' \
+  --hotword browser=app:firefox.desktop --dry-run
+```
+
+`--dry-run` prints TOML without writing. Omit it to create the file. `--no-apps`
+disables the installed set. Add action references after defining speech mappings.
