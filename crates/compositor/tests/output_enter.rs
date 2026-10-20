@@ -170,7 +170,7 @@ mod output_enter {
     }
 
     #[test]
-    fn the_surface_enters_its_output_before_the_first_configure() {
+    fn version_six_clients_receive_scale_then_done_then_enter_before_configure() {
         check_scale_delivery(6);
     }
 

@@ -32,3 +32,6 @@ tehuti-protocol = { path = "../protocol", features = ["arbitrary"] }
 toml = "1.1"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+
+[build-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
