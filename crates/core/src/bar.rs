@@ -25,19 +25,22 @@ pub struct Segment {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bar {
     context: Option<String>,
+    agents: Vec<String>,
     feedback: Option<Segment>,
     remaining: Option<Duration>,
     pub(crate) generation: u64,
 }
 
-const AGENTS: [&str; 2] = ["Claude", "Codex"];
-
 /// The chip text for a focused window. A window titled by its agent launcher
-/// (`Claude`, or `Claude: <project>`) shows the agent or the project; every
+/// (`agent`, or `agent: <project>`) shows the agent or the project; every
 /// other window shows its app id.
 #[must_use]
-pub fn context_label(app_id: Option<&str>, title: &str) -> Option<String> {
-    for agent in AGENTS {
+pub fn context_label(app_id: Option<&str>, title: &str, agents: &[String]) -> Option<String> {
+    for agent in agents
+        .iter()
+        .map(String::as_str)
+        .filter(|agent| !agent.is_empty())
+    {
         if title == agent {
             return Some(agent.into());
         }
@@ -58,10 +61,15 @@ impl Bar {
     pub const fn new() -> Self {
         Self {
             context: None,
+            agents: Vec::new(),
             feedback: None,
             remaining: None,
             generation: 0,
         }
+    }
+
+    pub(crate) fn set_agents(&mut self, agents: Vec<String>) {
+        self.agents = agents;
     }
 
     #[must_use]
@@ -78,7 +86,7 @@ impl Bar {
         match event {
             Event::Focus { app_id, title } => {
                 self.generation = self.generation.saturating_add(1);
-                self.context = context_label(app_id.as_deref(), title);
+                self.context = context_label(app_id.as_deref(), title, &self.agents);
                 self.feedback = None;
                 self.remaining = None;
             }
