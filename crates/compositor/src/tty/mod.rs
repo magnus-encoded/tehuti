@@ -46,6 +46,26 @@ struct Tty {
     retry_delay: Duration,
 }
 
+fn insert_device_watch(
+    event_loop: &EventLoop<LoopData>,
+    udev: UdevBackend,
+    device_id: libc::dev_t,
+) -> Result<(), Box<dyn Error>> {
+    let device_stop = event_loop.get_signal();
+    let _udev_token = event_loop
+        .handle()
+        .insert_source(udev, move |event, (), _| match event {
+            UdevEvent::Changed { device_id: changed } | UdevEvent::Removed { device_id: changed }
+                if changed == device_id =>
+            {
+                warn!("DRM device changed; switching to Plasma");
+                device_stop.stop();
+            }
+            UdevEvent::Added { .. } | UdevEvent::Changed { .. } | UdevEvent::Removed { .. } => {}
+        })?;
+    Ok(())
+}
+
 #[expect(
     clippy::redundant_pub_crate,
     reason = "conflicts with the workspace unreachable_pub lint"
@@ -86,19 +106,7 @@ pub(crate) fn insert(
                 flip_stop.stop();
             }
         })?;
-    let device_id = tty.borrow().device.device_id();
-    let device_stop = event_loop.get_signal();
-    let _udev_token = event_loop
-        .handle()
-        .insert_source(udev, move |event, (), _| match event {
-            UdevEvent::Changed { device_id: changed } | UdevEvent::Removed { device_id: changed }
-                if changed == device_id =>
-            {
-                warn!("DRM device changed; switching to Plasma");
-                device_stop.stop();
-            }
-            UdevEvent::Added { .. } | UdevEvent::Changed { .. } | UdevEvent::Removed { .. } => {}
-        })?;
+    insert_device_watch(event_loop, udev, tty.borrow().device.device_id())?;
     insert_wallpaper_redraw(event_loop, tty.clone())?;
     let render_stop = event_loop.get_signal();
     let _timer_token = event_loop
