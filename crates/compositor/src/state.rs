@@ -523,7 +523,7 @@ impl Compositor {
     }
 
     /// Feeds one input and every reply it asks for until its frame finishes.
-    fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+    pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
         let depth = self.dispatch.busy();
         let mut input = input;
         let mut rejection = None;
@@ -1595,6 +1595,10 @@ impl SeatHandler for Compositor {
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         self.text_input.focus(focused.cloned());
+        let _rejection = self.dispatch(DispatchInput::TextField {
+            active: false,
+            changed: false,
+        });
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}

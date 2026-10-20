@@ -58,9 +58,13 @@ impl proptest::arbitrary::Arbitrary for Text {
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 #[serde(rename_all = "snake_case")]
 pub enum ButtonName {
+    #[serde(alias = "A")]
     South,
+    #[serde(alias = "B")]
     East,
+    #[serde(alias = "Y")]
     North,
+    #[serde(alias = "X")]
     West,
     LeftBumper,
     RightBumper,
@@ -129,6 +133,23 @@ impl KeyName {
     }
 }
 
+/// How a context responds to an enabled text field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnTextField {
+    Open,
+    Button,
+    Off,
+}
+
+/// Optional overrides of the global keyboard policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyboardConfig {
+    pub on_text_field: Option<OnTextField>,
+    pub button: Option<ButtonName>,
+}
+
 /// An exact application-id match and its pressed-button mappings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
@@ -136,9 +157,15 @@ pub struct Context {
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, MappingAction>,
     unmatched_speech: Option<UnmatchedSpeech>,
+    keyboard: KeyboardConfig,
 }
 
 impl Context {
+    #[must_use]
+    pub const fn keyboard(&self) -> &KeyboardConfig {
+        &self.keyboard
+    }
+
     #[must_use]
     pub fn app_id(&self) -> &str {
         &self.app_id
@@ -192,6 +219,8 @@ struct ContextFile {
     speech: std::collections::HashMap<String, MappingAction>,
     #[serde(default)]
     unmatched_speech: Option<UnmatchedSpeech>,
+    #[serde(default)]
+    keyboard: KeyboardConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -238,6 +267,12 @@ impl MappingAction {
 /// phrase normalizes to nothing or to the same phrase as another mapping.
 pub fn parse_context(source: &str) -> Result<Context, String> {
     let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
+    if matches!(
+        context.keyboard.button,
+        Some(ButtonName::Guide | ButtonName::Record)
+    ) {
+        return Err("keyboard button cannot reserve Guide or Record".into());
+    }
     if context.app_id.trim().is_empty() {
         return Err("app_id must not be empty".into());
     }
@@ -260,6 +295,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         buttons: context.buttons,
         speech,
         unmatched_speech: context.unmatched_speech,
+        keyboard: context.keyboard,
     })
 }
 

@@ -1,0 +1,7 @@
+app_id = "*"
+
+[buttons]
+
+[keyboard]
+on_text_field = "button"
+button = "Y"

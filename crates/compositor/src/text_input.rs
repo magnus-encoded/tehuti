@@ -29,6 +29,8 @@ struct Instance {
     pending_enabled: Option<bool>,
     enabled: bool,
     serial: u32,
+    terminal: bool,
+    pending_terminal: Option<bool>,
 }
 
 impl TextInput {
@@ -46,6 +48,8 @@ impl TextInput {
             }
             instance.enabled = false;
             instance.pending_enabled = None;
+            instance.terminal = false;
+            instance.pending_terminal = None;
             if let Some(surface) = &focus
                 && instance.resource.id().same_client_as(&surface.id())
             {
@@ -115,6 +119,8 @@ impl Dispatch<ZwpTextInputManagerV3, ()> for Compositor {
                 pending_enabled: None,
                 enabled: false,
                 serial: 0,
+                terminal: false,
+                pending_terminal: None,
             });
         }
     }
@@ -135,6 +141,12 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
             .focus
             .as_ref()
             .is_some_and(|surface| resource.id().same_client_as(&surface.id()));
+        let another_enabled = state
+            .text_input
+            .instances
+            .iter()
+            .any(|instance| instance.resource != *resource && instance.enabled);
+        let mut field = None;
         if let Some(instance) = state
             .text_input
             .instances
@@ -142,13 +154,31 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
             .find(|instance| instance.resource == *resource)
         {
             match request {
-                zwp_text_input_v3::Request::Enable if focused => instance.pending_enabled = Some(true),
+                zwp_text_input_v3::Request::Enable if focused && !another_enabled => {
+                    instance.pending_enabled = Some(true);
+                    instance.pending_terminal = Some(false);
+                }
                 zwp_text_input_v3::Request::Disable => instance.pending_enabled = Some(false),
                 zwp_text_input_v3::Request::Commit => {
                     instance.serial = instance.serial.wrapping_add(1);
+                    let changed = instance.pending_enabled == Some(true);
+                    if let Some(terminal) = instance.pending_terminal.take() {
+                        instance.terminal = terminal;
+                    }
                     if let Some(enabled) = instance.pending_enabled.take() {
                         instance.enabled = enabled && focused;
                     }
+                    if focused && !another_enabled {
+                        field = Some((instance.enabled && !instance.terminal, changed));
+                    }
+                }
+                zwp_text_input_v3::Request::SetContentType { purpose, .. } if focused => {
+                    instance.pending_terminal = Some(
+                        purpose
+                            == smithay::reexports::wayland_server::WEnum::Value(
+                                zwp_text_input_v3::ContentPurpose::Terminal,
+                            ),
+                    );
                 }
                 zwp_text_input_v3::Request::Destroy
                 | zwp_text_input_v3::Request::Enable
@@ -162,6 +192,9 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
                 _ => tracing::warn!("unsupported text-input request"),
             }
         }
+        if let Some((active, changed)) = field {
+            let _rejection = state.dispatch(tehuti_core::dispatch::Input::TextField { active, changed });
+        }
     }
 
     fn destroyed(
@@ -170,9 +203,20 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
         resource: &ZwpTextInputV3,
         (): &(),
     ) {
+        let was_enabled = state
+            .text_input
+            .instances
+            .iter()
+            .any(|instance| instance.resource == *resource && instance.enabled);
         state
             .text_input
             .instances
             .retain(|instance| instance.resource != *resource);
+        if was_enabled {
+            let _rejection = state.dispatch(tehuti_core::dispatch::Input::TextField {
+                active: false,
+                changed: false,
+            });
+        }
     }
 }
