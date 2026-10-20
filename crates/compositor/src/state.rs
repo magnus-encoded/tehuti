@@ -132,6 +132,10 @@ impl Compositor {
     ///
     /// # Errors
     /// The keyboard keymap fails to load or the desktop entry worker cannot start.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat list of Wayland globals; splitting hides the setup order"
+    )]
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");

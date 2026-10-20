@@ -514,7 +514,7 @@ fn voice_bar_follows_capture_routing_and_expiry_through_dispatch() {
             elapsed: crate::bar::RESULT_LIFETIME,
         },
     );
-    assert_eq!(state.core().bar().segments().len(), 1);
+    assert_eq!(state.core().bar().segments().len(), 2, "context and level chips");
 }
 
 #[test]
@@ -538,10 +538,16 @@ fn focus_clears_voice_bar_and_rejects_old_capture_through_dispatch() {
     );
     assert_eq!(
         state.core().bar().segments(),
-        vec![crate::bar::Segment {
-            text: "new".into(),
-            tone: crate::bar::Tone::Context,
-        }]
+        vec![
+            crate::bar::Segment {
+                text: "new".into(),
+                tone: crate::bar::Tone::Context,
+            },
+            crate::bar::Segment {
+                text: "App".into(),
+                tone: crate::bar::Tone::Context,
+            }
+        ]
     );
 }
 
@@ -832,4 +838,23 @@ proptest! {
         let _state = world.run(state, Input::Tick { elapsed: Duration::from_secs(3) });
         prop_assert!(world.trace.contains(&Effect::Apply(Action::Quit)), "escape remains reachable");
     }
+}
+
+#[test]
+fn guide_tap_switches_level_inside_mouse_mode() {
+    let mut world = World::default();
+    let mut state = State::default();
+    for button in [
+        ButtonState::Pressed,
+        ButtonState::Released,
+        ButtonState::Pressed,
+        ButtonState::Released,
+    ] {
+        state = world.run(state, pad_button(ButtonName::Select, button));
+    }
+    assert!(world.trace.contains(&Effect::MouseMode(true)));
+    for button in [ButtonState::Pressed, ButtonState::Released] {
+        state = world.run(state, pad_button(ButtonName::Guide, button));
+    }
+    assert_eq!(state.core().level(), crate::Level::Columns);
 }
