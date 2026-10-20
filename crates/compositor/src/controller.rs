@@ -278,6 +278,11 @@ mod tests {
             [button(ButtonName::DpadDown, ButtonState::Released)]
         );
         assert_eq!(pad.translate(&hat(x, 0)), [], "release without press");
+        assert_eq!(
+            pad.translate(&hat(x, 5)),
+            [button(ButtonName::DpadRight, ButtonState::Pressed)],
+            "any positive value presses"
+        );
     }
 
     #[test]
