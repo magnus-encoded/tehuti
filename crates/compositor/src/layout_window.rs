@@ -1,5 +1,5 @@
 //! Assigned layout geometry stays independent of client resize commits.
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use smithay::{
@@ -9,10 +9,15 @@ use smithay::{
     utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
 };
 
+type Deferred = (Output, Rectangle<i32, Logical>);
+
 #[derive(Debug, Clone)]
 pub struct LayoutWindow {
     window: Window,
     size: Rc<Cell<Size<i32, Logical>>>,
+    /// Output overlaps reported while the surface had no buffer yet.
+    size_held: Rc<Cell<bool>>,
+    deferred: Rc<RefCell<Vec<Deferred>>>,
 }
 
 impl LayoutWindow {
@@ -20,7 +25,39 @@ impl LayoutWindow {
         Self {
             window,
             size: Rc::new(Cell::new(Size::default())),
+            size_held: Rc::new(Cell::new(false)),
+            deferred: Rc::new(RefCell::new(Vec::new())),
         }
+    }
+
+    /// Smithay's output tracking sends `wl_surface.leave` for a surface that
+    /// has no buffer yet, which would undo the early enter that clients such
+    /// as mpv need to size their first buffer. Hold overlaps back until mapped.
+    pub fn layout_size(&self) -> Size<i32, Logical> {
+        self.size.get()
+    }
+
+    /// Whether the size hint in the first configure is being withheld.
+    pub fn size_held(&self) -> bool {
+        self.size_held.get()
+    }
+
+    pub fn hold_size(&self, held: bool) {
+        self.size_held.set(held);
+    }
+
+    pub fn mapped(&self) -> bool {
+        use smithay::wayland::seat::WaylandFocus;
+        self.window.wl_surface().is_some_and(|surface| {
+            smithay::backend::renderer::utils::with_renderer_surface_state(surface.as_ref(), |state| {
+                state.buffer().is_some()
+            })
+            .unwrap_or(false)
+        })
+    }
+
+    pub fn client_size(&self) -> Size<i32, Logical> {
+        self.window.geometry().size
     }
 
     pub fn set_size(&self, size: Size<i32, Logical>) {
@@ -72,14 +109,28 @@ impl SpaceElement for LayoutWindow {
     }
 
     fn output_enter(&self, output: &Output, overlap: Rectangle<i32, Logical>) {
-        self.window.output_enter(output, overlap);
+        if self.mapped() {
+            self.window.output_enter(output, overlap);
+        } else {
+            let mut deferred = self.deferred.borrow_mut();
+            deferred.retain(|(held, _)| held != output);
+            deferred.push((output.clone(), overlap));
+        }
     }
 
     fn output_leave(&self, output: &Output) {
+        self.deferred.borrow_mut().retain(|(held, _)| held != output);
         self.window.output_leave(output);
     }
 
     fn refresh(&self) {
+        if !self.mapped() {
+            return;
+        }
+        let deferred = core::mem::take(&mut *self.deferred.borrow_mut());
+        for (output, overlap) in deferred {
+            self.window.output_enter(&output, overlap);
+        }
         self.window.refresh();
     }
 }

@@ -5,6 +5,9 @@ use smithay::{
     utils::Transform,
 };
 
+/// Most lines a notice draws; the system menu needs a title and eight items.
+const MAX_LINES: usize = 10;
+
 #[must_use]
 pub fn speech_notice_buffer() -> MemoryRenderBuffer {
     notice_buffer("NO SPEECH MAPPING")
@@ -13,12 +16,13 @@ pub fn speech_notice_buffer() -> MemoryRenderBuffer {
 #[must_use]
 pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
     let width = 512usize;
-    let height = 64usize;
+    let lines = text.lines().take(MAX_LINES).count();
+    let height = lines.saturating_mul(30).saturating_add(4).max(64);
     let mut pixels = vec![0u8; width.saturating_mul(height).saturating_mul(4)];
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[32, 32, 32, 255]);
     }
-    for (line, line_text) in text.lines().take(2).enumerate() {
+    for (line, line_text) in text.lines().take(MAX_LINES).enumerate() {
         for (letter, character) in line_text.chars().take(40).enumerate() {
             let glyph = glyph(character.to_ascii_uppercase());
             for (row, bits) in glyph.iter().enumerate() {
@@ -51,10 +55,17 @@ pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
             }
         }
     }
-    MemoryRenderBuffer::from_slice(&pixels, Fourcc::Argb8888, (512, 64), 1, Transform::Normal, None)
+    MemoryRenderBuffer::from_slice(
+        &pixels,
+        Fourcc::Argb8888,
+        (512, i32::try_from(height).unwrap_or(64)),
+        1,
+        Transform::Normal,
+        None,
+    )
 }
 
-const fn glyph(character: char) -> [u8; 7] {
+pub(crate) const fn glyph(character: char) -> [u8; 7] {
     match character {
         'N' => [17, 25, 25, 21, 19, 19, 17],
         'O' => [14, 17, 17, 17, 17, 17, 14],
@@ -80,6 +91,7 @@ const fn glyph(character: char) -> [u8; 7] {
         'K' => [17, 18, 20, 24, 20, 18, 17],
         'J' => [7, 2, 2, 2, 2, 18, 12],
         'Q' => [14, 17, 17, 17, 21, 18, 13],
+        'X' => [17, 17, 10, 4, 10, 17, 17],
         'Z' => [31, 1, 2, 4, 8, 16, 31],
         '0' => [14, 17, 19, 21, 25, 17, 14],
         '1' => [4, 12, 4, 4, 4, 4, 14],
@@ -97,7 +109,25 @@ const fn glyph(character: char) -> [u8; 7] {
         '_' => [0, 0, 0, 0, 0, 0, 31],
         '/' => [1, 2, 2, 4, 8, 8, 16],
         '@' => [14, 17, 23, 21, 23, 16, 14],
+        '>' => [16, 8, 4, 2, 4, 8, 16],
         '?' => [14, 17, 1, 2, 4, 0, 4],
         _ => [0; 7],
     }
+}
+
+#[must_use]
+pub fn cursor_buffer() -> MemoryRenderBuffer {
+    let mut pixels = vec![0_u8; 24 * 24 * 4];
+    for y in 0_usize..24 {
+        for x in 0_usize..24 {
+            if x <= y / 2 && y < 20 {
+                let color = if x == 0 || x == y / 2 || y == 19 { 0 } else { 255 };
+                let offset = y.saturating_mul(24).saturating_add(x).saturating_mul(4);
+                if let Some(pixel) = pixels.get_mut(offset..offset.saturating_add(4)) {
+                    pixel.copy_from_slice(&[color, color, color, 255]);
+                }
+            }
+        }
+    }
+    MemoryRenderBuffer::from_slice(&pixels, Fourcc::Argb8888, (24, 24), 1, Transform::Normal, None)
 }

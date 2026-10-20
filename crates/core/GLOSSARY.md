@@ -13,7 +13,9 @@
 | Fallback | The final routing layer, which discards input that earlier layers do not consume. |
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |
-| Escape chord | Holding Guide for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |
+| Escape chord | Holding Guide for three seconds to open the system menu. It consumes all Guide presses and releases before routing; an early release cancels the hold. |
+| System menu | The core-owned overlay that takes all input while open. Items: Close app, Screenshot, Lock, Log out, Restart Tehuti, Reboot, Power off, Cancel. South selects, East or Guide closes. |
+| Command | A system operation the menu chose, such as Reboot. It reaches the compositor as an effect and never crosses the plugin wire. |
 | Capture session | A core-owned speech start paired with exactly one stop, independently of sidecar I/O. |
 | Secret destination | One focused surface during one focus generation; returning to the same surface creates a different destination. |
 | Secret confirmation | A one-use controller approval bound to a named reference and secret destination, with a short expiry. |

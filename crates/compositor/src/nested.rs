@@ -1,5 +1,5 @@
 //! The winit backend: a window in the host desktop that Tehuti renders its output into.
-//! Host keyboard and pointer input on this window is ignored; only the controller drives Tehuti.
+//! Host keyboard input shares the controller gesture routes.
 
 use core::{cell::RefCell, error::Error, time::Duration};
 use std::rc::Rc;
@@ -17,7 +17,6 @@ use smithay::{
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
-    desktop::space::render_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{EventLoop, LoopSignal},
@@ -32,7 +31,6 @@ use tehuti::state::Compositor;
 use crate::LoopData;
 
 const REFRESH_MILLIHERTZ: i32 = 60_000;
-const BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 struct Nested {
     backend: Rc<RefCell<WinitGraphicsBackend<GlesRenderer>>>,
@@ -119,7 +117,15 @@ impl Nested {
             }
             WinitEvent::Redraw => self.redraw(data),
             WinitEvent::CloseRequested => self.stop.stop(),
-            WinitEvent::Input(_) | WinitEvent::Focus(_) => {}
+            WinitEvent::Input(smithay::backend::input::InputEvent::Keyboard { event }) => {
+                use smithay::backend::input::KeyboardKeyEvent;
+                data.compositor.physical_key(
+                    u32::from(event.key_code()).saturating_sub(8),
+                    event.state() == smithay::backend::input::KeyState::Pressed,
+                );
+            }
+            WinitEvent::Focus(false) => data.compositor.reset_physical_keyboard(),
+            WinitEvent::Input(_) | WinitEvent::Focus(true) => {}
         }
     }
 
@@ -151,8 +157,18 @@ impl Nested {
             self.notice = tehuti::notice::notice_buffer(text);
             self.notice_text.clone_from(text);
         }
-        let (confirmation_element_included, output_drew) =
-            self.draw_bound_output(data, visible_notice.is_some(), confirmation_pending);
+        let screenshot = data.compositor.take_screenshot_request();
+        let mut screenshot_result = None;
+        let (confirmation_element_included, output_drew) = self.draw_bound_output(
+            data,
+            visible_notice.is_some(),
+            confirmation_pending,
+            screenshot,
+            &mut screenshot_result,
+        );
+        if let Some(result) = screenshot_result {
+            data.compositor.screenshot_saved(&result);
+        }
         let submit_succeeded = match self
             .backend
             .borrow_mut()
@@ -174,6 +190,8 @@ impl Nested {
         data: &LoopData,
         visible_notice: bool,
         confirmation_pending: bool,
+        screenshot: Option<std::path::PathBuf>,
+        screenshot_result: &mut Option<std::io::Result<()>>,
     ) -> (bool, bool) {
         let mut output_drew = false;
         let mut confirmation_element_included = false;
@@ -201,28 +219,29 @@ impl Nested {
                 } else {
                     Vec::new()
                 };
-                let clock = chrono::Local::now().format("%H:%M").to_string();
-                match self
-                    .bar
-                    .element(renderer, &self.output, data.compositor.voice_bar(), &clock)
-                {
-                    Ok(Some(element)) => notices.push(element),
-                    Ok(None) => {}
-                    Err(error) => warn!(?error, "bar render failed"),
-                }
-                match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
+                add_overlays(
+                    &mut self.bar,
+                    &self.output,
+                    renderer,
+                    &data.compositor,
+                    &mut notices,
+                );
+                match tehuti::wallpaper::render_output(
                     &self.output,
                     renderer,
                     &mut framebuffer,
-                    1.0,
-                    0,
-                    [&data.compositor.space],
+                    &data.compositor,
                     &notices,
                     &mut self.damage_tracker,
-                    BACKGROUND,
                 ) {
-                    Ok(result) if result.damage.is_some() => output_drew = true,
-                    Ok(_) => {}
+                    Ok(result) => {
+                        output_drew = result.damage.is_some();
+                        if let Some(path) = screenshot {
+                            let size = output_size(&self.output);
+                            let saved = tehuti::system::capture(renderer, &framebuffer, size, &path);
+                            *screenshot_result = Some(saved);
+                        }
+                    }
                     Err(error) => warn!(?error, "render failed"),
                 }
             }
@@ -230,4 +249,39 @@ impl Nested {
         }
         (confirmation_element_included, output_drew)
     }
+}
+
+fn add_overlays(
+    bar: &mut tehuti::bar::Buffer,
+    output: &Output,
+    renderer: &mut GlesRenderer,
+    compositor: &Compositor,
+    notices: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    let clock = chrono::Local::now().format("%H:%M").to_string();
+    match bar.element(renderer, output, compositor.voice_bar(), &clock) {
+        Ok(Some(element)) => notices.push(element),
+        Ok(None) => {}
+        Err(error) => warn!(?error, "bar render failed"),
+    }
+    if let Some(location) = compositor.cursor_on(output) {
+        match MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            location,
+            &tehuti::notice::cursor_buffer(),
+            None,
+            None,
+            None,
+            Kind::Cursor,
+        ) {
+            Ok(element) => notices.insert(0, element),
+            Err(error) => warn!(?error, "cursor render failed"),
+        }
+    }
+}
+
+fn output_size(output: &Output) -> (i32, i32) {
+    output
+        .current_mode()
+        .map_or((0, 0), |mode| (mode.size.w, mode.size.h))
 }

@@ -8,11 +8,7 @@ mod nested;
 mod tty;
 
 use core::{error::Error, time::Duration};
-use std::{
-    os::fd::AsFd,
-    process::{Command, ExitCode},
-    sync::Arc,
-};
+use std::{os::fd::AsFd, process::ExitCode, sync::Arc};
 
 use smithay::{
     reexports::{
@@ -44,7 +40,7 @@ pub(crate) struct LoopData {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
-        ExitCode::from(if self.log_out {
+        ExitCode::from(if self.log_out || self.compositor.log_out_requested() {
             21
         } else if self.compositor.quit_requested() {
             20
@@ -54,8 +50,18 @@ impl LoopData {
     }
 }
 
+fn initialize_tracing() {
+    tracing_subscriber::fmt()
+        .with_max_level(if std::env::var_os("TEHUTI_TIMING").is_some() {
+            tracing::Level::TRACE
+        } else {
+            tracing::Level::INFO
+        })
+        .init();
+}
+
 fn main() -> Result<ExitCode, Box<dyn Error>> {
-    tracing_subscriber::fmt::init();
+    initialize_tracing();
     let mut application = std::env::args_os().skip(1);
     let context_directory = application
         .next()
@@ -66,11 +72,6 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory)));
-    install_plugins(
-        &event_loop,
-        std::path::Path::new(&context_directory),
-        &mut compositor,
-    )?;
     if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
         compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
     }
@@ -91,9 +92,19 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         attached_controller.map_or((None, None), |(device, token)| (Some(device), Some(token)));
     let discovery = initial_discovery(controller.as_ref(), &mut compositor);
 
+    let mut xwayland = tehuti::xwayland::Runtime::new()?;
+    xwayland.export_session_environment();
+    xwayland.dispatch(&display.handle(), &mut compositor);
+
+    install_plugins(
+        &event_loop,
+        std::path::Path::new(&context_directory),
+        &mut compositor,
+    )?;
+
     let child = program
         .map(|program| {
-            Command::new(program)
+            tehuti::child_environment::command(program)
                 .args(application)
                 .env("WAYLAND_DISPLAY", &socket_name)
                 .spawn()
@@ -112,7 +123,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         log_out: false,
         context_watch: insert_context_watch(&event_loop, std::path::Path::new(&context_directory)),
     };
-    run(&mut event_loop, &mut data, child)?;
+    run(&mut event_loop, &mut data, child, &mut xwayland)?;
     Ok(data.exit_code())
 }
 
@@ -120,11 +131,13 @@ fn run(
     event_loop: &mut EventLoop<LoopData>,
     data: &mut LoopData,
     mut child: Option<std::process::Child>,
+    xwayland: &mut tehuti::xwayland::Runtime,
 ) -> Result<(), Box<dyn Error>> {
     let termination = tehuti::shutdown::Termination::register()?;
     let signal = event_loop.get_signal();
     let handle = event_loop.handle();
     let result = event_loop.run(Some(Duration::from_millis(10)), data, |data| {
+        xwayland.dispatch(&data.display.handle(), &mut data.compositor);
         termination.stop_if_requested(&signal);
         advance_time(data);
         reload_contexts(data);
@@ -316,5 +329,15 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
 }
 
 fn advance_time(data: &mut LoopData) {
+    if let Some(pad) = &data.controller {
+        match pad.sticks() {
+            Ok(sticks) => data.compositor.sample_sticks(sticks),
+            Err(error) => {
+                data.compositor
+                    .sample_sticks(tehuti_core::dispatch::Sticks::default());
+                warn!(%error, "controller stick sample failed");
+            }
+        }
+    }
     data.compositor.advance_time();
 }
