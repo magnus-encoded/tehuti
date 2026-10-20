@@ -30,8 +30,6 @@ struct Instance {
     pending_enabled: Option<bool>,
     enabled: bool,
     serial: u32,
-    terminal: bool,
-    pending_terminal: Option<bool>,
     kind: FieldKind,
     pending_kind: Option<FieldKind>,
 }
@@ -42,9 +40,6 @@ impl Instance {
         let changed = self.pending_enabled == Some(true);
         if let Some(kind) = self.pending_kind.take() {
             self.kind = kind;
-        }
-        if let Some(terminal) = self.pending_terminal.take() {
-            self.terminal = terminal;
         }
         if let Some(enabled) = self.pending_enabled.take() {
             self.enabled = enabled && focused;
@@ -68,8 +63,6 @@ impl TextInput {
             }
             instance.enabled = false;
             instance.pending_enabled = None;
-            instance.terminal = false;
-            instance.pending_terminal = None;
             instance.kind = FieldKind::Normal;
             instance.pending_kind = None;
             if let Some(surface) = &focus
@@ -141,8 +134,6 @@ impl Dispatch<ZwpTextInputManagerV3, ()> for Compositor {
                 pending_enabled: None,
                 enabled: false,
                 serial: 0,
-                terminal: false,
-                pending_terminal: None,
                 kind: FieldKind::Normal,
                 pending_kind: None,
             });
@@ -180,24 +171,17 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
             match request {
                 zwp_text_input_v3::Request::Enable if focused && !another_enabled => {
                     instance.pending_enabled = Some(true);
-                    instance.pending_terminal = Some(false);
                     instance.pending_kind = Some(FieldKind::Normal);
                 }
                 zwp_text_input_v3::Request::Disable => instance.pending_enabled = Some(false),
                 zwp_text_input_v3::Request::Commit => {
                     let changed = instance.commit(focused);
                     if focused && !another_enabled {
-                        field = Some((instance.enabled && !instance.terminal, changed, instance.kind));
+                        field = Some((instance.enabled, changed, instance.kind));
                     }
                 }
                 zwp_text_input_v3::Request::SetContentType { purpose, .. } if focused => {
                     instance.pending_kind = Some(field_kind(purpose));
-                    instance.pending_terminal = Some(
-                        purpose
-                            == smithay::reexports::wayland_server::WEnum::Value(
-                                zwp_text_input_v3::ContentPurpose::Terminal,
-                            ),
-                    );
                 }
                 zwp_text_input_v3::Request::Destroy
                 | zwp_text_input_v3::Request::Enable
@@ -254,6 +238,7 @@ const fn field_kind(
         WEnum::Value(ContentPurpose::Url) => FieldKind::Url,
         WEnum::Value(ContentPurpose::Email) => FieldKind::Email,
         WEnum::Value(ContentPurpose::Password) => FieldKind::Password,
+        WEnum::Value(ContentPurpose::Terminal) => FieldKind::Terminal,
         WEnum::Value(_) | WEnum::Unknown(_) => FieldKind::Normal,
     }
 }

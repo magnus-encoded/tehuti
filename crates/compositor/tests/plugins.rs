@@ -219,12 +219,14 @@ for line in sys.stdin:
                         Effect::ConfirmSecret(_) => input = Input::SecretConfirmation(false),
                         Effect::SpeechCommand(_) => input = Input::SpeechSent(true),
                         Effect::PollSpeech(_) => input = Input::SpeechPolled(vec![]),
+                        Effect::QueryForegroundProgram => input = Input::ForegroundProgram(false),
                         Effect::InvalidReply => panic!("valid dispatch replies"),
                         Effect::MovePointer { .. }
                         | Effect::Scroll { .. }
                         | Effect::Click { .. }
                         | Effect::MouseMode(_)
                         | Effect::PollSources
+                        | Effect::Chord(_)
                         | Effect::SouthPressed(_)
                         | Effect::ResetSecretFocus
                         | Effect::Apply(_)

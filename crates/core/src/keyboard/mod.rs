@@ -3,7 +3,7 @@
 use core::ops::Range;
 use core::time::Duration;
 
-use tehuti_protocol::{ButtonName, ButtonState};
+use tehuti_protocol::{ButtonName, ButtonState, KeyName};
 
 /// How long a D-pad direction is held before the highlight starts repeating.
 pub const REPEAT_DELAY: Duration = Duration::from_millis(400);
@@ -20,6 +20,10 @@ pub const ROW_UNITS: u8 = 28;
 pub enum Key {
     Char(char),
     Text(&'static str),
+    /// Terminal strip key: sends the draft, then taps the key with any latched modifiers.
+    Tap(KeyName),
+    /// One-shot modifier: latches until the next key.
+    Modifier(Modifier),
     Shift,
     Symbols,
     Backspace,
@@ -143,6 +147,101 @@ pub enum FieldKind {
     Url,
     Email,
     Password,
+    Terminal,
+}
+
+const fn tap(key: KeyName) -> Slot {
+    slot(Key::Tap(key), 2)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modifier {
+    Control,
+    Alt,
+}
+
+/// The terminal strip above the letters, Termux style.
+const STRIP: &[Slot] = &[
+    tap(KeyName::Escape),
+    tap(KeyName::Tab),
+    slot(Key::Modifier(Modifier::Control), 2),
+    slot(Key::Modifier(Modifier::Alt), 2),
+    tap(KeyName::Left),
+    tap(KeyName::Up),
+    tap(KeyName::Down),
+    tap(KeyName::Right),
+    tap(KeyName::PageUp),
+    tap(KeyName::PageDown),
+    letter('/'),
+    letter('-'),
+    letter('|'),
+    letter('~'),
+];
+
+const TERMINAL_LETTERS: [&[Slot]; 4] = [STRIP, LETTERS[0], LETTERS[1], LETTERS[2]];
+
+/// Symbols with the pipe, redirections and backtick a shell needs.
+const SHELL_SYMBOLS: [&[Slot]; 4] = [
+    STRIP,
+    SYMBOLS[0],
+    &[
+        slot(Key::Symbols, 4),
+        letter('#'),
+        letter('$'),
+        letter('|'),
+        letter('&'),
+        letter('<'),
+        letter('>'),
+        letter('@'),
+        letter('('),
+        letter(')'),
+        letter('"'),
+        slot(Key::Send, 4),
+    ],
+    &[
+        slot(Key::CaretLeft, 4),
+        letter('!'),
+        letter('?'),
+        letter(':'),
+        letter(';'),
+        letter('`'),
+        letter('*'),
+        letter('='),
+        letter('_'),
+        letter('~'),
+        slot(Key::Space, 4),
+        slot(Key::CaretRight, 2),
+    ],
+];
+
+/// A key tap with modifiers, for terminals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChordKey {
+    Named(KeyName),
+    Char(char),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub control: bool,
+    pub alt: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chord {
+    pub key: ChordKey,
+    pub modifiers: Modifiers,
+}
+
+impl Chord {
+    /// Ctrl-C, which interrupts a terminal's foreground program.
+    pub const INTERRUPT: Self = Self {
+        key: ChordKey::Char('c'),
+        modifiers: Modifiers {
+            control: true,
+            alt: false,
+        },
+    };
 }
 
 const URL: Rows = [
@@ -189,6 +288,10 @@ pub enum Response {
     Consumed,
     /// Deliver this draft to the focused application.
     Send(String),
+    /// Deliver this draft, which may be empty, then tap the chord.
+    Chord(String, Chord),
+    /// B in a terminal: interrupt a foreground program, or close when there is none.
+    InterruptOrClose,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +329,14 @@ impl Direction {
     }
 }
 
+/// Whether the focused app is a terminal, from its field or its context.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AppKind {
+    #[default]
+    Other,
+    Terminal,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Layer {
     #[default]
@@ -240,6 +351,8 @@ enum Layer {
 pub struct Keyboard {
     open: bool,
     field_kind: FieldKind,
+    app: AppKind,
+    latched: Modifiers,
     revealed: Option<(Range<usize>, Duration)>,
     layer: Layer,
     highlight: (usize, usize),
@@ -266,7 +379,8 @@ impl Keyboard {
         *self = Self {
             open: true,
             field_kind: self.field_kind,
-            highlight: (0, 1),
+            app: self.app,
+            highlight: (self.rows().len().saturating_sub(3), 1),
             captured: core::mem::take(&mut self.captured),
             stick_engaged: self.stick_engaged,
             ..Self::default()
@@ -282,6 +396,7 @@ impl Keyboard {
         self.word = None;
         self.repeat = None;
         self.layer = Layer::Letters;
+        self.latched = Modifiers::default();
     }
 
     /// Whether a press of `name` was consumed and its release is still due.
@@ -318,6 +433,21 @@ impl Keyboard {
         }
         self.field_kind = kind;
         self.clamp_highlight();
+    }
+
+    /// Marks the focused app a terminal, which picks the terminal layout and B behaviour.
+    pub fn set_terminal(&mut self, terminal: bool) {
+        self.app = if terminal {
+            AppKind::Terminal
+        } else {
+            AppKind::Other
+        };
+        self.clamp_highlight();
+    }
+
+    #[must_use]
+    pub const fn terminal(&self) -> bool {
+        matches!(self.app, AppKind::Terminal)
     }
 
     /// True while the focused text field has password purpose, even with the overlay closed.
@@ -378,15 +508,31 @@ impl Keyboard {
 
     /// The keys of the current layer, top row first.
     #[must_use]
-    pub const fn rows(&self) -> &'static Rows {
-        if self.symbols() {
-            &SYMBOLS
-        } else {
-            match self.field_kind {
+    pub const fn rows(&self) -> &'static [&'static [Slot]] {
+        match (self.terminal(), self.symbols()) {
+            (true, true) => &SHELL_SYMBOLS,
+            (true, false) => &TERMINAL_LETTERS,
+            (false, true) => &SYMBOLS,
+            (false, false) => match self.field_kind {
                 FieldKind::Url => &URL,
                 FieldKind::Email => &EMAIL,
+                FieldKind::Terminal => &TERMINAL_LETTERS,
                 FieldKind::Normal | FieldKind::Password => &LETTERS,
-            }
+            },
+        }
+    }
+
+    /// Modifiers a strip tap latched for the next key.
+    #[must_use]
+    pub const fn latched(&self) -> Modifiers {
+        self.latched
+    }
+
+    #[must_use]
+    pub const fn is_latched(&self, modifier: Modifier) -> bool {
+        match modifier {
+            Modifier::Control => self.latched.control,
+            Modifier::Alt => self.latched.alt,
         }
     }
 
@@ -441,6 +587,7 @@ impl Keyboard {
             ButtonName::South => return self.activate(),
             ButtonName::West => self.backspace(),
             ButtonName::North => self.type_text(" "),
+            ButtonName::East if self.terminal() => return Response::InterruptOrClose,
             ButtonName::East => self.close(),
             ButtonName::Start => self.send_on_start_release = true,
             ButtonName::LeftBumper => self.move_caret(false),
@@ -460,6 +607,9 @@ impl Keyboard {
 
     fn activate(&mut self) -> Response {
         match self.highlighted_key() {
+            Some(Key::Char(character)) if self.latched != Modifiers::default() => {
+                return self.chord(ChordKey::Char(character));
+            }
             Some(Key::Char(character)) => {
                 let character = if self.shifted() {
                     character.to_uppercase().next().unwrap_or(character)
@@ -469,6 +619,9 @@ impl Keyboard {
                 self.type_text(character.encode_utf8(&mut [0; 4]));
             }
             Some(Key::Text(text)) => self.type_text(text),
+            Some(Key::Tap(key)) => return self.chord(ChordKey::Named(key)),
+            Some(Key::Modifier(Modifier::Control)) => self.latched.control = !self.latched.control,
+            Some(Key::Modifier(Modifier::Alt)) => self.latched.alt = !self.latched.alt,
             Some(Key::Shift) => {
                 self.layer = if self.shifted() {
                     Layer::Letters
@@ -487,6 +640,16 @@ impl Keyboard {
         Response::Consumed
     }
 
+    /// Hands over the draft with a chord and releases the latched modifiers.
+    fn chord(&mut self, key: ChordKey) -> Response {
+        let draft = core::mem::take(&mut self.draft);
+        self.caret = 0;
+        self.word = None;
+        self.revealed = None;
+        let modifiers = core::mem::take(&mut self.latched);
+        Response::Chord(draft, Chord { key, modifiers })
+    }
+
     fn toggle_symbols(&mut self) {
         self.layer = match self.layer {
             Layer::Letters => Layer::Symbols { capitals: false },
@@ -497,7 +660,11 @@ impl Keyboard {
         self.clamp_highlight();
     }
 
+    /// Terminals run the draft with Enter and keep the keyboard open for the next command.
     fn send(&mut self) -> Response {
+        if self.terminal() {
+            return self.chord(ChordKey::Named(KeyName::Enter));
+        }
         let draft = core::mem::take(&mut self.draft);
         self.close();
         if draft.is_empty() {
@@ -547,7 +714,13 @@ impl Keyboard {
         if self.password_field_active() {
             return;
         }
-        let text = text.trim();
+        let shell;
+        let text = if self.terminal() {
+            shell = without_sentence_punctuation(text);
+            shell.trim()
+        } else {
+            text.trim()
+        };
         if text.is_empty() {
             return;
         }
@@ -679,7 +852,8 @@ impl Keyboard {
     }
 
     fn clamp_highlight(&mut self) {
-        let (row, index) = self.highlight;
+        let row = self.highlight.0.min(self.rows().len().saturating_sub(1));
+        let index = self.highlight.1;
         let length = self.rows().get(row).map_or(0, |keys| keys.len());
         self.highlight = (row, index.min(length.saturating_sub(1)));
     }
@@ -721,6 +895,24 @@ fn key_at(keys: &[Slot], doubled: u32) -> usize {
         }
     }
     keys.len().saturating_sub(1)
+}
+
+/// Drops commas and full stops that end a word, which dictation adds and shells reject.
+#[must_use]
+pub fn without_sentence_punctuation(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut word = String::new();
+    for character in text.chars() {
+        if character.is_whitespace() {
+            kept.push_str(word.trim_end_matches([',', '.']));
+            word.clear();
+            kept.push(character);
+        } else {
+            word.push(character);
+        }
+    }
+    kept.push_str(word.trim_end_matches([',', '.']));
+    kept
 }
 
 /// Whether a transcript asks to open the keyboard.
