@@ -858,3 +858,251 @@ fn guide_tap_switches_level_inside_mouse_mode() {
     }
     assert_eq!(state.core().level(), crate::Level::Columns);
 }
+
+fn speech_event(text: &str) -> Input {
+    Input::Event {
+        event: Event::Speech {
+            text: Text::new(text.into()).unwrap(),
+        },
+        elapsed: Duration::ZERO,
+    }
+}
+
+fn tap_button(world: &mut World, state: State, name: ButtonName) -> State {
+    let state = world.run(state, pad_button(name, ButtonState::Pressed));
+    world.run(state, pad_button(name, ButtonState::Released))
+}
+
+fn with_open_keyboard(world: &mut World, state: State) -> State {
+    let state = world.run(state, speech_event("keyboard"));
+    assert!(state.keyboard().is_open());
+    state
+}
+
+fn every_button() -> impl Strategy<Value = Event> {
+    (
+        prop::sample::select(vec![
+            ButtonName::South,
+            ButtonName::East,
+            ButtonName::North,
+            ButtonName::West,
+            ButtonName::LeftBumper,
+            ButtonName::RightBumper,
+            ButtonName::Select,
+            ButtonName::Record,
+            ButtonName::Start,
+            ButtonName::Guide,
+            ButtonName::LeftStick,
+            ButtonName::RightStick,
+            ButtonName::DpadUp,
+            ButtonName::DpadDown,
+            ButtonName::DpadLeft,
+            ButtonName::DpadRight,
+        ]),
+        prop::bool::ANY,
+    )
+        .prop_map(|(name, pressed)| Event::Button {
+            name,
+            state: if pressed {
+                ButtonState::Pressed
+            } else {
+                ButtonState::Released
+            },
+        })
+}
+
+proptest! {
+    #[test]
+    fn only_saying_keyboard_opens_the_keyboard(
+        events in prop::collection::vec(prop_oneof![every_button(), arbitrary_event()], 0..60),
+        sticks in prop::collection::vec(any::<(i16, i16, i16, i16)>(), 0..10),
+        contexts in arbitrary_contexts(),
+    ) {
+        let mut world = World::default();
+        let app = contexts[0].app_id().to_owned();
+        let mut state = configured(contexts, &app);
+        for (left_x, left_y, right_x, right_y) in sticks {
+            state = world.run(state, Input::Sticks(Sticks { left: (left_x, left_y), right: (right_x, right_y) }));
+        }
+        for event in events {
+            let opens = matches!(&event, Event::Speech { text } if crate::keyboard::is_open_phrase(text.as_str()));
+            state = world.run(state, Input::Event { event, elapsed: Duration::from_millis(16) });
+            prop_assert!(opens || !state.keyboard().is_open());
+            if state.keyboard().is_open() {
+                break;
+            }
+        }
+        let state = world.run(state, speech_event("keyboard"));
+        prop_assert!(state.keyboard().is_open());
+    }
+
+    #[test]
+    fn speech_while_open_is_dictation_and_never_a_command(
+        contexts in arbitrary_contexts(),
+        phrase in "[a-z]{1,8}( [a-z]{1,8}){0,3}",
+    ) {
+        let mut world = World::default();
+        let app = contexts[0].app_id().to_owned();
+        let state = with_open_keyboard(&mut world, configured(contexts, &app));
+        world.trace.clear();
+        let state = world.run(state, speech_event(&phrase));
+        prop_assert_eq!(state.keyboard().draft(), phrase.as_str());
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::QueryPlugin(Event::Speech { .. }) | Effect::SpeechRouted { .. })), "dictation never routes");
+    }
+
+    #[test]
+    fn the_open_keyboard_keeps_its_buttons_from_apps_and_plugins(
+        contexts in arbitrary_contexts(),
+        name in prop::sample::select(vec![ButtonName::South, ButtonName::East, ButtonName::North, ButtonName::West, ButtonName::DpadUp, ButtonName::DpadLeft, ButtonName::LeftBumper, ButtonName::RightBumper]),
+    ) {
+        let mut world = World { plugin_active: true, ..World::default() };
+        let app = contexts[0].app_id().to_owned();
+        let state = with_open_keyboard(&mut world, configured(contexts, &app));
+        world.trace.clear();
+        let _state = tap_button(&mut world, state, name);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::QueryPlugin(Event::Button { .. }) | Effect::ConfirmSecret(_))), "no app or plugin sees the button");
+    }
+}
+
+#[test]
+fn menu_sends_the_draft_as_text_to_the_focused_app() {
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, State::default());
+    let state = world.run(state, speech_event("see you soon"));
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::Start);
+    assert!(!state.keyboard().is_open());
+    assert_eq!(
+        world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Apply(_)))
+            .collect::<Vec<_>>(),
+        vec![&Effect::Apply(Action::Text {
+            text: Text::new("see you soon".into()).unwrap()
+        })]
+    );
+}
+
+#[test]
+fn b_closes_without_sending_anything() {
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, State::default());
+    let state = world.run(state, speech_event("draft"));
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(!state.keyboard().is_open());
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(_)))
+    );
+}
+
+#[test]
+fn the_keyboard_opens_and_types_in_mouse_mode() {
+    let mut world = World::default();
+    let mut state = State::default();
+    for button in [
+        ButtonState::Pressed,
+        ButtonState::Released,
+        ButtonState::Pressed,
+        ButtonState::Released,
+    ] {
+        state = world.run(state, pad_button(ButtonName::Select, button));
+    }
+    assert!(world.trace.contains(&Effect::MouseMode(true)));
+    let state = with_open_keyboard(&mut world, state);
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::DpadRight);
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.keyboard().draft(), "w");
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Click { .. }))
+    );
+}
+
+#[test]
+fn right_stick_still_scrolls_while_the_keyboard_is_open() {
+    let mut world = World::default();
+    let mut state = State::default();
+    for button in [
+        ButtonState::Pressed,
+        ButtonState::Released,
+        ButtonState::Pressed,
+        ButtonState::Released,
+    ] {
+        state = world.run(state, pad_button(ButtonName::Select, button));
+    }
+    let state = with_open_keyboard(&mut world, state);
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (900, 0),
+            right: (0, 800),
+        }),
+    );
+    world.trace.clear();
+    let _state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(10),
+        },
+    );
+    assert!(
+        world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Scroll { y, .. } if *y > 0))
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::MovePointer { .. })),
+        "the left stick picks words instead of moving the pointer"
+    );
+}
+
+#[test]
+fn guide_tap_switches_level_while_open_and_shoulders_then_move_columns() {
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, State::default());
+    let state = tap_button(&mut world, state, ButtonName::Guide);
+    assert_eq!(state.core().level(), crate::Level::Columns);
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::RightBumper);
+    assert!(state.keyboard().is_open());
+    assert!(world.trace.contains(&Effect::Apply(Action::Layout {
+        action: tehuti_protocol::LayoutAction::FocusColumnRight
+    })));
+}
+
+#[test]
+fn escape_chord_quits_while_the_keyboard_is_open() {
+    let mut world = World::default();
+    let mut state = with_open_keyboard(&mut world, State::default());
+    state = world.run(state, speech_event("unsent"));
+    for name in [ButtonName::Guide, ButtonName::Start] {
+        state = world.run(state, pad_button(name, ButtonState::Pressed));
+    }
+    let _state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(3),
+        },
+    );
+    assert_eq!(
+        world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Apply(_)))
+            .collect::<Vec<_>>(),
+        vec![&Effect::Apply(Action::Quit)],
+        "Start inside the chord never sends the draft"
+    );
+}

@@ -115,6 +115,7 @@ pub struct Compositor {
     seat: Seat<Self>,
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
+    keyboard_reserved: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -195,6 +196,7 @@ impl Compositor {
             seat,
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
+            keyboard_reserved: false,
         };
         compositor
             .keyboard
@@ -500,10 +502,26 @@ impl Compositor {
                 }
             }
             if self.dispatch.busy() <= depth {
+                self.reserve_keyboard_height();
                 return rejection;
             }
             input = reply;
         }
+    }
+
+    /// Resizes tiled windows when the on-screen keyboard opens or closes.
+    fn reserve_keyboard_height(&mut self) {
+        let open = self.dispatch.keyboard().is_open();
+        if open != self.keyboard_reserved {
+            self.keyboard_reserved = open;
+            self.fill_output();
+        }
+    }
+
+    /// The on-screen keyboard, for drawing it.
+    #[must_use]
+    pub const fn on_screen_keyboard(&self) -> &tehuti_core::keyboard::Keyboard {
+        self.dispatch.keyboard()
     }
 
     /// Sends a start or stop to the speech sidecar; `false` when it fails.
@@ -1068,7 +1086,14 @@ impl Compositor {
         let geometry = OutputGeometry {
             area,
             usable: Rect {
-                height: (area.height - f64::from(tehuti_core::bar::HEIGHT)).max(1.0),
+                height: (area.height
+                    - f64::from(tehuti_core::bar::HEIGHT)
+                    - if self.keyboard_reserved {
+                        f64::from(crate::osk::logical_height())
+                    } else {
+                        0.0
+                    })
+                .max(1.0),
                 ..area
             },
         };

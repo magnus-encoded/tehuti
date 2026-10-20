@@ -163,6 +163,7 @@ pub struct State {
     core: crate::State,
     speech: SpeechState,
     mouse: mouse::State,
+    keyboard: crate::keyboard::Keyboard,
     frames: Vec<Frame>,
 }
 
@@ -173,6 +174,7 @@ impl State {
             core,
             speech: SpeechState::default(),
             mouse: mouse::State::default(),
+            keyboard: crate::keyboard::Keyboard::default(),
             frames: Vec::new(),
         }
     }
@@ -184,6 +186,12 @@ impl State {
 
     pub const fn core_mut(&mut self) -> &mut crate::State {
         &mut self.core
+    }
+
+    /// The on-screen keyboard, for drawing it.
+    #[must_use]
+    pub const fn keyboard(&self) -> &crate::keyboard::Keyboard {
+        &self.keyboard
     }
 
     /// Frames still waiting for replies or resumption.
@@ -240,11 +248,13 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             return (state, effects);
         }
         Input::Sticks(sticks) => {
+            state.keyboard.left_stick(sticks.left.0);
             state.mouse.sticks = sticks;
             return (state, effects);
         }
         Input::ControllerDisconnected => {
             state.mouse.disconnect(&mut effects);
+            state.keyboard.release_all();
             state.core.controller_disconnected();
             return (state, effects);
         }
@@ -389,6 +399,17 @@ fn run(mut state: State, mut effects: Vec<Effect>) -> (State, Vec<Effect>) {
     }
 }
 
+/// Advances keyboard repeat and mouse motion; true when a lone View tap is due.
+fn tick_pad(
+    keyboard: &mut crate::keyboard::Keyboard,
+    mouse: &mut mouse::State,
+    elapsed: Duration,
+    effects: &mut Vec<Effect>,
+) -> bool {
+    keyboard.tick(elapsed);
+    mouse.tick(elapsed, !keyboard.is_open(), effects)
+}
+
 fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
     let Some(frame) = state.frames.last_mut() else {
         return;
@@ -401,7 +422,7 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
         Task::Controller(event) => controller(state, event, effects),
         Task::Route(event) => {
             if let Event::Tick { elapsed } = event
-                && state.mouse.tick(elapsed, effects)
+                && tick_pad(&mut state.keyboard, &mut state.mouse, elapsed, effects)
             {
                 for button in [ButtonState::Released, ButtonState::Pressed] {
                     frame.tasks.push_front(Task::Route(Event::Button {
@@ -452,6 +473,9 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
 }
 
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if keyboard(state, &event, effects) {
+        return;
+    }
     let Some(frame) = state.frames.last_mut() else {
         return;
     };
@@ -487,6 +511,40 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
             frame.tasks.push_front(Task::Route(event));
         }
+    }
+}
+
+/// The open keyboard takes speech as dictation and most buttons; "keyboard" opens it.
+fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    match event {
+        Event::Speech { text } if state.keyboard.is_open() => {
+            state.keyboard.dictate(text.as_str());
+            state.core.keyboard_feedback("Dictated");
+            true
+        }
+        Event::Speech { text } if crate::keyboard::is_open_phrase(text.as_str()) => {
+            state.keyboard.open();
+            state.core.keyboard_feedback("Keyboard");
+            true
+        }
+        Event::Button {
+            name: ButtonName::Start,
+            ..
+        } if state.core.guide_held() => false,
+        Event::Button { name, state: button } => {
+            let shoulders_move_caret = state.core.level() == crate::Level::InApp;
+            match state.keyboard.button(*name, *button, shoulders_move_caret) {
+                crate::keyboard::Response::Pass => false,
+                crate::keyboard::Response::Consumed => true,
+                crate::keyboard::Response::Send(draft) => {
+                    if let Ok(text) = tehuti_protocol::Text::new(draft) {
+                        effects.push(Effect::Apply(Action::Text { text }));
+                    }
+                    true
+                }
+            }
+        }
+        Event::Speech { .. } | Event::Focus { .. } | Event::Tick { .. } => false,
     }
 }
 

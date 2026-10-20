@@ -178,6 +178,11 @@ impl Bar {
         self.remaining = None;
     }
 
+    pub(crate) fn keyboard_feedback(&mut self, text: &str) {
+        self.generation = self.generation.saturating_add(1);
+        self.result(text, Tone::Result);
+    }
+
     fn result(&mut self, text: &str, tone: Tone) {
         self.feedback = Some(Segment {
             text: text.into(),

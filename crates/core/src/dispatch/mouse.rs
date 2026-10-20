@@ -92,7 +92,12 @@ impl State {
         }
     }
 
-    pub(super) fn tick(&mut self, elapsed: Duration, effects: &mut Vec<Effect>) -> bool {
+    pub(super) fn tick(
+        &mut self,
+        elapsed: Duration,
+        left_stick_moves_pointer: bool,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
         let mut single_tap = false;
         if let Some(hold) = &mut self.hold {
             *hold = hold.saturating_add(elapsed);
@@ -111,7 +116,7 @@ impl State {
                 axis.saturating_mul(axis.abs()).saturating_mul(millis)
             };
             let (x, y) = self.sticks.left;
-            if x != 0 || y != 0 {
+            if left_stick_moves_pointer && (x != 0 || y != 0) {
                 effects.push(Effect::MovePointer {
                     x: motion(x),
                     y: motion(y),
