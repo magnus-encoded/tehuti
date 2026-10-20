@@ -57,8 +57,6 @@ pub enum Input {
     SpeechSent(bool),
     /// Reply to [`Effect::PollSpeech`].
     SpeechPolled(Vec<SpeechInput>),
-    /// Reply to [`Effect::QueryForegroundProgram`].
-    ForegroundProgram(bool),
     /// Continues the waiting frame after effects without a reply.
     Resume,
 }
@@ -102,11 +100,6 @@ pub enum Effect {
     PollSpeech(Duration),
     /// Polls secret lookups, launchers and desktop entries.
     PollSources,
-    /// Taps a key with modifiers in the focused client, from the on-screen keyboard.
-    Chord(crate::keyboard::Chord),
-    /// Query: does the focused terminal's shell have a program in the foreground?
-    /// Reply [`Input::ForegroundProgram`].
-    QueryForegroundProgram,
     /// Records whether South is held.
     SouthPressed(bool),
     /// Invalidates secret confirmations for the old focus.
@@ -164,7 +157,6 @@ enum Await {
     SecretConfirmation(Event),
     SpeechSent,
     SpeechPolled,
-    ForegroundProgram,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -180,7 +172,6 @@ pub struct State {
     mouse: mouse::State,
     keyboard: crate::keyboard::Keyboard,
     text_field: bool,
-    terminal_field: bool,
     opening_button: Option<ButtonName>,
     frames: Vec<Frame>,
 }
@@ -194,7 +185,6 @@ impl State {
             mouse: mouse::State::default(),
             keyboard: crate::keyboard::Keyboard::default(),
             text_field: false,
-            terminal_field: false,
             opening_button: None,
             frames: Vec::new(),
         }
@@ -253,27 +243,7 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
 
 /// Advances routing by one input. Performs no I/O.
 #[must_use]
-pub fn step(state: State, input: Input) -> (State, Vec<Effect>) {
-    let level = state.core.level();
-    let (mut state, effects) = step_input(state, input);
-    if level != crate::Level::InApp && state.core.level() == crate::Level::InApp {
-        sync_terminal(&mut state);
-        if state.keyboard.terminal() && state.core.terminal_config().1 {
-            state.keyboard.open();
-        }
-    }
-    (state, effects)
-}
-
-/// Picks the terminal layout when the field or the focused app's context says terminal.
-fn sync_terminal(state: &mut State) {
-    let terminal = state.terminal_field || state.core.terminal_config().0;
-    if terminal != state.keyboard.terminal() {
-        state.keyboard.set_terminal(terminal);
-    }
-}
-
-fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
+pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
@@ -312,10 +282,6 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             state.core.controller_disconnected();
             return (state, effects);
         }
-        Input::ForegroundProgram(running) => {
-            interrupt_or_close(&mut state, running, &mut effects);
-            return run(state, effects);
-        }
         reply @ (Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -345,13 +311,7 @@ fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate
         changed,
     );
     state.text_field = active;
-    state.terminal_field = active && kind == crate::keyboard::FieldKind::Terminal;
-    sync_terminal(state);
-    if active
-        && changed
-        && !state.keyboard.terminal()
-        && state.core.keyboard_config().0 == tehuti_protocol::OnTextField::Open
-    {
+    if active && changed && state.core.keyboard_config().0 == tehuti_protocol::OnTextField::Open {
         state.keyboard.open();
     }
 }
@@ -390,7 +350,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 route,
             },
             Input::PluginRequest(request),
-        ) => finish_route(state, event, actions, route, request, effects),
+        ) => finish_route(&mut state.core, event, actions, route, request, effects),
         (Await::Supervised, Input::Supervised(exited)) => {
             for plugin in exited.into_iter().rev() {
                 frame.tasks.push_front(Task::PluginExited(plugin));
@@ -418,44 +378,15 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
     }
 }
 
-/// Reply to B in a terminal: Ctrl-C for a running foreground program, otherwise close.
-fn interrupt_or_close(state: &mut State, running: bool, effects: &mut Vec<Effect>) {
-    let awaited = state.frames.last_mut().and_then(|frame| {
-        frame
-            .awaiting
-            .take_if(|awaiting| *awaiting == Await::ForegroundProgram)
-    });
-    if awaited.is_none() {
-        resume(state, Input::ForegroundProgram(running), effects);
-    } else if running {
-        effects.push(Effect::Chord(crate::keyboard::Chord::INTERRUPT));
-    } else {
-        state.keyboard.close();
-    }
-}
-
-/// Strips dictation's sentence punctuation from typed speech, for shells.
-fn drop_sentence_punctuation(actions: &mut [Action]) {
-    for action in actions {
-        if let Action::Text { text } = action
-            && let Ok(shell) =
-                tehuti_protocol::Text::new(crate::keyboard::without_sentence_punctuation(text.as_str()))
-        {
-            *text = shell;
-        }
-    }
-}
-
 /// Completes routing once the plugin layer has answered.
 fn finish_route(
-    state: &mut State,
+    core_state: &mut crate::State,
     event: Event,
     mut actions: Vec<Action>,
     route: bool,
     request: Option<(RequestKey, Vec<Permission>)>,
     effects: &mut Vec<Effect>,
 ) {
-    let core_state = &mut state.core;
     if route {
         let (next, mut routed) = match request {
             Some((key, permissions)) => {
@@ -475,9 +406,6 @@ fn finish_route(
         actions.append(&mut routed);
     }
     if let Event::Speech { text } = event {
-        if state.keyboard.terminal() {
-            drop_sentence_punctuation(&mut actions);
-        }
         effects.push(Effect::SpeechRouted {
             text,
             first: actions.first().cloned(),
@@ -584,7 +512,6 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
 }
 
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
-    sync_terminal(state);
     if state.keyboard.password_field_active()
         && matches!(
             &event,
@@ -651,7 +578,6 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
         let (mode, opening_button) = state.core.keyboard_config();
         if !state.keyboard.is_open()
             && state.text_field
-            && !state.keyboard.terminal()
             && mode != tehuti_protocol::OnTextField::Off
             && *name == opening_button
             && *button == ButtonState::Pressed
@@ -684,12 +610,14 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
             if guide_held {
                 state.keyboard.cancel_send();
             }
-            send_response(state, response, effects)
+            send_response(response, effects)
         }
         Event::Button { name, state: button } => {
             let shoulders_move_caret = state.core.level() == crate::Level::InApp;
-            let response = state.keyboard.button(*name, *button, shoulders_move_caret);
-            send_response(state, response, effects)
+            send_response(
+                state.keyboard.button(*name, *button, shoulders_move_caret),
+                effects,
+            )
         }
         Event::Speech { .. } | Event::Focus { .. } | Event::Tick { .. } => false,
     }
@@ -703,29 +631,13 @@ const fn start_state(event: &Event) -> ButtonState {
 }
 
 /// True when the keyboard consumed the button; a send becomes a text action.
-fn send_response(state: &mut State, response: crate::keyboard::Response, effects: &mut Vec<Effect>) -> bool {
+fn send_response(response: crate::keyboard::Response, effects: &mut Vec<Effect>) -> bool {
     match response {
         crate::keyboard::Response::Pass => false,
         crate::keyboard::Response::Consumed => true,
         crate::keyboard::Response::Send(draft) => {
             if let Ok(text) = tehuti_protocol::Text::new(draft) {
                 effects.push(Effect::Apply(Action::Text { text }));
-            }
-            true
-        }
-        crate::keyboard::Response::Chord(draft, chord) => {
-            if !draft.is_empty()
-                && let Ok(text) = tehuti_protocol::Text::new(draft)
-            {
-                effects.push(Effect::Apply(Action::Text { text }));
-            }
-            effects.push(Effect::Chord(chord));
-            true
-        }
-        crate::keyboard::Response::InterruptOrClose => {
-            if let Some(frame) = state.frames.last_mut() {
-                effects.push(Effect::QueryForegroundProgram);
-                frame.awaiting = Some(Await::ForegroundProgram);
             }
             true
         }
