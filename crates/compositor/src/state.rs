@@ -128,6 +128,12 @@ pub enum SetupError {
     DesktopEntries(#[from] std::io::Error),
 }
 
+fn default_keymap() -> Result<xkb::Keymap, SetupError> {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+        .ok_or(SetupError::KeymapCompilation)
+}
+
 impl Compositor {
     /// Creates the Wayland globals and a seat with one keyboard.
     ///
@@ -140,10 +146,7 @@ impl Compositor {
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
-        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap =
-            xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
-                .ok_or(SetupError::KeymapCompilation)?;
+        let keymap = default_keymap()?;
         let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         let text_keys = text_keys(&keymap);
         let pointer = seat.add_pointer();

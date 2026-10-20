@@ -35,3 +35,4 @@ pub mod scale;
 pub mod bar;
 
 pub mod osk;
+pub mod wallpaper;
