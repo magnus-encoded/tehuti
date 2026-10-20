@@ -1106,3 +1106,29 @@ fn escape_chord_quits_while_the_keyboard_is_open() {
         "Start inside the chord never sends the draft"
     );
 }
+
+#[test]
+fn start_first_escape_chord_quits_without_sending_while_open() {
+    let mut world = World::default();
+    let mut state = with_open_keyboard(&mut world, State::default());
+    state = world.run(state, speech_event("unsent"));
+    for name in [ButtonName::Start, ButtonName::Guide] {
+        state = world.run(state, pad_button(name, ButtonState::Pressed));
+    }
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(3),
+        },
+    );
+    let _state = world.run(state, pad_button(ButtonName::Start, ButtonState::Released));
+    assert_eq!(
+        world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Apply(_)))
+            .collect::<Vec<_>>(),
+        vec![&Effect::Apply(Action::Quit)],
+        "Start pressed before Guide joins the chord and never sends"
+    );
+}

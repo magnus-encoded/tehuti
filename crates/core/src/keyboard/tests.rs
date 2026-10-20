@@ -321,10 +321,27 @@ fn b_closes_and_discards_the_draft() {
 fn menu_sends_the_draft_and_closes() {
     let mut keyboard = with_draft("hello there");
     assert_eq!(
-        tap(&mut keyboard, ButtonName::Start),
+        keyboard.button(ButtonName::Start, ButtonState::Pressed, true),
+        Response::Consumed,
+        "Menu sends on release, so a Guide press can still join the escape chord"
+    );
+    assert_eq!(
+        keyboard.button(ButtonName::Start, ButtonState::Released, true),
         Response::Send("hello there".into())
     );
     assert!(!keyboard.is_open());
+}
+
+#[test]
+fn guide_during_a_held_menu_cancels_the_send() {
+    let mut keyboard = with_draft("hello");
+    let _pressed = keyboard.button(ButtonName::Start, ButtonState::Pressed, true);
+    let _guide = keyboard.button(ButtonName::Guide, ButtonState::Pressed, true);
+    assert_eq!(
+        keyboard.button(ButtonName::Start, ButtonState::Released, true),
+        Response::Consumed
+    );
+    assert_eq!(keyboard.draft(), "hello");
 }
 
 #[test]

@@ -530,21 +530,46 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
         Event::Button {
             name: ButtonName::Start,
             ..
-        } if state.core.guide_held() => false,
+        } if state.keyboard.is_open() || state.keyboard.holds(ButtonName::Start) => {
+            if let Some(actions) = crate::escape_chord(&mut state.core, event) {
+                effects.extend(actions.into_iter().map(Effect::Apply));
+            }
+            let guide_held = state.core.guide_held();
+            let response = state.keyboard.button(ButtonName::Start, start_state(event), true);
+            if guide_held {
+                state.keyboard.cancel_send();
+            }
+            send_response(response, effects)
+        }
         Event::Button { name, state: button } => {
             let shoulders_move_caret = state.core.level() == crate::Level::InApp;
-            match state.keyboard.button(*name, *button, shoulders_move_caret) {
-                crate::keyboard::Response::Pass => false,
-                crate::keyboard::Response::Consumed => true,
-                crate::keyboard::Response::Send(draft) => {
-                    if let Ok(text) = tehuti_protocol::Text::new(draft) {
-                        effects.push(Effect::Apply(Action::Text { text }));
-                    }
-                    true
-                }
-            }
+            send_response(
+                state.keyboard.button(*name, *button, shoulders_move_caret),
+                effects,
+            )
         }
         Event::Speech { .. } | Event::Focus { .. } | Event::Tick { .. } => false,
+    }
+}
+
+const fn start_state(event: &Event) -> ButtonState {
+    match event {
+        Event::Button { state, .. } => *state,
+        Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => ButtonState::Released,
+    }
+}
+
+/// True when the keyboard consumed the button; a send becomes a text action.
+fn send_response(response: crate::keyboard::Response, effects: &mut Vec<Effect>) -> bool {
+    match response {
+        crate::keyboard::Response::Pass => false,
+        crate::keyboard::Response::Consumed => true,
+        crate::keyboard::Response::Send(draft) => {
+            if let Ok(text) = tehuti_protocol::Text::new(draft) {
+                effects.push(Effect::Apply(Action::Text { text }));
+            }
+            true
+        }
     }
 }
 

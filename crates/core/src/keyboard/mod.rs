@@ -200,6 +200,7 @@ pub struct Keyboard {
     captured: Vec<ButtonName>,
     repeat: Option<(Direction, Duration)>,
     stick_engaged: bool,
+    send_on_start_release: bool,
 }
 
 impl Keyboard {
@@ -232,9 +233,21 @@ impl Keyboard {
         self.layer = Layer::Letters;
     }
 
+    /// Whether a press of `name` was consumed and its release is still due.
+    #[must_use]
+    pub fn holds(&self, name: ButtonName) -> bool {
+        self.captured.contains(&name)
+    }
+
+    /// Keeps the held Start from sending, because it became part of the escape chord.
+    pub const fn cancel_send(&mut self) {
+        self.send_on_start_release = false;
+    }
+
     /// Forgets held buttons, for a disconnected controller.
     pub fn release_all(&mut self) {
         self.captured.clear();
+        self.send_on_start_release = false;
         self.repeat = None;
         self.stick_engaged = false;
     }
@@ -289,7 +302,14 @@ impl Keyboard {
 
     /// Offers one button. `shoulders_move_caret` is false when LB and RB drive columns.
     pub fn button(&mut self, name: ButtonName, state: ButtonState, shoulders_move_caret: bool) -> Response {
+        if name == ButtonName::Guide {
+            self.cancel_send();
+        }
         if state == ButtonState::Released {
+            if name == ButtonName::Start && core::mem::take(&mut self.send_on_start_release) {
+                self.captured.retain(|held| *held != name);
+                return self.send();
+            }
             let Some(index) = self.captured.iter().position(|held| *held == name) else {
                 return Response::Pass;
             };
@@ -323,7 +343,7 @@ impl Keyboard {
             ButtonName::West => self.backspace(),
             ButtonName::North => self.type_text(" "),
             ButtonName::East => self.close(),
-            ButtonName::Start => return self.send(),
+            ButtonName::Start => self.send_on_start_release = true,
             ButtonName::LeftBumper => self.move_caret(false),
             ButtonName::RightBumper => self.move_caret(true),
             ButtonName::LeftStick
