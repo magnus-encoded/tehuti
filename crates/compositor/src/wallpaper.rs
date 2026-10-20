@@ -21,6 +21,13 @@ use smithay::{
 };
 
 use crate::state::Compositor;
+use smithay::reexports::calloop::ping::Ping;
+
+#[derive(Debug)]
+struct Request {
+    size: Size<i32, Physical>,
+    redraw: Option<Ping>,
+}
 
 #[derive(Debug)]
 pub struct Wallpaper {
@@ -84,7 +91,8 @@ impl Wallpaper {
 
 #[derive(Debug)]
 pub struct WallpaperCache {
-    requests: std::sync::mpsc::SyncSender<Size<i32, Physical>>,
+    requests: std::sync::mpsc::SyncSender<Request>,
+    redraw: Option<Ping>,
     buffers: std::sync::mpsc::Receiver<(Size<i32, Physical>, Option<MemoryRenderBuffer>)>,
     ready: std::collections::HashMap<(i32, i32), Option<MemoryRenderBuffer>>,
     pending: std::collections::HashSet<(i32, i32)>,
@@ -93,13 +101,13 @@ pub struct WallpaperCache {
 impl WallpaperCache {
     #[must_use]
     pub fn new(path: std::path::PathBuf) -> Self {
-        let (requests, sizes) = std::sync::mpsc::sync_channel::<Size<i32, Physical>>(1);
+        let (requests, sizes) = std::sync::mpsc::sync_channel::<Request>(1);
         let (prepared, buffers) = std::sync::mpsc::channel();
         if let Err(error) = std::thread::Builder::new()
             .name("wallpaper".into())
             .spawn(move || {
                 let mut wallpaper = Wallpaper::load(&path);
-                while let Ok(size) = sizes.recv() {
+                while let Ok(Request { size, redraw }) = sizes.recv() {
                     let buffer = if wallpaper.image.is_some() {
                         match wallpaper.buffer(size) {
                             Ok(buffer) => Some(buffer),
@@ -114,6 +122,9 @@ impl WallpaperCache {
                     if prepared.send((size, buffer)).is_err() {
                         break;
                     }
+                    if let Some(redraw) = redraw {
+                        redraw.ping();
+                    }
                 }
             })
         {
@@ -121,10 +132,15 @@ impl WallpaperCache {
         }
         Self {
             requests,
+            redraw: None,
             buffers,
             ready: std::collections::HashMap::new(),
             pending: std::collections::HashSet::new(),
         }
+    }
+
+    pub fn set_redraw_ping(&mut self, ping: Ping) {
+        self.redraw = Some(ping);
     }
 
     pub fn buffer(&mut self, size: Size<i32, Physical>) -> Option<MemoryRenderBuffer> {
@@ -136,7 +152,10 @@ impl WallpaperCache {
             return buffer.clone();
         }
         if self.pending.insert((size.w, size.h)) {
-            match self.requests.try_send(size) {
+            match self.requests.try_send(Request {
+                size,
+                redraw: self.redraw.clone(),
+            }) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     tracing::warn!("wallpaper worker disconnected; using black");
@@ -149,6 +168,16 @@ impl WallpaperCache {
         }
         None
     }
+}
+
+/// # Errors
+/// Returns an error when the wallpaper cache is poisoned.
+pub fn set_redraw_ping(ping: Ping) -> Result<(), Box<dyn Error>> {
+    wallpaper()
+        .lock()
+        .map_err(|_| "wallpaper cache unavailable")?
+        .set_redraw_ping(ping);
+    Ok(())
 }
 
 fn wallpaper() -> &'static Mutex<WallpaperCache> {

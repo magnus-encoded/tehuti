@@ -156,6 +156,27 @@ mod wallpaper {
     }
 
     #[test]
+    fn ready_wallpaper_requests_redraw_without_input() -> Result<(), Box<dyn Error>> {
+        use smithay::reexports::calloop::{EventLoop, ping::make_ping};
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("wallpaper.png");
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([210, 80, 30, 255])).save(&path)?;
+        let mut event_loop = EventLoop::<bool>::try_new()?;
+        let (ping, source) = make_ping()?;
+        let _token = event_loop
+            .handle()
+            .insert_source(source, |(), (), redraw| *redraw = true)?;
+        let mut cache = WallpaperCache::new(path);
+        cache.set_redraw_ping(ping);
+        assert!(cache.buffer((20, 20).into()).is_none());
+        let mut redraw = false;
+        event_loop.dispatch(core::time::Duration::from_secs(2), &mut redraw)?;
+        assert!(redraw, "ready wallpaper must request a redraw without input");
+        assert!(cache.buffer((20, 20).into()).is_some());
+        Ok(())
+    }
+
+    #[test]
     fn worker_prepares_artwork_and_reuses_it_after_file_removal() -> Result<(), Box<dyn Error>> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("wallpaper.png");

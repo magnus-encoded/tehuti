@@ -83,6 +83,7 @@ pub(crate) fn insert(
             }
             UdevEvent::Added { .. } | UdevEvent::Changed { .. } | UdevEvent::Removed { .. } => {}
         })?;
+    insert_wallpaper_redraw(event_loop, tty.clone())?;
     let render_stop = event_loop.get_signal();
     let _timer_token = event_loop
         .handle()
@@ -98,6 +99,28 @@ pub(crate) fn insert(
             }
             TimeoutAction::ToDuration(Duration::from_millis(16))
         })?;
+    Ok(())
+}
+
+fn insert_wallpaper_redraw(
+    event_loop: &EventLoop<LoopData>,
+    tty: Rc<RefCell<Tty>>,
+) -> Result<(), Box<dyn Error>> {
+    let (ping, source) = smithay::reexports::calloop::ping::make_ping()?;
+    let redraw_tty = tty;
+    let redraw_stop = event_loop.get_signal();
+    let _wallpaper_token = event_loop.handle().insert_source(source, move |(), (), data| {
+        let mut backend = redraw_tty.borrow_mut();
+        if data.seat_active
+            && backend.device.is_active()
+            && !backend.pending
+            && let Err(error) = backend.render(data)
+        {
+            warn!(%error, "wallpaper frame failed");
+            redraw_stop.stop();
+        }
+    })?;
+    tehuti::wallpaper::set_redraw_ping(ping)?;
     Ok(())
 }
 

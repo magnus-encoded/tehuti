@@ -89,6 +89,13 @@ pub(crate) fn insert(
     compositor.output = Some(output.clone());
     compositor.fill_output();
 
+    let (ping, source) = smithay::reexports::calloop::ping::make_ping()?;
+    let redraw_backend = backend.clone();
+    let _wallpaper_token = event_loop.handle().insert_source(source, move |(), (), _| {
+        redraw_backend.borrow().window().request_redraw();
+    })?;
+    tehuti::wallpaper::set_redraw_ping(ping)?;
+
     let mut nested = Nested {
         backend,
         damage_tracker: OutputDamageTracker::from_output(&output),
