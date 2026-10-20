@@ -104,6 +104,7 @@ mod synthetic_pad {
         keymap_source: String,
         pending_text: String,
         suppress_enable: bool,
+        content_purpose: Option<zwp_text_input_v3::ContentPurpose>,
         modifiers: (u32, u32, u32),
         dmabuf_modifiers: Vec<(u32, u64)>,
         dmabuf_main_device: Vec<u8>,
@@ -495,6 +496,9 @@ mod synthetic_pad {
                 zwp_text_input_v3::Event::Enter { .. } => {
                     if !app.suppress_enable {
                         input.enable();
+                        if let Some(purpose) = app.content_purpose {
+                            input.set_content_type(zwp_text_input_v3::ContentHint::empty(), purpose);
+                        }
                         input.commit();
                     }
                 }
@@ -838,7 +842,14 @@ mod synthetic_pad {
         toplevel.set_title("Synthetic-window-title-1234567890".into());
         toplevel.set_app_id(initial_app_id.into());
         surface.commit();
-        let mut app = App::default();
+        let mut app = App {
+            content_purpose: if let ClientTextState::Purpose(purpose) = text_state {
+                Some(purpose)
+            } else {
+                None
+            },
+            ..App::default()
+        };
         let _initial_dispatch = queue.roundtrip(&mut app).unwrap();
         toplevel.set_app_id(app_id.into());
         let _focus_dispatch = queue.roundtrip(&mut app).unwrap();
@@ -1580,6 +1591,7 @@ mod synthetic_pad {
 
     #[derive(Clone, Copy)]
     enum ClientTextState {
+        Purpose(zwp_text_input_v3::ContentPurpose),
         Enabled,
         Absent,
         Disabled,
@@ -2354,6 +2366,55 @@ else:
                 dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
                 let _app = client.join().unwrap();
             }
+        }
+    }
+
+    #[test]
+    fn committed_content_purpose_selects_the_keyboard_layout() {
+        use tehuti_core::keyboard::Key;
+        use zwp_text_input_v3::ContentPurpose;
+        for (purpose, special) in [
+            (ContentPurpose::Normal, Key::Char(',')),
+            (ContentPurpose::Url, Key::Text(".com")),
+            (ContentPurpose::Email, Key::Char('@')),
+            (ContentPurpose::Password, Key::Char(',')),
+            (ContentPurpose::Number, Key::Char(',')),
+        ] {
+            let mut display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+            let (server, client) = UnixStream::pair().unwrap();
+            let _client = display
+                .handle()
+                .insert_client(server, Arc::new(ClientState::default()))
+                .unwrap();
+            let (sender, receiver) = mpsc::channel();
+            let client = thread::spawn(move || {
+                run_client_with_app_id(client, "test", "test", ClientTextState::Purpose(purpose), &sender)
+            });
+            let started = Instant::now();
+            dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+            assert!(
+                compositor.on_screen_keyboard().rows()[2]
+                    .iter()
+                    .any(|slot| slot.key == special)
+            );
+            assert_eq!(
+                compositor.on_screen_keyboard().password_field_active(),
+                purpose == ContentPurpose::Password
+            );
+            let mut pad = SyntheticPad::default();
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button {
+                    name: ButtonName::South,
+                    state,
+                });
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+            let _app = client.join().unwrap();
+            let _disconnected = display.dispatch_clients(&mut compositor).unwrap();
+            assert!(!compositor.on_screen_keyboard().password_field_active());
         }
     }
 

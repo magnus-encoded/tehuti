@@ -72,7 +72,8 @@ impl World {
                     Effect::Apply(Action::Close) | Effect::PluginAction(Action::Close) => {
                         state = self.close_focus(state);
                     }
-                    Effect::MovePointer { .. }
+                    Effect::PasswordSpeechIgnored
+                    | Effect::MovePointer { .. }
                     | Effect::Scroll { .. }
                     | Effect::Click { .. }
                     | Effect::MouseMode(_)
@@ -1239,7 +1240,7 @@ proptest! {
                 state = tap_button(&mut world, state, ButtonName::Select);
             }
         }
-        state = world.run(state, Input::TextField { active: true, changed: true });
+        state = world.run(state, Input::TextField { active: true, changed: true, kind: crate::keyboard::FieldKind::Normal });
         prop_assert_eq!(state.keyboard().is_open(), mode == "open");
         state = tap_button(&mut world, state, ButtonName::East);
         for event in events {
@@ -1249,10 +1250,10 @@ proptest! {
                 prop_assert!(opens);
                 state = tap_button(&mut world, state, ButtonName::East);
             }
-            state = world.run(state, Input::TextField { active: true, changed: false });
+            state = world.run(state, Input::TextField { active: true, changed: false, kind: crate::keyboard::FieldKind::Normal });
             prop_assert!(!state.keyboard().is_open());
         }
-        state = world.run(state, Input::TextField { active: true, changed: true });
+        state = world.run(state, Input::TextField { active: true, changed: true, kind: crate::keyboard::FieldKind::Normal });
         prop_assert_eq!(state.keyboard().is_open(), mode == "open");
     }
 }
@@ -1284,4 +1285,103 @@ fn application_keyboard_options_inherit_the_global_context() {
         state.core().keyboard_config(),
         (tehuti_protocol::OnTextField::Button, ButtonName::West)
     );
+}
+
+#[test]
+fn password_fields_ignore_record_and_speech_even_with_keyboard_closed() {
+    for open in [false, true] {
+        let mut world = World::default();
+        let mut state = world.run(State::default(), Input::Speech(SpeechInput::Available));
+        state = world.run(
+            state,
+            Input::TextField {
+                active: true,
+                changed: true,
+                kind: crate::keyboard::FieldKind::Password,
+            },
+        );
+        if open {
+            state = world.run(state, keyboard_button(ButtonName::North, ButtonState::Pressed));
+        }
+        world.trace.clear();
+        for event in [
+            Event::Button {
+                name: ButtonName::Record,
+                state: ButtonState::Pressed,
+            },
+            Event::Button {
+                name: ButtonName::Record,
+                state: ButtonState::Released,
+            },
+            Event::Speech {
+                text: Text::new("keyboard".into()).unwrap(),
+            },
+        ] {
+            state = world.run(
+                state,
+                Input::Event {
+                    event,
+                    elapsed: Duration::ZERO,
+                },
+            );
+        }
+        assert_eq!(state.keyboard().is_open(), open);
+        assert!(state.keyboard().password_field_active());
+        assert_eq!(state.keyboard().draft(), "");
+        assert_eq!(
+            world
+                .trace
+                .iter()
+                .filter(|effect| **effect == Effect::PasswordSpeechIgnored)
+                .count(),
+            3
+        );
+        assert!(!world.trace.iter().any(|effect| matches!(
+            effect,
+            Effect::SpeechCommand(_)
+                | Effect::Apply(_)
+                | Effect::DispatchPlugin {
+                    event: Event::Speech { .. },
+                    ..
+                }
+        )));
+    }
+}
+
+fn keyboard_button(name: ButtonName, state: ButtonState) -> Input {
+    Input::Event {
+        event: Event::Button { name, state },
+        elapsed: Duration::ZERO,
+    }
+}
+
+#[test]
+fn entering_password_field_cancels_capture_without_transcribing() {
+    let mut world = World::default();
+    let mut state = State::default();
+    for input in [SpeechInput::Available, SpeechInput::Press] {
+        state = world.run(state, Input::Speech(input));
+    }
+    world.trace.clear();
+    state = world.run(
+        state,
+        Input::TextField {
+            active: true,
+            changed: true,
+            kind: crate::keyboard::FieldKind::Password,
+        },
+    );
+    assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Stop {
+        session: 0,
+        transcribe: false,
+    })));
+    state = world.run(
+        state,
+        Input::TextField {
+            active: false,
+            changed: false,
+            kind: crate::keyboard::FieldKind::Normal,
+        },
+    );
+    assert!(!state.keyboard().password_field_active());
 }

@@ -41,6 +41,7 @@ pub enum Input {
     TextField {
         active: bool,
         changed: bool,
+        kind: crate::keyboard::FieldKind,
     },
     ControllerDisconnected,
     Sticks(Sticks),
@@ -62,6 +63,7 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    PasswordSpeechIgnored,
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
         x: i32,
@@ -261,12 +263,17 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             state.mouse.sticks = sticks;
             return (state, effects);
         }
-        Input::TextField { active, changed } => {
-            state.text_field = active;
-            if active && changed && state.core.keyboard_config().0 == tehuti_protocol::OnTextField::Open {
-                state.keyboard.open();
+        Input::TextField {
+            active,
+            changed,
+            kind,
+        } => {
+            update_text_field(&mut state, active, changed, kind);
+            if state.keyboard.password_field_active() {
+                vec![Task::Speech(SpeechInput::Cancel)]
+            } else {
+                return (state, effects);
             }
-            return (state, effects);
         }
         Input::ControllerDisconnected => {
             state.mouse.disconnect(&mut effects);
@@ -292,6 +299,21 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
         awaiting: None,
     });
     run(state, effects)
+}
+
+fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate::keyboard::FieldKind) {
+    state.keyboard.set_field_kind(
+        if active {
+            kind
+        } else {
+            crate::keyboard::FieldKind::Normal
+        },
+        changed,
+    );
+    state.text_field = active;
+    if active && changed && state.core.keyboard_config().0 == tehuti_protocol::OnTextField::Open {
+        state.keyboard.open();
+    }
 }
 
 fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
@@ -490,6 +512,19 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
 }
 
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if state.keyboard.password_field_active()
+        && matches!(
+            &event,
+            Event::Button {
+                name: ButtonName::Record,
+                ..
+            } | Event::Speech { .. }
+        )
+    {
+        effects.push(Effect::PasswordSpeechIgnored);
+        return;
+    }
+
     if keyboard(state, &event, effects) {
         return;
     }
