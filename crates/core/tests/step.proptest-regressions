@@ -6,5 +6,3 @@
 # everyone who runs the test benefits from these saved cases.
 cc f2315f659b6a553c69132b5afdf7afd27e5592f603b6891fb87f9cb13d3c9b67 # shrinks to configurations = [], plugins = [Plugin { app_id: "a", subscribes: true, ready: true }], events = [Focus { app_id: Some("a"), title: "" }, Speech { text: Text("") }], millis = 3000
 cc 6ea3a64eb3a83126c20288e2446d421078b1aa32031181b061358a08a4924955 # shrinks to text = Text(""), app_id = "a", name = Record, mappings = {}
-cc a318490d21af4a5e8db58b16cf8f6f766a18545b9de4190ef918037c0b6eac12 # shrinks to text = Text(""), app_id = "a", name = East, mappings = {North: PageUp}
-cc ae4dca10193724be14b432928629a533849457116d43ee1eedc6fb59440533b6 # shrinks to mappings = {South: PageUp}, other_mappings = {}, focused = None, name = South, button_state = Pressed

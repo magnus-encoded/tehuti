@@ -16,8 +16,8 @@ key = "up"
 ```
 
 Button names use snake case, such as `south`, `left_bumper` and `dpad_left`.
-Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, `home`, `end`, `page_up` and `page_down`. A mapping sends a complete key tap on button press. Releases send
+Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`
+and `right`. A mapping sends a complete key tap on button press. Releases send
 nothing. Unknown fields, buttons and keys are rejected. Application ids must
 contain a non-whitespace character.
 
@@ -92,17 +92,3 @@ button follows normal routing. Mouse mode uses the same button. `"open"` opens
 once per field. After B closes it, ordinary field updates keep it closed until
 the client enables another field. `"off"` disables field opening. Saying
 "keyboard" remains available in every application. See `examples/global/context.toml`.
-
-A terminal is an application whose field reports the terminal purpose, or one
-whose context sets `terminal = true`. Focusing a terminal never opens the
-keyboard, and neither does the opening button. A Guide tap into the in-app
-level opens it unless `open_on_in_app_level = false`. A terminal keeps the
-normal letters and adds a strip row above them: Esc, Tab, Ctrl, Alt, the arrow
-keys, Page Up, Page Down, `/`, `-`, `|` and `~`. Strip keys send the draft and
-then tap the key. Ctrl and Alt latch for the next key, strip key or letter, so
-Ctrl then `c` sends Ctrl-C. The symbols layer carries `|`, `<`, `>` and the
-backtick. In a terminal, Start and send type the draft, press Enter and keep the keyboard
-open for the next command. B sends Ctrl-C while the shell has
-a program in the foreground and closes the keyboard otherwise. Inside tmux,
-screen or ssh, B always closes. Dictation into a terminal drops commas and full
-stops that end a word.

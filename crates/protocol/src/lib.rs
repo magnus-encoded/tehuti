@@ -114,10 +114,6 @@ pub enum KeyName {
     Down,
     Left,
     Right,
-    Home,
-    End,
-    PageUp,
-    PageDown,
 }
 
 impl KeyName {
@@ -133,10 +129,6 @@ impl KeyName {
             Self::Down => 108,
             Self::Left => 105,
             Self::Right => 106,
-            Self::Home => 102,
-            Self::End => 107,
-            Self::PageUp => 104,
-            Self::PageDown => 109,
         }
     }
 }
@@ -156,10 +148,6 @@ pub enum OnTextField {
 pub struct KeyboardConfig {
     pub on_text_field: Option<OnTextField>,
     pub button: Option<ButtonName>,
-    /// Marks the application as a terminal, for apps that never report a terminal field.
-    pub terminal: Option<bool>,
-    /// Whether a Guide tap into the in-app level opens the keyboard in a terminal.
-    pub open_on_in_app_level: Option<bool>,
 }
 
 /// An exact application-id match and its pressed-button mappings.

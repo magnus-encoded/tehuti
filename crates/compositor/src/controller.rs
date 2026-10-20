@@ -29,7 +29,16 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
         .find_map(|mut device| match grab_nonblocking(&mut device) {
-            Ok(()) => Some(EvdevPad(device, DpadHat::default())),
+            Ok(()) => {
+                let translator = DpadHat::for_vendor(device.input_id().vendor());
+                tracing::debug!(
+                    name = device.name().unwrap_or("unnamed"),
+                    vendor = device.input_id().vendor(),
+                    face_layout = ?translator.face_layout,
+                    "controller face layout selected"
+                );
+                Some(EvdevPad(device, translator))
+            }
             Err(error) => {
                 warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
                 None
@@ -156,15 +165,43 @@ fn drain_device(device: &mut Device, hat: &mut DpadHat) -> io::Result<Vec<Event>
     }
 }
 
-/// Turns the d-pad hat axes (`ABS_HAT0X`, `ABS_HAT0Y`) into d-pad button events,
-/// as the Xbox Series pad reports its d-pad that way.
+/// Translates controller keys into physical button positions and d-pad hat axes
+/// (`ABS_HAT0X`, `ABS_HAT0Y`) into d-pad button events.
 #[derive(Debug, Default)]
 pub struct DpadHat {
+    face_layout: FaceLayout,
     horizontal: i32,
     vertical: i32,
 }
 
+#[derive(Debug, Default)]
+enum FaceLayout {
+    #[default]
+    Positional,
+    Xbox,
+}
+
 impl DpadHat {
+    /// Selects the face layout for a controller's USB vendor ID.
+    #[must_use]
+    pub fn for_vendor(vendor: u16) -> Self {
+        Self {
+            face_layout: match vendor {
+                0x045e => FaceLayout::Xbox,
+                _ => FaceLayout::Positional,
+            },
+            ..Self::default()
+        }
+    }
+
+    const fn face_code(&self, code: KeyCode) -> KeyCode {
+        match (&self.face_layout, code) {
+            (FaceLayout::Xbox, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
+            (FaceLayout::Xbox, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+            _ => code,
+        }
+    }
+
     /// Translates one evdev event: keys parse as buttons, hat axes as d-pad presses and releases.
     #[expect(
         clippy::wildcard_enum_match_arm,
@@ -172,7 +209,9 @@ impl DpadHat {
     )]
     pub fn translate(&mut self, event: &EventSummary) -> Vec<Event> {
         match *event {
-            EventSummary::Key(_, code, value) => parse_button(code, value).into_iter().collect(),
+            EventSummary::Key(_, code, value) => {
+                parse_button(self.face_code(code), value).into_iter().collect()
+            }
             EventSummary::AbsoluteAxis(_, AbsoluteAxisCode::ABS_HAT0X, value) => Self::step(
                 &mut self.horizontal,
                 value,
@@ -244,6 +283,42 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn vendor_layout_maps_face_buttons_to_physical_positions() {
+        for (vendor, code, name) in [
+            (0x045e, KeyCode(0x133), ButtonName::West),
+            (0x045e, KeyCode(0x134), ButtonName::North),
+            (0x054c, KeyCode::BTN_NORTH, ButtonName::North),
+            (0x054c, KeyCode::BTN_WEST, ButtonName::West),
+            (0xffff, KeyCode::BTN_NORTH, ButtonName::North),
+            (0xffff, KeyCode::BTN_WEST, ButtonName::West),
+        ] {
+            let mut pad = DpadHat::for_vendor(vendor);
+            for (value, state) in [(1, ButtonState::Pressed), (0, ButtonState::Released)] {
+                let event = evdev::InputEvent::new(evdev::EventType::KEY.0, code.code(), value);
+                assert_eq!(pad.translate(&event.destructure()), [button(name, state)]);
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn vendor_layout_preserves_every_other_raw_key(
+            code in any::<u16>().prop_filter("face codes have vendor layouts", |code| {
+                *code != KeyCode::BTN_NORTH.code() && *code != KeyCode::BTN_WEST.code()
+            }),
+            value in any::<i32>(),
+            vendor in any::<u16>(),
+        ) {
+            let event = evdev::InputEvent::new(evdev::EventType::KEY.0, code, value);
+            prop_assert_eq!(
+                DpadHat::for_vendor(vendor).translate(&event.destructure()),
+                DpadHat::default().translate(&event.destructure())
+            );
+        }
+    }
 
     #[test]
     fn south_button_press_is_a_pressed() {

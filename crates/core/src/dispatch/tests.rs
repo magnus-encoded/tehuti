@@ -15,7 +15,6 @@ struct World {
     clock: VecDeque<Duration>,
     request: Option<(RequestKey, Vec<Permission>)>,
     close_focus: Option<Event>,
-    foreground_program: bool,
 }
 
 impl World {
@@ -56,9 +55,6 @@ impl World {
                     Effect::Supervise => {
                         reply = Input::Supervised(self.exits.pop_front().unwrap_or_default());
                     }
-                    Effect::QueryForegroundProgram => {
-                        reply = Input::ForegroundProgram(self.foreground_program);
-                    }
                     Effect::ConfirmSecret(_) => reply = Input::SecretConfirmation(self.secret_consumes),
                     Effect::SpeechCommand(_) => reply = Input::SpeechSent(true),
                     Effect::PollSpeech(_) => {
@@ -82,7 +78,6 @@ impl World {
                     | Effect::Click { .. }
                     | Effect::MouseMode(_)
                     | Effect::PollSources
-                    | Effect::Chord(_)
                     | Effect::SouthPressed(_)
                     | Effect::ResetSecretFocus
                     | Effect::Apply(_)
@@ -1413,183 +1408,4 @@ fn entering_password_field_cancels_capture_without_transcribing() {
         },
     );
     assert!(!state.keyboard().password_field_active());
-}
-
-fn terminal_by_context(open_on_in_app_level: Option<bool>) -> State {
-    let option =
-        open_on_in_app_level.map_or_else(String::new, |opens| format!("open_on_in_app_level = {opens}\n"));
-    let context = tehuti_protocol::parse_context(&format!(
-        "app_id = 'console'\n[buttons]\n[keyboard]\nterminal = true\non_text_field = 'open'\n{option}"
-    ))
-    .unwrap();
-    configured(vec![context], "console")
-}
-
-fn terminal_field() -> Input {
-    Input::TextField {
-        active: true,
-        changed: true,
-        kind: crate::keyboard::FieldKind::Terminal,
-    }
-}
-
-fn applied(world: &World) -> Vec<&Effect> {
-    world
-        .trace
-        .iter()
-        .filter(|effect| matches!(effect, Effect::Apply(_)))
-        .collect()
-}
-
-proptest! {
-    #[test]
-    fn focusing_a_terminal_or_its_field_never_opens_the_keyboard(
-        mode in prop::sample::select(vec!["open", "button", "off"]),
-        by_context in prop::bool::ANY,
-        events in prop::collection::vec(every_button(), 0..30),
-    ) {
-        let terminal = if by_context { "terminal = true\n" } else { "" };
-        let context = tehuti_protocol::parse_context(&format!(
-            "app_id = 'console'\n[buttons]\n[keyboard]\non_text_field = '{mode}'\n{terminal}"
-        )).unwrap();
-        let mut world = World::default();
-        let mut state = configured(vec![context], "console");
-        state = world.run(state, Input::TextField {
-            active: true,
-            changed: true,
-            kind: if by_context { crate::keyboard::FieldKind::Normal } else { crate::keyboard::FieldKind::Terminal },
-        });
-        prop_assert!(!state.keyboard().is_open());
-        for event in events {
-            let guide = matches!(event, Event::Button { name: ButtonName::Guide, .. });
-            state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
-            if guide {
-                break;
-            }
-            prop_assert!(!state.keyboard().is_open(), "only a Guide tap opens it in a terminal");
-        }
-    }
-}
-
-#[test]
-fn a_guide_tap_into_the_in_app_level_opens_the_terminal_keyboard() {
-    for state in [
-        terminal_by_context(None),
-        World::default().run(State::default(), terminal_field()),
-    ] {
-        let mut world = World::default();
-        let state = tap_button(&mut world, state, ButtonName::Guide);
-        assert_eq!(state.core().level(), crate::Level::Columns);
-        assert!(!state.keyboard().is_open());
-        let state = tap_button(&mut world, state, ButtonName::Guide);
-        assert!(state.keyboard().is_open());
-        assert!(state.keyboard().terminal());
-    }
-}
-
-#[test]
-fn a_context_can_keep_the_guide_tap_from_opening_the_terminal_keyboard() {
-    let mut world = World::default();
-    let mut state = terminal_by_context(Some(false));
-    for _ in 0..2 {
-        state = tap_button(&mut world, state, ButtonName::Guide);
-    }
-    assert_eq!(state.core().level(), crate::Level::InApp);
-    assert!(!state.keyboard().is_open());
-}
-
-#[test]
-fn guide_taps_outside_terminals_never_open_the_keyboard() {
-    let mut world = World::default();
-    let mut state = State::default();
-    for _ in 0..2 {
-        state = tap_button(&mut world, state, ButtonName::Guide);
-    }
-    assert!(!state.keyboard().is_open());
-}
-
-#[test]
-fn b_in_a_terminal_sends_ctrl_c_only_when_a_foreground_program_runs() {
-    for running in [false, true] {
-        let mut world = World {
-            foreground_program: running,
-            ..World::default()
-        };
-        let state = with_open_keyboard(&mut world, terminal_by_context(None));
-        world.trace.clear();
-        let state = tap_button(&mut world, state, ButtonName::East);
-        assert!(world.trace.contains(&Effect::QueryForegroundProgram));
-        if running {
-            assert!(state.keyboard().is_open());
-            assert_eq!(applied(&world), Vec::<&Effect>::new());
-            assert!(
-                world
-                    .trace
-                    .contains(&Effect::Chord(crate::keyboard::Chord::INTERRUPT))
-            );
-        } else {
-            assert!(!state.keyboard().is_open());
-            assert_eq!(applied(&world), Vec::<&Effect>::new());
-        }
-    }
-}
-
-#[test]
-fn b_outside_terminals_never_asks_about_foreground_programs() {
-    let mut world = World {
-        foreground_program: true,
-        ..World::default()
-    };
-    let state = with_open_keyboard(&mut world, State::default());
-    let state = tap_button(&mut world, state, ButtonName::East);
-    assert!(!state.keyboard().is_open());
-    assert!(!world.trace.contains(&Effect::QueryForegroundProgram));
-}
-
-#[test]
-fn terminal_strip_keys_send_the_draft_then_the_key() {
-    let mut world = World::default();
-    let mut state = with_open_keyboard(&mut world, terminal_by_context(None));
-    state = world.run(state, speech_event("ls"));
-    state = tap_button(&mut world, state, ButtonName::DpadUp);
-    state = tap_button(&mut world, state, ButtonName::DpadLeft);
-    world.trace.clear();
-    let state = tap_button(&mut world, state, ButtonName::South);
-    assert!(state.keyboard().is_open());
-    assert_eq!(state.keyboard().draft(), "");
-    assert_eq!(
-        applied(&world),
-        vec![&Effect::Apply(Action::Text {
-            text: Text::new("ls".into()).unwrap()
-        })]
-    );
-    assert!(world.trace.contains(&Effect::Chord(crate::keyboard::Chord {
-        key: crate::keyboard::ChordKey::Named(tehuti_protocol::KeyName::Tab),
-        modifiers: crate::keyboard::Modifiers::default(),
-    })));
-}
-
-#[test]
-fn dictation_into_a_terminal_drops_commas_and_full_stops() {
-    let mut world = World::default();
-    let state = with_open_keyboard(&mut world, terminal_by_context(None));
-    let state = world.run(state, speech_event("Claude, --model, sonnet. notes.txt"));
-    assert_eq!(state.keyboard().draft(), "Claude --model sonnet notes.txt");
-}
-
-#[test]
-fn typed_speech_into_a_terminal_drops_commas_and_full_stops() {
-    let context = tehuti_protocol::parse_context(
-        "app_id = 'console'\nunmatched_speech = 'type'\n[buttons]\n[keyboard]\nterminal = true",
-    )
-    .unwrap();
-    let mut world = World::default();
-    let state = configured(vec![context], "console");
-    let _state = world.run(state, speech_event("git, status."));
-    assert_eq!(
-        applied(&world),
-        vec![&Effect::Apply(Action::Text {
-            text: Text::new("git status ".into()).unwrap()
-        })]
-    );
 }
