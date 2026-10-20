@@ -1134,6 +1134,23 @@ impl Compositor {
         }
     }
 
+    /// Forwards one key from the host keyboard to the focused client.
+    pub fn host_key(&mut self, keycode: Keycode, pressed: bool) {
+        let state = if pressed {
+            smithay::backend::input::KeyState::Pressed
+        } else {
+            smithay::backend::input::KeyState::Released
+        };
+        self.send_keycode(keycode, state);
+    }
+
+    /// Releases every held host key, so a key held when the host window loses focus does not stick.
+    pub fn release_host_keys(&mut self) {
+        for keycode in self.keyboard.pressed_keys() {
+            self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
+        }
+    }
+
     fn send_keycode(&mut self, keycode: Keycode, state: smithay::backend::input::KeyState) {
         let keyboard = self.keyboard.clone();
         let time = self.millis_since_start();
