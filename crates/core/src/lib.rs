@@ -107,6 +107,17 @@ impl State {
         self.start_held = false;
     }
 
+    /// Whether Guide is down, so Start belongs to the escape chord.
+    #[must_use]
+    pub const fn guide_held(&self) -> bool {
+        self.guide_held.is_some()
+    }
+
+    /// Shows on the bar what the on-screen keyboard did with speech.
+    pub(crate) fn keyboard_feedback(&mut self, text: &str) {
+        self.bar.keyboard_feedback(text);
+    }
+
     /// What the shoulder buttons currently drive.
     #[must_use]
     pub const fn level(&self) -> Level {
@@ -318,3 +329,5 @@ pub mod windows;
 pub mod layout;
 
 pub mod bar;
+
+pub mod keyboard;

@@ -33,3 +33,5 @@ pub mod rendering;
 pub mod scale;
 
 pub mod bar;
+
+pub mod osk;

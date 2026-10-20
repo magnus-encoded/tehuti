@@ -42,6 +42,7 @@ struct Nested {
     notice: MemoryRenderBuffer,
     notice_text: String,
     bar: tehuti::bar::Buffer,
+    keyboard: tehuti::osk::Buffer,
 }
 
 #[expect(
@@ -98,6 +99,7 @@ pub(crate) fn insert(
         notice: tehuti::notice::speech_notice_buffer(),
         notice_text: "NO SPEECH MAPPING".into(),
         bar: tehuti::bar::Buffer::default(),
+        keyboard: tehuti::osk::Buffer::default(),
     };
     let _winit_token = event_loop
         .handle()
@@ -210,6 +212,7 @@ impl Nested {
                     Ok(None) => {}
                     Err(error) => warn!(?error, "bar render failed"),
                 }
+                append_keyboard(&mut self.keyboard, &self.output, renderer, data, &mut notices);
                 append_cursor(renderer, data, &mut notices);
                 match render_output::<_, MemoryRenderBufferRenderElement<GlesRenderer>, _, _>(
                     &self.output,
@@ -230,6 +233,20 @@ impl Nested {
             Err(error) => warn!(?error, "bind failed"),
         }
         (confirmation_element_included, output_drew)
+    }
+}
+
+fn append_keyboard(
+    keyboard: &mut tehuti::osk::Buffer,
+    output: &Output,
+    renderer: &mut GlesRenderer,
+    data: &LoopData,
+    notices: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    match keyboard.element(renderer, output, data.compositor.on_screen_keyboard()) {
+        Ok(Some(element)) => notices.push(element),
+        Ok(None) => {}
+        Err(error) => warn!(?error, "keyboard render failed"),
     }
 }
 
