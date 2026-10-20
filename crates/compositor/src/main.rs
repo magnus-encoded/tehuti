@@ -55,12 +55,16 @@ impl LoopData {
 }
 
 fn initialize_tracing() {
+    let default = if std::env::var_os("TEHUTI_TIMING").is_some() {
+        "trace"
+    } else {
+        "info"
+    };
     tracing_subscriber::fmt()
-        .with_max_level(if std::env::var_os("TEHUTI_TIMING").is_some() {
-            tracing::Level::TRACE
-        } else {
-            tracing::Level::INFO
-        })
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default)),
+        )
         .init();
 }
 

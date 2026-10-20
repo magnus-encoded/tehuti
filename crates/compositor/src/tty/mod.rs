@@ -42,6 +42,8 @@ struct Tty {
     next: bool,
     pending: bool,
     modeset: bool,
+    retry_at: Option<std::time::Instant>,
+    retry_delay: Duration,
 }
 
 #[expect(
@@ -260,6 +262,8 @@ fn create_output(
         next: false,
         pending: false,
         modeset: true,
+        retry_at: None,
+        retry_delay: Duration::ZERO,
     };
     Ok((tty, drm_notifier))
 }
@@ -368,34 +372,59 @@ impl Tty {
     }
 
     fn restore_mode(&mut self, data: &mut LoopData) {
-        let mode = if let Some((mode, renderer, next)) = self.rollback.take() {
-            self.renderer = renderer;
-            self.next = next;
-            mode
-        } else {
-            self.surface.current_mode()
-        };
-        if let Err(error) = self.surface.use_mode(mode) {
-            warn!(%error, "DRM mode restoration failed; retaining scanout buffers");
+        let mode = self.surface.current_mode();
+        let restored = self
+            .surface
+            .use_mode(mode)
+            .map_err(Box::<dyn Error>::from)
+            .and_then(|()| {
+                mode::restored_renderer(mode, self.rollback.take(), || {
+                    render::create(self.device.device_fd(), &self.surface)
+                })
+            });
+        match restored {
+            Ok((renderer, next)) => {
+                self.renderer = renderer;
+                self.next = next;
+                self.set_output_mode(mode, data);
+            }
+            Err(error) => warn!(%error, "DRM mode restoration failed; retaining scanout buffers"),
         }
-        self.set_output_mode(mode, data);
-        warn!("all listed DRM modes failed; retaining last working output");
     }
 
     fn render(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
+        if self
+            .retry_at
+            .is_some_and(|deadline| std::time::Instant::now() < deadline)
+        {
+            return Ok(());
+        }
         crate::advance_time(data);
-        mode::retry(
-            &mut (self, data),
+        let result = mode::retry(
+            &mut (&mut *self, data),
             |(tty, data)| tty.render_frame(data),
             |(tty, data), error| {
                 if !tty.modeset {
                     return Err(error);
                 }
-                warn!(%error, mode = ?tty.surface.pending_mode(), "DRM modeset failed; trying next listed mode");
-                Ok(tty.fallback_mode(data))
+                let fallback = tty.fallback_mode(data);
+                if fallback {
+                    warn!(%error, "DRM modeset failed; trying next listed mode");
+                } else {
+                    warn!(%error, delay = ?mode::next_backoff(tty.retry_delay), "all listed DRM modes failed; backing off before retrying restored output");
+                }
+                Ok(fallback)
             },
             |(tty, data)| tty.restore_mode(data),
-        ).map(|_| ())
+        )?;
+        if result.is_some() {
+            self.retry_at = None;
+            self.retry_delay = Duration::ZERO;
+        } else {
+            self.retry_delay = mode::next_backoff(self.retry_delay);
+            self.retry_at = std::time::Instant::now().checked_add(self.retry_delay);
+        }
+        Ok(())
     }
 
     fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {

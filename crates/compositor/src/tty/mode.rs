@@ -58,6 +58,26 @@ pub(super) fn ordered(modes: &[ListedMode], request: Option<Request>) -> (Vec<us
     (indices, matched.is_some())
 }
 
+pub(super) fn restored_renderer<Mode: Copy + PartialEq, Renderer, Error>(
+    restored: Mode,
+    rollback: Option<(Mode, Renderer, bool)>,
+    rebuild: impl FnOnce() -> Result<Renderer, Error>,
+) -> Result<(Renderer, bool), Error> {
+    if let Some((mode, renderer, next)) = rollback
+        && mode == restored
+    {
+        return Ok((renderer, next));
+    }
+    rebuild().map(|renderer| (renderer, false))
+}
+
+pub(super) fn next_backoff(previous: core::time::Duration) -> core::time::Duration {
+    previous.saturating_mul(2).clamp(
+        core::time::Duration::from_millis(32),
+        core::time::Duration::from_secs(4),
+    )
+}
+
 pub(super) fn retry<State, Value, Error>(
     state: &mut State,
     mut attempt: impl FnMut(&mut State) -> Result<Value, Error>,
@@ -79,8 +99,30 @@ pub(super) fn retry<State, Value, Error>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ListedMode, Request, ordered, retry};
+    use super::{ListedMode, Request, next_backoff, ordered, restored_renderer, retry};
     use proptest::prelude::*;
+
+    #[test]
+    fn restoration_rebuilds_for_the_current_mode_without_a_matching_renderer() {
+        let rebuilt = restored_renderer(1920, None::<(u32, u32, bool)>, || Ok::<_, ()>(1920));
+        assert_eq!(rebuilt, Ok((1920, false)));
+        let mismatched = restored_renderer(1920, Some((3840, 3840, true)), || Ok::<_, ()>(1920));
+        assert_eq!(mismatched, Ok((1920, false)));
+        let saved = restored_renderer(1920, Some((1920, 1920, true)), || Err(()));
+        assert_eq!(saved, Ok((1920, true)));
+        let failed = restored_renderer(1920, None::<(u32, u32, bool)>, || Err("allocation failed"));
+        assert_eq!(failed, Err("allocation failed"));
+    }
+
+    #[test]
+    fn exhausted_mode_backoff_doubles_and_caps_at_four_seconds() {
+        use core::time::Duration;
+        let mut delay = Duration::ZERO;
+        for millis in [32, 64, 128, 256, 512, 1024, 2048, 4000, 4000] {
+            delay = next_backoff(delay);
+            assert_eq!(delay, Duration::from_millis(millis));
+        }
+    }
 
     const MODES: [ListedMode; 4] = [
         ListedMode {
@@ -230,6 +272,24 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn restoration_always_pairs_the_restored_mode_with_its_renderer(
+            restored in 1_u32..8192,
+            saved in 1_u32..8192,
+            next in any::<bool>(),
+        ) {
+            let result = restored_renderer(restored, Some((saved, saved, next)), || Ok::<_, ()>(restored));
+            prop_assert_eq!(result.map(|(renderer, _)| renderer), Ok(restored));
+        }
+
+        #[test]
+        fn backoff_never_shrinks_below_the_cap(millis in 0_u64..=4000) {
+            let previous = core::time::Duration::from_millis(millis);
+            let next = next_backoff(previous);
+            prop_assert!(next >= previous);
+            prop_assert!(next <= core::time::Duration::from_secs(4));
+        }
+
         #[test]
         fn ordering_preserves_exactly_the_driver_list(
             sizes in prop::collection::vec((1_u16..=8192, 1_u16..=8192, 1_u32..=360, any::<bool>()), 0..40),
