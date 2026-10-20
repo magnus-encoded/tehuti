@@ -1039,8 +1039,16 @@ impl Compositor {
                 found
             }
         };
-        modifiers.ctrl |= chord.modifiers.control;
-        modifiers.alt |= chord.modifiers.alt;
+        // Clients read the serialized mask, not the flags. Control and Mod1 (Alt) are xkb real
+        // modifiers with fixed indices 2 and 3 in every keymap.
+        if chord.modifiers.control {
+            modifiers.ctrl = true;
+            modifiers.serialized.depressed |= 1 << 2;
+        }
+        if chord.modifiers.alt {
+            modifiers.alt = true;
+            modifiers.serialized.depressed |= 1 << 3;
+        }
         let focus = self.keyboard.current_focus();
         let seat = self.seat.clone();
         if let Some(surface) = &focus {
