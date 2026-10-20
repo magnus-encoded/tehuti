@@ -104,12 +104,18 @@ impl State {
                 single_tap = !self.active;
             }
         }
+        let nanos = i64::try_from(elapsed.as_nanos().min(100_000_000)).unwrap_or(100_000_000);
+        let motion = |axis: i16| {
+            let axis = i64::from(axis).clamp(-1000, 1000);
+            i32::try_from(
+                axis.saturating_mul(axis.abs())
+                    .saturating_mul(nanos)
+                    .saturating_div(1_000_000),
+            )
+            .unwrap_or(0)
+        };
         if self.active {
             let millis = i32::try_from(elapsed.as_millis().min(100)).unwrap_or(100);
-            let motion = |axis: i16| {
-                let axis = i32::from(axis).clamp(-1000, 1000);
-                axis.saturating_mul(axis.abs()).saturating_mul(millis)
-            };
             let (x, y) = self.sticks.left;
             if x != 0 || y != 0 {
                 effects.push(Effect::MovePointer {
