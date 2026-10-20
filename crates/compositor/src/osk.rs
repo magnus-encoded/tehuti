@@ -97,6 +97,10 @@ impl Buffer {
     }
 }
 
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "Strip keys get symbols; any other key shows its keysym name"
+)]
 fn label(key: Key, shifted: bool, symbols: bool) -> String {
     match key {
         Key::Char(character) if shifted => character.to_uppercase().collect(),
@@ -116,6 +120,7 @@ fn label(key: Key, shifted: bool, symbols: bool) -> String {
             KeyName::Escape => "esc",
             KeyName::Space => "spc",
             KeyName::Backspace => "⌫",
+            other => return other.keysym_name().to_lowercase(),
         }
         .into(),
         Key::Modifier(tehuti_core::keyboard::Modifier::Control) => "ctrl".into(),

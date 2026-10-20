@@ -81,7 +81,10 @@ mod plugin_latency {
             state,
             Input::Reply {
                 key: excess,
-                result: Ok(vec![Action::Key { key: KeyName::Enter }]),
+                result: Ok(vec![Action::Key {
+                    key: KeyName::Enter,
+                    mods: Vec::new(),
+                }]),
             },
         );
         assert_eq!(duplicate, Vec::<Action>::new());
@@ -158,7 +161,7 @@ mod plugin_latency {
             prop_assert!(early.is_empty(), "fallback must not fire before its deadline");
             let (state, due, _) = plugin::step(state, Input::Tick { elapsed: Duration::from_millis(100_u64.saturating_sub(before)) });
             prop_assert_eq!(due, vec![Action::Text { text }]);
-            let (_, late, _) = plugin::step(state, Input::Reply { key, result: Ok(vec![Action::Key { key: KeyName::Enter }]) });
+            let (_, late, _) = plugin::step(state, Input::Reply { key, result: Ok(vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }]) });
             prop_assert!(late.is_empty(), "the deadline closes the request before a reply");
         }
 
@@ -174,7 +177,7 @@ mod plugin_latency {
             let (state, _) = step(state, &Event::Focus { app_id: Some("editor".into()), title: String::new() });
             let (state, timed, _) = plugin::step(state, Input::Tick { elapsed: Duration::from_millis(elapsed) });
             prop_assert!(timed.is_empty(), "old fallback cannot cross a focus generation");
-            let (_, replied, _) = plugin::step(state, Input::Reply { key, result: Ok(vec![Action::Key { key: KeyName::Enter }]) });
+            let (_, replied, _) = plugin::step(state, Input::Reply { key, result: Ok(vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }]) });
             prop_assert!(replied.is_empty(), "returning to the same app must not revive an old reply");
         }
 
@@ -218,14 +221,14 @@ mod plugin_latency {
             let key = RequestKey { plugin: 0, request_id: 1 };
             let fallback = speech_fallback(&text);
             let pending = request(State::new(), key, speech(text.clone()));
-            let mut actions: Vec<_> = prefix.into_iter().map(|name| Action::Key { key: name }).collect();
+            let mut actions: Vec<_> = prefix.into_iter().map(|name| Action::Key { key: name, mods: Vec::new() }).collect();
             actions.push(Action::Text { text });
             let (resolved, delivered, rejection) = plugin::step(pending, Input::Reply { key, result: Ok(actions) });
             prop_assert_eq!(delivered, fallback);
             prop_assert!(rejection.as_ref().is_some_and(|rejected| rejected.key == key && rejected.reason.contains("text")), "a denied action names its request and reason");
             let (_, repeated, _) = plugin::step(resolved, Input::Reply {
                 key,
-                result: Ok(vec![Action::Key { key: KeyName::Enter }]),
+                result: Ok(vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }]),
             });
             prop_assert!(repeated.is_empty(), "a resolved request cannot deliver twice");
         }
@@ -245,7 +248,7 @@ mod plugin_latency {
             let state = request(state, new, speech(second));
             let (state, late, _) = plugin::step(state, Input::Reply {
                 key: old,
-                result: Ok(vec![Action::Key { key: KeyName::Enter }]),
+                result: Ok(vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }]),
             });
             prop_assert!(late.is_empty(), "late replies cannot deliver or release another event");
             let (_, delivered, _) = plugin::step(state, Input::Reply { key: new, result: Ok(Vec::new()) });

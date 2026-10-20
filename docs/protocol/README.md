@@ -115,7 +115,7 @@ accepted or stale. If a pending decision contains an invalid action, it replies
 with `error` code -32602 and releases that event's captured fallback:
 
 ```json
-{"jsonrpc":"2.0","id":42,"error":{"code":-32602,"message":"action 0 (key): unknown variant `Tab`"}}
+{"jsonrpc":"2.0","id":42,"error":{"code":-32602,"message":"action 0 (key): unknown variant `Hyper`"}}
 ```
 
 Action submissions share the event deadline and exactly-once handling of legacy
@@ -176,9 +176,43 @@ Key actions press and release one key in the currently focused Wayland client:
 {"type":"key","key":"tab"}
 ```
 
-Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, `home`, `end`, `page_up`, `page_down`, in snake case. Text delivers Unicode through enabled text-input-v3,
-with keyboard taps as fallback:
+Keys are `a`–`z`, `0`–`9`, `minus`, `equal`, `left_bracket`,
+`right_bracket`, `semicolon`, `apostrophe`, `grave`, `comma`, `period`,
+`slash`, `backslash`, `f1`–`f12`, `home`, `end`, `page_up`, `page_down`,
+`insert`, `delete`, `enter`, `escape`, `space`, `tab`, `backspace`,
+`up`, `down`, `left`, and `right`. Capitalized key labels such as `Left` and
+`F5` are accepted too. Optional `mods` holds `ctrl`, `alt`, `shift`, or `super`
+while the key is tapped, then releases them:
+
+```json
+{"type":"key","key":"l","mods":["ctrl"]}
+```
+
+Keys and modifiers resolve through the active XKB keymap, including remapped
+modifier keys. A shortcut whose key or modifier keysym is absent produces no
+events. Modifiers go down in Ctrl, Alt, Shift, Super order, then the key is
+pressed and released, then the modifiers release in reverse order. Duplicate
+modifier names hold each modifier once; omitting `mods` sends an unmodified key.
+
+Common shortcuts as actions:
+
+| Shortcut | Action |
+| --- | --- |
+| Alt+Left / Alt+Right | `{ key = "left", mods = ["alt"] }` / `"right"` |
+| Ctrl+0, Ctrl+Equal, Ctrl+Minus | `{ key = "0", mods = ["ctrl"] }`, `"equal"`, `"minus"` |
+| Ctrl+F, Ctrl+L, Ctrl+T, Ctrl+W | `{ key = "f", mods = ["ctrl"] }`, `"l"`, `"t"`, `"w"` |
+| Ctrl+Tab | `{ key = "tab", mods = ["ctrl"] }` |
+| Ctrl+Shift+Tab | `{ key = "tab", mods = ["ctrl", "shift"] }` |
+| Shift+Tab | `{ key = "tab", mods = ["shift"] }` |
+| Home, End, Page Up, Page Down, F5 | `{ key = "home" }`, `"end"`, `"page_up"`, `"page_down"`, `"f5"` |
+| Ctrl+Alt+Shift+D | `{ key = "d", mods = ["ctrl", "alt", "shift"] }` |
+
+Context mappings use the same fields, for
+example `{ key = "left", mods = ["alt"] }`. The shipped Firefox context maps
+East to Back, North to the address bar, and the bumpers to previous/next tab;
+speech commands are "new tab", "reload", and "close tab".
+
+Text delivers Unicode through enabled text-input-v3, with keyboard taps as fallback:
 
 ```json
 {"type":"text","text":"Hello ✓"}

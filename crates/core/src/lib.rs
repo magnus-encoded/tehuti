@@ -239,7 +239,10 @@ const fn global_layer(event: &Event) -> Option<Action> {
         Event::Button {
             name: ButtonName::South,
             state: ButtonState::Pressed,
-        } => Some(Action::Key { key: KeyName::Enter }),
+        } => Some(Action::Key {
+            key: KeyName::Enter,
+            mods: Vec::new(),
+        }),
         Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => None,
     }
 }

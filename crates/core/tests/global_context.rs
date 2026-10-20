@@ -36,11 +36,17 @@ mod global_context {
     fn global_phrase_beats_focused_typing_and_focused_phrase_wins_conflicts() {
         assert_eq!(
             speak(state(Some("browser")), "open atlas"),
-            vec![Action::Key { key: KeyName::Enter }]
+            vec![Action::Key {
+                key: KeyName::Enter,
+                mods: Vec::new()
+            }]
         );
         assert_eq!(
             speak(state(Some("browser")), "Clear."),
-            vec![Action::Key { key: KeyName::Space }]
+            vec![Action::Key {
+                key: KeyName::Space,
+                mods: Vec::new()
+            }]
         );
         assert!(matches!(
             speak(state(Some("browser")), "hello").as_slice(),
@@ -60,7 +66,8 @@ mod global_context {
         assert_eq!(
             actions,
             vec![Action::Key {
-                key: KeyName::Backspace
+                key: KeyName::Backspace,
+                mods: Vec::new()
             }]
         );
     }
@@ -73,7 +80,7 @@ mod global_context {
         ) {
             prop_assert_eq!(
                 speak(state(focused.as_deref()), spoken),
-                vec![Action::Key { key: KeyName::Enter }]
+                vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }]
             );
         }
     }

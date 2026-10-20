@@ -43,7 +43,7 @@ mod step {
         ) {
             let a_presses = events.iter().filter(|event| **event == A_PRESSED).count();
             let keys: Vec<_> = run(&events).into_iter().filter(|action| matches!(action, Action::Key { .. })).collect();
-            prop_assert_eq!(keys, vec![Action::Key { key: KeyName::Enter }; a_presses]);
+            prop_assert_eq!(keys, vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }; a_presses]);
         }
     }
 
@@ -58,7 +58,7 @@ mod step {
             let mut source = format!("app_id = {}\n[buttons]\n", toml::Value::String(app_id.clone()));
             for (button, key) in mappings {
                 if button != name {
-                    writeln!(source, "[buttons.{}]\nkey = '{}'", button_name(button), key_name(key)).unwrap();
+                    writeln!(source, "[buttons.{}]\nkey = '{key:?}'", button_name(button)).unwrap();
                 }
             }
             writeln!(source, "[buttons.{}]\ntext = {}", button_name(name), toml::Value::String(text.as_str().into())).unwrap();
@@ -170,23 +170,13 @@ mod step {
         name
     }
 
-    fn key_name(key: KeyName) -> String {
-        snake_case(&format!("{key:?}"))
-    }
-
     fn generated_context(
         app_id: &str,
         mappings: &std::collections::HashMap<ButtonName, KeyName>,
     ) -> tehuti_protocol::Context {
         let mut source = format!("app_id = '{app_id}'\n[buttons]\n");
         for (button, key) in mappings {
-            write!(
-                source,
-                "[buttons.{}]\nkey = '{}'\n",
-                button_name(*button),
-                key_name(*key)
-            )
-            .unwrap();
+            write!(source, "[buttons.{}]\nkey = '{key:?}'\n", button_name(*button)).unwrap();
         }
         tehuti_protocol::parse_context(&source).unwrap()
     }
@@ -205,7 +195,7 @@ mod step {
             prop_assert!(focus_actions.is_empty());
             let (_, actions) = step(state, &Event::Button { name, state: button_state });
             if button_state == ButtonState::Pressed && name == ButtonName::South {
-                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter }], "global consumption excludes context and fallback output");
+                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }], "global consumption excludes context and fallback output");
             } else if button_state == ButtonState::Pressed {
                 let mapping = match focused {
                     Some("test") => mappings.get(&name),
@@ -213,7 +203,7 @@ mod step {
                     _ => None,
                 };
                 if let Some(key) = mapping {
-                    prop_assert_eq!(actions, vec![Action::Key { key: *key }], "context consumption excludes fallback output");
+                    prop_assert_eq!(actions, vec![Action::Key { key: *key, mods: Vec::new() }], "context consumption excludes fallback output");
                 } else {
                     prop_assert!(actions.is_empty(), "unmapped presses use the empty fallback");
                 }
@@ -264,7 +254,13 @@ mod step {
             },
         );
         let (state, start_actions) = step(state, &start());
-        assert_eq!(start_actions, vec![Action::Key { key: KeyName::Space }]);
+        assert_eq!(
+            start_actions,
+            vec![Action::Key {
+                key: KeyName::Space,
+                mods: Vec::new()
+            }]
+        );
         let (state, solo_actions) = step(state, &tick(4000));
         assert_eq!(solo_actions, Vec::<Action>::new());
         let (state, guide_actions) = step(state, &guide(ButtonState::Pressed));
@@ -402,7 +398,13 @@ mod step {
                 state: ButtonState::Pressed,
             },
         );
-        assert_eq!(actions, vec![Action::Key { key: KeyName::Tab }]);
+        assert_eq!(
+            actions,
+            vec![Action::Key {
+                key: KeyName::Tab,
+                mods: Vec::new()
+            }]
+        );
         let (_, unmapped_actions) = step(
             state,
             &Event::Button {
@@ -439,7 +441,10 @@ mod step {
             assert_eq!(
                 actions,
                 if app_id == Some("test") {
-                    vec![Action::Key { key: KeyName::Tab }]
+                    vec![Action::Key {
+                        key: KeyName::Tab,
+                        mods: Vec::new(),
+                    }]
                 } else {
                     vec![]
                 },
@@ -452,7 +457,10 @@ mod step {
     fn pressing_a_sends_enter() {
         assert_eq!(
             run(&[A_PRESSED]),
-            vec![Action::Key { key: KeyName::Enter }],
+            vec![Action::Key {
+                key: KeyName::Enter,
+                mods: Vec::new()
+            }],
             "the global layer maps A to Enter"
         );
     }
