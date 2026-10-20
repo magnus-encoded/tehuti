@@ -4,69 +4,18 @@ mod hotwords {
     use tehuti_protocol::{Action, Text};
 
     #[test]
-    fn generator_lists_generic_names_and_skips_hidden_desktop_entries() {
-        let directory = tempfile::tempdir().unwrap();
-        let applications = directory.path().join("applications");
-        std::fs::create_dir_all(&applications).unwrap();
-        for (entry_id, source) in [
-            ("atlas.desktop", "Name=Atlas\nGenericName=Document Viewer\n"),
-            ("helper.desktop", "Name=Helper\nNoDisplay=true\n"),
-            ("hidden.desktop", "Name=Hidden\nHidden=true\n"),
-        ] {
-            std::fs::write(applications.join(entry_id), format!("[Desktop Entry]\n{source}")).unwrap();
-        }
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/new-context.py");
-        let output = std::process::Command::new("python3")
-            .args([
-                "-c",
-                "import runpy,sys; print(runpy.run_path(sys.argv[1])['installed_apps']())",
-            ])
-            .arg(script)
-            .env("XDG_DATA_HOME", directory.path())
-            .env("XDG_DATA_DIRS", directory.path().join("empty"))
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            "{'atlas.desktop': 'Atlas / Document Viewer'}\n"
-        );
-    }
-
-    #[test]
-    fn generator_writes_a_loadable_context_without_overwriting_and_dry_run_writes_nothing() {
-        let directory = tempfile::tempdir().unwrap();
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/new-context.py");
-        let generate = |dry_run: bool| {
-            let mut command = std::process::Command::new("python3");
-            let _configured = command
-                .arg(&script)
-                .args([
-                    "--name",
-                    "atlas",
-                    "--app-id",
-                    "org.example.Atlas",
-                    "--hotword",
-                    "atlas=path:~/Documents/atlas",
-                ])
-                .env("TEHUTI_CONTEXT_DIRECTORY", directory.path())
-                .stdin(std::process::Stdio::null());
-            if dry_run {
-                let _preview = command.arg("--dry-run");
-            }
-            command.output().unwrap()
-        };
-        let preview = generate(true);
-        assert!(preview.status.success());
-        assert!(!directory.path().join("atlas").exists());
-        assert!(generate(false).status.success());
-        let contexts = tehuti::contexts::try_load(directory.path()).unwrap();
+    fn fixture_loads_through_the_context_directory() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../protocol/tests/fixtures");
+        let contexts = tehuti::contexts::try_load(&directory).unwrap();
         assert_eq!(contexts.len(), 1);
-        assert_eq!(contexts.first().unwrap().app_id(), "org.example.Atlas");
-        assert!(!generate(false).status.success());
+        let context = contexts.first().unwrap();
+        assert_eq!(context.app_id(), "org.example.Atlas");
+        assert_eq!(context.hotwords().len(), 5);
         assert_eq!(
-            std::fs::read(directory.path().join("atlas/context.toml")).unwrap(),
-            preview.stdout
+            context.hotwords().get("website"),
+            Some(&Action::OpenUrl {
+                url: Text::new("https://example.org/atlas".into()).unwrap()
+            })
         );
     }
 

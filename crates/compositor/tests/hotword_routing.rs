@@ -86,7 +86,7 @@ mod hotword_routing {
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_contexts(vec![
             parse_context(
-                "app_id = '*'\n[buttons]\n[hotwords]\napps = false\natlas = { path = '/tmp/atlas' }",
+                "app_id = '*'\n[buttons]\n[hotwords]\napps = false\natlas = { path = '/tmp/atlas' }\nnebular = { recognition-only = true }",
             )
             .unwrap(),
             parse_context("app_id = 'editor'\n[buttons]\n[speech]\n'open settings' = { key = 'enter' }")
@@ -121,7 +121,17 @@ for line in sys.stdin:
         wait_for(&mut compositor, &root.join("stopped"), 3);
         let words: Vec<String> =
             serde_json::from_str(&std::fs::read_to_string(root.join("captured")).unwrap()).unwrap();
-        assert_eq!(words, ["Nebula", "Quasar", "atlas", "next page", "open settings"]);
+        assert_eq!(
+            words,
+            [
+                "Nebula",
+                "Quasar",
+                "atlas",
+                "nebular",
+                "next page",
+                "open settings"
+            ]
+        );
     }
 
     #[test]
@@ -195,6 +205,31 @@ for line in sys.stdin:
         assert_eq!(
             std::fs::read_to_string(root.join("opened")).unwrap(),
             format!("test-socket\n{}/Documents/atlas\n", root.display())
+        );
+    }
+    #[test]
+    fn url_speech_runs_the_default_handler_without_expanding_the_url() {
+        isolated("url_probe");
+    }
+
+    #[test]
+    fn url_probe() {
+        let Some(root) = std::env::var_os("TEHUTI_TEST_ROOT").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![parse_context(
+            "app_id = '*'\n[buttons]\n[hotwords]\natlas = { url = 'https://example.org/~/atlas?q=one&two=three' }",
+        ).unwrap()]);
+        compositor.set_launch_socket("test-socket".into());
+        compositor.handle(&Event::Speech {
+            text: tehuti_protocol::Text::new("open atlas".into()).unwrap(),
+        });
+        wait_for(&mut compositor, &root.join("opened"), 3);
+        assert_eq!(
+            std::fs::read_to_string(root.join("opened")).unwrap(),
+            "test-socket\nhttps://example.org/~/atlas?q=one&two=three\n"
         );
     }
 }

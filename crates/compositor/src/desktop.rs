@@ -24,8 +24,20 @@ pub fn launch(entry_id: &str, socket: &std::ffi::OsStr) -> Result<std::process::
 /// The path cannot be resolved or the handler cannot be started.
 pub fn open_path(path: &str, socket: &std::ffi::OsStr) -> Result<std::process::Child, String> {
     let absolute = std::path::absolute(path).map_err(|error| error.to_string())?;
+    open_target(absolute.as_os_str(), socket)
+}
+
+/// Opens a URL with its default handler.
+///
+/// # Errors
+/// The handler cannot be started.
+pub fn open_url(url: &str, socket: &std::ffi::OsStr) -> Result<std::process::Child, String> {
+    open_target(std::ffi::OsStr::new(url), socket)
+}
+
+fn open_target(target: &std::ffi::OsStr, socket: &std::ffi::OsStr) -> Result<std::process::Child, String> {
     std::process::Command::new("xdg-open")
-        .arg(absolute)
+        .arg(target)
         .env("WAYLAND_DISPLAY", socket)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

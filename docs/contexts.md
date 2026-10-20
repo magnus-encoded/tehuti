@@ -95,7 +95,7 @@ the client enables another field. `"off"` disables field opening. Saying
 
 ## Hotwords
 
-A hotword is a spoken phrase mapped to an application, path, or existing speech
+A hotword is a spoken phrase mapped to an application, path, URL, recognition-only phrase, or existing speech
 mapping in the same file. It works alone or after “open”. Installed applications
 supply a built-in set from their `.desktop` Name and GenericName, including names
 with several words. No alias phrases are generated.
@@ -113,6 +113,8 @@ apps = true
 browser = { app = "firefox.desktop" }
 atlas = { path = "~/Documents/atlas" }
 accept = { action = "confirm" }
+website = { url = "https://example.org/atlas" }
+quasar = { recognition-only = true }
 ```
 
 App targets are `.desktop` ids. Path targets open files or directories through
@@ -137,19 +139,5 @@ interim and final transcription.
 It is captured when Record is pressed, so a reload cannot change an in-flight
 session's vocabulary. Desktop entries refresh every thirty seconds.
 
-Run `python3 scripts/new-context.py` to choose a name, application match and
-starter app or path hotwords. The installed id list marks processes whose names
-match an id as possibly running; the exact window app id remains your input.
-The script creates `~/.config/tehuti/<name>/context.toml` by default
-(or beneath XDG_CONFIG_HOME). It honors TEHUTI_CONTEXT_DIRECTORY and refuses to
-overwrite an existing file. Pass `--contexts-dir` to use the directory supplied
-to `tehuti`.
-
-```sh
-python3 scripts/new-context.py --name atlas --app-id org.example.Editor \
-  --hotword 'atlas=path:~/Documents/atlas' \
-  --hotword browser=app:firefox.desktop --dry-run
-```
-
-`--dry-run` prints TOML without writing. Omit it to create the file. `--no-apps`
-disables the installed set. Add action references after defining speech mappings.
+URL targets open an absolute URL in its default handler without path expansion.
+Recognition-only targets prime speech and consume the phrase without an effect.

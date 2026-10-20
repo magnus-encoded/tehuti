@@ -91,4 +91,19 @@ mod hotwords {
         let disabled = focused(&["app_id = 'editor'\n[buttons]\n[hotwords]\napps = false"]);
         assert!(disabled.hotwords().is_empty());
     }
+    #[test]
+    fn recognition_only_consumes_speech_before_unmatched_dictation() {
+        let state = focused(&[
+            "app_id = 'editor'\nunmatched_speech = 'type'\n[buttons]\n[hotwords]\nquasar = { recognition-only = true }",
+        ]);
+        for heard in ["quasar", "Open Quasar!"] {
+            let (_, actions) = step(
+                state.clone(),
+                &Event::Speech {
+                    text: Text::new(heard.into()).unwrap(),
+                },
+            );
+            assert_eq!(actions, vec![Action::RecognitionOnly]);
+        }
+    }
 }

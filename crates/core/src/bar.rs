@@ -196,6 +196,8 @@ impl Bar {
             let (text, tone) = match action {
                 Action::Text { .. } => ("typed".into(), Tone::Result),
                 Action::Key { key } => (format!("{key:?}"), Tone::Result),
+                Action::RecognitionOnly => continue,
+                Action::OpenUrl { url } => (url.as_str().into(), Tone::Result),
                 Action::OpenPath { path } => (path.as_str().into(), Tone::Result),
                 Action::Launch { desktop_entry } => (desktop_entry.as_str().into(), Tone::Result),
                 Action::Notice { text } => {

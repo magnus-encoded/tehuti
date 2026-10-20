@@ -67,6 +67,11 @@ accept = { action = "confirm" }
             "atlas = { action = 'missing' }",
             "atlas = { path = '/tmp/atlas', app = 'atlas.desktop' }",
             "atlas = false",
+            "atlas = { url = '' }",
+            "atlas = { url = 'relative/path' }",
+            "atlas = { url = 'https://example.org/a b' }",
+            "atlas = { recognition-only = false }",
+            "atlas = { recognition-only = true, path = '/tmp/atlas' }",
             "apps = { app = 'atlas.desktop' }",
             "atlas = { path = '/tmp/a' }\n'ATLAS!' = { path = '/tmp/b' }",
         ] {
@@ -78,33 +83,21 @@ accept = { action = "confirm" }
     }
 
     #[test]
-    fn generator_output_parses_with_the_rust_loader() {
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/new-context.py");
-        let output = std::process::Command::new("python3")
-            .arg(script)
-            .args([
-                "--name",
-                "atlas",
-                "--app-id",
-                "org.example.Atlas",
-                "--no-apps",
-                "--hotword",
-                "browser=app:firefox.desktop",
-                "--hotword",
-                "two words=path:~/Documents/atlas",
-                "--dry-run",
-            ])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let context = parse_context(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    fn fixture_covers_every_hotword_target() {
+        let context = parse_context(include_str!("fixtures/atlas/context.toml")).unwrap();
         assert_eq!(context.app_id(), "org.example.Atlas");
-        assert_eq!(context.hotwords().len(), 2);
+        assert_eq!(context.hotwords().len(), 5);
         assert_eq!(context.app_hotwords(), Some(false));
+        assert_eq!(context.hotwords().get("quasar"), Some(&Action::RecognitionOnly));
+        assert_eq!(
+            context.hotwords().get("website"),
+            Some(&Action::OpenUrl {
+                url: Text::new("https://example.org/atlas".into()).unwrap()
+            })
+        );
+        assert_eq!(
+            context.hotwords().get("advance"),
+            Some(&Action::Key { key: KeyName::Tab })
+        );
     }
 }

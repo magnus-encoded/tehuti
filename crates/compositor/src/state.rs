@@ -981,6 +981,8 @@ impl Compositor {
                 self.quit_requested = true;
             }
             Action::OpenPath { path } => self.open_path(path),
+            Action::OpenUrl { url } => self.open_url(url),
+            Action::RecognitionOnly => {}
             Action::Launch { desktop_entry } => self.launch_application(desktop_entry),
             Action::Close => {
                 if let Some(identity) = self.layout.snapshot().focused_window {
@@ -1312,6 +1314,23 @@ impl Compositor {
         match result {
             Ok(child) => self.launchers.push(child),
             Err(error) => tracing::warn!(%error, "path handler failed"),
+        }
+    }
+
+    fn open_url(&mut self, path: &tehuti_protocol::Text) {
+        let result = self
+            .launch_socket
+            .as_deref()
+            .ok_or_else(|| "no compositor socket".to_owned())
+            .and_then(|socket| {
+                if self.launchers.len() >= 16 {
+                    return Err("too many launchers".into());
+                }
+                crate::desktop::open_url(path.as_str(), socket)
+            });
+        match result {
+            Ok(child) => self.launchers.push(child),
+            Err(error) => tracing::warn!(%error, "URL handler failed"),
         }
     }
 

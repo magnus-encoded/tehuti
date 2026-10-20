@@ -372,8 +372,12 @@ apps = false
 browser = { app = "firefox.desktop" }
 atlas = { path = "~/Documents/atlas" }
 accept = { action = "confirm" }
+website = { url = "https://example.org/atlas" }
+quasar = { recognition-only = true }
 ```
 
+`url` opens an absolute URL in its default handler without path expansion.
+`recognition-only = true` primes recognition and consumes the phrase without an effect.
 Each entry has exactly one target field. `app` names a `.desktop` id, `path`
 names a file or directory for its default handler, and `action` references a
 `[speech]` mapping in the same file. HOME expands `~` and `~/` at load time.
@@ -387,5 +391,4 @@ value when omitted. Explicit targets survive disabling the built-in set.
 Context routing checks explicit speech mappings first, then a hotword alone or
 after “open”, then unmatched dictation. The effective vocabulary primes Whisper at capture
 start. The core-only `open_path` action carries a validated `path` string;
-plugins cannot submit it. See [contexts](../contexts.md#hotwords) for generator
-flags, merge rules and examples.
+plugins cannot submit it. See [contexts](../contexts.md#hotwords) for merge rules and examples.

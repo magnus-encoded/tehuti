@@ -275,9 +275,22 @@ enum Hotword {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields, untagged)]
 enum HotwordTarget {
-    App { app: Text },
-    Path { path: Text },
-    Action { action: String },
+    App {
+        app: Text,
+    },
+    Path {
+        path: Text,
+    },
+    Action {
+        action: String,
+    },
+    Url {
+        url: Text,
+    },
+    RecognitionOnly {
+        #[serde(rename = "recognition-only")]
+        recognition_only: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -401,6 +414,16 @@ fn parse_hotwords(
                 .get(&normalize_phrase(&action))
                 .map(MappingAction::action)
                 .ok_or_else(|| format!("unknown speech action {action:?}"))?,
+            Hotword::Target(HotwordTarget::Url { url }) => {
+                validate_hotword_url(&url)?;
+                Action::OpenUrl { url }
+            }
+            Hotword::Target(HotwordTarget::RecognitionOnly {
+                recognition_only: true,
+            }) => Action::RecognitionOnly,
+            Hotword::Target(HotwordTarget::RecognitionOnly {
+                recognition_only: false,
+            }) => return Err("recognition-only must be true".into()),
             Hotword::Enabled(_) => return Err("only hotwords.apps accepts a boolean".into()),
         };
         if hotwords.insert(normalized, action).is_some() {
@@ -408,6 +431,21 @@ fn parse_hotwords(
         }
     }
     Ok((hotwords, app_hotwords))
+}
+
+fn validate_hotword_url(url: &Text) -> Result<(), String> {
+    let (scheme, rest) = url.as_str().split_once(':').ok_or("hotword url needs a scheme")?;
+    if scheme.is_empty()
+        || !scheme.starts_with(|character: char| character.is_ascii_alphabetic())
+        || !scheme
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "+-.".contains(character))
+        || rest.is_empty()
+        || url.as_str().chars().any(char::is_whitespace)
+    {
+        return Err("hotword url must be an absolute URL".into());
+    }
+    Ok(())
 }
 
 /// What the core asks its edges to do.
@@ -419,6 +457,10 @@ pub enum Action {
     Launch { desktop_entry: Text },
     /// Open a path through its default handler.
     OpenPath { path: Text },
+    /// Open a URL through its default handler.
+    OpenUrl { url: Text },
+    /// Consume a recognition vocabulary phrase without an effect.
+    RecognitionOnly,
     /// Close the focused client and focus the most recently mapped remaining window.
     Close,
     /// Press and release `key` in the focused client.
