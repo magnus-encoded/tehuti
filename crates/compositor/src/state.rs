@@ -96,6 +96,7 @@ pub struct Compositor {
     notice_text: Option<String>,
     launchers: Vec<std::process::Child>,
     desktop_entries: crate::desktop::EntryCache,
+    user_vocabulary: Vec<String>,
     launch_socket: Option<std::ffi::OsString>,
     layout: tehuti_core::layout::Layout,
     layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
@@ -180,6 +181,7 @@ impl Compositor {
             notice_text: None,
             launchers: Vec::new(),
             desktop_entries: crate::desktop::EntryCache::new()?,
+            user_vocabulary: crate::contexts::user_vocabulary(),
             launch_socket: None,
             layout: tehuti_core::layout::Layout::new(tehuti_core::layout::LayoutConfig::default()),
             layout_windows: Vec::new(),
@@ -216,6 +218,18 @@ impl Compositor {
             .set_app_hotwords(self.desktop_entries.hotwords().to_vec());
     }
 
+    /// Replaces the desktop entry cache with one refreshing at `interval`.
+    ///
+    /// # Errors
+    /// The refresh worker cannot be started.
+    pub fn set_desktop_refresh(&mut self, interval: core::time::Duration) -> std::io::Result<()> {
+        self.desktop_entries = crate::desktop::EntryCache::with_interval(interval)?;
+        self.dispatch
+            .core_mut()
+            .set_app_hotwords(self.desktop_entries.hotwords().to_vec());
+        Ok(())
+    }
+
     /// The installed contexts, in priority order.
     #[must_use]
     pub fn contexts(&self) -> &[tehuti_protocol::Context] {
@@ -227,6 +241,7 @@ impl Compositor {
         &mut self,
         reload: Result<Vec<tehuti_protocol::Context>, crate::contexts::LoadError>,
     ) {
+        self.user_vocabulary = crate::contexts::user_vocabulary();
         match reload {
             Ok(contexts) => {
                 tracing::info!(count = contexts.len(), "contexts reloaded");
@@ -585,13 +600,14 @@ impl Compositor {
             | tehuti_core::speech::SpeechEffect::Interim { .. }
             | tehuti_core::speech::SpeechEffect::Failed { .. } => {}
         }
-        let mut vocabulary: std::collections::BTreeSet<_> =
-            self.dispatch.core().hotwords().into_keys().collect();
+        let mut explicit = std::collections::BTreeSet::new();
         for context in self.contexts() {
-            vocabulary.extend(context.speech_phrases().map(str::to_owned));
+            explicit.extend(context.hotwords().keys().cloned());
+            explicit.extend(context.speech_phrases().map(str::to_owned));
         }
-        vocabulary.extend(crate::contexts::user_vocabulary());
-        let hotwords: Vec<_> = vocabulary.into_iter().collect();
+        explicit.extend(self.user_vocabulary.iter().cloned());
+        let hotwords =
+            crate::contexts::capture_vocabulary(explicit, self.dispatch.core().hotwords().into_keys());
         self.speech_process.as_mut().is_none_or(|process| {
             process
                 .send_with_hotwords(command, &hotwords)

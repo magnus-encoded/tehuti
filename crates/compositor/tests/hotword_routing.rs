@@ -72,6 +72,13 @@ mod hotword_routing {
         }
     }
 
+    fn finish_capture(compositor: &mut Compositor, root: &Path) -> Vec<String> {
+        press(compositor, ButtonState::Released);
+        wait_for(compositor, &root.join("stopped"), 3);
+        std::fs::remove_file(root.join("stopped")).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(root.join("captured")).unwrap()).unwrap()
+    }
+
     #[test]
     fn record_press_freezes_all_context_phrases_and_user_vocabulary() {
         isolated("capture_probe");
@@ -115,14 +122,11 @@ for line in sys.stdin:
         wait_for(&mut compositor, &root.join("ready"), 3);
         tick(&mut compositor);
         press(&mut compositor, ButtonState::Pressed);
-        compositor.reload_contexts(Ok(vec![]));
         std::fs::write(root.join("tehuti/vocabulary.txt"), "Changed\n").unwrap();
-        press(&mut compositor, ButtonState::Released);
-        wait_for(&mut compositor, &root.join("stopped"), 3);
-        let words: Vec<String> =
-            serde_json::from_str(&std::fs::read_to_string(root.join("captured")).unwrap()).unwrap();
+        compositor.reload_contexts(Ok(vec![]));
+        let frozen = finish_capture(&mut compositor, &root);
         assert_eq!(
-            words,
+            frozen,
             [
                 "Nebula",
                 "Quasar",
@@ -132,6 +136,14 @@ for line in sys.stdin:
                 "open settings"
             ]
         );
+        press(&mut compositor, ButtonState::Pressed);
+        let words = finish_capture(&mut compositor, &root);
+        assert_eq!(
+            words.first().map(String::as_str),
+            Some("Changed"),
+            "reload rereads the vocabulary file"
+        );
+        assert!(!words.iter().any(|word| word == "Quasar"), "{words:?}");
     }
 
     #[test]
@@ -147,6 +159,7 @@ for line in sys.stdin:
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_contexts(vec![]);
+        compositor.set_desktop_refresh(Duration::from_millis(50)).unwrap();
         std::fs::write(
             root.join("applications/atlas.desktop"),
             "[Desktop Entry]\nName=Fresh Atlas\n",
@@ -166,7 +179,7 @@ for line in sys.stdin:
 "#
             .into(),
         ]));
-        let deadline = Instant::now().checked_add(Duration::from_secs(35)).unwrap();
+        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
         while !root.join("refreshed").exists() {
             tick(&mut compositor);
             press(&mut compositor, ButtonState::Pressed);

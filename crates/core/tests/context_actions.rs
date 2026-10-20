@@ -40,4 +40,26 @@ mod context_actions {
             }
         }
     }
+    #[test]
+    fn hotword_targets_are_reserved_for_the_core() {
+        let text = Text::new("atlas".to_owned()).unwrap();
+        for action in [
+            Action::OpenPath { path: text.clone() },
+            Action::OpenUrl { url: text },
+            Action::RecognitionOnly,
+        ] {
+            let result = tehuti_core::plugin::validate_actions(
+                vec![action.clone()],
+                &[
+                    tehuti_protocol::Permission::Key,
+                    tehuti_protocol::Permission::Text,
+                    tehuti_protocol::Permission::Quit,
+                ],
+            );
+            assert!(
+                result.is_err_and(|error| error.contains("reserved for the core")),
+                "{action:?}"
+            );
+        }
+    }
 }

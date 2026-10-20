@@ -133,7 +133,9 @@ mappings run before hotwords, followed by unmatched dictation. Plugin speech
 routing and the on-screen keyboard retain their priority.
 
 All loaded contexts’ speech phrases and `~/.config/tehuti/vocabulary.txt`
-(one word per line) join the effective hotwords at Record press.
+(one word or phrase per line, read at startup and on context reload) join the
+effective hotwords at Record press. Explicit words and speech phrases come first,
+then app names, capped at about 200 prompt tokens.
 `XDG_CONFIG_HOME` overrides `~/.config`. The vocabulary primes Whisper for both
 interim and final transcription.
 It is captured when Record is pressed, so a reload cannot change an in-flight

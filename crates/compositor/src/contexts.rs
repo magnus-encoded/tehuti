@@ -307,7 +307,38 @@ fn read_context(path: &Path) -> io::Result<String> {
     Ok(source)
 }
 
-/// Reads optional user vocabulary, one phrase per line, at capture time.
+/// Words the Whisper prompt may hold, at a conservative two tokens per word.
+pub const VOCABULARY_WORDS: usize = 100;
+
+/// Orders explicit words before app names, drops repeats and caps the word count.
+///
+/// A phrase that would exceed [`VOCABULARY_WORDS`] is skipped so shorter ones still fit.
+#[must_use]
+pub fn capture_vocabulary(
+    explicit: impl IntoIterator<Item = String>,
+    apps: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut words: usize = 0;
+    let mut vocabulary = Vec::new();
+    for phrase in explicit.into_iter().chain(apps) {
+        let count = phrase.split_whitespace().count();
+        let Some(total) = words
+            .checked_add(count)
+            .filter(|total| *total <= VOCABULARY_WORDS)
+        else {
+            continue;
+        };
+        if !seen.insert(phrase.clone()) {
+            continue;
+        }
+        words = total;
+        vocabulary.push(phrase);
+    }
+    vocabulary
+}
+
+/// Reads optional user vocabulary, one phrase per line, at load and reload.
 #[must_use]
 pub fn user_vocabulary() -> Vec<String> {
     let directory = std::env::var_os("XDG_CONFIG_HOME")

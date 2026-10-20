@@ -56,7 +56,10 @@ class SpeechTests(unittest.TestCase):
 
     def test_live_preview_emits_text_while_record_is_held(self):
         class Model:
+            options = []
+
             def transcribe(self, path, **options):
+                self.options.append(options)
                 return iter([types.SimpleNamespace(text="Live Words", no_speech_prob=0, avg_logprob=0)]), None
 
         with tempfile.TemporaryDirectory() as directory:
@@ -65,11 +68,12 @@ class SpeechTests(unittest.TestCase):
             recorder.chmod(0o700)
             previous_path = os.environ["PATH"]
             os.environ["PATH"] = directory + os.pathsep + previous_path
-            speech = module.Speech(Model())
+            model = Model()
+            speech = module.Speech(model)
             output = io.StringIO()
             try:
                 with contextlib.redirect_stdout(output):
-                    speech.start(9)
+                    speech.start(9, ["atlas", "next page"])
                     deadline = time.monotonic() + 3
                     while not output.getvalue() and time.monotonic() < deadline:
                         time.sleep(0.01)
@@ -79,6 +83,10 @@ class SpeechTests(unittest.TestCase):
                     while len(output.getvalue().splitlines()) < 2 and time.monotonic() < deadline:
                         time.sleep(0.01)
                 self.assertEqual(json.loads(output.getvalue().splitlines()[-1]), {"session": 9, "text": "Live Words"})
+                self.assertGreaterEqual(len(model.options), 2, "interim and final both transcribe")
+                for options in model.options:
+                    self.assertEqual(options["initial_prompt"], "atlas, next page")
+                    self.assertEqual(options["hotwords"], "atlas, next page")
             finally:
                 speech.close()
                 os.environ["PATH"] = previous_path

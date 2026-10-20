@@ -213,6 +213,14 @@ impl EntryCache {
     /// # Errors
     /// The refresh worker cannot be started.
     pub fn new() -> std::io::Result<Self> {
+        Self::with_interval(core::time::Duration::from_secs(30))
+    }
+
+    /// Scans once and starts a worker that refreshes at `interval`.
+    ///
+    /// # Errors
+    /// The refresh worker cannot be started.
+    pub fn with_interval(interval: core::time::Duration) -> std::io::Result<Self> {
         let entries = installed_entries();
         let hotwords = application_hotwords(&data_directories());
         let (sender, updates) = std::sync::mpsc::sync_channel(1);
@@ -221,7 +229,7 @@ impl EntryCache {
             .name("desktop-entries".into())
             .spawn(move || {
                 while matches!(
-                    stopped.recv_timeout(core::time::Duration::from_secs(30)),
+                    stopped.recv_timeout(interval),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                 ) {
                     match sender.try_send((installed_entries(), application_hotwords(&data_directories()))) {
