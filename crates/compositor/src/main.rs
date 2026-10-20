@@ -54,8 +54,22 @@ impl LoopData {
     }
 }
 
+fn initialize_tracing() {
+    let default = if std::env::var_os("TEHUTI_TIMING").is_some() {
+        "trace"
+    } else {
+        "info"
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default)),
+        )
+        .init();
+}
+
 fn main() -> Result<ExitCode, Box<dyn Error>> {
-    tracing_subscriber::fmt::init();
+    initialize_tracing();
     let mut application = std::env::args_os().skip(1);
     let context_directory = application
         .next()
