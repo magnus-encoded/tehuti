@@ -173,16 +173,31 @@ impl Context {
 
     #[must_use]
     pub fn speech_action(&self, phrase: &str) -> Option<Action> {
-        let wanted = normalize_phrase(phrase);
+        self.mapped_speech_action(phrase)
+            .or_else(|| self.unmatched_speech_action(phrase))
+    }
+
+    /// The action of a mapped phrase only, ignoring `unmatched_speech`.
+    #[must_use]
+    pub fn mapped_speech_action(&self, phrase: &str) -> Option<Action> {
         if phrase.trim().is_empty() {
             return None;
         }
-        self.speech.get(&wanted).map(MappingAction::action).or_else(|| {
-            let UnmatchedSpeech::Type = self.unmatched_speech?;
-            Text::new(format!("{phrase} "))
-                .ok()
-                .map(|text| Action::Text { text })
-        })
+        self.speech
+            .get(&normalize_phrase(phrase))
+            .map(MappingAction::action)
+    }
+
+    /// The action `unmatched_speech` gives a phrase no mapping matched.
+    #[must_use]
+    pub fn unmatched_speech_action(&self, phrase: &str) -> Option<Action> {
+        if phrase.trim().is_empty() {
+            return None;
+        }
+        let UnmatchedSpeech::Type = self.unmatched_speech?;
+        Text::new(format!("{phrase} "))
+            .ok()
+            .map(|text| Action::Text { text })
     }
 
     #[must_use]
