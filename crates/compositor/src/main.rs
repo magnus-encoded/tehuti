@@ -68,12 +68,26 @@ fn initialize_tracing() {
         .init();
 }
 
+fn print_version() -> Result<ExitCode, Box<dyn Error>> {
+    use std::io::Write;
+    writeln!(
+        std::io::stdout().lock(),
+        "tehuti {} ({} {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("TEHUTI_GIT_HASH"),
+        env!("TEHUTI_BUILD_DATE")
+    )?;
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> Result<ExitCode, Box<dyn Error>> {
-    initialize_tracing();
     let mut application = std::env::args_os().skip(1);
-    let context_directory = application
-        .next()
-        .ok_or("usage: tehuti <context-directory> [application] [arguments...]")?;
+    let first = application.next();
+    if matches!(first.as_deref(), Some(argument) if argument == "--version" || argument == "-V") {
+        return print_version();
+    }
+    initialize_tracing();
+    let context_directory = first.ok_or("usage: tehuti <context-directory> [application] [arguments...]")?;
     let program = application.next();
 
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
