@@ -115,7 +115,8 @@ pub struct Compositor {
     seat: Seat<Self>,
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
-    keyboard_reserved: bool,
+    keyboard_reserved: i32,
+    display: DisplayHandle,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -199,7 +200,8 @@ impl Compositor {
             seat,
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
-            keyboard_reserved: false,
+            keyboard_reserved: 0,
+            display: display.clone(),
         };
         compositor
             .keyboard
@@ -556,9 +558,14 @@ impl Compositor {
 
     /// Resizes tiled windows when the on-screen keyboard opens or closes.
     fn reserve_keyboard_height(&mut self) {
-        let open = self.dispatch.keyboard().is_open();
-        if open != self.keyboard_reserved {
-            self.keyboard_reserved = open;
+        let keyboard = self.dispatch.keyboard();
+        let height = if keyboard.is_open() {
+            crate::osk::logical_height(keyboard)
+        } else {
+            0
+        };
+        if height != self.keyboard_reserved {
+            self.keyboard_reserved = height;
             self.fill_output();
         }
     }
@@ -623,6 +630,9 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
+            DispatchEffect::QueryForegroundProgram => Some(DispatchInput::ForegroundProgram(
+                self.focused_terminal_runs_program(),
+            )),
             DispatchEffect::PasswordSpeechIgnored => {
                 tracing::info!("push-to-talk ignored: password field active");
                 None
@@ -632,6 +642,7 @@ impl Compositor {
             | DispatchEffect::Click { .. }
             | DispatchEffect::MouseMode(_)
             | DispatchEffect::PollSources
+            | DispatchEffect::Chord(_)
             | DispatchEffect::SouthPressed(_)
             | DispatchEffect::ResetSecretFocus
             | DispatchEffect::Apply(_)
@@ -668,12 +679,9 @@ impl Compositor {
             DispatchEffect::ResetSecretFocus => {
                 self.reset_secret_confirmation_for_focus();
             }
-            DispatchEffect::Apply(action) => {
-                self.apply(&action);
-            }
-            DispatchEffect::PluginAction(action) => {
-                self.apply_plugin_action(&action);
-            }
+            DispatchEffect::Apply(action) => self.apply(&action),
+            DispatchEffect::PluginAction(action) => self.apply_plugin_action(&action),
+            DispatchEffect::Chord(chord) => self.tap_chord(chord),
             DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
@@ -681,6 +689,7 @@ impl Compositor {
             | DispatchEffect::QueryPlugin(_)
             | DispatchEffect::DispatchPlugin { .. }
             | DispatchEffect::Supervise
+            | DispatchEffect::QueryForegroundProgram
             | DispatchEffect::ConfirmSecret(_)
             | DispatchEffect::SpeechCommand(_)
             | DispatchEffect::PollSpeech(_) => {}
@@ -1016,6 +1025,60 @@ impl Compositor {
         self.tap_keycode(keycode);
     }
 
+    /// Taps a key with Control or Alt held, from the on-screen keyboard's terminal strip.
+    fn tap_chord(&mut self, chord: tehuti_core::keyboard::Chord) {
+        use tehuti_core::keyboard::ChordKey;
+        let (keycode, mut modifiers) = match chord.key {
+            ChordKey::Named(key) => (
+                Keycode::new(key.evdev_code().saturating_add(XKB_KEYCODE_OFFSET)),
+                ModifiersState::default(),
+            ),
+            ChordKey::Char(character) => {
+                let Some(found) = self.text_keys.get(&character).copied() else {
+                    tracing::warn!(?character, "chord character unavailable in keymap; skipped");
+                    return;
+                };
+                found
+            }
+        };
+        // Clients read the serialized mask, not the flags. Control and Mod1 (Alt) are xkb real
+        // modifiers with fixed indices 2 and 3 in every keymap.
+        if chord.modifiers.control {
+            modifiers.ctrl = true;
+            modifiers.serialized.depressed |= 1 << 2;
+        }
+        if chord.modifiers.alt {
+            modifiers.alt = true;
+            modifiers.serialized.depressed |= 1 << 3;
+        }
+        let focus = self.keyboard.current_focus();
+        let seat = self.seat.clone();
+        if let Some(surface) = &focus {
+            surface.modifiers(&seat, self, modifiers, SERIAL_COUNTER.next_serial());
+        }
+        self.tap_keycode(keycode);
+        if let Some(surface) = &focus {
+            surface.modifiers(
+                &seat,
+                self,
+                ModifiersState::default(),
+                SERIAL_COUNTER.next_serial(),
+            );
+        }
+        tracing::info!(?chord, "chord delivered to focused window");
+    }
+
+    /// Whether the focused client's shell has a program in the foreground; false when unknown.
+    fn focused_terminal_runs_program(&self) -> bool {
+        let pid = self
+            .keyboard
+            .current_focus()
+            .and_then(|surface| smithay::reexports::wayland_server::Resource::client(&surface))
+            .and_then(|client| client.get_credentials(&self.display).ok())
+            .map(|credentials| credentials.pid);
+        pid.is_some_and(crate::foreground::runs_program)
+    }
+
     fn tap_keycode(&mut self, keycode: Keycode) {
         let keyboard = self.keyboard.clone();
         for state in tehuti_core::controller::key_tap() {
@@ -1136,11 +1199,7 @@ impl Compositor {
             usable: Rect {
                 height: (area.height
                     - f64::from(tehuti_core::bar::HEIGHT)
-                    - if self.keyboard_reserved {
-                        f64::from(crate::osk::logical_height())
-                    } else {
-                        0.0
-                    })
+                    - f64::from(self.keyboard_reserved))
                 .max(1.0),
                 ..area
             },

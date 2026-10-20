@@ -101,6 +101,25 @@ impl State {
         (mode, button)
     }
 
+    /// Whether the focused app's context marks it a terminal, and whether a Guide tap into
+    /// the in-app level opens the keyboard there (inherited from the `*` context, default on).
+    #[must_use]
+    pub fn terminal_config(&self) -> (bool, bool) {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        let active = self
+            .contexts
+            .iter()
+            .find(|context| Some(context.app_id()) == self.focused_app_id.as_deref());
+        let marked = active
+            .and_then(|context| context.keyboard().terminal)
+            .unwrap_or(false);
+        let opens = active
+            .and_then(|context| context.keyboard().open_on_in_app_level)
+            .or_else(|| global.and_then(|context| context.keyboard().open_on_in_app_level))
+            .unwrap_or(true);
+        (marked, opens)
+    }
+
     /// Configures the launcher names recognized in focused window titles.
     #[must_use]
     pub fn with_bar_agents(mut self, agents: Vec<String>) -> Self {
@@ -354,6 +373,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
 
 pub mod secret;
 pub mod speech;
+pub mod terminal;
 
 pub mod plugin;
 
