@@ -17,7 +17,7 @@ key = "up"
 
 Button names use snake case, such as `south`, `left_bumper` and `dpad_left`.
 Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`
-and `right`. A mapping sends a complete key tap on button press. Releases send
+`right`, `home`, `end`, `page_up` and `page_down`. A mapping sends a complete key tap on button press. Releases send
 nothing. Unknown fields, buttons and keys are rejected. Application ids must
 contain a non-whitespace character.
 
