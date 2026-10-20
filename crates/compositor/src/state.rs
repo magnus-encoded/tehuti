@@ -128,6 +128,12 @@ pub enum SetupError {
     DesktopEntries(#[from] std::io::Error),
 }
 
+fn default_keymap() -> Result<xkb::Keymap, SetupError> {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+        .ok_or(SetupError::KeymapCompilation)
+}
+
 impl Compositor {
     /// Creates the Wayland globals and a seat with one keyboard.
     ///
@@ -1636,10 +1642,4 @@ fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin
         None if plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
         None => tracing::info!(text = text.as_str(), "speech produced no action"),
     }
-}
-
-fn default_keymap() -> Result<xkb::Keymap, SetupError> {
-    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-    xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
-        .ok_or(SetupError::KeymapCompilation)
 }
