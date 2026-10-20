@@ -37,6 +37,11 @@ pub enum Input {
     PluginExited {
         plugin: usize,
     },
+    /// A committed text-input enable denotes a new field, even on the same surface.
+    TextField {
+        active: bool,
+        changed: bool,
+    },
     ControllerDisconnected,
     Sticks(Sticks),
     /// Reply to [`Effect::QueryPlugin`].
@@ -164,6 +169,8 @@ pub struct State {
     speech: SpeechState,
     mouse: mouse::State,
     keyboard: crate::keyboard::Keyboard,
+    text_field: bool,
+    opening_button: Option<ButtonName>,
     frames: Vec<Frame>,
 }
 
@@ -175,6 +182,8 @@ impl State {
             speech: SpeechState::default(),
             mouse: mouse::State::default(),
             keyboard: crate::keyboard::Keyboard::default(),
+            text_field: false,
+            opening_button: None,
             frames: Vec::new(),
         }
     }
@@ -252,9 +261,17 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             state.mouse.sticks = sticks;
             return (state, effects);
         }
+        Input::TextField { active, changed } => {
+            state.text_field = active;
+            if active && changed && state.core.keyboard_config().0 == tehuti_protocol::OnTextField::Open {
+                state.keyboard.open();
+            }
+            return (state, effects);
+        }
         Input::ControllerDisconnected => {
             state.mouse.disconnect(&mut effects);
             state.keyboard.release_all();
+            state.opening_button = None;
             state.core.controller_disconnected();
             return (state, effects);
         }
@@ -516,6 +533,25 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
 
 /// The open keyboard takes speech as dictation and most buttons; "keyboard" opens it.
 fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if let Event::Button { name, state: button } = event {
+        if state.opening_button == Some(*name) {
+            if *button == ButtonState::Released {
+                state.opening_button = None;
+            }
+            return true;
+        }
+        let (mode, opening_button) = state.core.keyboard_config();
+        if !state.keyboard.is_open()
+            && state.text_field
+            && mode != tehuti_protocol::OnTextField::Off
+            && *name == opening_button
+            && *button == ButtonState::Pressed
+        {
+            state.opening_button = Some(*name);
+            state.keyboard.open();
+            return true;
+        }
+    }
     match event {
         Event::Speech { text } if state.keyboard.is_open() => {
             state.keyboard.dictate(text.as_str());

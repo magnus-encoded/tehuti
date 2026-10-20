@@ -1132,3 +1132,68 @@ fn start_first_escape_chord_quits_without_sending_while_open() {
         "Start pressed before Guide joins the chord and never sends"
     );
 }
+
+proptest! {
+    #[test]
+    fn field_policy_opens_only_for_intent_or_the_configured_button(
+        mode in prop::sample::select(vec!["open", "button", "off"]),
+        opening in prop::sample::select(vec![("Y", ButtonName::North), ("west", ButtonName::West)]),
+        mouse in prop::bool::ANY,
+        events in prop::collection::vec(every_button(), 0..30),
+    ) {
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = 'editor'\n[buttons]\n[keyboard]\non_text_field = '{mode}'\nbutton = '{}'", opening.0
+        )).unwrap();
+        let mut world = World::default();
+        let mut state = configured(vec![context], "editor");
+        if mouse {
+            for _ in 0..2 {
+                state = tap_button(&mut world, state, ButtonName::Select);
+            }
+        }
+        state = world.run(state, Input::TextField { active: true, changed: true });
+        prop_assert_eq!(state.keyboard().is_open(), mode == "open");
+        state = tap_button(&mut world, state, ButtonName::East);
+        for event in events {
+            let opens = mode != "off" && matches!(event, Event::Button { name, state: ButtonState::Pressed } if name == opening.1);
+            state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
+            if state.keyboard().is_open() {
+                prop_assert!(opens);
+                state = tap_button(&mut world, state, ButtonName::East);
+            }
+            state = world.run(state, Input::TextField { active: true, changed: false });
+            prop_assert!(!state.keyboard().is_open());
+        }
+        state = world.run(state, Input::TextField { active: true, changed: true });
+        prop_assert_eq!(state.keyboard().is_open(), mode == "open");
+    }
+}
+
+#[test]
+fn inactive_fields_pass_the_opening_button_to_the_context() {
+    let context =
+        tehuti_protocol::parse_context("app_id = 'editor'\n[buttons]\nnorth = { key = 'tab' }").unwrap();
+    let mut world = World::default();
+    let state = configured(vec![context], "editor");
+    let state = tap_button(&mut world, state, ButtonName::North);
+    assert!(!state.keyboard().is_open());
+    assert!(world.trace.contains(&Effect::Apply(Action::Key {
+        key: tehuti_protocol::KeyName::Tab
+    })));
+}
+
+#[test]
+fn application_keyboard_options_inherit_the_global_context() {
+    let global = tehuti_protocol::parse_context(
+        "app_id = '*'\n[buttons]\n[keyboard]\non_text_field = 'off'\nbutton = 'west'",
+    )
+    .unwrap();
+    let local =
+        tehuti_protocol::parse_context("app_id = 'editor'\n[buttons]\n[keyboard]\non_text_field = 'button'")
+            .unwrap();
+    let state = configured(vec![global, local], "editor");
+    assert_eq!(
+        state.core().keyboard_config(),
+        (tehuti_protocol::OnTextField::Button, ButtonName::West)
+    );
+}

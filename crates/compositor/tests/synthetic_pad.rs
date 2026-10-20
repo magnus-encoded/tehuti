@@ -680,6 +680,17 @@ mod synthetic_pad {
         text_state: ClientTextState,
         ready: &mpsc::Sender<()>,
     ) -> App {
+        let initial_app_id = if app_id == "test" { "other" } else { "test" };
+        run_client_with_app_id(stream, app_id, initial_app_id, text_state, ready)
+    }
+
+    fn run_client_with_app_id(
+        stream: UnixStream,
+        app_id: &str,
+        initial_app_id: &str,
+        text_state: ClientTextState,
+        ready: &mpsc::Sender<()>,
+    ) -> App {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -694,8 +705,7 @@ mod synthetic_pad {
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
         toplevel.set_title("Synthetic-window-title-1234567890".into());
-        let initial_app_id_before_focus_change = if app_id == "test" { "other" } else { "test" };
-        toplevel.set_app_id(initial_app_id_before_focus_change.into());
+        toplevel.set_app_id(initial_app_id.into());
         surface.commit();
         let mut app = App::default();
         let _initial_dispatch = queue.roundtrip(&mut app).unwrap();
@@ -2161,6 +2171,59 @@ else:
             "one press and release per character, with no Enter"
         );
         assert_eq!(app.text, "", "secret delivery bypasses text-input instances");
+    }
+
+    #[test]
+    fn text_input_enablement_controls_keyboard_opening() {
+        for mode in ["open", "button", "off"] {
+            for text_state in [
+                ClientTextState::Enabled,
+                ClientTextState::Disabled,
+                ClientTextState::Absent,
+                ClientTextState::FocusChanged,
+            ] {
+                let mut display: Display<Compositor> = Display::new().unwrap();
+                let mut compositor = Compositor::new(&display.handle()).unwrap();
+                compositor.set_contexts(vec![
+                    tehuti_protocol::parse_context(&format!(
+                        "app_id = 'test'\n[buttons]\n[keyboard]\non_text_field = '{mode}'"
+                    ))
+                    .unwrap(),
+                ]);
+                let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+                let (server_end, client_end) = UnixStream::pair().unwrap();
+                let _client = display
+                    .handle()
+                    .insert_client(server_end, Arc::new(ClientState::default()))
+                    .unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let client = thread::spawn(move || {
+                    run_client_with_app_id(client_end, "test", "test", text_state, &sender)
+                });
+                let started = Instant::now();
+                dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+                let active = matches!(text_state, ClientTextState::Enabled);
+                if active {
+                    assert_eq!(compositor.on_screen_keyboard().is_open(), mode == "open");
+                }
+                let mut pad = SyntheticPad::default();
+                for name in [ButtonName::East, ButtonName::North] {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        pad.push(Event::Button { name, state });
+                    }
+                }
+                route(&mut compositor, &mut pad).unwrap();
+                assert_eq!(compositor.on_screen_keyboard().is_open(), active && mode != "off");
+                for name in [ButtonName::East, ButtonName::South] {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        pad.push(Event::Button { name, state });
+                    }
+                }
+                route(&mut compositor, &mut pad).unwrap();
+                dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+                let _app = client.join().unwrap();
+            }
+        }
     }
 
     #[test]
