@@ -518,28 +518,52 @@ fn terminal() -> Keyboard {
 }
 
 #[test]
-fn the_terminal_layer_holds_shell_symbols_tab_arrows_and_ctrl_c() {
+fn terminals_add_a_strip_above_the_normal_letters() {
     let keyboard = terminal();
+    let rows = keyboard.rows();
+    assert_eq!(rows.get(1..), Some(opened().rows()));
+    let strip: Vec<Key> = rows[0].iter().map(|slot| slot.key).collect();
+    for key in [
+        KeyName::Escape,
+        KeyName::Tab,
+        KeyName::Left,
+        KeyName::Up,
+        KeyName::Down,
+        KeyName::Right,
+        KeyName::Home,
+        KeyName::End,
+        KeyName::PageUp,
+        KeyName::PageDown,
+    ] {
+        assert!(strip.contains(&Key::Tap(key)), "{key:?} on the strip");
+    }
+    assert!(strip.contains(&Key::Modifier(Modifier::Control)));
+    assert!(strip.contains(&Key::Modifier(Modifier::Alt)));
+    assert_eq!(keyboard.highlighted_key(), Some(Key::Char('q')));
+}
+
+#[test]
+fn shell_symbols_live_on_the_terminal_symbols_layer() {
+    let mut keyboard = terminal();
+    press(&mut keyboard, ButtonName::LeftStick);
     let keys: Vec<Key> = keyboard
         .rows()
         .iter()
         .flat_map(|row| row.iter().map(|slot| slot.key))
         .collect();
     for symbol in ['|', '&', '>', '<', ';', '$', '~', '`', '-', '_', '/', '*'] {
-        assert!(keys.contains(&Key::Char(symbol)), "{symbol} on the base layer");
+        assert!(keys.contains(&Key::Char(symbol)), "{symbol} reachable");
     }
-    for key in [
-        KeyName::Tab,
-        KeyName::Up,
-        KeyName::Down,
-        KeyName::Left,
-        KeyName::Right,
-        KeyName::Interrupt,
-    ] {
-        assert!(keys.contains(&Key::Tap(key)), "{key:?} on the base layer");
-    }
-    for row in keyboard.rows() {
-        assert_eq!(row.iter().map(|slot| slot.width).sum::<u8>(), TERMINAL_ROW_UNITS);
+}
+
+#[test]
+fn every_terminal_row_spans_the_same_width() {
+    let mut keyboard = terminal();
+    for _ in 0..2 {
+        for row in keyboard.rows() {
+            assert_eq!(row.iter().map(|slot| slot.width).sum::<u8>(), ROW_UNITS);
+        }
+        press(&mut keyboard, ButtonName::LeftStick);
     }
 }
 
@@ -559,18 +583,68 @@ fn b_in_a_terminal_leaves_the_choice_to_the_caller() {
     assert_eq!(keyboard.draft(), "make");
 }
 
+fn strip_key(keyboard: &mut Keyboard, key: Key) -> Response {
+    let index = keyboard.rows()[0]
+        .iter()
+        .position(|slot| slot.key == key)
+        .unwrap();
+    go_to(keyboard, 0, index);
+    tap(keyboard, ButtonName::South)
+}
+
 #[test]
-fn tap_keys_hand_over_the_draft_and_stay_open() {
+fn strip_keys_hand_over_the_draft_and_stay_open() {
     let mut keyboard = terminal();
     keyboard.dictate("cd sr");
-    go_to(&mut keyboard, 0, 0);
     assert_eq!(
-        tap(&mut keyboard, ButtonName::South),
-        Response::Tap("cd sr".into(), KeyName::Tab)
+        strip_key(&mut keyboard, Key::Tap(KeyName::Tab)),
+        Response::Chord(
+            "cd sr".into(),
+            Chord {
+                key: ChordKey::Named(KeyName::Tab),
+                modifiers: Modifiers::default()
+            }
+        )
     );
     assert!(keyboard.is_open());
     assert_eq!(keyboard.draft(), "");
-    assert_eq!(keyboard.caret(), 0);
+}
+
+#[test]
+fn ctrl_latches_for_one_letter_then_releases() {
+    let mut keyboard = terminal();
+    assert_eq!(
+        strip_key(&mut keyboard, Key::Modifier(Modifier::Control)),
+        Response::Consumed
+    );
+    assert!(keyboard.latched().control);
+    go_to(&mut keyboard, 3, 3);
+    assert_eq!(
+        tap(&mut keyboard, ButtonName::South),
+        Response::Chord(String::new(), Chord::INTERRUPT)
+    );
+    assert_eq!(keyboard.latched(), Modifiers::default());
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.draft(), "c");
+}
+
+#[test]
+fn alt_latches_onto_the_next_strip_key() {
+    let mut keyboard = terminal();
+    let _latch = strip_key(&mut keyboard, Key::Modifier(Modifier::Alt));
+    assert_eq!(
+        strip_key(&mut keyboard, Key::Tap(KeyName::Left)),
+        Response::Chord(
+            String::new(),
+            Chord {
+                key: ChordKey::Named(KeyName::Left),
+                modifiers: Modifiers {
+                    control: false,
+                    alt: true
+                }
+            }
+        )
+    );
 }
 
 #[test]

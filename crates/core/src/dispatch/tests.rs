@@ -82,6 +82,7 @@ impl World {
                     | Effect::Click { .. }
                     | Effect::MouseMode(_)
                     | Effect::PollSources
+                    | Effect::Chord(_)
                     | Effect::SouthPressed(_)
                     | Effect::ResetSecretFocus
                     | Effect::Apply(_)
@@ -1496,11 +1497,11 @@ fn b_in_a_terminal_sends_ctrl_c_only_when_a_foreground_program_runs() {
         assert!(world.trace.contains(&Effect::QueryForegroundProgram));
         if running {
             assert!(state.keyboard().is_open());
-            assert_eq!(
-                applied(&world),
-                vec![&Effect::Apply(Action::Key {
-                    key: tehuti_protocol::KeyName::Interrupt
-                })]
+            assert_eq!(applied(&world), Vec::<&Effect>::new());
+            assert!(
+                world
+                    .trace
+                    .contains(&Effect::Chord(crate::keyboard::Chord::INTERRUPT))
             );
         } else {
             assert!(!state.keyboard().is_open());
@@ -1522,10 +1523,11 @@ fn b_outside_terminals_never_asks_about_foreground_programs() {
 }
 
 #[test]
-fn terminal_tap_keys_send_the_draft_then_the_key() {
+fn terminal_strip_keys_send_the_draft_then_the_key() {
     let mut world = World::default();
     let mut state = with_open_keyboard(&mut world, terminal_by_context(None));
     state = world.run(state, speech_event("ls"));
+    state = tap_button(&mut world, state, ButtonName::DpadUp);
     state = tap_button(&mut world, state, ButtonName::DpadLeft);
     world.trace.clear();
     let state = tap_button(&mut world, state, ButtonName::South);
@@ -1533,15 +1535,14 @@ fn terminal_tap_keys_send_the_draft_then_the_key() {
     assert_eq!(state.keyboard().draft(), "");
     assert_eq!(
         applied(&world),
-        vec![
-            &Effect::Apply(Action::Text {
-                text: Text::new("ls".into()).unwrap()
-            }),
-            &Effect::Apply(Action::Key {
-                key: tehuti_protocol::KeyName::Tab
-            }),
-        ]
+        vec![&Effect::Apply(Action::Text {
+            text: Text::new("ls".into()).unwrap()
+        })]
     );
+    assert!(world.trace.contains(&Effect::Chord(crate::keyboard::Chord {
+        key: crate::keyboard::ChordKey::Named(tehuti_protocol::KeyName::Tab),
+        modifiers: crate::keyboard::Modifiers::default(),
+    })));
 }
 
 #[test]

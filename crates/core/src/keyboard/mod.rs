@@ -13,17 +13,17 @@ pub const REPEAT_INTERVAL: Duration = Duration::from_millis(80);
 pub const WORD_PICK_DEFLECTION: i16 = 500;
 /// The left stick must return inside this deflection before it picks another word.
 const WORD_PICK_RELEASE: i16 = 250;
-/// Every row of the letter and symbol layers spans this many width units.
+/// Every row spans this many width units.
 pub const ROW_UNITS: u8 = 28;
-/// Every row of the terminal layer spans this many width units.
-pub const TERMINAL_ROW_UNITS: u8 = 36;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Char(char),
     Text(&'static str),
-    /// Sends the draft, then taps the key; the keyboard stays open.
+    /// Terminal strip key: sends the draft, then taps the key with any latched modifiers.
     Tap(KeyName),
+    /// One-shot modifier: latches until the next key.
+    Modifier(Modifier),
     Shift,
     Symbols,
     Backspace,
@@ -154,66 +154,95 @@ const fn tap(key: KeyName) -> Slot {
     slot(Key::Tap(key), 2)
 }
 
-/// Letters with the symbols, Tab, arrows and Ctrl-C a shell uses most.
-const TERMINAL: Rows = [
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modifier {
+    Control,
+    Alt,
+}
+
+/// The terminal strip above the letters, Termux style.
+const STRIP: &[Slot] = &[
+    tap(KeyName::Escape),
+    tap(KeyName::Tab),
+    slot(Key::Modifier(Modifier::Control), 2),
+    slot(Key::Modifier(Modifier::Alt), 2),
+    tap(KeyName::Left),
+    tap(KeyName::Up),
+    tap(KeyName::Down),
+    tap(KeyName::Right),
+    tap(KeyName::Home),
+    tap(KeyName::End),
+    tap(KeyName::PageUp),
+    tap(KeyName::PageDown),
+    letter('/'),
+    letter('-'),
+];
+
+const TERMINAL_LETTERS: [&[Slot]; 4] = [STRIP, LETTERS[0], LETTERS[1], LETTERS[2]];
+
+/// Symbols with the pipe, redirections and backtick a shell needs.
+const SHELL_SYMBOLS: [&[Slot]; 4] = [
+    STRIP,
+    SYMBOLS[0],
     &[
-        tap(KeyName::Tab),
-        letter('q'),
-        letter('w'),
-        letter('e'),
-        letter('r'),
-        letter('t'),
-        letter('y'),
-        letter('u'),
-        letter('i'),
-        letter('o'),
-        letter('p'),
-        slot(Key::Backspace, 4),
+        slot(Key::Symbols, 4),
+        letter('#'),
+        letter('$'),
         letter('|'),
         letter('&'),
-        letter('>'),
         letter('<'),
-        letter(';'),
-    ],
-    &[
-        slot(Key::Symbols, 2),
-        letter('a'),
-        letter('s'),
-        letter('d'),
-        letter('f'),
-        letter('g'),
-        letter('h'),
-        letter('j'),
-        letter('k'),
-        letter('l'),
+        letter('>'),
+        letter('@'),
+        letter('('),
+        letter(')'),
+        letter('"'),
         slot(Key::Send, 4),
-        letter('$'),
-        letter('~'),
-        letter('`'),
-        letter('-'),
-        letter('_'),
-        letter('/'),
     ],
     &[
-        slot(Key::Shift, 2),
-        letter('z'),
-        letter('x'),
-        letter('c'),
-        letter('v'),
-        letter('b'),
-        letter('n'),
-        letter('m'),
-        letter('.'),
-        slot(Key::Space, 4),
+        slot(Key::CaretLeft, 4),
+        letter('!'),
+        letter('?'),
+        letter(':'),
+        letter(';'),
+        letter('`'),
         letter('*'),
         letter('='),
-        tap(KeyName::Left),
-        tap(KeyName::Up),
-        tap(KeyName::Down),
-        tap(KeyName::Right),
-        tap(KeyName::Interrupt),
+        letter('_'),
+        letter('~'),
+        slot(Key::Space, 4),
+        slot(Key::CaretRight, 2),
     ],
 ];
+
+/// A key tap with modifiers, for terminals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChordKey {
+    Named(KeyName),
+    Char(char),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub control: bool,
+    pub alt: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chord {
+    pub key: ChordKey,
+    pub modifiers: Modifiers,
+}
+
+impl Chord {
+    /// Ctrl-C, which interrupts a terminal's foreground program.
+    pub const INTERRUPT: Self = Self {
+        key: ChordKey::Char('c'),
+        modifiers: Modifiers {
+            control: true,
+            alt: false,
+        },
+    };
+}
 
 const URL: Rows = [
     LETTERS[0],
@@ -259,8 +288,8 @@ pub enum Response {
     Consumed,
     /// Deliver this draft to the focused application.
     Send(String),
-    /// Deliver this draft, which may be empty, then tap the key.
-    Tap(String, KeyName),
+    /// Deliver this draft, which may be empty, then tap the chord.
+    Chord(String, Chord),
     /// B in a terminal: interrupt a foreground program, or close when there is none.
     InterruptOrClose,
 }
@@ -323,6 +352,7 @@ pub struct Keyboard {
     open: bool,
     field_kind: FieldKind,
     app: AppKind,
+    latched: Modifiers,
     revealed: Option<(Range<usize>, Duration)>,
     layer: Layer,
     highlight: (usize, usize),
@@ -350,7 +380,7 @@ impl Keyboard {
             open: true,
             field_kind: self.field_kind,
             app: self.app,
-            highlight: (0, 1),
+            highlight: (self.rows().len().saturating_sub(3), 1),
             captured: core::mem::take(&mut self.captured),
             stick_engaged: self.stick_engaged,
             ..Self::default()
@@ -366,6 +396,7 @@ impl Keyboard {
         self.word = None;
         self.repeat = None;
         self.layer = Layer::Letters;
+        self.latched = Modifiers::default();
     }
 
     /// Whether a press of `name` was consumed and its release is still due.
@@ -477,18 +508,31 @@ impl Keyboard {
 
     /// The keys of the current layer, top row first.
     #[must_use]
-    pub const fn rows(&self) -> &'static Rows {
-        if self.symbols() {
-            &SYMBOLS
-        } else if self.terminal() {
-            &TERMINAL
-        } else {
-            match self.field_kind {
+    pub const fn rows(&self) -> &'static [&'static [Slot]] {
+        match (self.terminal(), self.symbols()) {
+            (true, true) => &SHELL_SYMBOLS,
+            (true, false) => &TERMINAL_LETTERS,
+            (false, true) => &SYMBOLS,
+            (false, false) => match self.field_kind {
                 FieldKind::Url => &URL,
                 FieldKind::Email => &EMAIL,
-                FieldKind::Terminal => &TERMINAL,
+                FieldKind::Terminal => &TERMINAL_LETTERS,
                 FieldKind::Normal | FieldKind::Password => &LETTERS,
-            }
+            },
+        }
+    }
+
+    /// Modifiers a strip tap latched for the next key.
+    #[must_use]
+    pub const fn latched(&self) -> Modifiers {
+        self.latched
+    }
+
+    #[must_use]
+    pub const fn is_latched(&self, modifier: Modifier) -> bool {
+        match modifier {
+            Modifier::Control => self.latched.control,
+            Modifier::Alt => self.latched.alt,
         }
     }
 
@@ -563,6 +607,9 @@ impl Keyboard {
 
     fn activate(&mut self) -> Response {
         match self.highlighted_key() {
+            Some(Key::Char(character)) if self.latched != Modifiers::default() => {
+                return self.chord(ChordKey::Char(character));
+            }
             Some(Key::Char(character)) => {
                 let character = if self.shifted() {
                     character.to_uppercase().next().unwrap_or(character)
@@ -572,13 +619,9 @@ impl Keyboard {
                 self.type_text(character.encode_utf8(&mut [0; 4]));
             }
             Some(Key::Text(text)) => self.type_text(text),
-            Some(Key::Tap(key)) => {
-                let draft = core::mem::take(&mut self.draft);
-                self.caret = 0;
-                self.word = None;
-                self.revealed = None;
-                return Response::Tap(draft, key);
-            }
+            Some(Key::Tap(key)) => return self.chord(ChordKey::Named(key)),
+            Some(Key::Modifier(Modifier::Control)) => self.latched.control = !self.latched.control,
+            Some(Key::Modifier(Modifier::Alt)) => self.latched.alt = !self.latched.alt,
             Some(Key::Shift) => {
                 self.layer = if self.shifted() {
                     Layer::Letters
@@ -595,6 +638,16 @@ impl Keyboard {
             None => {}
         }
         Response::Consumed
+    }
+
+    /// Hands over the draft with a chord and releases the latched modifiers.
+    fn chord(&mut self, key: ChordKey) -> Response {
+        let draft = core::mem::take(&mut self.draft);
+        self.caret = 0;
+        self.word = None;
+        self.revealed = None;
+        let modifiers = core::mem::take(&mut self.latched);
+        Response::Chord(draft, Chord { key, modifiers })
     }
 
     fn toggle_symbols(&mut self) {
@@ -795,7 +848,8 @@ impl Keyboard {
     }
 
     fn clamp_highlight(&mut self) {
-        let (row, index) = self.highlight;
+        let row = self.highlight.0.min(self.rows().len().saturating_sub(1));
+        let index = self.highlight.1;
         let length = self.rows().get(row).map_or(0, |keys| keys.len());
         self.highlight = (row, index.min(length.saturating_sub(1)));
     }

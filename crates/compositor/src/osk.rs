@@ -18,9 +18,6 @@ use smithay::{
 use tehuti_core::keyboard::{Key, Keyboard};
 use tehuti_protocol::KeyName;
 
-/// The draft line plus three key rows, each as tall as the bar.
-const ROWS: i32 = 4;
-
 const BACKGROUND: [u8; 4] = [30, 24, 20, 255];
 const KEY: [u8; 4] = [88, 65, 47, 255];
 const ACTION: [u8; 4] = [65, 50, 38, 255];
@@ -28,19 +25,21 @@ const HIGHLIGHT: [u8; 4] = [119, 88, 36, 255];
 const PICKED: [u8; 4] = [77, 96, 42, 255];
 const INK: [u8; 4] = [239, 235, 229, 255];
 
-/// Logical height the open keyboard takes from tiled windows.
+/// Logical height of the draft line plus the key rows, each as tall as the bar.
 #[must_use]
-pub const fn logical_height() -> i32 {
-    ROWS.saturating_mul(tehuti_core::bar::HEIGHT)
+pub fn logical_height(keyboard: &Keyboard) -> i32 {
+    i32::try_from(keyboard.rows().len().saturating_add(1))
+        .unwrap_or(i32::MAX)
+        .saturating_mul(tehuti_core::bar::HEIGHT)
 }
 
 /// Physical top and height on an output, above the bar and never taller than the space left.
 #[must_use]
-pub fn placement(output_height: i32, scale: i32) -> (i32, i32) {
+pub fn placement(output_height: i32, scale: i32, keyboard: &Keyboard) -> (i32, i32) {
     let scale = scale.max(1);
     let bar = tehuti_core::bar::HEIGHT.saturating_mul(scale);
     let room = output_height.saturating_sub(bar).max(0);
-    let height = logical_height().saturating_mul(scale).min(room);
+    let height = logical_height(keyboard).saturating_mul(scale).min(room);
     (room.saturating_sub(height), height)
 }
 
@@ -88,7 +87,7 @@ impl Buffer {
         }
         let mode = output.current_mode()?;
         let scale = output.current_scale().integer_scale().max(1);
-        let (top, height) = placement(mode.size.h, scale);
+        let (top, height) = placement(mode.size.h, scale, keyboard);
         let key = (keyboard.clone(), mode.size.w, height, scale);
         if self.key.as_ref() != Some(&key) {
             self.buffer = raster(keyboard, mode.size.w, height, scale);
@@ -104,26 +103,85 @@ fn label(key: Key, shifted: bool, symbols: bool) -> String {
         Key::Char(character) => character.into(),
         Key::Text(text) => text.into(),
         Key::Tap(key) => match key {
-            KeyName::Tab => "tab",
-            KeyName::Up => "^",
-            KeyName::Down => "v",
-            KeyName::Left => "<-",
-            KeyName::Right => "->",
-            KeyName::Interrupt => "^C",
-            KeyName::Enter => "ret",
+            KeyName::Tab => "⇥",
+            KeyName::Up => "↑",
+            KeyName::Down => "↓",
+            KeyName::Left => "←",
+            KeyName::Right => "→",
+            KeyName::Home => "home",
+            KeyName::End => "end",
+            KeyName::PageUp => "pgup",
+            KeyName::PageDown => "pgdn",
+            KeyName::Enter => "⏎",
             KeyName::Escape => "esc",
             KeyName::Space => "spc",
-            KeyName::Backspace => "<del",
+            KeyName::Backspace => "⌫",
         }
         .into(),
-        Key::Shift => "shift".into(),
+        Key::Modifier(tehuti_core::keyboard::Modifier::Control) => "ctrl".into(),
+        Key::Modifier(tehuti_core::keyboard::Modifier::Alt) => "alt".into(),
+        Key::Shift => "⇧".into(),
         Key::Symbols => if symbols { "abc" } else { "?123" }.into(),
-        Key::Backspace => "del".into(),
+        Key::Backspace => "⌫".into(),
         Key::Send => "send".into(),
         Key::CaretLeft => "<".into(),
         Key::CaretRight => ">".into(),
         Key::Space => "space".into(),
     }
+}
+
+/// Bitmap for a label character: the vendored font, then the key symbols it lacks.
+fn glyph(character: char) -> Option<[u8; 8]> {
+    font8x8::BASIC_FONTS
+        .get(character)
+        .or_else(|| font8x8::LATIN_FONTS.get(character))
+        .or_else(|| symbol(character).map(bits))
+}
+
+/// Key symbols missing from font8x8, drawn on the same 8x8 grid.
+const fn symbol(character: char) -> Option<[&'static str; 8]> {
+    Some(match character {
+        '←' => [
+            "........", "...#....", "..##....", ".######.", "..##....", "...#....", "........", "........",
+        ],
+        '→' => [
+            "........", "....#...", "....##..", ".######.", "....##..", "....#...", "........", "........",
+        ],
+        '↑' => [
+            "...##...", "..####..", ".######.", "...##...", "...##...", "...##...", "...##...", "........",
+        ],
+        '↓' => [
+            "...##...", "...##...", "...##...", "...##...", ".######.", "..####..", "...##...", "........",
+        ],
+        '⇧' => [
+            "...##...", "..#..#..", ".#....#.", "###..###", "..#..#..", "..#..#..", "..####..", "........",
+        ],
+        '⇪' => [
+            "...##...", "..#..#..", ".#....#.", "###..###", "..#..#..", "..####..", "........", "..####..",
+        ],
+        '⌫' => [
+            "........", "...#####", "..#....#", ".#.#.#.#", "#...#..#", ".#.#.#.#", "..#....#", "...#####",
+        ],
+        '⇥' => [
+            "........", "....#..#", "....##.#", "########", "....##.#", "....#..#", "........", "........",
+        ],
+        '⏎' => [
+            "........", ".......#", "..#....#", ".##....#", "########", ".##.....", "..#.....", "........",
+        ],
+        _ => return None,
+    })
+}
+
+/// Packs `#` cells into font8x8 rows, where bit zero is the leftmost column.
+fn bits(rows: [&str; 8]) -> [u8; 8] {
+    rows.map(|row| {
+        row.bytes()
+            .enumerate()
+            .filter(|(_, cell)| *cell == b'#')
+            .fold(0u8, |bits, (column, _)| {
+                bits | 1u8.checked_shl(u32::try_from(column).unwrap_or(8)).unwrap_or(0)
+            })
+    })
 }
 
 /// Left and right pixel edges of each key, inside a side margin of eight logical pixels.
@@ -176,6 +234,10 @@ fn raster(keyboard: &Keyboard, width: i32, height: i32, scale: i32) -> Option<Me
         {
             let colour = if keyboard.highlight() == (row, index) {
                 HIGHLIGHT
+            } else if let Key::Modifier(modifier) = slot.key
+                && keyboard.is_latched(modifier)
+            {
+                PICKED
             } else if matches!(slot.key, Key::Char(_)) {
                 KEY
             } else {
@@ -281,10 +343,7 @@ impl Canvas {
             if left.saturating_add(advance) > end {
                 break;
             }
-            let glyph = font8x8::BASIC_FONTS
-                .get(character)
-                .or_else(|| font8x8::LATIN_FONTS.get(character))
-                .unwrap_or([255, 129, 129, 129, 129, 129, 129, 255]);
+            let glyph = glyph(character).unwrap_or([255, 129, 129, 129, 129, 129, 129, 255]);
             for (row, bits) in glyph.into_iter().enumerate() {
                 for column in 0..8u32 {
                     if bits & (1u8 << column) != 0 {
@@ -328,6 +387,23 @@ mod tests {
                                 left >= scale.saturating_mul(8) && right <= width - scale * 8 && left < right
                             );
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_label_renders_without_a_missing_glyph() {
+        for keyboard in layouts() {
+            for keys in keyboard.rows() {
+                for slot in *keys {
+                    for (shifted, symbols) in [(false, false), (true, false), (false, true)] {
+                        let text = label(slot.key, shifted, symbols);
+                        assert!(
+                            text.chars().all(|character| glyph(character).is_some()),
+                            "{text} renders"
+                        );
                     }
                 }
             }

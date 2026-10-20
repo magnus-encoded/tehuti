@@ -115,7 +115,7 @@ pub struct Compositor {
     seat: Seat<Self>,
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
-    keyboard_reserved: bool,
+    keyboard_reserved: i32,
     display: DisplayHandle,
 }
 
@@ -200,7 +200,7 @@ impl Compositor {
             seat,
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
-            keyboard_reserved: false,
+            keyboard_reserved: 0,
             display: display.clone(),
         };
         compositor
@@ -556,9 +556,14 @@ impl Compositor {
 
     /// Resizes tiled windows when the on-screen keyboard opens or closes.
     fn reserve_keyboard_height(&mut self) {
-        let open = self.dispatch.keyboard().is_open();
-        if open != self.keyboard_reserved {
-            self.keyboard_reserved = open;
+        let keyboard = self.dispatch.keyboard();
+        let height = if keyboard.is_open() {
+            crate::osk::logical_height(keyboard)
+        } else {
+            0
+        };
+        if height != self.keyboard_reserved {
+            self.keyboard_reserved = height;
             self.fill_output();
         }
     }
@@ -635,6 +640,7 @@ impl Compositor {
             | DispatchEffect::Click { .. }
             | DispatchEffect::MouseMode(_)
             | DispatchEffect::PollSources
+            | DispatchEffect::Chord(_)
             | DispatchEffect::SouthPressed(_)
             | DispatchEffect::ResetSecretFocus
             | DispatchEffect::Apply(_)
@@ -671,12 +677,9 @@ impl Compositor {
             DispatchEffect::ResetSecretFocus => {
                 self.reset_secret_confirmation_for_focus();
             }
-            DispatchEffect::Apply(action) => {
-                self.apply(&action);
-            }
-            DispatchEffect::PluginAction(action) => {
-                self.apply_plugin_action(&action);
-            }
+            DispatchEffect::Apply(action) => self.apply(&action),
+            DispatchEffect::PluginAction(action) => self.apply_plugin_action(&action),
+            DispatchEffect::Chord(chord) => self.tap_chord(chord),
             DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
@@ -1017,17 +1020,31 @@ impl Compositor {
     fn tap(&mut self, key: KeyName) {
         let evdev_code = key.evdev_code();
         let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
-        let focus = key
-            .with_control()
-            .then(|| self.keyboard.current_focus())
-            .flatten();
+        self.tap_keycode(keycode);
+    }
+
+    /// Taps a key with Control or Alt held, from the on-screen keyboard's terminal strip.
+    fn tap_chord(&mut self, chord: tehuti_core::keyboard::Chord) {
+        use tehuti_core::keyboard::ChordKey;
+        let (keycode, mut modifiers) = match chord.key {
+            ChordKey::Named(key) => (
+                Keycode::new(key.evdev_code().saturating_add(XKB_KEYCODE_OFFSET)),
+                ModifiersState::default(),
+            ),
+            ChordKey::Char(character) => {
+                let Some(found) = self.text_keys.get(&character).copied() else {
+                    tracing::warn!(?character, "chord character unavailable in keymap; skipped");
+                    return;
+                };
+                found
+            }
+        };
+        modifiers.ctrl |= chord.modifiers.control;
+        modifiers.alt |= chord.modifiers.alt;
+        let focus = self.keyboard.current_focus();
         let seat = self.seat.clone();
         if let Some(surface) = &focus {
-            let control = ModifiersState {
-                ctrl: true,
-                ..ModifiersState::default()
-            };
-            surface.modifiers(&seat, self, control, SERIAL_COUNTER.next_serial());
+            surface.modifiers(&seat, self, modifiers, SERIAL_COUNTER.next_serial());
         }
         self.tap_keycode(keycode);
         if let Some(surface) = &focus {
@@ -1038,6 +1055,7 @@ impl Compositor {
                 SERIAL_COUNTER.next_serial(),
             );
         }
+        tracing::info!(?chord, "chord delivered to focused window");
     }
 
     /// Whether the focused client's shell has a program in the foreground; false when unknown.
@@ -1171,11 +1189,7 @@ impl Compositor {
             usable: Rect {
                 height: (area.height
                     - f64::from(tehuti_core::bar::HEIGHT)
-                    - if self.keyboard_reserved {
-                        f64::from(crate::osk::logical_height())
-                    } else {
-                        0.0
-                    })
+                    - f64::from(self.keyboard_reserved))
                 .max(1.0),
                 ..area
             },

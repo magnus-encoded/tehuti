@@ -226,6 +226,7 @@ for line in sys.stdin:
                         | Effect::Click { .. }
                         | Effect::MouseMode(_)
                         | Effect::PollSources
+                        | Effect::Chord(_)
                         | Effect::SouthPressed(_)
                         | Effect::ResetSecretFocus
                         | Effect::Apply(_)

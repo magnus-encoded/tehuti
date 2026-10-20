@@ -114,17 +114,13 @@ pub enum KeyName {
     Down,
     Left,
     Right,
-    /// Ctrl-C, which interrupts a terminal's foreground program.
-    Interrupt,
+    Home,
+    End,
+    PageUp,
+    PageDown,
 }
 
 impl KeyName {
-    /// Whether the key is sent with Control held.
-    #[must_use]
-    pub const fn with_control(self) -> bool {
-        matches!(self, Self::Interrupt)
-    }
-
     #[must_use]
     pub const fn evdev_code(self) -> u32 {
         match self {
@@ -137,7 +133,10 @@ impl KeyName {
             Self::Down => 108,
             Self::Left => 105,
             Self::Right => 106,
-            Self::Interrupt => 46,
+            Self::Home => 102,
+            Self::End => 107,
+            Self::PageUp => 104,
+            Self::PageDown => 109,
         }
     }
 }

@@ -102,6 +102,8 @@ pub enum Effect {
     PollSpeech(Duration),
     /// Polls secret lookups, launchers and desktop entries.
     PollSources,
+    /// Taps a key with modifiers in the focused client, from the on-screen keyboard.
+    Chord(crate::keyboard::Chord),
     /// Query: does the focused terminal's shell have a program in the foreground?
     /// Reply [`Input::ForegroundProgram`].
     QueryForegroundProgram,
@@ -426,9 +428,7 @@ fn interrupt_or_close(state: &mut State, running: bool, effects: &mut Vec<Effect
     if awaited.is_none() {
         resume(state, Input::ForegroundProgram(running), effects);
     } else if running {
-        effects.push(Effect::Apply(Action::Key {
-            key: tehuti_protocol::KeyName::Interrupt,
-        }));
+        effects.push(Effect::Chord(crate::keyboard::Chord::INTERRUPT));
     } else {
         state.keyboard.close();
     }
@@ -713,13 +713,13 @@ fn send_response(state: &mut State, response: crate::keyboard::Response, effects
             }
             true
         }
-        crate::keyboard::Response::Tap(draft, key) => {
+        crate::keyboard::Response::Chord(draft, chord) => {
             if !draft.is_empty()
                 && let Ok(text) = tehuti_protocol::Text::new(draft)
             {
                 effects.push(Effect::Apply(Action::Text { text }));
             }
-            effects.push(Effect::Apply(Action::Key { key }));
+            effects.push(Effect::Chord(chord));
             true
         }
         crate::keyboard::Response::InterruptOrClose => {

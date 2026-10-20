@@ -58,7 +58,7 @@ mod step {
             let mut source = format!("app_id = {}\n[buttons]\n", toml::Value::String(app_id.clone()));
             for (button, key) in mappings {
                 if button != name {
-                    writeln!(source, "[buttons.{}]\nkey = '{}'", button_name(button), format!("{key:?}").to_lowercase()).unwrap();
+                    writeln!(source, "[buttons.{}]\nkey = '{}'", button_name(button), key_name(key)).unwrap();
                 }
             }
             writeln!(source, "[buttons.{}]\ntext = {}", button_name(name), toml::Value::String(text.as_str().into())).unwrap();
@@ -156,14 +156,22 @@ mod step {
     }
 
     fn button_name(button: ButtonName) -> String {
+        snake_case(&format!("{button:?}"))
+    }
+
+    fn snake_case(debug: &str) -> String {
         let mut name = String::new();
-        for (index, letter) in format!("{button:?}").chars().enumerate() {
+        for (index, letter) in debug.chars().enumerate() {
             if index > 0 && letter.is_uppercase() {
                 name.push('_');
             }
             name.extend(letter.to_lowercase());
         }
         name
+    }
+
+    fn key_name(key: KeyName) -> String {
+        snake_case(&format!("{key:?}"))
     }
 
     fn generated_context(
@@ -176,7 +184,7 @@ mod step {
                 source,
                 "[buttons.{}]\nkey = '{}'\n",
                 button_name(*button),
-                format!("{key:?}").to_lowercase()
+                key_name(*key)
             )
             .unwrap();
         }
