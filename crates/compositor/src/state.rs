@@ -132,10 +132,17 @@ impl Compositor {
     ///
     /// # Errors
     /// The keyboard keymap fails to load or the desktop entry worker cannot start.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat list of Wayland globals; splitting hides the setup order"
+    )]
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
-        let keymap = Self::load_keymap()?;
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .ok_or(SetupError::KeymapCompilation)?;
         let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         let text_keys = text_keys(&keymap);
         let pointer = seat.add_pointer();
@@ -194,12 +201,6 @@ impl Compositor {
             .clone()
             .set_keymap_from_string(&mut compositor, keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))?;
         Ok(compositor)
-    }
-
-    fn load_keymap() -> Result<xkb::Keymap, SetupError> {
-        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
-            .ok_or(SetupError::KeymapCompilation)
     }
 
     /// Installs contexts before accepting clients.
