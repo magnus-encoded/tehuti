@@ -119,7 +119,7 @@ pub fn application_hotwords(directories: &[std::path::PathBuf]) -> Vec<(String, 
                 if !in_entry {
                     continue;
                 }
-                if line == "Hidden=true" {
+                if matches!(line, "Hidden=true" | "NoDisplay=true") {
                     hidden = true;
                 }
                 if let Some(name) = line

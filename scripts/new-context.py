@@ -15,17 +15,22 @@ def installed_apps():
     directories.extend(Path(item) for item in os.environ.get(
         "XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(os.pathsep) if item)
     apps = {}
+    seen = set()
     for directory in directories:
         root = directory / "applications"
         for path in sorted(root.rglob("*.desktop")):
             desktop_id = str(path.relative_to(root)).replace(os.sep, "-")
-            if desktop_id in apps:
+            if desktop_id in seen:
                 continue
+            seen.add(desktop_id)
             config = configparser.ConfigParser(interpolation=None, strict=False)
             try:
                 config.read(path, encoding="utf-8")
                 entry = config["Desktop Entry"]
-                apps[desktop_id] = entry.get("Name", desktop_id)
+                if entry.getboolean("Hidden", fallback=False) or entry.getboolean("NoDisplay", fallback=False):
+                    continue
+                names = [entry.get("Name", desktop_id), entry.get("GenericName", "")]
+                apps[desktop_id] = " / ".join(name for name in names if name)
             except (OSError, UnicodeError, configparser.Error, KeyError):
                 continue
     return apps
@@ -53,7 +58,7 @@ def render(app_id, hotwords, apps):
         word, separator, target = spec.partition("=")
         kind, colon, value = target.partition(":")
         if (not separator or not colon or kind not in {"app", "path", "action"}
-                or not value.strip() or not re.fullmatch(r"[^\W_]+", word, re.UNICODE)):
+                or not value.strip() or not re.fullmatch(r"[^\W_]+(?:\s+[^\W_]+)*", word, re.UNICODE)):
             raise ValueError("hotwords use WORD=app:ID, WORD=path:PATH or WORD=action:PHRASE")
         if word.lower() in seen or word == "apps":
             raise ValueError("hotword names must be unique; apps is reserved")

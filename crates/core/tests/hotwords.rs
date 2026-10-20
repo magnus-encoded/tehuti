@@ -31,6 +31,25 @@ mod hotwords {
     }
 
     #[test]
+    fn context_speech_mapping_beats_an_installed_app_name() {
+        let mut state =
+            focused(&["app_id = 'editor'\n[buttons]\n[speech]\n'open settings' = { key = 'tab' }"]);
+        state.set_app_hotwords(vec![("Settings".into(), launch("settings.desktop"))]);
+        let (_, actions) = step(
+            state,
+            &Event::Speech {
+                text: Text::new("Open Settings!".into()).unwrap(),
+            },
+        );
+        assert_eq!(
+            actions,
+            vec![Action::Key {
+                key: tehuti_protocol::KeyName::Tab
+            }]
+        );
+    }
+
+    #[test]
     fn local_hotwords_override_global_and_installed_apps_and_global_fills_gaps() {
         let state = focused(&[
             "app_id = '*'\n[buttons]\n[hotwords]\natlas = { app = 'global.desktop' }\nnotes = { app = 'notes.desktop' }",

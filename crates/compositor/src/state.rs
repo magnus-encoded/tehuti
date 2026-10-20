@@ -585,7 +585,13 @@ impl Compositor {
             | tehuti_core::speech::SpeechEffect::Interim { .. }
             | tehuti_core::speech::SpeechEffect::Failed { .. } => {}
         }
-        let hotwords: Vec<_> = self.dispatch.core().hotwords().into_keys().collect();
+        let mut vocabulary: std::collections::BTreeSet<_> =
+            self.dispatch.core().hotwords().into_keys().collect();
+        for context in self.contexts() {
+            vocabulary.extend(context.speech_phrases().map(str::to_owned));
+        }
+        vocabulary.extend(crate::contexts::user_vocabulary());
+        let hotwords: Vec<_> = vocabulary.into_iter().collect();
         self.speech_process.as_mut().is_none_or(|process| {
             process
                 .send_with_hotwords(command, &hotwords)

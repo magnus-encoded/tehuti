@@ -263,6 +263,14 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         if text.as_str().trim().is_empty() {
             return None;
         }
+        if let Some(action) = state
+            .contexts
+            .iter()
+            .find(|context| Some(context.app_id()) == state.focused_app_id.as_deref())
+            .and_then(|context| context.mapped_speech_action(text.as_str()))
+        {
+            return Some(action);
+        }
         let normalized = tehuti_protocol::normalize_phrase(text.as_str());
         let target = normalized.strip_prefix("open ").unwrap_or(&normalized);
         if let Some(action) = state.hotwords().get(target) {

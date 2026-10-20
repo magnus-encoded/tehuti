@@ -28,7 +28,7 @@ accept = { action = "confirm" }
         assert_eq!(
             context.hotwords().get("atlas"),
             Some(&Action::OpenPath {
-                path: Text::new(format!("{}/Documents/atlas", std::env::var("HOME").unwrap())).unwrap()
+                path: Text::new("~/Documents/atlas".into()).unwrap()
             })
         );
         assert_eq!(
@@ -38,9 +38,9 @@ accept = { action = "confirm" }
     }
 
     #[test]
-    fn home_alone_expands_and_other_paths_remain_literal() {
+    fn parser_keeps_paths_literal() {
         for (source, expected) in [
-            ("~", std::env::var("HOME").unwrap()),
+            ("~", "~".into()),
             ("/tmp/atlas", "/tmp/atlas".into()),
             ("Documents/atlas", "Documents/atlas".into()),
         ] {
@@ -60,7 +60,6 @@ accept = { action = "confirm" }
     #[test]
     fn invalid_hotword_boundaries_are_rejected() {
         for entry in [
-            "'two words' = { path = '/tmp/atlas' }",
             "'!' = { path = '/tmp/atlas' }",
             "atlas = { app = '../atlas.desktop' }",
             "atlas = { app = 'atlas' }",
@@ -92,7 +91,7 @@ accept = { action = "confirm" }
                 "--hotword",
                 "browser=app:firefox.desktop",
                 "--hotword",
-                "atlas=path:~/Documents/atlas",
+                "two words=path:~/Documents/atlas",
                 "--dry-run",
             ])
             .stdin(std::process::Stdio::null())

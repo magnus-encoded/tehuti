@@ -168,6 +168,34 @@ impl Context {
         &self.hotwords
     }
 
+    /// The normalized phrases declared in this context.
+    pub fn speech_phrases(&self) -> impl Iterator<Item = &str> {
+        self.speech.keys().map(String::as_str)
+    }
+
+    /// Resolves path targets at the loading boundary.
+    ///
+    /// # Errors
+    /// Returns the resolver's failure for an invalid path.
+    pub fn resolve_hotword_paths(
+        &mut self,
+        mut resolve: impl FnMut(&Text) -> Result<Text, String>,
+    ) -> Result<(), String> {
+        for action in self.hotwords.values_mut() {
+            if let Action::OpenPath { path } = action {
+                *path = resolve(path)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn mapped_speech_action(&self, phrase: &str) -> Option<Action> {
+        self.speech
+            .get(&normalize_phrase(phrase))
+            .map(MappingAction::action)
+    }
+
     #[must_use]
     pub const fn app_hotwords(&self) -> Option<bool> {
         self.app_hotwords
@@ -350,8 +378,8 @@ fn parse_hotwords(
             }
             continue;
         }
-        if normalized.split_whitespace().count() != 1 {
-            return Err(format!("hotword {word:?} must be one spoken word"));
+        if normalized.is_empty() {
+            return Err(format!("hotword {word:?} must contain spoken words"));
         }
         let action = match target {
             Hotword::Target(HotwordTarget::App { app }) => {
@@ -367,15 +395,7 @@ fn parse_hotwords(
                 if path.as_str().trim().is_empty() {
                     return Err("hotword path must not be empty".into());
                 }
-                let expanded = if path.as_str() == "~" || path.as_str().starts_with("~/") {
-                    let home = std::env::var("HOME").map_err(|_| "HOME is required for ~ paths")?;
-                    format!("{home}{}", path.as_str().strip_prefix('~').unwrap_or_default())
-                } else {
-                    path.as_str().to_owned()
-                };
-                Action::OpenPath {
-                    path: Text::new(expanded)?,
-                }
+                Action::OpenPath { path }
             }
             Hotword::Target(HotwordTarget::Action { action }) => speech
                 .get(&normalize_phrase(&action))

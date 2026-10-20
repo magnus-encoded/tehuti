@@ -95,7 +95,7 @@ the client enables another field. `"off"` disables field opening. Saying
 
 ## Hotwords
 
-A hotword is one spoken word mapped to an application, path, or existing speech
+A hotword is a spoken phrase mapped to an application, path, or existing speech
 mapping in the same file. It works alone or after “open”. Installed applications
 supply a built-in set from their `.desktop` Name and GenericName, including names
 with several words. No alias phrases are generated.
@@ -119,19 +119,21 @@ App targets are `.desktop` ids. Path targets open files or directories through
 their default handler; `~` and `~/` expand using HOME when the context loads.
 Relative paths resolve from the compositor's working directory. Action targets
 name an existing `[speech]` mapping; missing references reject the file.
-Hotwords use the same normalization as speech mappings. Empty names, names with
-several words, duplicate normalized names, and targets with several fields are
-rejected. `apps` is reserved for the built-in set switch.
+Hotwords use the same normalization as speech mappings. Empty names, duplicate
+normalized names, and targets with several fields are rejected. `apps` is reserved for the built-in set switch.
 
 Hotwords in the first `app_id = "*"` context apply everywhere. The focused
 context overrides matching global hotwords; both override installed app names.
 Other global words remain available. `apps = false` disables the installed set;
 a focused context inherits this switch unless it supplies its own value.
-Explicit app targets still work with the installed set disabled. Hotwords run
-before speech mappings and unmatched dictation in context routing. Plugin speech
+Explicit app targets still work with the installed set disabled. Explicit speech
+mappings run before hotwords, followed by unmatched dictation. Plugin speech
 routing and the on-screen keyboard retain their priority.
 
-The effective vocabulary primes Whisper for both interim and final transcription.
+All loaded contexts’ speech phrases and `~/.config/tehuti/vocabulary.txt`
+(one word per line) join the effective hotwords at Record press.
+`XDG_CONFIG_HOME` overrides `~/.config`. The vocabulary primes Whisper for both
+interim and final transcription.
 It is captured when Record is pressed, so a reload cannot change an in-flight
 session's vocabulary. Desktop entries refresh every thirty seconds.
 
