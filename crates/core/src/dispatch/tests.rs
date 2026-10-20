@@ -514,7 +514,7 @@ fn voice_bar_follows_capture_routing_and_expiry_through_dispatch() {
             elapsed: crate::bar::RESULT_LIFETIME,
         },
     );
-    assert_eq!(state.core().bar().segments().len(), 1);
+    assert_eq!(state.core().bar().segments().len(), 2, "context and level chips");
 }
 
 #[test]
@@ -538,10 +538,16 @@ fn focus_clears_voice_bar_and_rejects_old_capture_through_dispatch() {
     );
     assert_eq!(
         state.core().bar().segments(),
-        vec![crate::bar::Segment {
-            text: "new".into(),
-            tone: crate::bar::Tone::Context,
-        }]
+        vec![
+            crate::bar::Segment {
+                text: "new".into(),
+                tone: crate::bar::Tone::Context,
+            },
+            crate::bar::Segment {
+                text: "App".into(),
+                tone: crate::bar::Tone::Context,
+            }
+        ]
     );
 }
 
@@ -615,9 +621,9 @@ proptest! {
     }
 
     #[test]
-    fn mouse_mode_swallows_every_button_before_plugins_and_mappings(
+    fn mouse_mode_swallows_pointer_buttons_before_plugins_and_mappings(
         contexts in arbitrary_contexts(),
-        name in prop::sample::select(vec![ButtonName::South, ButtonName::East, ButtonName::West, ButtonName::North, ButtonName::Record, ButtonName::Guide, ButtonName::Start, ButtonName::LeftBumper, ButtonName::RightBumper, ButtonName::DpadUp, ButtonName::DpadDown, ButtonName::DpadLeft, ButtonName::DpadRight, ButtonName::LeftStick, ButtonName::RightStick]),
+        name in prop::sample::select(vec![ButtonName::South, ButtonName::East, ButtonName::West, ButtonName::North, ButtonName::LeftBumper, ButtonName::RightBumper, ButtonName::DpadUp, ButtonName::DpadDown, ButtonName::DpadLeft, ButtonName::DpadRight, ButtonName::LeftStick, ButtonName::RightStick]),
         plugin_active in prop::bool::ANY,
     ) {
         let mut world = World { plugin_active, ..World::default() };
@@ -699,6 +705,7 @@ proptest! {
         let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
         let mut state = finish_view_double_tap(&mut world, state);
         let mut distances = Vec::new();
+        let mut scroll_distances = Vec::new();
         for axis in [small, large] {
             let axis = if negative { axis.saturating_neg() } else { axis };
             state = world.run(state, Input::Sticks(Sticks { left: (axis, 0), right: (0, axis) }));
@@ -707,9 +714,13 @@ proptest! {
             let motion = world.trace.iter().find_map(|effect| if let Effect::MovePointer { x, y: 0 } = effect { Some(*x) } else { None }).unwrap();
             prop_assert_eq!(motion.signum(), if negative { -1 } else { 1 });
             prop_assert!(world.trace.iter().any(|effect| matches!(effect, Effect::Scroll { x: 0, y } if y.signum() == motion.signum())), "right stick scrolls independently");
+            let scroll = world.trace.iter().find_map(|effect| if let Effect::Scroll { x: 0, y } = effect { Some(*y) } else { None }).unwrap();
+            scroll_distances.push(scroll.abs());
             distances.push(motion.abs());
         }
         prop_assert!(distances[0] < distances[1]);
+        prop_assert!(scroll_distances[0] < scroll_distances[1]);
+        prop_assert!(scroll_distances[0] < 1_200_000, "small deflections scroll less than two pixels per tick");
         prop_assert!(distances[0] < 1_600_000, "small deflections move less than two pixels per tick");
     }
 
@@ -730,8 +741,91 @@ proptest! {
     }
 }
 
+proptest! {
+    #[test]
+    fn right_stick_scrolls_only_vertically_outside_mouse_mode(
+        contexts in arbitrary_contexts(),
+        left in (any::<i16>(), any::<i16>()),
+        right in (any::<i16>(), prop_oneof![Just(0_i16), any::<i16>()]),
+    ) {
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), Input::Sticks(Sticks { left, right }));
+        world.trace.clear();
+        let _state = world.run(state, Input::Tick { elapsed: Duration::from_millis(10) });
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::MovePointer { .. })), "normal mode keeps the pointer still");
+        let scrolls: Vec<_> = world.trace.iter().filter_map(|effect| {
+            if let Effect::Scroll { x, y } = effect { Some((*x, *y)) } else { None }
+        }).collect();
+        if right.1 == 0 {
+            prop_assert!(scrolls.is_empty());
+        } else {
+            prop_assert_eq!(scrolls.len(), 1);
+            prop_assert_eq!(scrolls[0].0, 0);
+            prop_assert_eq!(scrolls[0].1.signum(), i32::from(right.1).signum());
+        }
+    }
+
+    #[test]
+    fn right_stick_click_keeps_its_context_binding_while_scrolling(
+        mut contexts in arbitrary_contexts(),
+        vertical in 1_i16..1001,
+    ) {
+        contexts.insert(0, tehuti_protocol::parse_context("app_id = 'mouse-test'\n[buttons.right_stick]\nkey = 'tab'").unwrap());
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), Input::Sticks(Sticks { left: (0, 0), right: (0, vertical) }));
+        let state = world.run(state, Input::Tick { elapsed: Duration::from_millis(10) });
+        prop_assert!(world.trace.iter().any(|effect| matches!(effect, Effect::Scroll { .. })), "vertical deflection scrolls");
+        world.trace.clear();
+        let state = world.run(state, pad_button(ButtonName::RightStick, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(ButtonName::RightStick, ButtonState::Released));
+        prop_assert!(world.trace.contains(&Effect::Apply(Action::Key { key: tehuti_protocol::KeyName::Tab })), "stick click sends the context key");
+    }
+}
+
+proptest! {
+    #[test]
+    fn record_starts_and_transcribes_capture_in_mouse_mode(
+        contexts in arbitrary_contexts(),
+        plugin_active in prop::bool::ANY,
+    ) {
+        let mut world = World { plugin_active, ..World::default() };
+        let state = world.run(configured_mouse(contexts), Input::Speech(SpeechInput::Available));
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = finish_view_double_tap(&mut world, state);
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        world.trace.clear();
+        let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(ButtonName::Record, ButtonState::Released));
+        let commands: Vec<_> = world.trace.iter().filter_map(|effect| {
+            if let Effect::SpeechCommand(command) = effect { Some(command.clone()) } else { None }
+        }).collect();
+        prop_assert_eq!(commands, vec![SpeechEffect::Start { session: 0 }, SpeechEffect::Stop { session: 0, transcribe: true }]);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Click { .. })), "Record never clicks");
+    }
+
+    #[test]
+    fn guide_and_start_reach_normal_dispatch_in_mouse_mode(
+        contexts in arbitrary_contexts(),
+        plugin_active in prop::bool::ANY,
+        name in prop::sample::select(vec![ButtonName::Guide, ButtonName::Start]),
+    ) {
+        let mut world = World { plugin_active, ..World::default() };
+        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = finish_view_double_tap(&mut world, state);
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        world.trace.clear();
+        let state = world.run(state, pad_button(name, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(name, ButtonState::Released));
+        let buttons: Vec<_> = world.trace.iter().filter_map(|effect| {
+            if let Effect::QueryPlugin(event @ Event::Button { .. }) = effect { Some(event.clone()) } else { None }
+        }).collect();
+        prop_assert_eq!(buttons, vec![Event::Button { name, state: ButtonState::Pressed }, Event::Button { name, state: ButtonState::Released }]);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Click { .. })), "Guide and Start never click");
+    }
+}
+
 #[test]
-fn entering_mouse_mode_cancels_recording_before_record_release_is_swallowed() {
+fn entering_mouse_mode_cancels_recording_and_a_later_release_does_not_restart_it() {
     let mut world = World::default();
     let state = world.run(State::default(), Input::Speech(SpeechInput::Available));
     let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
@@ -755,7 +849,7 @@ fn entering_mouse_mode_cancels_recording_before_record_release_is_swallowed() {
             .trace
             .iter()
             .any(|effect| matches!(effect, Effect::SpeechCommand(_))),
-        "swallowed release cannot restart capture"
+        "release after cancellation cannot restart capture"
     );
 }
 
@@ -856,4 +950,297 @@ proptest! {
         let _state = world.run(state, Input::Tick { elapsed: Duration::from_secs(3) });
         prop_assert!(world.trace.contains(&Effect::Apply(Action::Quit)), "escape remains reachable");
     }
+}
+
+#[test]
+fn guide_tap_switches_level_inside_mouse_mode() {
+    let mut world = World::default();
+    let mut state = State::default();
+    for button in [
+        ButtonState::Pressed,
+        ButtonState::Released,
+        ButtonState::Pressed,
+        ButtonState::Released,
+    ] {
+        state = world.run(state, pad_button(ButtonName::Select, button));
+    }
+    assert!(world.trace.contains(&Effect::MouseMode(true)));
+    for button in [ButtonState::Pressed, ButtonState::Released] {
+        state = world.run(state, pad_button(ButtonName::Guide, button));
+    }
+    assert_eq!(state.core().level(), crate::Level::Columns);
+}
+
+fn speech_event(text: &str) -> Input {
+    Input::Event {
+        event: Event::Speech {
+            text: Text::new(text.into()).unwrap(),
+        },
+        elapsed: Duration::ZERO,
+    }
+}
+
+fn tap_button(world: &mut World, state: State, name: ButtonName) -> State {
+    let state = world.run(state, pad_button(name, ButtonState::Pressed));
+    world.run(state, pad_button(name, ButtonState::Released))
+}
+
+fn with_open_keyboard(world: &mut World, state: State) -> State {
+    let state = world.run(state, speech_event("keyboard"));
+    assert!(state.keyboard().is_open());
+    state
+}
+
+fn every_button() -> impl Strategy<Value = Event> {
+    (
+        prop::sample::select(vec![
+            ButtonName::South,
+            ButtonName::East,
+            ButtonName::North,
+            ButtonName::West,
+            ButtonName::LeftBumper,
+            ButtonName::RightBumper,
+            ButtonName::Select,
+            ButtonName::Record,
+            ButtonName::Start,
+            ButtonName::Guide,
+            ButtonName::LeftStick,
+            ButtonName::RightStick,
+            ButtonName::DpadUp,
+            ButtonName::DpadDown,
+            ButtonName::DpadLeft,
+            ButtonName::DpadRight,
+        ]),
+        prop::bool::ANY,
+    )
+        .prop_map(|(name, pressed)| Event::Button {
+            name,
+            state: if pressed {
+                ButtonState::Pressed
+            } else {
+                ButtonState::Released
+            },
+        })
+}
+
+proptest! {
+    #[test]
+    fn only_saying_keyboard_opens_the_keyboard(
+        events in prop::collection::vec(prop_oneof![every_button(), arbitrary_event()], 0..60),
+        sticks in prop::collection::vec(any::<(i16, i16, i16, i16)>(), 0..10),
+        contexts in arbitrary_contexts(),
+    ) {
+        let mut world = World::default();
+        let app = contexts[0].app_id().to_owned();
+        let mut state = configured(contexts, &app);
+        for (left_x, left_y, right_x, right_y) in sticks {
+            state = world.run(state, Input::Sticks(Sticks { left: (left_x, left_y), right: (right_x, right_y) }));
+        }
+        for event in events {
+            let opens = matches!(&event, Event::Speech { text } if crate::keyboard::is_open_phrase(text.as_str()));
+            state = world.run(state, Input::Event { event, elapsed: Duration::from_millis(16) });
+            prop_assert!(opens || !state.keyboard().is_open());
+            if state.keyboard().is_open() {
+                break;
+            }
+        }
+        let state = world.run(state, speech_event("keyboard"));
+        prop_assert!(state.keyboard().is_open());
+    }
+
+    #[test]
+    fn speech_while_open_is_dictation_and_never_a_command(
+        contexts in arbitrary_contexts(),
+        phrase in "[a-z]{1,8}( [a-z]{1,8}){0,3}",
+    ) {
+        let mut world = World::default();
+        let app = contexts[0].app_id().to_owned();
+        let state = with_open_keyboard(&mut world, configured(contexts, &app));
+        world.trace.clear();
+        let state = world.run(state, speech_event(&phrase));
+        prop_assert_eq!(state.keyboard().draft(), phrase.as_str());
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::QueryPlugin(Event::Speech { .. }) | Effect::SpeechRouted { .. })), "dictation never routes");
+    }
+
+    #[test]
+    fn the_open_keyboard_keeps_its_buttons_from_apps_and_plugins(
+        contexts in arbitrary_contexts(),
+        name in prop::sample::select(vec![ButtonName::South, ButtonName::East, ButtonName::North, ButtonName::West, ButtonName::DpadUp, ButtonName::DpadLeft, ButtonName::LeftBumper, ButtonName::RightBumper]),
+    ) {
+        let mut world = World { plugin_active: true, ..World::default() };
+        let app = contexts[0].app_id().to_owned();
+        let state = with_open_keyboard(&mut world, configured(contexts, &app));
+        world.trace.clear();
+        let _state = tap_button(&mut world, state, name);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::QueryPlugin(Event::Button { .. }) | Effect::ConfirmSecret(_))), "no app or plugin sees the button");
+    }
+}
+
+#[test]
+fn menu_sends_the_draft_as_text_to_the_focused_app() {
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, State::default());
+    let state = world.run(state, speech_event("see you soon"));
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::Start);
+    assert!(!state.keyboard().is_open());
+    assert_eq!(
+        world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Apply(_)))
+            .collect::<Vec<_>>(),
+        vec![&Effect::Apply(Action::Text {
+            text: Text::new("see you soon".into()).unwrap()
+        })]
+    );
+}
+
+#[test]
+fn b_closes_without_sending_anything() {
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, State::default());
+    let state = world.run(state, speech_event("draft"));
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(!state.keyboard().is_open());
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(_)))
+    );
+}
+
+#[test]
+fn the_keyboard_opens_and_types_in_mouse_mode() {
+    let mut world = World::default();
+    let mut state = State::default();
+    for button in [
+        ButtonState::Pressed,
+        ButtonState::Released,
+        ButtonState::Pressed,
+        ButtonState::Released,
+    ] {
+        state = world.run(state, pad_button(ButtonName::Select, button));
+    }
+    assert!(world.trace.contains(&Effect::MouseMode(true)));
+    let state = with_open_keyboard(&mut world, state);
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::DpadRight);
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.keyboard().draft(), "w");
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Click { .. }))
+    );
+}
+
+#[test]
+fn right_stick_still_scrolls_while_the_keyboard_is_open() {
+    let mut world = World::default();
+    let mut state = State::default();
+    for button in [
+        ButtonState::Pressed,
+        ButtonState::Released,
+        ButtonState::Pressed,
+        ButtonState::Released,
+    ] {
+        state = world.run(state, pad_button(ButtonName::Select, button));
+    }
+    let state = with_open_keyboard(&mut world, state);
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (900, 0),
+            right: (0, 800),
+        }),
+    );
+    world.trace.clear();
+    let _state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(10),
+        },
+    );
+    assert!(
+        world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Scroll { y, .. } if *y > 0))
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::MovePointer { .. })),
+        "the left stick picks words instead of moving the pointer"
+    );
+}
+
+#[test]
+fn guide_tap_switches_level_while_open_and_shoulders_then_move_columns() {
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, State::default());
+    let state = tap_button(&mut world, state, ButtonName::Guide);
+    assert_eq!(state.core().level(), crate::Level::Columns);
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::RightBumper);
+    assert!(state.keyboard().is_open());
+    assert!(world.trace.contains(&Effect::Apply(Action::Layout {
+        action: tehuti_protocol::LayoutAction::FocusColumnRight
+    })));
+}
+
+#[test]
+fn escape_chord_quits_while_the_keyboard_is_open() {
+    let mut world = World::default();
+    let mut state = with_open_keyboard(&mut world, State::default());
+    state = world.run(state, speech_event("unsent"));
+    for name in [ButtonName::Guide, ButtonName::Start] {
+        state = world.run(state, pad_button(name, ButtonState::Pressed));
+    }
+    let _state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(3),
+        },
+    );
+    assert_eq!(
+        world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Apply(_)))
+            .collect::<Vec<_>>(),
+        vec![&Effect::Apply(Action::Quit)],
+        "Start inside the chord never sends the draft"
+    );
+}
+
+#[test]
+fn start_first_escape_chord_quits_without_sending_while_open() {
+    let mut world = World::default();
+    let mut state = with_open_keyboard(&mut world, State::default());
+    state = world.run(state, speech_event("unsent"));
+    for name in [ButtonName::Start, ButtonName::Guide] {
+        state = world.run(state, pad_button(name, ButtonState::Pressed));
+    }
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(3),
+        },
+    );
+    let _state = world.run(state, pad_button(ButtonName::Start, ButtonState::Released));
+    assert_eq!(
+        world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Apply(_)))
+            .collect::<Vec<_>>(),
+        vec![&Effect::Apply(Action::Quit)],
+        "Start pressed before Guide joins the chord and never sends"
+    );
 }

@@ -8,6 +8,10 @@
 | Synthetic pad | An input source driven by code, for tests that run without devices. |
 | Apply | Carry out an action from the core step, such as sending a key tap to the focused client. |
 | Secret confirmation notice | An overlay naming one secret reference and the focused application before a controller press can authorize lookup. |
+| On-screen keyboard | The compositor's own keyboard overlay, docked low. One highlight moves over the keys with the D-pad, the way console keyboards work. |
+| Draft | The line of text the on-screen keyboard and speech edit before it is sent to the focused application. Closing the keyboard discards it. |
+| Password mode | The on-screen keyboard for a field the application marks as a password: every character except the last one typed is hidden, and push-to-talk never dictates into it. |
+| Keyboard intent | A sign from a context that the user wants to type, which opens the on-screen keyboard without a dedicated button. |
 | Secret destination | One live Wayland surface during one focus generation; secret insertion checks it again after lookup. |
 
 Starting without a controller logs a warning. Discovery continues every 250 ms and on input directory changes until a controller can be grabbed.

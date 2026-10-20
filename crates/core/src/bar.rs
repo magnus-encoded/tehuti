@@ -28,6 +28,7 @@ pub struct Bar {
     agents: Vec<String>,
     feedback: Option<Segment>,
     remaining: Option<Duration>,
+    level: crate::Level,
     pub(crate) generation: u64,
 }
 
@@ -64,6 +65,7 @@ impl Bar {
             agents: Vec::new(),
             feedback: None,
             remaining: None,
+            level: crate::Level::InApp,
             generation: 0,
         }
     }
@@ -79,7 +81,15 @@ impl Bar {
             tone: Tone::Context,
         }];
         segments.extend(self.feedback.clone());
+        segments.push(Segment {
+            text: self.level.label().into(),
+            tone: Tone::Context,
+        });
         segments
+    }
+
+    pub(crate) const fn set_level(&mut self, level: crate::Level) {
+        self.level = level;
     }
 
     pub(crate) fn event(&mut self, event: &Event) {
@@ -166,6 +176,11 @@ impl Bar {
             tone: Tone::Live,
         });
         self.remaining = None;
+    }
+
+    pub(crate) fn keyboard_feedback(&mut self, text: &str) {
+        self.generation = self.generation.saturating_add(1);
+        self.result(text, Tone::Result);
     }
 
     fn result(&mut self, text: &str, tone: Tone) {

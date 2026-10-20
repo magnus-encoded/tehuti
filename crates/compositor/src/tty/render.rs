@@ -42,6 +42,7 @@ pub(super) struct Scanout<Buffer, Framebuffer> {
     dmabuf: Dmabuf,
     _buffer: Buffer,
     bar: tehuti::bar::Buffer,
+    keyboard: tehuti::osk::Buffer,
 }
 
 pub(super) struct Gpu {
@@ -94,6 +95,7 @@ fn create_gpu(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Gpu, Box<
                 dmabuf,
                 _buffer: buffer,
                 bar: tehuti::bar::Buffer::default(),
+                keyboard: tehuti::osk::Buffer::default(),
             })
         };
         match allocate().and_then(|first| allocate().map(|second| [first, second])) {
@@ -124,6 +126,7 @@ fn create_software(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Soft
             dmabuf: buffer.export()?,
             _buffer: buffer,
             bar: tehuti::bar::Buffer::default(),
+            keyboard: tehuti::osk::Buffer::default(),
         })
     };
     Ok(Software {
@@ -174,6 +177,7 @@ pub(super) fn draw(
                 gpu.device.borrow_mut().renderer_mut(),
                 &mut buffer.dmabuf,
                 &mut buffer.bar,
+                &mut buffer.keyboard,
                 output,
                 damage,
                 compositor,
@@ -189,6 +193,7 @@ pub(super) fn draw(
                 &mut software.renderer,
                 &mut buffer.dmabuf,
                 &mut buffer.bar,
+                &mut buffer.keyboard,
                 output,
                 damage,
                 compositor,
@@ -202,6 +207,7 @@ fn draw_buffer<R>(
     renderer: &mut R,
     dmabuf: &mut Dmabuf,
     bar: &mut tehuti::bar::Buffer,
+    keyboard: &mut tehuti::osk::Buffer,
     output: &Output,
     damage: &mut OutputDamageTracker,
     compositor: &Compositor,
@@ -236,7 +242,10 @@ where
     if let Some(element) = bar.element(renderer, output, compositor.voice_bar(), &clock)? {
         elements.push(element);
     }
-    if let Some(location) = compositor.cursor_location() {
+    if let Some(element) = keyboard.element(renderer, output, compositor.on_screen_keyboard())? {
+        elements.push(element);
+    }
+    if let Some(location) = compositor.cursor_on(output) {
         elements.insert(
             0,
             MemoryRenderBufferRenderElement::from_buffer(

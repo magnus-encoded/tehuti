@@ -1,13 +1,46 @@
 //! The pure core step: state and one event in, state and actions out.
 
-use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, KeyName};
+use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, KeyName, LayoutAction};
+
+/// The longest Guide press that still counts as a tap.
+pub const GUIDE_TAP_WINDOW: core::time::Duration = core::time::Duration::from_millis(500);
+
+/// What LB and RB drive; a Guide tap switches between the two.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Level {
+    /// LB and RB route to the focused app's context like any other button.
+    #[default]
+    InApp,
+    /// LB and RB move focus one column left or right.
+    Columns,
+}
+
+impl Level {
+    #[must_use]
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::InApp => Self::Columns,
+            Self::Columns => Self::InApp,
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::InApp => "App",
+            Self::Columns => "Columns",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     contexts: Vec<Context>,
     focused_app_id: Option<String>,
     guide_held: Option<core::time::Duration>,
+    guide_tap: Option<core::time::Duration>,
     start_held: bool,
+    level: Level,
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
 }
@@ -41,7 +74,9 @@ impl State {
             contexts,
             focused_app_id: None,
             guide_held: None,
+            guide_tap: None,
             start_held: false,
+            level: Level::InApp,
             pending: Vec::new(),
             bar: bar::Bar::new(),
         }
@@ -68,7 +103,25 @@ impl State {
     /// Cancels controller holds when the device disconnects or the seat pauses.
     pub const fn controller_disconnected(&mut self) {
         self.guide_held = None;
+        self.guide_tap = None;
         self.start_held = false;
+    }
+
+    /// Whether Guide is down, so Start belongs to the escape chord.
+    #[must_use]
+    pub const fn guide_held(&self) -> bool {
+        self.guide_held.is_some()
+    }
+
+    /// Shows on the bar what the on-screen keyboard did with speech.
+    pub(crate) fn keyboard_feedback(&mut self, text: &str) {
+        self.bar.keyboard_feedback(text);
+    }
+
+    /// What the shoulder buttons currently drive.
+    #[must_use]
+    pub const fn level(&self) -> Level {
+        self.level
     }
 
     /// Plugin decisions still awaiting a reply, expiry or plugin exit.
@@ -115,6 +168,9 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         return (state, actions, false);
     }
     if let Some(actions) = escape_chord(&mut state, event) {
+        return (state, actions, false);
+    }
+    if let Some(actions) = shoulder_level(&state, event) {
         return (state, actions, false);
     }
     if let Some(action) = global_layer(event) {
@@ -180,6 +236,22 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         .and_then(|context| context.action_for(*name))
 }
 
+/// In the columns level LB and RB move focus between columns and never reach the app.
+fn shoulder_level(state: &State, event: &Event) -> Option<Vec<Action>> {
+    let Event::Button { name, state: button } = event else {
+        return None;
+    };
+    let action = match (state.level, name) {
+        (Level::Columns, ButtonName::LeftBumper) => LayoutAction::FocusColumnLeft,
+        (Level::Columns, ButtonName::RightBumper) => LayoutAction::FocusColumnRight,
+        _ => return None,
+    };
+    Some(match button {
+        ButtonState::Pressed => vec![Action::Layout { action }],
+        ButtonState::Released => Vec::new(),
+    })
+}
+
 const fn fallback(_event: &Event) -> Option<Action> {
     None
 }
@@ -192,9 +264,22 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
         } => {
             match button_state {
                 ButtonState::Pressed => {
+                    if state.guide_held.is_none() {
+                        state.guide_tap = (!state.start_held).then_some(core::time::Duration::ZERO);
+                    }
                     let _held = state.guide_held.get_or_insert(core::time::Duration::ZERO);
                 }
-                ButtonState::Released => state.guide_held = None,
+                ButtonState::Released => {
+                    state.guide_held = None;
+                    if state
+                        .guide_tap
+                        .take()
+                        .is_some_and(|elapsed| elapsed < GUIDE_TAP_WINDOW)
+                    {
+                        state.level = state.level.toggled();
+                        state.bar.set_level(state.level);
+                    }
+                }
             }
             Some(Vec::new())
         }
@@ -203,12 +288,18 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             state: button_state,
         } => {
             state.start_held = *button_state == ButtonState::Pressed;
+            if state.guide_held.is_some() {
+                state.guide_tap = None;
+            }
             state.guide_held.as_mut().map(|held| {
                 *held = core::time::Duration::ZERO;
                 Vec::new()
             })
         }
         Event::Tick { elapsed } => {
+            if let Some(tap) = &mut state.guide_tap {
+                *tap = tap.saturating_add(*elapsed);
+            }
             if state.start_held
                 && let Some(held) = &mut state.guide_held
             {
@@ -238,3 +329,5 @@ pub mod windows;
 pub mod layout;
 
 pub mod bar;
+
+pub mod keyboard;

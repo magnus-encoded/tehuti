@@ -36,7 +36,7 @@ impl State {
             self.view_button(*state, effects);
             return true;
         }
-        if !self.active {
+        if !self.active || matches!(name, ButtonName::Record | ButtonName::Guide | ButtonName::Start) {
             return false;
         }
         let click = match name {
@@ -92,7 +92,12 @@ impl State {
         }
     }
 
-    pub(super) fn tick(&mut self, elapsed: Duration, effects: &mut Vec<Effect>) -> bool {
+    pub(super) fn tick(
+        &mut self,
+        elapsed: Duration,
+        left_stick_moves_pointer: bool,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
         let mut single_tap = false;
         if let Some(hold) = &mut self.hold {
             *hold = hold.saturating_add(elapsed);
@@ -115,27 +120,21 @@ impl State {
             .unwrap_or(0)
         };
         if self.active {
-            let millis = i32::try_from(elapsed.as_millis().min(100)).unwrap_or(100);
             let (x, y) = self.sticks.left;
-            if x != 0 || y != 0 {
+            if left_stick_moves_pointer && (x != 0 || y != 0) {
                 effects.push(Effect::MovePointer {
                     x: motion(x),
                     y: motion(y),
                 });
             }
-            let (scroll_x, scroll_y) = self.sticks.right;
-            if scroll_x != 0 || scroll_y != 0 {
-                effects.push(Effect::Scroll {
-                    x: i32::from(scroll_x)
-                        .clamp(-1000, 1000)
-                        .saturating_mul(millis)
-                        .saturating_mul(250),
-                    y: i32::from(scroll_y)
-                        .clamp(-1000, 1000)
-                        .saturating_mul(millis)
-                        .saturating_mul(250),
-                });
-            }
+        }
+        let (scroll_x, scroll_y) = self.sticks.right;
+        let scroll_x = if self.active { scroll_x } else { 0 };
+        if scroll_x != 0 || scroll_y != 0 {
+            effects.push(Effect::Scroll {
+                x: motion(scroll_x).saturating_div(4).saturating_mul(3),
+                y: motion(scroll_y).saturating_div(4).saturating_mul(3),
+            });
         }
         single_tap
     }
