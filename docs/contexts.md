@@ -98,10 +98,11 @@ whose context sets `terminal = true`. Focusing a terminal never opens the
 keyboard, and neither does the opening button. A Guide tap into the in-app
 level opens it unless `open_on_in_app_level = false`. A terminal keeps the
 normal letters and adds a strip row above them: Esc, Tab, Ctrl, Alt, the arrow
-keys, Home, End, Page Up, Page Down, `/` and `-`. Strip keys send the draft and
+keys, Page Up, Page Down, `/`, `-`, `|` and `~`. Strip keys send the draft and
 then tap the key. Ctrl and Alt latch for the next key, strip key or letter, so
 Ctrl then `c` sends Ctrl-C. The symbols layer carries `|`, `<`, `>` and the
-backtick. B sends Ctrl-C while the shell has
+backtick. In a terminal, Start and send type the draft, press Enter and keep the keyboard
+open for the next command. B sends Ctrl-C while the shell has
 a program in the foreground and closes the keyboard otherwise. Inside tmux,
 screen or ssh, B always closes. Dictation into a terminal drops commas and full
 stops that end a word.

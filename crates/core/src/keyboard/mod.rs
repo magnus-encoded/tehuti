@@ -170,12 +170,12 @@ const STRIP: &[Slot] = &[
     tap(KeyName::Up),
     tap(KeyName::Down),
     tap(KeyName::Right),
-    tap(KeyName::Home),
-    tap(KeyName::End),
     tap(KeyName::PageUp),
     tap(KeyName::PageDown),
     letter('/'),
     letter('-'),
+    letter('|'),
+    letter('~'),
 ];
 
 const TERMINAL_LETTERS: [&[Slot]; 4] = [STRIP, LETTERS[0], LETTERS[1], LETTERS[2]];
@@ -660,7 +660,11 @@ impl Keyboard {
         self.clamp_highlight();
     }
 
+    /// Terminals run the draft with Enter and keep the keyboard open for the next command.
     fn send(&mut self) -> Response {
+        if self.terminal() {
+            return self.chord(ChordKey::Named(KeyName::Enter));
+        }
         let draft = core::mem::take(&mut self.draft);
         self.close();
         if draft.is_empty() {

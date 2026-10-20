@@ -530,8 +530,6 @@ fn terminals_add_a_strip_above_the_normal_letters() {
         KeyName::Up,
         KeyName::Down,
         KeyName::Right,
-        KeyName::Home,
-        KeyName::End,
         KeyName::PageUp,
         KeyName::PageDown,
     ] {
@@ -581,6 +579,25 @@ fn b_in_a_terminal_leaves_the_choice_to_the_caller() {
     assert_eq!(tap(&mut keyboard, ButtonName::East), Response::InterruptOrClose);
     assert!(keyboard.is_open());
     assert_eq!(keyboard.draft(), "make");
+}
+
+#[test]
+fn start_in_a_terminal_runs_the_draft_and_stays_open() {
+    let mut keyboard = terminal();
+    keyboard.dictate("ls");
+    let _press = keyboard.button(ButtonName::Start, ButtonState::Pressed, true);
+    assert_eq!(
+        keyboard.button(ButtonName::Start, ButtonState::Released, true),
+        Response::Chord(
+            "ls".into(),
+            Chord {
+                key: ChordKey::Named(KeyName::Enter),
+                modifiers: Modifiers::default(),
+            }
+        )
+    );
+    assert!(keyboard.is_open());
+    assert_eq!(keyboard.draft(), "");
 }
 
 fn strip_key(keyboard: &mut Keyboard, key: Key) -> Response {
