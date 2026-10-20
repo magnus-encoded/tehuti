@@ -2263,6 +2263,50 @@ else:
     }
 
     #[test]
+    fn host_keyboard_reaches_the_focused_client_and_releases_on_focus_loss() {
+        use smithay::input::keyboard::Keycode;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let shift = Keycode::new(42 + 8);
+        let letter_a = Keycode::new(30 + 8);
+        compositor.host_key(shift, true);
+        compositor.host_key(letter_a, true);
+        compositor.host_key(letter_a, false);
+        compositor.release_host_keys();
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        let trace: Vec<_> = client
+            .join()
+            .unwrap()
+            .keyboard_trace
+            .into_iter()
+            .skip_while(|event| !matches!(event, Trace::Key(..)))
+            .collect();
+        assert_eq!(
+            trace,
+            vec![
+                Trace::Key(42, KeyState::Pressed),
+                Trace::Mods(1),
+                Trace::Key(30, KeyState::Pressed),
+                Trace::Key(30, KeyState::Released),
+                Trace::Key(42, KeyState::Released),
+                Trace::Mods(0),
+            ]
+        );
+    }
+
+    #[test]
     fn shortcut_with_absent_keysym_sends_nothing_and_holds_no_modifier() {
         // A Cyrillic-only keymap has no Latin `c`, so the shortcut cannot resolve.
         if std::env::var_os("TEHUTI_ABSENT_KEYSYM_TEST").is_none() {

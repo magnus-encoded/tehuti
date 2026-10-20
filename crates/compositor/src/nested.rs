@@ -1,5 +1,5 @@
 //! The winit backend: a window in the host desktop that Tehuti renders its output into.
-//! Host keyboard and pointer input on this window is ignored; only the controller drives Tehuti.
+//! Host keyboard input on this window goes to the focused client; host pointer input is ignored.
 
 use core::{cell::RefCell, error::Error, time::Duration};
 use std::rc::Rc;
@@ -126,7 +126,15 @@ impl Nested {
             }
             WinitEvent::Redraw => self.redraw(data),
             WinitEvent::CloseRequested => self.stop.stop(),
-            WinitEvent::Input(_) | WinitEvent::Focus(_) => {}
+            WinitEvent::Input(smithay::backend::input::InputEvent::Keyboard { event }) => {
+                use smithay::backend::input::KeyboardKeyEvent as _;
+                data.compositor.host_key(
+                    event.key_code(),
+                    event.state() == smithay::backend::input::KeyState::Pressed,
+                );
+            }
+            WinitEvent::Focus(false) => data.compositor.release_host_keys(),
+            WinitEvent::Input(_) | WinitEvent::Focus(true) => {}
         }
     }
 
