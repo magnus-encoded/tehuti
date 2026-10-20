@@ -45,12 +45,11 @@ def reply(value):
 
 def log(message):
     line = f"INFO speech: {message}\n"
-    sys.stderr.write(line)
-    sys.stderr.flush()
     try:
         with open(os.environ.get("TEHUTI_LOG_FILE", "/tmp/tehuti.log"), "a") as output:
             output.write(line)
     except OSError as error:
+        sys.stderr.write(line)
         print(f"speech log failed: {error}", file=sys.stderr, flush=True)
 
 
