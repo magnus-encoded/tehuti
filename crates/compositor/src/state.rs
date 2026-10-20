@@ -116,6 +116,7 @@ pub struct Compositor {
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
     keyboard_reserved: bool,
+    display: DisplayHandle,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -200,6 +201,7 @@ impl Compositor {
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: false,
+            display: display.clone(),
         };
         compositor
             .keyboard
@@ -621,6 +623,9 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
+            DispatchEffect::QueryForegroundProgram => Some(DispatchInput::ForegroundProgram(
+                self.focused_terminal_runs_program(),
+            )),
             DispatchEffect::PasswordSpeechIgnored => {
                 tracing::info!("push-to-talk ignored: password field active");
                 None
@@ -679,6 +684,7 @@ impl Compositor {
             | DispatchEffect::QueryPlugin(_)
             | DispatchEffect::DispatchPlugin { .. }
             | DispatchEffect::Supervise
+            | DispatchEffect::QueryForegroundProgram
             | DispatchEffect::ConfirmSecret(_)
             | DispatchEffect::SpeechCommand(_)
             | DispatchEffect::PollSpeech(_) => {}
@@ -1011,7 +1017,38 @@ impl Compositor {
     fn tap(&mut self, key: KeyName) {
         let evdev_code = key.evdev_code();
         let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
+        let focus = key
+            .with_control()
+            .then(|| self.keyboard.current_focus())
+            .flatten();
+        let seat = self.seat.clone();
+        if let Some(surface) = &focus {
+            let control = ModifiersState {
+                ctrl: true,
+                ..ModifiersState::default()
+            };
+            surface.modifiers(&seat, self, control, SERIAL_COUNTER.next_serial());
+        }
         self.tap_keycode(keycode);
+        if let Some(surface) = &focus {
+            surface.modifiers(
+                &seat,
+                self,
+                ModifiersState::default(),
+                SERIAL_COUNTER.next_serial(),
+            );
+        }
+    }
+
+    /// Whether the focused client's shell has a program in the foreground; false when unknown.
+    fn focused_terminal_runs_program(&self) -> bool {
+        let pid = self
+            .keyboard
+            .current_focus()
+            .and_then(|surface| smithay::reexports::wayland_server::Resource::client(&surface))
+            .and_then(|client| client.get_credentials(&self.display).ok())
+            .map(|credentials| credentials.pid);
+        pid.is_some_and(crate::foreground::runs_program)
     }
 
     fn tap_keycode(&mut self, keycode: Keycode) {

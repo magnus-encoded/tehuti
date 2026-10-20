@@ -15,7 +15,8 @@ use smithay::{
     output::Output,
     utils::Transform,
 };
-use tehuti_core::keyboard::{Key, Keyboard, ROW_UNITS};
+use tehuti_core::keyboard::{Key, Keyboard};
+use tehuti_protocol::KeyName;
 
 /// The draft line plus three key rows, each as tall as the bar.
 const ROWS: i32 = 4;
@@ -102,6 +103,19 @@ fn label(key: Key, shifted: bool, symbols: bool) -> String {
         Key::Char(character) if shifted => character.to_uppercase().collect(),
         Key::Char(character) => character.into(),
         Key::Text(text) => text.into(),
+        Key::Tap(key) => match key {
+            KeyName::Tab => "tab",
+            KeyName::Up => "up",
+            KeyName::Down => "dn",
+            KeyName::Left => "<-",
+            KeyName::Right => "->",
+            KeyName::Interrupt => "^C",
+            KeyName::Enter => "ret",
+            KeyName::Escape => "esc",
+            KeyName::Space => "spc",
+            KeyName::Backspace => "<del",
+        }
+        .into(),
         Key::Shift => "shift".into(),
         Key::Symbols => if symbols { "abc" } else { "?123" }.into(),
         Key::Backspace => "<del".into(),
@@ -126,8 +140,8 @@ fn raster(keyboard: &Keyboard, width: i32, height: i32, scale: i32) -> Option<Me
     };
     canvas.rectangle(0, 0, width_usize, height_usize, BACKGROUND);
     draw_draft(&mut canvas, keyboard, row_height, unit);
-    let total = usize::from(ROW_UNITS);
     for (row, keys) in keyboard.rows().iter().enumerate() {
+        let total: usize = keys.iter().map(|slot| usize::from(slot.width)).sum();
         let top = row.saturating_add(1).saturating_mul(row_height);
         let mut start_units = 0usize;
         for (index, slot) in keys.iter().enumerate() {

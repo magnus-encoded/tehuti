@@ -114,9 +114,17 @@ pub enum KeyName {
     Down,
     Left,
     Right,
+    /// Ctrl-C, which interrupts a terminal's foreground program.
+    Interrupt,
 }
 
 impl KeyName {
+    /// Whether the key is sent with Control held.
+    #[must_use]
+    pub const fn with_control(self) -> bool {
+        matches!(self, Self::Interrupt)
+    }
+
     #[must_use]
     pub const fn evdev_code(self) -> u32 {
         match self {
@@ -129,6 +137,7 @@ impl KeyName {
             Self::Down => 108,
             Self::Left => 105,
             Self::Right => 106,
+            Self::Interrupt => 46,
         }
     }
 }
@@ -148,6 +157,10 @@ pub enum OnTextField {
 pub struct KeyboardConfig {
     pub on_text_field: Option<OnTextField>,
     pub button: Option<ButtonName>,
+    /// Marks the application as a terminal, for apps that never report a terminal field.
+    pub terminal: Option<bool>,
+    /// Whether a Guide tap into the in-app level opens the keyboard in a terminal.
+    pub open_on_in_app_level: Option<bool>,
 }
 
 /// An exact application-id match and its pressed-button mappings.

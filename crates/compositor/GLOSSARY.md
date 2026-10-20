@@ -12,6 +12,7 @@
 | Draft | The line of text the on-screen keyboard and speech edit before it is sent to the focused application. Closing the keyboard discards it. |
 | Password mode | The on-screen keyboard for a field the application marks as a password: every character except the last one typed is hidden, and push-to-talk never dictates into it. |
 | Keyboard intent | A sign from a context that the user wants to type, which opens the on-screen keyboard without a dedicated button. |
+| Terminal layout | The on-screen keyboard's base layer in a terminal: letters plus shell symbols, Tab, arrow keys and Ctrl-C. B sends Ctrl-C while a program runs in the foreground and closes otherwise. |
 | Secret destination | One live Wayland surface during one focus generation; secret insertion checks it again after lookup. |
 
 Starting without a controller logs a warning. Discovery continues every 250 ms and on input directory changes until a controller can be grabbed.

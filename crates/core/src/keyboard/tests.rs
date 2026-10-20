@@ -509,3 +509,92 @@ fn changing_fields_discards_password_and_clears_reveal() {
     assert_eq!(keyboard.displayed_draft(), "");
     assert!(!keyboard.password_field_active());
 }
+
+fn terminal() -> Keyboard {
+    let mut keyboard = Keyboard::default();
+    keyboard.set_terminal(true);
+    keyboard.open();
+    keyboard
+}
+
+#[test]
+fn the_terminal_layer_holds_shell_symbols_tab_arrows_and_ctrl_c() {
+    let keyboard = terminal();
+    let keys: Vec<Key> = keyboard
+        .rows()
+        .iter()
+        .flat_map(|row| row.iter().map(|slot| slot.key))
+        .collect();
+    for symbol in ['|', '&', '>', '<', ';', '$', '~', '`', '-', '_', '/', '*'] {
+        assert!(keys.contains(&Key::Char(symbol)), "{symbol} on the base layer");
+    }
+    for key in [
+        KeyName::Tab,
+        KeyName::Up,
+        KeyName::Down,
+        KeyName::Left,
+        KeyName::Right,
+        KeyName::Interrupt,
+    ] {
+        assert!(keys.contains(&Key::Tap(key)), "{key:?} on the base layer");
+    }
+    for row in keyboard.rows() {
+        assert_eq!(row.iter().map(|slot| slot.width).sum::<u8>(), TERMINAL_ROW_UNITS);
+    }
+}
+
+#[test]
+fn a_terminal_field_picks_the_terminal_layer() {
+    let mut keyboard = opened();
+    keyboard.set_field_kind(FieldKind::Terminal, true);
+    assert_eq!(keyboard.rows(), terminal().rows());
+}
+
+#[test]
+fn b_in_a_terminal_leaves_the_choice_to_the_caller() {
+    let mut keyboard = terminal();
+    keyboard.dictate("make");
+    assert_eq!(tap(&mut keyboard, ButtonName::East), Response::InterruptOrClose);
+    assert!(keyboard.is_open());
+    assert_eq!(keyboard.draft(), "make");
+}
+
+#[test]
+fn tap_keys_hand_over_the_draft_and_stay_open() {
+    let mut keyboard = terminal();
+    keyboard.dictate("cd sr");
+    go_to(&mut keyboard, 0, 0);
+    assert_eq!(
+        tap(&mut keyboard, ButtonName::South),
+        Response::Tap("cd sr".into(), KeyName::Tab)
+    );
+    assert!(keyboard.is_open());
+    assert_eq!(keyboard.draft(), "");
+    assert_eq!(keyboard.caret(), 0);
+}
+
+#[test]
+fn sentence_punctuation_goes_but_dotted_names_stay() {
+    assert_eq!(
+        without_sentence_punctuation("claude, --model, sonnet."),
+        "claude --model sonnet"
+    );
+    assert_eq!(
+        without_sentence_punctuation("cat notes.txt, then 1.5."),
+        "cat notes.txt then 1.5"
+    );
+}
+
+proptest! {
+    #[test]
+    fn terminal_dictation_never_leaves_a_comma_or_full_stop_before_a_space(text in "[a-z.,]{0,6}( [a-z.,]{0,6}){0,4}") {
+        let kept = without_sentence_punctuation(&text);
+        prop_assert!(!kept.contains(", ") && !kept.contains(". ") && !kept.ends_with(['.', ',']));
+    }
+
+    #[test]
+    fn dictation_outside_terminals_keeps_punctuation(text in "[a-z]{1,6}[.,]( [a-z]{1,6}[.,]){0,3}") {
+        let keyboard = with_draft(&text);
+        prop_assert_eq!(keyboard.draft(), text.as_str());
+    }
+}

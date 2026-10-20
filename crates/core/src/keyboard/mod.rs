@@ -3,7 +3,7 @@
 use core::ops::Range;
 use core::time::Duration;
 
-use tehuti_protocol::{ButtonName, ButtonState};
+use tehuti_protocol::{ButtonName, ButtonState, KeyName};
 
 /// How long a D-pad direction is held before the highlight starts repeating.
 pub const REPEAT_DELAY: Duration = Duration::from_millis(400);
@@ -13,13 +13,17 @@ pub const REPEAT_INTERVAL: Duration = Duration::from_millis(80);
 pub const WORD_PICK_DEFLECTION: i16 = 500;
 /// The left stick must return inside this deflection before it picks another word.
 const WORD_PICK_RELEASE: i16 = 250;
-/// Every row spans this many width units.
+/// Every row of the letter and symbol layers spans this many width units.
 pub const ROW_UNITS: u8 = 28;
+/// Every row of the terminal layer spans this many width units.
+pub const TERMINAL_ROW_UNITS: u8 = 36;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Char(char),
     Text(&'static str),
+    /// Sends the draft, then taps the key; the keyboard stays open.
+    Tap(KeyName),
     Shift,
     Symbols,
     Backspace,
@@ -143,7 +147,73 @@ pub enum FieldKind {
     Url,
     Email,
     Password,
+    Terminal,
 }
+
+const fn tap(key: KeyName) -> Slot {
+    slot(Key::Tap(key), 2)
+}
+
+/// Letters with the symbols, Tab, arrows and Ctrl-C a shell uses most.
+const TERMINAL: Rows = [
+    &[
+        tap(KeyName::Tab),
+        letter('q'),
+        letter('w'),
+        letter('e'),
+        letter('r'),
+        letter('t'),
+        letter('y'),
+        letter('u'),
+        letter('i'),
+        letter('o'),
+        letter('p'),
+        slot(Key::Backspace, 4),
+        letter('|'),
+        letter('&'),
+        letter('>'),
+        letter('<'),
+        letter(';'),
+    ],
+    &[
+        slot(Key::Symbols, 2),
+        letter('a'),
+        letter('s'),
+        letter('d'),
+        letter('f'),
+        letter('g'),
+        letter('h'),
+        letter('j'),
+        letter('k'),
+        letter('l'),
+        slot(Key::Send, 4),
+        letter('$'),
+        letter('~'),
+        letter('`'),
+        letter('-'),
+        letter('_'),
+        letter('/'),
+    ],
+    &[
+        slot(Key::Shift, 2),
+        letter('z'),
+        letter('x'),
+        letter('c'),
+        letter('v'),
+        letter('b'),
+        letter('n'),
+        letter('m'),
+        letter('.'),
+        slot(Key::Space, 4),
+        letter('*'),
+        letter('='),
+        tap(KeyName::Left),
+        tap(KeyName::Up),
+        tap(KeyName::Down),
+        tap(KeyName::Right),
+        tap(KeyName::Interrupt),
+    ],
+];
 
 const URL: Rows = [
     LETTERS[0],
@@ -189,6 +259,10 @@ pub enum Response {
     Consumed,
     /// Deliver this draft to the focused application.
     Send(String),
+    /// Deliver this draft, which may be empty, then tap the key.
+    Tap(String, KeyName),
+    /// B in a terminal: interrupt a foreground program, or close when there is none.
+    InterruptOrClose,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +300,14 @@ impl Direction {
     }
 }
 
+/// Whether the focused app is a terminal, from its field or its context.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AppKind {
+    #[default]
+    Other,
+    Terminal,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Layer {
     #[default]
@@ -240,6 +322,7 @@ enum Layer {
 pub struct Keyboard {
     open: bool,
     field_kind: FieldKind,
+    app: AppKind,
     revealed: Option<(Range<usize>, Duration)>,
     layer: Layer,
     highlight: (usize, usize),
@@ -266,6 +349,7 @@ impl Keyboard {
         *self = Self {
             open: true,
             field_kind: self.field_kind,
+            app: self.app,
             highlight: (0, 1),
             captured: core::mem::take(&mut self.captured),
             stick_engaged: self.stick_engaged,
@@ -318,6 +402,21 @@ impl Keyboard {
         }
         self.field_kind = kind;
         self.clamp_highlight();
+    }
+
+    /// Marks the focused app a terminal, which picks the terminal layout and B behaviour.
+    pub fn set_terminal(&mut self, terminal: bool) {
+        self.app = if terminal {
+            AppKind::Terminal
+        } else {
+            AppKind::Other
+        };
+        self.clamp_highlight();
+    }
+
+    #[must_use]
+    pub const fn terminal(&self) -> bool {
+        matches!(self.app, AppKind::Terminal)
     }
 
     /// True while the focused text field has password purpose, even with the overlay closed.
@@ -381,10 +480,13 @@ impl Keyboard {
     pub const fn rows(&self) -> &'static Rows {
         if self.symbols() {
             &SYMBOLS
+        } else if self.terminal() {
+            &TERMINAL
         } else {
             match self.field_kind {
                 FieldKind::Url => &URL,
                 FieldKind::Email => &EMAIL,
+                FieldKind::Terminal => &TERMINAL,
                 FieldKind::Normal | FieldKind::Password => &LETTERS,
             }
         }
@@ -441,6 +543,7 @@ impl Keyboard {
             ButtonName::South => return self.activate(),
             ButtonName::West => self.backspace(),
             ButtonName::North => self.type_text(" "),
+            ButtonName::East if self.terminal() => return Response::InterruptOrClose,
             ButtonName::East => self.close(),
             ButtonName::Start => self.send_on_start_release = true,
             ButtonName::LeftBumper => self.move_caret(false),
@@ -469,6 +572,13 @@ impl Keyboard {
                 self.type_text(character.encode_utf8(&mut [0; 4]));
             }
             Some(Key::Text(text)) => self.type_text(text),
+            Some(Key::Tap(key)) => {
+                let draft = core::mem::take(&mut self.draft);
+                self.caret = 0;
+                self.word = None;
+                self.revealed = None;
+                return Response::Tap(draft, key);
+            }
             Some(Key::Shift) => {
                 self.layer = if self.shifted() {
                     Layer::Letters
@@ -547,7 +657,13 @@ impl Keyboard {
         if self.password_field_active() {
             return;
         }
-        let text = text.trim();
+        let shell;
+        let text = if self.terminal() {
+            shell = without_sentence_punctuation(text);
+            shell.trim()
+        } else {
+            text.trim()
+        };
         if text.is_empty() {
             return;
         }
@@ -721,6 +837,24 @@ fn key_at(keys: &[Slot], doubled: u32) -> usize {
         }
     }
     keys.len().saturating_sub(1)
+}
+
+/// Drops commas and full stops that end a word, which dictation adds and shells reject.
+#[must_use]
+pub fn without_sentence_punctuation(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut word = String::new();
+    for character in text.chars() {
+        if character.is_whitespace() {
+            kept.push_str(word.trim_end_matches([',', '.']));
+            word.clear();
+            kept.push(character);
+        } else {
+            word.push(character);
+        }
+    }
+    kept.push_str(word.trim_end_matches([',', '.']));
+    kept
 }
 
 /// Whether a transcript asks to open the keyboard.

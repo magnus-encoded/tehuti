@@ -92,3 +92,13 @@ button follows normal routing. Mouse mode uses the same button. `"open"` opens
 once per field. After B closes it, ordinary field updates keep it closed until
 the client enables another field. `"off"` disables field opening. Saying
 "keyboard" remains available in every application. See `examples/global/context.toml`.
+
+A terminal is an application whose field reports the terminal purpose, or one
+whose context sets `terminal = true`. Focusing a terminal never opens the
+keyboard, and neither does the opening button. A Guide tap into the in-app
+level opens it unless `open_on_in_app_level = false`. The terminal layout puts
+shell symbols, Tab, the arrow keys and Ctrl-C on the base layer; Tab, arrows and
+Ctrl-C send the draft and then tap the key. B sends Ctrl-C while the shell has
+a program in the foreground and closes the keyboard otherwise. Inside tmux,
+screen or ssh, B always closes. Dictation into a terminal drops commas and full
+stops that end a word.
