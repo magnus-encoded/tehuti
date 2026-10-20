@@ -233,7 +233,8 @@ for line in sys.stdin:
                         | Effect::Handle(_)
                         | Effect::SpeechFailed { .. }
                         | Effect::TranscriptReceived { .. }
-                        | Effect::SpeechRouted { .. } => {}
+                        | Effect::SpeechRouted { .. }
+                        | Effect::PasswordSpeechIgnored => {}
                     }
                 }
                 if state.busy() == 0 {

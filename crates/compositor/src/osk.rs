@@ -101,6 +101,7 @@ fn label(key: Key, shifted: bool, symbols: bool) -> String {
     match key {
         Key::Char(character) if shifted => character.to_uppercase().collect(),
         Key::Char(character) => character.into(),
+        Key::Text(text) => text.into(),
         Key::Shift => "shift".into(),
         Key::Symbols => if symbols { "abc" } else { "?123" }.into(),
         Key::Backspace => "<del".into(),
@@ -198,7 +199,12 @@ fn draw_draft(canvas: &mut Canvas, keyboard: &Keyboard, row_height: usize, unit:
             PICKED,
         );
     }
-    let shown: String = draft.chars().skip(skip).take(visible).collect();
+    let shown: String = keyboard
+        .displayed_draft()
+        .chars()
+        .skip(skip)
+        .take(visible)
+        .collect();
     canvas.text(margin, 0, canvas.width, row_height, &shown, glyph);
     if keyboard.picked_word().is_none() {
         let left = margin.saturating_add(caret.saturating_sub(skip).saturating_mul(advance));

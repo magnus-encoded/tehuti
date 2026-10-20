@@ -12,6 +12,7 @@ use smithay::reexports::{
 };
 
 use crate::state::Compositor;
+use tehuti_core::keyboard::FieldKind;
 
 #[derive(Debug, Default)]
 #[expect(
@@ -31,6 +32,25 @@ struct Instance {
     serial: u32,
     terminal: bool,
     pending_terminal: Option<bool>,
+    kind: FieldKind,
+    pending_kind: Option<FieldKind>,
+}
+
+impl Instance {
+    fn commit(&mut self, focused: bool) -> bool {
+        self.serial = self.serial.wrapping_add(1);
+        let changed = self.pending_enabled == Some(true);
+        if let Some(kind) = self.pending_kind.take() {
+            self.kind = kind;
+        }
+        if let Some(terminal) = self.pending_terminal.take() {
+            self.terminal = terminal;
+        }
+        if let Some(enabled) = self.pending_enabled.take() {
+            self.enabled = enabled && focused;
+        }
+        changed
+    }
 }
 
 impl TextInput {
@@ -50,6 +70,8 @@ impl TextInput {
             instance.pending_enabled = None;
             instance.terminal = false;
             instance.pending_terminal = None;
+            instance.kind = FieldKind::Normal;
+            instance.pending_kind = None;
             if let Some(surface) = &focus
                 && instance.resource.id().same_client_as(&surface.id())
             {
@@ -121,6 +143,8 @@ impl Dispatch<ZwpTextInputManagerV3, ()> for Compositor {
                 serial: 0,
                 terminal: false,
                 pending_terminal: None,
+                kind: FieldKind::Normal,
+                pending_kind: None,
             });
         }
     }
@@ -157,22 +181,17 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
                 zwp_text_input_v3::Request::Enable if focused && !another_enabled => {
                     instance.pending_enabled = Some(true);
                     instance.pending_terminal = Some(false);
+                    instance.pending_kind = Some(FieldKind::Normal);
                 }
                 zwp_text_input_v3::Request::Disable => instance.pending_enabled = Some(false),
                 zwp_text_input_v3::Request::Commit => {
-                    instance.serial = instance.serial.wrapping_add(1);
-                    let changed = instance.pending_enabled == Some(true);
-                    if let Some(terminal) = instance.pending_terminal.take() {
-                        instance.terminal = terminal;
-                    }
-                    if let Some(enabled) = instance.pending_enabled.take() {
-                        instance.enabled = enabled && focused;
-                    }
+                    let changed = instance.commit(focused);
                     if focused && !another_enabled {
-                        field = Some((instance.enabled && !instance.terminal, changed));
+                        field = Some((instance.enabled && !instance.terminal, changed, instance.kind));
                     }
                 }
                 zwp_text_input_v3::Request::SetContentType { purpose, .. } if focused => {
+                    instance.pending_kind = Some(field_kind(purpose));
                     instance.pending_terminal = Some(
                         purpose
                             == smithay::reexports::wayland_server::WEnum::Value(
@@ -192,8 +211,12 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
                 _ => tracing::warn!("unsupported text-input request"),
             }
         }
-        if let Some((active, changed)) = field {
-            let _rejection = state.dispatch(tehuti_core::dispatch::Input::TextField { active, changed });
+        if let Some((active, changed, kind)) = field {
+            let _rejection = state.dispatch(tehuti_core::dispatch::Input::TextField {
+                active,
+                changed,
+                kind,
+            });
         }
     }
 
@@ -216,7 +239,21 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
             let _rejection = state.dispatch(tehuti_core::dispatch::Input::TextField {
                 active: false,
                 changed: false,
+                kind: FieldKind::Normal,
             });
         }
+    }
+}
+
+const fn field_kind(
+    purpose: smithay::reexports::wayland_server::WEnum<zwp_text_input_v3::ContentPurpose>,
+) -> FieldKind {
+    use smithay::reexports::wayland_server::WEnum;
+    use zwp_text_input_v3::ContentPurpose;
+    match purpose {
+        WEnum::Value(ContentPurpose::Url) => FieldKind::Url,
+        WEnum::Value(ContentPurpose::Email) => FieldKind::Email,
+        WEnum::Value(ContentPurpose::Password) => FieldKind::Password,
+        WEnum::Value(_) | WEnum::Unknown(_) => FieldKind::Normal,
     }
 }

@@ -621,6 +621,10 @@ impl Compositor {
                     .as_mut()
                     .map_or_else(Vec::new, |process| process.poll(elapsed)),
             )),
+            DispatchEffect::PasswordSpeechIgnored => {
+                tracing::info!("push-to-talk ignored: password field active");
+                None
+            }
             effect @ (DispatchEffect::MovePointer { .. }
             | DispatchEffect::Scroll { .. }
             | DispatchEffect::Click { .. }
@@ -658,9 +662,7 @@ impl Compositor {
                 self.poll_launchers();
                 self.desktop_entries.poll();
             }
-            DispatchEffect::SouthPressed(pressed) => {
-                self.secret_confirmation.south_pressed = pressed;
-            }
+            DispatchEffect::SouthPressed(pressed) => self.secret_confirmation.south_pressed = pressed,
             DispatchEffect::ResetSecretFocus => {
                 self.reset_secret_confirmation_for_focus();
             }
@@ -670,7 +672,8 @@ impl Compositor {
             DispatchEffect::PluginAction(action) => {
                 self.apply_plugin_action(&action);
             }
-            DispatchEffect::ReadClock
+            DispatchEffect::PasswordSpeechIgnored
+            | DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
             | DispatchEffect::PluginRejected(_)
             | DispatchEffect::QueryPlugin(_)
@@ -1604,6 +1607,7 @@ impl SeatHandler for Compositor {
         let _rejection = self.dispatch(DispatchInput::TextField {
             active: false,
             changed: false,
+            kind: tehuti_core::keyboard::FieldKind::Normal,
         });
     }
 
