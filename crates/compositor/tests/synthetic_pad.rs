@@ -43,6 +43,19 @@ mod synthetic_pad {
     };
 
     #[test]
+    fn default_compositor_labels_agent_windows_with_the_project() {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut pad = SyntheticPad::default();
+        pad.push(Event::Focus {
+            app_id: Some("kitty".into()),
+            title: "Claude: budmo".into(),
+        });
+        route(&mut compositor, &mut pad).unwrap();
+        assert_eq!(compositor.voice_bar().segments()[0].text, "budmo");
+    }
+
+    #[test]
     fn disconnect_and_seat_pause_cancel_escape_before_reconnect() {
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();

@@ -47,6 +47,13 @@ impl State {
         }
     }
 
+    /// Configures the launcher names recognized in focused window titles.
+    #[must_use]
+    pub fn with_bar_agents(mut self, agents: Vec<String>) -> Self {
+        self.bar.set_agents(agents);
+        self
+    }
+
     /// Swaps the contexts and keeps focus, held buttons and pending plugin decisions.
     pub fn replace_contexts(&mut self, contexts: Vec<Context>) {
         self.contexts = contexts;

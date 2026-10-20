@@ -24,6 +24,74 @@ mod tests {
         .0
     }
 
+    fn chip_with_agents(app_id: &str, title: &str, agents: Vec<String>) -> String {
+        let state = step(
+            State::default().with_bar_agents(agents),
+            &Event::Focus {
+                app_id: Some(app_id.into()),
+                title: title.into(),
+            },
+        )
+        .0;
+        state.bar().segments()[0].text.clone()
+    }
+
+    fn chip_after_focus(app_id: &str, title: &str) -> String {
+        chip_with_agents(app_id, title, vec!["Claude".into(), "Codex".into()])
+    }
+
+    #[test]
+    fn only_configured_agents_override_the_app_id() {
+        assert_eq!(chip_with_agents("kitty", "Claude: project", vec![]), "kitty");
+        assert_eq!(
+            chip_with_agents("kitty", "Helper", vec!["Helper".into()]),
+            "Helper"
+        );
+        assert_eq!(
+            chip_with_agents("kitty", "Helper: project", vec!["Helper".into()]),
+            "project"
+        );
+        assert_eq!(
+            chip_with_agents("kitty", ": project", vec![String::new()]),
+            "kitty"
+        );
+    }
+
+    #[test]
+    fn malformed_agent_titles_keep_the_app_id() {
+        for title in ["Claude: ", "Claude:   ", "Claude:project", "Claudeish: project"] {
+            assert_eq!(chip_after_focus("kitty", title), "kitty");
+        }
+    }
+
+    #[test]
+    fn agent_windows_show_the_agent_name() {
+        assert_eq!(chip_after_focus("kitty", "Claude"), "Claude");
+        assert_eq!(chip_after_focus("kitty", "Codex"), "Codex");
+    }
+
+    #[test]
+    fn work_on_windows_show_the_project_name() {
+        assert_eq!(chip_after_focus("kitty", "Claude: budmo"), "budmo");
+        assert_eq!(
+            chip_after_focus("kitty", "Codex: comment-review"),
+            "comment-review"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn configured_agent_titles_show_the_project(agent in "[A-Z][a-z]{1,12}", project in "[a-z]{1,12}") {
+            let title = format!("{agent}: {project}");
+            prop_assert_eq!(chip_with_agents("kitty", &title, vec![agent]), project);
+        }
+
+        #[test]
+        fn other_titles_keep_the_app_id(app_id in "[a-z]{1,8}", title in "[a-z ~/]{0,12}") {
+            prop_assert_eq!(chip_after_focus(&app_id, &title), app_id);
+        }
+    }
+
     fn feedback(state: &State) -> Option<Segment> {
         state.bar().segments().get(1).cloned()
     }

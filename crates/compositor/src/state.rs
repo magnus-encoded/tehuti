@@ -138,7 +138,10 @@ impl Compositor {
             start_time: Instant::now(),
             space: Space::default(),
             output: None,
-            dispatch: tehuti_core::dispatch::State::default(),
+            // Agent launchers title windows Claude/Codex[: project]; mirror them until compositor config exists.
+            dispatch: tehuti_core::dispatch::State::new(
+                tehuti_core::State::new().with_bar_agents(vec!["Claude".into(), "Codex".into()]),
+            ),
             previous_tick: Instant::now(),
             plugins: None,
             quit_requested: false,
