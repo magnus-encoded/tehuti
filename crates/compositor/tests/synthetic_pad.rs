@@ -49,10 +49,10 @@ mod synthetic_pad {
         let mut pad = SyntheticPad::default();
         pad.push(Event::Focus {
             app_id: Some("kitty".into()),
-            title: "Claude: budmo".into(),
+            title: "Claude: atlas".into(),
         });
         route(&mut compositor, &mut pad).unwrap();
-        assert_eq!(compositor.voice_bar().segments()[0].text, "budmo");
+        assert_eq!(compositor.voice_bar().segments()[0].text, "atlas");
     }
 
     #[test]

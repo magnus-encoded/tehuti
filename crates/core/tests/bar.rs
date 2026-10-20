@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn work_on_windows_show_the_project_name() {
-        assert_eq!(chip_after_focus("kitty", "Claude: budmo"), "budmo");
+        assert_eq!(chip_after_focus("kitty", "Claude: atlas"), "atlas");
         assert_eq!(
             chip_after_focus("kitty", "Codex: comment-review"),
             "comment-review"
