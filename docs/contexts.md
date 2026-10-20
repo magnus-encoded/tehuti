@@ -92,3 +92,54 @@ button follows normal routing. Mouse mode uses the same button. `"open"` opens
 once per field. After B closes it, ordinary field updates keep it closed until
 the client enables another field. `"off"` disables field opening. Saying
 "keyboard" remains available in every application. See `examples/global/context.toml`.
+
+## Hotwords
+
+A hotword is a spoken phrase mapped to an application, path, URL, recognition-only phrase, or existing speech
+mapping in the same file. It works alone or after “open”. Installed applications
+supply a built-in set from their `.desktop` Name and GenericName, including names
+with several words. No alias phrases are generated.
+
+```toml
+app_id = "org.example.Editor"
+
+[buttons]
+
+[speech]
+confirm = { key = "enter" }
+
+[hotwords]
+apps = true
+browser = { app = "firefox.desktop" }
+atlas = { path = "~/Documents/atlas" }
+accept = { action = "confirm" }
+website = { url = "https://example.org/atlas" }
+quasar = { recognition-only = true }
+```
+
+App targets are `.desktop` ids. Path targets open files or directories through
+their default handler; `~` and `~/` expand using HOME when the context loads.
+Relative paths resolve from the compositor's working directory. Action targets
+name an existing `[speech]` mapping; missing references reject the file.
+Hotwords use the same normalization as speech mappings. Empty names, duplicate
+normalized names, and targets with several fields are rejected. `apps` is reserved for the built-in set switch.
+
+Hotwords in the first `app_id = "*"` context apply everywhere. The focused
+context overrides matching global hotwords; both override installed app names.
+Other global words remain available. `apps = false` disables the installed set;
+a focused context inherits this switch unless it supplies its own value.
+Explicit app targets still work with the installed set disabled. Explicit speech
+mappings run before hotwords, followed by unmatched dictation. Plugin speech
+routing and the on-screen keyboard retain their priority.
+
+All loaded contexts’ speech phrases and `~/.config/tehuti/vocabulary.txt`
+(one word or phrase per line, read at startup and on context reload) join the
+effective hotwords at Record press. Explicit words and speech phrases come first,
+then app names, capped at about 200 prompt tokens.
+`XDG_CONFIG_HOME` overrides `~/.config`. The vocabulary primes Whisper for both
+interim and final transcription.
+It is captured when Record is pressed, so a reload cannot change an in-flight
+session's vocabulary. Desktop entries refresh every thirty seconds.
+
+URL targets open an absolute URL in its default handler without path expansion.
+Recognition-only targets prime speech and consume the phrase without an effect.

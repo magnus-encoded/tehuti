@@ -53,7 +53,7 @@ class Speech:
         self.transcriptions = threading.BoundedSemaphore(2)
         self.interims = threading.BoundedSemaphore(1)
 
-    def start(self, session):
+    def start(self, session, hotwords=()):
         if self.capture is not None:
             return
         self.clip = tempfile.TemporaryFile()
@@ -62,7 +62,9 @@ class Speech:
             stdout=subprocess.PIPE, stderr=sys.stderr,
         )
         self.session = session
+        self.hotwords = tuple(hotwords)
         capture, clip = self.capture, self.clip
+        hotwords = self.hotwords
 
         def drain():
             remaining = MAX_AUDIO_SECONDS * 16000 * 2
@@ -76,7 +78,7 @@ class Speech:
                 remaining -= len(chunk)
                 audio.extend(chunk)
                 if len(audio) >= next_interim:
-                    self.interim(session, bytes(audio), capture)
+                    self.interim(session, bytes(audio), capture, hotwords)
                     next_interim = len(audio) + INTERIM_BYTES
             if remaining == 0 and capture.poll() is None:
                 capture.send_signal(signal.SIGINT)
@@ -84,19 +86,21 @@ class Speech:
         self.reader = threading.Thread(target=drain, daemon=True)
         self.reader.start()
 
-    def transcribe_audio(self, audio):
+    def transcribe_audio(self, audio, hotwords=()):
         with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
             with wave.open(recording.name, "wb") as output:
                 output.setnchannels(1)
                 output.setsampwidth(2)
                 output.setframerate(16000)
                 output.writeframes(audio)
+            options = {"initial_prompt": ", ".join(hotwords),
+                       "hotwords": ", ".join(hotwords)} if hotwords else {}
             segments, _ = self.model.transcribe(
-                recording.name, beam_size=5, language="en", vad_filter=True,
+                recording.name, beam_size=5, language="en", vad_filter=True, **options,
             )
             return transcript(segments)
 
-    def interim(self, session, audio, capture):
+    def interim(self, session, audio, capture, hotwords=()):
         if not self.interims.acquire(blocking=False):
             return
 
@@ -107,7 +111,7 @@ class Speech:
                 if not self.model_lock.acquire(blocking=False):
                     return
                 try:
-                    text = self.transcribe_audio(audio)
+                    text = self.transcribe_audio(audio, hotwords)
                 finally:
                     self.model_lock.release()
                 if self.capture is capture and text:
@@ -123,6 +127,7 @@ class Speech:
         if self.capture is None or session != self.session:
             return
         capture, clip = self.capture, self.clip
+        hotwords = self.hotwords
         self.capture = self.clip = self.session = None
         if capture.poll() is None:
             capture.send_signal(signal.SIGINT)
@@ -155,7 +160,7 @@ class Speech:
                     reply({"session": session, "error": "silent"})
                     return
                 with self.model_lock:
-                    text = self.transcribe_audio(audio)
+                    text = self.transcribe_audio(audio, hotwords)
                 reply({"session": session, "text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)
@@ -183,6 +188,12 @@ def run(stream, speech):
             command = json.loads(line)
             if set(command) == {"start"} and type(command["start"]) is int and command["start"] >= 0:
                 speech.start(command["start"])
+            elif (set(command) == {"start", "hotwords"}
+                  and type(command["start"]) is int and command["start"] >= 0
+                  and isinstance(command["hotwords"], list)
+                  and all(isinstance(word, str) and word.strip() and not any(ord(char) < 32 for char in word)
+                          for word in command["hotwords"])):
+                speech.start(command["start"], command["hotwords"])
             elif (set(command) == {"stop", "transcribe"}
                   and type(command["stop"]) is int and command["stop"] >= 0
                   and type(command["transcribe"]) is bool):

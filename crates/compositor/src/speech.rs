@@ -100,8 +100,22 @@ impl SpeechProcess {
     /// # Errors
     /// The child is absent or its bounded output queue is full.
     pub fn send(&mut self, effect: &SpeechEffect) -> io::Result<()> {
+        self.send_with_hotwords(effect, &[])
+    }
+
+    /// Queues capture with the effective vocabulary frozen at start.
+    ///
+    /// # Errors
+    /// The child is absent or its bounded output queue is full.
+    pub fn send_with_hotwords(&mut self, effect: &SpeechEffect, hotwords: &[String]) -> io::Result<()> {
         let value = match effect {
-            SpeechEffect::Start { session } => serde_json::json!({"start": session}),
+            SpeechEffect::Start { session } => {
+                if hotwords.is_empty() {
+                    serde_json::json!({"start": session})
+                } else {
+                    serde_json::json!({"start": session, "hotwords": hotwords})
+                }
+            }
             SpeechEffect::Stop { session, transcribe } => {
                 serde_json::json!({"stop": session, "transcribe": transcribe})
             }

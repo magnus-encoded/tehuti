@@ -127,7 +127,21 @@ fn load_one(path: &Path) -> Result<Option<Context>, LoadError> {
         message,
     };
     match read_context(path) {
-        Ok(source) => parse_context(&source).map(Some).map_err(failed),
+        Ok(source) => {
+            let mut context = parse_context(&source).map_err(failed)?;
+            context
+                .resolve_hotword_paths(|target| {
+                    if target.as_str() == "~" || target.as_str().starts_with("~/") {
+                        let home = std::env::var("HOME").map_err(|_| "HOME is required for ~ paths")?;
+                        let suffix = target.as_str().strip_prefix('~').unwrap_or_default();
+                        tehuti_protocol::Text::new(format!("{home}{suffix}"))
+                    } else {
+                        Ok(target.clone())
+                    }
+                })
+                .map_err(failed)?;
+            Ok(Some(context))
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(failed(error.to_string())),
     }
@@ -291,4 +305,61 @@ fn read_context(path: &Path) -> io::Result<String> {
         ));
     }
     Ok(source)
+}
+
+/// Words the Whisper prompt may hold, at a conservative two tokens per word.
+pub const VOCABULARY_WORDS: usize = 100;
+
+/// Orders explicit words before app names, drops repeats and caps the word count.
+///
+/// A phrase that would exceed [`VOCABULARY_WORDS`] is skipped so shorter ones still fit.
+#[must_use]
+pub fn capture_vocabulary(
+    explicit: impl IntoIterator<Item = String>,
+    apps: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut words: usize = 0;
+    let mut vocabulary = Vec::new();
+    for phrase in explicit.into_iter().chain(apps) {
+        let count = phrase.split_whitespace().count();
+        let Some(total) = words
+            .checked_add(count)
+            .filter(|total| *total <= VOCABULARY_WORDS)
+        else {
+            continue;
+        };
+        if !seen.insert(phrase.clone()) {
+            continue;
+        }
+        words = total;
+        vocabulary.push(phrase);
+    }
+    vocabulary
+}
+
+/// Reads optional user vocabulary, one phrase per line, at load and reload.
+#[must_use]
+pub fn user_vocabulary() -> Vec<String> {
+    let directory = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    let Some(path) = directory.map(|directory| directory.join("tehuti/vocabulary.txt")) else {
+        return Vec::new();
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(source) => source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter(|line| tehuti_protocol::Text::new((*line).to_owned()).is_ok())
+            .map(str::to_owned)
+            .collect(),
+        Err(error) => {
+            if error.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(%error, path = %path.display(), "vocabulary unavailable");
+            }
+            Vec::new()
+        }
+    }
 }

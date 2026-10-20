@@ -29,6 +29,33 @@ mod speech_process {
     }
 
     #[test]
+    fn capture_start_carries_the_effective_hotwords_to_the_sidecar() {
+        let mut process = child(
+            r#"import json,sys,time
+print('{"ready":true}', flush=True)
+command = json.loads(sys.stdin.readline())
+assert command == {"start":7,"hotwords":["atlas","web browser"]}
+print('{"session":7,"text":"primed"}', flush=True)
+time.sleep(60)
+"#,
+        );
+        wait_for(&mut process, &SpeechInput::Available);
+        process
+            .send_with_hotwords(
+                &SpeechEffect::Start { session: 7 },
+                &["atlas".into(), "web browser".into()],
+            )
+            .unwrap();
+        wait_for(
+            &mut process,
+            &SpeechInput::Transcript {
+                session: 7,
+                text: Text::new("primed".into()).unwrap(),
+            },
+        );
+    }
+
+    #[test]
     fn hanging_child_leaves_button_and_escape_routing_available() {
         let mut process = child("import time\nprint('{\"ready\":true}', flush=True)\ntime.sleep(60)");
         wait_for(&mut process, &SpeechInput::Available);

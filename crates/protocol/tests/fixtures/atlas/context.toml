@@ -1,0 +1,15 @@
+app_id = "org.example.Atlas"
+
+[buttons]
+south = { key = "enter" }
+
+[speech]
+next = { key = "tab" }
+
+[hotwords]
+apps = false
+atlas = { app = "atlas.desktop" }
+folder = { path = "~/Documents/atlas" }
+advance = { action = "next" }
+website = { url = "https://example.org/atlas" }
+quasar = { recognition-only = true }

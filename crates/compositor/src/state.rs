@@ -96,6 +96,7 @@ pub struct Compositor {
     notice_text: Option<String>,
     launchers: Vec<std::process::Child>,
     desktop_entries: crate::desktop::EntryCache,
+    user_vocabulary: Vec<String>,
     launch_socket: Option<std::ffi::OsString>,
     layout: tehuti_core::layout::Layout,
     layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
@@ -180,6 +181,7 @@ impl Compositor {
             notice_text: None,
             launchers: Vec::new(),
             desktop_entries: crate::desktop::EntryCache::new()?,
+            user_vocabulary: crate::contexts::user_vocabulary(),
             launch_socket: None,
             layout: tehuti_core::layout::Layout::new(tehuti_core::layout::LayoutConfig::default()),
             layout_windows: Vec::new(),
@@ -211,6 +213,21 @@ impl Compositor {
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, contexts: Vec<tehuti_protocol::Context>) {
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
+        self.dispatch
+            .core_mut()
+            .set_app_hotwords(self.desktop_entries.hotwords().to_vec());
+    }
+
+    /// Replaces the desktop entry cache with one refreshing at `interval`.
+    ///
+    /// # Errors
+    /// The refresh worker cannot be started.
+    pub fn set_desktop_refresh(&mut self, interval: core::time::Duration) -> std::io::Result<()> {
+        self.desktop_entries = crate::desktop::EntryCache::with_interval(interval)?;
+        self.dispatch
+            .core_mut()
+            .set_app_hotwords(self.desktop_entries.hotwords().to_vec());
+        Ok(())
     }
 
     /// The installed contexts, in priority order.
@@ -224,6 +241,7 @@ impl Compositor {
         &mut self,
         reload: Result<Vec<tehuti_protocol::Context>, crate::contexts::LoadError>,
     ) {
+        self.user_vocabulary = crate::contexts::user_vocabulary();
         match reload {
             Ok(contexts) => {
                 tracing::info!(count = contexts.len(), "contexts reloaded");
@@ -582,9 +600,17 @@ impl Compositor {
             | tehuti_core::speech::SpeechEffect::Interim { .. }
             | tehuti_core::speech::SpeechEffect::Failed { .. } => {}
         }
+        let mut explicit = std::collections::BTreeSet::new();
+        for context in self.contexts() {
+            explicit.extend(context.hotwords().keys().cloned());
+            explicit.extend(context.speech_phrases().map(str::to_owned));
+        }
+        explicit.extend(self.user_vocabulary.iter().cloned());
+        let hotwords =
+            crate::contexts::capture_vocabulary(explicit, self.dispatch.core().hotwords().into_keys());
         self.speech_process.as_mut().is_none_or(|process| {
             process
-                .send(command)
+                .send_with_hotwords(command, &hotwords)
                 .inspect_err(|error| tracing::warn!(%error, "speech command failed"))
                 .is_ok()
         })
@@ -662,7 +688,7 @@ impl Compositor {
             DispatchEffect::PollSources => {
                 self.poll_secret_lookup();
                 self.poll_launchers();
-                self.desktop_entries.poll();
+                self.refresh_app_hotwords();
             }
             DispatchEffect::SouthPressed(pressed) => self.secret_confirmation.south_pressed = pressed,
             DispatchEffect::ResetSecretFocus => {
@@ -970,6 +996,9 @@ impl Compositor {
                 self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
                 self.quit_requested = true;
             }
+            Action::OpenPath { path } => self.open_path(path),
+            Action::OpenUrl { url } => self.open_url(url),
+            Action::RecognitionOnly => {}
             Action::Launch { desktop_entry } => self.launch_application(desktop_entry),
             Action::Close => {
                 if let Some(identity) = self.layout.snapshot().focused_window {
@@ -1276,6 +1305,48 @@ impl Compositor {
                 tracing::warn!(%error, "window removal failed");
             }
             self.place_layout();
+        }
+    }
+
+    fn refresh_app_hotwords(&mut self) {
+        if self.desktop_entries.poll() {
+            self.dispatch
+                .core_mut()
+                .set_app_hotwords(self.desktop_entries.hotwords().to_vec());
+        }
+    }
+
+    fn open_path(&mut self, path: &tehuti_protocol::Text) {
+        let result = self
+            .launch_socket
+            .as_deref()
+            .ok_or_else(|| "no compositor socket".to_owned())
+            .and_then(|socket| {
+                if self.launchers.len() >= 16 {
+                    return Err("too many launchers".into());
+                }
+                crate::desktop::open_path(path.as_str(), socket)
+            });
+        match result {
+            Ok(child) => self.launchers.push(child),
+            Err(error) => tracing::warn!(%error, "path handler failed"),
+        }
+    }
+
+    fn open_url(&mut self, path: &tehuti_protocol::Text) {
+        let result = self
+            .launch_socket
+            .as_deref()
+            .ok_or_else(|| "no compositor socket".to_owned())
+            .and_then(|socket| {
+                if self.launchers.len() >= 16 {
+                    return Err("too many launchers".into());
+                }
+                crate::desktop::open_url(path.as_str(), socket)
+            });
+        match result {
+            Ok(child) => self.launchers.push(child),
+            Err(error) => tracing::warn!(%error, "URL handler failed"),
         }
     }
 
