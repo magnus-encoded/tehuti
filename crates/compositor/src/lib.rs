@@ -34,5 +34,6 @@ pub mod scale;
 
 pub mod bar;
 
+mod foreground;
 pub mod osk;
 pub mod wallpaper;

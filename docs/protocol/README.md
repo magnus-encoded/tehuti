@@ -177,7 +177,7 @@ Key actions press and release one key in the currently focused Wayland client:
 ```
 
 Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, in lowercase. Text delivers Unicode through enabled text-input-v3,
+`right`, `home`, `end`, `page_up`, `page_down`, in snake case. Text delivers Unicode through enabled text-input-v3,
 with keyboard taps as fallback:
 
 ```json
