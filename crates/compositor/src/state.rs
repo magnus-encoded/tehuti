@@ -6,8 +6,8 @@ use crate::layout_window::LayoutWindow;
 
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
-    delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_fractional_scale, delegate_output, delegate_seat,
+    delegate_shm, delegate_viewporter, delegate_xdg_shell,
     desktop::{Space, Window},
     input::{
         Seat, SeatHandler, SeatState,
@@ -29,6 +29,7 @@ use smithay::{
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface,
         },
+        fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale},
         output::{OutputHandler, OutputManagerState},
         selection::{
             SelectionHandler,
@@ -36,6 +37,7 @@ use smithay::{
         },
         shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
         shm::{ShmHandler, ShmState},
+        viewporter::ViewporterState,
     },
 };
 use tehuti_core::dispatch::{Effect as DispatchEffect, Input as DispatchInput};
@@ -99,6 +101,8 @@ pub struct Compositor {
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
     shm_state: ShmState,
+    _viewporter_state: ViewporterState,
+    _fractional_scale_state: FractionalScaleManagerState,
     pub(crate) dmabuf: crate::rendering::DmabufSupport,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
@@ -166,9 +170,11 @@ impl Compositor {
             layout_windows: Vec::new(),
             next_window: 0,
             windows: tehuti_core::windows::Windows::new(),
-            surfaces: CompositorState::new::<Self>(display),
+            surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             shm_state: ShmState::new::<Self>(display, vec![]),
+            _viewporter_state: ViewporterState::new::<Self>(display),
+            _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
             dmabuf: crate::rendering::DmabufSupport::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
@@ -984,8 +990,21 @@ impl Compositor {
                 .to_i32_round(),
                 snapshot.focused_window == Some(*identity),
             );
+            // Space only reports output entry once a buffer gives the window a
+            // view. Clients such as mpv size their first buffer from the output
+            // scale they learn on entry, so announce it before the first
+            // configure instead of after the first (wrongly scaled) frame.
+            if let (Some(output), Some(toplevel)) = (&self.output, window.toplevel()) {
+                output.enter(toplevel.wl_surface());
+                Self::announce_scale(output, toplevel.wl_surface());
+            }
             if let Some(toplevel) = window.toplevel() {
-                Self::configure_layout_window(toplevel, tile, snapshot.focused_window == Some(*identity));
+                Self::configure_layout_window(
+                    toplevel,
+                    tile,
+                    snapshot.focused_window == Some(*identity),
+                    !window.size_held(),
+                );
             }
         }
         self.sync_window_focus();
@@ -995,6 +1014,7 @@ impl Compositor {
         toplevel: &ToplevelSurface,
         tile: &tehuti_core::layout::TileView,
         focused: bool,
+        send: bool,
     ) {
         toplevel.with_pending_state(|pending| {
             pending.size = Some(
@@ -1015,7 +1035,7 @@ impl Compositor {
                 }
             }
         });
-        if toplevel.is_initial_configure_sent() {
+        if send && toplevel.is_initial_configure_sent() {
             let _serial = toplevel.send_pending_configure();
         }
     }
@@ -1238,6 +1258,12 @@ impl CompositorHandler for Compositor {
             .map_or(&*FALLBACK, |data| &data.compositor_state)
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        if let Some(output) = &self.output {
+            Self::announce_scale(output, surface);
+        }
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         if is_sync_subsurface(surface) {
@@ -1249,12 +1275,45 @@ impl CompositorHandler for Compositor {
         }
         if let Some(window) = self.window_for_root(&root) {
             window.on_commit();
-            if let Some(toplevel) = window.toplevel()
-                && !toplevel.is_initial_configure_sent()
-            {
-                let _serial = toplevel.send_configure();
+            if let Some(toplevel) = window.toplevel() {
+                if !toplevel.is_initial_configure_sent() {
+                    window.hold_size(true);
+                    toplevel.with_pending_state(|pending| pending.size = None);
+                    let _serial = toplevel.send_configure();
+                    toplevel.with_pending_state(|pending| pending.size = Some(window.layout_size()));
+                } else if window.size_held() && window.mapped() {
+                    window.hold_size(false);
+                    let _serial = toplevel.send_pending_configure();
+                }
             }
         }
+    }
+}
+
+impl FractionalScaleHandler for Compositor {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        if let Some(output) = &self.output {
+            Self::announce_scale(output, &surface);
+        }
+    }
+}
+
+impl Compositor {
+    /// Tell a surface the output's scale, both as an integer
+    /// (`wl_surface.preferred_buffer_scale`) and as `wp_fractional_scale_v1`.
+    fn announce_scale(output: &Output, surface: &WlSurface) {
+        let scale = output.current_scale();
+        smithay::wayland::compositor::with_states(surface, |states| {
+            smithay::wayland::compositor::send_surface_state(
+                surface,
+                states,
+                scale.integer_scale(),
+                output.current_transform(),
+            );
+            with_fractional_scale(states, |fractional| {
+                fractional.set_preferred_scale(scale.fractional_scale());
+            });
+        });
     }
 }
 
@@ -1352,6 +1411,8 @@ impl OutputHandler for Compositor {}
 
 delegate_compositor!(Compositor);
 delegate_shm!(Compositor);
+delegate_viewporter!(Compositor);
+delegate_fractional_scale!(Compositor);
 delegate_xdg_shell!(Compositor);
 delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
