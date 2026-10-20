@@ -346,8 +346,8 @@ impl Keyboard {
             ButtonName::Start => self.send_on_start_release = true,
             ButtonName::LeftBumper => self.move_caret(false),
             ButtonName::RightBumper => self.move_caret(true),
-            ButtonName::LeftStick
-            | ButtonName::RightStick
+            ButtonName::LeftStick => self.toggle_symbols(),
+            ButtonName::RightStick
             | ButtonName::Select
             | ButtonName::Record
             | ButtonName::Guide
@@ -379,14 +379,7 @@ impl Keyboard {
                     Layer::Capitals
                 };
             }
-            Some(Key::Symbols) => {
-                self.layer = if self.symbols() {
-                    Layer::Letters
-                } else {
-                    Layer::Symbols
-                };
-                self.clamp_highlight();
-            }
+            Some(Key::Symbols) => self.toggle_symbols(),
             Some(Key::Backspace) => self.backspace(),
             Some(Key::Send) => return self.send(),
             Some(Key::CaretLeft) => self.move_caret(false),
@@ -395,6 +388,15 @@ impl Keyboard {
             None => {}
         }
         Response::Consumed
+    }
+
+    fn toggle_symbols(&mut self) {
+        self.layer = if self.symbols() {
+            Layer::Letters
+        } else {
+            Layer::Symbols
+        };
+        self.clamp_highlight();
     }
 
     fn send(&mut self) -> Response {

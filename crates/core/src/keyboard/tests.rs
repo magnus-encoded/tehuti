@@ -384,3 +384,15 @@ fn only_the_keyboard_phrase_opens_it() {
         assert!(!is_open_phrase(phrase), "{phrase}");
     }
 }
+
+#[test]
+fn left_stick_click_switches_between_letters_and_symbols() {
+    let mut keyboard = opened();
+    press(&mut keyboard, ButtonName::LeftStick);
+    assert!(keyboard.symbols());
+    press(&mut keyboard, ButtonName::South);
+    press(&mut keyboard, ButtonName::LeftStick);
+    assert!(!keyboard.symbols());
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.draft(), "1q");
+}
