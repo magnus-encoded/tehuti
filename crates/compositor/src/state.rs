@@ -113,6 +113,7 @@ pub struct Compositor {
     keyboard: KeyboardHandle<Self>,
     controller_session: tehuti_core::controller::State,
     seat: Seat<Self>,
+    shortcut_keycodes: Vec<(Keycode, u32)>,
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
     keyboard_reserved: i32,
@@ -198,6 +199,7 @@ impl Compositor {
             keyboard,
             controller_session: tehuti_core::controller::State::default(),
             seat,
+            shortcut_keycodes: Vec::new(),
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: 0,
@@ -207,6 +209,12 @@ impl Compositor {
             .keyboard
             .clone()
             .set_keymap_from_string(&mut compositor, keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))?;
+        compositor.shortcut_keycodes = (keymap.min_keycode().raw()..=keymap.max_keycode().raw())
+            .map(|code| {
+                let keycode = Keycode::new(code);
+                (keycode, keymap.num_layouts_for_key(keycode))
+            })
+            .collect();
         Ok(compositor)
     }
 
@@ -949,8 +957,8 @@ impl Compositor {
     /// Carries out one action from the core step.
     fn apply(&mut self, action: &Action) {
         match action {
-            Action::Key { key } => {
-                self.tap(*key);
+            Action::Key { key, mods } => {
+                self.tap_with_modifiers(*key, mods);
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(?key, ?app_id, ?title, "key delivered to focused window");
             }
@@ -1028,43 +1036,28 @@ impl Compositor {
     /// Taps a key with Control or Alt held, from the on-screen keyboard's terminal strip.
     fn tap_chord(&mut self, chord: tehuti_core::keyboard::Chord) {
         use tehuti_core::keyboard::ChordKey;
-        let (keycode, mut modifiers) = match chord.key {
-            ChordKey::Named(key) => (
-                Keycode::new(key.evdev_code().saturating_add(XKB_KEYCODE_OFFSET)),
-                ModifiersState::default(),
-            ),
+        use tehuti_protocol::Modifier;
+        let mut mods = Vec::new();
+        if chord.modifiers.control {
+            mods.push(Modifier::Ctrl);
+        }
+        if chord.modifiers.alt {
+            mods.push(Modifier::Alt);
+        }
+        let keycode = match chord.key {
+            ChordKey::Named(key) => Keycode::new(key.evdev_code().saturating_add(XKB_KEYCODE_OFFSET)),
             ChordKey::Char(character) => {
-                let Some(found) = self.text_keys.get(&character).copied() else {
+                let Some((keycode, level)) = self.text_keys.get(&character).copied() else {
                     tracing::warn!(?character, "chord character unavailable in keymap; skipped");
                     return;
                 };
-                found
+                if level.shift {
+                    mods.push(Modifier::Shift);
+                }
+                keycode
             }
         };
-        // Clients read the serialized mask, not the flags. Control and Mod1 (Alt) are xkb real
-        // modifiers with fixed indices 2 and 3 in every keymap.
-        if chord.modifiers.control {
-            modifiers.ctrl = true;
-            modifiers.serialized.depressed |= 1 << 2;
-        }
-        if chord.modifiers.alt {
-            modifiers.alt = true;
-            modifiers.serialized.depressed |= 1 << 3;
-        }
-        let focus = self.keyboard.current_focus();
-        let seat = self.seat.clone();
-        if let Some(surface) = &focus {
-            surface.modifiers(&seat, self, modifiers, SERIAL_COUNTER.next_serial());
-        }
-        self.tap_keycode(keycode);
-        if let Some(surface) = &focus {
-            surface.modifiers(
-                &seat,
-                self,
-                ModifiersState::default(),
-                SERIAL_COUNTER.next_serial(),
-            );
-        }
+        self.tap_keycode_with_modifiers(keycode, &mods);
         tracing::info!(?chord, "chord delivered to focused window");
     }
 
@@ -1079,23 +1072,79 @@ impl Compositor {
         pid.is_some_and(crate::foreground::runs_program)
     }
 
-    fn tap_keycode(&mut self, keycode: Keycode) {
+    /// Resolves a keysym name to a keycode in the active layout.
+    fn resolve_keysym(&mut self, name: &str) -> Option<Keycode> {
         let keyboard = self.keyboard.clone();
-        for state in tehuti_core::controller::key_tap() {
-            let state = match state {
-                tehuti_protocol::ButtonState::Pressed => smithay::backend::input::KeyState::Pressed,
-                tehuti_protocol::ButtonState::Released => smithay::backend::input::KeyState::Released,
-            };
-            let time = self.millis_since_start();
-            let _forwarded: Option<()> = keyboard.input(
-                self,
-                keycode,
-                state,
-                SERIAL_COUNTER.next_serial(),
-                time,
-                |_, _, _| FilterResult::Forward,
-            );
+        let codes = self.shortcut_keycodes.clone();
+        keyboard.with_xkb_state(self, |context| {
+            let xkb = context
+                .xkb()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let symbol = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+            codes.iter().find_map(|(code, layouts)| {
+                let layout = smithay::input::keyboard::Layout(xkb.active_layout().0.checked_rem(*layouts)?);
+                xkb.raw_syms_for_key_in_layout(*code, layout)
+                    .contains(&symbol)
+                    .then_some(*code)
+            })
+        })
+    }
+
+    fn tap_with_modifiers(&mut self, key: KeyName, mods: &[tehuti_protocol::Modifier]) {
+        let Some(keycode) = self.resolve_keysym(key.keysym_name()) else {
+            tracing::warn!(?key, "shortcut unavailable in active keymap");
+            return;
+        };
+        self.tap_keycode_with_modifiers(keycode, mods);
+    }
+
+    /// The one way to send a modifier: press the real modifier keys so xkb serializes the mask.
+    fn tap_keycode_with_modifiers(&mut self, keycode: Keycode, mods: &[tehuti_protocol::Modifier]) {
+        use tehuti_protocol::Modifier;
+        let held = [
+            (Modifier::Ctrl, "Control_L"),
+            (Modifier::Alt, "Alt_L"),
+            (Modifier::Shift, "Shift_L"),
+            (Modifier::Super, "Super_L"),
+        ]
+        .into_iter()
+        .filter(|(modifier, _)| mods.contains(modifier))
+        .map(|(_, name)| self.resolve_keysym(name))
+        .collect::<Option<Vec<_>>>();
+        let Some(held) = held else {
+            tracing::warn!(?mods, "modifier unavailable in active keymap");
+            return;
+        };
+        for code in &held {
+            self.send_keycode(*code, smithay::backend::input::KeyState::Pressed);
         }
+        self.tap_keycode(keycode);
+        for code in held.iter().rev() {
+            self.send_keycode(*code, smithay::backend::input::KeyState::Released);
+        }
+    }
+
+    fn tap_keycode(&mut self, keycode: Keycode) {
+        for state in [
+            smithay::backend::input::KeyState::Pressed,
+            smithay::backend::input::KeyState::Released,
+        ] {
+            self.send_keycode(keycode, state);
+        }
+    }
+
+    fn send_keycode(&mut self, keycode: Keycode, state: smithay::backend::input::KeyState) {
+        let keyboard = self.keyboard.clone();
+        let time = self.millis_since_start();
+        let _forwarded: Option<()> = keyboard.input(
+            self,
+            keycode,
+            state,
+            SERIAL_COUNTER.next_serial(),
+            time,
+            |_, _, _| FilterResult::Forward,
+        );
     }
 
     fn type_text(&mut self, text: &str) {

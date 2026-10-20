@@ -87,6 +87,12 @@ mod synthetic_pad {
     /// `KEY_ENTER` from linux/input-event-codes.h, as `wl_keyboard.key` reports it.
     const KEY_ENTER: u32 = 28;
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum Trace {
+        Mods(u32),
+        Key(u32, KeyState),
+    }
+
     #[derive(Debug, Default)]
     struct App {
         keys: Vec<(u32, KeyState)>,
@@ -106,6 +112,9 @@ mod synthetic_pad {
         suppress_enable: bool,
         content_purpose: Option<zwp_text_input_v3::ContentPurpose>,
         modifiers: (u32, u32, u32),
+        key_modifiers: Vec<(u32, u32)>,
+        /// Every `wl_keyboard.modifiers` depressed mask and each key press, in arrival order.
+        keyboard_trace: Vec<Trace>,
         dmabuf_modifiers: Vec<(u32, u64)>,
         dmabuf_main_device: Vec<u8>,
         dmabuf_import_result: Option<bool>,
@@ -446,6 +455,7 @@ mod synthetic_pad {
             } = &event
             {
                 app.modifiers = (*mods_depressed, *mods_latched, *mods_locked);
+                app.keyboard_trace.push(Trace::Mods(*mods_depressed));
                 app.group = *group;
             }
             if let wl_keyboard::Event::Key {
@@ -455,8 +465,10 @@ mod synthetic_pad {
             } = event
             {
                 app.keys.push((key, state));
+                app.keyboard_trace.push(Trace::Key(key, state));
                 if state == KeyState::Pressed {
                     use smithay::input::keyboard::xkb;
+                    app.key_modifiers.push((key, app.modifiers.0));
                     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
                     let keymap = xkb::Keymap::new_from_string(
                         &context,
@@ -2009,6 +2021,341 @@ else:
         }
 
         client.join().unwrap()
+    }
+
+    fn exchange_shortcuts(
+        context: tehuti_protocol::Context,
+        buttons: &[ButtonName],
+        phrases: &[&str],
+    ) -> App {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![context]);
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker =
+            thread::spawn(move || run_client(client_end, "firefox", ClientTextState::Absent, &sender));
+        let mut sent = false;
+        let began = Instant::now();
+        while !worker.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "shortcut delivery stalled"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            if !sent && receiver.try_recv().is_ok() {
+                sent = true;
+                for &name in buttons {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        compositor.handle(&Event::Button { name, state });
+                    }
+                }
+                for &phrase in phrases {
+                    compositor.handle(&Event::Speech {
+                        text: tehuti_protocol::Text::new(phrase.into()).unwrap(),
+                    });
+                }
+                compositor.handle(&Event::Button {
+                    name: ButtonName::South,
+                    state: ButtonState::Pressed,
+                });
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        worker.join().unwrap()
+    }
+
+    fn run_shortcut_layout_variants() -> bool {
+        if std::env::var_os("TEHUTI_SHORTCUT_LAYOUT_TEST").is_none() {
+            for variant in ["", "dvorak"] {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "synthetic_pad::firefox_shortcuts_hold_modifiers_during_keys_and_release_everything",
+                        "--test-threads=1",
+                    ])
+                    .env("TEHUTI_SHORTCUT_LAYOUT_TEST", variant)
+                    .env("XKB_DEFAULT_LAYOUT", "us")
+                    .env("XKB_DEFAULT_VARIANT", variant)
+                    .env(
+                        "XKB_DEFAULT_OPTIONS",
+                        if variant.is_empty() { "" } else { "ctrl:swapcaps" },
+                    )
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "shortcut delivery failed for {variant}");
+            }
+            return true;
+        }
+        false
+    }
+
+    #[test]
+    fn firefox_shortcuts_hold_modifiers_during_keys_and_release_everything() {
+        if run_shortcut_layout_variants() {
+            return;
+        }
+        let dvorak = std::env::var("TEHUTI_SHORTCUT_LAYOUT_TEST").unwrap() == "dvorak";
+        let app = exchange_shortcuts(
+            tehuti_protocol::parse_context(include_str!("../../../dist/contexts/firefox/context.toml"))
+                .unwrap(),
+            &[
+                ButtonName::East,
+                ButtonName::North,
+                ButtonName::LeftBumper,
+                ButtonName::RightBumper,
+            ],
+            &["new tab", "reload", "close tab"],
+        );
+        let targets: Vec<_> = app
+            .key_modifiers
+            .into_iter()
+            .filter(|(key, _)| ![29, 42, 56, 58, 125].contains(key))
+            .collect();
+        assert_eq!(
+            targets,
+            vec![
+                (105, 8),
+                (if dvorak { 25 } else { 38 }, 4),
+                (15, 5),
+                (15, 4),
+                (if dvorak { 37 } else { 20 }, 4),
+                (63, 0),
+                (if dvorak { 51 } else { 17 }, 4),
+                (28, 0)
+            ]
+        );
+        assert_eq!(app.modifiers, (0, 0, 0));
+        let mut held = std::collections::HashSet::new();
+        for (key, state) in app.keys {
+            if state == KeyState::Pressed {
+                assert!(held.insert(key));
+            } else {
+                assert!(held.remove(&key));
+            }
+        }
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn ctrl_c_reaches_client_with_serialized_control_mask() {
+        let context = tehuti_protocol::parse_context(
+            "app_id = 'firefox'\n[buttons]\nnorth = { key = 'c', mods = ['ctrl'] }",
+        )
+        .unwrap();
+        let app = exchange_shortcuts(context, &[ButtonName::North], &[]);
+        let trace: Vec<_> = app
+            .keyboard_trace
+            .into_iter()
+            .skip_while(|event| !matches!(event, Trace::Key(..)))
+            .take_while(|event| *event != Trace::Key(28, KeyState::Pressed))
+            .collect();
+        assert_eq!(
+            trace,
+            vec![
+                Trace::Key(29, KeyState::Pressed),
+                Trace::Mods(1 << 2),
+                Trace::Key(46, KeyState::Pressed),
+                Trace::Key(46, KeyState::Released),
+                Trace::Key(29, KeyState::Released),
+                Trace::Mods(0),
+            ]
+        );
+    }
+
+    /// Moves the on-screen keyboard highlight to `key` with the D-pad, then presses South.
+    fn select_osk_key(compositor: &mut Compositor, pad: &mut SyntheticPad, key: tehuti_core::keyboard::Key) {
+        let (row, index) = compositor
+            .on_screen_keyboard()
+            .rows()
+            .iter()
+            .enumerate()
+            .find_map(|(row, slots)| {
+                slots
+                    .iter()
+                    .position(|slot| slot.key == key)
+                    .map(|index| (row, index))
+            })
+            .unwrap();
+        for (axis, target, forward, back) in [
+            (0, row, ButtonName::DpadDown, ButtonName::DpadUp),
+            (1, index, ButtonName::DpadRight, ButtonName::DpadLeft),
+        ] {
+            loop {
+                let (current_row, current_index) = compositor.on_screen_keyboard().highlight();
+                let current = if axis == 0 { current_row } else { current_index };
+                let name = match current.cmp(&target) {
+                    core::cmp::Ordering::Equal => break,
+                    core::cmp::Ordering::Less => forward,
+                    core::cmp::Ordering::Greater => back,
+                };
+                for state in [ButtonState::Pressed, ButtonState::Released] {
+                    pad.push(Event::Button { name, state });
+                }
+                route(compositor, pad).unwrap();
+            }
+        }
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(Event::Button {
+                name: ButtonName::South,
+                state,
+            });
+        }
+        route(compositor, pad).unwrap();
+    }
+
+    #[test]
+    fn sticky_ctrl_then_c_from_the_on_screen_keyboard_presses_real_ctrl() {
+        use tehuti_core::keyboard::{Key, Modifier};
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(
+                "app_id = 'test'\n[buttons]\n[keyboard]\non_text_field = 'open'\nterminal = true",
+            )
+            .unwrap(),
+        ]);
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let mut pad = SyntheticPad::default();
+        compositor.handle(&Event::Speech {
+            text: tehuti_protocol::Text::new("keyboard".into()).unwrap(),
+        });
+        assert!(compositor.on_screen_keyboard().is_open());
+        assert!(compositor.on_screen_keyboard().terminal());
+        for key in [Key::Modifier(Modifier::Control), Key::Char('c')] {
+            select_osk_key(&mut compositor, &mut pad, key);
+        }
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        let trace: Vec<_> = client
+            .join()
+            .unwrap()
+            .keyboard_trace
+            .into_iter()
+            .skip_while(|event| !matches!(event, Trace::Key(..)))
+            .collect();
+        assert_eq!(
+            trace,
+            vec![
+                Trace::Key(29, KeyState::Pressed),
+                Trace::Mods(1 << 2),
+                Trace::Key(46, KeyState::Pressed),
+                Trace::Key(46, KeyState::Released),
+                Trace::Key(29, KeyState::Released),
+                Trace::Mods(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn shortcut_with_absent_keysym_sends_nothing_and_holds_no_modifier() {
+        // A Cyrillic-only keymap has no Latin `c`, so the shortcut cannot resolve.
+        if std::env::var_os("TEHUTI_ABSENT_KEYSYM_TEST").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "synthetic_pad::shortcut_with_absent_keysym_sends_nothing_and_holds_no_modifier",
+                    "--test-threads=1",
+                ])
+                .env("TEHUTI_ABSENT_KEYSYM_TEST", "1")
+                .env("XKB_DEFAULT_LAYOUT", "ru")
+                .env("XKB_DEFAULT_VARIANT", "")
+                .env("XKB_DEFAULT_OPTIONS", "")
+                .status()
+                .unwrap();
+            assert!(status.success(), "absent keysym shortcut leaked events");
+            return;
+        }
+        let context = tehuti_protocol::parse_context(
+            "app_id = 'firefox'\n[buttons]\nnorth = { key = 'c', mods = ['ctrl', 'shift'] }",
+        )
+        .unwrap();
+        let app = exchange_shortcuts(context, &[ButtonName::North], &[]);
+        assert_eq!(app.keys, vec![(28, KeyState::Pressed), (28, KeyState::Released)]);
+        assert_eq!(app.modifiers, (0, 0, 0));
+    }
+
+    const SHORTCUTS: &[(&str, &[i32])] = &[
+        (r#"{ key = "left", mods = ["alt"] }"#, &[56, 105, -105, -56]),
+        (r#"{ key = "right", mods = ["alt"] }"#, &[56, 106, -106, -56]),
+        (r#"{ key = "0", mods = ["ctrl"] }"#, &[29, 11, -11, -29]),
+        (r#"{ key = "equal", mods = ["ctrl"] }"#, &[29, 13, -13, -29]),
+        (r#"{ key = "minus", mods = ["ctrl"] }"#, &[29, 12, -12, -29]),
+        (r#"{ key = "f", mods = ["ctrl"] }"#, &[29, 33, -33, -29]),
+        (r#"{ key = "l", mods = ["ctrl"] }"#, &[29, 38, -38, -29]),
+        (r#"{ key = "t", mods = ["ctrl"] }"#, &[29, 20, -20, -29]),
+        (r#"{ key = "w", mods = ["ctrl"] }"#, &[29, 17, -17, -29]),
+        (r#"{ key = "tab", mods = ["ctrl"] }"#, &[29, 15, -15, -29]),
+        (
+            r#"{ key = "tab", mods = ["ctrl", "shift"] }"#,
+            &[29, 42, 15, -15, -42, -29],
+        ),
+        (r#"{ key = "tab", mods = ["shift"] }"#, &[42, 15, -15, -42]),
+        (r#"{ key = "home" }"#, &[102, -102]),
+        (r#"{ key = "end" }"#, &[107, -107]),
+        (r#"{ key = "page_up" }"#, &[104, -104]),
+        (r#"{ key = "page_down" }"#, &[109, -109]),
+        (r#"{ key = "f5" }"#, &[63, -63]),
+        (
+            r#"{ key = "d", mods = ["ctrl", "alt", "shift"] }"#,
+            &[29, 56, 42, 32, -32, -42, -56, -29],
+        ),
+        (r#"{ key = "a", mods = ["super"] }"#, &[125, 30, -30, -125]),
+        (r#"{ key = "insert" }"#, &[110, -110]),
+        (r#"{ key = "delete" }"#, &[111, -111]),
+        (
+            r#"{ key = "tab", mods = ["shift", "ctrl", "ctrl"] }"#,
+            &[29, 42, 15, -15, -42, -29],
+        ),
+    ];
+
+    #[test]
+    fn native_shortcuts_parse_and_deliver_exact_press_release_sequences() {
+        use core::fmt::Write as _;
+        let mut source = String::from("app_id = 'firefox'\n[buttons]\n[speech]\n");
+        let phrases: Vec<_> = SHORTCUTS
+            .iter()
+            .enumerate()
+            .map(|(index, (mapping, _))| {
+                let phrase = format!("shortcut {index}");
+                writeln!(source, "{phrase:?} = {mapping}").unwrap();
+                phrase
+            })
+            .collect();
+        let phrases: Vec<_> = phrases.iter().map(String::as_str).collect();
+        let app = exchange_shortcuts(tehuti_protocol::parse_context(&source).unwrap(), &[], &phrases);
+        let expected: Vec<_> = SHORTCUTS
+            .iter()
+            .flat_map(|(_, events)| events.iter())
+            .chain([&28, &-28])
+            .map(|code| {
+                (
+                    code.unsigned_abs(),
+                    if *code > 0 {
+                        KeyState::Pressed
+                    } else {
+                        KeyState::Released
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(app.keys, expected);
+        assert_eq!(app.modifiers, (0, 0, 0), "all modifiers are released");
     }
 
     proptest! {

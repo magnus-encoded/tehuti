@@ -69,7 +69,10 @@ mod dead_plugin_fallback {
     }
 
     fn decided() -> Vec<Action> {
-        vec![Action::Key { key: KeyName::Enter }]
+        vec![Action::Key {
+            key: KeyName::Enter,
+            mods: Vec::new(),
+        }]
     }
 
     /// Reference model: pending requests in arrival order with their remaining budget.

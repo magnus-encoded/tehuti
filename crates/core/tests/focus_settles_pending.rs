@@ -143,7 +143,7 @@ mod focus_settles_pending {
             prop_assert!(timed.is_empty(), "settled decisions cannot time out again");
             state = after_tick;
             for key in keys {
-                for result in [Ok(Vec::new()), Ok(vec![Action::Key { key: KeyName::Enter }])] {
+                for result in [Ok(Vec::new()), Ok(vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }])] {
                     let (after_reply, late, _) = plugin::step(state, Input::Reply { key, result });
                     prop_assert!(late.is_empty(), "a late reply after focus releases nothing");
                     state = after_reply;

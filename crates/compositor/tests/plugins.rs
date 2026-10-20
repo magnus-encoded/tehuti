@@ -125,7 +125,7 @@ for line in sys.stdin:
     else:
         continue
     if message['method'] == 'button' and {mode:?} == 'invalid_action':
-        print(json.dumps({{'jsonrpc':'2.0','id':42,'method':'submit_actions','params':{{'event_id':message['id'],'actions':[{{'type':'key','key':'Tab'}}]}}}}), flush=True)
+        print(json.dumps({{'jsonrpc':'2.0','id':42,'method':'submit_actions','params':{{'event_id':message['id'],'actions':[{{'type':'key','key':'UnknownKey'}}]}}}}), flush=True)
         continue
     if message['method'] == 'button' and {mode:?} == 'junk':
         sys.stdout.write('not json\n' + 'x' * 70000 + '\n')
@@ -345,7 +345,7 @@ for line in sys.stdin:
             assert_eq!(rejection["error"]["code"], -32602);
             let reason = rejection["error"]["message"].as_str().unwrap();
             assert!(reason.contains("action 0 (key)"));
-            assert!(reason.contains("Tab"));
+            assert!(reason.contains("UnknownKey"));
             harness.send([Event::Tick {
                 elapsed: Duration::from_secs(3),
             }]);

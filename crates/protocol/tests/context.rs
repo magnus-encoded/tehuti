@@ -5,6 +5,64 @@ mod context {
     use proptest::prelude::*;
     use tehuti_protocol::{KeyName, parse_context};
 
+    #[test]
+    fn firefox_context_maps_buttons_and_speech_to_modifier_actions() {
+        use tehuti_protocol::{Action, ButtonName, Modifier};
+        let context = parse_context(include_str!("../../../dist/contexts/firefox/context.toml")).unwrap();
+        assert_eq!(context.app_id(), "firefox");
+        for (button, key, mods) in [
+            (ButtonName::East, KeyName::Left, vec![Modifier::Alt]),
+            (ButtonName::North, KeyName::L, vec![Modifier::Ctrl]),
+            (
+                ButtonName::LeftBumper,
+                KeyName::Tab,
+                vec![Modifier::Ctrl, Modifier::Shift],
+            ),
+            (ButtonName::RightBumper, KeyName::Tab, vec![Modifier::Ctrl]),
+        ] {
+            assert_eq!(context.action_for(button), Some(Action::Key { key, mods }));
+            assert_eq!(
+                context.key_for(button),
+                None,
+                "a chord cannot become an unmodified key"
+            );
+        }
+        for (phrase, key, mods) in [
+            ("new tab", KeyName::T, vec![Modifier::Ctrl]),
+            ("reload", KeyName::F5, vec![]),
+            ("close tab", KeyName::W, vec![Modifier::Ctrl]),
+        ] {
+            assert_eq!(context.speech_action(phrase), Some(Action::Key { key, mods }));
+        }
+    }
+
+    #[test]
+    fn key_modifiers_are_optional_and_unknown_modifiers_are_rejected() {
+        use tehuti_protocol::{Action, Modifier};
+        let chord: Action = serde_json::from_str(r#"{"type":"key","key":"Left","mods":["alt"]}"#).unwrap();
+        assert_eq!(
+            chord,
+            Action::Key {
+                key: KeyName::Left,
+                mods: vec![Modifier::Alt]
+            }
+        );
+        let plain: Action = serde_json::from_str(r#"{"type":"key","key":"enter"}"#).unwrap();
+        assert_eq!(
+            plain,
+            Action::Key {
+                key: KeyName::Enter,
+                mods: vec![]
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(plain).unwrap(),
+            serde_json::json!({"type":"key", "key":"enter"})
+        );
+        assert!(serde_json::from_str::<Action>(r#"{"type":"key","key":"tab","mods":["hyper"]}"#).is_err());
+        assert!(parse_context("app_id = 'test'\n[buttons.east]\nkey = 'Left'\nmods = ['hyper']").is_err());
+    }
+
     proptest! {
         #[test]
         fn arbitrary_configuration_returns_a_result(source in any::<String>()) {
