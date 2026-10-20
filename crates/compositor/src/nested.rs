@@ -218,7 +218,7 @@ impl Nested {
                     Err(error) => warn!(?error, "bar render failed"),
                 }
                 append_keyboard(&mut self.keyboard, &self.output, renderer, data, &mut notices);
-                append_cursor(renderer, data, &mut notices);
+                append_cursor(renderer, data, &self.output, &mut notices);
                 match tehuti::wallpaper::render_output(
                     &self.output,
                     renderer,
@@ -255,9 +255,10 @@ fn append_keyboard(
 fn append_cursor(
     renderer: &mut GlesRenderer,
     data: &LoopData,
+    output: &Output,
     notices: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
 ) {
-    if let Some(location) = data.compositor.cursor_location() {
+    if let Some(location) = data.compositor.cursor_on(output) {
         match MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             location,

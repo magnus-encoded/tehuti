@@ -173,4 +173,22 @@ text = "a\u0000b"
             );
         }
     }
+
+    #[test]
+    fn keyboard_options_reject_unknown_modes_buttons_and_fields() {
+        for setting in [
+            "on_text_field = 'always'",
+            "button = 'unknown'",
+            "button = 'guide'",
+            "button = 'record'",
+            "popup = true",
+        ] {
+            assert!(
+                tehuti_protocol::parse_context(&format!(
+                    "app_id = 'editor'\n[buttons]\n[keyboard]\n{setting}"
+                ))
+                .is_err()
+            );
+        }
+    }
 }

@@ -79,3 +79,16 @@ clear after three seconds. Focus changes cancel capture and clear voice feedback
 The clock sits at the right edge. Context, live text, results and errors use
 different dark backgrounds with chevron edges. Text and bar height follow the
 output scale. Existing notices keep their overlay and focus behaviour.
+
+## Keyboard intent
+
+`[keyboard]` sets `on_text_field` to `"button"` (the default), `"open"`, or
+`"off"`. `button = "Y"` selects the default opening button; protocol button names
+such as `"west"` also work. A context with `app_id = "*"` supplies global keyboard
+options. Application contexts inherit each option they omit.
+
+`"button"` opens while a text-input-v3 field is enabled; outside a field the
+button follows normal routing. Mouse mode uses the same button. `"open"` opens
+once per field. After B closes it, ordinary field updates keep it closed until
+the client enables another field. `"off"` disables field opening. Saying
+"keyboard" remains available in every application. See `examples/global/context.toml`.

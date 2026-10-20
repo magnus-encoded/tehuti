@@ -244,7 +244,7 @@ where
     if let Some(element) = keyboard.element(renderer, output, compositor.on_screen_keyboard())? {
         elements.push(element);
     }
-    if let Some(location) = compositor.cursor_location() {
+    if let Some(location) = compositor.cursor_on(output) {
         elements.insert(
             0,
             MemoryRenderBufferRenderElement::from_buffer(

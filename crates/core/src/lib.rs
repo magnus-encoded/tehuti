@@ -82,6 +82,25 @@ impl State {
         }
     }
 
+    /// Resolves per-application keyboard options over the `*` global context.
+    #[must_use]
+    pub fn keyboard_config(&self) -> (tehuti_protocol::OnTextField, tehuti_protocol::ButtonName) {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        let active = self
+            .contexts
+            .iter()
+            .find(|context| Some(context.app_id()) == self.focused_app_id.as_deref());
+        let mode = active
+            .and_then(|context| context.keyboard().on_text_field)
+            .or_else(|| global.and_then(|context| context.keyboard().on_text_field))
+            .unwrap_or(tehuti_protocol::OnTextField::Button);
+        let button = active
+            .and_then(|context| context.keyboard().button)
+            .or_else(|| global.and_then(|context| context.keyboard().button))
+            .unwrap_or(tehuti_protocol::ButtonName::North);
+        (mode, button)
+    }
+
     /// Configures the launcher names recognized in focused window titles.
     #[must_use]
     pub fn with_bar_agents(mut self, agents: Vec<String>) -> Self {

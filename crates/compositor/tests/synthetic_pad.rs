@@ -91,6 +91,12 @@ mod synthetic_pad {
     struct App {
         keys: Vec<(u32, KeyState)>,
         clicks: Vec<(u32, wayland_client::protocol::wl_pointer::ButtonState)>,
+        pointer_focused: Option<wayland_client::backend::ObjectId>,
+        axes: Vec<(
+            wayland_client::backend::ObjectId,
+            wayland_client::protocol::wl_pointer::Axis,
+            f64,
+        )>,
         focused: Option<wayland_client::backend::ObjectId>,
         close_requested: bool,
         text: String,
@@ -543,6 +549,25 @@ mod synthetic_pad {
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
+            use wayland_client::protocol::wl_pointer::Event as PointerEvent;
+            if let PointerEvent::Enter { surface, .. } = &event {
+                app.pointer_focused = Some(wayland_client::Proxy::id(surface));
+            }
+            if matches!(&event, PointerEvent::Leave { .. }) {
+                app.pointer_focused = None;
+            }
+            if let PointerEvent::Axis {
+                axis: WEnum::Value(axis),
+                value,
+                ..
+            } = &event
+            {
+                app.axes.push((
+                    app.pointer_focused.clone().expect("axis has pointer focus"),
+                    *axis,
+                    *value,
+                ));
+            }
             if let wayland_client::protocol::wl_pointer::Event::Button {
                 button,
                 state: WEnum::Value(state),
@@ -557,7 +582,30 @@ mod synthetic_pad {
     delegate_noop!(App: ignore wayland_client::protocol::wl_shm::WlShm);
     delegate_noop!(App: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
 
-    fn run_pointer_client(stream: UnixStream, ready: &mpsc::Sender<()>) -> App {
+    fn assert_pointer_scroll_target(
+        app: &App,
+        surface: &WlSurface,
+        other_surface: &WlSurface,
+        mouse_mode: bool,
+    ) {
+        let target = if mouse_mode { surface } else { other_surface };
+        assert_eq!(
+            app.axes,
+            vec![(
+                wayland_client::Proxy::id(target),
+                wayland_client::protocol::wl_pointer::Axis::VerticalScroll,
+                7.5
+            )]
+        );
+        assert_eq!(app.focused, Some(wayland_client::Proxy::id(other_surface)));
+        assert_eq!(app.pointer_focused, Some(wayland_client::Proxy::id(surface)));
+    }
+
+    fn run_pointer_client(
+        stream: UnixStream,
+        ready: &mpsc::Sender<()>,
+        scroll_mouse_mode: Option<bool>,
+    ) -> App {
         use std::os::fd::AsFd;
         use wayland_client::protocol::wl_shm::{Format, WlShm};
         let connection = Connection::from_socket(stream).unwrap();
@@ -598,10 +646,18 @@ mod synthetic_pad {
             "new window starts focused"
         );
         ready.send(()).unwrap();
-        while app.clicks.len() < 2 {
+        while if scroll_mouse_mode.is_some() {
+            app.axes.is_empty()
+        } else {
+            app.clicks.len() < 2
+        } {
             let _events = queue.blocking_dispatch(&mut app).unwrap();
         }
         let _finished = queue.roundtrip(&mut app).unwrap();
+        if let Some(mouse_mode) = scroll_mouse_mode {
+            assert_pointer_scroll_target(&app, &surface, &other_surface, mouse_mode);
+            return app;
+        }
         assert_eq!(
             app.focused,
             Some(wayland_client::Proxy::id(&surface)),
@@ -621,7 +677,7 @@ mod synthetic_pad {
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
         let (sender, receiver) = mpsc::channel();
-        let client = thread::spawn(move || run_pointer_client(client, &sender));
+        let client = thread::spawn(move || run_pointer_client(client, &sender, None));
         let began = Instant::now();
         let mut sent = false;
         while !client.is_finished() {
@@ -673,10 +729,96 @@ mod synthetic_pad {
         assert!(app.keys.is_empty(), "A clicks instead of sending Enter");
     }
 
+    fn toggle_pointer_mode(compositor: &mut Compositor) {
+        let mut pad = SyntheticPad::default();
+        pad.push(Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Pressed,
+        });
+        pad.push(Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Released,
+        });
+        pad.push(Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Pressed,
+        });
+        pad.push(Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Released,
+        });
+        route(compositor, &mut pad).unwrap();
+    }
+
+    #[test]
+    fn right_stick_scroll_targets_keyboard_focus_and_mouse_mode_targets_pointer_focus() {
+        for mouse_mode in [false, true] {
+            let mut display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let (server, client) = UnixStream::pair().unwrap();
+            let _client = display
+                .handle()
+                .insert_client(server, Arc::new(ClientState::default()))
+                .unwrap();
+            let (sender, receiver) = mpsc::channel();
+            let client = thread::spawn(move || run_pointer_client(client, &sender, Some(mouse_mode)));
+            let began = Instant::now();
+            let mut sent = false;
+            while !client.is_finished() {
+                assert!(
+                    began.elapsed() < Duration::from_secs(5),
+                    "scroll client timed out"
+                );
+                let _events = display.dispatch_clients(&mut compositor).unwrap();
+                if !sent && receiver.try_recv().is_ok() {
+                    let mut pad = SyntheticPad::default();
+                    toggle_pointer_mode(&mut compositor);
+                    let cursor = compositor.cursor_location();
+                    if !mouse_mode {
+                        toggle_pointer_mode(&mut compositor);
+                    }
+                    compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+                        left: (0, 0),
+                        right: (0, 1000),
+                    });
+                    pad.push(Event::Tick {
+                        elapsed: Duration::from_millis(10),
+                    });
+                    route(&mut compositor, &mut pad).unwrap();
+                    compositor.sample_sticks(tehuti_core::dispatch::Sticks::default());
+                    if !mouse_mode {
+                        assert_eq!(compositor.cursor_location(), None);
+                        toggle_pointer_mode(&mut compositor);
+                    }
+                    assert_eq!(
+                        compositor.cursor_location(),
+                        cursor,
+                        "scroll preserves cursor position"
+                    );
+                    sent = true;
+                }
+                display.flush_clients().unwrap();
+                thread::sleep(Duration::from_millis(1));
+            }
+            let _app = client.join().unwrap();
+        }
+    }
+
     /// Opens one toplevel and returns every key it receives once it has seen one full key tap.
     fn run_client(
         stream: UnixStream,
         app_id: &str,
+        text_state: ClientTextState,
+        ready: &mpsc::Sender<()>,
+    ) -> App {
+        let initial_app_id = if app_id == "test" { "other" } else { "test" };
+        run_client_with_app_id(stream, app_id, initial_app_id, text_state, ready)
+    }
+
+    fn run_client_with_app_id(
+        stream: UnixStream,
+        app_id: &str,
+        initial_app_id: &str,
         text_state: ClientTextState,
         ready: &mpsc::Sender<()>,
     ) -> App {
@@ -694,8 +836,7 @@ mod synthetic_pad {
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
         toplevel.set_title("Synthetic-window-title-1234567890".into());
-        let initial_app_id_before_focus_change = if app_id == "test" { "other" } else { "test" };
-        toplevel.set_app_id(initial_app_id_before_focus_change.into());
+        toplevel.set_app_id(initial_app_id.into());
         surface.commit();
         let mut app = App::default();
         let _initial_dispatch = queue.roundtrip(&mut app).unwrap();
@@ -2161,6 +2302,59 @@ else:
             "one press and release per character, with no Enter"
         );
         assert_eq!(app.text, "", "secret delivery bypasses text-input instances");
+    }
+
+    #[test]
+    fn text_input_enablement_controls_keyboard_opening() {
+        for mode in ["open", "button", "off"] {
+            for text_state in [
+                ClientTextState::Enabled,
+                ClientTextState::Disabled,
+                ClientTextState::Absent,
+                ClientTextState::FocusChanged,
+            ] {
+                let mut display: Display<Compositor> = Display::new().unwrap();
+                let mut compositor = Compositor::new(&display.handle()).unwrap();
+                compositor.set_contexts(vec![
+                    tehuti_protocol::parse_context(&format!(
+                        "app_id = 'test'\n[buttons]\n[keyboard]\non_text_field = '{mode}'"
+                    ))
+                    .unwrap(),
+                ]);
+                let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+                let (server_end, client_end) = UnixStream::pair().unwrap();
+                let _client = display
+                    .handle()
+                    .insert_client(server_end, Arc::new(ClientState::default()))
+                    .unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let client = thread::spawn(move || {
+                    run_client_with_app_id(client_end, "test", "test", text_state, &sender)
+                });
+                let started = Instant::now();
+                dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+                let active = matches!(text_state, ClientTextState::Enabled);
+                if active {
+                    assert_eq!(compositor.on_screen_keyboard().is_open(), mode == "open");
+                }
+                let mut pad = SyntheticPad::default();
+                for name in [ButtonName::East, ButtonName::North] {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        pad.push(Event::Button { name, state });
+                    }
+                }
+                route(&mut compositor, &mut pad).unwrap();
+                assert_eq!(compositor.on_screen_keyboard().is_open(), active && mode != "off");
+                for name in [ButtonName::East, ButtonName::South] {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        pad.push(Event::Button { name, state });
+                    }
+                }
+                route(&mut compositor, &mut pad).unwrap();
+                dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+                let _app = client.join().unwrap();
+            }
+        }
     }
 
     #[test]

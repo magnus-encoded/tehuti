@@ -358,13 +358,43 @@ impl Compositor {
     )]
     fn pointer_scroll(&mut self, x: i32, y: i32) {
         use smithay::backend::input::{Axis, AxisSource};
-        self.move_pointer();
+        if self.mouse_mode {
+            self.move_pointer();
+        } else {
+            let Some(surface) = self.keyboard.current_focus() else {
+                return;
+            };
+            let Some(window) = self.window_for_root(&surface) else {
+                return;
+            };
+            let geometry = window.geometry();
+            if geometry.size.w <= 0 || geometry.size.h <= 0 {
+                return;
+            }
+            let location = (
+                f64::from(geometry.loc.x) + f64::from(geometry.size.w) / 2.0,
+                f64::from(geometry.loc.y) + f64::from(geometry.size.h) / 2.0,
+            )
+                .into();
+            let event = smithay::input::pointer::MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: self.pointer_time(),
+            };
+            self.pointer
+                .clone()
+                .motion(self, Some((surface, (0.0, 0.0).into())), &event);
+            self.pointer.clone().frame(self);
+        }
         let frame = smithay::input::pointer::AxisFrame::new(self.pointer_time())
             .source(AxisSource::Continuous)
             .value(Axis::Horizontal, f64::from(x) / 1_000_000.0)
             .value(Axis::Vertical, f64::from(y) / 1_000_000.0);
         self.pointer.clone().axis(self, frame);
         self.pointer.clone().frame(self);
+        if !self.mouse_mode {
+            self.move_pointer();
+        }
     }
     fn pointer_click(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
         self.move_pointer();
@@ -405,6 +435,16 @@ impl Compositor {
     pub fn cursor_location(&self) -> Option<(f64, f64)> {
         self.mouse_mode
             .then_some((self.pointer_location.x, self.pointer_location.y))
+    }
+
+    /// Where to draw the cursor on `output`, in its physical pixels.
+    #[must_use]
+    pub fn cursor_on(
+        &self,
+        output: &smithay::output::Output,
+    ) -> Option<smithay::utils::Point<f64, smithay::utils::Physical>> {
+        let scale = output.current_scale().fractional_scale();
+        self.mouse_mode.then(|| self.pointer_location.to_physical(scale))
     }
 
     fn pointer_time(&self) -> u32 {
@@ -489,7 +529,7 @@ impl Compositor {
     }
 
     /// Feeds one input and every reply it asks for until its frame finishes.
-    fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+    pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
         let depth = self.dispatch.busy();
         let mut input = input;
         let mut rejection = None;
@@ -1561,6 +1601,10 @@ impl SeatHandler for Compositor {
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         self.text_input.focus(focused.cloned());
+        let _rejection = self.dispatch(DispatchInput::TextField {
+            active: false,
+            changed: false,
+        });
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}

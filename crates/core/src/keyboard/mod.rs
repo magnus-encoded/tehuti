@@ -184,9 +184,10 @@ impl Direction {
 enum Layer {
     #[default]
     Letters,
-    /// Capitals for the next letter only.
     Capitals,
-    Symbols,
+    Symbols {
+        capitals: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -282,7 +283,7 @@ impl Keyboard {
 
     #[must_use]
     pub const fn symbols(&self) -> bool {
-        matches!(self.layer, Layer::Symbols)
+        matches!(self.layer, Layer::Symbols { .. })
     }
 
     /// The keys of the current layer, top row first.
@@ -368,9 +369,6 @@ impl Keyboard {
                     character
                 };
                 self.type_text(character.encode_utf8(&mut [0; 4]));
-                if self.shifted() {
-                    self.layer = Layer::Letters;
-                }
             }
             Some(Key::Shift) => {
                 self.layer = if self.shifted() {
@@ -391,10 +389,11 @@ impl Keyboard {
     }
 
     fn toggle_symbols(&mut self) {
-        self.layer = if self.symbols() {
-            Layer::Letters
-        } else {
-            Layer::Symbols
+        self.layer = match self.layer {
+            Layer::Letters => Layer::Symbols { capitals: false },
+            Layer::Capitals => Layer::Symbols { capitals: true },
+            Layer::Symbols { capitals: false } => Layer::Letters,
+            Layer::Symbols { capitals: true } => Layer::Capitals,
         };
         self.clamp_highlight();
     }

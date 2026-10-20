@@ -205,7 +205,7 @@ fn holding_a_direction_repeats_after_a_delay() {
 }
 
 #[test]
-fn south_types_the_highlighted_key_and_shift_lasts_one_letter() {
+fn shift_toggles_capitals_until_pressed_again() {
     let mut keyboard = opened();
     press(&mut keyboard, ButtonName::South);
     go_to(&mut keyboard, 0, 0);
@@ -213,7 +213,13 @@ fn south_types_the_highlighted_key_and_shift_lasts_one_letter() {
     go_to(&mut keyboard, 0, 2);
     press(&mut keyboard, ButtonName::South);
     press(&mut keyboard, ButtonName::South);
-    assert_eq!(keyboard.draft(), "qWw");
+    assert!(keyboard.shifted());
+    go_to(&mut keyboard, 0, 0);
+    press(&mut keyboard, ButtonName::South);
+    assert!(!keyboard.shifted());
+    go_to(&mut keyboard, 0, 2);
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.draft(), "qWWw");
 }
 
 #[test]
@@ -395,4 +401,49 @@ fn left_stick_click_switches_between_letters_and_symbols() {
     assert!(!keyboard.symbols());
     press(&mut keyboard, ButtonName::South);
     assert_eq!(keyboard.draft(), "1q");
+}
+
+proptest! {
+    #[test]
+    fn symbols_preserve_the_letter_layer(capitals in any::<bool>(), trips in 1usize..8) {
+        let mut keyboard = opened();
+        if capitals {
+            go_to(&mut keyboard, 0, 0);
+            press(&mut keyboard, ButtonName::South);
+        }
+        go_to(&mut keyboard, 0, 1);
+        for _ in 0..trips {
+            press(&mut keyboard, ButtonName::LeftStick);
+            assert!(keyboard.symbols());
+            assert!(!keyboard.shifted());
+            press(&mut keyboard, ButtonName::South);
+            press(&mut keyboard, ButtonName::LeftStick);
+            assert!(!keyboard.symbols());
+            assert_eq!(keyboard.shifted(), capitals);
+            press(&mut keyboard, ButtonName::South);
+        }
+        prop_assert_eq!(keyboard.draft(), (if capitals { "1Q" } else { "1q" }).repeat(trips));
+    }
+}
+
+#[test]
+fn b_resets_capitals_even_when_symbols_are_showing() {
+    for symbols in [false, true] {
+        let mut keyboard = opened();
+        go_to(&mut keyboard, 0, 0);
+        press(&mut keyboard, ButtonName::South);
+        if symbols {
+            press(&mut keyboard, ButtonName::LeftStick);
+        }
+        press(&mut keyboard, ButtonName::East);
+        assert!(!keyboard.shifted());
+        assert!(!keyboard.symbols());
+        keyboard.open();
+        assert!(!keyboard.shifted());
+        press(&mut keyboard, ButtonName::South);
+        assert_eq!(keyboard.draft(), "q");
+        press(&mut keyboard, ButtonName::LeftStick);
+        press(&mut keyboard, ButtonName::LeftStick);
+        assert!(!keyboard.shifted());
+    }
 }

@@ -59,6 +59,44 @@ mod scale {
     }
 
     #[test]
+    fn cursor_uses_physical_pixels_only_in_mouse_mode() {
+        use tehuti::input::{SyntheticPad, route};
+        use tehuti_protocol::{ButtonName, ButtonState, Event};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let output = Output::new(
+            "test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Example".into(),
+                model: "Test".into(),
+            },
+        );
+        let mode = Mode {
+            size: (3840, 2160).into(),
+            refresh: 60_000,
+        };
+        scale::apply(&output, mode, 2);
+        assert_eq!(compositor.cursor_on(&output), None);
+        let mut pad = SyntheticPad::default();
+        for _ in 0..2 {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button {
+                    name: ButtonName::Select,
+                    state,
+                });
+            }
+        }
+        route(&mut compositor, &mut pad).unwrap();
+        assert_eq!(compositor.cursor_location(), Some((100.0, 100.0)));
+        assert_eq!(compositor.cursor_on(&output), Some((200.0, 200.0).into()));
+        scale::apply(&output, mode, 1);
+        assert_eq!(compositor.cursor_on(&output), Some((100.0, 100.0).into()));
+    }
+
+    #[test]
     fn layout_uses_the_logical_output_size_at_scale_two() {
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
