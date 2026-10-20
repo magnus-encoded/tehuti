@@ -9,6 +9,7 @@ import time
 import threading
 import types
 import unittest
+from unittest.mock import patch
 import wave
 
 spec = importlib.util.spec_from_file_location("speech", Path(__file__).with_name("speech.py"))
@@ -17,6 +18,58 @@ spec.loader.exec_module(module)
 
 
 class SpeechTests(unittest.TestCase):
+    def test_empty_vad_transcript_retries_once_without_vad(self):
+        for retry_text in ["confirm", ""]:
+            with self.subTest(retry_text=retry_text), tempfile.TemporaryDirectory() as directory:
+                class Model:
+                    def __init__(self):
+                        self.calls = []
+
+                    def transcribe(self, path, **options):
+                        self.calls.append(options)
+                        text = "" if len(self.calls) == 1 else retry_text
+                        return iter([types.SimpleNamespace(
+                            text=text, no_speech_prob=0, avg_logprob=0,
+                        )]), None
+
+                model = Model()
+                log_path = Path(directory) / "speech.log"
+                with patch.dict(os.environ, {"TEHUTI_LOG_FILE": str(log_path)}):
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        text = module.Speech(model).transcribe_audio(b"\x00\x10" * 16000)
+                self.assertEqual(text, retry_text)
+                self.assertEqual(model.calls, [
+                    {"beam_size": 5, "language": "en", "vad_filter": True,
+                     "vad_parameters": {"threshold": 0.3, "min_speech_duration_ms": 80,
+                                        "speech_pad_ms": 300}},
+                    {"beam_size": 5, "language": "en", "vad_filter": False},
+                ])
+                self.assertEqual(log_path.read_text().splitlines(), [
+                    "INFO speech: VAD returned empty text for clip (32000 bytes)",
+                    "INFO speech: retrying clip without VAD",
+                ])
+
+    def test_nonempty_vad_transcript_does_not_retry(self):
+        class Model:
+            def __init__(self):
+                self.calls = []
+
+            def transcribe(self, path, **options):
+                self.calls.append(options)
+                return iter([types.SimpleNamespace(
+                    text="confirm", no_speech_prob=0, avg_logprob=0,
+                )]), None
+
+        model = Model()
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "speech.log"
+            with patch.dict(os.environ, {"TEHUTI_LOG_FILE": str(log_path)}):
+                self.assertEqual(module.Speech(model).transcribe_audio(b"\x00\x10" * 16000),
+                                 "confirm")
+            self.assertFalse(log_path.exists())
+        self.assertEqual(len(model.calls), 1)
+        self.assertTrue(model.calls[0]["vad_filter"])
+
     def test_recording_finishes_on_release_and_transcribes_complete_audio(self):
         class Model:
             def transcribe(self, path, **options):
@@ -47,7 +100,11 @@ class SpeechTests(unittest.TestCase):
                 self.assertEqual(json.loads(output.getvalue()), {"session": 7, "text": "confirm"})
                 self.assertEqual(model.format, (16000, 1, 2))
                 self.assertEqual(model.samples, b"\x00\x10" * 320)
-                self.assertEqual(model.options, {"beam_size": 5, "language": "en", "vad_filter": True})
+                self.assertEqual(model.options, {
+                    "beam_size": 5, "language": "en", "vad_filter": True,
+                    "vad_parameters": {"threshold": 0.3, "min_speech_duration_ms": 80,
+                                       "speech_pad_ms": 300},
+                })
             finally:
                 speech.close()
                 os.environ["PATH"] = previous_path

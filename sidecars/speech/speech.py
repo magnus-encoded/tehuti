@@ -43,6 +43,17 @@ def reply(value):
     print(json.dumps(value), flush=True)
 
 
+def log(message):
+    line = f"INFO speech: {message}\n"
+    sys.stderr.write(line)
+    sys.stderr.flush()
+    try:
+        with open(os.environ.get("TEHUTI_LOG_FILE", "/tmp/tehuti.log"), "a") as output:
+            output.write(line)
+    except OSError as error:
+        print(f"speech log failed: {error}", file=sys.stderr, flush=True)
+
+
 class Speech:
     def __init__(self, model):
         self.model = model
@@ -93,6 +104,16 @@ class Speech:
                 output.writeframes(audio)
             segments, _ = self.model.transcribe(
                 recording.name, beam_size=5, language="en", vad_filter=True,
+                vad_parameters={"threshold": 0.3, "min_speech_duration_ms": 80,
+                                "speech_pad_ms": 300},
+            )
+            text = transcript(segments)
+            if text:
+                return text
+            log(f"VAD returned empty text for clip ({len(audio)} bytes)")
+            log("retrying clip without VAD")
+            segments, _ = self.model.transcribe(
+                recording.name, beam_size=5, language="en", vad_filter=False,
             )
             return transcript(segments)
 
