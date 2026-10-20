@@ -18,7 +18,7 @@ mod output_enter {
         globals::{GlobalListContents, registry_queue_init},
         protocol::{
             wl_compositor::WlCompositor,
-            wl_output::WlOutput,
+            wl_output::{self, WlOutput},
             wl_registry::WlRegistry,
             wl_surface::{self, WlSurface},
         },
@@ -110,6 +110,7 @@ mod output_enter {
             }
             if let wl_surface::Event::PreferredBufferScale { factor } = event {
                 app.buffer_scale = Some(factor);
+                app.order.push("buffer_scale");
             }
         }
     }
@@ -124,18 +125,36 @@ mod output_enter {
         ) {
             if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
                 app.fractional = Some(scale);
+                app.order.push("fractional_scale");
             }
         }
     }
     delegate_noop!(App: ignore WpFractionalScaleManagerV1);
     delegate_noop!(App: ignore WlCompositor);
-    delegate_noop!(App: ignore WlOutput);
+    impl Dispatch<WlOutput, ()> for App {
+        fn event(
+            app: &mut Self,
+            _: &WlOutput,
+            event: wl_output::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let wl_output::Event::Scale { factor } = event {
+                assert_eq!(factor, 2);
+                app.order.push("scale");
+            }
+            if matches!(event, wl_output::Event::Done) {
+                app.order.push("done");
+            }
+        }
+    }
 
-    fn client(stream: UnixStream) -> App {
+    fn client(stream: UnixStream, version: u32) -> App {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
-        let compositor: WlCompositor = globals.bind(&handle, 6..=6, ()).unwrap();
+        let compositor: WlCompositor = globals.bind(&handle, version..=version, ()).unwrap();
         let manager: WpFractionalScaleManagerV1 = globals.bind(&handle, 1..=1, ()).unwrap();
         let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
         let _output: WlOutput = globals.bind(&handle, 1..=4, ()).unwrap();
@@ -152,6 +171,15 @@ mod output_enter {
 
     #[test]
     fn the_surface_enters_its_output_before_the_first_configure() {
+        check_scale_delivery(6);
+    }
+
+    #[test]
+    fn version_four_clients_receive_output_and_fractional_scale_before_configure() {
+        check_scale_delivery(4);
+    }
+
+    fn check_scale_delivery(version: u32) {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         let output = Output::new(
@@ -177,7 +205,7 @@ mod output_enter {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let thread = thread::spawn(move || client(stream));
+        let thread = thread::spawn(move || client(stream, version));
         let started = Instant::now();
         while !thread.is_finished() {
             assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
@@ -188,9 +216,23 @@ mod output_enter {
         }
         let app = thread.join().unwrap();
         let order = app.order;
-        assert_eq!(app.buffer_scale, Some(2));
+        assert_eq!(app.buffer_scale, (version >= 6).then_some(2));
         assert_eq!(app.fractional, Some(240));
-        assert_eq!(order.first(), Some(&"enter"), "{order:?}");
+        assert_eq!(order.first(), Some(&"scale"), "{order:?}");
+        let scale = order.iter().position(|event| *event == "scale").unwrap();
+        let done = order.iter().position(|event| *event == "done").unwrap();
+        let enter = order.iter().position(|event| *event == "enter").unwrap();
+        let configure = order.iter().position(|event| *event == "configure").unwrap();
+        assert!(scale < done && done < enter && enter < configure, "{order:?}");
+        let fractional = order
+            .iter()
+            .position(|event| *event == "fractional_scale")
+            .unwrap();
+        assert!(fractional < configure, "{order:?}");
+        if version >= 6 {
+            let preferred = order.iter().position(|event| *event == "buffer_scale").unwrap();
+            assert!(preferred < configure, "{order:?}");
+        }
         assert!(!order.contains(&"leave"), "{order:?}");
         assert!(order.contains(&"configure"), "{order:?}");
     }
