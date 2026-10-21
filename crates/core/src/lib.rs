@@ -42,7 +42,7 @@ pub struct State {
     start_held: bool,
     level: Level,
     menu: Option<menu::Menu>,
-    menu_closing_button: Option<ButtonName>,
+    menu_buttons: Vec<ButtonName>,
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
 }
@@ -80,7 +80,7 @@ impl State {
             start_held: false,
             level: Level::InApp,
             menu: None,
-            menu_closing_button: None,
+            menu_buttons: Vec::new(),
             pending: Vec::new(),
             bar: bar::Bar::new(),
         }
@@ -148,7 +148,7 @@ impl State {
         self.guide_tap = None;
         self.start_held = false;
         self.menu = None;
-        self.menu_closing_button = None;
+        self.menu_buttons.clear();
     }
 
     /// The system menu, for drawing it independently of plugins.
@@ -224,12 +224,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         return (state, actions, false);
     }
     if state.menu.is_some() {
-        let _command = menu::handle(&mut state.menu, event);
-        if state.menu.is_none()
-            && let Event::Button { name, .. } = event
-        {
-            state.menu_closing_button = Some(*name);
-        }
+        let _command = menu_input(&mut state, event);
         return (state, Vec::new(), false);
     }
     if let Some(actions) = shoulder_level(&state, event) {
@@ -340,15 +335,29 @@ const fn fallback(_event: &Event) -> Option<Action> {
 }
 
 fn menu_button_release(state: &mut State, event: &Event) -> bool {
-    if let Event::Button { name, state: button } = event
-        && state.menu_closing_button == Some(*name)
+    if state.menu.is_none()
+        && let Event::Button { name, state: button } = event
+        && state.menu_buttons.contains(name)
     {
         if *button == ButtonState::Released {
-            state.menu_closing_button = None;
+            state.menu_buttons.retain(|held| held != name);
         }
         return true;
     }
     false
+}
+
+fn menu_input(state: &mut State, event: &Event) -> Option<menu::Command> {
+    if let Event::Button { name, state: button } = event
+        && *name != ButtonName::Start
+    {
+        match button {
+            ButtonState::Pressed if !state.menu_buttons.contains(name) => state.menu_buttons.push(*name),
+            ButtonState::Released => state.menu_buttons.retain(|held| held != name),
+            ButtonState::Pressed => {}
+        }
+    }
+    menu::handle(&mut state.menu, event)
 }
 
 fn guide_button(state: &mut State, button_state: ButtonState) {

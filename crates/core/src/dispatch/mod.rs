@@ -621,13 +621,8 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
         if let Some(actions) = crate::escape_chord(&mut state.core, event) {
             effects.extend(actions.into_iter().map(Effect::Apply));
         }
-        if let Some(command) = crate::menu::handle(&mut state.core.menu, event) {
+        if let Some(command) = crate::menu_input(&mut state.core, event) {
             effects.push(Effect::RunMenuCommand(command));
-        }
-        if state.core.menu().is_none()
-            && let Event::Button { name, .. } = event
-        {
-            state.core.menu_closing_button = Some(*name);
         }
         return true;
     }
