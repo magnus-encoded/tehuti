@@ -80,6 +80,7 @@ impl World {
                     }
                     Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
+                    | Effect::SettingsScale(_)
                     | Effect::RunMenuCommand(_)
                     | Effect::PasswordSpeechIgnored
                     | Effect::MovePointer { .. }
@@ -1777,6 +1778,11 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
     for _ in 0..5 {
         state = settings_button(&mut world, state, ButtonName::DpadDown);
     }
+    assert_eq!(state.settings().selected, 3);
+    state = settings_button(&mut world, state, ButtonName::DpadLeft);
+    assert_eq!(state.settings().selected, 3);
+    assert_eq!(state.settings().scale.get(), 1);
+    state = settings_button(&mut world, state, ButtonName::DpadUp);
     assert_eq!(state.settings().selected, 2);
     state = settings_button(&mut world, state, ButtonName::DpadLeft);
     assert_eq!(state.settings().selected, 1);
@@ -2287,4 +2293,24 @@ fn configured_start_ptt_preserves_guide_start_escape() {
             .iter()
             .any(|effect| matches!(effect, Effect::SpeechCommand(_)))
     );
+}
+
+#[test]
+fn display_scale_changes_immediately_without_mode_confirmation() {
+    let mut world = World::default();
+    let mut state = open_display(&mut world);
+    for _ in 0..3 {
+        state = settings_button(&mut world, state, ButtonName::DpadDown);
+    }
+    state = settings_button(&mut world, state, ButtonName::DpadRight);
+    state = settings_button(&mut world, state, ButtonName::DpadRight);
+    assert_eq!(state.settings().scale.get(), 3);
+    assert!(state.settings().remaining.is_none());
+    assert!(
+        world
+            .trace
+            .contains(&Effect::SettingsScale(core::num::NonZeroU32::new(3).unwrap()))
+    );
+    state = settings_button(&mut world, state, ButtonName::DpadLeft);
+    assert_eq!(state.settings().scale.get(), 2);
 }

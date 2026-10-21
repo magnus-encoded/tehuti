@@ -487,7 +487,7 @@ impl Tty {
         tehuti::scale::apply(
             &self.output,
             mode.into(),
-            tehuti::scale::from_env(i32::from(mode.size().0)),
+            self.output.current_scale().integer_scale(),
         );
         self.output.set_preferred(mode.into());
         self.damage = OutputDamageTracker::from_output(&self.output);

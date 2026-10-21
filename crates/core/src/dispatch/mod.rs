@@ -26,6 +26,7 @@ pub enum Input {
         current: usize,
     },
     ModeApplied(Option<usize>),
+    DisplayScale(core::num::NonZeroU32),
     /// Elapsed wall time since the previous tick.
     Tick {
         elapsed: Duration,
@@ -77,6 +78,7 @@ pub enum Effect {
     RunMenuCommand(crate::menu::Command),
     SettingsMode(usize),
     PersistMode(usize),
+    SettingsScale(core::num::NonZeroU32),
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
         x: i32,
@@ -303,10 +305,8 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
         Input::DisplayModes { modes, current } => return display_modes(state, modes, current),
-        Input::ModeApplied(current) => {
-            state.settings.applied(current, &mut effects);
-            return (state, effects);
-        }
+        Input::DisplayScale(scale) => return display_scale(state, scale),
+        Input::ModeApplied(current) => return mode_applied(state, current),
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
         Input::Event { event, elapsed } => event_tasks(event, elapsed),
         Input::Speech(input) => vec![Task::Speech(input)],
@@ -360,6 +360,17 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         awaiting: None,
     });
     run(state, effects)
+}
+
+const fn display_scale(mut state: State, scale: core::num::NonZeroU32) -> (State, Vec<Effect>) {
+    state.settings.scale = scale;
+    (state, Vec::new())
+}
+
+fn mode_applied(mut state: State, current: Option<usize>) -> (State, Vec<Effect>) {
+    let mut effects = Vec::new();
+    state.settings.applied(current, &mut effects);
+    (state, effects)
 }
 
 fn display_modes(mut state: State, modes: Vec<String>, current: usize) -> (State, Vec<Effect>) {

@@ -129,4 +129,35 @@ mod scale {
             (0.0, 0.0, 1920.0, 1080.0)
         );
     }
+    #[test]
+    fn changing_scale_relayouts_the_running_output_and_bar() {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let output = Output::new(
+            "test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Example".into(),
+                model: "Test".into(),
+            },
+        );
+        scale::apply(
+            &output,
+            Mode {
+                size: (3840, 2160).into(),
+                refresh: 60_000,
+            },
+            2,
+        );
+        compositor.space.map_output(&output, (0, 0));
+        compositor.output = Some(output.clone());
+        compositor.fill_output();
+        compositor.change_display_scale(core::num::NonZeroU32::new(3).unwrap());
+        assert_eq!(output.current_scale().integer_scale(), 3);
+        let geometry = compositor.layout_snapshot().outputs[0].geometry;
+        assert_eq!((geometry.area.width, geometry.area.height), (1280.0, 720.0));
+        assert_eq!(geometry.usable.height, 688.0);
+        assert_eq!(compositor.settings().scale.get(), 3);
+    }
 }

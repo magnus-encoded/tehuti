@@ -224,6 +224,7 @@ for line in sys.stdin:
                         Effect::RunMenuCommand(_)
                         | Effect::SettingsMode(_)
                         | Effect::PersistMode(_)
+                        | Effect::SettingsScale(_)
                         | Effect::MovePointer { .. }
                         | Effect::Scroll { .. }
                         | Effect::Click { .. }

@@ -557,6 +557,7 @@ impl Compositor {
             | DispatchInput::Event { elapsed, .. }
             | DispatchInput::ClockRead(elapsed) => *elapsed,
             DispatchInput::DisplayModes { .. }
+            | DispatchInput::DisplayScale(_)
             | DispatchInput::ModeApplied(_)
             | DispatchInput::Speech(_)
             | DispatchInput::PluginReply { .. }
@@ -698,6 +699,28 @@ impl Compositor {
             .buffer(self.settings(), size)
     }
 
+    pub fn change_display_scale(&mut self, scale: core::num::NonZeroU32) {
+        let Ok(scale) = i32::try_from(scale.get()) else {
+            return;
+        };
+        let Some(output) = self.output.clone() else { return };
+        let Some(mode) = output.current_mode() else { return };
+        crate::scale::apply(&output, mode, scale);
+        self.fill_output();
+    }
+
+    fn persist_display_scale(&mut self, scale: core::num::NonZeroU32) {
+        self.change_display_scale(scale);
+        let Ok(scale) = i32::try_from(scale.get()) else {
+            return;
+        };
+        let result = crate::display_mode_store::Store::from_env().and_then(|store| store.write_scale(scale));
+        if let Err(error) = result {
+            tracing::warn!(%error, "display scale persistence failed");
+            self.show_notice("scale not saved");
+        }
+    }
+
     pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
         let _rejection = self.dispatch(DispatchInput::DisplayModes { modes, current });
     }
@@ -759,6 +782,7 @@ impl Compositor {
             )),
             effect @ (DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
+            | DispatchEffect::SettingsScale(_)
             | DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::RunMenuCommand(_)
             | DispatchEffect::MovePointer { .. }
@@ -812,6 +836,7 @@ impl Compositor {
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::SettingsScale(scale) => self.persist_display_scale(scale),
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
             DispatchEffect::PasswordSpeechIgnored => {
@@ -1386,6 +1411,12 @@ impl Compositor {
     )]
     pub fn fill_output(&mut self) {
         use tehuti_core::layout::{OutputGeometry, OutputId, Rect};
+        if let Some(output) = self.output.as_ref()
+            && let Some(scale) =
+                core::num::NonZeroU32::new(output.current_scale().integer_scale().unsigned_abs())
+        {
+            let _rejection = self.dispatch(DispatchInput::DisplayScale(scale));
+        }
         let size = self.output.as_ref().and_then(|output| {
             output.current_mode().map(|mode| {
                 mode.size

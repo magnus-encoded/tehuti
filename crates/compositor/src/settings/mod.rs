@@ -90,31 +90,34 @@ impl Canvas {
     fn contents(&mut self, settings: &Settings) {
         if settings.display {
             let first = settings.selected.saturating_sub(2);
-            for (row, (index, mode)) in settings.modes.iter().enumerate().skip(first).take(5).enumerate() {
+            let rows: Vec<String> = settings
+                .modes
+                .iter()
+                .map(|mode| format!("{} HZ", mode.replace('x', " X ").replace('@', " / ")))
+                .chain(core::iter::once(format!(
+                    "SCALE {}  (LEFT / RIGHT)",
+                    settings.scale
+                )))
+                .collect();
+            for (row, (index, mode)) in rows.iter().enumerate().skip(first).take(5).enumerate() {
                 let y = 244usize.saturating_add(row.saturating_mul(64));
                 if index == settings.selected {
                     self.rectangle(72, y.saturating_sub(12), 850, 54, [65, 43, 12, 255]);
                     self.rectangle(72, y.saturating_sub(12), 4, 54, CYAN);
                 }
-                self.text(
-                    96,
-                    y,
-                    &format!("{} HZ", mode.replace('x', " X ").replace('@', " / ")),
-                    4,
-                    WHITE,
-                );
-                if index == settings.current {
+                self.text(96, y, mode, 4, WHITE);
+                if index == settings.current && index < settings.modes.len() {
                     self.text(720, y.saturating_add(6), "ACTIVE", 2, CYAN);
                 }
             }
             if settings.modes.is_empty() {
-                self.text(96, 256, "NO DRIVER MODES AVAILABLE", 3, AMBER);
+                self.text(96, 568, "NO DRIVER MODES AVAILABLE", 3, AMBER);
             }
         } else {
             self.rectangle(72, 236, 1128, 76, [65, 43, 12, 255]);
             self.rectangle(72, 236, 4, 76, CYAN);
             self.text(96, 256, "DISPLAY", 5, WHITE);
-            self.text(600, 268, "RESOLUTION / REFRESH", 3, CYAN);
+            self.text(600, 268, "RESOLUTION / REFRESH / SCALE", 3, CYAN);
         }
     }
 

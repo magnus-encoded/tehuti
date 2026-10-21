@@ -28,7 +28,7 @@ impl Store {
     /// Returns file read errors other than a missing file.
     pub fn read(&self) -> io::Result<Option<String>> {
         match std::fs::read_to_string(&self.path) {
-            Ok(value) => Ok(Some(value.trim().to_owned())),
+            Ok(value) => Ok(Some(value.lines().next().unwrap_or_default().trim().to_owned())),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         }
@@ -37,6 +37,36 @@ impl Store {
     /// # Errors
     /// Returns config directory, file write and atomic replacement errors.
     pub fn write(&self, mode: &str) -> io::Result<()> {
+        self.replace(mode, self.read_scale()?)
+    }
+
+    /// # Errors
+    /// Returns file read errors other than a missing file.
+    pub fn read_scale(&self) -> io::Result<Option<i32>> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(value) => Ok(value
+                .lines()
+                .nth(1)
+                .and_then(|line| line.parse().ok())
+                .filter(|scale| *scale > 0)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// # Errors
+    /// Returns an error for invalid scales or failed atomic replacement.
+    pub fn write_scale(&self, scale: i32) -> io::Result<()> {
+        if scale < 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "scale must be positive",
+            ));
+        }
+        self.replace(self.read()?.as_deref().unwrap_or_default(), Some(scale))
+    }
+
+    fn replace(&self, mode: &str, scale: Option<i32>) -> io::Result<()> {
         let parent = self
             .path
             .parent()
@@ -45,6 +75,9 @@ impl Store {
         let temporary = self.path.with_extension("tmp");
         let mut file = std::fs::File::create(&temporary)?;
         file.write_all(mode.as_bytes())?;
+        if let Some(scale) = scale {
+            write!(file, "\n{scale}")?;
+        }
         file.sync_all()?;
         std::fs::rename(temporary, &self.path)
     }
@@ -77,6 +110,29 @@ mod tests {
                 .write("3840x2160@120")
                 .is_err()
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::Store;
+
+    #[test]
+    fn scale_and_mode_survive_independent_updates() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("display-mode");
+        let store = Store::new(path.clone());
+        store.write("3840x2160@60")?;
+        assert_eq!(store.read_scale()?, None);
+        store.write_scale(3)?;
+        let reopened = Store::new(path);
+        assert_eq!(reopened.read_scale()?, Some(3));
+        assert_eq!(reopened.read()?, Some("3840x2160@60".into()));
+        reopened.write("1920x1080@60")?;
+        assert_eq!(reopened.read_scale()?, Some(3));
+        assert!(reopened.write_scale(0).is_err());
+        assert_eq!(reopened.read_scale()?, Some(3));
         Ok(())
     }
 }
