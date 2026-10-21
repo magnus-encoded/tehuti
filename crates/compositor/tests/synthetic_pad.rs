@@ -1543,6 +1543,76 @@ mod synthetic_pad {
     }
 
     #[test]
+    fn synthetic_guide_taps_and_holds_route_in_every_mode() {
+        for mode in 0..3 {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut pad = SyntheticPad::default();
+            if mode == 1 {
+                for _ in 0..2 {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        pad.push(Event::Button {
+                            name: ButtonName::Select,
+                            state,
+                        });
+                    }
+                }
+            } else if mode == 2 {
+                pad.push(Event::Speech {
+                    text: tehuti_protocol::Text::new("keyboard".into()).unwrap(),
+                });
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            assert_eq!(compositor.on_screen_keyboard().is_open(), mode == 2);
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button {
+                    name: ButtonName::Guide,
+                    state,
+                });
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            assert_eq!(compositor.voice_bar().segments().last().unwrap().text, "Columns");
+            assert!(
+                !compositor
+                    .visible_notice_text()
+                    .is_some_and(|text| text.contains("SYSTEM MENU"))
+            );
+            pad.push(Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Pressed,
+            });
+            pad.push(Event::Tick {
+                elapsed: Duration::from_millis(500),
+            });
+            pad.push(Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Released,
+            });
+            route(&mut compositor, &mut pad).unwrap();
+            assert!(
+                compositor
+                    .visible_notice_text()
+                    .is_some_and(|text| text.contains("SYSTEM MENU"))
+            );
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button {
+                    name: ButtonName::Guide,
+                    state,
+                });
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            assert!(
+                !compositor
+                    .visible_notice_text()
+                    .is_some_and(|text| text.contains("SYSTEM MENU"))
+            );
+            assert_eq!(compositor.voice_bar().segments().last().unwrap().text, "Columns");
+            assert_eq!(compositor.on_screen_keyboard().is_open(), mode == 2);
+            assert!(!compositor.quit_requested());
+        }
+    }
+
+    #[test]
     fn guide_hold_releases_the_synthetic_pad_and_exits_the_event_loop() {
         use smithay::reexports::calloop::EventLoop;
         let display: Display<Compositor> = Display::new().unwrap();
