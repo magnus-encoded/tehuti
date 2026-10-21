@@ -327,33 +327,37 @@ const fn fallback(_event: &Event) -> Option<Action> {
     None
 }
 
+fn guide_button(state: &mut State, button_state: ButtonState) {
+    match button_state {
+        ButtonState::Pressed => {
+            if state.menu.take().is_some() {
+                state.guide_tap = None;
+            } else if state.guide_held.is_none() {
+                state.guide_tap = (!state.start_held).then_some(core::time::Duration::ZERO);
+            }
+            let _held = state.guide_held.get_or_insert(core::time::Duration::ZERO);
+        }
+        ButtonState::Released => {
+            state.guide_held = None;
+            if state
+                .guide_tap
+                .take()
+                .is_some_and(|elapsed| elapsed < GUIDE_TAP_WINDOW)
+            {
+                state.level = state.level.toggled();
+                state.bar.set_level(state.level);
+            }
+        }
+    }
+}
+
 fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     match event {
         Event::Button {
             name: ButtonName::Guide,
             state: button_state,
         } => {
-            match button_state {
-                ButtonState::Pressed => {
-                    if state.menu.take().is_some() {
-                        state.guide_tap = None;
-                    } else if state.guide_held.is_none() {
-                        state.guide_tap = (!state.start_held).then_some(core::time::Duration::ZERO);
-                    }
-                    let _held = state.guide_held.get_or_insert(core::time::Duration::ZERO);
-                }
-                ButtonState::Released => {
-                    state.guide_held = None;
-                    if state
-                        .guide_tap
-                        .take()
-                        .is_some_and(|elapsed| elapsed < GUIDE_TAP_WINDOW)
-                    {
-                        state.level = state.level.toggled();
-                        state.bar.set_level(state.level);
-                    }
-                }
-            }
+            guide_button(state, *button_state);
             Some(Vec::new())
         }
         Event::Button {

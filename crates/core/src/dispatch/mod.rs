@@ -298,11 +298,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             return (state, effects);
         }
         Input::Sticks(sticks) => {
-            if state.core.menu().is_some() {
-                return (state, effects);
-            }
-            state.keyboard.left_stick(sticks.left.0);
-            state.mouse.sticks = sticks;
+            update_sticks(&mut state, sticks);
             return (state, effects);
         }
         Input::TextField {
@@ -346,6 +342,13 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         awaiting: None,
     });
     run(state, effects)
+}
+
+fn update_sticks(state: &mut State, sticks: Sticks) {
+    if state.core.menu().is_none() {
+        state.keyboard.left_stick(sticks.left.0);
+        state.mouse.sticks = sticks;
+    }
 }
 
 fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate::keyboard::FieldKind) {

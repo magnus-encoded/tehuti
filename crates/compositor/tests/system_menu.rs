@@ -37,4 +37,40 @@ mod system_menu {
                 .is_err()
         );
     }
+
+    #[test]
+    fn menu_overlay_closes_and_escape_needs_no_renderer() {
+        use core::time::Duration;
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::state::Compositor;
+        use tehuti_protocol::{ButtonName, ButtonState, Event};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.handle(&Event::Button {
+            name: ButtonName::Guide,
+            state: ButtonState::Pressed,
+        });
+        compositor.handle(&Event::Tick {
+            elapsed: Duration::from_millis(500),
+        });
+        assert!(
+            compositor
+                .visible_notice_text()
+                .is_some_and(|text| text.contains("SYSTEM MENU") && text.contains("SWITCH TO PLASMA"))
+        );
+        compositor.handle(&Event::Button {
+            name: ButtonName::East,
+            state: ButtonState::Pressed,
+        });
+        assert!(compositor.visible_notice_text().is_none());
+        compositor.handle(&Event::Button {
+            name: ButtonName::Start,
+            state: ButtonState::Pressed,
+        });
+        compositor.handle(&Event::Tick {
+            elapsed: Duration::from_secs(3),
+        });
+        assert!(compositor.quit_requested());
+    }
 }
