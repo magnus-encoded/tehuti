@@ -24,6 +24,7 @@ pub struct Settings {
     status: Status,
     cancel_preview: bool,
     south: Option<ButtonState>,
+    held: Vec<ButtonName>,
 }
 
 impl Settings {
@@ -97,11 +98,7 @@ impl Settings {
 
     pub(super) fn event(&mut self, event: &Event, effects: &mut Vec<Effect>) -> bool {
         if let Event::Speech { text } = event
-            && text
-                .as_str()
-                .trim()
-                .trim_end_matches('.')
-                .eq_ignore_ascii_case("pop the hood")
+            && is_open_phrase(text.as_str())
         {
             self.toggle(effects);
             return true;
@@ -116,14 +113,20 @@ impl Settings {
         } else {
             false
         };
-        if !self.open {
-            return false;
-        }
         let Event::Button { name, state } = event else {
             return false;
         };
         if matches!(name, ButtonName::Guide | ButtonName::Start | ButtonName::Record) {
             return false;
+        }
+        let was_held = self.held.contains(name);
+        if *state == ButtonState::Released {
+            self.held.retain(|held| held != name);
+        } else if self.open && !was_held {
+            self.held.push(*name);
+        }
+        if !self.open {
+            return was_held;
         }
         if *state == ButtonState::Released || stale_south {
             return true;
@@ -192,4 +195,10 @@ impl Settings {
             | ButtonName::DpadRight => {}
         }
     }
+}
+
+fn is_open_phrase(text: &str) -> bool {
+    text.trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("pop the hood")
 }

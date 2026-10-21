@@ -2099,3 +2099,20 @@ fn guide_closes_settings_and_preserves_menu_and_emergency_escape() {
     );
     assert!(world.trace.contains(&Effect::Apply(Action::Quit)));
 }
+
+#[test]
+fn b_closes_settings_without_forwarding_its_release_to_the_application() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(!state.settings().open);
+    assert!(!world.trace.iter().any(|effect| matches!(
+        effect,
+        Effect::Apply(_)
+            | Effect::DispatchPlugin {
+                event: Event::Button { .. },
+                ..
+            }
+    )));
+}

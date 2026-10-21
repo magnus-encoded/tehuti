@@ -273,7 +273,12 @@ fn create_output(
         session.open(path, rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC)?,
     ));
     let (mut device, drm_notifier) = DrmDevice::new(device_fd, false)?;
-    let (surface, renderer, remaining_modes, listed_modes) = connected_surface(&mut device)?;
+    let ConnectedSurface {
+        surface,
+        renderer,
+        remaining_modes,
+        listed_modes,
+    } = connected_surface(&mut device)?;
     let mode = surface.pending_mode();
 
     let output = drm_output(display, mode);
@@ -320,17 +325,14 @@ fn create_libinput(session: &LibSeatSession) -> Result<smithay::reexports::input
     Ok(libinput)
 }
 
-fn connected_surface(
-    device: &mut DrmDevice,
-) -> Result<
-    (
-        DrmSurface,
-        render::DrmRendering,
-        std::collections::VecDeque<Mode>,
-        Vec<Mode>,
-    ),
-    Box<dyn Error>,
-> {
+struct ConnectedSurface {
+    surface: DrmSurface,
+    renderer: render::DrmRendering,
+    remaining_modes: std::collections::VecDeque<Mode>,
+    listed_modes: Vec<Mode>,
+}
+
+fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn Error>> {
     let request = std::env::var("TEHUTI_MODE").ok();
     let parsed = request.as_deref().and_then(mode::Request::parse);
     let resources = device.resource_handles()?;
@@ -373,7 +375,12 @@ fn connected_surface(
                         });
                     match attempt {
                         Ok((surface, renderer)) => {
-                            return Ok((surface, renderer, remaining, connector.modes().to_vec()));
+                            return Ok(ConnectedSurface {
+                                surface,
+                                renderer,
+                                remaining_modes: remaining,
+                                listed_modes: connector.modes().to_vec(),
+                            });
                         }
                         Err(error) => {
                             warn!(?mode, %error, "DRM mode initialization failed; trying next listed mode");

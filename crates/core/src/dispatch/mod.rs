@@ -302,8 +302,9 @@ fn sync_terminal(state: &mut State) {
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
-        input @ (Input::DisplayModes { .. } | Input::ModeApplied(_)) => {
-            settings_reply(&mut state.settings, input, &mut effects);
+        Input::DisplayModes { modes, current } => return display_modes(state, modes, current),
+        Input::ModeApplied(current) => {
+            state.settings.applied(current, &mut effects);
             return (state, effects);
         }
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
@@ -361,12 +362,9 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     run(state, effects)
 }
 
-fn settings_reply(settings: &mut Settings, input: Input, effects: &mut Vec<Effect>) {
-    match input {
-        Input::DisplayModes { modes, current } => settings.configure(modes, current),
-        Input::ModeApplied(current) => settings.applied(current, effects),
-        _ => {}
-    }
+fn display_modes(mut state: State, modes: Vec<String>, current: usize) -> (State, Vec<Effect>) {
+    state.settings.configure(modes, current);
+    (state, Vec::new())
 }
 
 fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
@@ -619,6 +617,7 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
 }
 
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    route_tick(state, &event, effects);
     let Some(route_frame) = state.frames.last_mut() else {
         return;
     };
@@ -634,10 +633,6 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
             }));
         }
     }
-    route_tick(state, &event, effects);
-    let Some(route_frame) = state.frames.last_mut() else {
-        return;
-    };
     effects.push(Effect::QueryPlugin(event.clone()));
     route_frame.awaiting = Some(Await::PluginActive(event));
 }
