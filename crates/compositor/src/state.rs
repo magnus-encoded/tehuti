@@ -674,11 +674,20 @@ impl Compositor {
             DispatchEffect::SpeechCommand(command) => {
                 Some(DispatchInput::SpeechSent(self.send_speech_command(&command)))
             }
-            DispatchEffect::PollSpeech(elapsed) => Some(DispatchInput::SpeechPolled(
-                self.speech_process
+            DispatchEffect::PollSpeech(elapsed) => {
+                let inputs = self
+                    .speech_process
                     .as_mut()
-                    .map_or_else(Vec::new, |process| process.poll(elapsed)),
-            )),
+                    .map_or_else(Vec::new, |process| process.poll(elapsed));
+                while let Some(notice) = self
+                    .speech_process
+                    .as_mut()
+                    .and_then(crate::speech::SpeechProcess::take_notice)
+                {
+                    self.show_notice(notice);
+                }
+                Some(DispatchInput::SpeechPolled(inputs))
+            }
             DispatchEffect::QueryForegroundProgram => Some(DispatchInput::ForegroundProgram(
                 self.focused_terminal_runs_program(),
             )),

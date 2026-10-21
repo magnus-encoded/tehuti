@@ -101,14 +101,70 @@ mod speech_process {
             }]
         );
         assert!(process.send(&SpeechEffect::Start { session: 1 }).is_err());
-        assert_eq!(process.poll(Duration::from_millis(999)), vec![]);
-        assert!(process.send(&SpeechEffect::Start { session: 1 }).is_err());
-        let _inputs = process.poll(Duration::from_millis(1));
+        assert_eq!(process.take_notice(), Some("Speech is down, restarting"));
+        assert_eq!(process.take_notice(), None);
         wait_for(&mut process, &SpeechInput::Available);
+        assert_eq!(process.take_notice(), Some("Speech is back"));
+        assert_eq!(process.take_notice(), None);
         let (state, ready_effects) = speech_step(state, SpeechInput::Available);
         assert_eq!(ready_effects, vec![]);
         let (_, released_effects) = speech_step(state, SpeechInput::Release);
         assert_eq!(released_effects, vec![], "crash already closed this capture");
+    }
+
+    #[test]
+    fn repeated_exits_back_off_and_a_minute_alive_resets_the_delay() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("starts");
+        let release = directory.path().join("exit");
+        let source = format!(
+            "import pathlib,time\nmarker=pathlib.Path({:?})\nrelease=pathlib.Path({:?})\nwith marker.open('a') as output: output.write('start\\n')\nwhile not release.exists(): time.sleep(0.001)\nraise SystemExit(7)",
+            marker.to_string_lossy(),
+            release.to_string_lossy()
+        );
+        let mut process = child(&source);
+        let _inputs = process.poll(Duration::ZERO);
+        wait_for_starts(&marker, 1);
+        for (attempt, seconds) in [0, 1, 2, 5, 10, 20, 30, 30].into_iter().enumerate() {
+            std::fs::write(&release, "").unwrap();
+            wait_for(&mut process, &SpeechInput::Unavailable);
+            std::fs::remove_file(&release).unwrap();
+            if attempt == 0 {
+                assert_eq!(process.take_notice(), Some("Speech is down, restarting"));
+            }
+            assert_eq!(process.take_notice(), None, "one notice per outage");
+            if seconds > 0 {
+                assert_eq!(process.poll(Duration::from_millis(seconds * 1000 - 1)), vec![]);
+                assert_eq!(
+                    std::fs::read_to_string(&marker).unwrap().lines().count(),
+                    attempt + 1,
+                    "restart happened before its deadline"
+                );
+            }
+            let _inputs = process.poll(Duration::from_millis(u64::from(seconds > 0)));
+            wait_for_starts(&marker, attempt + 2);
+        }
+        let _inputs = process.poll(Duration::from_secs(60));
+        std::fs::write(&release, "").unwrap();
+        wait_for(&mut process, &SpeechInput::Unavailable);
+        std::fs::remove_file(&release).unwrap();
+        let _inputs = process.poll(Duration::ZERO);
+        wait_for_starts(&marker, 10);
+    }
+
+    fn wait_for_starts(marker: &std::path::Path, expected: usize) {
+        let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+        loop {
+            let count = std::fs::read_to_string(marker).map_or(0, |contents| contents.lines().count());
+            if count == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected {expected} starts, got {count}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]

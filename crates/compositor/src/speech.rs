@@ -36,6 +36,9 @@ pub struct SpeechProcess {
     command: Vec<OsString>,
     running: Option<Running>,
     retry: core::time::Duration,
+    failures: usize,
+    outage: bool,
+    notices: VecDeque<&'static str>,
 }
 
 impl SpeechProcess {
@@ -45,6 +48,9 @@ impl SpeechProcess {
             command,
             running: None,
             retry: core::time::Duration::ZERO,
+            failures: 0,
+            outage: false,
+            notices: VecDeque::new(),
         }
     }
 
@@ -122,15 +128,34 @@ impl SpeechProcess {
         Ok(())
     }
 
-    /// Polls bounded pipe work and restarts failed children after one second.
+    /// Takes the next outage or recovery notice for the compositor notice path.
+    pub fn take_notice(&mut self) -> Option<&'static str> {
+        self.notices.pop_front()
+    }
+
+    fn failed(&mut self) {
+        if !self.outage {
+            self.outage = true;
+            self.notices.push_back("Speech is down, restarting");
+        }
+        let seconds = [0, 1, 2, 5, 10, 20].get(self.failures).copied().unwrap_or(30);
+        self.retry = core::time::Duration::from_secs(seconds);
+        self.failures = self.failures.saturating_add(1);
+    }
+
+    /// Polls bounded pipe work and supervises children with capped restart backoff.
     pub fn poll(&mut self, elapsed: core::time::Duration) -> Vec<SpeechInput> {
         self.retry = self.retry.saturating_sub(elapsed);
         if self.running.is_none() && self.retry.is_zero() {
             match self.start() {
-                Ok(running) => self.running = Some(running),
+                Ok(running) => {
+                    self.running = Some(running);
+                    return Vec::new();
+                }
                 Err(error) => {
                     tracing::warn!(%error, "speech start failed");
-                    self.retry = core::time::Duration::from_secs(1);
+                    self.failed();
+                    return vec![SpeechInput::Unavailable];
                 }
             }
         }
@@ -138,12 +163,21 @@ impl SpeechProcess {
             return Vec::new();
         };
         running.age = running.age.saturating_add(elapsed);
+        if running.age >= core::time::Duration::from_secs(60) {
+            self.failures = 0;
+        }
         match running.poll() {
-            Ok(inputs) => inputs,
+            Ok(inputs) => {
+                if self.outage && running.ready {
+                    self.outage = false;
+                    self.notices.push_back("Speech is back");
+                }
+                inputs
+            }
             Err(error) => {
                 tracing::warn!(%error, "speech process failed");
                 self.running = None;
-                self.retry = core::time::Duration::from_secs(1);
+                self.failed();
                 vec![SpeechInput::Unavailable]
             }
         }
@@ -152,8 +186,9 @@ impl SpeechProcess {
 
 impl Running {
     fn poll(&mut self) -> io::Result<Vec<SpeechInput>> {
-        if self.child.try_wait()?.is_some() {
-            return Err(io::Error::other("speech exited"));
+        if let Some(status) = self.child.try_wait()? {
+            tracing::warn!(%status, "speech sidecar exited");
+            return Err(io::Error::other(format!("speech exited: {status}")));
         }
         if !self.ready && self.age >= core::time::Duration::from_secs(120) {
             return Err(io::Error::other("speech readiness timed out"));
@@ -176,7 +211,7 @@ impl Running {
         let mut bytes = [0; 4096];
         for _attempt in 0..16 {
             match self.stdout.read(&mut bytes) {
-                Ok(0) => return Err(io::Error::other("speech stdout closed")),
+                Ok(0) => break,
                 Ok(count) => {
                     for byte in bytes.get(..count).unwrap_or_default() {
                         if *byte == b'\n' {
