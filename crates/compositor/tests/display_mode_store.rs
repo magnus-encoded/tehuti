@@ -12,7 +12,10 @@ fn failed_save_shows_a_notice_and_keeps_the_confirmed_mode() -> std::io::Result<
     let result = Store::new(parent.join("display-mode")).write("3840x2160@60");
     assert!(result.is_err());
     compositor.display_mode_saved(result);
-    assert_eq!(compositor.visible_notice_text().as_deref(), Some("mode not saved"));
+    assert_eq!(
+        compositor.visible_notice_text().as_deref(),
+        Some("mode not saved")
+    );
     assert_eq!(compositor.settings().current, 1);
     assert!(!compositor.quit_requested());
     assert!(compositor.take_settings_request().is_none());
