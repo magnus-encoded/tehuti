@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use core::{cell::RefCell, time::Duration};
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, rc::Rc};
 
     use evdev::{AbsoluteAxisCode, KeyCode};
     use proptest::prelude::*;
@@ -11,33 +11,55 @@ mod tests {
     use tehuti_protocol::ButtonName;
 
     #[derive(Default)]
-    struct Client(RefCell<VecDeque<ButtonName>>);
+    struct Client(Rc<RefCell<VecDeque<ButtonName>>>);
 
     impl Client {
-        fn query_keys(&self) {
+        fn query_keys(&self, during: impl FnOnce()) {
+            during();
             self.0.borrow_mut().clear();
         }
     }
 
     #[test]
-    fn querying_state_preserves_a_queued_button_and_escape_chord() {
+    fn querying_state_preserves_a_queued_button_and_escape_chord()
+    -> Result<(), Box<dyn core::error::Error>> {
         let mut handles = PadHandles::new(Client::default(), Client::default());
-        handles.events().0.borrow_mut().extend([
-            ButtonName::South,
-            ButtonName::Guide,
-            ButtonName::Start,
-        ]);
-        handles.probe().query_keys();
+        let queued = Rc::clone(&handles.events().0);
+        handles.probe().query_keys(|| {
+            queued
+                .borrow_mut()
+                .extend([ButtonName::South, ButtonName::Guide, ButtonName::Start]);
+        });
+        let buttons = handles.events().0.borrow_mut().drain(..).collect::<Vec<_>>();
         assert_eq!(
-            handles.events().0.borrow_mut().drain(..).collect::<Vec<_>>(),
+            buttons,
             [ButtonName::South, ButtonName::Guide, ButtonName::Start]
         );
+        let display = smithay::reexports::wayland_server::Display::new()?;
+        let mut compositor = tehuti::state::Compositor::new(&display.handle())?;
+        let mut pad = tehuti::input::SyntheticPad::default();
+        for name in buttons {
+            pad.push(tehuti_protocol::Event::Button {
+                name,
+                state: tehuti_protocol::ButtonState::Pressed,
+            });
+        }
+        tehuti::input::route(&mut compositor, &mut pad)?;
+        pad.push(tehuti_protocol::Event::Tick {
+            elapsed: Duration::from_secs(3),
+        });
+        tehuti::input::route(&mut compositor, &mut pad)?;
+        assert!(compositor.quit_requested());
+        Ok(())
     }
 
     #[test]
     fn button_and_hat_changes_change_the_fingerprint() {
         let idle = fingerprint(&[], &[(AbsoluteAxisCode::ABS_HAT0X.0, 0)]);
-        assert_ne!(idle, fingerprint(&[KeyCode::BTN_SOUTH.code()], &[]));
+        assert_ne!(
+            idle,
+            fingerprint(&[KeyCode::BTN_SOUTH.code()], &[(AbsoluteAxisCode::ABS_HAT0X.0, 0)])
+        );
         assert_ne!(idle, fingerprint(&[], &[(AbsoluteAxisCode::ABS_HAT0X.0, 1)]));
     }
 
