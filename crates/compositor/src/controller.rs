@@ -11,11 +11,15 @@ use tracing::warn;
 
 use crate::input::InputSource;
 
-/// Opens and grabs the first pad with a south face button that no other program holds,
+/// Opens and grabs every pad with a south face button that no other program holds,
 /// so only Tehuti sees its input. Pads that fail to grab are logged and skipped.
 #[must_use]
-pub fn open_grabbed(virtual_pad: Option<&str>) -> Option<EvdevPad> {
+pub fn open_grabbed(
+    virtual_pad: Option<&str>,
+    attached: &std::collections::BTreeSet<std::path::PathBuf>,
+) -> Vec<(std::path::PathBuf, EvdevPad)> {
     evdev::enumerate()
+        .filter(|(path, _)| !attached.contains(path))
         .filter(|(path, device)| {
             let sysfs = path
                 .file_name()
@@ -27,7 +31,7 @@ pub fn open_grabbed(virtual_pad: Option<&str>) -> Option<EvdevPad> {
                 .supported_keys()
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
-        .find_map(|(path, mut device)| match grab_nonblocking(&mut device) {
+        .filter_map(|(path, mut device)| match grab_nonblocking(&mut device) {
             Ok(()) => {
                 let translator = DpadHat::for_vendor(device.input_id().vendor());
                 tracing::debug!(
@@ -37,7 +41,7 @@ pub fn open_grabbed(virtual_pad: Option<&str>) -> Option<EvdevPad> {
                     "controller face layout selected"
                 );
                 match Device::open(&path) {
-                    Ok(probe) => Some(EvdevPad::new(device, probe, translator)),
+                    Ok(probe) => Some((path, EvdevPad::new(device, probe, translator))),
                     Err(error) => {
                         warn!(%error, "controller probe open failed; skipping it");
                         None
@@ -49,6 +53,7 @@ pub fn open_grabbed(virtual_pad: Option<&str>) -> Option<EvdevPad> {
                 None
             }
         })
+        .collect()
 }
 
 /// Whether discovery accepts a physical pad or an explicitly named virtual pad.
@@ -576,10 +581,10 @@ mod tests {
     }
 }
 
-/// Controller discovery state; an attached controller cannot schedule another open.
+/// Controller discovery state, including the next periodic scan.
 #[derive(Debug)]
 pub enum Discovery {
-    Attached,
+    Attached { retry_at: core::time::Duration },
     Searching { retry_at: core::time::Duration },
 }
 
@@ -604,22 +609,31 @@ pub const RETRY_INTERVAL: core::time::Duration = core::time::Duration::from_mill
 #[must_use]
 pub fn discover(state: Discovery, input: DiscoveryInput) -> (Discovery, Option<DiscoveryEffect>) {
     match (state, input) {
-        (Discovery::Attached, DiscoveryInput::Disconnected { now }) => {
+        (Discovery::Attached { .. }, DiscoveryInput::Disconnected { now }) => {
             (Discovery::Searching { retry_at: now }, None)
         }
-        (Discovery::Searching { retry_at }, DiscoveryInput::Poll { now, rescan })
-            if rescan || now >= retry_at =>
-        {
-            (
-                Discovery::Searching {
-                    retry_at: now.saturating_add(RETRY_INTERVAL),
+        (state, DiscoveryInput::Poll { now, rescan }) => {
+            let retry_at = match state {
+                Discovery::Attached { retry_at } | Discovery::Searching { retry_at } => retry_at,
+            };
+            if !rescan && now < retry_at {
+                return (state, None);
+            }
+            let next_retry_at = now.saturating_add(RETRY_INTERVAL);
+            let next = match state {
+                Discovery::Attached { .. } => Discovery::Attached {
+                    retry_at: next_retry_at,
                 },
-                Some(DiscoveryEffect::Scan),
-            )
+                Discovery::Searching { .. } => Discovery::Searching {
+                    retry_at: next_retry_at,
+                },
+            };
+            (next, Some(DiscoveryEffect::Scan))
         }
-        (Discovery::Searching { .. }, DiscoveryInput::Found) => {
-            (Discovery::Attached, Some(DiscoveryEffect::Reconnected))
-        }
+        (Discovery::Searching { retry_at }, DiscoveryInput::Found) => (
+            Discovery::Attached { retry_at },
+            Some(DiscoveryEffect::Reconnected),
+        ),
         (state, _) => (state, None),
     }
 }

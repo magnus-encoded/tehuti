@@ -205,13 +205,13 @@ fn insert_seat(
             match event {
                 Event::PauseSession => {
                     data.seat_active = false;
-                    data.controller = None;
+                    data.controllers.clear();
                     data.compositor
                         .controller_input(tehuti_core::controller::Input::Disconnected);
-                    if let Some(token) = data.controller_token.take()
-                        && let Some(handle) = weak_handle.upgrade()
-                    {
-                        handle.remove(token);
+                    for (_, token) in core::mem::take(&mut data.controller_tokens) {
+                        if let Some(handle) = weak_handle.upgrade() {
+                            handle.remove(token);
+                        }
                     }
                     data.discovery = tehuti::controller::Discovery::Searching {
                         retry_at: Duration::ZERO,
