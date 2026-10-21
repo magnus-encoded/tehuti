@@ -1633,7 +1633,7 @@ proptest! {
         prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
             Effect::Apply(_) | Effect::RunMenuCommand(_) | Effect::QueryForegroundProgram
             | Effect::Click { .. } | Effect::DispatchPlugin { event: Event::Button { .. }, .. }
-        )));
+        )), "closing the menu never reaches applications or plugins");
     }
 
     #[test]
