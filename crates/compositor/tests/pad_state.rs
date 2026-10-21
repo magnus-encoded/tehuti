@@ -21,8 +21,8 @@ mod tests {
     }
 
     #[test]
-    fn querying_state_preserves_a_queued_button_and_escape_chord()
-    -> Result<(), Box<dyn core::error::Error>> {
+    fn querying_state_preserves_a_queued_button_and_escape_chord() -> Result<(), Box<dyn core::error::Error>>
+    {
         let mut handles = PadHandles::new(Client::default(), Client::default());
         let queued = Rc::clone(&handles.events().0);
         handles.probe().query_keys(|| {
@@ -31,10 +31,7 @@ mod tests {
                 .extend([ButtonName::South, ButtonName::Guide, ButtonName::Start]);
         });
         let buttons = handles.events().0.borrow_mut().drain(..).collect::<Vec<_>>();
-        assert_eq!(
-            buttons,
-            [ButtonName::South, ButtonName::Guide, ButtonName::Start]
-        );
+        assert_eq!(buttons, [ButtonName::South, ButtonName::Guide, ButtonName::Start]);
         let display = smithay::reexports::wayland_server::Display::new()?;
         let mut compositor = tehuti::state::Compositor::new(&display.handle())?;
         let mut pad = tehuti::input::SyntheticPad::default();
@@ -58,7 +55,10 @@ mod tests {
         let idle = fingerprint(&[], &[(AbsoluteAxisCode::ABS_HAT0X.0, 0)]);
         assert_ne!(
             idle,
-            fingerprint(&[KeyCode::BTN_SOUTH.code()], &[(AbsoluteAxisCode::ABS_HAT0X.0, 0)])
+            fingerprint(
+                &[KeyCode::BTN_SOUTH.code()],
+                &[(AbsoluteAxisCode::ABS_HAT0X.0, 0)]
+            )
         );
         assert_ne!(idle, fingerprint(&[], &[(AbsoluteAxisCode::ABS_HAT0X.0, 1)]));
     }
