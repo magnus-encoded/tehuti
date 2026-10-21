@@ -1,10 +1,12 @@
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use smithay::reexports::wayland_server::Display;
     use tehuti::{display_mode_store::Store, state::Compositor};
 
     #[test]
-    fn failed_save_shows_a_notice_and_keeps_the_confirmed_mode() -> Result<(), Box<dyn std::error::Error>> {
+    fn failed_save_shows_a_notice_and_keeps_the_confirmed_mode() -> Result<(), Box<dyn Error>> {
         let display: Display<Compositor> = Display::new()?;
         let mut compositor = Compositor::new(&display.handle())?;
         compositor.configure_display_modes(vec!["1920x1080@60".into(), "3840x2160@60".into()], 1);
