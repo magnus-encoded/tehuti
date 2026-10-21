@@ -7,7 +7,9 @@ mod tests {
 
     use evdev::{AbsoluteAxisCode, KeyCode};
     use proptest::prelude::*;
+    use smithay::reexports::wayland_server::Display;
     use tehuti::controller::{PadHandles, WatchInput, WatchVerdict, Watchdog, fingerprint, watch};
+    use tehuti::state::Compositor;
     use tehuti_protocol::ButtonName;
 
     #[derive(Default)]
@@ -32,8 +34,8 @@ mod tests {
         });
         let buttons = handles.events().0.borrow_mut().drain(..).collect::<Vec<_>>();
         assert_eq!(buttons, [ButtonName::South, ButtonName::Guide, ButtonName::Start]);
-        let display = smithay::reexports::wayland_server::Display::new()?;
-        let mut compositor = tehuti::state::Compositor::new(&display.handle())?;
+        let display: Display<Compositor> = Display::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
         let mut pad = tehuti::input::SyntheticPad::default();
         for name in buttons {
             pad.push(tehuti_protocol::Event::Button {
