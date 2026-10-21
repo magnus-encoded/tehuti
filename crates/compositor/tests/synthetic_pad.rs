@@ -1163,9 +1163,9 @@ mod synthetic_pad {
                     }
                     Command::Hold => {
                         if let Some(source) = &mut pad {
-                            for name in [ButtonName::South, ButtonName::Guide] {
-                                source.push(Event::Button { name, state: ButtonState::Pressed });
-                            }
+                            source.push(Event::Button {
+                                name: ButtonName::South, state: ButtonState::Pressed,
+                            });
                             route(&mut compositor, source).unwrap();
                         }
                     }
