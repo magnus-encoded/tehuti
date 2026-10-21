@@ -610,13 +610,6 @@ impl Compositor {
 
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         match effect {
-            DispatchEffect::RunMenuCommand(command) => {
-                if let Err(error) = crate::system_menu::execute(command) {
-                    tracing::warn!(?command, %error, "system menu command failed");
-                    self.show_notice("MENU COMMAND UNAVAILABLE");
-                }
-                None
-            }
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
                 tracing::error!("invalid dispatch reply");
@@ -655,7 +648,8 @@ impl Compositor {
                 tracing::info!("push-to-talk ignored: password field active");
                 None
             }
-            effect @ (DispatchEffect::MovePointer { .. }
+            effect @ (DispatchEffect::RunMenuCommand(_)
+            | DispatchEffect::MovePointer { .. }
             | DispatchEffect::Scroll { .. }
             | DispatchEffect::Click { .. }
             | DispatchEffect::MouseMode(_)
@@ -676,10 +670,18 @@ impl Compositor {
         }
     }
 
+    fn run_menu_command(&mut self, command: tehuti_core::menu::Command) {
+        if let Err(error) = crate::system_menu::execute(command) {
+            tracing::warn!(?command, %error, "system menu command failed");
+            self.show_notice("MENU COMMAND UNAVAILABLE");
+        }
+    }
+
     /// Runs an effect that needs no reply; `run_effect` answers the queries.
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::RunMenuCommand(command) => self.run_menu_command(command),
             DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
             DispatchEffect::Scroll { x, y } => self.pointer_scroll(x, y),
             DispatchEffect::Click { button, pressed } => self.pointer_click(button, pressed),
@@ -700,8 +702,7 @@ impl Compositor {
             DispatchEffect::Apply(action) => self.apply(&action),
             DispatchEffect::PluginAction(action) => self.apply_plugin_action(&action),
             DispatchEffect::Chord(chord) => self.tap_chord(chord),
-            DispatchEffect::RunMenuCommand(_)
-            | DispatchEffect::PasswordSpeechIgnored
+            DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
             | DispatchEffect::PluginRejected(_)
