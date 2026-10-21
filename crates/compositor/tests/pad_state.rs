@@ -92,8 +92,8 @@ mod tests {
                 let (next, verdict) = watch(state, sample(now, fingerprint));
                 prop_assert_eq!(verdict, WatchVerdict::Healthy);
                 now = now.saturating_add(2000);
-                let (next, verdict) = watch(next, sample(now, fingerprint));
-                prop_assert_eq!(verdict, WatchVerdict::Healthy);
+                let (next, idle_verdict) = watch(next, sample(now, fingerprint));
+                prop_assert_eq!(idle_verdict, WatchVerdict::Healthy);
                 state = next;
             }
         }
