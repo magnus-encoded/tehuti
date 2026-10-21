@@ -183,6 +183,7 @@ pub struct State {
     text_field: bool,
     terminal_field: bool,
     opening_button: Option<ButtonName>,
+    menu_closing_button: Option<ButtonName>,
     frames: Vec<Frame>,
 }
 
@@ -197,6 +198,7 @@ impl State {
             text_field: false,
             terminal_field: false,
             opening_button: None,
+            menu_closing_button: None,
             frames: Vec::new(),
         }
     }
@@ -314,11 +316,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             }
         }
         Input::ControllerDisconnected => {
-            state.core.menu = None;
-            state.mouse.disconnect(&mut effects);
-            state.keyboard.release_all();
-            state.opening_button = None;
-            state.core.controller_disconnected();
+            disconnect_controller(&mut state, &mut effects);
             return (state, effects);
         }
         Input::ForegroundProgram(running) => {
@@ -342,6 +340,15 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         awaiting: None,
     });
     run(state, effects)
+}
+
+fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
+    state.core.menu = None;
+    state.menu_closing_button = None;
+    state.mouse.disconnect(effects);
+    state.keyboard.release_all();
+    state.opening_button = None;
+    state.core.controller_disconnected();
 }
 
 fn update_sticks(state: &mut State, sticks: Sticks) {
@@ -600,6 +607,18 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
     }
 }
 
+fn menu_button_release(state: &mut State, event: &Event) -> bool {
+    if let Event::Button { name, state: button } = event
+        && state.menu_closing_button == Some(*name)
+    {
+        if *button == ButtonState::Released {
+            state.menu_closing_button = None;
+        }
+        return true;
+    }
+    false
+}
+
 fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
     if matches!(
         event,
@@ -620,6 +639,11 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
         }
         if let Some(command) = crate::menu::handle(&mut state.core.menu, event) {
             effects.push(Effect::RunMenuCommand(command));
+        }
+        if state.core.menu().is_none()
+            && let Event::Button { name, .. } = event
+        {
+            state.menu_closing_button = Some(*name);
         }
         return true;
     }
@@ -644,6 +668,9 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
 
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     sync_terminal(state);
+    if menu_button_release(state, &event) {
+        return;
+    }
     if system_menu(state, &event, effects) {
         return;
     }

@@ -1052,6 +1052,10 @@ proptest! {
                 break;
             }
         }
+        if state.core().menu().is_some() {
+            state = world.run(state, pad_button(ButtonName::East, ButtonState::Pressed));
+            state = world.run(state, pad_button(ButtonName::East, ButtonState::Released));
+        }
         let state = world.run(state, speech_event("keyboard"));
         prop_assert!(state.keyboard().is_open());
     }

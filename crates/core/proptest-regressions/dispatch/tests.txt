@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 46b13edaf2d292b1fa6fe396a14c52918b586758ec097cace152524c2527d530 # shrinks to contexts = [Context { app_id: "a", buttons: {}, speech: {}, unmatched_speech: None }], parts = [1, 1], negative = false
+cc 2905e6dfc1b1da71b46f6f61f78c7eba2bd5ac9993951d193e0768f5b6c477ad # menu closing release stays consumed
