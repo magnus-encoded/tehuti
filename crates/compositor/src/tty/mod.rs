@@ -37,6 +37,8 @@ struct Tty {
     renderer: render::DrmRendering,
     remaining_modes: std::collections::VecDeque<Mode>,
     listed_modes: Vec<Mode>,
+    // Rollback wins on a failed frame and clears on restore or successful scanout;
+    // preview retains the confirmed mode until confirmation or reversion.
     preview: Option<(Mode, render::DrmRendering, bool)>,
     rollback: Option<(Mode, render::DrmRendering, bool)>,
     output: Output,
@@ -418,11 +420,9 @@ impl Tty {
             };
             if persist {
                 self.preview = None;
-                if let Err(error) = tehuti::display_mode_store::Store::from_env()
-                    .and_then(|store| store.write(&mode_label(&mode)))
-                {
-                    warn!(%error, "display mode persistence failed");
-                }
+                let result = tehuti::display_mode_store::Store::from_env()
+                    .and_then(|store| store.write(&mode_label(&mode)));
+                data.compositor.display_mode_saved(result);
                 continue;
             }
             self.switch_settings_mode(mode, index, data);

@@ -1,6 +1,6 @@
 //! The confirmed display choice, replaced atomically in the user config directory.
 
-use std::{io, path::PathBuf};
+use std::{io, io::Write as _, path::PathBuf};
 
 #[derive(Debug)]
 pub struct Store {
@@ -43,7 +43,9 @@ impl Store {
             .ok_or_else(|| io::Error::other("config directory unavailable"))?;
         std::fs::create_dir_all(parent)?;
         let temporary = self.path.with_extension("tmp");
-        std::fs::write(&temporary, mode)?;
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(mode.as_bytes())?;
+        file.sync_all()?;
         std::fs::rename(temporary, &self.path)
     }
 }

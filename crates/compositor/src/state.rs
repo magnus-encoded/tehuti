@@ -630,6 +630,13 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::ModeApplied(current));
     }
 
+    pub fn display_mode_saved(&mut self, result: std::io::Result<()>) {
+        if let Err(error) = result {
+            tracing::warn!(%error, "display mode persistence failed");
+            self.show_notice("mode not saved");
+        }
+    }
+
     pub fn take_settings_request(&mut self) -> Option<(usize, bool)> {
         self.settings_display.requests.pop_front()
     }

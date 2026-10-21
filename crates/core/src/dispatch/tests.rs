@@ -2118,3 +2118,98 @@ fn b_closes_settings_without_forwarding_its_release_to_the_application() {
             }
     )));
 }
+
+#[test]
+fn emergency_escape_survives_switching_and_the_confirmation_countdown() {
+    for applied in [false, true] {
+        let mut world = World::default();
+        let state = open_display(&mut world);
+        let state = settings_button(&mut world, state, ButtonName::DpadDown);
+        let mut state = settings_button(&mut world, state, ButtonName::South);
+        if applied {
+            state = world.run(state, Input::ModeApplied(Some(1)));
+            assert_eq!(state.settings().remaining, Some(Duration::from_secs(15)));
+        }
+        assert!(state.settings().open);
+        state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+        state = world.run(state, pad_button(ButtonName::Start, ButtonState::Pressed));
+        world.trace.clear();
+        state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_millis(2999),
+            },
+        );
+        assert!(!world.trace.contains(&Effect::Apply(Action::Quit)));
+        let _state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_millis(1),
+            },
+        );
+        assert!(world.trace.contains(&Effect::Apply(Action::Quit)));
+    }
+}
+
+#[test]
+fn south_held_before_opening_cannot_enter_display_until_released() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        pad_button(ButtonName::South, ButtonState::Pressed),
+    );
+    let state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood".into()).unwrap(),
+        },
+    );
+    let state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+    assert!(state.settings().open);
+    assert!(!state.settings().display);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert!(state.settings().display);
+}
+
+#[test]
+fn open_settings_takes_only_its_voice_phrase_from_contexts_and_plugins() {
+    for plugin_active in [false, true] {
+        let context = tehuti_protocol::parse_context(
+            "app_id = 'example-app'\n[buttons]\n[speech.screenshot]\nnotify = 'capture'",
+        )
+        .unwrap();
+        let mut world = World {
+            plugin_active,
+            ..World::default()
+        };
+        let state = configured(vec![context], "example-app");
+        let state = settings_event(
+            &mut world,
+            state,
+            Event::Speech {
+                text: Text::new("Pop the hood".into()).unwrap(),
+            },
+        );
+        assert!(state.settings().open);
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::SpeechRouted { .. }))
+        );
+        world.trace.clear();
+        let text = Text::new("Screenshot.".into()).unwrap();
+        let state = settings_event(&mut world, state, Event::Speech { text: text.clone() });
+        let expected = Action::Notice {
+            text: Text::new("capture".into()).unwrap(),
+        };
+        assert!(state.settings().open);
+        assert!(world.trace.contains(&Effect::SpeechRouted {
+            text,
+            first: Some(expected.clone()),
+            plugin: plugin_active,
+        }));
+        assert!(world.trace.contains(&Effect::Apply(expected)));
+    }
+}

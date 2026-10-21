@@ -343,6 +343,23 @@ mod saved_choice_tests {
     use super::{ListedMode, Request, ordered_with_saved};
 
     #[test]
+    fn garbage_in_the_saved_file_falls_back_to_the_preferred_mode() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("display-mode");
+        std::fs::write(&path, "garbage, not a display mode")?;
+        let saved = tehuti::display_mode_store::Store::new(path).read()?;
+        let modes = [ListedMode {
+            size: (1920, 1080),
+            refresh: 60,
+            preferred: true,
+        }];
+        let request = saved.as_deref().and_then(Request::parse);
+        assert!(request.is_none());
+        assert_eq!(ordered_with_saved(&modes, None, request), (vec![0], false));
+        Ok(())
+    }
+
+    #[test]
     fn explicit_override_precedes_saved_choice_and_saved_precedes_preferred() {
         let modes = [
             ListedMode {
