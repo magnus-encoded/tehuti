@@ -42,6 +42,7 @@ pub struct State {
     start_held: bool,
     level: Level,
     menu: Option<menu::Menu>,
+    menu_closing_button: Option<ButtonName>,
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
 }
@@ -79,6 +80,7 @@ impl State {
             start_held: false,
             level: Level::InApp,
             menu: None,
+            menu_closing_button: None,
             pending: Vec::new(),
             bar: bar::Bar::new(),
         }
@@ -145,6 +147,8 @@ impl State {
         self.guide_held = None;
         self.guide_tap = None;
         self.start_held = false;
+        self.menu = None;
+        self.menu_closing_button = None;
     }
 
     /// The system menu, for drawing it independently of plugins.
@@ -213,11 +217,19 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         state.focused_app_id.clone_from(app_id);
         return (state, actions, false);
     }
+    if menu_button_release(&mut state, event) {
+        return (state, Vec::new(), false);
+    }
     if let Some(actions) = escape_chord(&mut state, event) {
         return (state, actions, false);
     }
     if state.menu.is_some() {
         let _command = menu::handle(&mut state.menu, event);
+        if state.menu.is_none()
+            && let Event::Button { name, .. } = event
+        {
+            state.menu_closing_button = Some(*name);
+        }
         return (state, Vec::new(), false);
     }
     if let Some(actions) = shoulder_level(&state, event) {
@@ -325,6 +337,18 @@ fn shoulder_level(state: &State, event: &Event) -> Option<Vec<Action>> {
 
 const fn fallback(_event: &Event) -> Option<Action> {
     None
+}
+
+fn menu_button_release(state: &mut State, event: &Event) -> bool {
+    if let Event::Button { name, state: button } = event
+        && state.menu_closing_button == Some(*name)
+    {
+        if *button == ButtonState::Released {
+            state.menu_closing_button = None;
+        }
+        return true;
+    }
+    false
 }
 
 fn guide_button(state: &mut State, button_state: ButtonState) {
