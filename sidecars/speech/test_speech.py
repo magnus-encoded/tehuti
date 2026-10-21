@@ -18,6 +18,93 @@ spec.loader.exec_module(module)
 
 
 class SpeechTests(unittest.TestCase):
+    def test_tail_map_validates_entries_and_warns_with_fallback(self):
+        for invalid in ["-1", "1.5", "nan", "inf", "60001", "9" * 5000, ""]:
+            with self.subTest(invalid=invalid), contextlib.redirect_stderr(io.StringIO()) as warning:
+                self.assertEqual(module.speech_tails("remote=" + invalid + ",default=75"),
+                                 {"default": 75})
+                self.assertIn("WARNING", warning.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()) as warning:
+            self.assertEqual(module.speech_tails("broken,default=-1,=12"), {"default": 150})
+            self.assertEqual(warning.getvalue().count("WARNING"), 3)
+        self.assertEqual(module.speech_tails("remote=1200,default=150,instant=0"),
+                         {"remote": 1200, "default": 150, "instant": 0})
+        self.assertEqual(module.speech_tails(None), {"default": 150})
+
+    def test_sources_stop_at_their_own_tails_and_late_remote_audio_can_win(self):
+        self.run_tail_capture("finish")
+
+    def test_press_during_source_tail_discards_old_capture(self):
+        self.run_tail_capture("restart")
+
+    def test_cancellation_during_source_tail_discards_capture(self):
+        self.run_tail_capture("cancel")
+
+    def run_tail_capture(self, action):
+        class Model:
+            def transcribe(self, path, **options):
+                with wave.open(path) as clip:
+                    self.samples = clip.readframes(clip.getnframes())
+                return iter([types.SimpleNamespace(text="late words", no_speech_prob=0,
+                                                   avg_logprob=0)]), None
+
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = Path(directory) / "pw-record"
+            recorder.write_text("""#!/usr/bin/env python3
+import sys,time,signal,pathlib
+signal.signal(signal.SIGINT,lambda *_:sys.exit(0))
+source=sys.argv[2]
+pathlib.Path(source+'.ready').touch()
+if source == 'broken': sys.exit(1)
+sys.stdout.buffer.write(b'\\x00\\x01'*10)
+sys.stdout.buffer.flush()
+while not pathlib.Path('released').exists(): time.sleep(0.005)
+time.sleep(0.7)
+sys.stdout.buffer.write(b'\\x00\\x30'*10)
+sys.stdout.buffer.flush()
+time.sleep(60)
+""")
+            recorder.chmod(0o700)
+            model = Model()
+            output = io.StringIO()
+            with patch.dict(os.environ, {"PATH": directory + os.pathsep + os.environ["PATH"],
+                                        "TEHUTI_SPEECH_TAIL_MS": "remote=1200,broken=60000,default=150",
+                                        "TEHUTI_LOG_FILE": directory + "/log"}), \
+                    contextlib.chdir(directory), contextlib.redirect_stdout(output):
+                speech = module.Speech(model, sources=lambda: ["local", "remote", "broken"])
+                try:
+                    speech.start(42)
+                    take = speech.capture
+                    deadline = time.monotonic() + 3
+                    while not all(Path(name + ".ready").exists() for name in ["local", "remote", "broken"]):
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(0.005)
+                    speech.stop(42, True)
+                    Path("released").touch()
+                    time.sleep(0.4)
+                    self.assertIsNotNone(take.recordings[0].process.poll())
+                    self.assertIsNone(take.recordings[1].process.poll())
+                    self.assertEqual(output.getvalue(), "")
+                    if action != "finish":
+                        if action == "restart":
+                            speech.start(43)
+                        else:
+                            speech.stop(42, False)
+                        self.assertIsNotNone(take.recordings[1].process.poll())
+                        self.assertEqual(output.getvalue(), "")
+                        if action == "restart":
+                            self.assertIsNone(speech.capture.poll())
+                    else:
+                        time.sleep(0.5)
+                        self.assertIsNone(take.recordings[1].process.poll())
+                        while not output.getvalue() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        self.assertEqual(json.loads(output.getvalue()),
+                                         {"session": 42, "text": "late words"})
+                        self.assertEqual(model.samples, b"\x00\x01" * 10 + b"\x00\x30" * 10)
+                finally:
+                    speech.close()
+
     def test_empty_vad_transcript_retries_once_without_vad(self):
         for retry_text in ["confirm", ""]:
             with self.subTest(retry_text=retry_text), tempfile.TemporaryDirectory() as directory:

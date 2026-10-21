@@ -8,12 +8,15 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import wave
 
 MAX_LINE = 65536
 MAX_AUDIO_SECONDS = 60
 INTERIM_BYTES = 16000 * 2
 SILENCE_PEAK = 64
+DEFAULT_SPEECH_TAIL_MS = 150
+MAX_SPEECH_TAIL_MS = MAX_AUDIO_SECONDS * 1000
 
 
 HALLUCINATION = re.compile(
@@ -86,6 +89,25 @@ def list_sources():
     return names or [None]
 
 
+def speech_tails(value):
+    tails = {"default": DEFAULT_SPEECH_TAIL_MS}
+    if not value:
+        return tails
+    for entry in value.split(","):
+        name, separator, milliseconds = entry.strip().partition("=")
+        name, milliseconds = name.strip(), milliseconds.strip()
+        if (not separator or not name or not milliseconds.isascii()
+                or not milliseconds.isdecimal() or len(milliseconds) > 5
+                or int(milliseconds) > MAX_SPEECH_TAIL_MS):
+            print("WARNING speech: invalid TEHUTI_SPEECH_TAIL_MS entry; using fallback",
+                  file=sys.stderr, flush=True)
+            tails.pop(name, None)
+            continue
+        tails[name] = int(milliseconds)
+    tails.setdefault("default", DEFAULT_SPEECH_TAIL_MS)
+    return tails
+
+
 class Recording:
     def __init__(self, source, process):
         self.source = source
@@ -104,8 +126,11 @@ class Recording:
 
 class Take:
     """One push-to-talk, recorded from every source at once."""
-    def __init__(self):
+    def __init__(self, session):
+        self.session = session
         self.recordings = []
+        self.cancelled = threading.Event()
+        self.worker = None
 
     def poll(self):
         if any(r.process.poll() is None for r in self.recordings):
@@ -122,16 +147,25 @@ class Speech:
     def __init__(self, model, sources=list_sources):
         self.model = model
         self.sources = sources
+        self.tails = speech_tails(os.environ.get("TEHUTI_SPEECH_TAIL_MS"))
+        self.releasing = None
         self.capture = None
         self.session = None
         self.model_lock = threading.Lock()
         self.transcriptions = threading.BoundedSemaphore(2)
         self.interims = threading.BoundedSemaphore(1)
 
+    def cancel_tail(self):
+        if self.releasing is not None:
+            self.releasing.cancelled.set()
+            self.releasing.worker.join()
+            self.releasing = None
+
     def start(self, session):
+        self.cancel_tail()
         if self.capture is not None:
             return
-        take = Take()
+        take = Take(session)
         for source in self.sources():
             target = [] if source is None else ["--target", source]
             try:
@@ -218,11 +252,33 @@ class Speech:
         threading.Thread(target=finish, daemon=True).start()
 
     def stop(self, session, transcribe):
+        if (not transcribe and self.releasing is not None
+                and session == self.releasing.session):
+            self.cancel_tail()
         if self.capture is None or session != self.session:
             return
         take = self.capture
         self.capture = self.session = None
-        for recording in take.recordings:
+        if transcribe:
+            self.cancel_tail()
+            self.releasing = take
+            take.worker = threading.Thread(
+                target=self.finish_take, args=(session, take, True), daemon=True,
+            )
+            take.worker.start()
+        else:
+            self.finish_take(session, take, False)
+
+    def finish_take(self, session, take, transcribe):
+        released = time.monotonic()
+        recordings = sorted(take.recordings,
+                            key=lambda r: self.tails.get(r.source, self.tails["default"]))
+        for recording in recordings:
+            if recording.process.poll() is not None:
+                continue
+            tail = self.tails.get(recording.source, self.tails["default"]) / 1000
+            if transcribe:
+                take.cancelled.wait(max(0, released + tail - time.monotonic()))
             if recording.process.poll() is None:
                 recording.process.send_signal(signal.SIGINT)
         for recording in take.recordings:
@@ -237,7 +293,7 @@ class Speech:
             recording.process.stdout.close()
             if not recording.reader.is_alive():
                 finished.append(recording)
-        if not transcribe or not finished:
+        if not transcribe or take.cancelled.is_set() or not finished:
             return
         if not self.transcriptions.acquire(blocking=False):
             reply({"session": session, "text": ""})
@@ -263,6 +319,7 @@ class Speech:
         threading.Thread(target=finish, daemon=True).start()
 
     def close(self):
+        self.cancel_tail()
         if self.capture is not None:
             self.stop(self.session, False)
 
