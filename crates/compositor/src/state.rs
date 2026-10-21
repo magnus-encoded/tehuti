@@ -675,18 +675,7 @@ impl Compositor {
                 Some(DispatchInput::SpeechSent(self.send_speech_command(&command)))
             }
             DispatchEffect::PollSpeech(elapsed) => {
-                let inputs = self
-                    .speech_process
-                    .as_mut()
-                    .map_or_else(Vec::new, |process| process.poll(elapsed));
-                while let Some(notice) = self
-                    .speech_process
-                    .as_mut()
-                    .and_then(crate::speech::SpeechProcess::take_notice)
-                {
-                    self.show_notice(notice);
-                }
-                Some(DispatchInput::SpeechPolled(inputs))
+                Some(DispatchInput::SpeechPolled(self.poll_speech(elapsed)))
             }
             DispatchEffect::QueryForegroundProgram => Some(DispatchInput::ForegroundProgram(
                 self.focused_terminal_runs_program(),
@@ -714,6 +703,21 @@ impl Compositor {
                 None
             }
         }
+    }
+
+    fn poll_speech(&mut self, elapsed: core::time::Duration) -> Vec<tehuti_core::speech::SpeechInput> {
+        let inputs = self
+            .speech_process
+            .as_mut()
+            .map_or_else(Vec::new, |process| process.poll(elapsed));
+        while let Some(notice) = self
+            .speech_process
+            .as_mut()
+            .and_then(crate::speech::SpeechProcess::take_notice)
+        {
+            self.show_notice(notice);
+        }
+        inputs
     }
 
     fn queue_settings(&mut self, index: usize, persist: bool) {
