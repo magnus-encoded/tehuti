@@ -38,6 +38,16 @@ impl World {
         }
     }
 
+    fn event(&mut self, state: State, event: Event) -> State {
+        self.run(
+            state,
+            Input::Event {
+                event,
+                elapsed: Duration::ZERO,
+            },
+        )
+    }
+
     fn run_at_depth(&mut self, state: State, input: Input, depth: usize) -> State {
         let (mut state, mut effects) = step(state, input);
         loop {
@@ -64,15 +74,7 @@ impl World {
                     Effect::PollSpeech(_) => {
                         reply = Input::SpeechPolled(self.speech_output.pop_front().unwrap_or_default());
                     }
-                    Effect::Handle(event) => {
-                        state = self.run(
-                            state,
-                            Input::Event {
-                                event,
-                                elapsed: Duration::ZERO,
-                            },
-                        );
-                    }
+                    Effect::Handle(event) => state = self.event(state, event),
                     Effect::Apply(Action::Close) | Effect::PluginAction(Action::Close) => {
                         state = self.close_focus(state);
                     }

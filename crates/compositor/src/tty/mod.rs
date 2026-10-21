@@ -115,6 +115,9 @@ pub(crate) fn insert(
         .handle()
         .insert_source(Timer::immediate(), move |_, (), data| {
             let mut backend = tty.borrow_mut();
+            if data.seat_active && backend.device.is_active() && backend.preview.is_some() {
+                backend.settings_request(data);
+            }
             if data.seat_active
                 && backend.device.is_active()
                 && !backend.pending
@@ -472,6 +475,7 @@ impl Tty {
                 self.rollback = retained;
                 self.restore_mode(data);
                 self.modeset = true;
+                self.pending = false;
                 data.compositor.display_mode_applied(None);
             }
         }
