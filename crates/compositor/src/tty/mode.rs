@@ -337,3 +337,35 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod saved_choice_tests {
+    use super::{ListedMode, Request, ordered_with_saved};
+
+    #[test]
+    fn explicit_override_precedes_saved_choice_and_saved_precedes_preferred() {
+        let modes = [
+            ListedMode {
+                size: (1920, 1080),
+                refresh: 60,
+                preferred: true,
+            },
+            ListedMode {
+                size: (2560, 1440),
+                refresh: 60,
+                preferred: false,
+            },
+            ListedMode {
+                size: (3840, 2160),
+                refresh: 60,
+                preferred: false,
+            },
+        ];
+        let saved = Request::parse("2560x1440@60");
+        assert_eq!(ordered_with_saved(&modes, None, saved).0, vec![1, 0, 2]);
+        let explicit = Request::parse("3840x2160@60");
+        assert_eq!(ordered_with_saved(&modes, explicit, saved), (vec![2, 1, 0], true));
+        let missing = Request::parse("800x600@60");
+        assert_eq!(ordered_with_saved(&modes, None, missing).0, vec![0, 2, 1]);
+    }
+}

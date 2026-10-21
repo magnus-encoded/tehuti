@@ -23,7 +23,7 @@ pub struct Settings {
     previous: Option<usize>,
     status: Status,
     cancel_preview: bool,
-    south_held: bool,
+    south: Option<ButtonState>,
 }
 
 impl Settings {
@@ -111,8 +111,8 @@ impl Settings {
             state,
         } = event
         {
-            let held = core::mem::replace(&mut self.south_held, *state == ButtonState::Pressed);
-            held && *state == ButtonState::Pressed
+            let previous = self.south.replace(*state);
+            previous == Some(ButtonState::Pressed) && *state == ButtonState::Pressed
         } else {
             false
         };
@@ -152,15 +152,7 @@ impl Settings {
 
     fn button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
         match name {
-            ButtonName::East => {
-                if self.remaining.is_some() {
-                    self.revert(effects);
-                } else if self.display {
-                    self.display = false;
-                } else {
-                    self.open = false;
-                }
-            }
+            ButtonName::East => self.close(effects),
             ButtonName::South => {
                 if self.remaining.take().is_some() {
                     self.previous = None;

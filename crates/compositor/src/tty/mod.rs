@@ -400,7 +400,7 @@ fn mode_label(mode: &Mode) -> String {
 }
 
 impl Tty {
-    fn settings_request(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
+    fn settings_request(&mut self, data: &mut LoopData) {
         while let Some((index, persist)) = data.compositor.take_settings_request() {
             let Some(mode) = self.listed_modes.get(index).copied() else {
                 data.compositor.display_mode_applied(None);
@@ -415,18 +415,12 @@ impl Tty {
                 }
                 continue;
             }
-            self.switch_settings_mode(mode, index, data)?;
-            return Ok(());
+            self.switch_settings_mode(mode, index, data);
+            return;
         }
-        Ok(())
     }
 
-    fn switch_settings_mode(
-        &mut self,
-        mode: Mode,
-        index: usize,
-        data: &mut LoopData,
-    ) -> Result<(), Box<dyn Error>> {
+    fn switch_settings_mode(&mut self, mode: Mode, index: usize, data: &mut LoopData) {
         let previous = self.surface.current_mode();
         let previous_next = self.next;
         let reverting = self.preview.as_ref().is_some_and(|(saved, _, _)| *saved == mode);
@@ -449,7 +443,7 @@ impl Tty {
                 warn!(%error, "display mode rejected");
                 self.restore_mode(data);
                 data.compositor.display_mode_applied(None);
-                return Ok(());
+                return;
             }
         };
         let previous_renderer = core::mem::replace(&mut self.renderer, renderer);
@@ -474,7 +468,6 @@ impl Tty {
                 data.compositor.display_mode_applied(None);
             }
         }
-        Ok(())
     }
 
     fn set_output_mode(&mut self, mode: Mode, data: &mut LoopData) {
@@ -550,7 +543,7 @@ impl Tty {
             return Ok(());
         }
         crate::advance_time(data);
-        self.settings_request(data)?;
+        self.settings_request(data);
         if self.pending {
             return Ok(());
         }

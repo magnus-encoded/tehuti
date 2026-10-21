@@ -302,12 +302,8 @@ fn sync_terminal(state: &mut State) {
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
-        Input::DisplayModes { modes, current } => {
-            state.settings.configure(modes, current);
-            return (state, effects);
-        }
-        Input::ModeApplied(current) => {
-            state.settings.applied(current, &mut effects);
+        input @ (Input::DisplayModes { .. } | Input::ModeApplied(_)) => {
+            settings_reply(&mut state.settings, input, &mut effects);
             return (state, effects);
         }
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
@@ -365,10 +361,16 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     run(state, effects)
 }
 
+fn settings_reply(settings: &mut Settings, input: Input, effects: &mut Vec<Effect>) {
+    match input {
+        Input::DisplayModes { modes, current } => settings.configure(modes, current),
+        Input::ModeApplied(current) => settings.applied(current, effects),
+        _ => {}
+    }
+}
+
 fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
-    state.mouse.release(effects);
-    state.keyboard.release_all();
-    state.keyboard.close();
+    state.mouse.disconnect(effects);
     state.keyboard.release_all();
     state.opening_button = None;
     state.core.controller_disconnected();
@@ -577,26 +579,7 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
             frame.awaiting = Some(Await::ClockRead);
         }
         Task::Controller(event) => controller(state, event, effects),
-        Task::Route(event) => {
-            if let Event::Tick { elapsed } = event
-                && state.core.menu().is_none()
-                && !state.settings.open
-                && tick_pad(&mut state.keyboard, &mut state.mouse, elapsed, effects)
-            {
-                for button in [ButtonState::Released, ButtonState::Pressed] {
-                    frame.tasks.push_front(Task::Route(Event::Button {
-                        name: ButtonName::Select,
-                        state: button,
-                    }));
-                }
-            }
-            route_tick(state, &event, effects);
-            let Some(route_frame) = state.frames.last_mut() else {
-                return;
-            };
-            effects.push(Effect::QueryPlugin(event.clone()));
-            route_frame.awaiting = Some(Await::PluginActive(event));
-        }
+        Task::Route(event) => route_event(state, event, effects),
         Task::Supervise => {
             effects.push(Effect::Supervise);
             frame.awaiting = Some(Await::Supervised);
@@ -635,10 +618,35 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
     }
 }
 
+fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    let Some(route_frame) = state.frames.last_mut() else {
+        return;
+    };
+    if let Event::Tick { elapsed } = event
+        && state.core.menu().is_none()
+        && !state.settings.open
+        && tick_pad(&mut state.keyboard, &mut state.mouse, elapsed, effects)
+    {
+        for button in [ButtonState::Released, ButtonState::Pressed] {
+            route_frame.tasks.push_front(Task::Route(Event::Button {
+                name: ButtonName::Select,
+                state: button,
+            }));
+        }
+    }
+    route_tick(state, &event, effects);
+    let Some(route_frame) = state.frames.last_mut() else {
+        return;
+    };
+    effects.push(Effect::QueryPlugin(event.clone()));
+    route_frame.awaiting = Some(Await::PluginActive(event));
+}
+
 fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
     let was_open = state.settings.open;
     let consumed = state.settings.event(event, effects);
     if !was_open && state.settings.open {
+        state.core.menu = None;
         state.mouse.release(effects);
         state.keyboard.release_all();
         state.keyboard.close();
@@ -710,17 +718,20 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
     false
 }
 
-fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
-    sync_terminal(state);
-    if crate::menu_button_release(&mut state.core, &event) {
-        return;
+fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if matches!(event, Event::Speech { .. }) && settings_event(state, event, effects) {
+        return true;
     }
-    if system_menu(state, &event, effects) {
-        return;
+    sync_terminal(state);
+    if crate::menu_button_release(&mut state.core, event) {
+        return true;
+    }
+    if system_menu(state, event, effects) {
+        return true;
     }
     if state.keyboard.password_field_active()
         && matches!(
-            &event,
+            event,
             Event::Button {
                 name: ButtonName::Record,
                 ..
@@ -728,13 +739,20 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         )
     {
         effects.push(Effect::PasswordSpeechIgnored);
-        return;
+        return true;
     }
 
-    if settings_event(state, &event, effects) {
-        return;
+    if settings_event(state, event, effects) {
+        return true;
     }
-    if keyboard(state, &event, effects) {
+    if keyboard(state, event, effects) {
+        return true;
+    }
+    false
+}
+
+fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if reserved_input(state, &event, effects) {
         return;
     }
     let Some(frame) = state.frames.last_mut() else {

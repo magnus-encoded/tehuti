@@ -1792,10 +1792,8 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
             .any(|effect| matches!(effect, Effect::Apply(_) | Effect::ConfirmSecret(_)))
     );
     state = settings_button(&mut world, state, ButtonName::East);
-    assert!(state.settings().open);
-    assert!(!state.settings().display);
-    state = settings_button(&mut world, state, ButtonName::East);
     assert!(!state.settings().open);
+    assert!(!state.settings().display);
 }
 
 #[test]
@@ -1924,7 +1922,7 @@ fn east_and_the_global_phrase_cancel_mode_preview() {
         world.trace.clear();
         let state = settings_event(&mut world, state, event.clone());
         assert!(world.trace.contains(&Effect::SettingsMode(0)));
-        assert_eq!(state.settings().open, matches!(event, Event::Button { .. }));
+        assert!(!state.settings().open);
         assert_eq!(state.settings().remaining, None);
     }
 }
