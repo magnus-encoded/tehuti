@@ -98,7 +98,7 @@ mod levels {
             );
             assert_eq!(state.level(), level);
             assert_eq!(state.menu().is_some(), menu_open);
-            assert!(actions.is_empty());
+            assert_eq!(actions, Vec::<Action>::new());
         }
     }
 
