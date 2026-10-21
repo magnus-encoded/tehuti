@@ -99,9 +99,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         std::path::Path::new(&context_directory),
         &mut compositor,
     )?;
-    if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
-        compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
-    }
+    install_speech(&mut compositor);
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
     compositor.set_launch_socket(socket_name.clone());
     if let Err(error) = insert_controller_watch(&event_loop) {
@@ -157,6 +155,12 @@ fn shut_down(event_loop: EventLoop<LoopData>, data: LoopData) {
     } = data;
     drop(compositor);
     drop(display);
+}
+
+fn install_speech(compositor: &mut Compositor) {
+    if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
+        compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
+    }
 }
 
 fn run(

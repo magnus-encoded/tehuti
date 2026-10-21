@@ -123,7 +123,7 @@ mod speech_process {
             release.to_string_lossy()
         );
         let mut process = child(&source);
-        let _inputs = process.poll(Duration::ZERO);
+        let _initial_inputs = process.poll(Duration::ZERO);
         wait_for_starts(&marker, 1);
         for (attempt, seconds) in [0_u64, 1, 2, 5, 10, 20, 30, 30].into_iter().enumerate() {
             std::fs::write(&release, "").unwrap();
@@ -146,14 +146,14 @@ mod speech_process {
                     "restart happened before its deadline"
                 );
             }
-            let _inputs = process.poll(Duration::from_millis(u64::from(seconds > 0)));
+            let _restart_inputs = process.poll(Duration::from_millis(u64::from(seconds > 0)));
             wait_for_starts(&marker, attempt.saturating_add(2));
         }
-        let _inputs = process.poll(Duration::from_secs(60));
+        let _alive_inputs = process.poll(Duration::from_secs(60));
         std::fs::write(&release, "").unwrap();
         wait_for(&mut process, &SpeechInput::Unavailable);
         std::fs::remove_file(&release).unwrap();
-        let _inputs = process.poll(Duration::ZERO);
+        let _reset_inputs = process.poll(Duration::ZERO);
         wait_for_starts(&marker, 10);
     }
 
