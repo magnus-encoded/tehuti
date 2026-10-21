@@ -1542,6 +1542,10 @@ mod synthetic_pad {
         check_routing("test", 15);
     }
 
+    fn synthetic_button(name: ButtonName, state: ButtonState) -> Event {
+        Event::Button { name, state }
+    }
+
     #[test]
     fn synthetic_guide_taps_and_holds_route_in_every_mode() {
         for mode in 0..3 {
@@ -1551,10 +1555,7 @@ mod synthetic_pad {
             if mode == 1 {
                 for _ in 0..2 {
                     for state in [ButtonState::Pressed, ButtonState::Released] {
-                        pad.push(Event::Button {
-                            name: ButtonName::Select,
-                            state,
-                        });
+                        pad.push(synthetic_button(ButtonName::Select, state));
                     }
                 }
             } else if mode == 2 {
@@ -1565,10 +1566,7 @@ mod synthetic_pad {
             route(&mut compositor, &mut pad).unwrap();
             assert_eq!(compositor.on_screen_keyboard().is_open(), mode == 2);
             for state in [ButtonState::Pressed, ButtonState::Released] {
-                pad.push(Event::Button {
-                    name: ButtonName::Guide,
-                    state,
-                });
+                pad.push(synthetic_button(ButtonName::Guide, state));
             }
             route(&mut compositor, &mut pad).unwrap();
             assert_eq!(compositor.voice_bar().segments().last().unwrap().text, "Columns");
@@ -1577,17 +1575,11 @@ mod synthetic_pad {
                     .visible_notice_text()
                     .is_some_and(|text| text.contains("SYSTEM MENU"))
             );
-            pad.push(Event::Button {
-                name: ButtonName::Guide,
-                state: ButtonState::Pressed,
-            });
+            pad.push(synthetic_button(ButtonName::Guide, ButtonState::Pressed));
             pad.push(Event::Tick {
                 elapsed: Duration::from_millis(500),
             });
-            pad.push(Event::Button {
-                name: ButtonName::Guide,
-                state: ButtonState::Released,
-            });
+            pad.push(synthetic_button(ButtonName::Guide, ButtonState::Released));
             route(&mut compositor, &mut pad).unwrap();
             assert!(
                 compositor
@@ -1595,10 +1587,7 @@ mod synthetic_pad {
                     .is_some_and(|text| text.contains("SYSTEM MENU"))
             );
             for state in [ButtonState::Pressed, ButtonState::Released] {
-                pad.push(Event::Button {
-                    name: ButtonName::Guide,
-                    state,
-                });
+                pad.push(synthetic_button(ButtonName::Guide, state));
             }
             route(&mut compositor, &mut pad).unwrap();
             assert!(
