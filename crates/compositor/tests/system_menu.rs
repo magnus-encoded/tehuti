@@ -5,7 +5,7 @@ mod system_menu {
 
     #[test]
     fn commands_use_only_configured_arguments() {
-        let config = Config::parse(r#"{"reboot":["example-session","restart","an argument"]}"#).unwrap();
+        let config = Config::parse(r#"reboot = ["example-session", "restart", "an argument"]"#).unwrap();
         config
             .run(Command::Reboot, |program, args| {
                 assert_eq!(program, "example-session");
@@ -23,19 +23,34 @@ mod system_menu {
     #[test]
     fn invalid_config_and_empty_commands_cannot_run() {
         for text in [
-            r#"{"unknown":["command"]}"#,
-            r#"{"reboot":[""]}"#,
-            r#"{"reboot":[1]}"#,
-            r#"{"reboot":["bad\u0000name"]}"#,
+            r#"{"reboot":["command"]}"#,
+            r#"unknown = ["command"]"#,
+            r#"reboot = [""]"#,
+            r#"reboot = [1]"#,
+            r#"reboot = ["bad\u0000name"]"#,
         ] {
             assert!(Config::parse(text).is_err());
         }
-        let config = Config::parse(r#"{"shut_down":[]}"#).unwrap();
+        let config = Config::parse(r#"shut_down = []"#).unwrap();
         assert!(
             config
                 .run(Command::ShutDown, |_, _| panic!("disabled command ran"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn example_configures_every_menu_command() {
+        let config = Config::parse(include_str!("../../../examples/menu.toml")).unwrap();
+        for command in [
+            Command::LogOut,
+            Command::Plasma,
+            Command::Reboot,
+            Command::ShutDown,
+            Command::TaskMonitor,
+        ] {
+            config.run(command, |_, _| Ok(())).unwrap();
+        }
     }
 
     #[test]

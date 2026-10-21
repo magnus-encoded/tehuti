@@ -14,7 +14,7 @@ impl Config {
     /// # Errors
     /// Unknown entries, non-string arguments and invalid program names are rejected.
     pub fn parse(text: &str) -> io::Result<Self> {
-        let commands: BTreeMap<String, Vec<String>> = serde_json::from_str(text).map_err(io::Error::other)?;
+        let commands: BTreeMap<String, Vec<String>> = toml::from_str(text).map_err(io::Error::other)?;
         for (name, argv) in &commands {
             if !["log_out", "plasma", "reboot", "shut_down", "task_monitor"].contains(&name.as_str())
                 || argv.first().is_some_and(String::is_empty)
@@ -52,7 +52,7 @@ fn config_path() -> io::Result<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no configuration directory"))?;
-    Ok(directory.join("tehuti/menu.json"))
+    Ok(directory.join("tehuti/menu.toml"))
 }
 
 /// Loads the menu config and starts the selected command.

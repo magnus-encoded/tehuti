@@ -99,6 +99,11 @@ route while Guide is held. Outside overlays, South presses send Enter and never
 reach plugins; South releases can reach them. Tick is internal and never crosses
 the wire.
 
+System menu commands use TOML argument lists in
+`$XDG_CONFIG_HOME/tehuti/menu.toml` (or `$HOME/.config/tehuti/menu.toml`).
+`TEHUTI_MENU_CONFIG` overrides the path; `examples/menu.toml` shows the format.
+Commands run without a shell; session and power actions require confirmation.
+
 Reply once with the same id and a list of actions:
 
 ```json

@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 signal-hook = "0.3"
 serde_json = "1"
+toml = "1.1"
 rustix = { version = "1", features = ["fs", "process"] }
 libc = "0.2"
 evdev = "0.13"
@@ -29,6 +30,5 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 tempfile = "3"
 proptest = "1"
 tehuti-protocol = { path = "../protocol", features = ["arbitrary"] }
-toml = "1.1"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }

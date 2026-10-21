@@ -1,7 +1,0 @@
-{
-  "log_out": ["session-logout"],
-  "plasma": ["session-switch", "plasma"],
-  "reboot": ["session-reboot"],
-  "shut_down": ["session-poweroff"],
-  "task_monitor": ["foot", "-e", "btop"]
-}
