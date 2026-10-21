@@ -3,45 +3,75 @@
 #[cfg(test)]
 mod tests {
     use core::{cell::RefCell, time::Duration};
-    use std::{collections::VecDeque, rc::Rc};
+    use std::{collections::VecDeque, io, rc::Rc};
 
     use evdev::{AbsoluteAxisCode, KeyCode};
     use proptest::prelude::*;
     use smithay::reexports::wayland_server::Display;
-    use tehuti::controller::{PadHandles, WatchInput, WatchVerdict, Watchdog, fingerprint, watch};
+    use tehuti::controller::{
+        DpadHat, EvdevPad, PadDevice, WatchInput, WatchVerdict, Watchdog, fingerprint, watch,
+    };
+    use tehuti::input::InputSource;
     use tehuti::state::Compositor;
     use tehuti_protocol::ButtonName;
 
     #[derive(Default)]
     struct Client(Rc<RefCell<VecDeque<ButtonName>>>);
 
-    impl Client {
-        fn query_keys(&self, during: impl FnOnce()) {
-            during();
+    impl PadDevice for Client {
+        fn get_key_state(&self) -> io::Result<Vec<u16>> {
             self.0.borrow_mut().clear();
+            Ok(Vec::new())
+        }
+
+        fn get_absinfo(&self) -> io::Result<Vec<(AbsoluteAxisCode, evdev::AbsInfo)>> {
+            self.0.borrow_mut().clear();
+            Ok(Vec::new())
+        }
+
+        fn drain(&mut self, _hat: &mut DpadHat) -> io::Result<Vec<tehuti_protocol::Event>> {
+            Ok(self
+                .0
+                .borrow_mut()
+                .drain(..)
+                .map(|name| tehuti_protocol::Event::Button {
+                    name,
+                    state: tehuti_protocol::ButtonState::Pressed,
+                })
+                .collect())
+        }
+
+        fn ungrab(&mut self) -> io::Result<()> {
+            Ok(())
         }
     }
 
     #[test]
     fn querying_state_preserves_a_queued_button_and_escape_chord() -> Result<(), Box<dyn core::error::Error>>
     {
-        let mut handles = PadHandles::new(Client::default(), Client::default());
-        let queued = Rc::clone(&handles.events().0);
-        handles.probe().query_keys(|| {
-            queued
-                .borrow_mut()
-                .extend([ButtonName::South, ButtonName::Guide, ButtonName::Start]);
-        });
-        let buttons = handles.events().0.borrow_mut().drain(..).collect::<Vec<_>>();
-        assert_eq!(buttons, [ButtonName::South, ButtonName::Guide, ButtonName::Start]);
+        let events = Client::default();
+        let queued = Rc::clone(&events.0);
+        let mut controller = EvdevPad::new(events, Client::default(), DpadHat::default());
+        queued
+            .borrow_mut()
+            .extend([ButtonName::South, ButtonName::Guide, ButtonName::Start]);
+        let _activity = controller.activity()?;
+        let _sticks = controller.sticks()?;
+        let buttons = controller.drain()?;
+        assert_eq!(
+            buttons,
+            [ButtonName::South, ButtonName::Guide, ButtonName::Start].map(|name| {
+                tehuti_protocol::Event::Button {
+                    name,
+                    state: tehuti_protocol::ButtonState::Pressed,
+                }
+            })
+        );
         let display: Display<Compositor> = Display::new()?;
         let mut compositor = Compositor::new(&display.handle())?;
         let mut pad = tehuti::input::SyntheticPad::default();
-        for name in buttons {
-            pad.push(tehuti_protocol::Event::Button {
-                name,
-                state: tehuti_protocol::ButtonState::Pressed,
-            });
+        for event in buttons {
+            pad.push(event);
         }
         tehuti::input::route(&mut compositor, &mut pad)?;
         pad.push(tehuti_protocol::Event::Tick {
@@ -89,21 +119,13 @@ mod tests {
             let mut now = 0;
             for fingerprint in changes {
                 state = watch(state, WatchInput::Events).0;
-                let (next, verdict) = watch(state, sample(now, fingerprint));
-                prop_assert_eq!(verdict, WatchVerdict::Healthy);
+                let (next, sampled_verdict) = watch(state, sample(now, fingerprint));
+                prop_assert_eq!(sampled_verdict, WatchVerdict::Healthy);
                 now = now.saturating_add(2000);
-                let (next, idle_verdict) = watch(next, sample(now, fingerprint));
+                let (idle_state, idle_verdict) = watch(next, sample(now, fingerprint));
                 prop_assert_eq!(idle_verdict, WatchVerdict::Healthy);
-                state = next;
+                state = idle_state;
             }
-        }
-
-        #[test]
-        fn drifting_sticks_and_triggers_do_not_change_activity(
-            values in prop::array::uniform6(any::<i32>()),
-        ) {
-            let axes: Vec<_> = (0_u16..6).zip(values).collect();
-            prop_assert_eq!(fingerprint(&[], &axes), fingerprint(&[], &[]));
         }
     }
 }

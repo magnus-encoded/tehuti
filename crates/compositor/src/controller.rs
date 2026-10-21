@@ -37,7 +37,7 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                     "controller face layout selected"
                 );
                 match Device::open(&path) {
-                    Ok(probe) => Some(EvdevPad(PadHandles::new(device, probe), translator)),
+                    Ok(probe) => Some(EvdevPad::new(device, probe, translator)),
                     Err(error) => {
                         warn!(%error, "controller probe open failed; skipping it");
                         None
@@ -116,7 +116,45 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
 
 /// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
 #[derive(Debug)]
-pub struct EvdevPad(PadHandles<Device>, DpadHat);
+pub struct EvdevPad<D = Device>(PadHandles<D>, DpadHat);
+
+/// Kernel operations used by a controller client.
+pub trait PadDevice {
+    /// Reads held keys.
+    /// # Errors
+    /// The client could not query key state.
+    fn get_key_state(&self) -> io::Result<Vec<u16>>;
+    /// Reads calibrated absolute axes.
+    /// # Errors
+    /// The client could not query axis state.
+    fn get_absinfo(&self) -> io::Result<Vec<(AbsoluteAxisCode, evdev::AbsInfo)>>;
+    /// Reads pending protocol events.
+    /// # Errors
+    /// The client could not read events.
+    fn drain(&mut self, hat: &mut DpadHat) -> io::Result<Vec<Event>>;
+    /// Releases exclusive input ownership.
+    /// # Errors
+    /// The client could not release its grab.
+    fn ungrab(&mut self) -> io::Result<()>;
+}
+
+impl PadDevice for Device {
+    fn get_key_state(&self) -> io::Result<Vec<u16>> {
+        Ok(Self::get_key_state(self)?.iter().map(KeyCode::code).collect())
+    }
+
+    fn get_absinfo(&self) -> io::Result<Vec<(AbsoluteAxisCode, evdev::AbsInfo)>> {
+        Ok(Self::get_absinfo(self)?.collect())
+    }
+
+    fn drain(&mut self, hat: &mut DpadHat) -> io::Result<Vec<Event>> {
+        drain_device(self, hat)
+    }
+
+    fn ungrab(&mut self) -> io::Result<()> {
+        Self::ungrab(self)
+    }
+}
 
 /// Separate event delivery and state-query clients for one controller.
 #[derive(Debug)]
@@ -149,6 +187,15 @@ impl EvdevPad {
     pub fn name(&self) -> &str {
         self.0.events.name().unwrap_or("unnamed")
     }
+}
+
+impl<D: PadDevice> EvdevPad<D> {
+    /// Uses independently opened event and probe clients with the selected layout.
+    #[must_use]
+    pub const fn new(events: D, probe: D, translator: DpadHat) -> Self {
+        Self(PadHandles::new(events, probe), translator)
+    }
+
     /// Samples the current calibrated stick axes, including a 15 percent deadzone.
     /// # Errors
     /// The kernel could not read the controller axis state.
@@ -174,17 +221,12 @@ impl EvdevPad {
     /// # Errors
     /// The kernel could not read the controller state, as when the node is gone.
     pub fn activity(&self) -> io::Result<u64> {
-        let keys: Vec<_> = self
-            .0
-            .probe()
-            .get_key_state()?
-            .iter()
-            .map(KeyCode::code)
-            .collect();
+        let keys = self.0.probe().get_key_state()?;
         let axes: Vec<_> = self
             .0
             .probe()
             .get_absinfo()?
+            .into_iter()
             .map(|(axis, info)| (axis.0, info.value()))
             .collect();
         Ok(fingerprint(&keys, &axes))
@@ -211,13 +253,13 @@ impl AsFd for EvdevPad {
     }
 }
 
-impl InputSource for EvdevPad {
+impl<D: PadDevice> InputSource for EvdevPad<D> {
     fn release(&mut self) -> io::Result<()> {
         self.0.events().ungrab()
     }
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
-        drain_device(self.0.events(), &mut self.1)
+        self.0.events().drain(&mut self.1)
     }
 }
 
