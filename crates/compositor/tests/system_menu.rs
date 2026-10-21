@@ -26,12 +26,12 @@ mod system_menu {
             r#"{"reboot":["command"]}"#,
             r#"unknown = ["command"]"#,
             r#"reboot = [""]"#,
-            r#"reboot = [1]"#,
+            "reboot = [1]",
             r#"reboot = ["bad\u0000name"]"#,
         ] {
             assert!(Config::parse(text).is_err());
         }
-        let config = Config::parse(r#"shut_down = []"#).unwrap();
+        let config = Config::parse("shut_down = []").unwrap();
         assert!(
             config
                 .run(Command::ShutDown, |_, _| panic!("disabled command ran"))
