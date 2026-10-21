@@ -41,6 +41,8 @@ pub struct State {
     guide_tap: Option<core::time::Duration>,
     start_held: bool,
     level: Level,
+    menu: Option<menu::Menu>,
+    menu_buttons: Vec<ButtonName>,
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
 }
@@ -77,6 +79,8 @@ impl State {
             guide_tap: None,
             start_held: false,
             level: Level::InApp,
+            menu: None,
+            menu_buttons: Vec::new(),
             pending: Vec::new(),
             bar: bar::Bar::new(),
         }
@@ -139,10 +143,18 @@ impl State {
     }
 
     /// Cancels controller holds when the device disconnects or the seat pauses.
-    pub const fn controller_disconnected(&mut self) {
+    pub fn controller_disconnected(&mut self) {
         self.guide_held = None;
         self.guide_tap = None;
         self.start_held = false;
+        self.menu = None;
+        self.menu_buttons.clear();
+    }
+
+    /// The system menu, for drawing it independently of plugins.
+    #[must_use]
+    pub const fn menu(&self) -> Option<&menu::Menu> {
+        self.menu.as_ref()
     }
 
     /// Whether Guide is down, so Start belongs to the escape chord.
@@ -205,8 +217,15 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         state.focused_app_id.clone_from(app_id);
         return (state, actions, false);
     }
+    if menu_button_release(&mut state, event) {
+        return (state, Vec::new(), false);
+    }
     if let Some(actions) = escape_chord(&mut state, event) {
         return (state, actions, false);
+    }
+    if state.menu.is_some() {
+        let _command = menu_input(&mut state, event);
+        return (state, Vec::new(), false);
     }
     if let Some(actions) = shoulder_level(&state, event) {
         return (state, actions, false);
@@ -315,31 +334,65 @@ const fn fallback(_event: &Event) -> Option<Action> {
     None
 }
 
+fn menu_button_release(state: &mut State, event: &Event) -> bool {
+    if state.menu.is_none()
+        && let Event::Button { name, state: button } = event
+        && state.menu_buttons.contains(name)
+    {
+        if *button == ButtonState::Released {
+            state.menu_buttons.retain(|held| held != name);
+        }
+        return true;
+    }
+    false
+}
+
+fn menu_input(state: &mut State, event: &Event) -> Option<menu::Command> {
+    if let Event::Button { name, state: button } = event
+        && *name != ButtonName::Start
+    {
+        match button {
+            ButtonState::Pressed if !state.menu_buttons.contains(name) => {
+                state.menu_buttons.push(*name);
+            }
+            ButtonState::Released => state.menu_buttons.retain(|held| held != name),
+            ButtonState::Pressed => {}
+        }
+    }
+    menu::handle(&mut state.menu, event)
+}
+
+fn guide_button(state: &mut State, button_state: ButtonState) {
+    match button_state {
+        ButtonState::Pressed => {
+            if state.menu.take().is_some() {
+                state.guide_tap = None;
+            } else if state.guide_held.is_none() {
+                state.guide_tap = (!state.start_held).then_some(core::time::Duration::ZERO);
+            }
+            let _held = state.guide_held.get_or_insert(core::time::Duration::ZERO);
+        }
+        ButtonState::Released => {
+            state.guide_held = None;
+            if state
+                .guide_tap
+                .take()
+                .is_some_and(|elapsed| elapsed < GUIDE_TAP_WINDOW)
+            {
+                state.level = state.level.toggled();
+                state.bar.set_level(state.level);
+            }
+        }
+    }
+}
+
 fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     match event {
         Event::Button {
             name: ButtonName::Guide,
             state: button_state,
         } => {
-            match button_state {
-                ButtonState::Pressed => {
-                    if state.guide_held.is_none() {
-                        state.guide_tap = (!state.start_held).then_some(core::time::Duration::ZERO);
-                    }
-                    let _held = state.guide_held.get_or_insert(core::time::Duration::ZERO);
-                }
-                ButtonState::Released => {
-                    state.guide_held = None;
-                    if state
-                        .guide_tap
-                        .take()
-                        .is_some_and(|elapsed| elapsed < GUIDE_TAP_WINDOW)
-                    {
-                        state.level = state.level.toggled();
-                        state.bar.set_level(state.level);
-                    }
-                }
-            }
+            guide_button(state, *button_state);
             Some(Vec::new())
         }
         Event::Button {
@@ -358,6 +411,10 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
         Event::Tick { elapsed } => {
             if let Some(tap) = &mut state.guide_tap {
                 *tap = tap.saturating_add(*elapsed);
+            }
+            if !state.start_held && state.guide_tap.is_some_and(|held| held >= GUIDE_TAP_WINDOW) {
+                state.guide_tap = None;
+                state.menu = Some(menu::Menu::default());
             }
             if state.start_held
                 && let Some(held) = &mut state.guide_held
@@ -391,3 +448,4 @@ pub mod layout;
 pub mod bar;
 
 pub mod keyboard;
+pub mod menu;

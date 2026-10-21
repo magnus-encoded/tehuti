@@ -37,9 +37,10 @@ mod step {
             let _actions = run_from(State::with_contexts(contexts), &events);
         }
 
+        // Guide opens a modal menu that consumes A; targeted Guide tests cover that route.
         #[test]
-        fn each_a_press_sends_one_enter_and_nothing_else_reaches_the_client(
-            events in prop::collection::vec(any::<Event>(), 0..200),
+        fn outside_the_menu_each_a_press_sends_one_enter_and_nothing_else_reaches_the_client(
+            events in prop::collection::vec(any::<Event>().prop_filter("outside the system menu", |event| !matches!(event, Event::Button { name: ButtonName::Guide, .. })), 0..200),
         ) {
             let a_presses = events.iter().filter(|event| **event == A_PRESSED).count();
             let keys: Vec<_> = run(&events).into_iter().filter(|action| matches!(action, Action::Key { .. })).collect();

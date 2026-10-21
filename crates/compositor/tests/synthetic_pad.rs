@@ -1162,10 +1162,11 @@ mod synthetic_pad {
                         }
                     }
                     Command::Hold => {
+                        // Guide holds open a modal menu; this model tracks plugin delivery outside it.
                         if let Some(source) = &mut pad {
-                            for name in [ButtonName::South, ButtonName::Guide] {
-                                source.push(Event::Button { name, state: ButtonState::Pressed });
-                            }
+                            source.push(Event::Button {
+                                name: ButtonName::South, state: ButtonState::Pressed,
+                            });
                             route(&mut compositor, source).unwrap();
                         }
                     }
@@ -1539,6 +1540,65 @@ mod synthetic_pad {
     #[test]
     fn changing_to_a_matching_app_id_sends_tab_from_a_synthetic_pad() {
         check_routing("test", 15);
+    }
+
+    fn synthetic_button(name: ButtonName, state: ButtonState) -> Event {
+        Event::Button { name, state }
+    }
+
+    #[test]
+    fn synthetic_guide_taps_and_holds_route_in_every_mode() {
+        for mode in 0..3 {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut pad = SyntheticPad::default();
+            if mode == 1 {
+                for _ in 0..2 {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        pad.push(synthetic_button(ButtonName::Select, state));
+                    }
+                }
+            } else if mode == 2 {
+                pad.push(Event::Speech {
+                    text: tehuti_protocol::Text::new("keyboard".into()).unwrap(),
+                });
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            assert_eq!(compositor.on_screen_keyboard().is_open(), mode == 2);
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(synthetic_button(ButtonName::Guide, state));
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            assert_eq!(compositor.voice_bar().segments().last().unwrap().text, "Columns");
+            assert!(
+                !compositor
+                    .visible_notice_text()
+                    .is_some_and(|text| text.contains("SYSTEM MENU"))
+            );
+            pad.push(synthetic_button(ButtonName::Guide, ButtonState::Pressed));
+            pad.push(Event::Tick {
+                elapsed: Duration::from_millis(500),
+            });
+            pad.push(synthetic_button(ButtonName::Guide, ButtonState::Released));
+            route(&mut compositor, &mut pad).unwrap();
+            assert!(
+                compositor
+                    .visible_notice_text()
+                    .is_some_and(|text| text.contains("SYSTEM MENU"))
+            );
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(synthetic_button(ButtonName::Guide, state));
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            assert!(
+                !compositor
+                    .visible_notice_text()
+                    .is_some_and(|text| text.contains("SYSTEM MENU"))
+            );
+            assert_eq!(compositor.voice_bar().segments().last().unwrap().text, "Columns");
+            assert_eq!(compositor.on_screen_keyboard().is_open(), mode == 2);
+            assert!(!compositor.quit_requested());
+        }
     }
 
     #[test]

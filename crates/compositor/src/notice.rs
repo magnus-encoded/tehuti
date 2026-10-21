@@ -13,12 +13,13 @@ pub fn speech_notice_buffer() -> MemoryRenderBuffer {
 #[must_use]
 pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
     let width = 512usize;
-    let height = 64usize;
+    let lines = text.lines().count().clamp(2, 10);
+    let height = lines.saturating_mul(32);
     let mut pixels = vec![0u8; width.saturating_mul(height).saturating_mul(4)];
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[32, 32, 32, 255]);
     }
-    for (line, line_text) in text.lines().take(2).enumerate() {
+    for (line, line_text) in text.lines().take(10).enumerate() {
         for (letter, character) in line_text.chars().take(40).enumerate() {
             let glyph = glyph(character.to_ascii_uppercase());
             for (row, bits) in glyph.iter().enumerate() {
@@ -51,7 +52,14 @@ pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
             }
         }
     }
-    MemoryRenderBuffer::from_slice(&pixels, Fourcc::Argb8888, (512, 64), 1, Transform::Normal, None)
+    MemoryRenderBuffer::from_slice(
+        &pixels,
+        Fourcc::Argb8888,
+        (512, i32::try_from(height).unwrap_or(64)),
+        1,
+        Transform::Normal,
+        None,
+    )
 }
 
 const fn glyph(character: char) -> [u8; 7] {
@@ -97,6 +105,7 @@ const fn glyph(character: char) -> [u8; 7] {
         '_' => [0, 0, 0, 0, 0, 0, 31],
         '/' => [1, 2, 2, 4, 8, 8, 16],
         '@' => [14, 17, 23, 21, 23, 16, 14],
+        '>' => [16, 8, 4, 2, 4, 8, 16],
         '?' => [14, 17, 1, 2, 4, 0, 4],
         _ => [0; 7],
     }

@@ -300,6 +300,9 @@ impl Compositor {
 
     #[must_use]
     pub fn visible_notice_text(&self) -> Option<String> {
+        if let Some(menu) = self.dispatch.core().menu() {
+            return Some(menu.text());
+        }
         self.secret_confirmation_text()
             .or_else(|| {
                 self.secret_notice_until
@@ -645,7 +648,8 @@ impl Compositor {
                 tracing::info!("push-to-talk ignored: password field active");
                 None
             }
-            effect @ (DispatchEffect::MovePointer { .. }
+            effect @ (DispatchEffect::RunMenuCommand(_)
+            | DispatchEffect::MovePointer { .. }
             | DispatchEffect::Scroll { .. }
             | DispatchEffect::Click { .. }
             | DispatchEffect::MouseMode(_)
@@ -666,10 +670,18 @@ impl Compositor {
         }
     }
 
+    fn run_menu_command(&mut self, command: tehuti_core::menu::Command) {
+        if let Err(error) = crate::system_menu::execute(command) {
+            tracing::warn!(?command, %error, "system menu command failed");
+            self.show_notice("MENU COMMAND UNAVAILABLE");
+        }
+    }
+
     /// Runs an effect that needs no reply; `run_effect` answers the queries.
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::RunMenuCommand(command) => self.run_menu_command(command),
             DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
             DispatchEffect::Scroll { x, y } => self.pointer_scroll(x, y),
             DispatchEffect::Click { button, pressed } => self.pointer_click(button, pressed),
@@ -801,6 +813,9 @@ impl Compositor {
 
     #[must_use]
     pub fn secret_confirmation_text(&self) -> Option<String> {
+        if self.dispatch.core().menu().is_some() {
+            return None;
+        }
         self.secret_confirmation_label
             .as_ref()
             .and_then(|(entry, target)| {

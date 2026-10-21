@@ -90,10 +90,19 @@ States are `pressed` and `released`. Names are `south`, `east`, `north`,
 All names and enum values are case sensitive.
 
 Record (Share) presses and releases control push-to-talk and never reach plugins.
-Guide presses and releases never reach plugins. Holding Guide for three
-seconds requests Quit; releasing early cancels the hold. Other buttons still
-route while Guide is held. South presses send Enter and never reach plugins;
-South releases can reach them. Tick is internal and never crosses the wire.
+Guide presses and releases never reach plugins. A Guide tap shorter than half a
+second switches the focus level; holding Guide for half a second opens the system
+menu. Menu buttons stay consumed through release. B or Guide closes the menu.
+Holding Guide+Start together for three seconds requests Quit, including while the
+menu is open; releasing either button early cancels the escape. Start does not
+route while Guide is held. Outside overlays, South presses send Enter and never
+reach plugins; South releases can reach them. Tick is internal and never crosses
+the wire.
+
+System menu commands use TOML argument lists in
+`$XDG_CONFIG_HOME/tehuti/menu.toml` (or `$HOME/.config/tehuti/menu.toml`).
+`TEHUTI_MENU_CONFIG` overrides the path; `examples/menu.toml` shows the format.
+Commands run without a shell; session and power actions require confirmation.
 
 Reply once with the same id and a list of actions:
 
@@ -390,7 +399,7 @@ Focus changes to `test` while initialization is pending.
 | Plugin → stdout | `{"jsonrpc":"2.0","method":"actions","params":{"actions":[{"type":"key","key":"space"}]}}` |
 | Core → stdin | `{"jsonrpc":"2.0","method":"focus","params":{"app_id":null,"title":""}}` |
 
-The user holds Guide for three seconds. No Guide or Tick message is sent;
+The user holds Guide+Start for three seconds. No chord or Tick message is sent;
 the core requests Quit and terminates the plugin during teardown.
 For a runnable button remapping plugin, see
 [east-to-tab.py](../../examples/plugins/east-to-tab.py). No Tehuti library is

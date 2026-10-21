@@ -66,6 +66,7 @@ pub enum Input {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     PasswordSpeechIgnored,
+    RunMenuCommand(crate::menu::Command),
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
         x: i32,
@@ -254,15 +255,23 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
 /// Advances routing by one input. Performs no I/O.
 #[must_use]
 pub fn step(state: State, input: Input) -> (State, Vec<Effect>) {
+    let menu_open = state.core.menu().is_some();
     let level = state.core.level();
-    let (mut state, effects) = step_input(state, input);
+    let (mut state, mut effects) = step_input(state, input);
+    if !menu_open && state.core.menu().is_some() {
+        state.mouse.release(&mut effects);
+        state.keyboard.release_all();
+        if let Some(frame) = state.frames.last_mut() {
+            frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
+        }
+    }
     if level != crate::Level::InApp && state.core.level() == crate::Level::InApp {
         sync_terminal(&mut state);
         if state.keyboard.terminal() && state.core.terminal_config().1 {
             state.keyboard.open();
         }
     }
-    (state, effects)
+    run(state, effects)
 }
 
 /// Picks the terminal layout when the field or the focused app's context says terminal.
@@ -289,8 +298,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             return (state, effects);
         }
         Input::Sticks(sticks) => {
-            state.keyboard.left_stick(sticks.left.0);
-            state.mouse.sticks = sticks;
+            update_sticks(&mut state, sticks);
             return (state, effects);
         }
         Input::TextField {
@@ -306,10 +314,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             }
         }
         Input::ControllerDisconnected => {
-            state.mouse.disconnect(&mut effects);
-            state.keyboard.release_all();
-            state.opening_button = None;
-            state.core.controller_disconnected();
+            disconnect_controller(&mut state, &mut effects);
             return (state, effects);
         }
         Input::ForegroundProgram(running) => {
@@ -333,6 +338,20 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         awaiting: None,
     });
     run(state, effects)
+}
+
+fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
+    state.mouse.disconnect(effects);
+    state.keyboard.release_all();
+    state.opening_button = None;
+    state.core.controller_disconnected();
+}
+
+fn update_sticks(state: &mut State, sticks: Sticks) {
+    if state.core.menu().is_none() {
+        state.keyboard.left_stick(sticks.left.0);
+        state.mouse.sticks = sticks;
+    }
 }
 
 fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate::keyboard::FieldKind) {
@@ -533,6 +552,7 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
         Task::Controller(event) => controller(state, event, effects),
         Task::Route(event) => {
             if let Event::Tick { elapsed } = event
+                && state.core.menu().is_none()
                 && tick_pad(&mut state.keyboard, &mut state.mouse, elapsed, effects)
             {
                 for button in [ButtonState::Released, ButtonState::Pressed] {
@@ -583,8 +603,56 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
     }
 }
 
+fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if matches!(
+        event,
+        Event::Button {
+            name: ButtonName::Guide,
+            ..
+        }
+    ) {
+        let _response = state.keyboard.button(ButtonName::Guide, start_state(event), true);
+        if let Some(actions) = crate::escape_chord(&mut state.core, event) {
+            effects.extend(actions.into_iter().map(Effect::Apply));
+        }
+        return true;
+    }
+    if state.core.menu().is_some() {
+        if let Some(actions) = crate::escape_chord(&mut state.core, event) {
+            effects.extend(actions.into_iter().map(Effect::Apply));
+        }
+        if let Some(command) = crate::menu_input(&mut state.core, event) {
+            effects.push(Effect::RunMenuCommand(command));
+        }
+        return true;
+    }
+    if state.core.guide_held()
+        && matches!(
+            event,
+            Event::Button {
+                name: ButtonName::Start,
+                ..
+            }
+        )
+    {
+        let _response = state.keyboard.button(ButtonName::Start, start_state(event), true);
+        state.keyboard.cancel_send();
+        if let Some(actions) = crate::escape_chord(&mut state.core, event) {
+            effects.extend(actions.into_iter().map(Effect::Apply));
+        }
+        return true;
+    }
+    false
+}
+
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     sync_terminal(state);
+    if crate::menu_button_release(&mut state.core, &event) {
+        return;
+    }
+    if system_menu(state, &event, effects) {
+        return;
+    }
     if state.keyboard.password_field_active()
         && matches!(
             &event,

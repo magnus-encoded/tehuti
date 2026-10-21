@@ -76,7 +76,8 @@ impl World {
                     Effect::Apply(Action::Close) | Effect::PluginAction(Action::Close) => {
                         state = self.close_focus(state);
                     }
-                    Effect::PasswordSpeechIgnored
+                    Effect::RunMenuCommand(_)
+                    | Effect::PasswordSpeechIgnored
                     | Effect::MovePointer { .. }
                     | Effect::Scroll { .. }
                     | Effect::Click { .. }
@@ -250,7 +251,7 @@ proptest! {
         prop_assert!(supervisions[0] < poll && poll < supervisions[1]);
         let record = event_is(&event, ButtonName::Record);
         let south = event_is(&event, ButtonName::South);
-        if record || (south && secret_consumes) {
+        if record || event_is(&event, ButtonName::Guide) || (south && secret_consumes) {
             prop_assert!(routed.is_none());
         } else {
             prop_assert!(routed.is_some_and(|routed| supervisions[1] < routed));
@@ -810,7 +811,7 @@ proptest! {
     }
 
     #[test]
-    fn guide_and_start_reach_normal_dispatch_in_mouse_mode(
+    fn guide_is_reserved_and_start_routes_in_mouse_mode(
         contexts in arbitrary_contexts(),
         plugin_active in prop::bool::ANY,
         name in prop::sample::select(vec![ButtonName::Guide, ButtonName::Start]),
@@ -825,7 +826,8 @@ proptest! {
         let buttons: Vec<_> = world.trace.iter().filter_map(|effect| {
             if let Effect::QueryPlugin(event @ Event::Button { .. }) = effect { Some(event.clone()) } else { None }
         }).collect();
-        prop_assert_eq!(buttons, vec![Event::Button { name, state: ButtonState::Pressed }, Event::Button { name, state: ButtonState::Released }]);
+        let expected = if name == ButtonName::Guide { vec![] } else { vec![Event::Button { name, state: ButtonState::Pressed }, Event::Button { name, state: ButtonState::Released }] };
+        prop_assert_eq!(buttons, expected);
         prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Click { .. })), "Guide and Start never click");
     }
 }
@@ -1049,6 +1051,11 @@ proptest! {
             if state.keyboard().is_open() {
                 break;
             }
+        }
+        state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
+        if state.core().menu().is_some() {
+            state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+            state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
         }
         let state = world.run(state, speech_event("keyboard"));
         prop_assert!(state.keyboard().is_open());
@@ -1593,4 +1600,109 @@ fn typed_speech_into_a_terminal_drops_commas_and_full_stops() {
             text: Text::new("git status ".into()).unwrap()
         })]
     );
+}
+
+proptest! {
+    #[test]
+    fn guide_gestures_stay_above_contexts_and_plugins_in_every_mode(
+        contexts in arbitrary_contexts(),
+        plugin_active in any::<bool>(),
+    ) {
+        for mode in 0..3 {
+            for millis in [499, 500] {
+                let mut world = World { plugin_active, ..World::default() };
+                let app = contexts[0].app_id().to_owned();
+                let mut state = configured(contexts.clone(), &app);
+                if mode == 1 {
+                    state = tap_button(&mut world, state, ButtonName::Select);
+                    state = tap_button(&mut world, state, ButtonName::Select);
+                    prop_assert!(world.trace.contains(&Effect::MouseMode(true)));
+                } else if mode == 2 {
+                    state = with_open_keyboard(&mut world, state);
+                }
+                world.trace.clear();
+                state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+                state = world.run(state, Input::Tick { elapsed: Duration::from_millis(millis) });
+                state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
+                if millis == 499 {
+                    prop_assert_eq!(state.core().level(), crate::Level::Columns);
+                    prop_assert!(state.core().menu().is_none());
+                } else {
+                    prop_assert_eq!(state.core().level(), crate::Level::InApp);
+                    prop_assert!(state.core().menu().is_some());
+                    state = tap_button(&mut world, state, ButtonName::Guide);
+                    prop_assert!(state.core().menu().is_none());
+                    prop_assert_eq!(state.core().level(), crate::Level::InApp);
+                }
+                prop_assert_eq!(state.keyboard().is_open(), mode == 2);
+                prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
+                    Effect::Apply(_) | Effect::RunMenuCommand(_) | Effect::QueryForegroundProgram
+                    | Effect::Click { .. } | Effect::DispatchPlugin { event: Event::Button { .. }, .. }
+                )), "Guide gestures never reach applications or plugins");
+            }
+        }
+    }
+}
+
+proptest! {
+    #[test]
+    fn menu_reachable_and_escapable_in_every_mode(
+        contexts in arbitrary_contexts(),
+        plugin_active in any::<bool>(),
+        mode in 0u8..3,
+        close_with_guide in any::<bool>(),
+        held in prop::sample::select(vec![ButtonName::DpadDown, ButtonName::Record, ButtonName::South]),
+    ) {
+        let mut world = World { plugin_active, ..World::default() };
+        let app = contexts[0].app_id().to_owned();
+        let mut state = configured(contexts, &app);
+        if mode == 1 {
+            for button in [ButtonState::Pressed, ButtonState::Released, ButtonState::Pressed, ButtonState::Released] {
+                state = world.run(state, pad_button(ButtonName::Select, button));
+            }
+        } else if mode == 2 {
+            state = world.run(state, Input::TextField {
+                active: true, changed: true, kind: crate::keyboard::FieldKind::Terminal,
+            });
+            state = world.run(state, speech_event("keyboard"));
+            prop_assert!(state.keyboard().is_open());
+        }
+        state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+        state = world.run(state, Input::Tick { elapsed: Duration::from_millis(500) });
+        prop_assert!(state.core().menu().is_some());
+        prop_assert_eq!(state.core().level(), crate::Level::InApp);
+        state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
+        world.trace.clear();
+        state = world.run(state, pad_button(held, ButtonState::Pressed));
+        let close = if close_with_guide { ButtonName::Guide } else { ButtonName::East };
+        state = world.run(state, pad_button(close, ButtonState::Pressed));
+        state = world.run(state, pad_button(close, ButtonState::Released));
+        state = world.run(state, pad_button(held, ButtonState::Released));
+        prop_assert!(state.core().menu().is_none());
+        prop_assert_eq!(state.core().level(), crate::Level::InApp);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
+            Effect::Apply(_) | Effect::RunMenuCommand(_) | Effect::QueryForegroundProgram
+            | Effect::Click { .. } | Effect::DispatchPlugin { event: Event::Button { .. }, .. }
+        )), "closing the menu never reaches applications or plugins");
+    }
+
+    #[test]
+    fn emergency_escape_works_without_drawing_or_plugin_replies(
+        contexts in arbitrary_contexts(),
+        plugin_active in any::<bool>(),
+    ) {
+        let mut world = World { plugin_active, ..World::default() };
+        let app = contexts[0].app_id().to_owned();
+        let mut state = configured(contexts, &app);
+        state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+        state = world.run(state, Input::Tick { elapsed: Duration::from_millis(500) });
+        prop_assert!(state.core().menu().is_some());
+        state = world.run(state, pad_button(ButtonName::Start, ButtonState::Pressed));
+        world.trace.clear();
+        state = world.run(state, Input::Tick { elapsed: Duration::from_millis(2999) });
+        prop_assert!(!world.trace.contains(&Effect::Apply(Action::Quit)));
+        let _state = world.run(state, Input::Tick { elapsed: Duration::from_millis(1) });
+        prop_assert!(world.trace.contains(&Effect::Apply(Action::Quit)));
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::RunMenuCommand(_))));
+    }
 }

@@ -139,7 +139,7 @@ impl State {
         single_tap
     }
 
-    fn release(&mut self, effects: &mut Vec<Effect>) {
+    pub(super) fn release(&mut self, effects: &mut Vec<Effect>) {
         for (held, button) in self
             .clicks
             .iter_mut()
