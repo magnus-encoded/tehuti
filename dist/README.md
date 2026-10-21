@@ -40,3 +40,17 @@ Hardware verification: log in to Tehuti, open and control an application, check
 notices, switch away and back to the VT, switch to Plasma, and log out of Plasma
 to return to Tehuti. Check the
 log for DRM and controller errors. These checks require the owner's hardware.
+
+Hold Guide for half a second to open the system menu in any controller mode.
+A shorter tap keeps switching the App/Columns focus level. Use the D-pad to
+select an entry, A to select, and B or Guide to close. Session and power actions
+ask for a second A press; release A between presses. Guide+Start held together
+for three seconds remains the emergency escape while the menu is open.
+
+Menu commands come from `$XDG_CONFIG_HOME/tehuti/menu.json` (or
+`$HOME/.config/tehuti/menu.json`). `TEHUTI_MENU_CONFIG` overrides the file path.
+Each entry is an argument list, executed without a shell. Missing or empty
+entries stay visible but report unavailable when selected. No session or power
+commands run by default. `examples/menu.json` shows neutral placeholder session
+helpers and a task monitor in a terminal; replace them with commands appropriate
+for the installed session. The `plasma` helper must arrange the desktop switch.

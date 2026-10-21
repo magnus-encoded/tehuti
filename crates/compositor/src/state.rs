@@ -300,6 +300,9 @@ impl Compositor {
 
     #[must_use]
     pub fn visible_notice_text(&self) -> Option<String> {
+        if let Some(menu) = self.dispatch.core().menu() {
+            return Some(menu.text());
+        }
         self.secret_confirmation_text()
             .or_else(|| {
                 self.secret_notice_until
@@ -607,6 +610,13 @@ impl Compositor {
 
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         match effect {
+            DispatchEffect::RunMenuCommand(command) => {
+                if let Err(error) = crate::system_menu::execute(command) {
+                    tracing::warn!(?command, %error, "system menu command failed");
+                    self.show_notice("MENU COMMAND UNAVAILABLE");
+                }
+                None
+            }
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
                 tracing::error!("invalid dispatch reply");
@@ -690,7 +700,8 @@ impl Compositor {
             DispatchEffect::Apply(action) => self.apply(&action),
             DispatchEffect::PluginAction(action) => self.apply_plugin_action(&action),
             DispatchEffect::Chord(chord) => self.tap_chord(chord),
-            DispatchEffect::PasswordSpeechIgnored
+            DispatchEffect::RunMenuCommand(_)
+            | DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::ReadClock
             | DispatchEffect::InvalidReply
             | DispatchEffect::PluginRejected(_)

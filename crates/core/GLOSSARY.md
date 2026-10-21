@@ -14,8 +14,13 @@
 | Fallback | The final routing layer, which discards input that earlier layers do not consume. |
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |
-| Escape chord | Holding Guide for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |
+| Escape chord | Holding Guide and Start together for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |
 | Level | What LB and RB drive. In-app (the start state) routes them to the focused app like other buttons; columns moves focus one column left or right. A Guide tap shorter than half a second, with Start untouched, toggles the level; the bar shows it as a chip. Focus changes keep it. |
 | Capture session | A core-owned speech start paired with exactly one stop, independently of sidecar I/O. |
 | Secret destination | One focused surface during one focus generation; returning to the same surface creates a different destination. |
 | Secret confirmation | A one-use controller approval bound to a named reference and secret destination, with a short expiry. |
+
+The system menu opens after holding Guide for half a second. A shorter tap
+keeps switching the focus level. The menu consumes controller input before the
+keyboard, mouse mode, contexts and plugins. B or Guide closes it. Session and
+power commands require confirmation with a second A press.

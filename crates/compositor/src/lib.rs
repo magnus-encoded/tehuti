@@ -37,3 +37,5 @@ pub mod bar;
 mod foreground;
 pub mod osk;
 pub mod wallpaper;
+
+pub mod system_menu;
