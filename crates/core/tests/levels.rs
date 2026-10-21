@@ -87,10 +87,7 @@ mod levels {
 
     #[test]
     fn guide_at_499_ms_taps_and_at_500_ms_opens_the_menu() {
-        for (millis, level, menu_open) in [
-            (499, Level::Columns, false),
-            (500, Level::InApp, true),
-        ] {
+        for (millis, level, menu_open) in [(499, Level::Columns, false), (500, Level::InApp, true)] {
             let (state, actions) = run(
                 State::new(),
                 &[
