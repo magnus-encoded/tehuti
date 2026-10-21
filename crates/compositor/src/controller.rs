@@ -14,13 +14,13 @@ use crate::input::InputSource;
 /// Opens and grabs the first pad with a south face button that no other program holds,
 /// so only Tehuti sees its input. Pads that fail to grab are logged and skipped.
 #[must_use]
-pub fn open_grabbed() -> Option<EvdevPad> {
+pub fn open_grabbed(virtual_pad: Option<&str>) -> Option<EvdevPad> {
     evdev::enumerate()
         .filter(|(path, device)| {
             let sysfs = path
                 .file_name()
                 .and_then(|node| std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok());
-            is_physical(device.input_id().bus_type(), sysfs.as_deref())
+            accepts_pad(device.input_id().bus_type(), sysfs.as_deref(), device.name(), virtual_pad)
         })
         .filter(|(_, device)| {
             device
@@ -48,6 +48,20 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                 warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
                 None
             }
+        })
+}
+
+/// Whether discovery accepts a physical pad or an explicitly named virtual pad.
+#[must_use]
+pub fn accepts_pad(
+    bus: evdev::BusType,
+    sysfs: Option<&std::path::Path>,
+    name: Option<&str>,
+    virtual_pad: Option<&str>,
+) -> bool {
+    is_physical(bus, sysfs)
+        || virtual_pad.is_some_and(|substring| {
+            !substring.is_empty() && name.is_some_and(|name| name.contains(substring))
         })
 }
 

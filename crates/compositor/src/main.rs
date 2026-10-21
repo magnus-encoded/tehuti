@@ -33,6 +33,7 @@ pub(crate) struct LoopData {
     display: Display<Compositor>,
     compositor: Compositor,
     controller: Option<EvdevPad>,
+    virtual_pad: Option<String>,
     controller_token: Option<calloop::RegistrationToken>,
     rescan_controller: bool,
     discovery: controller::Discovery,
@@ -104,6 +105,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
         compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
     }
+    let virtual_pad = std::env::var("TEHUTI_VIRTUAL_PAD").ok();
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
     compositor.set_launch_socket(socket_name.clone());
     if let Err(error) = insert_controller_watch(&event_loop) {
@@ -116,7 +118,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         tehuti::backend::Backend::Nested => nested::insert(&event_loop, &display.handle(), &mut compositor)?,
         tehuti::backend::Backend::Tty => tty::insert(&event_loop, &display.handle(), &mut compositor)?,
     }
-    let attached_controller = insert_controller(&event_loop.handle())?;
+    let attached_controller = insert_controller(&event_loop.handle(), virtual_pad.as_deref())?;
     let (controller, controller_token) =
         attached_controller.map_or((None, None), |(device, token)| (Some(device), Some(token)));
     let discovery = initial_discovery(controller.as_ref(), &mut compositor);
@@ -135,6 +137,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         compositor,
         controller,
         controller_token,
+        virtual_pad,
         rescan_controller: true,
         watchdog: controller::Watchdog::default(),
         discovery,
@@ -222,7 +225,7 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
     );
     data.discovery = state;
     if effect == Some(controller::DiscoveryEffect::Scan) {
-        match insert_controller(handle) {
+        match insert_controller(handle, data.virtual_pad.as_deref()) {
             Ok(Some((device, token))) => {
                 data.controller = Some(device);
                 data.controller_token = Some(token);
@@ -269,8 +272,9 @@ fn insert_wayland_sources(
 
 fn insert_controller(
     handle: &calloop::LoopHandle<'_, LoopData>,
+    virtual_pad: Option<&str>,
 ) -> Result<Option<(EvdevPad, calloop::RegistrationToken)>, Box<dyn Error>> {
-    let Some(device) = controller::open_grabbed() else {
+    let Some(device) = controller::open_grabbed(virtual_pad) else {
         return Ok(None);
     };
     info!(name = device.name(), "controller grabbed");
