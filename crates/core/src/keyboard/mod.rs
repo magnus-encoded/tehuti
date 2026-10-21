@@ -290,8 +290,6 @@ pub enum Response {
     Send(String),
     /// Deliver this draft, which may be empty, then tap the chord.
     Chord(String, Chord),
-    /// B in a terminal: interrupt a foreground program, or close when there is none.
-    InterruptOrClose,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -587,7 +585,6 @@ impl Keyboard {
             ButtonName::South => return self.activate(),
             ButtonName::West => self.backspace(),
             ButtonName::North => self.type_text(" "),
-            ButtonName::East if self.terminal() => return Response::InterruptOrClose,
             ButtonName::East => self.close(),
             ButtonName::Start => self.send_on_start_release = true,
             ButtonName::LeftBumper => self.move_caret(false),
@@ -660,13 +657,14 @@ impl Keyboard {
         self.clamp_highlight();
     }
 
-    /// Terminals run the draft with Enter and keep the keyboard open for the next command.
+    /// Sends the draft and keeps the keyboard open; terminals also tap Enter.
     fn send(&mut self) -> Response {
         if self.terminal() {
             return self.chord(ChordKey::Named(KeyName::Enter));
         }
         let draft = core::mem::take(&mut self.draft);
-        self.close();
+        self.caret = 0;
+        self.word = None;
         if draft.is_empty() {
             Response::Consumed
         } else {

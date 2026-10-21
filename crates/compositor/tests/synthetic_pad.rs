@@ -2875,7 +2875,7 @@ else:
     }
 
     #[test]
-    fn text_input_enablement_controls_keyboard_opening() {
+    fn text_input_enablement_allows_y_without_automatically_opening_the_keyboard() {
         for mode in ["open", "button", "off"] {
             for text_state in [
                 ClientTextState::Enabled,
@@ -2904,9 +2904,7 @@ else:
                 let started = Instant::now();
                 dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
                 let active = matches!(text_state, ClientTextState::Enabled);
-                if active {
-                    assert_eq!(compositor.on_screen_keyboard().is_open(), mode == "open");
-                }
+                assert!(!compositor.on_screen_keyboard().is_open());
                 let mut pad = SyntheticPad::default();
                 for name in [ButtonName::East, ButtonName::North] {
                     for state in [ButtonState::Pressed, ButtonState::Released] {
@@ -2914,7 +2912,10 @@ else:
                     }
                 }
                 route(&mut compositor, &mut pad).unwrap();
-                assert_eq!(compositor.on_screen_keyboard().is_open(), active && mode != "off");
+                assert_eq!(
+                    compositor.on_screen_keyboard().is_open(),
+                    mode == "open" || (active && mode == "button")
+                );
                 for name in [ButtonName::East, ButtonName::South] {
                     for state in [ButtonState::Pressed, ButtonState::Released] {
                         pad.push(Event::Button { name, state });

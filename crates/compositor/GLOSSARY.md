@@ -9,13 +9,13 @@
 | Apply | Carry out an action from the core step, such as sending a key tap to the focused client. |
 | Secret confirmation notice | An overlay naming one secret reference and the focused application before a controller press can authorize lookup. |
 | On-screen keyboard | The compositor's own keyboard overlay, docked low. One highlight moves over the keys with the D-pad, the way console keyboards work. |
-| Draft | The one-row text buffer the keyboard edits, local or mirroring the application. |
+| Draft | The one-row text buffer the keyboard edits, local or mirroring the application. Closing the keyboard discards the local draft. |
 | Synced | A draft that mirrors the application’s own text and edits it live. |
 | Powerline | The bar along the bottom edge of every output. |
 | Chip | One segment of the powerline. |
 | Password mode | The on-screen keyboard for a field the application marks as a password: every character except the last one typed is hidden, and push-to-talk never dictates into it. |
-| Keyboard intent | A sign from a context that the user wants to type, which opens the on-screen keyboard without a dedicated button. |
-| Terminal layout | The on-screen keyboard in a terminal: the normal letters plus a strip of Esc, Tab, latching Ctrl and Alt, arrows and paging keys. B sends Ctrl-C while a program runs in the foreground and closes otherwise. |
+| Keyboard intent | Permission to open the keyboard with Y in an active text field or terminal. A context can allow Y everywhere or pass it to the application. Saying keyboard opens it in any application. |
+| Terminal layout | The on-screen keyboard in a terminal: the normal letters plus a strip of Esc, Tab, latching Ctrl and Alt, arrows and paging keys. B closes it. Enter keeps it open. |
 | Secret destination | One live Wayland surface during one focus generation; secret insertion checks it again after lookup. |
 
 Starting without a controller logs a warning. Discovery continues every 250 ms and on input directory changes until a controller can be grabbed.

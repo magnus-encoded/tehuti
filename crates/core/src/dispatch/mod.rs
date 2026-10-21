@@ -71,8 +71,6 @@ pub enum Input {
     SpeechSent(bool),
     /// Reply to [`Effect::PollSpeech`].
     SpeechPolled(Vec<SpeechInput>),
-    /// Reply to [`Effect::QueryForegroundProgram`].
-    ForegroundProgram(bool),
     /// Continues the waiting frame after effects without a reply.
     Resume,
 }
@@ -122,9 +120,6 @@ pub enum Effect {
     PollSources,
     /// Taps a key with modifiers in the focused client, from the on-screen keyboard.
     Chord(crate::keyboard::Chord),
-    /// Query: does the focused terminal's shell have a program in the foreground?
-    /// Reply [`Input::ForegroundProgram`].
-    QueryForegroundProgram,
     /// Records whether South is held.
     SouthPressed(bool),
     /// Invalidates secret confirmations for the old focus.
@@ -182,7 +177,6 @@ enum Await {
     SecretConfirmation(Event),
     SpeechSent,
     SpeechPolled,
-    ForegroundProgram,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -284,7 +278,6 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
 #[must_use]
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let menu_open = state.core.menu().is_some();
-    let level = state.core.level();
     if matches!(
         &input,
         Input::Event {
@@ -302,12 +295,6 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
         state.keyboard.release_all();
         if let Some(frame) = state.frames.last_mut() {
             frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
-        }
-    }
-    if level != crate::Level::App && state.core.level() == crate::Level::App {
-        sync_terminal(&mut state);
-        if state.keyboard.terminal() && state.core.terminal_config().1 {
-            state.keyboard.open();
         }
     }
     run(state, effects)
@@ -356,10 +343,6 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::ControllerDisconnected => {
             disconnect_controller(&mut state, &mut effects);
             return (state, effects);
-        }
-        Input::ForegroundProgram(running) => {
-            interrupt_or_close(&mut state, running, &mut effects);
-            return run(state, effects);
         }
         reply @ (Input::ClockRead(_)
         | Input::PluginActive(_)
@@ -435,13 +418,6 @@ fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate
     state.text_field = active;
     state.terminal_field = active && kind == crate::keyboard::FieldKind::Terminal;
     sync_terminal(state);
-    if active
-        && changed
-        && !state.keyboard.terminal()
-        && state.core.keyboard_config().0 == tehuti_protocol::OnTextField::Open
-    {
-        state.keyboard.open();
-    }
 }
 
 fn release_passthrough_overlays(state: &mut State, effects: &mut Vec<Effect>) {
@@ -514,22 +490,6 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             let _aborted = state.frames.pop();
             effects.push(Effect::InvalidReply);
         }
-    }
-}
-
-/// Reply to B in a terminal: Ctrl-C for a running foreground program, otherwise close.
-fn interrupt_or_close(state: &mut State, running: bool, effects: &mut Vec<Effect>) {
-    let awaited = state.frames.last_mut().and_then(|frame| {
-        frame
-            .awaiting
-            .take_if(|awaiting| *awaiting == Await::ForegroundProgram)
-    });
-    if awaited.is_none() {
-        resume(state, Input::ForegroundProgram(running), effects);
-    } else if running {
-        effects.push(Effect::Chord(crate::keyboard::Chord::INTERRUPT));
-    } else {
-        state.keyboard.close();
     }
 }
 
@@ -889,12 +849,11 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
             }
             return true;
         }
-        let (mode, opening_button) = state.core.keyboard_config();
+        let (mode, _) = state.core.keyboard_config();
         if !state.keyboard.is_open()
-            && state.text_field
-            && !state.keyboard.terminal()
+            && (state.text_field || state.keyboard.terminal() || mode == tehuti_protocol::OnTextField::Open)
             && mode != tehuti_protocol::OnTextField::Off
-            && *name == opening_button
+            && *name == ButtonName::North
             && *button == ButtonState::Pressed
         {
             state.opening_button = Some(*name);
@@ -925,12 +884,12 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
             if guide_held {
                 state.keyboard.cancel_send();
             }
-            send_response(state, response, effects)
+            send_response(response, effects)
         }
         Event::Button { name, state: button } => {
             let shoulders_move_caret = state.core.level() == crate::Level::App;
             let response = state.keyboard.button(*name, *button, shoulders_move_caret);
-            send_response(state, response, effects)
+            send_response(response, effects)
         }
         Event::Speech { .. } | Event::Focus { .. } | Event::Tick { .. } => false,
     }
@@ -944,7 +903,7 @@ const fn start_state(event: &Event) -> ButtonState {
 }
 
 /// True when the keyboard consumed the button; a send becomes a text action.
-fn send_response(state: &mut State, response: crate::keyboard::Response, effects: &mut Vec<Effect>) -> bool {
+fn send_response(response: crate::keyboard::Response, effects: &mut Vec<Effect>) -> bool {
     match response {
         crate::keyboard::Response::Pass => false,
         crate::keyboard::Response::Consumed => true,
@@ -961,13 +920,6 @@ fn send_response(state: &mut State, response: crate::keyboard::Response, effects
                 effects.push(Effect::Apply(Action::Text { text }));
             }
             effects.push(Effect::Chord(chord));
-            true
-        }
-        crate::keyboard::Response::InterruptOrClose => {
-            if let Some(frame) = state.frames.last_mut() {
-                effects.push(Effect::QueryForegroundProgram);
-                frame.awaiting = Some(Await::ForegroundProgram);
-            }
             true
         }
     }

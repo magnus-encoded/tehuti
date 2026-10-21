@@ -246,7 +246,7 @@ pub struct KeyboardConfig {
     pub button: Option<ButtonName>,
     /// Marks the application as a terminal, for apps that never report a terminal field.
     pub terminal: Option<bool>,
-    /// Whether a Guide tap into the app level opens the keyboard in a terminal.
+    /// Legacy option, accepted without opening on level changes.
     pub open_on_app_level: Option<bool>,
 }
 

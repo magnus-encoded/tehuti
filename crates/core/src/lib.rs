@@ -147,8 +147,7 @@ impl State {
         (mode, button)
     }
 
-    /// Whether the focused app's context marks it a terminal, and whether a Guide tap into
-    /// the app level opens the keyboard there (inherited from the `*` context, default on).
+    /// Whether the focused context marks a terminal, plus its legacy level-opening option.
     #[must_use]
     pub fn terminal_config(&self) -> (bool, bool) {
         let global = self.contexts.iter().find(|context| context.app_id() == "*");
@@ -484,7 +483,6 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
 
 pub mod secret;
 pub mod speech;
-pub mod terminal;
 
 pub mod plugin;
 

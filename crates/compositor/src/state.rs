@@ -121,7 +121,6 @@ pub struct Compositor {
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
     keyboard_reserved: i32,
-    display: DisplayHandle,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -224,7 +223,6 @@ impl Compositor {
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: 0,
-            display: display.clone(),
         };
         compositor
             .keyboard
@@ -592,7 +590,6 @@ impl Compositor {
             | DispatchInput::SecretConfirmation(_)
             | DispatchInput::SpeechSent(_)
             | DispatchInput::SpeechPolled(_)
-            | DispatchInput::ForegroundProgram(_)
             | DispatchInput::Resume => core::time::Duration::ZERO,
         };
         self.dim_elapsed = self.dim_elapsed.saturating_add(elapsed);
@@ -798,9 +795,6 @@ impl Compositor {
             DispatchEffect::PollSpeech(elapsed) => {
                 Some(DispatchInput::SpeechPolled(self.poll_speech(elapsed)))
             }
-            DispatchEffect::QueryForegroundProgram => Some(DispatchInput::ForegroundProgram(
-                self.focused_terminal_runs_program(),
-            )),
             effect @ (DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
             | DispatchEffect::SettingsScale(_)
@@ -890,7 +884,6 @@ impl Compositor {
             | DispatchEffect::QueryPlugin(_)
             | DispatchEffect::DispatchPlugin { .. }
             | DispatchEffect::Supervise
-            | DispatchEffect::QueryForegroundProgram
             | DispatchEffect::ConfirmSecret(_)
             | DispatchEffect::SpeechCommand(_)
             | DispatchEffect::PollSpeech(_) => {}
@@ -1252,17 +1245,6 @@ impl Compositor {
         };
         self.tap_keycode_with_modifiers(keycode, &mods);
         tracing::info!(?chord, "chord delivered to focused window");
-    }
-
-    /// Whether the focused client's shell has a program in the foreground; false when unknown.
-    fn focused_terminal_runs_program(&self) -> bool {
-        let pid = self
-            .keyboard
-            .current_focus()
-            .and_then(|surface| smithay::reexports::wayland_server::Resource::client(&surface))
-            .and_then(|client| client.get_credentials(&self.display).ok())
-            .map(|credentials| credentials.pid);
-        pid.is_some_and(crate::foreground::runs_program)
     }
 
     /// Resolves a keysym name to a keycode in the active layout.
