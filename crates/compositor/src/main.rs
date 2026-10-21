@@ -36,6 +36,7 @@ pub(crate) struct LoopData {
     controller_token: Option<calloop::RegistrationToken>,
     rescan_controller: bool,
     discovery: controller::Discovery,
+    watchdog: controller::Watchdog,
     discovery_epoch: std::time::Instant,
     seat_active: bool,
     log_out: bool,
@@ -120,6 +121,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         controller,
         controller_token,
         rescan_controller: true,
+        watchdog: controller::Watchdog::default(),
         discovery,
         discovery_epoch: std::time::Instant::now(),
         seat_active: true,
@@ -188,6 +190,12 @@ fn initial_discovery(controller: Option<&EvdevPad>, compositor: &mut Compositor)
 fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
     if !data.seat_active || data.compositor.quit_requested() {
         return;
+    }
+    if data.watchdog.take_reopen() && data.controller.is_some() {
+        if let Some(token) = data.controller_token.take() {
+            handle.remove(token);
+        }
+        drop_controller(data);
     }
     let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
     let (state, effect) = controller::discover(
@@ -325,23 +333,40 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     let Some(device) = data.controller.as_mut() else {
         return PostAction::Remove;
     };
-    match input::route(&mut data.compositor, device) {
-        Ok(()) => PostAction::Continue,
-        Err(error) => {
-            error!(%error, "controller read failed; dropping it");
-            data.controller = None;
-            data.controller_token = None;
-            let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
-            data.discovery = controller::discover(
-                state,
-                controller::DiscoveryInput::Disconnected {
-                    now: data.discovery_epoch.elapsed(),
-                },
+    match input::route_counted(&mut data.compositor, device) {
+        Ok(0) => PostAction::Continue,
+        Ok(_) => {
+            data.watchdog = controller::watch(
+                core::mem::take(&mut data.watchdog),
+                controller::WatchInput::Events,
             )
             .0;
+            PostAction::Continue
+        }
+        Err(error) => {
+            error!(%error, "controller read failed; dropping it");
+            drop_controller(data);
             PostAction::Remove
         }
     }
+}
+
+fn drop_controller(data: &mut LoopData) {
+    data.controller = None;
+    data.controller_token = None;
+    data.watchdog = controller::Watchdog::default();
+    data.compositor
+        .speech_input(tehuti_core::speech::SpeechInput::Disconnected);
+    data.compositor
+        .controller_input(tehuti_core::controller::Input::Disconnected);
+    let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+    data.discovery = controller::discover(
+        state,
+        controller::DiscoveryInput::Disconnected {
+            now: data.discovery_epoch.elapsed(),
+        },
+    )
+    .0;
 }
 
 fn advance_time(data: &mut LoopData) {
@@ -352,6 +377,28 @@ fn advance_time(data: &mut LoopData) {
                 data.compositor
                     .sample_sticks(tehuti_core::dispatch::Sticks::default());
                 warn!(%error, "controller stick sample failed");
+                data.watchdog.request_reopen();
+            }
+        }
+    }
+    if let Some(pad) = &data.controller {
+        match pad.activity() {
+            Ok(fingerprint) => {
+                let (watchdog, verdict) = controller::watch(
+                    core::mem::take(&mut data.watchdog),
+                    controller::WatchInput::Sample {
+                        now: data.discovery_epoch.elapsed(),
+                        fingerprint,
+                    },
+                );
+                data.watchdog = watchdog;
+                if verdict == controller::WatchVerdict::Reopen {
+                    data.watchdog.request_reopen();
+                }
+            }
+            Err(error) => {
+                warn!(%error, "controller state query failed");
+                data.watchdog.request_reopen();
             }
         }
     }

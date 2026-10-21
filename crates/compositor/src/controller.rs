@@ -37,7 +37,7 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                     "controller face layout selected"
                 );
                 match Device::open(&path) {
-                    Ok(probe) => Some(EvdevPad(device, translator, probe)),
+                    Ok(probe) => Some(EvdevPad(PadHandles::new(device, probe), translator)),
                     Err(error) => {
                         warn!(%error, "controller probe open failed; skipping it");
                         None
@@ -116,12 +116,38 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
 
 /// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
 #[derive(Debug)]
-pub struct EvdevPad(Device, DpadHat, Device);
+pub struct EvdevPad(PadHandles<Device>, DpadHat);
+
+/// Separate event delivery and state-query clients for one controller.
+#[derive(Debug)]
+pub struct PadHandles<D> {
+    events: D,
+    probe: D,
+}
+
+impl<D> PadHandles<D> {
+    /// Uses independently opened clients for events and state queries.
+    #[must_use]
+    pub const fn new(events: D, probe: D) -> Self {
+        Self { events, probe }
+    }
+
+    /// Borrows the event client for draining or releasing the grab.
+    pub const fn events(&mut self) -> &mut D {
+        &mut self.events
+    }
+
+    /// Borrows the ungrabbed client for state queries.
+    #[must_use]
+    pub const fn probe(&self) -> &D {
+        &self.probe
+    }
+}
 
 impl EvdevPad {
     #[must_use]
     pub fn name(&self) -> &str {
-        self.0.name().unwrap_or("unnamed")
+        self.0.events.name().unwrap_or("unnamed")
     }
     /// Samples the current calibrated stick axes, including a 15 percent deadzone.
     /// # Errors
@@ -129,7 +155,7 @@ impl EvdevPad {
     pub fn sticks(&self) -> io::Result<tehuti_core::dispatch::Sticks> {
         use evdev::AbsoluteAxisCode;
         let mut sticks = tehuti_core::dispatch::Sticks::default();
-        for (axis, info) in self.2.get_absinfo()? {
+        for (axis, info) in self.0.probe().get_absinfo()? {
             let value = stick_axis(info.value(), info.minimum(), info.maximum());
             match axis {
                 AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
@@ -148,9 +174,16 @@ impl EvdevPad {
     /// # Errors
     /// The kernel could not read the controller state, as when the node is gone.
     pub fn activity(&self) -> io::Result<u64> {
-        let keys: Vec<_> = self.2.get_key_state()?.iter().map(KeyCode::code).collect();
+        let keys: Vec<_> = self
+            .0
+            .probe()
+            .get_key_state()?
+            .iter()
+            .map(KeyCode::code)
+            .collect();
         let axes: Vec<_> = self
-            .2
+            .0
+            .probe()
             .get_absinfo()?
             .map(|(axis, info)| (axis.0, info.value()))
             .collect();
@@ -158,9 +191,9 @@ impl EvdevPad {
     }
 }
 
-/// Hashes held keys and hat axes. Sticks and triggers are left out: they drift
-/// without yielding routed events, so hashing them made an idle pad look dead.
-fn fingerprint(keys: &[u16], axes: &[(u16, i32)]) -> u64 {
+/// Hashes held keys and D-pad hats, excluding sampled sticks and triggers.
+#[must_use]
+pub fn fingerprint(keys: &[u16], axes: &[(u16, i32)]) -> u64 {
     use core::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     keys.hash(&mut hasher);
@@ -174,17 +207,17 @@ fn fingerprint(keys: &[u16], axes: &[(u16, i32)]) -> u64 {
 
 impl AsFd for EvdevPad {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
+        self.0.events.as_fd()
     }
 }
 
 impl InputSource for EvdevPad {
     fn release(&mut self) -> io::Result<()> {
-        self.0.ungrab()
+        self.0.events().ungrab()
     }
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
-        drain_device(&mut self.0, &mut self.1)
+        drain_device(self.0.events(), &mut self.1)
     }
 }
 
@@ -532,6 +565,76 @@ pub fn discover(state: Discovery, input: DiscoveryInput) -> (Discovery, Option<D
             (Discovery::Attached, Some(DiscoveryEffect::Reconnected))
         }
         (state, _) => (state, None),
+    }
+}
+
+/// How long kernel-side activity may go without a routed event before the pad is re-opened.
+pub const SILENCE_LIMIT: core::time::Duration = core::time::Duration::from_secs(1);
+
+/// Notices a grabbed pad whose kernel state changes while none of its events reach us.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Watchdog {
+    fingerprint: Option<u64>,
+    unanswered_since: Option<core::time::Duration>,
+    reopen: bool,
+}
+
+impl Watchdog {
+    /// Asks the event loop to drop and re-open the pad, as after a failed read.
+    pub const fn request_reopen(&mut self) {
+        self.reopen = true;
+    }
+
+    /// Takes a pending re-open request.
+    pub const fn take_reopen(&mut self) -> bool {
+        core::mem::replace(&mut self.reopen, false)
+    }
+}
+
+/// What the watchdog observes from the event loop.
+#[derive(Debug, Clone, Copy)]
+pub enum WatchInput {
+    /// The pad's activity fingerprint, sampled at `now`.
+    Sample {
+        now: core::time::Duration,
+        fingerprint: u64,
+    },
+    /// At least one event was read from the pad.
+    Events,
+}
+
+/// Whether the pad must be dropped and re-opened.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WatchVerdict {
+    Healthy,
+    Reopen,
+}
+
+/// Advances the watchdog. Performs no I/O.
+#[must_use]
+pub fn watch(mut state: Watchdog, input: WatchInput) -> (Watchdog, WatchVerdict) {
+    match input {
+        WatchInput::Events => {
+            state.unanswered_since = None;
+            state.fingerprint = None;
+            (state, WatchVerdict::Healthy)
+        }
+        WatchInput::Sample { now, fingerprint } => {
+            let previous = state.fingerprint.replace(fingerprint);
+            if previous.is_some_and(|previous| previous != fingerprint) {
+                let _first = state.unanswered_since.get_or_insert(now);
+            }
+            let verdict = if !state.reopen
+                && state
+                    .unanswered_since
+                    .is_some_and(|since| now.saturating_sub(since) >= SILENCE_LIMIT)
+            {
+                WatchVerdict::Reopen
+            } else {
+                WatchVerdict::Healthy
+            };
+            (state, verdict)
+        }
     }
 }
 
