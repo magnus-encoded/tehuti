@@ -52,17 +52,17 @@ mod levels {
     }
 
     #[test]
-    fn starts_in_app_and_shows_it() {
+    fn starts_at_app_level_and_shows_it() {
         let state = State::new();
-        assert_eq!(state.level(), Level::InApp);
-        assert_eq!(bar_level(&state), "App");
+        assert_eq!(state.level(), Level::App);
+        assert_eq!(bar_level(&state), "app level");
     }
 
     #[test]
     fn columns_level_moves_column_focus() {
         let (state, toggled) = run(State::new(), &tap());
         assert_eq!(toggled, Vec::new());
-        assert_eq!(bar_level(&state), "Columns");
+        assert_eq!(bar_level(&state), "columns level");
         let (_, actions) = run(
             state,
             &[
@@ -87,7 +87,7 @@ mod levels {
 
     #[test]
     fn guide_at_499_ms_taps_and_at_500_ms_opens_the_menu() {
-        for (millis, level, menu_open) in [(499, Level::Columns, false), (500, Level::InApp, true)] {
+        for (millis, level, menu_open) in [(499, Level::Columns, false), (500, Level::App, true)] {
             let (state, actions) = run(
                 State::new(),
                 &[
@@ -112,7 +112,7 @@ mod levels {
                 events.push(button(ButtonName::Guide, ButtonState::Released));
             }
             let (state, _) = run(State::new(), &events);
-            let expected = if taps % 2 == 0 { Level::InApp } else { Level::Columns };
+            let expected = if taps % 2 == 0 { Level::App } else { Level::Columns };
             prop_assert_eq!(state.level(), expected);
         }
 
@@ -128,7 +128,7 @@ mod levels {
             events.push(button(ButtonName::Start, ButtonState::Released));
             let (state, actions) = run(State::new(), &events);
             prop_assert_eq!(actions, vec![Action::Quit]);
-            prop_assert_eq!(state.level(), Level::InApp);
+            prop_assert_eq!(state.level(), Level::App);
         }
 
         #[test]
@@ -137,7 +137,7 @@ mod levels {
             events.extend(apps.iter().map(|app| focus(app)));
             let (state, _) = run(State::new(), &events);
             prop_assert_eq!(state.level(), Level::Columns);
-            prop_assert_eq!(bar_level(&state), "Columns");
+            prop_assert_eq!(bar_level(&state), "columns level");
         }
     }
 }

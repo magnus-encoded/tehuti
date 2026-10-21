@@ -246,8 +246,56 @@ pub struct KeyboardConfig {
     pub button: Option<ButtonName>,
     /// Marks the application as a terminal, for apps that never report a terminal field.
     pub terminal: Option<bool>,
-    /// Whether a Guide tap into the in-app level opens the keyboard in a terminal.
-    pub open_on_in_app_level: Option<bool>,
+    /// Whether a Guide tap into the app level opens the keyboard in a terminal.
+    pub open_on_app_level: Option<bool>,
+}
+
+/// The fraction of a window's colour retained while dimmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "f32")]
+pub struct DimStrength(u16);
+
+impl DimStrength {
+    #[must_use]
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "validated thousandths become a colour multiplier"
+    )]
+    pub fn multiplier(self) -> f32 {
+        f32::from(self.0) / 1000.0
+    }
+}
+
+impl From<DimStrength> for f32 {
+    fn from(value: DimStrength) -> Self {
+        value.multiplier()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DimStrength {
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::float_arithmetic,
+        reason = "finite unit interval is rounded into bounded thousandths"
+    )]
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f32::deserialize(deserializer)?;
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(serde::de::Error::custom("dim strength must be between 0 and 1"));
+        }
+        Ok(Self((value * 1000.0).round() as u16))
+    }
+}
+
+/// Optional overrides of the global level dimming policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DimConfig {
+    pub enabled: Option<bool>,
+    pub strength: Option<DimStrength>,
+    pub fade_ms: Option<u16>,
 }
 
 /// An exact application-id match and its pressed-button mappings.
@@ -258,9 +306,15 @@ pub struct Context {
     speech: std::collections::HashMap<String, MappingAction>,
     unmatched_speech: Option<UnmatchedSpeech>,
     keyboard: KeyboardConfig,
+    dim: DimConfig,
 }
 
 impl Context {
+    #[must_use]
+    pub const fn dim(&self) -> &DimConfig {
+        &self.dim
+    }
+
     #[must_use]
     pub const fn keyboard(&self) -> &KeyboardConfig {
         &self.keyboard
@@ -336,6 +390,8 @@ struct ContextFile {
     unmatched_speech: Option<UnmatchedSpeech>,
     #[serde(default)]
     keyboard: KeyboardConfig,
+    #[serde(default)]
+    dim: DimConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -430,6 +486,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         speech,
         unmatched_speech: context.unmatched_speech,
         keyboard: context.keyboard,
+        dim: context.dim,
     })
 }
 

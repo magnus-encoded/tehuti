@@ -95,8 +95,8 @@ the client enables another field. `"off"` disables field opening. Saying
 
 A terminal is an application whose field reports the terminal purpose, or one
 whose context sets `terminal = true`. Focusing a terminal never opens the
-keyboard, and neither does the opening button. A Guide tap into the in-app
-level opens it unless `open_on_in_app_level = false`. A terminal keeps the
+keyboard, and neither does the opening button. A Guide tap into the app
+level opens it unless `open_on_app_level = false`. A terminal keeps the
 normal letters and adds a strip row above them: Esc, Tab, Ctrl, Alt, the arrow
 keys, Page Up, Page Down, `/`, `-`, `|` and `~`. Strip keys send the draft and
 then tap the key. Ctrl and Alt latch for the next key, strip key or letter, so
@@ -106,3 +106,23 @@ open for the next command. B sends Ctrl-C while the shell has
 a program in the foreground and closes the keyboard otherwise. Inside tmux,
 screen or ssh, B always closes. Dictation into a terminal drops commas and full
 stops that end a word.
+
+## Level dimming
+
+At the app level, other visible application windows and their popups dim. The
+columns level leaves every window bright. One visible window stays bright.
+The powerline, notices, launcher, settings and keyboard stay bright.
+
+The global `*` context supplies defaults; each application's context can override
+individual values. Context reload applies these values without restarting.
+
+```toml
+[dim]
+enabled = true
+strength = 0.67
+fade_ms = 100
+```
+
+`strength` is the retained colour fraction, between 0 and 1, rounded to
+thousandths. `fade_ms` is the time to full dimming in milliseconds (0 to 65535).
+The defaults shown above apply when the values are absent.

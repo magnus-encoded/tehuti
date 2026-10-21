@@ -16,6 +16,8 @@ pub struct LayoutWindow {
     window: Window,
     size: Rc<Cell<Size<i32, Logical>>>,
     size_held: Rc<Cell<bool>>,
+    brightness: Rc<Cell<f32>>,
+    dim_revision: Rc<Cell<usize>>,
     /// Output overlaps reported while the surface had no buffer yet.
     deferred: Rc<RefCell<Vec<Deferred>>>,
 }
@@ -26,7 +28,15 @@ impl LayoutWindow {
             window,
             size: Rc::new(Cell::new(Size::default())),
             size_held: Rc::new(Cell::new(false)),
+            brightness: Rc::new(Cell::new(1.0)),
+            dim_revision: Rc::new(Cell::new(0)),
             deferred: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    pub fn set_brightness(&self, brightness: f32) {
+        if self.brightness.replace(brightness).to_bits() != brightness.to_bits() {
+            self.dim_revision.set(self.dim_revision.get().wrapping_add(1));
         }
     }
 
@@ -134,7 +144,7 @@ impl<Render: Renderer + ImportAll> AsRenderElements<Render> for LayoutWindow
 where
     Window: AsRenderElements<Render>,
 {
-    type RenderElement = <Window as AsRenderElements<Render>>::RenderElement;
+    type RenderElement = crate::dim::DimElement<<Window as AsRenderElements<Render>>::RenderElement>;
 
     fn render_elements<Element: From<Self::RenderElement>>(
         &self,
@@ -143,6 +153,16 @@ where
         scale: Scale<f64>,
         alpha: f32,
     ) -> Vec<Element> {
-        self.window.render_elements(renderer, location, scale, alpha)
+        self.window
+            .render_elements(renderer, location, scale, alpha)
+            .into_iter()
+            .map(|surface| {
+                Element::from(crate::dim::DimElement {
+                    surface,
+                    brightness: self.brightness.get(),
+                    revision: self.dim_revision.get(),
+                })
+            })
+            .collect()
     }
 }
