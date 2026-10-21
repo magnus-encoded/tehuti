@@ -605,9 +605,7 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
             ..
         }
     ) {
-        let _response = state
-            .keyboard
-            .button(ButtonName::Guide, start_state(event), true);
+        let _response = state.keyboard.button(ButtonName::Guide, start_state(event), true);
         if let Some(actions) = crate::escape_chord(&mut state.core, event) {
             effects.extend(actions.into_iter().map(Effect::Apply));
         }
@@ -631,9 +629,7 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
             }
         )
     {
-        let _response = state
-            .keyboard
-            .button(ButtonName::Start, start_state(event), true);
+        let _response = state.keyboard.button(ButtonName::Start, start_state(event), true);
         state.keyboard.cancel_send();
         if let Some(actions) = crate::escape_chord(&mut state.core, event) {
             effects.extend(actions.into_iter().map(Effect::Apply));

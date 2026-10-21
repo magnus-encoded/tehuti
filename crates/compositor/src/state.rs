@@ -812,6 +812,9 @@ impl Compositor {
 
     #[must_use]
     pub fn secret_confirmation_text(&self) -> Option<String> {
+        if self.dispatch.core().menu().is_some() {
+            return None;
+        }
         self.secret_confirmation_label
             .as_ref()
             .and_then(|(entry, target)| {
