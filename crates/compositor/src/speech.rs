@@ -10,6 +10,8 @@ use std::{
 use tehuti_core::speech::{SpeechEffect, SpeechFailure, SpeechInput};
 use tehuti_protocol::{MAX_MESSAGE_BYTES, Text};
 
+const CAPTURE_TAIL: core::time::Duration = core::time::Duration::from_millis(300);
+
 #[derive(Debug)]
 struct Running {
     child: Child,
@@ -19,6 +21,7 @@ struct Running {
     input: Vec<u8>,
     ready: bool,
     age: core::time::Duration,
+    tail: Option<(u64, core::time::Duration)>,
 }
 
 impl Drop for Running {
@@ -93,6 +96,7 @@ impl SpeechProcess {
                 input: Vec::new(),
                 ready: false,
                 age: core::time::Duration::ZERO,
+                tail: None,
             }),
             Err(error) => {
                 terminate(&mut child);
@@ -115,16 +119,29 @@ impl SpeechProcess {
                 return Ok(());
             }
         };
-        let bytes = serde_json::to_vec(&value)?;
         let running = self
             .running
             .as_mut()
             .ok_or_else(|| io::Error::other("speech unavailable"))?;
-        if running.output.len().saturating_add(bytes.len()).saturating_add(1) > MAX_MESSAGE_BYTES {
-            return Err(io::Error::other("speech output queue full"));
+        if let SpeechEffect::Stop {
+            session,
+            transcribe: true,
+        } = effect
+        {
+            running.tail = Some((*session, CAPTURE_TAIL));
+            return Ok(());
         }
-        running.output.extend(bytes);
-        running.output.push_back(b'\n');
+        let mut bytes = Vec::new();
+        if let Some((session, _)) = running.tail {
+            bytes.extend(serde_json::to_vec(
+                &serde_json::json!({"stop": session, "transcribe": false}),
+            )?);
+            bytes.push(b'\n');
+        }
+        bytes.extend(serde_json::to_vec(&value)?);
+        bytes.push(b'\n');
+        running.queue(&bytes)?;
+        running.tail = None;
         Ok(())
     }
 
@@ -166,7 +183,7 @@ impl SpeechProcess {
         if running.age >= core::time::Duration::from_secs(60) {
             self.failures = 0;
         }
-        match running.poll() {
+        match running.poll(elapsed) {
             Ok(inputs) => {
                 if self.outage && running.ready {
                     self.outage = false;
@@ -185,7 +202,32 @@ impl SpeechProcess {
 }
 
 impl Running {
-    fn poll(&mut self) -> io::Result<Vec<SpeechInput>> {
+    fn queue(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if self.output.len().saturating_add(bytes.len()) > MAX_MESSAGE_BYTES {
+            return Err(io::Error::other("speech output queue full"));
+        }
+        self.output.extend(bytes);
+        Ok(())
+    }
+
+    fn advance_tail(&mut self, elapsed: core::time::Duration) -> io::Result<()> {
+        if let Some((session, remaining)) = self.tail {
+            let remaining = remaining.saturating_sub(elapsed);
+            if remaining.is_zero() {
+                let mut bytes =
+                    serde_json::to_vec(&serde_json::json!({"stop": session, "transcribe": true}))?;
+                bytes.push(b'\n');
+                self.queue(&bytes)?;
+                self.tail = None;
+            } else {
+                self.tail = Some((session, remaining));
+            }
+        }
+        Ok(())
+    }
+
+    fn poll(&mut self, elapsed: core::time::Duration) -> io::Result<Vec<SpeechInput>> {
+        self.advance_tail(elapsed)?;
         if let Some(status) = self.child.try_wait()? {
             tracing::warn!(%status, "speech sidecar exited");
             return Err(io::Error::other(format!("speech exited: {status}")));

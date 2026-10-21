@@ -29,6 +29,104 @@ mod speech_process {
     }
 
     #[test]
+    fn release_keeps_capturing_speech_in_the_tail() {
+        let directory = tempfile::tempdir().unwrap();
+        let audio = directory.path().join("audio");
+        std::fs::write(&audio, "").unwrap();
+        let mut process = child(&format!(
+            r"import sys,json,pathlib
+audio=pathlib.Path({:?})
+print(json.dumps({{'ready':True}}),flush=True)
+for line in sys.stdin:
+ c=json.loads(line)
+ if 'stop' in c and c['transcribe']:
+  print(json.dumps({{'session':c['stop'],'text':audio.read_text()}}),flush=True)
+",
+            audio.to_string_lossy()
+        ));
+        wait_for(&mut process, &SpeechInput::Available);
+        process.send(&SpeechEffect::Start { session: 0 }).unwrap();
+        process
+            .send(&SpeechEffect::Stop {
+                session: 0,
+                transcribe: true,
+            })
+            .unwrap();
+        assert_eq!(process.poll(Duration::from_millis(299)), vec![]);
+        for _attempt in 0..20 {
+            assert!(
+                process.poll(Duration::ZERO).is_empty(),
+                "capture stopped before the tail ended"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::fs::write(&audio, "last words").unwrap();
+        let expected = SpeechInput::Transcript {
+            session: 0,
+            text: Text::new("last words".into()).unwrap(),
+        };
+        let inputs = process.poll(Duration::from_millis(1));
+        if !inputs.contains(&expected) {
+            wait_for(&mut process, &expected);
+        }
+    }
+
+    #[test]
+    fn press_during_tail_discards_old_capture_and_starts_cleanly() {
+        let mut process = child(
+            r"import sys,json
+clean=False
+active=None
+print(json.dumps({'ready':True}),flush=True)
+for line in sys.stdin:
+ c=json.loads(line)
+ if 'stop' in c:
+  clean=not c['transcribe']
+  if active==c['stop']:
+   active=None
+   if c['transcribe']:
+    print(json.dumps({'session':c['stop'],'text':'new words'}),flush=True)
+ if 'start' in c:
+  active=c['start']
+  if active==1:
+   print(json.dumps({'session':1,'interim':'clean' if clean else 'old capture'}),flush=True)
+",
+        );
+        wait_for(&mut process, &SpeechInput::Available);
+        process.send(&SpeechEffect::Start { session: 0 }).unwrap();
+        process
+            .send(&SpeechEffect::Stop {
+                session: 0,
+                transcribe: true,
+            })
+            .unwrap();
+        let _inputs = process.poll(Duration::from_millis(100));
+        process.send(&SpeechEffect::Start { session: 1 }).unwrap();
+        wait_for(
+            &mut process,
+            &SpeechInput::Interim {
+                session: 1,
+                text: Text::new("clean".into()).unwrap(),
+            },
+        );
+        assert_eq!(process.poll(Duration::from_millis(300)), vec![]);
+        process
+            .send(&SpeechEffect::Stop {
+                session: 1,
+                transcribe: true,
+            })
+            .unwrap();
+        let expected = SpeechInput::Transcript {
+            session: 1,
+            text: Text::new("new words".into()).unwrap(),
+        };
+        let inputs = process.poll(Duration::from_millis(300));
+        if !inputs.contains(&expected) {
+            wait_for(&mut process, &expected);
+        }
+    }
+
+    #[test]
     fn hanging_child_leaves_button_and_escape_routing_available() {
         let mut process = child("import time\nprint('{\"ready\":true}', flush=True)\ntime.sleep(60)");
         wait_for(&mut process, &SpeechInput::Available);
