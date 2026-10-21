@@ -143,7 +143,7 @@ impl State {
     }
 
     /// Cancels controller holds when the device disconnects or the seat pauses.
-    pub const fn controller_disconnected(&mut self) {
+    pub fn controller_disconnected(&mut self) {
         self.guide_held = None;
         self.guide_tap = None;
         self.start_held = false;
