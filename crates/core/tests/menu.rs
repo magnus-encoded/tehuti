@@ -53,12 +53,12 @@ mod menu {
     }
 
     #[test]
-    fn up_wraps_to_task_monitor() {
+    fn up_wraps_to_settings() {
         let mut menu = Some(Menu::default());
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
         assert_eq!(
             button(&mut menu, ButtonName::South, ButtonState::Pressed),
-            Some(Command::TaskMonitor)
+            Some(Command::Settings)
         );
         assert!(menu.is_none());
     }

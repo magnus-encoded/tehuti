@@ -76,7 +76,9 @@ impl World {
                     Effect::Apply(Action::Close) | Effect::PluginAction(Action::Close) => {
                         state = self.close_focus(state);
                     }
-                    Effect::RunMenuCommand(_)
+                    Effect::SettingsMode(_)
+                    | Effect::PersistMode(_)
+                    | Effect::RunMenuCommand(_)
                     | Effect::PasswordSpeechIgnored
                     | Effect::MovePointer { .. }
                     | Effect::Scroll { .. }
@@ -1636,7 +1638,9 @@ proptest! {
                 }
                 prop_assert_eq!(state.keyboard().is_open(), mode == 2);
                 prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
-                    Effect::Apply(_) | Effect::RunMenuCommand(_) | Effect::QueryForegroundProgram
+                    Effect::Apply(_) | Effect::SettingsMode(_)
+                    | Effect::PersistMode(_)
+                    | Effect::RunMenuCommand(_) | Effect::QueryForegroundProgram
                     | Effect::Click { .. } | Effect::DispatchPlugin { event: Event::Button { .. }, .. }
                 )), "Guide gestures never reach applications or plugins");
             }
@@ -1681,7 +1685,9 @@ proptest! {
         prop_assert!(state.core().menu().is_none());
         prop_assert_eq!(state.core().level(), crate::Level::InApp);
         prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
-            Effect::Apply(_) | Effect::RunMenuCommand(_) | Effect::QueryForegroundProgram
+            Effect::Apply(_) | Effect::SettingsMode(_)
+                    | Effect::PersistMode(_)
+                    | Effect::RunMenuCommand(_) | Effect::QueryForegroundProgram
             | Effect::Click { .. } | Effect::DispatchPlugin { event: Event::Button { .. }, .. }
         )), "closing the menu never reaches applications or plugins");
     }
@@ -1703,6 +1709,395 @@ proptest! {
         prop_assert!(!world.trace.contains(&Effect::Apply(Action::Quit)));
         let _state = world.run(state, Input::Tick { elapsed: Duration::from_millis(1) });
         prop_assert!(world.trace.contains(&Effect::Apply(Action::Quit)));
-        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::RunMenuCommand(_))));
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SettingsMode(_)
+                    | Effect::PersistMode(_)
+                    | Effect::RunMenuCommand(_))));
     }
+}
+
+fn settings_event(world: &mut World, state: State, event: Event) -> State {
+    world.run(
+        state,
+        Input::Event {
+            event,
+            elapsed: Duration::ZERO,
+        },
+    )
+}
+
+fn open_display(world: &mut World) -> State {
+    let state = world.run(
+        State::default(),
+        Input::DisplayModes {
+            modes: vec![
+                "1920x1080@60".into(),
+                "3840x2160@60".into(),
+                "3840x2160@120".into(),
+            ],
+            current: 0,
+        },
+    );
+    let state = settings_event(
+        world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood.".into()).unwrap(),
+        },
+    );
+    settings_button(world, state, ButtonName::South)
+}
+
+fn settings_button(world: &mut World, state: State, name: ButtonName) -> State {
+    let state = settings_event(
+        world,
+        state,
+        Event::Button {
+            name,
+            state: ButtonState::Released,
+        },
+    );
+    settings_event(
+        world,
+        state,
+        Event::Button {
+            name,
+            state: ButtonState::Pressed,
+        },
+    )
+}
+
+#[test]
+fn settings_navigation_is_bounded_and_consumes_client_input() {
+    let mut world = World::default();
+    let mut state = open_display(&mut world);
+    assert!(state.settings().open);
+    assert!(state.settings().display);
+    world.trace.clear();
+    for _ in 0..5 {
+        state = settings_button(&mut world, state, ButtonName::DpadDown);
+    }
+    assert_eq!(state.settings().selected, 2);
+    state = settings_button(&mut world, state, ButtonName::DpadLeft);
+    assert_eq!(state.settings().selected, 1);
+    for _ in 0..5 {
+        state = settings_button(&mut world, state, ButtonName::DpadUp);
+    }
+    assert_eq!(state.settings().selected, 0);
+    state = settings_button(&mut world, state, ButtonName::DpadRight);
+    assert_eq!(state.settings().selected, 1);
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(_) | Effect::ConfirmSecret(_)))
+    );
+    state = settings_button(&mut world, state, ButtonName::East);
+    assert!(state.settings().open);
+    assert!(!state.settings().display);
+    state = settings_button(&mut world, state, ButtonName::East);
+    assert!(!state.settings().open);
+}
+
+#[test]
+fn successful_mode_apply_starts_countdown_and_south_confirms_once() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert!(world.trace.contains(&Effect::SettingsMode(1)));
+    assert_eq!(state.settings().remaining, None);
+    world.trace.clear();
+    let state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(20),
+        },
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SettingsMode(_) | Effect::PersistMode(_)))
+    );
+    let state = world.run(state, Input::ModeApplied(Some(1)));
+    assert_eq!(state.settings().current, 1);
+    assert_eq!(state.settings().remaining, Some(Duration::from_secs(15)));
+    let state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(14),
+        },
+    );
+    assert_eq!(state.settings().remaining, Some(Duration::from_secs(1)));
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert!(world.trace.contains(&Effect::PersistMode(1)));
+    assert_eq!(state.settings().remaining, None);
+    world.trace.clear();
+    let state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(20),
+        },
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SettingsMode(_) | Effect::PersistMode(_)))
+    );
+    assert_eq!(state.settings().current, 1);
+}
+
+#[test]
+fn unconfirmed_mode_reverts_at_fifteen_seconds_without_persisting() {
+    for final_tick in [Duration::from_secs(1), Duration::from_secs(20)] {
+        let mut world = World::default();
+        let state = open_display(&mut world);
+        let state = settings_button(&mut world, state, ButtonName::DpadDown);
+        let state = settings_button(&mut world, state, ButtonName::South);
+        let state = world.run(state, Input::ModeApplied(Some(1)));
+        world.trace.clear();
+        let state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_secs(14),
+            },
+        );
+        assert!(!world.trace.contains(&Effect::SettingsMode(0)));
+        let state = world.run(state, Input::Tick { elapsed: final_tick });
+        assert!(world.trace.contains(&Effect::SettingsMode(0)));
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::PersistMode(_)))
+        );
+        let state = world.run(state, Input::ModeApplied(Some(0)));
+        assert_eq!(state.settings().current, 0);
+        assert_eq!(state.settings().remaining, None);
+    }
+}
+
+#[test]
+fn rejected_modes_keep_current_choice_and_do_not_offer_confirmation() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    let state = world.run(state, Input::ModeApplied(None));
+    assert_eq!(state.settings().current, 0);
+    assert!(state.settings().failed());
+    assert_eq!(state.settings().remaining, None);
+    world.trace.clear();
+    let _state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(30),
+        },
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SettingsMode(_) | Effect::PersistMode(_)))
+    );
+}
+
+#[test]
+fn east_and_the_global_phrase_cancel_mode_preview() {
+    for event in [
+        Event::Button {
+            name: ButtonName::East,
+            state: ButtonState::Pressed,
+        },
+        Event::Speech {
+            text: Text::new("POP THE HOOD".into()).unwrap(),
+        },
+    ] {
+        let mut world = World::default();
+        let state = open_display(&mut world);
+        let state = settings_button(&mut world, state, ButtonName::DpadDown);
+        let state = settings_button(&mut world, state, ButtonName::South);
+        let state = world.run(state, Input::ModeApplied(Some(1)));
+        world.trace.clear();
+        let state = settings_event(&mut world, state, event.clone());
+        assert!(world.trace.contains(&Effect::SettingsMode(0)));
+        assert_eq!(state.settings().open, matches!(event, Event::Button { .. }));
+        assert_eq!(state.settings().remaining, None);
+    }
+}
+
+#[test]
+fn closing_during_apply_reverts_after_the_backend_reports_success() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    let state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood.".into()).unwrap(),
+        },
+    );
+    assert!(!state.settings().open);
+    world.trace.clear();
+    let state = world.run(state, Input::ModeApplied(Some(1)));
+    assert!(world.trace.contains(&Effect::SettingsMode(0)));
+    assert_eq!(state.settings().remaining, None);
+    let state = world.run(state, Input::ModeApplied(Some(0)));
+    assert_eq!(state.settings().current, 0);
+}
+
+#[test]
+fn confirmation_at_the_deadline_cannot_persist_the_expired_preview() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    let state = world.run(state, Input::ModeApplied(Some(1)));
+    world.trace.clear();
+    let _state = world.run(
+        state,
+        Input::Event {
+            event: Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed,
+            },
+            elapsed: Duration::from_secs(15),
+        },
+    );
+    assert!(world.trace.contains(&Effect::SettingsMode(0)));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::PersistMode(_)))
+    );
+}
+
+#[test]
+fn settings_button_hints_name_a_and_b_through_navigation_and_confirmation() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    let state = world.run(state, Input::ModeApplied(Some(1)));
+    assert_eq!(state.settings().button_hint(), "A: KEEP THIS MODE");
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+    let state = settings_button(&mut world, state, ButtonName::East);
+    assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+}
+
+proptest! {
+    #[test]
+    fn settings_keeps_speech_commands_and_transcript_mapping(plugin_active in prop::bool::ANY) {
+        let context = tehuti_protocol::parse_context("app_id = 'voice-test'\n[buttons]\n[speech.screenshot]\nnotify = 'capture'").unwrap();
+        let mut world = World { plugin_active, ..World::default() };
+        let state = configured(vec![context], "voice-test");
+        let state = settings_event(&mut world, state, Event::Speech { text: Text::new("pop the hood".into()).unwrap() });
+        let state = world.run(state, Input::Speech(SpeechInput::Available));
+        let state = settings_button(&mut world, state, ButtonName::Record);
+        let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Released));
+        prop_assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Stop { session: 0, transcribe: true })), "record transcribes while settings is open");
+        world.trace.clear();
+        let text = Text::new("Screenshot.".into()).unwrap();
+        let state = world.run(state, Input::Speech(SpeechInput::Transcript { session: 0, text: text.clone() }));
+        let expected = Action::Notice { text: Text::new("capture".into()).unwrap() };
+        prop_assert!(state.settings().open);
+        prop_assert!(world.trace.contains(&Effect::TranscriptReceived { session: 0, text: text.clone(), admitted: true }), "transcript is admitted");
+        prop_assert!(world.trace.contains(&Effect::SpeechRouted { text, first: Some(expected.clone()), plugin: plugin_active }), "transcript is mapped while settings is open");
+        prop_assert!(world.trace.contains(&Effect::Apply(expected)));
+    }
+}
+
+#[test]
+fn settings_confirmation_requires_a_release_after_the_apply_press() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    let mut state = world.run(state, Input::ModeApplied(Some(1)));
+    world.trace.clear();
+    for _ in 0..3 {
+        state = settings_event(
+            &mut world,
+            state,
+            Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed,
+            },
+        );
+    }
+    assert_eq!(state.settings().remaining, Some(Duration::from_secs(15)));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::PersistMode(_)))
+    );
+    let _state = settings_button(&mut world, state, ButtonName::South);
+    assert!(world.trace.contains(&Effect::PersistMode(1)));
+}
+
+#[test]
+fn system_menu_settings_entry_opens_the_view_without_a_shell_command() {
+    let mut world = World::default();
+    let mut state = world.run(
+        State::default(),
+        pad_button(ButtonName::Guide, ButtonState::Pressed),
+    );
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(500),
+        },
+    );
+    state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
+    state = tap_button(&mut world, state, ButtonName::DpadUp);
+    world.trace.clear();
+    state = tap_button(&mut world, state, ButtonName::South);
+    assert!(state.settings().open);
+    assert!(state.core().menu().is_none());
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::RunMenuCommand(_)))
+    );
+}
+
+#[test]
+fn guide_closes_settings_and_preserves_menu_and_emergency_escape() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    let mut state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+    assert!(!state.settings().open);
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(500),
+        },
+    );
+    assert!(state.core().menu().is_some());
+    state = world.run(state, pad_button(ButtonName::Start, ButtonState::Pressed));
+    world.trace.clear();
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(2999),
+        },
+    );
+    assert!(!world.trace.contains(&Effect::Apply(Action::Quit)));
+    let _state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(1),
+        },
+    );
+    assert!(world.trace.contains(&Effect::Apply(Action::Quit)));
 }

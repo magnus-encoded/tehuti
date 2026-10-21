@@ -78,6 +78,24 @@ pub(super) fn next_backoff(previous: core::time::Duration) -> core::time::Durati
     )
 }
 
+pub(super) fn ordered_with_saved(
+    modes: &[ListedMode],
+    request: Option<Request>,
+    saved: Option<Request>,
+) -> (Vec<usize>, bool) {
+    let (mut indices, matched) = ordered(modes, request);
+    if let Some(index) = saved.and_then(|saved| {
+        modes
+            .iter()
+            .position(|mode| mode.size == saved.size && mode.refresh == saved.refresh)
+    }) && (!matched || indices.first() != Some(&index))
+    {
+        indices.retain(|candidate| *candidate != index);
+        indices.insert(usize::from(matched), index);
+    }
+    (indices, matched)
+}
+
 pub(super) fn retry<State, Value, Error>(
     state: &mut State,
     mut attempt: impl FnMut(&mut State) -> Result<Value, Error>,

@@ -225,6 +225,11 @@ impl Nested {
                     Ok(None) => {}
                     Err(error) => warn!(?error, "bar render failed"),
                 }
+                match tehuti::settings::element(renderer, &data.compositor, &self.output) {
+                    Ok(Some(element)) => notices.insert(0, element),
+                    Ok(None) => {}
+                    Err(error) => warn!(?error, "settings render failed"),
+                }
                 append_keyboard(&mut self.keyboard, &self.output, renderer, data, &mut notices);
                 append_cursor(renderer, data, &self.output, &mut notices);
                 match tehuti::wallpaper::render_output(

@@ -9,6 +9,7 @@ pub enum Command {
     Reboot,
     ShutDown,
     TaskMonitor,
+    Settings,
 }
 
 impl Command {
@@ -20,6 +21,7 @@ impl Command {
             Self::Reboot => "reboot",
             Self::ShutDown => "shut_down",
             Self::TaskMonitor => "task_monitor",
+            Self::Settings => "settings",
         }
     }
 
@@ -30,16 +32,18 @@ impl Command {
             Self::Reboot => "REBOOT",
             Self::ShutDown => "SHUT DOWN",
             Self::TaskMonitor => "TASK MONITOR",
+            Self::Settings => "SETTINGS",
         }
     }
 }
 
-const ITEMS: [Command; 5] = [
+const ITEMS: [Command; 6] = [
     Command::LogOut,
     Command::Plasma,
     Command::Reboot,
     Command::ShutDown,
     Command::TaskMonitor,
+    Command::Settings,
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -85,14 +89,19 @@ pub fn handle(menu: &mut Option<Menu>, event: &Event) -> Option<Command> {
         ButtonName::DpadUp | ButtonName::DpadDown => {
             open.confirming = false;
             open.selected = if *name == ButtonName::DpadUp {
-                open.selected.checked_sub(1).unwrap_or(4)
+                open.selected
+                    .checked_sub(1)
+                    .unwrap_or(ITEMS.len().saturating_sub(1))
             } else {
-                open.selected.saturating_add(1).checked_rem(5).unwrap_or(0)
+                open.selected
+                    .saturating_add(1)
+                    .checked_rem(ITEMS.len())
+                    .unwrap_or(0)
             };
         }
         ButtonName::South => {
             let command = *ITEMS.get(open.selected)?;
-            if open.confirming || command == Command::TaskMonitor {
+            if open.confirming || matches!(command, Command::TaskMonitor | Command::Settings) {
                 *menu = None;
                 return Some(command);
             }
