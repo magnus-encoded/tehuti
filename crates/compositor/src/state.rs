@@ -718,7 +718,7 @@ impl Compositor {
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
             DispatchEffect::PasswordSpeechIgnored => {
-                tracing::info!("push-to-talk ignored: password field active")
+                tracing::info!("push-to-talk ignored: password field active");
             }
             DispatchEffect::RunMenuCommand(command) => self.run_menu_command(command),
             DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
