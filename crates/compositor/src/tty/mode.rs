@@ -78,6 +78,24 @@ pub(super) fn next_backoff(previous: core::time::Duration) -> core::time::Durati
     )
 }
 
+pub(super) fn ordered_with_saved(
+    modes: &[ListedMode],
+    request: Option<Request>,
+    saved: Option<Request>,
+) -> (Vec<usize>, bool) {
+    let (mut indices, matched) = ordered(modes, request);
+    if let Some(index) = saved.and_then(|saved| {
+        modes
+            .iter()
+            .position(|mode| mode.size == saved.size && mode.refresh == saved.refresh)
+    }) && (!matched || indices.first() != Some(&index))
+    {
+        indices.retain(|candidate| *candidate != index);
+        indices.insert(usize::from(matched), index);
+    }
+    (indices, matched)
+}
+
 pub(super) fn retry<State, Value, Error>(
     state: &mut State,
     mut attempt: impl FnMut(&mut State) -> Result<Value, Error>,
@@ -317,5 +335,54 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod saved_choice_tests {
+    use super::{ListedMode, Request, ordered_with_saved};
+
+    #[test]
+    fn garbage_in_the_saved_file_falls_back_to_the_preferred_mode() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("display-mode");
+        std::fs::write(&path, "garbage, not a display mode")?;
+        let saved = tehuti::display_mode_store::Store::new(path).read()?;
+        let modes = [ListedMode {
+            size: (1920, 1080),
+            refresh: 60,
+            preferred: true,
+        }];
+        let request = saved.as_deref().and_then(Request::parse);
+        assert!(request.is_none());
+        assert_eq!(ordered_with_saved(&modes, None, request), (vec![0], false));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_override_precedes_saved_choice_and_saved_precedes_preferred() {
+        let modes = [
+            ListedMode {
+                size: (1920, 1080),
+                refresh: 60,
+                preferred: true,
+            },
+            ListedMode {
+                size: (2560, 1440),
+                refresh: 60,
+                preferred: false,
+            },
+            ListedMode {
+                size: (3840, 2160),
+                refresh: 60,
+                preferred: false,
+            },
+        ];
+        let saved = Request::parse("2560x1440@60");
+        assert_eq!(ordered_with_saved(&modes, None, saved).0, vec![1, 0, 2]);
+        let explicit = Request::parse("3840x2160@60");
+        assert_eq!(ordered_with_saved(&modes, explicit, saved), (vec![2, 1, 0], true));
+        let missing = Request::parse("800x600@60");
+        assert_eq!(ordered_with_saved(&modes, None, missing).0, vec![0, 2, 1]);
     }
 }

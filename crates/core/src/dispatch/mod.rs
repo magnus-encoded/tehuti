@@ -10,6 +10,9 @@ use std::collections::VecDeque;
 
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
+mod settings;
+pub use settings::Settings;
+
 mod mouse;
 pub use mouse::{PointerButton, Sticks};
 
@@ -18,6 +21,11 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    DisplayModes {
+        modes: Vec<String>,
+        current: usize,
+    },
+    ModeApplied(Option<usize>),
     /// Elapsed wall time since the previous tick.
     Tick {
         elapsed: Duration,
@@ -67,6 +75,8 @@ pub enum Input {
 pub enum Effect {
     PasswordSpeechIgnored,
     RunMenuCommand(crate::menu::Command),
+    SettingsMode(usize),
+    PersistMode(usize),
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
         x: i32,
@@ -184,6 +194,7 @@ pub struct State {
     terminal_field: bool,
     opening_button: Option<ButtonName>,
     frames: Vec<Frame>,
+    settings: Settings,
 }
 
 impl State {
@@ -198,6 +209,7 @@ impl State {
             terminal_field: false,
             opening_button: None,
             frames: Vec::new(),
+            settings: Settings::default(),
         }
     }
 
@@ -214,6 +226,11 @@ impl State {
     #[must_use]
     pub const fn keyboard(&self) -> &crate::keyboard::Keyboard {
         &self.keyboard
+    }
+
+    #[must_use]
+    pub const fn settings(&self) -> &Settings {
+        &self.settings
     }
 
     /// Frames still waiting for replies or resumption.
@@ -285,6 +302,11 @@ fn sync_terminal(state: &mut State) {
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
+        Input::DisplayModes { modes, current } => return display_modes(state, modes, current),
+        Input::ModeApplied(current) => {
+            state.settings.applied(current, &mut effects);
+            return (state, effects);
+        }
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
         Input::Event { event, elapsed } => event_tasks(event, elapsed),
         Input::Speech(input) => vec![Task::Speech(input)],
@@ -338,6 +360,11 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         awaiting: None,
     });
     run(state, effects)
+}
+
+fn display_modes(mut state: State, modes: Vec<String>, current: usize) -> (State, Vec<Effect>) {
+    state.settings.configure(modes, current);
+    (state, Vec::new())
 }
 
 fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
@@ -550,21 +577,7 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
             frame.awaiting = Some(Await::ClockRead);
         }
         Task::Controller(event) => controller(state, event, effects),
-        Task::Route(event) => {
-            if let Event::Tick { elapsed } = event
-                && state.core.menu().is_none()
-                && tick_pad(&mut state.keyboard, &mut state.mouse, elapsed, effects)
-            {
-                for button in [ButtonState::Released, ButtonState::Pressed] {
-                    frame.tasks.push_front(Task::Route(Event::Button {
-                        name: ButtonName::Select,
-                        state: button,
-                    }));
-                }
-            }
-            effects.push(Effect::QueryPlugin(event.clone()));
-            frame.awaiting = Some(Await::PluginActive(event));
-        }
+        Task::Route(event) => route_event(state, event, effects),
         Task::Supervise => {
             effects.push(Effect::Supervise);
             frame.awaiting = Some(Await::Supervised);
@@ -603,6 +616,46 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
     }
 }
 
+fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    route_tick(state, &event, effects);
+    let Some(route_frame) = state.frames.last_mut() else {
+        return;
+    };
+    if let Event::Tick { elapsed } = event
+        && state.core.menu().is_none()
+        && !state.settings.open
+        && tick_pad(&mut state.keyboard, &mut state.mouse, elapsed, effects)
+    {
+        for button in [ButtonState::Released, ButtonState::Pressed] {
+            route_frame.tasks.push_front(Task::Route(Event::Button {
+                name: ButtonName::Select,
+                state: button,
+            }));
+        }
+    }
+    effects.push(Effect::QueryPlugin(event.clone()));
+    route_frame.awaiting = Some(Await::PluginActive(event));
+}
+
+fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    let was_open = state.settings.open;
+    let consumed = state.settings.event(event, effects);
+    if !was_open && state.settings.open {
+        state.core.menu = None;
+        state.mouse.release(effects);
+        state.keyboard.release_all();
+        state.keyboard.close();
+        effects.push(Effect::ResetSecretFocus);
+    }
+    consumed
+}
+
+fn route_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
+    if let Event::Tick { elapsed } = event {
+        state.settings.tick(*elapsed, effects);
+    }
+}
+
 fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
     if matches!(
         event,
@@ -611,6 +664,15 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
             ..
         }
     ) {
+        if matches!(
+            event,
+            Event::Button {
+                state: ButtonState::Pressed,
+                ..
+            }
+        ) {
+            state.settings.close(effects);
+        }
         let _response = state.keyboard.button(ButtonName::Guide, start_state(event), true);
         if let Some(actions) = crate::escape_chord(&mut state.core, event) {
             effects.extend(actions.into_iter().map(Effect::Apply));
@@ -622,7 +684,13 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
             effects.extend(actions.into_iter().map(Effect::Apply));
         }
         if let Some(command) = crate::menu_input(&mut state.core, event) {
-            effects.push(Effect::RunMenuCommand(command));
+            if command == crate::menu::Command::Settings {
+                state.settings.open = true;
+                state.settings.display = false;
+                effects.push(Effect::ResetSecretFocus);
+            } else {
+                effects.push(Effect::RunMenuCommand(command));
+            }
         }
         return true;
     }
@@ -645,17 +713,20 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
     false
 }
 
-fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
-    sync_terminal(state);
-    if crate::menu_button_release(&mut state.core, &event) {
-        return;
+fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if matches!(event, Event::Speech { .. }) && settings_event(state, event, effects) {
+        return true;
     }
-    if system_menu(state, &event, effects) {
-        return;
+    sync_terminal(state);
+    if crate::menu_button_release(&mut state.core, event) {
+        return true;
+    }
+    if system_menu(state, event, effects) {
+        return true;
     }
     if state.keyboard.password_field_active()
         && matches!(
-            &event,
+            event,
             Event::Button {
                 name: ButtonName::Record,
                 ..
@@ -663,10 +734,20 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         )
     {
         effects.push(Effect::PasswordSpeechIgnored);
-        return;
+        return true;
     }
 
-    if keyboard(state, &event, effects) {
+    if settings_event(state, event, effects) {
+        return true;
+    }
+    if keyboard(state, event, effects) {
+        return true;
+    }
+    false
+}
+
+fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if reserved_input(state, &event, effects) {
         return;
     }
     let Some(frame) = state.frames.last_mut() else {

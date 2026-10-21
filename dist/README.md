@@ -55,3 +55,8 @@ entries stay visible but report unavailable when selected. No session or power
 commands run by default. `examples/menu.toml` shows neutral placeholder session
 helpers and a task monitor in a terminal; replace them with commands appropriate
 for the installed session. The `plasma` helper must arrange the desktop switch.
+
+The settings view embeds the vendored Liberation Sans font from
+`crates/compositor/assets/LiberationSans-Regular.ttf`, licensed under the
+SIL Open Font License (OFL) 1.1. The licence and copyright notices are in
+`crates/compositor/assets/Liberation-LICENSE`.

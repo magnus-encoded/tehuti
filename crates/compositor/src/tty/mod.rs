@@ -36,6 +36,10 @@ struct Tty {
     device: DrmDevice,
     renderer: render::DrmRendering,
     remaining_modes: std::collections::VecDeque<Mode>,
+    listed_modes: Vec<Mode>,
+    // Rollback wins on a failed frame and clears on restore or successful scanout;
+    // preview retains the confirmed mode until confirmation or reversion.
+    preview: Option<(Mode, render::DrmRendering, bool)>,
     rollback: Option<(Mode, render::DrmRendering, bool)>,
     output: Output,
     damage: OutputDamageTracker,
@@ -113,6 +117,9 @@ pub(crate) fn insert(
         .handle()
         .insert_source(Timer::immediate(), move |_, (), data| {
             let mut backend = tty.borrow_mut();
+            if data.seat_active && backend.device.is_active() && backend.preview.is_some() {
+                backend.settings_request(data);
+            }
             if data.seat_active
                 && backend.device.is_active()
                 && !backend.pending
@@ -271,12 +278,24 @@ fn create_output(
         session.open(path, rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC)?,
     ));
     let (mut device, drm_notifier) = DrmDevice::new(device_fd, false)?;
-    let (surface, renderer, remaining_modes) = connected_surface(&mut device)?;
+    let ConnectedSurface {
+        surface,
+        renderer,
+        remaining_modes,
+        listed_modes,
+    } = connected_surface(&mut device)?;
     let mode = surface.pending_mode();
 
     let output = drm_output(display, mode);
     compositor.space.map_output(&output, (0, 0));
     compositor.output = Some(output.clone());
+    compositor.configure_display_modes(
+        listed_modes.iter().map(mode_label).collect(),
+        listed_modes
+            .iter()
+            .position(|candidate| *candidate == mode)
+            .unwrap_or_default(),
+    );
     compositor.fill_output();
     let libinput = create_libinput(&session)?;
     let tty = Tty {
@@ -288,6 +307,8 @@ fn create_output(
         renderer,
         remaining_modes,
         rollback: None,
+        listed_modes,
+        preview: None,
         damage: OutputDamageTracker::from_output(&output),
         output,
         next: false,
@@ -309,9 +330,14 @@ fn create_libinput(session: &LibSeatSession) -> Result<smithay::reexports::input
     Ok(libinput)
 }
 
-fn connected_surface(
-    device: &mut DrmDevice,
-) -> Result<(DrmSurface, render::DrmRendering, std::collections::VecDeque<Mode>), Box<dyn Error>> {
+struct ConnectedSurface {
+    surface: DrmSurface,
+    renderer: render::DrmRendering,
+    remaining_modes: std::collections::VecDeque<Mode>,
+    listed_modes: Vec<Mode>,
+}
+
+fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn Error>> {
     let request = std::env::var("TEHUTI_MODE").ok();
     let parsed = request.as_deref().and_then(mode::Request::parse);
     let resources = device.resource_handles()?;
@@ -329,7 +355,8 @@ fn connected_surface(
                 preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
             })
             .collect();
-        let (indices, matched) = mode::ordered(&listed, parsed);
+        let saved = saved_mode().as_deref().and_then(mode::Request::parse);
+        let (indices, matched) = mode::ordered_with_saved(&listed, parsed, saved);
         if request.is_some() && !matched {
             warn!(
                 ?request,
@@ -352,7 +379,14 @@ fn connected_surface(
                             render::create(device.device_fd(), &surface).map(|renderer| (surface, renderer))
                         });
                     match attempt {
-                        Ok((surface, renderer)) => return Ok((surface, renderer, remaining)),
+                        Ok((surface, renderer)) => {
+                            return Ok(ConnectedSurface {
+                                surface,
+                                renderer,
+                                remaining_modes: remaining,
+                                listed_modes: connector.modes().to_vec(),
+                            });
+                        }
                         Err(error) => {
                             warn!(?mode, %error, "DRM mode initialization failed; trying next listed mode");
                         }
@@ -364,7 +398,89 @@ fn connected_surface(
     Err("no connected DRM output with a usable mode".into())
 }
 
+fn saved_mode() -> Option<String> {
+    tehuti::display_mode_store::Store::from_env()
+        .and_then(|store| store.read())
+        .unwrap_or_else(|error| {
+            warn!(%error, "saved display mode unavailable");
+            None
+        })
+}
+
+fn mode_label(mode: &Mode) -> String {
+    format!("{}x{}@{}", mode.size().0, mode.size().1, mode.vrefresh())
+}
+
 impl Tty {
+    fn settings_request(&mut self, data: &mut LoopData) {
+        while let Some((index, persist)) = data.compositor.take_settings_request() {
+            let Some(mode) = self.listed_modes.get(index).copied() else {
+                data.compositor.display_mode_applied(None);
+                continue;
+            };
+            if persist {
+                self.preview = None;
+                let result = tehuti::display_mode_store::Store::from_env()
+                    .and_then(|store| store.write(&mode_label(&mode)));
+                data.compositor.display_mode_saved(result);
+                continue;
+            }
+            self.switch_settings_mode(mode, index, data);
+            return;
+        }
+    }
+
+    fn switch_settings_mode(&mut self, mode: Mode, index: usize, data: &mut LoopData) {
+        let previous = self.surface.current_mode();
+        let previous_next = self.next;
+        let reverting = self.preview.as_ref().is_some_and(|(saved, _, _)| *saved == mode);
+        let attempt = self
+            .surface
+            .use_mode(mode)
+            .map_err(Box::<dyn Error>::from)
+            .and_then(|()| {
+                if reverting {
+                    mode::restored_renderer(mode, self.preview.take(), || {
+                        render::create(self.device.device_fd(), &self.surface)
+                    })
+                } else {
+                    render::create(self.device.device_fd(), &self.surface).map(|renderer| (renderer, false))
+                }
+            });
+        let (renderer, next) = match attempt {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(%error, "display mode rejected");
+                self.restore_mode(data);
+                data.compositor.display_mode_applied(None);
+                return;
+            }
+        };
+        let previous_renderer = core::mem::replace(&mut self.renderer, renderer);
+        self.rollback = Some((previous, previous_renderer, previous_next));
+        self.next = next;
+        self.set_output_mode(mode, data);
+        self.modeset = true;
+        // Keep the confirmed scanout alive until the preview is confirmed or reverted.
+        let retained = self.rollback.take();
+        match self.render_frame(data) {
+            Ok(()) => {
+                if !reverting {
+                    self.preview = retained;
+                }
+                data.compositor.display_mode_applied(Some(index));
+            }
+            Err(error) => {
+                warn!(%error, "display modeset rejected; restoring current output");
+                self.rollback = retained;
+                self.restore_mode(data);
+                self.modeset = true;
+                self.pending = false;
+                data.compositor.display_mode_applied(None);
+            }
+        }
+    }
+
     fn set_output_mode(&mut self, mode: Mode, data: &mut LoopData) {
         self.output
             .change_current_state(Some(mode.into()), None, None, None);
@@ -393,6 +509,13 @@ impl Tty {
                         self.rollback = Some((previous, renderer, self.next));
                     }
                     self.set_output_mode(mode, data);
+                    data.compositor.configure_display_modes(
+                        self.listed_modes.iter().map(mode_label).collect(),
+                        self.listed_modes
+                            .iter()
+                            .position(|candidate| *candidate == mode)
+                            .unwrap_or_default(),
+                    );
                     self.next = false;
                     return true;
                 }
@@ -431,6 +554,10 @@ impl Tty {
             return Ok(());
         }
         crate::advance_time(data);
+        self.settings_request(data);
+        if self.pending {
+            return Ok(());
+        }
         let result = mode::retry(
             &mut (&mut *self, data),
             |(tty, data)| tty.render_frame(data),

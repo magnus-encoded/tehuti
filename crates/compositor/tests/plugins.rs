@@ -222,6 +222,8 @@ for line in sys.stdin:
                         Effect::QueryForegroundProgram => input = Input::ForegroundProgram(false),
                         Effect::InvalidReply => panic!("valid dispatch replies"),
                         Effect::RunMenuCommand(_)
+                        | Effect::SettingsMode(_)
+                        | Effect::PersistMode(_)
                         | Effect::MovePointer { .. }
                         | Effect::Scroll { .. }
                         | Effect::Click { .. }
