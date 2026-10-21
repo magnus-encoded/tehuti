@@ -39,6 +39,20 @@ mod menu {
     }
 
     #[test]
+    fn moving_after_confirmation_requires_two_fresh_presses() {
+        for direction in [ButtonName::DpadUp, ButtonName::DpadDown] {
+            let mut menu = Some(Menu::default());
+            let _command = button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed);
+            assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Pressed), None);
+            assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Released), None);
+            assert_eq!(button(&mut menu, direction, ButtonState::Pressed), None);
+            assert!(menu.as_ref().is_some_and(|open| !open.text().contains("CONFIRM")));
+            assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Pressed), None);
+            assert!(menu.as_ref().is_some_and(|open| open.text().contains("CONFIRM")));
+        }
+    }
+
+    #[test]
     fn up_wraps_to_task_monitor() {
         let mut menu = Some(Menu::default());
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);

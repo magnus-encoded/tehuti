@@ -1604,6 +1604,48 @@ fn typed_speech_into_a_terminal_drops_commas_and_full_stops() {
 
 proptest! {
     #[test]
+    fn guide_gestures_stay_above_contexts_and_plugins_in_every_mode(
+        contexts in arbitrary_contexts(),
+        plugin_active in any::<bool>(),
+    ) {
+        for mode in 0..3 {
+            for millis in [499, 500] {
+                let mut world = World { plugin_active, ..World::default() };
+                let app = contexts[0].app_id().to_owned();
+                let mut state = configured(contexts.clone(), &app);
+                if mode == 1 {
+                    state = tap_button(&mut world, state, ButtonName::Select);
+                    state = tap_button(&mut world, state, ButtonName::Select);
+                    prop_assert!(world.trace.contains(&Effect::MouseMode(true)));
+                } else if mode == 2 {
+                    state = with_open_keyboard(&mut world, state);
+                }
+                world.trace.clear();
+                state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+                state = world.run(state, Input::Tick { elapsed: Duration::from_millis(millis) });
+                state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
+                if millis == 499 {
+                    prop_assert_eq!(state.core().level(), crate::Level::Columns);
+                    prop_assert!(state.core().menu().is_none());
+                } else {
+                    prop_assert_eq!(state.core().level(), crate::Level::InApp);
+                    prop_assert!(state.core().menu().is_some());
+                    state = tap_button(&mut world, state, ButtonName::Guide);
+                    prop_assert!(state.core().menu().is_none());
+                    prop_assert_eq!(state.core().level(), crate::Level::InApp);
+                }
+                prop_assert_eq!(state.keyboard().is_open(), mode == 2);
+                prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
+                    Effect::Apply(_) | Effect::RunMenuCommand(_) | Effect::QueryForegroundProgram
+                    | Effect::Click { .. } | Effect::DispatchPlugin { event: Event::Button { .. }, .. }
+                )), "Guide gestures never reach applications or plugins");
+            }
+        }
+    }
+}
+
+proptest! {
+    #[test]
     fn menu_reachable_and_escapable_in_every_mode(
         contexts in arbitrary_contexts(),
         plugin_active in any::<bool>(),

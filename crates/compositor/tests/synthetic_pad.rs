@@ -1162,6 +1162,7 @@ mod synthetic_pad {
                         }
                     }
                     Command::Hold => {
+                        // Guide holds open a modal menu; this model tracks plugin delivery outside it.
                         if let Some(source) = &mut pad {
                             source.push(Event::Button {
                                 name: ButtonName::South, state: ButtonState::Pressed,

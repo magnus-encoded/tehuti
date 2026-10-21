@@ -5,7 +5,7 @@ mod levels {
     use core::time::Duration;
 
     use proptest::prelude::*;
-    use tehuti_core::{GUIDE_TAP_WINDOW, Level, State, step};
+    use tehuti_core::{Level, State, step};
     use tehuti_protocol::{Action, ButtonName, ButtonState, Event, LayoutAction};
 
     const fn button(name: ButtonName, state: ButtonState) -> Event {
@@ -86,14 +86,23 @@ mod levels {
     }
 
     #[test]
-    fn long_guide_press_is_not_a_tap() {
-        let mut events = vec![button(ButtonName::Guide, ButtonState::Pressed)];
-        events.push(Event::Tick {
-            elapsed: GUIDE_TAP_WINDOW,
-        });
-        events.push(button(ButtonName::Guide, ButtonState::Released));
-        let (state, _) = run(State::new(), &events);
-        assert_eq!(state.level(), Level::InApp);
+    fn guide_at_499_ms_taps_and_at_500_ms_opens_the_menu() {
+        for (millis, level, menu_open) in [
+            (499, Level::Columns, false),
+            (500, Level::InApp, true),
+        ] {
+            let (state, actions) = run(
+                State::new(),
+                &[
+                    button(ButtonName::Guide, ButtonState::Pressed),
+                    tick(millis),
+                    button(ButtonName::Guide, ButtonState::Released),
+                ],
+            );
+            assert_eq!(state.level(), level);
+            assert_eq!(state.menu().is_some(), menu_open);
+            assert!(actions.is_empty());
+        }
     }
 
     proptest! {
