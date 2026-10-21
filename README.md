@@ -33,6 +33,8 @@ and retries Tehuti with a delay.
 
 Speech: hold Share to record, release to transcribe. Set `TEHUTI_NO_SPEECH=1` to skip it.
 
+Controllers: physical pads are accepted by default. Set `TEHUTI_VIRTUAL_PAD=Sunshine` to also accept virtual pads whose device name contains that case-sensitive substring. Unset or empty values keep virtual pads disabled. The value is read once at startup and applies to reconnects. Pads must have a south face button.
+
 Scale: `TEHUTI_SCALE` sets the integer output scale, for example `TEHUTI_SCALE=2`.
 Without it, modes wider than 2560 pixels use 2 and others use 1. Invalid values
 (0, negative or not a whole number) log a warning and use that default. The
