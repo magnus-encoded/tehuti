@@ -125,7 +125,7 @@ mod speech_process {
         let mut process = child(&source);
         let _inputs = process.poll(Duration::ZERO);
         wait_for_starts(&marker, 1);
-        for (attempt, seconds) in [0, 1, 2, 5, 10, 20, 30, 30].into_iter().enumerate() {
+        for (attempt, seconds) in [0_u64, 1, 2, 5, 10, 20, 30, 30].into_iter().enumerate() {
             std::fs::write(&release, "").unwrap();
             wait_for(&mut process, &SpeechInput::Unavailable);
             std::fs::remove_file(&release).unwrap();
@@ -134,15 +134,20 @@ mod speech_process {
             }
             assert_eq!(process.take_notice(), None, "one notice per outage");
             if seconds > 0 {
-                assert_eq!(process.poll(Duration::from_millis(seconds * 1000 - 1)), vec![]);
+                assert_eq!(
+                    process.poll(Duration::from_millis(
+                        seconds.saturating_mul(1000).saturating_sub(1)
+                    )),
+                    vec![]
+                );
                 assert_eq!(
                     std::fs::read_to_string(&marker).unwrap().lines().count(),
-                    attempt + 1,
+                    attempt.saturating_add(1),
                     "restart happened before its deadline"
                 );
             }
             let _inputs = process.poll(Duration::from_millis(u64::from(seconds > 0)));
-            wait_for_starts(&marker, attempt + 2);
+            wait_for_starts(&marker, attempt.saturating_add(2));
         }
         let _inputs = process.poll(Duration::from_secs(60));
         std::fs::write(&release, "").unwrap();
