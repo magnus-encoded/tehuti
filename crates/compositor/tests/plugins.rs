@@ -221,7 +221,8 @@ for line in sys.stdin:
                         Effect::PollSpeech(_) => input = Input::SpeechPolled(vec![]),
                         Effect::QueryForegroundProgram => input = Input::ForegroundProgram(false),
                         Effect::InvalidReply => panic!("valid dispatch replies"),
-                        Effect::MovePointer { .. }
+                        Effect::RunMenuCommand(_)
+                        | Effect::MovePointer { .. }
                         | Effect::Scroll { .. }
                         | Effect::Click { .. }
                         | Effect::MouseMode(_)
