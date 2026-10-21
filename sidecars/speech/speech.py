@@ -43,21 +43,86 @@ def reply(value):
     print(json.dumps(value), flush=True)
 
 
-def log(message):
+def log(message, private=False):
     line = f"INFO speech: {message}\n"
     try:
         with open(os.environ.get("TEHUTI_LOG_FILE", "/tmp/tehuti.log"), "a") as output:
             output.write(line)
     except OSError as error:
-        sys.stderr.write(line)
+        if not private:
+            sys.stderr.write(line)
         print(f"speech log failed: {error}", file=sys.stderr, flush=True)
 
 
+def capture_sources(listing):
+    names = []
+    for node in listing:
+        if node.get("type") != "PipeWire:Interface:Node":
+            continue
+        properties = node.get("info", {}).get("props", {})
+        name = properties.get("node.name")
+        if (properties.get("media.class") == "Audio/Source"
+                and properties.get("device.class") != "monitor"
+                and isinstance(name, str) and name and not name.endswith(".monitor")):
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def list_sources():
+    """The pinned source, else every capture device, else the default source."""
+    pinned = os.environ.get("TEHUTI_SPEECH_SOURCE")
+    if pinned:
+        return [pinned]
+    try:
+        listing = subprocess.run(
+            ["pw-dump"],
+            capture_output=True, check=True, timeout=2,
+        ).stdout
+        names = capture_sources(json.loads(listing))
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError) as error:
+        print(f"speech source listing failed: {error}", file=sys.stderr, flush=True)
+        names = []
+    return names or [None]
+
+
+class Recording:
+    def __init__(self, source, process):
+        self.source = source
+        self.process = process
+        self.audio = bytearray()
+        self.peak = 0
+        self.scanned = 0
+        self.reader = None
+
+    def extend(self, chunk):
+        self.audio.extend(chunk)
+        whole = len(self.audio) - len(self.audio) % 2
+        self.peak = max(self.peak, peak(self.audio[self.scanned:whole]))
+        self.scanned = whole
+
+
+class Take:
+    """One push-to-talk, recorded from every source at once."""
+    def __init__(self):
+        self.recordings = []
+
+    def poll(self):
+        if any(r.process.poll() is None for r in self.recordings):
+            return None
+        return 0
+
+
+def choose(recordings):
+    """The recording with the strongest signal; ties keep listing order."""
+    return max(recordings, key=lambda r: r.peak)
+
+
 class Speech:
-    def __init__(self, model):
+    def __init__(self, model, sources=list_sources):
         self.model = model
+        self.sources = sources
         self.capture = None
-        self.clip = None
         self.session = None
         self.model_lock = threading.Lock()
         self.transcriptions = threading.BoundedSemaphore(2)
@@ -66,33 +131,46 @@ class Speech:
     def start(self, session):
         if self.capture is not None:
             return
-        self.clip = tempfile.TemporaryFile()
-        self.capture = subprocess.Popen(
-            ["pw-record", "--raw", "--format", "s16", "--rate", "16000", "--channels", "1", "-"],
-            stdout=subprocess.PIPE, stderr=sys.stderr,
-        )
+        take = Take()
+        for source in self.sources():
+            target = [] if source is None else ["--target", source]
+            try:
+                process = subprocess.Popen(
+                    ["pw-record", *target, "--raw", "--format", "s16", "--rate", "16000",
+                     "--channels", "1", "-"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                )
+            except OSError:
+                print("speech capture source failed to start", file=sys.stderr, flush=True)
+                continue
+            take.recordings.append(Recording(source or "default", process))
+        if not take.recordings:
+            reply({"session": session, "error": "no capture source"})
+            return
+        self.capture = take
         self.session = session
-        capture, clip = self.capture, self.clip
+        for recording in take.recordings:
+            recording.reader = threading.Thread(
+                target=self.drain, args=(session, take, recording), daemon=True,
+            )
+            recording.reader.start()
 
-        def drain():
-            remaining = MAX_AUDIO_SECONDS * 16000 * 2
-            audio = bytearray()
-            next_interim = INTERIM_BYTES
-            while remaining:
-                chunk = capture.stdout.read1(min(4096, remaining))
-                if not chunk:
-                    break
-                clip.write(chunk)
-                remaining -= len(chunk)
-                audio.extend(chunk)
-                if len(audio) >= next_interim:
-                    self.interim(session, bytes(audio), capture)
-                    next_interim = len(audio) + INTERIM_BYTES
-            if remaining == 0 and capture.poll() is None:
-                capture.send_signal(signal.SIGINT)
-
-        self.reader = threading.Thread(target=drain, daemon=True)
-        self.reader.start()
+    def drain(self, session, take, recording):
+        capture = recording.process
+        remaining = MAX_AUDIO_SECONDS * 16000 * 2
+        next_interim = INTERIM_BYTES
+        while remaining:
+            chunk = capture.stdout.read1(min(4096, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            recording.extend(chunk)
+            if len(recording.audio) >= next_interim:
+                if choose(take.recordings) is recording:
+                    self.interim(session, bytes(recording.audio), take)
+                next_interim = len(recording.audio) + INTERIM_BYTES
+        if remaining == 0 and capture.poll() is None:
+            capture.send_signal(signal.SIGINT)
 
     def transcribe_audio(self, audio):
         with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
@@ -142,46 +220,44 @@ class Speech:
     def stop(self, session, transcribe):
         if self.capture is None or session != self.session:
             return
-        capture, clip = self.capture, self.clip
-        self.capture = self.clip = self.session = None
-        if capture.poll() is None:
-            capture.send_signal(signal.SIGINT)
-        try:
-            capture.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            capture.kill()
-            capture.wait()
-        self.reader.join(timeout=3)
-        if self.reader.is_alive():
-            capture.stdout.close()
-            clip.close()
-            return
-        capture.stdout.close()
-        if not transcribe:
-            clip.close()
+        take = self.capture
+        self.capture = self.session = None
+        for recording in take.recordings:
+            if recording.process.poll() is None:
+                recording.process.send_signal(signal.SIGINT)
+        for recording in take.recordings:
+            try:
+                recording.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                recording.process.kill()
+                recording.process.wait()
+        finished = []
+        for recording in take.recordings:
+            recording.reader.join(timeout=3)
+            recording.process.stdout.close()
+            if not recording.reader.is_alive():
+                finished.append(recording)
+        if not transcribe or not finished:
             return
         if not self.transcriptions.acquire(blocking=False):
-            clip.close()
             reply({"session": session, "text": ""})
             return
 
         def finish():
             try:
-                clip.seek(0)
-                audio = clip.read()
-                loudest = peak(audio)
-                print(f"INFO speech capture: {len(audio)} bytes, peak {loudest}", file=sys.stderr, flush=True)
-                if loudest <= SILENCE_PEAK:
+                winner = choose(finished)
+                log(f"session {session}: source {winner.source}, "
+                    f"{len(winner.audio)} bytes, peak {winner.peak}", private=True)
+                if winner.peak <= SILENCE_PEAK:
                     reply({"session": session, "error": "silent"})
                     return
                 with self.model_lock:
-                    text = self.transcribe_audio(audio)
+                    text = self.transcribe_audio(bytes(winner.audio))
                 reply({"session": session, "text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)
                 reply({"session": session, "error": str(error)})
             finally:
-                clip.close()
                 self.transcriptions.release()
 
         threading.Thread(target=finish, daemon=True).start()

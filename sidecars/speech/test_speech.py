@@ -86,7 +86,7 @@ class SpeechTests(unittest.TestCase):
             previous_path = os.environ["PATH"]
             os.environ["PATH"] = directory + os.pathsep + previous_path
             model = Model()
-            speech = module.Speech(model)
+            speech = module.Speech(model, sources=lambda: [None])
             output = io.StringIO()
             try:
                 with contextlib.redirect_stdout(output):
@@ -120,7 +120,7 @@ class SpeechTests(unittest.TestCase):
             recorder.chmod(0o700)
             previous_path = os.environ["PATH"]
             os.environ["PATH"] = directory + os.pathsep + previous_path
-            speech = module.Speech(Model())
+            speech = module.Speech(Model(), sources=lambda: [None])
             output = io.StringIO()
             try:
                 with contextlib.redirect_stdout(output):
@@ -147,7 +147,7 @@ class SpeechTests(unittest.TestCase):
                 finish.wait(3)
                 return iter([types.SimpleNamespace(text="old", no_speech_prob=0, avg_logprob=0)]), None
 
-        speech = module.Speech(Model())
+        speech = module.Speech(Model(), sources=lambda: [None])
         capture = object()
         speech.capture = capture
         output = io.StringIO()
@@ -208,7 +208,7 @@ class SpeechTests(unittest.TestCase):
                 recorder.chmod(0o700)
                 previous_path = os.environ["PATH"]
                 os.environ["PATH"] = directory + os.pathsep + previous_path
-                speech = module.Speech(Model())
+                speech = module.Speech(Model(), sources=lambda: [None])
                 output = io.StringIO()
                 try:
                     with contextlib.redirect_stdout(output):
@@ -222,6 +222,99 @@ class SpeechTests(unittest.TestCase):
                 finally:
                     speech.close()
                     os.environ["PATH"] = previous_path
+
+    def recording(self, source, *chunks):
+        recording = module.Recording(source, None)
+        for chunk in chunks:
+            recording.extend(chunk)
+        return recording
+
+    def test_loudest_source_wins_over_a_live_but_silent_default(self):
+        dead = self.recording("quiet", b"\x01\x00" * 800)
+        jack = self.recording("front", b"\x00\x00" * 400 + b"\x00\x20" + b"\x00\x00" * 400)
+        self.assertIs(module.choose([dead, jack]), jack)
+        self.assertEqual((dead.peak, jack.peak), (1, 0x2000))
+
+    def test_ties_keep_the_first_listed_source(self):
+        first, second = self.recording("a", b"\x00\x01"), self.recording("b", b"\x00\x01")
+        self.assertIs(module.choose([first, second]), first)
+
+    def test_peak_survives_samples_split_across_chunks(self):
+        self.assertEqual(self.recording("a", b"\x00", b"\x40", b"\x00\x00").peak, 0x4000)
+
+    def test_source_listing_keeps_capture_devices_and_drops_monitors(self):
+        def node(name, media_class="Audio/Source", **properties):
+            return {"type": "PipeWire:Interface:Node",
+                    "info": {"props": {"node.name": name, "media.class": media_class,
+                                       **properties}}}
+        listing = [
+            node("output.monitor"), node("microphone-a"),
+            node("renamed", **{"device.class": "monitor"}),
+            node("output", "Audio/Sink"), node("microphone-b"),
+            node("microphone-a"), {"type": "PipeWire:Interface:Device"},
+        ]
+        self.assertEqual(module.capture_sources(listing), ["microphone-a", "microphone-b"])
+
+    def test_pinned_source_overrides_discovery(self):
+        previous = os.environ.get("TEHUTI_SPEECH_SOURCE")
+        os.environ["TEHUTI_SPEECH_SOURCE"] = "front"
+        try:
+            self.assertEqual(module.list_sources(), ["front"])
+        finally:
+            if previous is None:
+                del os.environ["TEHUTI_SPEECH_SOURCE"]
+            else:
+                os.environ["TEHUTI_SPEECH_SOURCE"] = previous
+
+    def test_all_sources_record_at_once_and_failed_sources_are_skipped(self):
+        class Model:
+            def transcribe(self, path, **options):
+                with wave.open(path) as clip:
+                    self.samples = clip.readframes(clip.getnframes())
+                self.calls = getattr(self, "calls", []) + [(self.samples, options["vad_filter"])]
+                text = "" if options["vad_filter"] else "hi"
+                return iter([types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)]), None
+
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = Path(directory) / "pw-record"
+            recorder.write_text("#!/usr/bin/env python3\nimport sys,time,signal\nsignal.signal(signal.SIGINT,lambda *_:sys.exit(0))\ntarget=sys.argv[2]\nif target=='broken': sys.exit(1)\nsys.stdout.buffer.write((b'\\x00\\x30' if target=='front' else b'\\x01\\x00')*320)\nsys.stdout.buffer.flush()\ntime.sleep(60)\n")
+            recorder.chmod(0o700)
+            previous_path = os.environ["PATH"]
+            os.environ["PATH"] = directory + os.pathsep + previous_path
+            model = Model()
+            speech = module.Speech(model, sources=lambda: ["quiet", "broken", "front"])
+            output, log = io.StringIO(), io.StringIO()
+            log_path = Path(directory) / "speech.log"
+            try:
+                with patch.dict(os.environ, {"TEHUTI_LOG_FILE": str(log_path)}), contextlib.redirect_stdout(output), contextlib.redirect_stderr(log):
+                    speech.start(5)
+                    time.sleep(0.2)
+                    speech.stop(5, True)
+                    deadline = time.monotonic() + 3
+                    while not output.getvalue() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                self.assertEqual(json.loads(output.getvalue()), {"session": 5, "text": "hi"})
+                self.assertEqual(model.samples, b"\x00\x30" * 320)
+                self.assertEqual(model.calls, [(b"\x00\x30" * 320, True),
+                                               (b"\x00\x30" * 320, False)])
+                self.assertEqual(log_path.read_text().splitlines(), [
+                    "INFO speech: session 5: source front, 640 bytes, peak 12288",
+                    "INFO speech: VAD returned empty text for clip (640 bytes)",
+                    "INFO speech: retrying clip without VAD",
+                ])
+                self.assertNotIn("front", log.getvalue())
+                self.assertNotIn("quiet", log.getvalue())
+            finally:
+                speech.close()
+                os.environ["PATH"] = previous_path
+
+    def test_private_source_log_never_falls_back_to_stderr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"TEHUTI_LOG_FILE": directory}):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    module.log("source microphone-a", private=True)
+                self.assertNotIn("microphone-a", stderr.getvalue())
 
     def test_invalid_command_cancels_capture_on_transport_exit(self):
         class Capture:

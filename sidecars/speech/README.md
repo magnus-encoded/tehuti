@@ -13,7 +13,7 @@ keep a working recovery path before giving Tehuti controller ownership.
 
 ## Run
 
-Install pw-record through your OS's PipeWire package. Create an isolated Python
+Install pw-record and pw-dump through your OS's PipeWire package. Create an isolated Python
 venv outside voice-cmd's environment:
 
 ```sh
@@ -34,6 +34,12 @@ Tehuti. Without it speech is disabled. `TEHUTI_SPEECH_MODEL` selects the model;
 cuBLAS and cuDNN libraries expected by faster-whisper. Model initialization
 may download model weights. The sidecar emits readiness after initialization.
 
+Each press records from every PipeWire capture source at once (monitors are
+excluded). On release the sidecar transcribes the source with the highest
+peak and logs the winner once per released capture session to the Tehuti log. A source that fails
+to start is skipped. `TEHUTI_SPEECH_SOURCE` pins one source by its PipeWire
+name and turns off discovery.
+
 ## Transport and limits
 
 Commands and replies are one JSON object per line, capped at 64 KiB:
@@ -51,7 +57,7 @@ An `error` reply shows SPEECH FAILED instead of NO SPEECH MAPPING. The
 `silent` error shows MIC SILENT: the sidecar sends it without transcribing
 when the capture is empty or its peak sample amplitude is at most 64, such as
 the digital silence of a headset disconnected from its base. Each finished
-capture logs its byte size and peak to stderr at INFO. The compositor logs at
+capture logs its source, byte size and peak only to the Tehuti log at INFO. The compositor logs at
 INFO each mapped key or text it delivers, naming the focused window's app id
 and title.
 
