@@ -22,13 +22,12 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                 .and_then(|node| std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok());
             is_physical(device.input_id().bus_type(), sysfs.as_deref())
         })
-        .map(|(_, device)| device)
-        .filter(|device| {
+        .filter(|(_, device)| {
             device
                 .supported_keys()
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
-        .find_map(|mut device| match grab_nonblocking(&mut device) {
+        .find_map(|(path, mut device)| match grab_nonblocking(&mut device) {
             Ok(()) => {
                 let translator = DpadHat::for_vendor(device.input_id().vendor());
                 tracing::debug!(
@@ -37,7 +36,13 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                     face_layout = ?translator.face_layout,
                     "controller face layout selected"
                 );
-                Some(EvdevPad(device, translator))
+                match Device::open(&path) {
+                    Ok(probe) => Some(EvdevPad::new(device, probe, translator)),
+                    Err(error) => {
+                        warn!(%error, "controller probe open failed; skipping it");
+                        None
+                    }
+                }
             }
             Err(error) => {
                 warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
@@ -111,20 +116,93 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
 
 /// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
 #[derive(Debug)]
-pub struct EvdevPad(Device, DpadHat);
+pub struct EvdevPad<D = Device>(PadHandles<D>, DpadHat);
+
+/// Kernel operations used by a controller client.
+pub trait PadDevice {
+    /// Reads held keys.
+    /// # Errors
+    /// The client could not query key state.
+    fn get_key_state(&self) -> io::Result<Vec<u16>>;
+    /// Reads calibrated absolute axes.
+    /// # Errors
+    /// The client could not query axis state.
+    fn get_absinfo(&self) -> io::Result<Vec<(AbsoluteAxisCode, evdev::AbsInfo)>>;
+    /// Reads pending protocol events.
+    /// # Errors
+    /// The client could not read events.
+    fn drain(&mut self, hat: &mut DpadHat) -> io::Result<Vec<Event>>;
+    /// Releases exclusive input ownership.
+    /// # Errors
+    /// The client could not release its grab.
+    fn ungrab(&mut self) -> io::Result<()>;
+}
+
+impl PadDevice for Device {
+    fn get_key_state(&self) -> io::Result<Vec<u16>> {
+        Ok(Self::get_key_state(self)?.iter().map(KeyCode::code).collect())
+    }
+
+    fn get_absinfo(&self) -> io::Result<Vec<(AbsoluteAxisCode, evdev::AbsInfo)>> {
+        Ok(Self::get_absinfo(self)?.collect())
+    }
+
+    fn drain(&mut self, hat: &mut DpadHat) -> io::Result<Vec<Event>> {
+        drain_device(self, hat)
+    }
+
+    fn ungrab(&mut self) -> io::Result<()> {
+        Self::ungrab(self)
+    }
+}
+
+/// Separate event delivery and state-query clients for one controller.
+#[derive(Debug)]
+pub struct PadHandles<D> {
+    events: D,
+    probe: D,
+}
+
+impl<D> PadHandles<D> {
+    /// Uses independently opened clients for events and state queries.
+    #[must_use]
+    pub const fn new(events: D, probe: D) -> Self {
+        Self { events, probe }
+    }
+
+    /// Borrows the event client for draining or releasing the grab.
+    pub const fn events(&mut self) -> &mut D {
+        &mut self.events
+    }
+
+    /// Borrows the ungrabbed client for state queries.
+    #[must_use]
+    pub const fn probe(&self) -> &D {
+        &self.probe
+    }
+}
 
 impl EvdevPad {
     #[must_use]
     pub fn name(&self) -> &str {
-        self.0.name().unwrap_or("unnamed")
+        self.0.events.name().unwrap_or("unnamed")
     }
+}
+
+impl<D: PadDevice> EvdevPad<D> {
+    /// Uses independently opened event and probe clients with the selected layout.
+    #[must_use]
+    pub const fn new(events: D, probe: D, translator: DpadHat) -> Self {
+        Self(PadHandles::new(events, probe), translator)
+    }
+
     /// Samples the current calibrated stick axes, including a 15 percent deadzone.
     /// # Errors
     /// The kernel could not read the controller axis state.
     pub fn sticks(&self) -> io::Result<tehuti_core::dispatch::Sticks> {
         use evdev::AbsoluteAxisCode;
         let mut sticks = tehuti_core::dispatch::Sticks::default();
-        for (axis, info) in self.0.get_absinfo()? {
+        for (axis, info) in self.0.probe().get_absinfo()? {
             let value = stick_axis(info.value(), info.minimum(), info.maximum());
             match axis {
                 AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
@@ -136,21 +214,52 @@ impl EvdevPad {
         }
         Ok(sticks)
     }
+    /// Fingerprints the kernel's view of held keys and D-pad hat positions.
+    ///
+    /// The kernel updates this state even when no event reaches our file descriptor,
+    /// so a changing fingerprint without routed events means our read path is dead.
+    /// # Errors
+    /// The kernel could not read the controller state, as when the node is gone.
+    pub fn activity(&self) -> io::Result<u64> {
+        let keys = self.0.probe().get_key_state()?;
+        let axes: Vec<_> = self
+            .0
+            .probe()
+            .get_absinfo()?
+            .into_iter()
+            .map(|(axis, info)| (axis.0, info.value()))
+            .collect();
+        Ok(fingerprint(&keys, &axes))
+    }
+}
+
+/// Hashes held keys and D-pad hats, excluding sampled sticks and triggers.
+#[must_use]
+pub fn fingerprint(keys: &[u16], axes: &[(u16, i32)]) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    keys.hash(&mut hasher);
+    for (axis, value) in axes {
+        if *axis == AbsoluteAxisCode::ABS_HAT0X.0 || *axis == AbsoluteAxisCode::ABS_HAT0Y.0 {
+            (axis, value).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 impl AsFd for EvdevPad {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
+        self.0.events.as_fd()
     }
 }
 
-impl InputSource for EvdevPad {
+impl<D: PadDevice> InputSource for EvdevPad<D> {
     fn release(&mut self) -> io::Result<()> {
-        self.0.ungrab()
+        self.0.events().ungrab()
     }
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
-        drain_device(&mut self.0, &mut self.1)
+        self.0.events().drain(&mut self.1)
     }
 }
 
@@ -304,6 +413,18 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn stick_and_trigger_drift_leaves_the_fingerprint_unchanged(
+            keys in prop::collection::vec(any::<u16>(), 0..8),
+            hat in (-1_i32..=1, -1_i32..=1),
+            drift in prop::collection::vec((0_u16..6, any::<i32>()), 1..12),
+        ) {
+            let hats = [(AbsoluteAxisCode::ABS_HAT0X.0, hat.0), (AbsoluteAxisCode::ABS_HAT0Y.0, hat.1)];
+            let mut drifted = drift;
+            drifted.extend(hats);
+            prop_assert_eq!(super::fingerprint(&keys, &hats), super::fingerprint(&keys, &drifted));
+        }
+
         #[test]
         fn vendor_layout_preserves_every_other_raw_key(
             code in any::<u16>().prop_filter("face codes have vendor layouts", |code| {
@@ -486,6 +607,76 @@ pub fn discover(state: Discovery, input: DiscoveryInput) -> (Discovery, Option<D
             (Discovery::Attached, Some(DiscoveryEffect::Reconnected))
         }
         (state, _) => (state, None),
+    }
+}
+
+/// How long kernel-side activity may go without a routed event before the pad is re-opened.
+pub const SILENCE_LIMIT: core::time::Duration = core::time::Duration::from_secs(1);
+
+/// Notices a grabbed pad whose kernel state changes while none of its events reach us.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Watchdog {
+    fingerprint: Option<u64>,
+    unanswered_since: Option<core::time::Duration>,
+    reopen: bool,
+}
+
+impl Watchdog {
+    /// Asks the event loop to drop and re-open the pad, as after a failed read.
+    pub const fn request_reopen(&mut self) {
+        self.reopen = true;
+    }
+
+    /// Takes a pending re-open request.
+    pub const fn take_reopen(&mut self) -> bool {
+        core::mem::replace(&mut self.reopen, false)
+    }
+}
+
+/// What the watchdog observes from the event loop.
+#[derive(Debug, Clone, Copy)]
+pub enum WatchInput {
+    /// The pad's activity fingerprint, sampled at `now`.
+    Sample {
+        now: core::time::Duration,
+        fingerprint: u64,
+    },
+    /// At least one event was read from the pad.
+    Events,
+}
+
+/// Whether the pad must be dropped and re-opened.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WatchVerdict {
+    Healthy,
+    Reopen,
+}
+
+/// Advances the watchdog. Performs no I/O.
+#[must_use]
+pub fn watch(mut state: Watchdog, input: WatchInput) -> (Watchdog, WatchVerdict) {
+    match input {
+        WatchInput::Events => {
+            state.unanswered_since = None;
+            state.fingerprint = None;
+            (state, WatchVerdict::Healthy)
+        }
+        WatchInput::Sample { now, fingerprint } => {
+            let previous = state.fingerprint.replace(fingerprint);
+            if previous.is_some_and(|previous| previous != fingerprint) {
+                let _first = state.unanswered_since.get_or_insert(now);
+            }
+            let verdict = if !state.reopen
+                && state
+                    .unanswered_since
+                    .is_some_and(|since| now.saturating_sub(since) >= SILENCE_LIMIT)
+            {
+                WatchVerdict::Reopen
+            } else {
+                WatchVerdict::Healthy
+            };
+            (state, verdict)
+        }
     }
 }
 
