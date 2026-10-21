@@ -46,3 +46,21 @@ mod menu {
         assert!(menu.is_none());
     }
 }
+
+#[cfg(test)]
+mod defaults {
+    use tehuti_protocol::{ButtonName, parse_context};
+
+    #[test]
+    fn shipped_contexts_leave_guide_reserved() {
+        for source in [
+            include_str!("../../../examples/global/context.toml"),
+            include_str!("../../../examples/foot/context.toml"),
+            include_str!("../../../dist/contexts/firefox/context.toml"),
+        ] {
+            let context = parse_context(source).unwrap();
+            assert_eq!(context.action_for(ButtonName::Guide), None);
+            assert_ne!(context.keyboard().button, Some(ButtonName::Guide));
+        }
+    }
+}

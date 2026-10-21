@@ -98,7 +98,17 @@ pub fn handle(menu: &mut Option<Menu>, event: &Event) -> Option<Command> {
             }
             open.confirming = true;
         }
-        _ => {}
+        ButtonName::North
+        | ButtonName::West
+        | ButtonName::LeftBumper
+        | ButtonName::RightBumper
+        | ButtonName::Select
+        | ButtonName::Record
+        | ButtonName::Start
+        | ButtonName::LeftStick
+        | ButtonName::RightStick
+        | ButtonName::DpadLeft
+        | ButtonName::DpadRight => {}
     }
     None
 }
