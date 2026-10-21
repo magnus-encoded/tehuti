@@ -339,6 +339,18 @@ mod tests {
 
     proptest! {
         #[test]
+        fn stick_and_trigger_drift_leaves_the_fingerprint_unchanged(
+            keys in prop::collection::vec(any::<u16>(), 0..8),
+            hat in (-1_i32..=1, -1_i32..=1),
+            drift in prop::collection::vec((0_u16..6, any::<i32>()), 1..12),
+        ) {
+            let hats = [(AbsoluteAxisCode::ABS_HAT0X.0, hat.0), (AbsoluteAxisCode::ABS_HAT0Y.0, hat.1)];
+            let mut drifted = drift;
+            drifted.extend(hats);
+            prop_assert_eq!(super::fingerprint(&keys, &hats), super::fingerprint(&keys, &drifted));
+        }
+
+        #[test]
         fn vendor_layout_preserves_every_other_raw_key(
             code in any::<u16>().prop_filter("face codes have vendor layouts", |code| {
                 *code != KeyCode::BTN_NORTH.code() && *code != KeyCode::BTN_WEST.code()
