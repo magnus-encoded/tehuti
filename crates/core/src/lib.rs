@@ -373,9 +373,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             if let Some(tap) = &mut state.guide_tap {
                 *tap = tap.saturating_add(*elapsed);
             }
-            if !state.start_held
-                && state.guide_tap.is_some_and(|held| held >= GUIDE_TAP_WINDOW)
-            {
+            if !state.start_held && state.guide_tap.is_some_and(|held| held >= GUIDE_TAP_WINDOW) {
                 state.guide_tap = None;
                 state.menu = Some(menu::Menu::default());
             }

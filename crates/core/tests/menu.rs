@@ -42,7 +42,10 @@ mod menu {
     fn up_wraps_to_task_monitor() {
         let mut menu = Some(Menu::default());
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
-        assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Pressed), Some(Command::TaskMonitor));
+        assert_eq!(
+            button(&mut menu, ButtonName::South, ButtonState::Pressed),
+            Some(Command::TaskMonitor)
+        );
         assert!(menu.is_none());
     }
 }

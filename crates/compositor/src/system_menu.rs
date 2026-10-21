@@ -14,8 +14,7 @@ impl Config {
     /// # Errors
     /// Unknown entries, non-string arguments and invalid program names are rejected.
     pub fn parse(text: &str) -> io::Result<Self> {
-        let commands: BTreeMap<String, Vec<String>> =
-            serde_json::from_str(text).map_err(io::Error::other)?;
+        let commands: BTreeMap<String, Vec<String>> = serde_json::from_str(text).map_err(io::Error::other)?;
         for (name, argv) in &commands {
             if !["log_out", "plasma", "reboot", "shut_down", "task_monitor"].contains(&name.as_str())
                 || argv.first().is_some_and(String::is_empty)
@@ -36,7 +35,10 @@ impl Config {
         command: Command,
         spawn: impl FnOnce(&str, &[String]) -> io::Result<()>,
     ) -> io::Result<()> {
-        let (program, args) = self.commands.get(command.key()).and_then(|argv| argv.split_first())
+        let (program, args) = self
+            .commands
+            .get(command.key())
+            .and_then(|argv| argv.split_first())
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "menu command is not configured"))?;
         spawn(program, args)
     }
@@ -46,9 +48,10 @@ fn config_path() -> io::Result<PathBuf> {
     if let Some(path) = std::env::var_os("TEHUTI_MENU_CONFIG") {
         return Ok(path.into());
     }
-    let directory = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"))
-    }).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no configuration directory"))?;
+    let directory = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no configuration directory"))?;
     Ok(directory.join("tehuti/menu.json"))
 }
 

@@ -597,30 +597,55 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
     }
 }
 
-fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
-    sync_terminal(state);
-    if matches!(event, Event::Button { name: ButtonName::Guide, .. }) {
-        let _response = state.keyboard.button(ButtonName::Guide, start_state(&event), true);
-        if let Some(actions) = crate::escape_chord(&mut state.core, &event) {
+fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if matches!(
+        event,
+        Event::Button {
+            name: ButtonName::Guide,
+            ..
+        }
+    ) {
+        let _response = state
+            .keyboard
+            .button(ButtonName::Guide, start_state(event), true);
+        if let Some(actions) = crate::escape_chord(&mut state.core, event) {
             effects.extend(actions.into_iter().map(Effect::Apply));
         }
-        return;
+        return true;
     }
     if state.core.menu().is_some() {
-        if let Some(actions) = crate::escape_chord(&mut state.core, &event) {
+        if let Some(actions) = crate::escape_chord(&mut state.core, event) {
             effects.extend(actions.into_iter().map(Effect::Apply));
         }
-        if let Some(command) = crate::menu::handle(&mut state.core.menu, &event) {
+        if let Some(command) = crate::menu::handle(&mut state.core.menu, event) {
             effects.push(Effect::RunMenuCommand(command));
         }
-        return;
+        return true;
     }
-    if state.core.guide_held() && matches!(event, Event::Button { name: ButtonName::Start, .. }) {
-        let _response = state.keyboard.button(ButtonName::Start, start_state(&event), true);
+    if state.core.guide_held()
+        && matches!(
+            event,
+            Event::Button {
+                name: ButtonName::Start,
+                ..
+            }
+        )
+    {
+        let _response = state
+            .keyboard
+            .button(ButtonName::Start, start_state(event), true);
         state.keyboard.cancel_send();
-        if let Some(actions) = crate::escape_chord(&mut state.core, &event) {
+        if let Some(actions) = crate::escape_chord(&mut state.core, event) {
             effects.extend(actions.into_iter().map(Effect::Apply));
         }
+        return true;
+    }
+    false
+}
+
+fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    sync_terminal(state);
+    if system_menu(state, &event, effects) {
         return;
     }
     if state.keyboard.password_field_active()
