@@ -352,7 +352,9 @@ fn menu_input(state: &mut State, event: &Event) -> Option<menu::Command> {
         && *name != ButtonName::Start
     {
         match button {
-            ButtonState::Pressed if !state.menu_buttons.contains(name) => state.menu_buttons.push(*name),
+            ButtonState::Pressed if !state.menu_buttons.contains(name) => {
+                state.menu_buttons.push(*name);
+            }
             ButtonState::Released => state.menu_buttons.retain(|held| held != name),
             ButtonState::Pressed => {}
         }

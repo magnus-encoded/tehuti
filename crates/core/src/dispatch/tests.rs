@@ -1608,6 +1608,7 @@ proptest! {
         plugin_active in any::<bool>(),
         mode in 0u8..3,
         close_with_guide in any::<bool>(),
+        held in prop::sample::select(vec![ButtonName::DpadDown, ButtonName::Record, ButtonName::South]),
     ) {
         let mut world = World { plugin_active, ..World::default() };
         let app = contexts[0].app_id().to_owned();
@@ -1629,9 +1630,11 @@ proptest! {
         prop_assert_eq!(state.core().level(), crate::Level::InApp);
         state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
         world.trace.clear();
+        state = world.run(state, pad_button(held, ButtonState::Pressed));
         let close = if close_with_guide { ButtonName::Guide } else { ButtonName::East };
         state = world.run(state, pad_button(close, ButtonState::Pressed));
         state = world.run(state, pad_button(close, ButtonState::Released));
+        state = world.run(state, pad_button(held, ButtonState::Released));
         prop_assert!(state.core().menu().is_none());
         prop_assert_eq!(state.core().level(), crate::Level::InApp);
         prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
