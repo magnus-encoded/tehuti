@@ -211,7 +211,7 @@ impl Running {
         let mut bytes = [0; 4096];
         for _attempt in 0..16 {
             match self.stdout.read(&mut bytes) {
-                Ok(0) => break,
+                Ok(0) => return Err(io::Error::other("speech stdout closed")),
                 Ok(count) => {
                     for byte in bytes.get(..count).unwrap_or_default() {
                         if *byte == b'\n' {

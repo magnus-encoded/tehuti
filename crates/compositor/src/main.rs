@@ -80,6 +80,7 @@ fn print_version() -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+#[expect(clippy::too_many_lines, reason = "speech spawn stays in startup")]
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut application = std::env::args_os().skip(1);
     let first = application.next();
@@ -99,7 +100,9 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         std::path::Path::new(&context_directory),
         &mut compositor,
     )?;
-    install_speech(&mut compositor);
+    if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
+        compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
+    }
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
     compositor.set_launch_socket(socket_name.clone());
     if let Err(error) = insert_controller_watch(&event_loop) {
@@ -155,12 +158,6 @@ fn shut_down(event_loop: EventLoop<LoopData>, data: LoopData) {
     } = data;
     drop(compositor);
     drop(display);
-}
-
-fn install_speech(compositor: &mut Compositor) {
-    if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
-        compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
-    }
 }
 
 fn run(

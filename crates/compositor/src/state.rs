@@ -1851,3 +1851,32 @@ fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
         tracing::info!("speech transcript dropped for a stale session");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Compositor;
+    use core::time::Duration;
+    use smithay::reexports::wayland_server::Display;
+    use tehuti_protocol::Event;
+
+    #[test]
+    fn polling_speech_shows_the_process_outage_notice() {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        compositor.set_speech(crate::speech::SpeechProcess::new(vec![
+            directory.path().join("missing-speech").into_os_string(),
+        ]));
+        assert_eq!(compositor.visible_notice_text(), None);
+
+        compositor.handle(&Event::Tick {
+            elapsed: Duration::ZERO,
+        });
+
+        assert_eq!(
+            compositor.visible_notice_text().as_deref(),
+            Some("Speech is down, restarting")
+        );
+        assert!(compositor.speech_notice_visible());
+    }
+}

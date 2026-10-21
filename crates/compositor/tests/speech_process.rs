@@ -133,7 +133,10 @@ mod speech_process {
                 assert_eq!(process.take_notice(), Some("Speech is down, restarting"));
             }
             assert_eq!(process.take_notice(), None, "one notice per outage");
-            if seconds > 0 {
+            if seconds == 1 {
+                assert_eq!(process.poll(Duration::from_millis(999)), vec![]);
+                assert!(process.send(&SpeechEffect::Start { session: 1 }).is_err());
+            } else if seconds > 0 {
                 assert_eq!(
                     process.poll(Duration::from_millis(
                         seconds.saturating_mul(1000).saturating_sub(1)
@@ -146,7 +149,11 @@ mod speech_process {
                     "restart happened before its deadline"
                 );
             }
-            let _restart_inputs = process.poll(Duration::from_millis(u64::from(seconds > 0)));
+            let _restart_inputs = if seconds == 1 {
+                process.poll(Duration::from_millis(1))
+            } else {
+                process.poll(Duration::from_millis(u64::from(seconds > 0)))
+            };
             wait_for_starts(&marker, attempt.saturating_add(2));
         }
         let _alive_inputs = process.poll(Duration::from_secs(60));
@@ -194,6 +201,14 @@ mod speech_process {
         let (_, effects) = speech_step(SpeechState::default(), expected);
         assert_eq!(effects, vec![]);
     }
+    #[test]
+    fn closed_stdout_fails_even_while_the_child_is_alive() {
+        let mut process = child("import os,time\nos.close(1)\ntime.sleep(60)");
+        wait_for(&mut process, &SpeechInput::Unavailable);
+        assert_eq!(process.take_notice(), Some("Speech is down, restarting"));
+        assert!(process.send(&SpeechEffect::Start { session: 0 }).is_err());
+    }
+
     #[test]
     fn silent_startup_times_out_without_waiting_on_the_child() {
         let mut process = child("import time\ntime.sleep(60)");
