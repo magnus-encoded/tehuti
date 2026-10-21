@@ -674,11 +674,9 @@ impl Compositor {
             DispatchEffect::SpeechCommand(command) => {
                 Some(DispatchInput::SpeechSent(self.send_speech_command(&command)))
             }
-            DispatchEffect::PollSpeech(elapsed) => Some(DispatchInput::SpeechPolled(
-                self.speech_process
-                    .as_mut()
-                    .map_or_else(Vec::new, |process| process.poll(elapsed)),
-            )),
+            DispatchEffect::PollSpeech(elapsed) => {
+                Some(DispatchInput::SpeechPolled(self.poll_speech(elapsed)))
+            }
             DispatchEffect::QueryForegroundProgram => Some(DispatchInput::ForegroundProgram(
                 self.focused_terminal_runs_program(),
             )),
@@ -705,6 +703,21 @@ impl Compositor {
                 None
             }
         }
+    }
+
+    fn poll_speech(&mut self, elapsed: core::time::Duration) -> Vec<tehuti_core::speech::SpeechInput> {
+        let inputs = self
+            .speech_process
+            .as_mut()
+            .map_or_else(Vec::new, |process| process.poll(elapsed));
+        while let Some(notice) = self
+            .speech_process
+            .as_mut()
+            .and_then(crate::speech::SpeechProcess::take_notice)
+        {
+            self.show_notice(notice);
+        }
+        inputs
     }
 
     fn queue_settings(&mut self, index: usize, persist: bool) {
@@ -1836,5 +1849,34 @@ fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
     tracing::info!(session, text = text.as_str(), "speech transcript received");
     if !admitted {
         tracing::info!("speech transcript dropped for a stale session");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Compositor;
+    use core::time::Duration;
+    use smithay::reexports::wayland_server::Display;
+    use tehuti_protocol::Event;
+
+    #[test]
+    fn polling_speech_shows_the_process_outage_notice() {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        compositor.set_speech(crate::speech::SpeechProcess::new(vec![
+            directory.path().join("missing-speech").into_os_string(),
+        ]));
+        assert_eq!(compositor.visible_notice_text(), None);
+
+        compositor.handle(&Event::Tick {
+            elapsed: Duration::ZERO,
+        });
+
+        assert_eq!(
+            compositor.visible_notice_text().as_deref(),
+            Some("Speech is down, restarting")
+        );
+        assert!(compositor.speech_notice_visible());
     }
 }

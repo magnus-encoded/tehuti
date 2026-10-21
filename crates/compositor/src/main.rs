@@ -81,6 +81,7 @@ fn print_version() -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+#[expect(clippy::too_many_lines, reason = "speech spawn stays in startup")]
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut application = std::env::args_os().skip(1);
     let first = application.next();
