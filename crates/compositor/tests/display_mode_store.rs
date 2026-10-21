@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
+    use core::error::Error;
 
     use smithay::reexports::wayland_server::Display;
     use tehuti::{display_mode_store::Store, state::Compositor};
