@@ -22,13 +22,12 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                 .and_then(|node| std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok());
             is_physical(device.input_id().bus_type(), sysfs.as_deref())
         })
-        .map(|(_, device)| device)
-        .filter(|device| {
+        .filter(|(_, device)| {
             device
                 .supported_keys()
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
-        .find_map(|mut device| match grab_nonblocking(&mut device) {
+        .find_map(|(path, mut device)| match grab_nonblocking(&mut device) {
             Ok(()) => {
                 let translator = DpadHat::for_vendor(device.input_id().vendor());
                 tracing::debug!(
@@ -37,7 +36,13 @@ pub fn open_grabbed() -> Option<EvdevPad> {
                     face_layout = ?translator.face_layout,
                     "controller face layout selected"
                 );
-                Some(EvdevPad(device, translator))
+                match Device::open(&path) {
+                    Ok(probe) => Some(EvdevPad(device, translator, probe)),
+                    Err(error) => {
+                        warn!(%error, "controller probe open failed; skipping it");
+                        None
+                    }
+                }
             }
             Err(error) => {
                 warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
@@ -111,7 +116,7 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
 
 /// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
 #[derive(Debug)]
-pub struct EvdevPad(Device, DpadHat);
+pub struct EvdevPad(Device, DpadHat, Device);
 
 impl EvdevPad {
     #[must_use]
@@ -124,7 +129,7 @@ impl EvdevPad {
     pub fn sticks(&self) -> io::Result<tehuti_core::dispatch::Sticks> {
         use evdev::AbsoluteAxisCode;
         let mut sticks = tehuti_core::dispatch::Sticks::default();
-        for (axis, info) in self.0.get_absinfo()? {
+        for (axis, info) in self.2.get_absinfo()? {
             let value = stick_axis(info.value(), info.minimum(), info.maximum());
             match axis {
                 AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
@@ -136,6 +141,35 @@ impl EvdevPad {
         }
         Ok(sticks)
     }
+    /// Fingerprints the kernel's view of held keys and D-pad hat positions.
+    ///
+    /// The kernel updates this state even when no event reaches our file descriptor,
+    /// so a changing fingerprint without routed events means our read path is dead.
+    /// # Errors
+    /// The kernel could not read the controller state, as when the node is gone.
+    pub fn activity(&self) -> io::Result<u64> {
+        let keys: Vec<_> = self.2.get_key_state()?.iter().map(KeyCode::code).collect();
+        let axes: Vec<_> = self
+            .2
+            .get_absinfo()?
+            .map(|(axis, info)| (axis.0, info.value()))
+            .collect();
+        Ok(fingerprint(&keys, &axes))
+    }
+}
+
+/// Hashes held keys and hat axes. Sticks and triggers are left out: they drift
+/// without yielding routed events, so hashing them made an idle pad look dead.
+fn fingerprint(keys: &[u16], axes: &[(u16, i32)]) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    keys.hash(&mut hasher);
+    for (axis, value) in axes {
+        if *axis == AbsoluteAxisCode::ABS_HAT0X.0 || *axis == AbsoluteAxisCode::ABS_HAT0Y.0 {
+            (axis, value).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 impl AsFd for EvdevPad {
