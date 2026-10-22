@@ -77,6 +77,7 @@ impl Buffer {
 
 const fn colour(tone: Tone) -> [u8; 4] {
     match tone {
+        Tone::Unfocused => [55, 43, 34, 255],
         Tone::Context => [88, 65, 47, 255],
         Tone::Live => [119, 88, 36, 255],
         Tone::Result => [77, 96, 42, 255],
@@ -115,11 +116,12 @@ fn raster(
             .saturating_mul(16)
             .saturating_add(36)
             .saturating_mul(unit);
-        let wanted = if index == 0 && segments.len() > 1 {
-            wanted.min(clock_start / 3)
-        } else {
-            wanted
-        };
+        let available = clock_start.saturating_sub(arrow).saturating_sub(next_start);
+        let wanted = wanted.min(
+            available
+                .checked_div(segments.len().saturating_sub(index))
+                .unwrap_or_default(),
+        );
         let end = next_start
             .saturating_add(wanted)
             .min(clock_start.saturating_sub(arrow));
@@ -202,7 +204,12 @@ impl Canvas {
         let size = 2usize.saturating_mul(unit);
         let advance = 8usize.saturating_mul(size);
         let top = self.height.saturating_sub(8usize.saturating_mul(size)) / 2;
-        for (index, character) in text.chars().enumerate() {
+        let capacity = end.saturating_sub(start).checked_div(advance).unwrap_or_default();
+        let truncated = text.chars().count() > capacity;
+        for (index, mut character) in text.chars().enumerate() {
+            if truncated && index.saturating_add(1) == capacity {
+                character = '…';
+            }
             let left = start.saturating_add(index.saturating_mul(advance));
             if left.saturating_add(advance) > end {
                 break;

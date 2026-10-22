@@ -1375,8 +1375,40 @@ impl Compositor {
     }
 
     #[must_use]
-    pub const fn voice_bar(&self) -> &tehuti_core::bar::Bar {
-        self.dispatch.core().bar()
+    pub fn voice_bar(&self) -> tehuti_core::bar::Bar {
+        let snapshot = self.layout.snapshot();
+        let windows = snapshot
+            .outputs
+            .iter()
+            .filter_map(|output| output.workspaces.get(output.active_workspace))
+            .flat_map(|workspace| &workspace.columns)
+            .flat_map(|column| &column.tiles)
+            .filter_map(|tile| {
+                let (_, window) = self
+                    .layout_windows
+                    .iter()
+                    .find(|(identity, _)| *identity == tile.window)?;
+                let toplevel = window.toplevel()?;
+                let title = smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                        .map(|attributes| {
+                            let attributes = attributes
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            attributes
+                                .title
+                                .clone()
+                                .filter(|title| !title.is_empty())
+                                .or_else(|| attributes.app_id.clone())
+                                .unwrap_or_else(|| "Untitled".into())
+                        })
+                })?;
+                Some((title, snapshot.focused_window == Some(tile.window)))
+            })
+            .collect();
+        self.dispatch.core().bar().clone().with_windows(windows)
     }
 
     /// Updates the layout to the output's logical size and configures its windows.

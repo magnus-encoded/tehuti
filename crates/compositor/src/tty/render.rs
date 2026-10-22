@@ -238,7 +238,7 @@ where
         .collect::<Vec<_>>();
     let notice_included = !elements.is_empty();
     let clock = chrono::Local::now().format("%H:%M").to_string();
-    if let Some(element) = bar.element(renderer, output, compositor.voice_bar(), &clock)? {
+    if let Some(element) = bar.element(renderer, output, &compositor.voice_bar(), &clock)? {
         elements.push(element);
     }
     if let Some(element) = keyboard.element(renderer, output, compositor.on_screen_keyboard())? {

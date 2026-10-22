@@ -1569,10 +1569,8 @@ mod synthetic_pad {
                 pad.push(synthetic_button(ButtonName::Guide, state));
             }
             route(&mut compositor, &mut pad).unwrap();
-            assert_eq!(
-                compositor.voice_bar().segments().last().unwrap().text,
-                "columns level"
-            );
+            let segments = compositor.voice_bar().segments();
+            assert!(!segments.iter().any(|segment| segment.text == "Columns"));
             assert!(
                 !compositor
                     .visible_notice_text()
@@ -1598,10 +1596,8 @@ mod synthetic_pad {
                     .visible_notice_text()
                     .is_some_and(|text| text.contains("SYSTEM MENU"))
             );
-            assert_eq!(
-                compositor.voice_bar().segments().last().unwrap().text,
-                "columns level"
-            );
+            let after_menu = compositor.voice_bar().segments();
+            assert!(!after_menu.iter().any(|segment| segment.text == "Columns"));
             assert_eq!(compositor.on_screen_keyboard().is_open(), mode == 2);
             assert!(!compositor.quit_requested());
         }

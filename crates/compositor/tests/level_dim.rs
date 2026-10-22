@@ -281,7 +281,7 @@ mod level_dim {
             ];
             let mut bar = tehuti::bar::Buffer::default();
             overlays.push(
-                bar.element(&mut self.renderer, output, compositor.voice_bar(), "12:00")
+                bar.element(&mut self.renderer, output, &compositor.voice_bar(), "12:00")
                     .unwrap()
                     .unwrap(),
             );

@@ -219,7 +219,7 @@ impl Nested {
                 let clock = chrono::Local::now().format("%H:%M").to_string();
                 match self
                     .bar
-                    .element(renderer, &self.output, data.compositor.voice_bar(), &clock)
+                    .element(renderer, &self.output, &data.compositor.voice_bar(), &clock)
                 {
                     Ok(Some(element)) => notices.push(element),
                     Ok(None) => {}
