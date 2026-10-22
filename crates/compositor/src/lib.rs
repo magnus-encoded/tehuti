@@ -21,6 +21,7 @@ pub mod notice;
 pub mod secret_delivery;
 
 pub mod desktop;
+pub mod desktop_hints;
 
 pub mod backend;
 

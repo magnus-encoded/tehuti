@@ -257,10 +257,17 @@ pub struct Context {
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, MappingAction>,
     unmatched_speech: Option<UnmatchedSpeech>,
+    launch_phrases: Vec<(String, String)>,
     keyboard: KeyboardConfig,
 }
 
 impl Context {
+    /// First configured phrase for each desktop entry, in speech table order.
+    #[must_use]
+    pub fn launch_phrases(&self) -> &[(String, String)] {
+        &self.launch_phrases
+    }
+
     #[must_use]
     pub const fn keyboard(&self) -> &KeyboardConfig {
         &self.keyboard
@@ -331,7 +338,7 @@ struct ContextFile {
     app_id: String,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
-    speech: std::collections::HashMap<String, MappingAction>,
+    speech: toml::Table,
     #[serde(default)]
     unmatched_speech: Option<UnmatchedSpeech>,
     #[serde(default)]
@@ -411,7 +418,16 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         return Err("app_id must not be empty".into());
     }
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
-    for (mapped, action) in context.speech {
+    let mut launch_phrases = Vec::new();
+    for (mapped, value) in context.speech {
+        let action: MappingAction = value
+            .try_into()
+            .map_err(|error: toml::de::Error| error.to_string())?;
+        if let MappingAction::Launch { launch } = &action
+            && !launch_phrases.iter().any(|(entry, _)| entry == launch.as_str())
+        {
+            launch_phrases.push((launch.as_str().to_owned(), mapped.clone()));
+        }
         let normalized = normalize_phrase(&mapped);
         if normalized.is_empty() {
             return Err(format!(
@@ -428,6 +444,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         app_id: context.app_id,
         buttons: context.buttons,
         speech,
+        launch_phrases,
         unmatched_speech: context.unmatched_speech,
         keyboard: context.keyboard,
     })
