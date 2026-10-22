@@ -25,6 +25,7 @@ pub mod desktop;
 pub mod backend;
 
 pub mod dim;
+mod focus_outline;
 mod layout_window;
 
 pub mod shutdown;

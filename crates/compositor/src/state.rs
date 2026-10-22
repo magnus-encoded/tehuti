@@ -82,6 +82,7 @@ pub struct Compositor {
     settings_display: crate::settings::Display,
     previous_tick: Instant,
     dim_elapsed: core::time::Duration,
+    focus_outline_ids: [smithay::backend::renderer::element::Id; 4],
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
@@ -169,6 +170,7 @@ impl Compositor {
             settings_display: crate::settings::Display::default(),
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
+            focus_outline_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
@@ -1372,6 +1374,54 @@ impl Compositor {
     #[must_use]
     pub fn layout_snapshot(&self) -> tehuti_core::layout::Snapshot {
         self.layout.snapshot()
+    }
+
+    #[must_use]
+    pub fn focus_outline(
+        &self,
+        output: &Output,
+    ) -> Vec<smithay::backend::renderer::element::solid::SolidColorRenderElement> {
+        use smithay::utils::Rectangle;
+        let snapshot = self.layout.snapshot();
+        let fullscreen = snapshot
+            .outputs
+            .iter()
+            .flat_map(|snapshot_output| &snapshot_output.workspaces)
+            .flat_map(|workspace| &workspace.columns)
+            .flat_map(|column| &column.tiles)
+            .any(|tile| {
+                Some(tile.window) == snapshot.focused_window
+                    && tile.mode == tehuti_core::layout::TileMode::Fullscreen
+            });
+        if fullscreen {
+            return Vec::new();
+        }
+        let Some((_, window)) = self
+            .layout_windows
+            .iter()
+            .find(|(identity, _)| Some(*identity) == snapshot.focused_window)
+        else {
+            return Vec::new();
+        };
+        let (Some(location), Some(area)) = (
+            self.space.element_location(window),
+            self.space.output_geometry(output),
+        ) else {
+            return Vec::new();
+        };
+        if !window.mapped() {
+            return Vec::new();
+        }
+        let location = (
+            location.x.saturating_sub(area.loc.x),
+            location.y.saturating_sub(area.loc.y),
+        );
+        let bounds = Rectangle::new(location.into(), window.layout_size());
+        crate::focus_outline::elements(
+            bounds,
+            output.current_scale().fractional_scale(),
+            &self.focus_outline_ids,
+        )
     }
 
     #[must_use]

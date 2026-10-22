@@ -253,6 +253,7 @@ impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for WallpaperElement<E> 
 smithay::backend::renderer::element::render_elements! {
     OutputRenderElements<'a, R, E, C> where R: ImportAll + ImportMem;
     Space=SpaceRenderElements<R, E>,
+    Focus=smithay::backend::renderer::element::solid::SolidColorRenderElement,
     Custom=&'a C,
     Wallpaper=WallpaperElement<MemoryRenderBufferRenderElement<R>>,
 }
@@ -308,6 +309,12 @@ where
         .iter()
         .map(OutputRenderElements::Custom)
         .collect::<Vec<_>>();
+    elements.extend(
+        compositor
+            .focus_outline(output)
+            .into_iter()
+            .map(OutputRenderElements::Focus),
+    );
     elements.extend(space.into_iter().map(OutputRenderElements::Space));
     if let Some(background) = background {
         elements.push(OutputRenderElements::Wallpaper(WallpaperElement(background)));
