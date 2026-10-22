@@ -24,6 +24,7 @@ pub mod desktop;
 
 pub mod backend;
 
+pub mod dim;
 mod layout_window;
 
 pub mod shutdown;

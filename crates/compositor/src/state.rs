@@ -81,6 +81,8 @@ pub struct Compositor {
     dispatch: tehuti_core::dispatch::State,
     settings_display: crate::settings::Display,
     previous_tick: Instant,
+    dim_elapsed: core::time::Duration,
+    popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
@@ -166,6 +168,8 @@ impl Compositor {
             ),
             settings_display: crate::settings::Display::default(),
             previous_tick: Instant::now(),
+            dim_elapsed: core::time::Duration::ZERO,
+            popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
             speech_process: None,
@@ -240,6 +244,7 @@ impl Compositor {
             Ok(contexts) => {
                 tracing::info!(count = contexts.len(), "contexts reloaded");
                 self.dispatch.core_mut().replace_contexts(contexts);
+                self.update_window_dimming();
                 self.show_notice("CONTEXTS RELOADED");
             }
             Err(error) => {
@@ -547,6 +552,29 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        let elapsed = match &input {
+            DispatchInput::Tick { elapsed }
+            | DispatchInput::Event { elapsed, .. }
+            | DispatchInput::ClockRead(elapsed) => *elapsed,
+            DispatchInput::DisplayModes { .. }
+            | DispatchInput::ModeApplied(_)
+            | DispatchInput::Speech(_)
+            | DispatchInput::PluginReply { .. }
+            | DispatchInput::PluginExited { .. }
+            | DispatchInput::TextField { .. }
+            | DispatchInput::ControllerDisconnected
+            | DispatchInput::Sticks(_)
+            | DispatchInput::PluginActive(_)
+            | DispatchInput::PluginRequest(_)
+            | DispatchInput::Supervised(_)
+            | DispatchInput::SecretConfirmation(_)
+            | DispatchInput::SpeechSent(_)
+            | DispatchInput::SpeechPolled(_)
+            | DispatchInput::ForegroundProgram(_)
+            | DispatchInput::Resume => core::time::Duration::ZERO,
+        };
+        self.dim_elapsed = self.dim_elapsed.saturating_add(elapsed);
+        let level = self.dispatch.core().level();
         let depth = self.dispatch.busy();
         let mut input = input;
         let mut rejection = None;
@@ -562,10 +590,59 @@ impl Compositor {
                 }
             }
             if self.dispatch.busy() <= depth {
+                if level != self.dispatch.core().level() {
+                    self.dim_elapsed = core::time::Duration::ZERO;
+                }
+                self.update_window_dimming();
                 self.reserve_keyboard_height();
                 return rejection;
             }
             input = reply;
+        }
+    }
+
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "linear colour fade over validated duration"
+    )]
+    fn update_window_dimming(&self) {
+        let (enabled, strength, duration) = self.dispatch.core().dim_config();
+        let snapshot = self.layout.snapshot();
+        for output in self.space.outputs() {
+            let Some(area) = self.space.output_geometry(output) else {
+                continue;
+            };
+            let visible = self
+                .space
+                .elements()
+                .filter(|window| {
+                    window.mapped()
+                        && self
+                            .space
+                            .element_bbox(window)
+                            .is_some_and(|bounds| bounds.overlaps(area))
+                })
+                .collect::<Vec<_>>();
+            let progress = if duration.is_zero() {
+                1.0
+            } else {
+                (self.dim_elapsed.as_secs_f32() / duration.as_secs_f32()).min(1.0)
+            };
+            for window in &visible {
+                let focused = self.layout_windows.iter().any(|(identity, candidate)| {
+                    candidate == *window && snapshot.focused_window == Some(*identity)
+                });
+                let brightness = if enabled
+                    && self.dispatch.core().level() == tehuti_core::Level::App
+                    && visible.len() > 1
+                    && !focused
+                {
+                    (1.0 - strength).mul_add(-progress, 1.0)
+                } else {
+                    1.0
+                };
+                window.set_brightness(brightness);
+            }
         }
     }
 
@@ -1419,6 +1496,7 @@ impl Compositor {
             }
         }
         self.sync_window_focus();
+        self.update_window_dimming();
     }
 
     fn configure_layout_window(
@@ -1677,6 +1755,14 @@ impl CompositorHandler for Compositor {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        self.popups.commit(surface);
+        if let Some(smithay::desktop::PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
+            && !popup.is_initial_configure_sent()
+            && let Err(error) = popup.send_configure()
+        {
+            tracing::warn!(%error, "popup configure failed");
+        }
+        self.popups.cleanup();
         if is_sync_subsurface(surface) {
             return;
         }
@@ -1783,7 +1869,12 @@ impl XdgShellHandler for Compositor {
         }
     }
 
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        surface.with_pending_state(|pending| pending.geometry = positioner.get_geometry());
+        if let Err(error) = self.popups.track_popup(smithay::desktop::PopupKind::Xdg(surface)) {
+            tracing::warn!(%error, "popup tracking failed");
+        }
+    }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
 

@@ -65,7 +65,7 @@ impl Bar {
             agents: Vec::new(),
             feedback: None,
             remaining: None,
-            level: crate::Level::InApp,
+            level: crate::Level::App,
             generation: 0,
         }
     }

@@ -555,7 +555,7 @@ fn focus_clears_voice_bar_and_rejects_old_capture_through_dispatch() {
                 tone: crate::bar::Tone::Context,
             },
             crate::bar::Segment {
-                text: "App".into(),
+                text: "app level".into(),
                 tone: crate::bar::Tone::Context,
             }
         ]
@@ -1427,9 +1427,8 @@ fn entering_password_field_cancels_capture_without_transcribing() {
     assert!(!state.keyboard().password_field_active());
 }
 
-fn terminal_by_context(open_on_in_app_level: Option<bool>) -> State {
-    let option =
-        open_on_in_app_level.map_or_else(String::new, |opens| format!("open_on_in_app_level = {opens}\n"));
+fn terminal_by_context(open_on_app_level: Option<bool>) -> State {
+    let option = open_on_app_level.map_or_else(String::new, |opens| format!("open_on_app_level = {opens}\n"));
     let context = tehuti_protocol::parse_context(&format!(
         "app_id = 'console'\n[buttons]\n[keyboard]\nterminal = true\non_text_field = 'open'\n{option}"
     ))
@@ -1484,7 +1483,7 @@ proptest! {
 }
 
 #[test]
-fn a_guide_tap_into_the_in_app_level_opens_the_terminal_keyboard() {
+fn a_guide_tap_into_the_app_level_opens_the_terminal_keyboard() {
     for state in [
         terminal_by_context(None),
         World::default().run(State::default(), terminal_field()),
@@ -1506,7 +1505,7 @@ fn a_context_can_keep_the_guide_tap_from_opening_the_terminal_keyboard() {
     for _ in 0..2 {
         state = tap_button(&mut world, state, ButtonName::Guide);
     }
-    assert_eq!(state.core().level(), crate::Level::InApp);
+    assert_eq!(state.core().level(), crate::Level::App);
     assert!(!state.keyboard().is_open());
 }
 
@@ -1632,11 +1631,11 @@ proptest! {
                     prop_assert_eq!(state.core().level(), crate::Level::Columns);
                     prop_assert!(state.core().menu().is_none());
                 } else {
-                    prop_assert_eq!(state.core().level(), crate::Level::InApp);
+                    prop_assert_eq!(state.core().level(), crate::Level::App);
                     prop_assert!(state.core().menu().is_some());
                     state = tap_button(&mut world, state, ButtonName::Guide);
                     prop_assert!(state.core().menu().is_none());
-                    prop_assert_eq!(state.core().level(), crate::Level::InApp);
+                    prop_assert_eq!(state.core().level(), crate::Level::App);
                 }
                 prop_assert_eq!(state.keyboard().is_open(), mode == 2);
                 prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
@@ -1676,7 +1675,7 @@ proptest! {
         state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
         state = world.run(state, Input::Tick { elapsed: Duration::from_millis(500) });
         prop_assert!(state.core().menu().is_some());
-        prop_assert_eq!(state.core().level(), crate::Level::InApp);
+        prop_assert_eq!(state.core().level(), crate::Level::App);
         state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
         world.trace.clear();
         state = world.run(state, pad_button(held, ButtonState::Pressed));
@@ -1685,7 +1684,7 @@ proptest! {
         state = world.run(state, pad_button(close, ButtonState::Released));
         state = world.run(state, pad_button(held, ButtonState::Released));
         prop_assert!(state.core().menu().is_none());
-        prop_assert_eq!(state.core().level(), crate::Level::InApp);
+        prop_assert_eq!(state.core().level(), crate::Level::App);
         prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
             Effect::Apply(_) | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)

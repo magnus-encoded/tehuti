@@ -315,7 +315,7 @@ mod tests {
                     tone: Tone::Context
                 },
                 Segment {
-                    text: "App".into(),
+                    text: "app level".into(),
                     tone: Tone::Context
                 }
             ]

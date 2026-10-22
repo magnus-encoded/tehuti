@@ -10,7 +10,7 @@ pub const GUIDE_TAP_WINDOW: core::time::Duration = core::time::Duration::from_mi
 pub enum Level {
     /// LB and RB route to the focused app's context like any other button.
     #[default]
-    InApp,
+    App,
     /// LB and RB move focus one column left or right.
     Columns,
 }
@@ -19,16 +19,16 @@ impl Level {
     #[must_use]
     pub const fn toggled(self) -> Self {
         match self {
-            Self::InApp => Self::Columns,
-            Self::Columns => Self::InApp,
+            Self::App => Self::Columns,
+            Self::Columns => Self::App,
         }
     }
 
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::InApp => "App",
-            Self::Columns => "Columns",
+            Self::App => "app level",
+            Self::Columns => "columns level",
         }
     }
 }
@@ -78,12 +78,44 @@ impl State {
             guide_held: None,
             guide_tap: None,
             start_held: false,
-            level: Level::InApp,
+            level: Level::App,
             menu: None,
             menu_buttons: Vec::new(),
             pending: Vec::new(),
             bar: bar::Bar::new(),
         }
+    }
+
+    /// Resolves the focused app's dimming policy over the global context.
+    #[must_use]
+    pub fn dim_config(&self) -> (bool, f32, core::time::Duration) {
+        let global = self
+            .contexts
+            .iter()
+            .find(|context| context.app_id() == "*")
+            .map(Context::dim);
+        let active = self
+            .contexts
+            .iter()
+            .find(|context| Some(context.app_id()) == self.focused_app_id.as_deref())
+            .map(Context::dim);
+        let enabled = active
+            .and_then(|config| config.enabled)
+            .or_else(|| global.and_then(|config| config.enabled))
+            .unwrap_or(true);
+        let strength = active
+            .and_then(|config| config.strength)
+            .or_else(|| global.and_then(|config| config.strength))
+            .map_or(0.67, tehuti_protocol::DimStrength::multiplier);
+        let fade = active
+            .and_then(|config| config.fade_ms)
+            .or_else(|| global.and_then(|config| config.fade_ms))
+            .unwrap_or(100);
+        (
+            enabled,
+            strength,
+            core::time::Duration::from_millis(u64::from(fade)),
+        )
     }
 
     /// Resolves per-application keyboard options over the `*` global context.
@@ -106,7 +138,7 @@ impl State {
     }
 
     /// Whether the focused app's context marks it a terminal, and whether a Guide tap into
-    /// the in-app level opens the keyboard there (inherited from the `*` context, default on).
+    /// the app level opens the keyboard there (inherited from the `*` context, default on).
     #[must_use]
     pub fn terminal_config(&self) -> (bool, bool) {
         let global = self.contexts.iter().find(|context| context.app_id() == "*");
@@ -118,8 +150,8 @@ impl State {
             .and_then(|context| context.keyboard().terminal)
             .unwrap_or(false);
         let opens = active
-            .and_then(|context| context.keyboard().open_on_in_app_level)
-            .or_else(|| global.and_then(|context| context.keyboard().open_on_in_app_level))
+            .and_then(|context| context.keyboard().open_on_app_level)
+            .or_else(|| global.and_then(|context| context.keyboard().open_on_app_level))
             .unwrap_or(true);
         (marked, opens)
     }

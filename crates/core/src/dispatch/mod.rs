@@ -282,7 +282,7 @@ pub fn step(state: State, input: Input) -> (State, Vec<Effect>) {
             frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
         }
     }
-    if level != crate::Level::InApp && state.core.level() == crate::Level::InApp {
+    if level != crate::Level::App && state.core.level() == crate::Level::App {
         sync_terminal(&mut state);
         if state.keyboard.terminal() && state.core.terminal_config().1 {
             state.keyboard.open();
@@ -836,7 +836,7 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
             send_response(state, response, effects)
         }
         Event::Button { name, state: button } => {
-            let shoulders_move_caret = state.core.level() == crate::Level::InApp;
+            let shoulders_move_caret = state.core.level() == crate::Level::App;
             let response = state.keyboard.button(*name, *button, shoulders_move_caret);
             send_response(state, response, effects)
         }
