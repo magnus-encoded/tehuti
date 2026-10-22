@@ -307,9 +307,15 @@ pub struct Context {
     unmatched_speech: Option<UnmatchedSpeech>,
     keyboard: KeyboardConfig,
     dim: DimConfig,
+    push_to_talk: Vec<ButtonName>,
 }
 
 impl Context {
+    #[must_use]
+    pub fn push_to_talk(&self, button: ButtonName) -> bool {
+        self.push_to_talk.contains(&button)
+    }
+
     #[must_use]
     pub const fn dim(&self) -> &DimConfig {
         &self.dim
@@ -379,6 +385,10 @@ enum UnmatchedSpeech {
     Type,
 }
 
+fn default_push_to_talk() -> Vec<ButtonName> {
+    vec![ButtonName::Record]
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContextFile {
@@ -392,6 +402,8 @@ struct ContextFile {
     keyboard: KeyboardConfig,
     #[serde(default)]
     dim: DimConfig,
+    #[serde(default = "default_push_to_talk")]
+    push_to_talk: Vec<ButtonName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -487,6 +499,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         unmatched_speech: context.unmatched_speech,
         keyboard: context.keyboard,
         dim: context.dim,
+        push_to_talk: context.push_to_talk,
     })
 }
 

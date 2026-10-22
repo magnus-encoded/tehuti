@@ -725,13 +725,8 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
         return true;
     }
     if state.keyboard.password_field_active()
-        && matches!(
-            event,
-            Event::Button {
-                name: ButtonName::Record,
-                ..
-            } | Event::Speech { .. }
-        )
+        && (matches!(event, Event::Button { name, .. } if state.core.push_to_talk(*name))
+            || matches!(event, Event::Speech { .. }))
     {
         effects.push(Effect::PasswordSpeechIgnored);
         return true;
@@ -766,13 +761,12 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         return;
     }
     match event {
-        Event::Button {
-            name: ButtonName::Record,
-            state: button,
-        } => frame.tasks.push_front(Task::Speech(match button {
-            ButtonState::Pressed => SpeechInput::Press,
-            ButtonState::Released => SpeechInput::Release,
-        })),
+        Event::Button { name, state: button } if state.core.push_to_talk(name) => {
+            frame.tasks.push_front(Task::Speech(match button {
+                ButtonState::Pressed => SpeechInput::Press,
+                ButtonState::Released => SpeechInput::Release,
+            }));
+        }
         Event::Button {
             name: ButtonName::South,
             state: button,
