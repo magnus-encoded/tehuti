@@ -1431,10 +1431,16 @@ mod synthetic_pad {
 
     #[test]
     fn sidecar_transcript_reaches_client() {
+        for passthrough in [false, true] {
+            sidecar_transcript_in_context(passthrough);
+        }
+    }
+
+    fn sidecar_transcript_in_context(passthrough: bool) {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_contexts(vec![
-            tehuti_protocol::parse_context("app_id = 'test'\n[buttons]\n[speech]\nconfirm = { key = 'tab' }")
+            tehuti_protocol::parse_context(&format!("app_id = 'test'\n[buttons]\n[speech]\nconfirm = {{ key = 'tab' }}\n[pad]\npassthrough = {passthrough}"))
                 .unwrap(),
         ]);
         let process = tehuti::speech::SpeechProcess::new(vec!["python3".into(), "-u".into(), "-c".into(),

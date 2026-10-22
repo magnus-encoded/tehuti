@@ -308,6 +308,17 @@ pub struct Context {
     keyboard: KeyboardConfig,
     dim: DimConfig,
     push_to_talk: Vec<ButtonName>,
+    pad: PadConfig,
+}
+
+/// Controller ownership options for an application.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PadConfig {
+    #[serde(default)]
+    passthrough: bool,
+    #[serde(default)]
+    push_to_talk: Option<Vec<ButtonName>>,
 }
 
 impl Context {
@@ -319,6 +330,16 @@ impl Context {
     #[must_use]
     pub const fn dim(&self) -> &DimConfig {
         &self.dim
+    }
+
+    #[must_use]
+    pub fn passthrough_push_to_talk(&self) -> &[ButtonName] {
+        self.pad.push_to_talk.as_deref().unwrap_or(&[ButtonName::Record])
+    }
+
+    #[must_use]
+    pub const fn passthrough(&self) -> bool {
+        self.pad.passthrough
     }
 
     #[must_use]
@@ -404,6 +425,8 @@ struct ContextFile {
     dim: DimConfig,
     #[serde(default = "default_push_to_talk")]
     push_to_talk: Vec<ButtonName>,
+    #[serde(default)]
+    pad: PadConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -462,6 +485,25 @@ impl MappingAction {
     }
 }
 
+fn validate_push_to_talk(buttons: Option<&[ButtonName]>) -> Result<(), String> {
+    let Some(buttons) = buttons else {
+        return Ok(());
+    };
+    if buttons.is_empty() || buttons.contains(&ButtonName::Guide) || buttons.contains(&ButtonName::Start) {
+        return Err("pad.push_to_talk needs buttons other than Guide or Start".into());
+    }
+    if matches!(buttons, [button] if !matches!(button, ButtonName::Record | ButtonName::Select)) {
+        return Err("a single pad.push_to_talk button must be Record or Select".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for button in buttons {
+        if !seen.insert(button) {
+            return Err("pad.push_to_talk cannot repeat a button".into());
+        }
+    }
+    Ok(())
+}
+
 /// Parses a context at the configuration boundary.
 ///
 /// # Errors
@@ -469,6 +511,7 @@ impl MappingAction {
 /// phrase normalizes to nothing or to the same phrase as another mapping.
 pub fn parse_context(source: &str) -> Result<Context, String> {
     let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
+    validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
     if matches!(
         context.keyboard.button,
         Some(ButtonName::Guide | ButtonName::Record)
@@ -500,6 +543,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         keyboard: context.keyboard,
         dim: context.dim,
         push_to_talk: context.push_to_talk,
+        pad: context.pad,
     })
 }
 

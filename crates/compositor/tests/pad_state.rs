@@ -16,9 +16,20 @@ mod tests {
     use tehuti_protocol::ButtonName;
 
     #[derive(Default)]
-    struct Client(Rc<RefCell<VecDeque<ButtonName>>>);
+    struct Client(
+        Rc<RefCell<VecDeque<ButtonName>>>,
+        Rc<core::cell::Cell<bool>>,
+        Rc<core::cell::Cell<bool>>,
+    );
 
     impl PadDevice for Client {
+        fn grab(&mut self) -> io::Result<()> {
+            if self.2.get() {
+                return Err(io::Error::other("grab refused"));
+            }
+            self.1.set(true);
+            Ok(())
+        }
         fn get_key_state(&self) -> io::Result<Vec<u16>> {
             self.0.borrow_mut().clear();
             Ok(Vec::new())
@@ -42,7 +53,48 @@ mod tests {
         }
 
         fn ungrab(&mut self) -> io::Result<()> {
+            if self.2.get() {
+                return Err(io::Error::other("ungrab refused"));
+            }
+            self.1.set(false);
             Ok(())
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn grab_follows_focused_context_and_retries_failures(
+            changes in prop::collection::vec((any::<bool>(), any::<bool>()), 1..40),
+        ) {
+            let client = Client::default();
+            let queued = Rc::clone(&client.0);
+            let grabbed = Rc::clone(&client.1);
+            let fail = Rc::clone(&client.2);
+            grabbed.set(true);
+            let mut pad = EvdevPad::new(client, Client::default(), DpadHat::default());
+            let context = tehuti_protocol::parse_context(include_str!("../../../examples/emulator/context.toml")).unwrap();
+            let mut core = tehuti_core::State::with_contexts(vec![context]);
+            for (passthrough, failure) in changes {
+                core = tehuti_core::step(core, &tehuti_protocol::Event::Focus {
+                    app_id: Some(if passthrough { "org.example.Emulator" } else { "org.example.Editor" }.into()),
+                    title: String::new(),
+                }).0;
+                let previous = grabbed.get();
+                fail.set(failure);
+                let result = pad.set_passthrough(core.passthrough());
+                if failure && previous == passthrough {
+                    prop_assert!(result.is_err());
+                    prop_assert_eq!(grabbed.get(), previous);
+                } else {
+                    prop_assert!(result.is_ok());
+                    prop_assert_eq!(grabbed.get(), !passthrough);
+                }
+                fail.set(false);
+                prop_assert!(pad.set_passthrough(core.passthrough()).is_ok());
+                prop_assert_eq!(grabbed.get(), !passthrough);
+                queued.borrow_mut().push_back(ButtonName::Record);
+                prop_assert_eq!(pad.drain().unwrap(), vec![tehuti_protocol::Event::Button { name: ButtonName::Record, state: tehuti_protocol::ButtonState::Pressed }]);
+            }
         }
     }
 

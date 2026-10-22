@@ -49,6 +49,16 @@ pub struct State {
 
 impl State {
     #[must_use]
+    pub fn passthrough_push_to_talk(&self) -> &[ButtonName] {
+        focused_context(self).map_or(&[ButtonName::Record], Context::passthrough_push_to_talk)
+    }
+
+    #[must_use]
+    pub fn passthrough(&self) -> bool {
+        focused_context(self).is_some_and(Context::passthrough)
+    }
+
+    #[must_use]
     pub const fn bar(&self) -> &bar::Bar {
         &self.bar
     }
@@ -256,6 +266,10 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         state.focused_app_id.clone_from(app_id);
         return (state, actions, false);
     }
+    if state.passthrough() && matches!(event, Event::Button { .. }) {
+        let actions = escape_chord(&mut state, event).unwrap_or_default();
+        return (state, actions, false);
+    }
     if menu_button_release(&mut state, event) {
         return (state, Vec::new(), false);
     }
@@ -399,12 +413,13 @@ fn menu_input(state: &mut State, event: &Event) -> Option<menu::Command> {
 }
 
 fn guide_button(state: &mut State, button_state: ButtonState) {
+    let passthrough = state.passthrough();
     match button_state {
         ButtonState::Pressed => {
             if state.menu.take().is_some() {
                 state.guide_tap = None;
             } else if state.guide_held.is_none() {
-                state.guide_tap = (!state.start_held).then_some(core::time::Duration::ZERO);
+                state.guide_tap = (!state.start_held && !passthrough).then_some(core::time::Duration::ZERO);
             }
             let _held = state.guide_held.get_or_insert(core::time::Duration::ZERO);
         }
