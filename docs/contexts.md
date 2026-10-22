@@ -53,8 +53,8 @@ speech into the focused window, followed by one space. Mapped phrases still win.
 The transcript keeps its original casing and punctuation. Empty or whitespace-only
 transcripts do nothing. The option applies only to the focused window's context.
 Without the option, unmatched speech shows “No speech mapping” for three
-seconds above the client without changing focus. Record (Share) controls push-to-talk and
-never reaches context mappings.
+seconds above the client without changing focus. Record (Share) controls push-to-talk
+by default. Configured push-to-talk buttons never reach context mappings.
 
 ## Reload
 
@@ -126,3 +126,5 @@ fade_ms = 100
 `strength` is the retained colour fraction, between 0 and 1, rounded to
 thousandths. `fade_ms` is the time to full dimming in milliseconds (0 to 65535).
 The defaults shown above apply when the values are absent.
+
+The global context accepts `push_to_talk = ['start']` before `[buttons]` to use Menu for push-to-talk. The default is `['record']`; `[]` disables controller push-to-talk. Listed buttons replace their context bindings; Guide+Start still escapes.

@@ -189,6 +189,13 @@ impl State {
         self.menu.as_ref()
     }
 
+    #[must_use]
+    pub fn push_to_talk(&self, button: ButtonName) -> bool {
+        global_context(self).map_or(button == ButtonName::Record, |context| {
+            context.push_to_talk(button)
+        })
+    }
+
     /// Whether Guide is down, so Start belongs to the escape chord.
     #[must_use]
     pub const fn guide_held(&self) -> bool {
@@ -267,10 +274,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     }
     if matches!(
         event,
-        Event::Button {
-            name: ButtonName::Record,
-            ..
-        }
+        Event::Button { name, .. } if state.push_to_talk(*name)
     ) {
         return (state, Vec::new(), false);
     }

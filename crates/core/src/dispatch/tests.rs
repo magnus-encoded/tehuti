@@ -2212,3 +2212,79 @@ fn open_settings_takes_only_its_voice_phrase_from_contexts_and_plugins() {
         assert!(world.trace.contains(&Effect::Apply(expected)));
     }
 }
+
+#[test]
+fn controller_ptt_uses_global_buttons_and_defaults_to_share() {
+    for (setting, name, talks) in [
+        ("", ButtonName::Record, true),
+        ("", ButtonName::Start, false),
+        ("push_to_talk = ['start']", ButtonName::Start, true),
+        ("push_to_talk = ['start']", ButtonName::Record, false),
+        ("push_to_talk = []", ButtonName::Record, false),
+    ] {
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = '*'\n{setting}\n[buttons]\nstart = {{ key = 'enter' }}\nrecord = {{ key = 'enter' }}"
+        ))
+        .unwrap();
+        let mut world = World::default();
+        let state = State::new(crate::State::with_contexts(vec![context]));
+        let state = world.run(state, Input::Speech(SpeechInput::Available));
+        let state = world.run(state, pad_button(name, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(name, ButtonState::Released));
+        let commands: Vec<_> = world
+            .trace
+            .iter()
+            .filter_map(|effect| {
+                if let Effect::SpeechCommand(command) = effect {
+                    Some(command.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let expected = if talks {
+            vec![
+                SpeechEffect::Start { session: 0 },
+                SpeechEffect::Stop {
+                    session: 0,
+                    transcribe: true,
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(commands, expected, "{setting}, {name:?}");
+        assert_eq!(
+            world.trace.contains(&Effect::Apply(Action::Key {
+                key: tehuti_protocol::KeyName::Enter,
+                mods: Vec::new()
+            })),
+            !talks
+        );
+    }
+}
+
+#[test]
+fn configured_start_ptt_preserves_guide_start_escape() {
+    let context =
+        tehuti_protocol::parse_context("app_id = '*'\npush_to_talk = ['start']\n[buttons]").unwrap();
+    let mut world = World::default();
+    let state = State::new(crate::State::with_contexts(vec![context]));
+    let mut state = world.run(state, Input::Speech(SpeechInput::Available));
+    for name in [ButtonName::Guide, ButtonName::Start] {
+        state = world.run(state, pad_button(name, ButtonState::Pressed));
+    }
+    let _state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(3),
+        },
+    );
+    assert!(world.trace.contains(&Effect::Apply(Action::Quit)));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SpeechCommand(_)))
+    );
+}
