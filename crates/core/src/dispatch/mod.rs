@@ -785,6 +785,10 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
 }
 
 fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if state.keyboard.password_field_active() && matches!(event, Event::Speech { .. }) {
+        effects.push(Effect::PasswordSpeechIgnored);
+        return;
+    }
     if let Event::Button { name, state: button } = &event {
         state.passthrough_buttons.retain(|held| held != name);
         if *button == ButtonState::Pressed {
@@ -797,6 +801,10 @@ fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Eff
             .all(|member| state.passthrough_buttons.contains(member));
         if held != state.passthrough_ptt {
             state.passthrough_ptt = held;
+            if state.keyboard.password_field_active() {
+                effects.push(Effect::PasswordSpeechIgnored);
+                return;
+            }
             speech(
                 state,
                 if held {

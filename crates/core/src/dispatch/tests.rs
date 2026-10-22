@@ -1325,9 +1325,19 @@ fn application_keyboard_options_inherit_the_global_context() {
 
 #[test]
 fn password_fields_ignore_record_and_speech_even_with_keyboard_closed() {
+    for passthrough in [false, true] {
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = 'org.example.Emulator'\nbuttons = {{}}\n[pad]\npassthrough = {passthrough}"
+        ))
+        .unwrap();
+        password_fields_in_context(&configured(vec![context], "org.example.Emulator"));
+    }
+}
+
+fn password_fields_in_context(base: &State) {
     for open in [false, true] {
         let mut world = World::default();
-        let mut state = world.run(State::default(), Input::Speech(SpeechInput::Available));
+        let mut state = world.run(base.clone(), Input::Speech(SpeechInput::Available));
         state = world.run(
             state,
             Input::TextField {
@@ -1361,7 +1371,7 @@ fn password_fields_ignore_record_and_speech_even_with_keyboard_closed() {
                 },
             );
         }
-        assert_eq!(state.keyboard().is_open(), open);
+        assert_eq!(state.keyboard().is_open(), open && !state.core().passthrough());
         assert!(state.keyboard().password_field_active());
         assert_eq!(state.keyboard().draft(), "");
         assert_eq!(
