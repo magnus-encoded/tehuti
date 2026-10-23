@@ -71,3 +71,12 @@ seconds of audio. One transcription runs at a time, with at most one waiting tra
 
 Synthetic tests need no microphone or model. Real audio quality and CUDA setup
 must be checked with the intended microphone before the host handoff.
+
+`TEHUTI_SPEECH_TAIL_MS` sets capture time after release per source, in whole
+milliseconds: `remote-mic=1200,default=150`. Source names match PipeWire node
+names. Unlisted sources use `default`, whose built-in value is 150 ms. Each
+source stops at its own deadline; transcription waits for the longest active
+tail and chooses the strongest recording, including audio received during the
+tail. A new press or cancellation discards the pending tail. Values must be
+between 0 and 60000 ms. Invalid entries warn and use the default; an invalid
+`default` uses the built-in value.

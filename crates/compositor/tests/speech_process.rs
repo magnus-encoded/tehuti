@@ -29,6 +29,34 @@ mod speech_process {
     }
 
     #[test]
+    fn release_reaches_source_tail_scheduler_without_transport_delay() {
+        let mut process = child(
+            r"import sys,json
+print(json.dumps({'ready':True}),flush=True)
+for line in sys.stdin:
+ c=json.loads(line)
+ if 'stop' in c:
+  print(json.dumps({'session':c['stop'],'text':'released'}),flush=True)
+",
+        );
+        wait_for(&mut process, &SpeechInput::Available);
+        process.send(&SpeechEffect::Start { session: 0 }).unwrap();
+        process
+            .send(&SpeechEffect::Stop {
+                session: 0,
+                transcribe: true,
+            })
+            .unwrap();
+        wait_for(
+            &mut process,
+            &SpeechInput::Transcript {
+                session: 0,
+                text: Text::new("released".into()).unwrap(),
+            },
+        );
+    }
+
+    #[test]
     fn hanging_child_leaves_button_and_escape_routing_available() {
         let mut process = child("import time\nprint('{\"ready\":true}', flush=True)\ntime.sleep(60)");
         wait_for(&mut process, &SpeechInput::Available);
