@@ -178,7 +178,7 @@ app_id = '*'
     }
 
     #[test]
-    fn png_lookup_inherits_and_svg_falls_back() -> Result<(), Box<dyn core::error::Error>> {
+    fn icon_lookup_inherits_and_respects_svg_feature() -> Result<(), Box<dyn core::error::Error>> {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
         std::fs::create_dir_all(root.join("custom"))?;
@@ -195,7 +195,10 @@ app_id = '*'
         std::fs::write(&png, [])?;
         std::fs::write(root.join("hicolor/48x48/apps/vector.svg"), "<svg/>")?;
         assert_eq!(icon_path("reader", &[root.to_path_buf()], "custom"), Some(png));
-        assert_eq!(icon_path("vector", &[root.to_path_buf()], "custom"), None);
+        assert_eq!(
+            icon_path("vector", &[root.to_path_buf()], "custom"),
+            cfg!(feature = "svg-icons").then(|| root.join("hicolor/48x48/apps/vector.svg"))
+        );
         assert_eq!(icon_path("missing", &[root.to_path_buf()], "custom"), None);
         Ok(())
     }

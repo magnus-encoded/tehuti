@@ -42,3 +42,6 @@ pub mod wallpaper;
 pub mod display_mode_store;
 pub mod settings;
 pub mod system_menu;
+
+#[cfg(feature = "svg-icons")]
+pub mod svg_icons;

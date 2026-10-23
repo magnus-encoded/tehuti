@@ -79,30 +79,32 @@ fn desktop_path(directory: &Path, entry_id: &str, depth: usize) -> Option<PathBu
     None
 }
 
-/// Resolves PNG icons through theme directories, inheritance and unthemed fallbacks.
+/// Resolves PNG and optional SVG icons through theme directories, inheritance and unthemed fallbacks.
 #[must_use]
 pub fn icon_path(name: &str, roots: &[PathBuf], theme: &str) -> Option<PathBuf> {
+    icon_path_with_extension(name, roots, theme, "png").or_else(|| {
+        cfg!(feature = "svg-icons")
+            .then(|| icon_path_with_extension(name, roots, theme, "svg"))
+            .flatten()
+    })
+}
+
+fn icon_path_with_extension(name: &str, roots: &[PathBuf], theme: &str, extension: &str) -> Option<PathBuf> {
     let icon_name = Path::new(name);
     if icon_name.is_absolute() {
-        return (icon_name.extension().is_some_and(|extension| extension == "png") && icon_name.is_file())
+        return (icon_name.extension().is_some_and(|value| value == extension) && icon_name.is_file())
             .then(|| icon_name.to_path_buf());
     }
-    if name.is_empty()
-        || name.contains('/')
-        || icon_name
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
-        || name == ".."
-    {
+    if name.is_empty() || name.contains('/') || name == ".." {
         return None;
     }
     let filename = if icon_name
         .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        .is_some_and(|value| value.eq_ignore_ascii_case(extension))
     {
         name.to_owned()
     } else {
-        format!("{name}.png")
+        format!("{name}.{extension}")
     };
     let mut themes = vec![theme.to_owned()];
     let mut visited = std::collections::HashSet::new();
@@ -125,7 +127,7 @@ pub fn icon_path(name: &str, roots: &[PathBuf], theme: &str) -> Option<PathBuf> 
         }
     }
     if theme != "hicolor"
-        && let Some(path) = icon_path(name, roots, "hicolor")
+        && let Some(path) = icon_path_with_extension(name, roots, "hicolor", extension)
     {
         return Some(path);
     }
@@ -220,19 +222,27 @@ pub(crate) fn draw(pixels: Vec<u8>, size: (i32, i32), hints: &[Hint]) -> Option<
         (usize::try_from(size.0).ok()?, usize::try_from(size.1).ok()?),
         hints.len(),
     )) {
-        let icon = hint
-            .icon
-            .as_ref()
-            .and_then(|path| image::ImageReader::open(path).ok())
-            .and_then(|mut reader| {
-                let mut limits = image::Limits::default();
-                limits.max_image_width = Some(1024);
-                limits.max_image_height = Some(1024);
-                limits.max_alloc = Some(8 * 1024 * 1024);
-                reader.limits(limits);
-                reader.set_format(image::ImageFormat::Png);
-                reader.decode().ok()
-            });
+        let icon = hint.icon.as_ref().and_then(|path| {
+            #[cfg(feature = "svg-icons")]
+            if path.extension().is_some_and(|extension| extension == "svg") {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                let _read = std::fs::File::open(path)
+                    .ok()?
+                    .take(1_048_577)
+                    .read_to_end(&mut bytes)
+                    .ok()?;
+                return crate::svg_icons::rasterize_svg(&bytes, 48).map(image::DynamicImage::ImageRgba8);
+            }
+            let mut reader = image::ImageReader::open(path).ok()?;
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(1024);
+            limits.max_image_height = Some(1024);
+            limits.max_alloc = Some(8 * 1024 * 1024);
+            reader.limits(limits);
+            reader.set_format(image::ImageFormat::Png);
+            reader.decode().ok()
+        });
         if let Some(icon) = icon {
             canvas.image(x, y, &icon.thumbnail(48, 48).to_rgba8());
         } else {
