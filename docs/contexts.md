@@ -26,8 +26,9 @@ handles other mapped presses. The fallback discards events that neither handles.
 Focus changes select a context by the focused toplevel's current application id.
 
 The escape chord consumes every Guide press and release before context routing.
-A context mapping on Guide never fires. Holding Guide for three seconds emits
-Quit once; releasing it before then cancels the hold.
+A context mapping on Guide never fires. Holding Guide for 500 ms opens the
+system menu. Holding Guide+Start for three seconds emits Quit once; releasing
+either button before then cancels the hold.
 
 Double tapping View (Select) within 300 ms toggles mouse mode. A single
 press sends its normal mapping on release. Left stick moves the pointer with
@@ -139,3 +140,22 @@ at either end.
 
 New columns default to one-third of the available width, the narrowest preset.
 `LayoutConfig.default_column_width` and per-window rules can override it.
+
+## Pad passthrough
+
+A context with `[pad] passthrough = true` lets the focused application read the
+pad directly. Hold View (Select) alone for 500 ms to take the pad back for
+normal keyboard, window focus and mouse handling. Release keeps that mode;
+another solo hold gives the pad back. Any other button cancels the pending
+hold. Changing focused windows restores the context's configured mode, even
+between windows with the same application id. Title updates keep the mode.
+
+A short View press still reaches the passthrough application directly.
+In normal handling, short presses retain View's single and double tap actions.
+Guide stays reserved for Tehuti: hold it for 500 ms to open the system menu;
+Guide+Start held for three seconds quits.
+
+The pad's `push_to_talk` list defines a chord in passthrough mode. A chord
+containing View cancels the solo hold and records while the complete chord is
+held. If View is the only push-to-talk button, capture starts and stops only
+on a release before 500 ms. A solo hold never starts capture.

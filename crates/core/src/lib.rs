@@ -37,6 +37,7 @@ impl Level {
 pub struct State {
     contexts: Vec<Context>,
     focused_app_id: Option<String>,
+    pad_taken_back: bool,
     guide_held: Option<core::time::Duration>,
     guide_tap: Option<core::time::Duration>,
     start_held: bool,
@@ -55,6 +56,10 @@ impl State {
 
     #[must_use]
     pub fn passthrough(&self) -> bool {
+        self.passthrough_context() && !self.pad_taken_back
+    }
+
+    pub(crate) fn passthrough_context(&self) -> bool {
         focused_context(self).is_some_and(Context::passthrough)
     }
 
@@ -85,6 +90,7 @@ impl State {
         Self {
             contexts,
             focused_app_id: None,
+            pad_taken_back: false,
             guide_held: None,
             guide_tap: None,
             start_held: false,

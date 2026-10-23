@@ -186,6 +186,14 @@ struct Frame {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum Takeback {
+    #[default]
+    Idle,
+    Holding(Duration),
+    Fired,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     core: crate::State,
     speech: SpeechState,
@@ -196,6 +204,7 @@ pub struct State {
     opening_button: Option<ButtonName>,
     passthrough_buttons: Vec<ButtonName>,
     passthrough_ptt: bool,
+    takeback: Takeback,
     frames: Vec<Frame>,
     settings: Settings,
 }
@@ -213,6 +222,7 @@ impl State {
             opening_button: None,
             passthrough_buttons: Vec::new(),
             passthrough_ptt: false,
+            takeback: Takeback::Idle,
             frames: Vec::new(),
             settings: Settings::default(),
         }
@@ -285,6 +295,8 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             ..
         } | Input::ControllerDisconnected
     ) {
+        state.core.pad_taken_back = false;
+        state.takeback = Takeback::Idle;
         state.passthrough_buttons.clear();
         state.passthrough_ptt = false;
     }
@@ -628,6 +640,17 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
 }
 
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if let Event::Tick { elapsed } = &event
+        && let Takeback::Holding(held) = &mut state.takeback
+    {
+        *held = held.saturating_add(*elapsed);
+        if *held >= Duration::from_millis(500) {
+            state.takeback = Takeback::Fired;
+            state.core.pad_taken_back = !state.core.pad_taken_back;
+            state.mouse.release(effects);
+            state.keyboard.release_all();
+        }
+    }
     if state.core.passthrough() && matches!(event, Event::Button { .. } | Event::Tick { .. }) {
         let (next, actions) = crate::step(core::mem::take(&mut state.core), &event);
         state.core = next;
@@ -766,16 +789,13 @@ fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Eff
         effects.push(Effect::PasswordSpeechIgnored);
         return;
     }
-    if let Event::Button { name, state: button } = &event {
-        state.passthrough_buttons.retain(|held| held != name);
-        if *button == ButtonState::Pressed {
-            state.passthrough_buttons.push(*name);
-        }
-        let held = state
-            .core
-            .passthrough_push_to_talk()
-            .iter()
-            .all(|member| state.passthrough_buttons.contains(member));
+    if let Event::Button { .. } = &event {
+        let held = state.core.passthrough_push_to_talk() != [ButtonName::Select]
+            && state
+                .core
+                .passthrough_push_to_talk()
+                .iter()
+                .all(|member| state.passthrough_buttons.contains(member));
         if held != state.passthrough_ptt {
             state.passthrough_ptt = held;
             if state.keyboard.password_field_active() {
@@ -797,6 +817,57 @@ fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Eff
 }
 
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if let Event::Button { name, state: button } = &event {
+        let was_held = state.passthrough_buttons.contains(name);
+        state.passthrough_buttons.retain(|held| held != name);
+        if *button == ButtonState::Pressed {
+            state.passthrough_buttons.push(*name);
+        }
+        if state.core.passthrough_context() {
+            if *name != ButtonName::Select {
+                if matches!(state.takeback, Takeback::Holding(_)) {
+                    state.takeback = Takeback::Idle;
+                }
+            } else if *button == ButtonState::Pressed {
+                if !was_held && state.passthrough_buttons.len() == 1 {
+                    state.takeback = Takeback::Holding(Duration::ZERO);
+                }
+                if !matches!(state.takeback, Takeback::Idle) {
+                    return;
+                }
+            } else {
+                let takeback = core::mem::take(&mut state.takeback);
+                let short = matches!(takeback, Takeback::Holding(_));
+                if takeback == Takeback::Fired {
+                    return;
+                }
+                if short && state.core.passthrough() {
+                    if state.core.passthrough_push_to_talk() == [ButtonName::Select]
+                        && !state.keyboard.password_field_active()
+                        && let Some(frame) = state.frames.last_mut()
+                    {
+                        frame.tasks.push_front(Task::Speech(SpeechInput::Release));
+                        frame.tasks.push_front(Task::Speech(SpeechInput::Press));
+                    }
+                    return;
+                }
+                if short {
+                    routed_controller(
+                        state,
+                        Event::Button {
+                            name: ButtonName::Select,
+                            state: ButtonState::Pressed,
+                        },
+                        effects,
+                    );
+                }
+            }
+        }
+    }
+    routed_controller(state, event, effects);
+}
+
+fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if state.core.passthrough() {
         passthrough_controller(state, event, effects);
         return;
