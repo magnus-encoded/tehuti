@@ -153,7 +153,20 @@ impl Compositor {
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
         let keymap = default_keymap()?;
-        let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
+        // Clients repeat held keys themselves; a slow client can miss the release and repeat for a long time.
+        // TEHUTI_KEY_REPEAT_RATE=0 turns repeat off.
+        let repeat = |name: &str, default: i32| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .filter(|value| *value >= 0)
+                .unwrap_or(default)
+        };
+        let keyboard = seat.add_keyboard(
+            XkbConfig::default(),
+            repeat("TEHUTI_KEY_REPEAT_DELAY", 200),
+            repeat("TEHUTI_KEY_REPEAT_RATE", 25),
+        )?;
         let text_keys = text_keys(&keymap);
         let pointer = seat.add_pointer();
         let mut compositor = Self {
