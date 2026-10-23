@@ -63,6 +63,7 @@ struct LoopPacing {
     /// Set by sources whose input may change the output, so the next loop turn redraws.
     input_arrived: bool,
     turns: u32,
+    pad_reads_without_input: u32,
     report: tehuti::pacing::Interval,
 }
 
@@ -212,6 +213,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             work: tehuti::pacing::Interval::new(tehuti::pacing::LOOP_WORK_PERIOD),
             input_arrived: true,
             turns: 0,
+            pad_reads_without_input: 0,
             report: tehuti::pacing::Interval::new(tehuti::pacing::STATISTICS_PERIOD),
         },
         context_watch: insert_context_watch(&event_loop, std::path::Path::new(&context_directory)),
@@ -287,10 +289,12 @@ fn count_wakeup(data: &mut LoopData, now: std::time::Instant) {
     if data.pacing.report.due(now) {
         tracing::debug!(
             turns = data.pacing.turns,
+            pad_reads_without_input = data.pacing.pad_reads_without_input,
             period = ?tehuti::pacing::STATISTICS_PERIOD,
             "event loop wakeups"
         );
         data.pacing.turns = 0;
+        data.pacing.pad_reads_without_input = 0;
     }
 }
 
@@ -488,12 +492,19 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
 }
 
 /// Routes pending events from every pad; failed registrations are removed on the next loop turn.
+///
+/// Stick and trigger motion arrives as events the core never sees, because sticks are sampled
+/// on the loop's periodic work; such a read changes nothing and returns at once.
 fn route_controller_input(data: &mut LoopData) -> PostAction {
+    let was_attached = !data.controllers.is_empty();
+    let (events, removed) = input::drain_pads(&mut data.controllers);
+    if events.is_empty() && removed.is_empty() {
+        data.pacing.pad_reads_without_input = data.pacing.pad_reads_without_input.saturating_add(1);
+        return PostAction::Continue;
+    }
     data.pacing.input_arrived = true;
     sync_pad_grab(data);
     advance_time(data);
-    let was_attached = !data.controllers.is_empty();
-    let (events, _) = input::drain_pads(&mut data.controllers);
     for event in events {
         data.compositor
             .controller_input(tehuti_core::controller::Input::Event(event));
