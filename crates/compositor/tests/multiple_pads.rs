@@ -49,6 +49,14 @@ mod tests {
         }
     }
 
+    fn drain_gated(
+        pads: &mut BTreeMap<PathBuf, Pad>,
+        gate: &mut tehuti::input::PadGate,
+        chosen: &PathBuf,
+    ) -> Vec<Event> {
+        tehuti::input::drain_pads_admitted(pads, |path, _, event| gate.admit(path, path == chosen, event)).0
+    }
+
     proptest! {
         #[test]
         fn every_pad_delivers_buttons_and_losing_one_preserves_the_others(
@@ -81,5 +89,53 @@ mod tests {
             prop_assert_eq!(drain_pads(&mut pads).0, [button(ButtonName::Guide, true)]);
             prop_assert_eq!(pads.len(), 2);
         }
+    }
+
+    #[test]
+    fn a_chosen_pad_drives_alone_while_connected() {
+        use tehuti::input::chosen;
+        use tehuti_core::dispatch::ControllerChoice;
+        let connected = ["Wireless Controller".to_owned(), "Xbox Controller".to_owned()];
+        let wireless = ControllerChoice::Named("Wireless Controller".into());
+        assert!(chosen(&ControllerChoice::Auto, &connected, "Xbox Controller"));
+        assert!(chosen(&wireless, &connected, "Wireless Controller"));
+        assert!(!chosen(&wireless, &connected, "Xbox Controller"));
+        assert!(
+            chosen(&wireless, &connected[1..], "Xbox Controller"),
+            "a missing chosen pad never locks every pad out"
+        );
+    }
+
+    #[test]
+    fn the_gate_lets_go_of_buttons_it_let_through_and_drops_the_rest() {
+        use tehuti::input::PadGate;
+        let paths = [PathBuf::from("event0"), PathBuf::from("event1")];
+        let mut pads = BTreeMap::from([
+            (paths[0].clone(), pad([button(ButtonName::DpadDown, true)])),
+            (paths[1].clone(), pad([button(ButtonName::South, true)])),
+        ]);
+        let mut gate = PadGate::default();
+        let mut chosen_path = paths[0].clone();
+        assert_eq!(
+            drain_gated(&mut pads, &mut gate, &chosen_path),
+            [button(ButtonName::DpadDown, true)]
+        );
+        chosen_path.clone_from(&paths[1]);
+        for (path, event) in [
+            (&paths[0], button(ButtonName::DpadDown, false)),
+            (&paths[0], button(ButtonName::East, true)),
+            (&paths[0], button(ButtonName::East, false)),
+            (&paths[1], button(ButtonName::South, false)),
+        ] {
+            pads.get_mut(path).expect("connected pad").source.push(event);
+        }
+        assert_eq!(
+            drain_gated(&mut pads, &mut gate, &chosen_path),
+            [
+                button(ButtonName::DpadDown, false),
+                button(ButtonName::South, false)
+            ],
+            "the old pad lets go of its held button but presses nothing new"
+        );
     }
 }

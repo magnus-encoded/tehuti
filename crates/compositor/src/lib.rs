@@ -40,5 +40,6 @@ pub mod osk;
 pub mod wallpaper;
 
 pub mod display_mode_store;
+pub mod input_choice_store;
 pub mod settings;
 pub mod system_menu;

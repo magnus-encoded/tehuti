@@ -37,8 +37,11 @@ may download model weights. The sidecar emits readiness after initialization.
 Each press records from every PipeWire capture source at once (monitors are
 excluded). On release the sidecar transcribes the source with the highest
 peak and logs the winner once per released capture session to the Tehuti log. A source that fails
-to start is skipped. `TEHUTI_SPEECH_SOURCE` pins one source by its PipeWire
-name and turns off discovery.
+to start is skipped. The Input page of Tehuti's settings writes
+`$XDG_CONFIG_HOME/tehuti/speech-source`: `all` (or no file) keeps this,
+`auto` records the default source, and a PipeWire node name records that
+source while it is listed. `TEHUTI_SPEECH_SOURCE` pins one source by its
+PipeWire name and overrides both.
 
 ## Transport and limits
 

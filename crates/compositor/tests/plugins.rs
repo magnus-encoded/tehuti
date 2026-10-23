@@ -186,11 +186,62 @@ for line in sys.stdin:
         }
     }
 
+    /// The reply a dispatch effect asks for, recording routed plugin events.
+    fn answer(
+        effect: tehuti_core::dispatch::Effect,
+        routed: &mut Vec<Event>,
+    ) -> Option<tehuti_core::dispatch::Input> {
+        use tehuti_core::dispatch::{Effect, Input};
+        match effect {
+            Effect::QueryPlugin(_) => return Some(Input::PluginActive(true)),
+            Effect::DispatchPlugin {
+                event: dispatched,
+                route,
+            } => {
+                if route {
+                    routed.push(dispatched);
+                }
+                return Some(Input::PluginRequest(None));
+            }
+            Effect::ReadClock => return Some(Input::ClockRead(Duration::ZERO)),
+            Effect::Supervise => return Some(Input::Supervised(vec![])),
+            Effect::ConfirmSecret(_) => return Some(Input::SecretConfirmation(false)),
+            Effect::SpeechCommand(_) => return Some(Input::SpeechSent(true)),
+            Effect::PollSpeech(_) => return Some(Input::SpeechPolled(vec![])),
+            Effect::InvalidReply => panic!("valid dispatch replies"),
+            Effect::RunMenuCommand(_)
+            | Effect::SettingsMode(_)
+            | Effect::PersistMode(_)
+            | Effect::SettingsScale(_)
+            | Effect::SettingsController(_)
+            | Effect::PersistController(_)
+            | Effect::SettingsMicrophone(_)
+            | Effect::ListMicrophones
+            | Effect::MovePointer { .. }
+            | Effect::Scroll { .. }
+            | Effect::Click { .. }
+            | Effect::MouseMode(_)
+            | Effect::PollSources
+            | Effect::Chord(_)
+            | Effect::SouthPressed(_)
+            | Effect::ResetSecretFocus
+            | Effect::Apply(_)
+            | Effect::PluginAction(_)
+            | Effect::PluginRejected(_)
+            | Effect::Handle(_)
+            | Effect::SpeechFailed { .. }
+            | Effect::TranscriptReceived { .. }
+            | Effect::SpeechRouted { .. }
+            | Effect::PasswordSpeechIgnored => {}
+        }
+        None
+    }
+
     fn dispatched_plugin_events(
         contexts: Vec<tehuti_protocol::Context>,
         events: impl IntoIterator<Item = Event>,
     ) -> Vec<Event> {
-        use tehuti_core::dispatch::{Effect, Input, State, step};
+        use tehuti_core::dispatch::{Input, State, step};
         let mut state = State::new(tehuti_core::State::with_contexts(contexts));
         let mut routed = Vec::new();
         for event in events {
@@ -203,43 +254,8 @@ for line in sys.stdin:
                 state = next;
                 input = Input::Resume;
                 for effect in effects {
-                    match effect {
-                        Effect::QueryPlugin(_) => input = Input::PluginActive(true),
-                        Effect::DispatchPlugin {
-                            event: dispatched,
-                            route,
-                        } => {
-                            if route {
-                                routed.push(dispatched);
-                            }
-                            input = Input::PluginRequest(None);
-                        }
-                        Effect::ReadClock => input = Input::ClockRead(Duration::ZERO),
-                        Effect::Supervise => input = Input::Supervised(vec![]),
-                        Effect::ConfirmSecret(_) => input = Input::SecretConfirmation(false),
-                        Effect::SpeechCommand(_) => input = Input::SpeechSent(true),
-                        Effect::PollSpeech(_) => input = Input::SpeechPolled(vec![]),
-                        Effect::InvalidReply => panic!("valid dispatch replies"),
-                        Effect::RunMenuCommand(_)
-                        | Effect::SettingsMode(_)
-                        | Effect::PersistMode(_)
-                        | Effect::SettingsScale(_)
-                        | Effect::MovePointer { .. }
-                        | Effect::Scroll { .. }
-                        | Effect::Click { .. }
-                        | Effect::MouseMode(_)
-                        | Effect::PollSources
-                        | Effect::Chord(_)
-                        | Effect::SouthPressed(_)
-                        | Effect::ResetSecretFocus
-                        | Effect::Apply(_)
-                        | Effect::PluginAction(_)
-                        | Effect::PluginRejected(_)
-                        | Effect::Handle(_)
-                        | Effect::SpeechFailed { .. }
-                        | Effect::TranscriptReceived { .. }
-                        | Effect::SpeechRouted { .. }
-                        | Effect::PasswordSpeechIgnored => {}
+                    if let Some(reply) = answer(effect, &mut routed) {
+                        input = reply;
                     }
                 }
                 if state.busy() == 0 {

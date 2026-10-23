@@ -72,11 +72,24 @@ def capture_sources(listing):
     return names
 
 
+def chosen_source():
+    """The microphone picked in Tehuti's settings: "all", "auto", a node name, or None."""
+    root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    try:
+        with open(os.path.join(root, "tehuti", "speech-source"), encoding="utf-8") as choice:
+            return choice.readline().strip() or None
+    except OSError:
+        return None
+
+
 def list_sources():
-    """The pinned source, else every capture device, else the default source."""
+    """The pinned source, else the settings choice, else every capture device, else the default."""
     pinned = os.environ.get("TEHUTI_SPEECH_SOURCE")
     if pinned:
         return [pinned]
+    choice = chosen_source()
+    if choice == "auto":
+        return [None]
     try:
         listing = subprocess.run(
             ["pw-dump"],
@@ -86,6 +99,8 @@ def list_sources():
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"speech source listing failed: {error}", file=sys.stderr, flush=True)
         names = []
+    if choice in names:
+        return [choice]
     return names or [None]
 
 
