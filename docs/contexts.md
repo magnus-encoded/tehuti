@@ -21,8 +21,10 @@ Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
 nothing. Unknown fields, buttons and keys are rejected. Application ids must
 contain a non-whitespace character.
 
-The global layer consumes South presses and sends Enter. The active context
-handles other mapped presses. The fallback discards events that neither handles.
+The global layer consumes South presses and sends Enter, unless the active
+context maps South; then its mapping, tap or hold, replaces Enter. A South
+mapping in the `*` global context keeps Enter. The active context handles
+other mapped presses. The fallback discards events that neither handles.
 Focus changes select a context by the focused toplevel's current application id.
 
 The escape chord consumes every Guide press and release before context routing.

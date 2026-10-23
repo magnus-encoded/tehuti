@@ -195,23 +195,89 @@ mod step {
             let (state, focus_actions) = step(state, &Event::Focus { app_id: focused.map(str::to_owned), title: String::new() });
             prop_assert!(focus_actions.is_empty());
             let (_, actions) = step(state, &Event::Button { name, state: button_state });
-            if button_state == ButtonState::Pressed && name == ButtonName::South {
-                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }], "global consumption excludes context and fallback output");
+            let mapping = match focused {
+                Some("test") => mappings.get(&name),
+                Some("other") => other_mappings.get(&name),
+                _ => None,
+            };
+            if button_state == ButtonState::Pressed && let Some(key) = mapping {
+                prop_assert_eq!(actions, vec![Action::Key { key: *key, mods: Vec::new() }], "context consumption excludes global and fallback output");
+            } else if button_state == ButtonState::Pressed && name == ButtonName::South {
+                prop_assert_eq!(actions, vec![Action::Key { key: KeyName::Enter, mods: Vec::new() }], "South is Enter unless the focused context maps it");
             } else if button_state == ButtonState::Pressed {
-                let mapping = match focused {
-                    Some("test") => mappings.get(&name),
-                    Some("other") => other_mappings.get(&name),
-                    _ => None,
-                };
-                if let Some(key) = mapping {
-                    prop_assert_eq!(actions, vec![Action::Key { key: *key, mods: Vec::new() }], "context consumption excludes fallback output");
-                } else {
-                    prop_assert!(actions.is_empty(), "unmapped presses use the empty fallback");
-                }
+                prop_assert!(actions.is_empty(), "unmapped presses use the empty fallback");
             } else {
                 prop_assert!(actions.is_empty(), "releases use the empty fallback");
             }
         }
+    }
+
+    #[test]
+    fn a_focused_tap_mapping_on_south_replaces_the_global_enter() {
+        let context =
+            tehuti_protocol::parse_context("app_id = 'emulator'\n[buttons]\nsouth = { key = 'x' }").unwrap();
+        let (state, _) = step(
+            State::with_contexts(vec![context]),
+            &Event::Focus {
+                app_id: Some("emulator".into()),
+                title: String::new(),
+            },
+        );
+        let (state, pressed) = step(state, &A_PRESSED);
+        assert_eq!(
+            pressed,
+            vec![Action::Key {
+                key: KeyName::X,
+                mods: Vec::new()
+            }]
+        );
+        let (state, released) = step(
+            state,
+            &Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Released,
+            },
+        );
+        assert_eq!(released, Vec::new());
+        let (unmapped, _) = step(
+            state,
+            &Event::Focus {
+                app_id: Some("unmapped".into()),
+                title: String::new(),
+            },
+        );
+        let (_, default_south) = step(unmapped, &A_PRESSED);
+        assert_eq!(
+            default_south,
+            vec![Action::Key {
+                key: KeyName::Enter,
+                mods: Vec::new()
+            }],
+            "without a context entry South keeps the default"
+        );
+    }
+
+    #[test]
+    fn a_global_context_mapping_on_south_keeps_the_global_enter() {
+        let global = tehuti_protocol::parse_context(
+            "app_id = '*'\n[buttons]\nsouth = { key = 'x', hold = true }\neast = { key = 'z' }",
+        )
+        .unwrap();
+        let (state, _) = step(
+            State::with_contexts(vec![global]),
+            &Event::Focus {
+                app_id: Some("emulator".into()),
+                title: String::new(),
+            },
+        );
+        let (_, pressed) = step(state, &A_PRESSED);
+        assert_eq!(
+            pressed,
+            vec![Action::Key {
+                key: KeyName::Enter,
+                mods: Vec::new()
+            }]
+        );
     }
 
     fn guide(button_state: ButtonState) -> Event {

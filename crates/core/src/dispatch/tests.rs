@@ -3076,3 +3076,33 @@ fn held_keys_follow_the_pad_through_a_view_takeback() {
         "the pad is the application's again"
     );
 }
+
+#[test]
+fn holding_guide_opens_the_menu_whatever_a_context_maps_on_guide() {
+    for mapping in ["{ key = 'x' }", "{ key = 'x', hold = true }"] {
+        for passthrough in [false, true] {
+            for held_for in [crate::GUIDE_TAP_WINDOW, Duration::from_secs(3)] {
+                let context = tehuti_protocol::parse_context(&format!(
+                    "app_id = 'org.example.Emulator'\n[buttons]\nguide = {mapping}\n[pad]\npassthrough = {passthrough}"
+                ))
+                .unwrap();
+                let mut world = World::default();
+                let mut state = configured(vec![context], "org.example.Emulator");
+                state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+                state = world.run(state, Input::Tick { elapsed: held_for });
+                state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
+                assert!(
+                    state.core().menu().is_some(),
+                    "{mapping}, passthrough {passthrough}, {held_for:?}"
+                );
+                assert!(
+                    !world.trace.iter().any(|effect| matches!(
+                        effect,
+                        Effect::Apply(Action::Key { .. } | Action::KeyDown { .. } | Action::KeyUp { .. })
+                    )),
+                    "the Guide mapping never fires: {mapping}, passthrough {passthrough}"
+                );
+            }
+        }
+    }
+}

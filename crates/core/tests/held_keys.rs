@@ -64,16 +64,6 @@ mod held_keys {
         assert_eq!(pressed, vec![Action::KeyDown { key: KeyName::X }]);
         let (_, released) = button(state, ButtonName::South, ButtonState::Released);
         assert_eq!(released, vec![Action::KeyUp { key: KeyName::X }]);
-        let tapped = focused("app_id = 'emulator'\n[buttons]\nsouth = { key = 'x' }");
-        let (_, tapped_south) = button(tapped, ButtonName::South, ButtonState::Pressed);
-        assert_eq!(
-            tapped_south,
-            vec![Action::Key {
-                key: KeyName::Enter,
-                mods: Vec::new()
-            }],
-            "a plain South mapping keeps the global Enter"
-        );
     }
 
     #[test]
