@@ -425,8 +425,6 @@ fn release_passthrough_overlays(state: &mut State, effects: &mut Vec<Effect>) {
         state.mouse.disconnect(effects);
         state.keyboard.release_all();
         state.keyboard.close();
-        state.core.menu = None;
-        state.core.guide_tap = None;
         state.settings.close(effects);
     }
 }
@@ -761,6 +759,9 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
 }
 
 fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if crate::menu_button_release(&mut state.core, &event) || system_menu(state, &event, effects) {
+        return;
+    }
     if state.keyboard.password_field_active() && matches!(event, Event::Speech { .. }) {
         effects.push(Effect::PasswordSpeechIgnored);
         return;

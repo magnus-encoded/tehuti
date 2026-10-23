@@ -2460,4 +2460,82 @@ fn y_opening_obeys_fields_terminals_and_context_overrides() {
             }
         }
     }
+
+proptest! {
+    #[test]
+    fn passthrough_sticks_and_global_buttons_stay_with_the_application(
+        mut contexts in arbitrary_contexts(),
+        mapping in arbitrary_mapping(),
+        right_y in 1_i16..=1000,
+    ) {
+        for passthrough in [false, true] {
+            let context = tehuti_protocol::parse_context(&format!("app_id = 'org.example.Game'\nbuttons = {{}}\n[pad]\npassthrough = {passthrough}")).unwrap();
+            let global = tehuti_protocol::parse_context(&format!("app_id = '*'\n[buttons]\nwest = {mapping}")).unwrap();
+            contexts.insert(0, global);
+            contexts.insert(0, context);
+            let mut world = World::default();
+            let mut state = configured(contexts.clone(), "org.example.Game");
+            state = world.run(state, Input::Sticks(Sticks { left: (1000, 1000), right: (1000, right_y) }));
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(10) });
+            prop_assert_eq!(world.trace.iter().any(|effect| matches!(effect, Effect::Scroll { y, .. } if *y > 0)), !passthrough);
+            world.trace.clear();
+            state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+            prop_assert_eq!(world.trace.contains(&Effect::Apply(Action::Key { key: tehuti_protocol::KeyName::Enter, mods: Vec::new() })), !passthrough);
+            world.trace.clear();
+            state = world.run(state, pad_button(ButtonName::West, ButtonState::Pressed));
+            prop_assert_eq!(world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_))), !passthrough);
+            for button in [ButtonState::Pressed, ButtonState::Released, ButtonState::Pressed, ButtonState::Released] {
+                state = world.run(state, pad_button(ButtonName::Select, button));
+            }
+            world.trace.clear();
+            state = world.run(state, Input::Sticks(Sticks { left: (1000, 1000), right: (1000, right_y) }));
+            let _state = world.run(state, Input::Tick { elapsed: Duration::from_millis(10) });
+            prop_assert_eq!(world.trace.iter().any(|effect| matches!(effect, Effect::MovePointer { .. })), !passthrough);
+        }
+    }
+
+    #[test]
+    fn passthrough_shoulders_follow_the_focus_level(mapping in arbitrary_mapping()) {
+        let context = tehuti_protocol::parse_context("app_id = 'org.example.Game'\nbuttons = {}\n[pad]\npassthrough = true").unwrap();
+        let global = tehuti_protocol::parse_context(&format!("app_id = '*'\n[buttons]\nleft_bumper = {mapping}\nright_bumper = {mapping}")).unwrap();
+        let mut state = configured(vec![context, global], "org.example.Game");
+        let mut world = World::default();
+        for columns in [false, true] {
+            world.trace.clear();
+            for name in [ButtonName::LeftBumper, ButtonName::RightBumper] {
+                for button in [ButtonState::Pressed, ButtonState::Released] {
+                    state = world.run(state, pad_button(name, button));
+                }
+            }
+            let actions: Vec<_> = world.trace.iter().filter_map(|effect| if let Effect::Apply(action) = effect { Some(action.clone()) } else { None }).collect();
+            if columns {
+                prop_assert_eq!(actions, vec![Action::Layout { action: tehuti_protocol::LayoutAction::FocusColumnLeft }, Action::Layout { action: tehuti_protocol::LayoutAction::FocusColumnRight }]);
+            } else {
+                prop_assert!(actions.is_empty());
+            }
+            for button in [ButtonState::Pressed, ButtonState::Released] {
+                state = world.run(state, pad_button(ButtonName::Guide, button));
+            }
+            prop_assert_eq!(state.core().level(), if columns { crate::Level::App } else { crate::Level::Columns });
+        }
+    }
+
+    #[test]
+    fn passthrough_held_guide_opens_system_menu(mapping in arbitrary_mapping(), mut contexts in arbitrary_contexts()) {
+        let context = tehuti_protocol::parse_context(&format!("app_id = 'org.example.Game'\n[buttons]\nguide = {mapping}\n[pad]\npassthrough = true")).unwrap();
+        contexts.insert(0, context);
+        let mut state = configured(contexts, "org.example.Game");
+        let mut world = World::default();
+        state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+        state = world.run(state, Input::Tick { elapsed: Duration::from_millis(500) });
+        prop_assert!(state.core().menu().is_some());
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_))));
+        state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
+        prop_assert!(state.core().menu().is_some());
+        state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+        prop_assert!(state.core().menu().is_none());
+        state = world.run(state, pad_button(ButtonName::Start, ButtonState::Pressed));
+        let _state = world.run(state, Input::Tick { elapsed: Duration::from_secs(3) });
+        prop_assert!(world.trace.contains(&Effect::Apply(Action::Quit)));
+    }
 }
