@@ -576,7 +576,8 @@ impl Compositor {
             DispatchInput::Tick { elapsed }
             | DispatchInput::Event { elapsed, .. }
             | DispatchInput::ClockRead(elapsed) => *elapsed,
-            DispatchInput::DisplayModes { .. }
+            DispatchInput::FocusTitle { .. }
+            | DispatchInput::DisplayModes { .. }
             | DispatchInput::DisplayScale(_)
             | DispatchInput::ModeApplied(_)
             | DispatchInput::Speech(_)
@@ -1769,10 +1770,16 @@ impl Compositor {
     }
 
     fn update_focus(&mut self, surface: &ToplevelSurface) {
-        if self.keyboard.current_focus().as_ref() != Some(surface.wl_surface()) {
-            return;
+        if let Some(event) = self.focus_event(surface) {
+            self.handle(&event);
         }
-        let event = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+    }
+
+    fn focus_event(&self, surface: &ToplevelSurface) -> Option<Event> {
+        if self.keyboard.current_focus().as_ref() != Some(surface.wl_surface()) {
+            return None;
+        }
+        smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
             let attributes = states
                 .data_map
                 .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>();
@@ -1785,10 +1792,7 @@ impl Compositor {
                     title: attributes.title.clone().unwrap_or_default(),
                 }
             })
-        });
-        if let Some(event) = event {
-            self.handle(&event);
-        }
+        })
     }
 
     fn window_for_root(&self, root: &WlSurface) -> Option<&LayoutWindow> {
@@ -1985,7 +1989,9 @@ impl XdgShellHandler for Compositor {
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
-        self.update_focus(&surface);
+        if let Some(Event::Focus { app_id, title }) = self.focus_event(&surface) {
+            let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {

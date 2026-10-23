@@ -38,6 +38,11 @@ pub enum Input {
     },
     /// Reply to [`Effect::ReadClock`].
     ClockRead(Duration),
+    /// Metadata for the same focused surface and application.
+    FocusTitle {
+        app_id: Option<String>,
+        title: String,
+    },
     Speech(SpeechInput),
     PluginReply {
         key: RequestKey,
@@ -324,16 +329,14 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::ModeApplied(current) => return mode_applied(state, current),
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
         Input::Event { event, elapsed } => event_tasks(event, elapsed),
+        Input::FocusTitle { app_id, title } => vec![
+            Task::Supervise,
+            Task::Route(Event::Focus { app_id, title }),
+            Task::ReadClock,
+        ],
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
-        Input::PluginReply { key, result } => {
-            let (next, actions, rejection) =
-                crate::plugin::step(state.core, crate::plugin::Input::Reply { key, result });
-            state.core = next;
-            effects.extend(actions.into_iter().map(Effect::PluginAction));
-            effects.extend(rejection.map(Effect::PluginRejected));
-            return (state, effects);
-        }
+        Input::PluginReply { key, result } => return plugin_reply(state, key, result),
         Input::Sticks(sticks) => {
             update_sticks(&mut state, sticks);
             return (state, effects);
@@ -385,6 +388,19 @@ const fn display_scale(mut state: State, scale: core::num::NonZeroU32) -> (State
 fn mode_applied(mut state: State, current: Option<usize>) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     state.settings.applied(current, &mut effects);
+    (state, effects)
+}
+
+fn plugin_reply(
+    mut state: State,
+    key: RequestKey,
+    result: Result<Vec<Action>, String>,
+) -> (State, Vec<Effect>) {
+    let (next, actions, rejection) =
+        crate::plugin::step(state.core, crate::plugin::Input::Reply { key, result });
+    state.core = next;
+    let mut effects: Vec<_> = actions.into_iter().map(Effect::PluginAction).collect();
+    effects.extend(rejection.map(Effect::PluginRejected));
     (state, effects)
 }
 
