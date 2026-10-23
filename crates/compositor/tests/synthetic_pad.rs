@@ -96,6 +96,7 @@ mod synthetic_pad {
     #[derive(Debug, Default)]
     struct App {
         keys: Vec<(u32, KeyState)>,
+        repeat_info: Option<(i32, i32)>,
         clicks: Vec<(u32, wayland_client::protocol::wl_pointer::ButtonState)>,
         pointer_focused: Option<wayland_client::backend::ObjectId>,
         axes: Vec<(
@@ -439,6 +440,9 @@ mod synthetic_pad {
             _: &QueueHandle<Self>,
         ) {
             update_client_focus(app, &event);
+            if let wl_keyboard::Event::RepeatInfo { rate, delay } = &event {
+                app.repeat_info = Some((*rate, *delay));
+            }
             if let wl_keyboard::Event::Keymap { fd: descriptor, .. } = event {
                 app.keymap_source.clear();
                 let mut keymap_file = std::fs::File::from(descriptor);
@@ -2328,6 +2332,64 @@ else:
                 Trace::Mods(0),
             ]
         );
+    }
+
+    #[test]
+    fn clients_receive_configured_key_repeat_and_invalid_values_use_defaults() {
+        const CHILD: &str = "TEHUTI_REPEAT_TEST_EXPECTED";
+        if let Ok(expected) = std::env::var(CHILD) {
+            let mut display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let (server_end, client_end) = UnixStream::pair().unwrap();
+            let _client = display
+                .handle()
+                .insert_client(server_end, Arc::new(ClientState::default()))
+                .unwrap();
+            let client = thread::spawn(move || {
+                let connection = Connection::from_socket(client_end).unwrap();
+                let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+                let handle = queue.handle();
+                let seat: WlSeat = globals.bind(&handle, 4..=4, ()).unwrap();
+                let _keyboard = seat.get_keyboard(&handle, ());
+                let mut app = App::default();
+                let _dispatched = queue.roundtrip(&mut app).unwrap();
+                app.repeat_info
+            });
+            let started = Instant::now();
+            while !client.is_finished() {
+                assert!(started.elapsed() < Duration::from_secs(5));
+                let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+                display.flush_clients().unwrap();
+                thread::sleep(Duration::from_millis(1));
+            }
+            let expected = match expected.as_str() {
+                "disabled" => (0, 450),
+                "custom" => (37, 310),
+                "default" => (25, 200),
+                _ => panic!("unknown repeat test case"),
+            };
+            assert_eq!(client.join().unwrap(), Some(expected));
+            return;
+        }
+        for (case, rate, delay) in [
+            ("disabled", "0", "450"),
+            ("custom", "37", "310"),
+            ("default", "-1", "invalid"),
+            ("default", "invalid", "-1"),
+        ] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "synthetic_pad::clients_receive_configured_key_repeat_and_invalid_values_use_defaults",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, case)
+                .env("TEHUTI_KEY_REPEAT_RATE", rate)
+                .env("TEHUTI_KEY_REPEAT_DELAY", delay)
+                .status()
+                .unwrap();
+            assert!(status.success(), "repeat case {case} failed");
+        }
     }
 
     #[test]

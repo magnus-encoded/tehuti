@@ -182,10 +182,13 @@ fn insert_keyboard(event_loop: &EventLoop<LoopData>, tty: &Rc<RefCell<Tty>>) -> 
                             warn!(%error, "VT switch failed");
                         }
                     }
-                    None => {}
+                    None => data
+                        .compositor
+                        .host_key(event.key_code(), event.state() == KeyState::Pressed),
                 }
             } else if matches!(event, InputEvent::DeviceRemoved { .. }) {
                 keyboard_tty.borrow_mut().keyboard = tehuti::backend::EscapeKeyboard::default();
+                data.compositor.release_host_keys();
             }
         })?;
     Ok(())
@@ -205,6 +208,7 @@ fn insert_seat(
             match event {
                 Event::PauseSession => {
                     data.seat_active = false;
+                    data.compositor.release_host_keys();
                     data.controllers.clear();
                     data.compositor
                         .controller_input(tehuti_core::controller::Input::Disconnected);
