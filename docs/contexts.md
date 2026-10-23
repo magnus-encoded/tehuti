@@ -128,3 +128,19 @@ thousandths. `fade_ms` is the time to full dimming in milliseconds (0 to 65535).
 The defaults shown above apply when the values are absent.
 
 The global context accepts `push_to_talk = ['start']` before `[buttons]` to use Menu for push-to-talk. The default is `['record']`; `[]` disables controller push-to-talk. Listed buttons replace their context bindings; Guide+Start still escapes.
+
+## Column widths
+
+The global context maps "Wider." to `switch-preset-column-width` and
+"Narrower." to `switch-preset-column-width-back`. These layout actions cycle
+the focused column through the width presets forward and backward, wrapping
+at either end.
+
+```toml
+[speech]
+"Wider." = { layout = "switch-preset-column-width" }
+"Narrower." = { layout = "switch-preset-column-width-back" }
+```
+
+New columns default to one-third of the available width, the narrowest preset.
+`LayoutConfig.default_column_width` and per-window rules can override it.

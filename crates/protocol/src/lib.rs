@@ -588,6 +588,8 @@ pub enum LayoutAction {
     MoveColumnRight,
     /// Cycles the focused column through the preset widths.
     SwitchPresetColumnWidth,
+    /// Cycles the focused column through the preset widths in reverse.
+    SwitchPresetColumnWidthBack,
     FocusWorkspaceDown,
     FocusWorkspaceUp,
     MoveColumnToWorkspaceDown,

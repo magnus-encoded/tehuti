@@ -865,7 +865,10 @@ mod layout_laws {
         let config = LayoutConfig::default();
         assert_eq!(config.preset_column_widths, niri_presets());
         assert_eq!(config.preset_window_heights, niri_presets());
-        assert_eq!(config.default_column_width, Some(PresetSize::Proportion(0.5)));
+        assert_eq!(
+            config.default_column_width,
+            Some(PresetSize::Proportion(1.0 / 3.0))
+        );
     }
 
     // NH: window heights within a column.
