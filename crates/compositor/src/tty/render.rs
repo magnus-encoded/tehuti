@@ -19,7 +19,6 @@ use smithay::{
         renderer::{
             Bind, ImportAll, ImportDma, ImportMem, Renderer,
             damage::OutputDamageTracker,
-            element::{Kind, memory::MemoryRenderBufferRenderElement},
             gles::GlesRenderer,
             multigpu::{
                 ApiDevice, GraphicsApi,
@@ -32,6 +31,7 @@ use smithay::{
     reexports::{drm::control::framebuffer, wayland_server::DisplayHandle},
 };
 use tehuti::{
+    overlays::Overlays,
     rendering::{Rendering, scanout_formats},
     state::Compositor,
 };
@@ -40,18 +40,32 @@ pub(super) struct Scanout<Buffer, Framebuffer> {
     framebuffer: Framebuffer,
     dmabuf: Dmabuf,
     _buffer: Buffer,
-    bar: tehuti::bar::Buffer,
-    keyboard: tehuti::osk::Buffer,
+    /// The drawn-frame count when this buffer was last drawn.
+    drawn_at: Option<u64>,
 }
 
 pub(super) struct Gpu {
     device: Rc<RefCell<GbmGlesDevice<GlesRenderer>>>,
     buffers: [Scanout<GbmBuffer, GbmFramebuffer>; 2],
+    overlays: Overlays,
 }
 
 pub(super) struct Software {
     renderer: PixmanRenderer,
     buffers: [Scanout<DumbBuffer, DumbFramebuffer>; 2],
+    overlays: Overlays,
+}
+
+/// A frame to scan out, or none when nothing on the output changed.
+pub(super) struct Drawn {
+    pub(super) framebuffer: framebuffer::Handle,
+    pub(super) notice_included: bool,
+}
+
+/// How a frame is drawn: the drawn-frame count, and whether to redraw everything.
+pub(super) struct Pass<'counter> {
+    pub(super) drawn: &'counter mut u64,
+    pub(super) full: bool,
 }
 
 pub(super) type DrmRendering = Rendering<Gpu, Software>;
@@ -93,8 +107,7 @@ fn create_gpu(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Gpu, Box<
                 framebuffer,
                 dmabuf,
                 _buffer: buffer,
-                bar: tehuti::bar::Buffer::default(),
-                keyboard: tehuti::osk::Buffer::default(),
+                drawn_at: None,
             })
         };
         match allocate().and_then(|first| allocate().map(|second| [first, second])) {
@@ -102,6 +115,7 @@ fn create_gpu(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Gpu, Box<
                 return Ok(Gpu {
                     device: Rc::new(RefCell::new(device)),
                     buffers,
+                    overlays: Overlays::default(),
                 });
             }
             Err(error) => tracing::debug!(?format, %error, "GPU scanout format unavailable"),
@@ -124,13 +138,13 @@ fn create_software(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Soft
             framebuffer: framebuffer_from_dumb_buffer(device_fd, &buffer, true)?,
             dmabuf: buffer.export()?,
             _buffer: buffer,
-            bar: tehuti::bar::Buffer::default(),
-            keyboard: tehuti::osk::Buffer::default(),
+            drawn_at: None,
         })
     };
     Ok(Software {
         renderer: PixmanRenderer::new()?,
         buffers: [allocate()?, allocate()?],
+        overlays: Overlays::default(),
     })
 }
 
@@ -159,13 +173,15 @@ pub(super) fn advertise(
     Ok(())
 }
 
+/// Draws the damage since `buffer` last held a frame; `None` when nothing changed.
 pub(super) fn draw(
     rendering: &mut DrmRendering,
     next: bool,
+    mut pass: Pass<'_>,
     output: &Output,
     damage: &mut OutputDamageTracker,
     compositor: &Compositor,
-) -> Result<(framebuffer::Handle, bool), Box<dyn Error>> {
+) -> Result<Option<Drawn>, Box<dyn Error>> {
     match rendering {
         Rendering::Gles(gpu) => {
             let buffer = gpu
@@ -174,14 +190,17 @@ pub(super) fn draw(
                 .ok_or("missing GPU scanout buffer")?;
             let notice = draw_buffer(
                 gpu.device.borrow_mut().renderer_mut(),
-                &mut buffer.dmabuf,
-                &mut buffer.bar,
-                &mut buffer.keyboard,
+                buffer,
+                &mut gpu.overlays,
+                &mut pass,
                 output,
                 damage,
                 compositor,
             )?;
-            Ok((*buffer.framebuffer.as_ref(), notice))
+            Ok(notice.map(|notice_included| Drawn {
+                framebuffer: *buffer.framebuffer.as_ref(),
+                notice_included,
+            }))
         }
         Rendering::Pixman(software) => {
             let buffer = software
@@ -190,79 +209,64 @@ pub(super) fn draw(
                 .ok_or("missing pixman scanout buffer")?;
             let notice = draw_buffer(
                 &mut software.renderer,
-                &mut buffer.dmabuf,
-                &mut buffer.bar,
-                &mut buffer.keyboard,
+                buffer,
+                &mut software.overlays,
+                &mut pass,
                 output,
                 damage,
                 compositor,
             )?;
-            Ok((*buffer.framebuffer.as_ref(), notice))
+            Ok(notice.map(|notice_included| Drawn {
+                framebuffer: *buffer.framebuffer.as_ref(),
+                notice_included,
+            }))
         }
     }
 }
 
-fn draw_buffer<R>(
+/// Whether the drawn frame shows a notice, or `None` when the damage tracker found no change.
+fn draw_buffer<R, B, F>(
     renderer: &mut R,
-    dmabuf: &mut Dmabuf,
-    bar: &mut tehuti::bar::Buffer,
-    keyboard: &mut tehuti::osk::Buffer,
+    buffer: &mut Scanout<B, F>,
+    overlays: &mut Overlays,
+    pass: &mut Pass<'_>,
     output: &Output,
     damage: &mut OutputDamageTracker,
     compositor: &Compositor,
-) -> Result<bool, Box<dyn Error>>
+) -> Result<Option<bool>, Box<dyn Error>>
 where
     R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
     R::TextureId: Send + Clone + 'static,
     R::Error: 'static,
 {
-    let mut target = renderer.bind(dmabuf)?;
-    let notice = compositor
-        .visible_notice_text()
-        .map(|text| tehuti::notice::notice_buffer(&text));
-    let mut elements = notice
-        .as_ref()
-        .map(|buffer| {
-            MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                (16.0, 16.0),
-                buffer,
-                None,
-                None,
-                None,
-                Kind::Unspecified,
-            )
-        })
-        .transpose()?
-        .into_iter()
-        .collect::<Vec<_>>();
-    let notice_included = !elements.is_empty();
+    let age = tehuti::pacing::buffer_age(*pass.drawn, buffer.drawn_at, pass.full);
     let clock = chrono::Local::now().format("%H:%M").to_string();
-    if let Some(element) = bar.element(renderer, output, &compositor.voice_bar(), &clock)? {
-        elements.push(element);
+    let overlay = overlays.elements(renderer, output, compositor, &clock)?;
+    let mut target = renderer.bind(&mut buffer.dmabuf)?;
+    let outcome = tehuti::wallpaper::render_output_at_age(
+        output,
+        renderer,
+        &mut target,
+        compositor,
+        &overlay.elements,
+        damage,
+        age,
+    )
+    .and_then(|frame| {
+        let drew = frame.damage.is_some();
+        frame.sync.wait()?;
+        Ok(drew)
+    });
+    match outcome {
+        Ok(false) => return Ok(None),
+        Ok(true) => {}
+        Err(error) => {
+            // The tracker may have counted this frame, so its history and the buffers disagree.
+            *damage = OutputDamageTracker::from_output(output);
+            return Err(error);
+        }
     }
-    if let Some(element) = keyboard.element(renderer, output, compositor.on_screen_keyboard())? {
-        elements.push(element);
-    }
-    if let Some(element) = tehuti::settings::element(renderer, compositor, output)? {
-        elements.insert(0, element);
-    }
-    if let Some(location) = compositor.cursor_on(output) {
-        elements.insert(
-            0,
-            MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                location,
-                &tehuti::notice::cursor_buffer(),
-                None,
-                None,
-                None,
-                Kind::Cursor,
-            )?,
-        );
-    }
-    let frame =
-        tehuti::wallpaper::render_output(output, renderer, &mut target, compositor, &elements, damage)?;
-    frame.sync.wait()?;
-    Ok(notice_included && frame.damage.is_some())
+    buffer.drawn_at = Some(*pass.drawn);
+    *pass.drawn = pass.drawn.saturating_add(1);
+    Ok(Some(overlay.notice_included))
 }

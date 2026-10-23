@@ -37,6 +37,8 @@ pub mod scale;
 pub mod bar;
 
 pub mod osk;
+pub mod overlays;
+pub mod pacing;
 pub mod wallpaper;
 
 pub mod display_mode_store;
