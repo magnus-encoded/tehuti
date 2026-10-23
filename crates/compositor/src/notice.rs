@@ -12,8 +12,15 @@ pub fn speech_notice_buffer() -> MemoryRenderBuffer {
 
 #[must_use]
 pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
-    let width = 512usize;
-    let lines = text.lines().count().clamp(2, 10);
+    // Fit the box to its text so a short notice does not cover the top of the focused window.
+    let columns = text
+        .lines()
+        .take(10)
+        .map(|line| line.chars().count().min(40))
+        .max()
+        .unwrap_or(0);
+    let width = columns.saturating_mul(12).saturating_add(16).max(64);
+    let lines = text.lines().count().clamp(1, 10);
     let height = lines.saturating_mul(32);
     let mut pixels = vec![0u8; width.saturating_mul(height).saturating_mul(4)];
     for pixel in pixels.as_chunks_mut::<4>().0 {
@@ -55,7 +62,10 @@ pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
     MemoryRenderBuffer::from_slice(
         &pixels,
         Fourcc::Argb8888,
-        (512, i32::try_from(height).unwrap_or(64)),
+        (
+            i32::try_from(width).unwrap_or(512),
+            i32::try_from(height).unwrap_or(32),
+        ),
         1,
         Transform::Normal,
         None,
