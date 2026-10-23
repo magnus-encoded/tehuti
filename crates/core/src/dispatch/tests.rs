@@ -2,7 +2,7 @@ use core::fmt::Write as _;
 
 use super::*;
 use proptest::prelude::*;
-use tehuti_protocol::Text;
+use tehuti_protocol::{KeyName, Text};
 
 /// Scripted answers to query effects, standing in for the compositor.
 #[derive(Default)]
@@ -2876,4 +2876,203 @@ fn the_microphone_row_cycles_all_auto_and_each_source_without_confirmation() {
     let state = settings_button(&mut world, state, ButtonName::East);
     assert_eq!(state.settings().page, Page::Categories);
     assert!(state.settings().open);
+}
+
+fn hold_guide(world: &mut World, mut state: State) -> State {
+    state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: crate::GUIDE_TAP_WINDOW,
+        },
+    );
+    world.run(state, pad_button(ButtonName::Guide, ButtonState::Released))
+}
+
+fn held_emulator(world: &mut World) -> State {
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'org.example.Emulator'\n[buttons]\nsouth = { key = 'x', hold = true }\neast = { key = 'z' }",
+    )
+    .unwrap();
+    let state = configured(vec![context], "org.example.Emulator");
+    let state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+    assert_eq!(held_key_effects(world), vec![Action::KeyDown { key: KeyName::X }]);
+    world.trace.clear();
+    state
+}
+
+fn held_key_effects(world: &World) -> Vec<Action> {
+    world
+        .trace
+        .iter()
+        .filter_map(|effect| {
+            if let Effect::Apply(action @ (Action::KeyDown { .. } | Action::KeyUp { .. })) = effect {
+                Some(action.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn a_focus_change_releases_a_held_key_and_the_later_release_sends_nothing() {
+    let mut world = World::default();
+    let state = held_emulator(&mut world);
+    let state = world.event(state, focus("other"));
+    assert_eq!(held_key_effects(&world), vec![Action::KeyUp { key: KeyName::X }]);
+    world.trace.clear();
+    let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Released));
+    assert_eq!(held_key_effects(&world), Vec::new());
+}
+
+#[test]
+fn a_title_change_keeps_a_held_key_down() {
+    let mut world = World::default();
+    let state = held_emulator(&mut world);
+    let state = world.run(
+        state,
+        Input::FocusTitle {
+            app_id: Some("org.example.Emulator".into()),
+            title: "Level 2".into(),
+        },
+    );
+    assert_eq!(held_key_effects(&world), Vec::new());
+    let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Released));
+    assert_eq!(held_key_effects(&world), vec![Action::KeyUp { key: KeyName::X }]);
+}
+
+#[test]
+fn a_controller_disconnect_releases_a_held_key() {
+    let mut world = World::default();
+    let state = held_emulator(&mut world);
+    let _state = world.run(state, Input::ControllerDisconnected);
+    assert_eq!(held_key_effects(&world), vec![Action::KeyUp { key: KeyName::X }]);
+}
+
+#[test]
+fn opening_the_system_menu_releases_a_held_key() {
+    let mut world = World::default();
+    let state = held_emulator(&mut world);
+    let state = hold_guide(&mut world, state);
+    assert!(state.core().menu().is_some());
+    assert_eq!(held_key_effects(&world), vec![Action::KeyUp { key: KeyName::X }]);
+}
+
+#[test]
+fn a_release_the_open_keyboard_consumes_still_lifts_the_held_key() {
+    let mut world = World::default();
+    let state = held_emulator(&mut world);
+    let state = with_open_keyboard(&mut world, state);
+    assert_eq!(held_key_effects(&world), Vec::new());
+    let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Released));
+    assert_eq!(held_key_effects(&world), vec![Action::KeyUp { key: KeyName::X }]);
+}
+
+proptest! {
+    #[test]
+    fn held_keys_balance_and_none_outlives_its_buttons(
+        holds in prop::collection::hash_map(
+            prop::sample::select(vec!["south", "east", "north", "west", "dpad_up", "left_bumper"]),
+            prop::sample::select(vec!["x", "z", "up"]),
+            0..6,
+        ),
+        inputs in prop::collection::vec(prop_oneof![
+            8 => every_button().prop_map(|event| Input::Event { event, elapsed: Duration::from_millis(16) }),
+            1 => Just(speech_event("keyboard")),
+            1 => Just(Input::ControllerDisconnected),
+            1 => prop::sample::select(vec!["org.example.Emulator", "other"]).prop_map(|app| Input::Event { event: focus(app), elapsed: Duration::ZERO }),
+            1 => (0_u64..1000).prop_map(|millis| Input::Tick { elapsed: Duration::from_millis(millis) }),
+        ], 0..60),
+    ) {
+        let mut source = String::from("app_id = 'org.example.Emulator'\n[buttons]\n");
+        for (button, key) in &holds {
+            writeln!(source, "{button} = {{ key = '{key}', hold = true }}").unwrap();
+        }
+        let context = tehuti_protocol::parse_context(&source).unwrap();
+        let mut world = World::default();
+        let mut state = configured(vec![context], "org.example.Emulator");
+        for input in inputs {
+            state = world.run(state, input);
+        }
+        for event in every_button_release() {
+            state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
+        }
+        let mut down: Vec<KeyName> = Vec::new();
+        for action in held_key_effects(&world) {
+            if let Action::KeyDown { key } = action {
+                prop_assert!(!down.contains(&key), "a held key goes down once");
+                down.push(key);
+            } else if let Action::KeyUp { key } = action {
+                prop_assert!(down.contains(&key), "only a held key goes up");
+                down.retain(|held| *held != key);
+            }
+        }
+        prop_assert_eq!(down, Vec::new(), "releasing every button lifts every held key");
+    }
+}
+
+fn every_button_release() -> Vec<Event> {
+    [
+        ButtonName::South,
+        ButtonName::East,
+        ButtonName::North,
+        ButtonName::West,
+        ButtonName::DpadUp,
+        ButtonName::LeftBumper,
+    ]
+    .into_iter()
+    .map(|name| Event::Button {
+        name,
+        state: ButtonState::Released,
+    })
+    .collect()
+}
+
+fn hold_view(world: &mut World, mut state: State) -> State {
+    state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(600),
+        },
+    );
+    world.run(state, pad_button(ButtonName::Select, ButtonState::Released))
+}
+
+#[test]
+fn held_keys_follow_the_pad_through_a_view_takeback() {
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'org.example.Game'\n[buttons]\nsouth = { key = 'x', hold = true }\n[pad]\npassthrough = true",
+    )
+    .unwrap();
+    let mut world = World::default();
+    let mut state = configured(vec![context], "org.example.Game");
+    state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+    state = world.run(state, pad_button(ButtonName::South, ButtonState::Released));
+    assert_eq!(held_key_effects(&world), Vec::new(), "passthrough holds nothing");
+    state = hold_view(&mut world, state);
+    assert!(!state.core().passthrough());
+    state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+    assert_eq!(
+        held_key_effects(&world),
+        vec![Action::KeyDown { key: KeyName::X }]
+    );
+    state = world.run(state, pad_button(ButtonName::South, ButtonState::Released));
+    assert_eq!(
+        held_key_effects(&world),
+        vec![
+            Action::KeyDown { key: KeyName::X },
+            Action::KeyUp { key: KeyName::X }
+        ]
+    );
+    world.trace.clear();
+    state = hold_view(&mut world, state);
+    assert!(state.core().passthrough());
+    let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+    assert_eq!(
+        held_key_effects(&world),
+        Vec::new(),
+        "the pad is the application's again"
+    );
 }

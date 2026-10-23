@@ -2464,6 +2464,64 @@ else:
         assert_eq!(app.modifiers, (0, 0, 0));
     }
 
+    #[test]
+    fn a_held_key_stays_down_in_the_client_until_the_button_is_released() {
+        /// `KEY_X` from linux/input-event-codes.h.
+        const KEY_X: u32 = 45;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(
+                "app_id = 'mgba-qt'\n[buttons]\nsouth = { key = 'x', hold = true }",
+            )
+            .unwrap(),
+        ]);
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker =
+            thread::spawn(move || run_client(client_end, "mgba-qt", ClientTextState::Absent, &sender));
+        let mut pressed_at = None;
+        let mut released = false;
+        let began = Instant::now();
+        while !worker.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "held key delivery stalled"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            if pressed_at.is_none() && receiver.try_recv().is_ok() {
+                compositor.handle(&Event::Button {
+                    name: ButtonName::South,
+                    state: ButtonState::Pressed,
+                });
+                pressed_at = Some(Instant::now());
+            }
+            if !released && pressed_at.is_some_and(|instant| instant.elapsed() > Duration::from_millis(100)) {
+                assert!(
+                    !worker.is_finished(),
+                    "the client saw only the press while South was held"
+                );
+                compositor.handle(&Event::Button {
+                    name: ButtonName::South,
+                    state: ButtonState::Released,
+                });
+                released = true;
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let app = worker.join().unwrap();
+        assert!(released);
+        assert_eq!(
+            app.keys,
+            vec![(KEY_X, KeyState::Pressed), (KEY_X, KeyState::Released)]
+        );
+    }
+
     const SHORTCUTS: &[(&str, &[i32])] = &[
         (r#"{ key = "left", mods = ["alt"] }"#, &[56, 105, -105, -56]),
         (r#"{ key = "right", mods = ["alt"] }"#, &[56, 106, -106, -56]),

@@ -126,6 +126,8 @@ pub struct Compositor {
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
     keyboard_reserved: i32,
+    /// Keys a held pad button keeps down, with the keycode they went down on.
+    held_pad_keys: Vec<(KeyName, Keycode)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -232,6 +234,7 @@ impl Compositor {
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: 0,
+            held_pad_keys: Vec::new(),
         };
         compositor
             .keyboard
@@ -1241,6 +1244,8 @@ impl Compositor {
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(?key, ?app_id, ?title, "key delivered to focused window");
             }
+            Action::KeyDown { key } => self.press_held_key(*key),
+            Action::KeyUp { key } => self.release_held_key(*key),
             Action::Text { text } => {
                 let method = if self.text_input.send(text.as_str()) {
                     "text-input"
@@ -1310,6 +1315,30 @@ impl Compositor {
         let evdev_code = key.evdev_code();
         let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
         self.tap_keycode(keycode);
+    }
+
+    fn press_held_key(&mut self, key: KeyName) {
+        if self.held_pad_keys.iter().any(|(held, _)| *held == key) {
+            return;
+        }
+        let Some(keycode) = self.resolve_keysym(key.keysym_name()) else {
+            tracing::warn!(?key, "held key unavailable in active keymap");
+            return;
+        };
+        self.held_pad_keys.push((key, keycode));
+        self.send_keycode(keycode, smithay::backend::input::KeyState::Pressed);
+        let (app_id, title) = self.focused_window_label();
+        tracing::info!(?key, ?app_id, ?title, "key held in focused window");
+    }
+
+    /// Releases on the keycode the key went down on, even if the keymap changed since.
+    fn release_held_key(&mut self, key: KeyName) {
+        let Some(index) = self.held_pad_keys.iter().position(|(held, _)| *held == key) else {
+            return;
+        };
+        let (_, keycode) = self.held_pad_keys.remove(index);
+        self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
+        tracing::info!(?key, "held key released");
     }
 
     /// Taps a key with Control or Alt held, from the on-screen keyboard's terminal strip.
@@ -1412,8 +1441,9 @@ impl Compositor {
         self.send_keycode(keycode, state);
     }
 
-    /// Releases every held host key, so a key held when the host window loses focus does not stick.
+    /// Releases every held host and pad key, so a key held when the host window loses focus or the seat pauses does not stick.
     pub fn release_host_keys(&mut self) {
+        self.held_pad_keys.clear();
         for keycode in self.keyboard.pressed_keys() {
             self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
         }

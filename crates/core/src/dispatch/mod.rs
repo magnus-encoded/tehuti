@@ -307,6 +307,7 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
 #[must_use]
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let menu_open = state.core.menu().is_some();
+    let mut released = Vec::new();
     if matches!(
         &input,
         Input::Event {
@@ -318,12 +319,16 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
         state.takeback = Takeback::Idle;
         state.passthrough_buttons.clear();
         state.passthrough_ptt = false;
+        release_held_keys(&mut state, &mut released);
     }
-    let (mut state, mut effects) = step_input(state, input);
+    let (mut state, mut routed) = step_input(state, input);
+    let mut effects = released;
+    effects.append(&mut routed);
     release_passthrough_overlays(&mut state, &mut effects);
     if !menu_open && state.core.menu().is_some() {
         state.mouse.release(&mut effects);
         state.keyboard.release_all();
+        release_held_keys(&mut state, &mut effects);
         if let Some(frame) = state.frames.last_mut() {
             frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
         }
@@ -472,10 +477,16 @@ fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate
     sync_terminal(state);
 }
 
+/// Lifts every key a held pad button keeps down.
+fn release_held_keys(state: &mut State, effects: &mut Vec<Effect>) {
+    effects.extend(state.core.release_held_keys().into_iter().map(Effect::Apply));
+}
+
 fn release_passthrough_overlays(state: &mut State, effects: &mut Vec<Effect>) {
     if state.core.passthrough() {
         state.mouse.disconnect(effects);
         state.keyboard.release_all();
+        release_held_keys(state, effects);
         state.keyboard.close();
         state.settings.close(effects);
     }
@@ -689,6 +700,7 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
             state.core.pad_taken_back = !state.core.pad_taken_back;
             state.mouse.release(effects);
             state.keyboard.release_all();
+            release_held_keys(state, effects);
         }
     }
     if state.core.passthrough() && matches!(event, Event::Button { .. } | Event::Tick { .. }) {
@@ -731,6 +743,7 @@ fn hand_overlays_to_settings(state: &mut State, effects: &mut Vec<Effect>) {
     state.core.menu = None;
     state.mouse.release(effects);
     state.keyboard.release_all();
+    release_held_keys(state, effects);
     state.keyboard.close();
     effects.push(Effect::ResetSecretFocus);
 }
@@ -913,6 +926,15 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
 }
 
 fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    // Released here, before any layer that consumes the release, so a held key never sticks.
+    if let Event::Button {
+        name,
+        state: ButtonState::Released,
+    } = event
+        && let Some(release) = state.core.release_held_button(name)
+    {
+        effects.push(Effect::Apply(release));
+    }
     if state.core.passthrough() {
         passthrough_controller(state, event, effects);
         return;

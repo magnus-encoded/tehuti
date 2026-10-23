@@ -46,6 +46,7 @@ pub struct State {
     menu_buttons: Vec<ButtonName>,
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
+    held_keys: Vec<(ButtonName, KeyName)>,
 }
 
 impl State {
@@ -99,6 +100,7 @@ impl State {
             menu_buttons: Vec::new(),
             pending: Vec::new(),
             bar: bar::Bar::new(),
+            held_keys: Vec::new(),
         }
     }
 
@@ -198,6 +200,24 @@ impl State {
         self.menu_buttons.clear();
     }
 
+    /// Releases every key a held button keeps down, each key once.
+    pub fn release_held_keys(&mut self) -> Vec<Action> {
+        let mut released: Vec<KeyName> = Vec::new();
+        for (_, key) in self.held_keys.drain(..) {
+            if !released.contains(&key) {
+                released.push(key);
+            }
+        }
+        released.into_iter().map(|key| Action::KeyUp { key }).collect()
+    }
+
+    /// Ends `button`'s hold; its key goes up once no other held button keeps it down.
+    pub fn release_held_button(&mut self, button: ButtonName) -> Option<Action> {
+        let index = self.held_keys.iter().position(|(held, _)| *held == button)?;
+        let (_, key) = self.held_keys.remove(index);
+        (!self.held_keys.iter().any(|(_, other)| *other == key)).then_some(Action::KeyUp { key })
+    }
+
     /// The system menu, for drawing it independently of plugins.
     #[must_use]
     pub const fn menu(&self) -> Option<&menu::Menu> {
@@ -248,7 +268,17 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     if !matches!(event, Event::Focus { .. }) {
         state.bar.event(event);
     }
-    let (mut next, actions, routed) = route(state, event, plugin_active);
+    let released = match event {
+        Event::Button {
+            name,
+            state: ButtonState::Released,
+        } => state.release_held_button(*name),
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => None,
+    };
+    let (mut next, mut actions, routed) = route(state, event, plugin_active);
+    if let Some(release) = released {
+        actions.insert(0, release);
+    }
     if matches!(event, Event::Focus { .. }) {
         next.bar.event(event);
     }
@@ -287,6 +317,9 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if state.passthrough() && matches!(event, Event::Button { .. }) {
         return (state, Vec::new(), false);
     }
+    if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
+        return (state, actions, false);
+    }
     if let Some(action) = global_layer(event) {
         return (state, vec![action], false);
     }
@@ -304,6 +337,34 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         .into_iter()
         .collect();
     (state, actions, false)
+}
+
+/// A `hold = true` mapping presses its key until the button's release, ahead of the global layer.
+fn hold_key(state: &mut State, event: &Event) -> Option<Vec<Action>> {
+    let Event::Button {
+        name,
+        state: ButtonState::Pressed,
+    } = event
+    else {
+        return None;
+    };
+    if state.push_to_talk(*name) {
+        return None;
+    }
+    let key = focused_context(state)
+        .filter(|context| context.action_for(*name).is_some())
+        .or_else(|| global_context(state))
+        .and_then(|context| context.held_key_for(*name))?;
+    if state.held_keys.iter().any(|(held, _)| held == name) {
+        return Some(Vec::new());
+    }
+    let already_down = state.held_keys.iter().any(|(_, other)| *other == key);
+    state.held_keys.push((*name, key));
+    Some(if already_down {
+        Vec::new()
+    } else {
+        vec![Action::KeyDown { key }]
+    })
 }
 
 /// The fixed global mapping takes priority over contexts.
