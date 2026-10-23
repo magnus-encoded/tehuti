@@ -9,7 +9,9 @@ mod tty;
 
 use core::{error::Error, time::Duration};
 use std::{
+    collections::BTreeMap,
     os::fd::AsFd,
+    path::PathBuf,
     process::{Command, ExitCode},
     sync::Arc,
 };
@@ -32,16 +34,39 @@ use tracing::{error, info, warn};
 pub(crate) struct LoopData {
     display: Display<Compositor>,
     compositor: Compositor,
-    controller: Option<EvdevPad>,
+    controllers: BTreeMap<PathBuf, AttachedController>,
     virtual_pad: Option<String>,
-    controller_token: Option<calloop::RegistrationToken>,
+    controller_tokens: BTreeMap<PathBuf, calloop::RegistrationToken>,
     rescan_controller: bool,
     discovery: controller::Discovery,
-    watchdog: controller::Watchdog,
     discovery_epoch: std::time::Instant,
     seat_active: bool,
     log_out: bool,
     context_watch: Option<tehuti::contexts::ContextWatch>,
+}
+
+#[derive(Debug)]
+struct AttachedController {
+    pad: EvdevPad,
+    watchdog: controller::Watchdog,
+}
+
+impl input::InputSource for AttachedController {
+    fn drain(&mut self) -> std::io::Result<Vec<tehuti_protocol::Event>> {
+        let events = self.pad.drain()?;
+        if !events.is_empty() {
+            self.watchdog = controller::watch(
+                core::mem::take(&mut self.watchdog),
+                controller::WatchInput::Events,
+            )
+            .0;
+        }
+        Ok(events)
+    }
+
+    fn release(&mut self) -> std::io::Result<()> {
+        self.pad.release()
+    }
 }
 
 impl LoopData {
@@ -118,10 +143,15 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         tehuti::backend::Backend::Nested => nested::insert(&event_loop, &display.handle(), &mut compositor)?,
         tehuti::backend::Backend::Tty => tty::insert(&event_loop, &display.handle(), &mut compositor)?,
     }
-    let attached_controller = insert_controller(&event_loop.handle(), virtual_pad.as_deref())?;
-    let (controller, controller_token) =
-        attached_controller.map_or((None, None), |(device, token)| (Some(device), Some(token)));
-    let discovery = initial_discovery(controller.as_ref(), &mut compositor);
+    let mut controllers = BTreeMap::new();
+    let mut controller_tokens = BTreeMap::new();
+    insert_controllers(
+        &event_loop.handle(),
+        virtual_pad.as_deref(),
+        &mut controllers,
+        &mut controller_tokens,
+    );
+    let discovery = initial_discovery(!controllers.is_empty(), &mut compositor);
 
     let child = program
         .map(|program| {
@@ -135,11 +165,10 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut data = LoopData {
         display,
         compositor,
-        controller,
-        controller_token,
+        controllers,
+        controller_tokens,
         virtual_pad,
         rescan_controller: true,
-        watchdog: controller::Watchdog::default(),
         discovery,
         discovery_epoch: std::time::Instant::now(),
         seat_active: true,
@@ -178,11 +207,12 @@ fn run(
         advance_time(data);
         reload_contexts(data);
         reconnect_controller(data, &handle);
-        if let Some(pad) = data.controller.as_mut() {
+        for pad in data.controllers.values_mut() {
             if let Err(error) = input::finish_quit(&data.compositor, pad, &signal) {
                 error!(%error, "controller release failed");
             }
-        } else if data.compositor.quit_requested() {
+        }
+        if data.compositor.quit_requested() {
             signal.stop();
         }
     });
@@ -193,9 +223,11 @@ fn run(
     Ok(())
 }
 
-fn initial_discovery(controller: Option<&EvdevPad>, compositor: &mut Compositor) -> controller::Discovery {
-    if controller.is_some() {
-        controller::Discovery::Attached
+fn initial_discovery(attached: bool, compositor: &mut Compositor) -> controller::Discovery {
+    if attached {
+        controller::Discovery::Attached {
+            retry_at: Duration::ZERO,
+        }
     } else {
         warn!("no controller found; discovery retries every 250 ms");
         compositor.controller_input(tehuti_core::controller::Input::Disconnected);
@@ -209,13 +241,25 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
     if !data.seat_active || data.compositor.quit_requested() {
         return;
     }
-    if data.watchdog.take_reopen() && data.controller.is_some() {
-        if let Some(token) = data.controller_token.take() {
-            handle.remove(token);
+    let was_attached = !data.controllers.is_empty();
+    data.controllers.retain(|_, pad| !pad.watchdog.take_reopen());
+    data.controller_tokens.retain(|path, token| {
+        if data.controllers.contains_key(path) {
+            true
+        } else {
+            handle.remove(*token);
+            false
         }
-        drop_controller(data);
+    });
+    if was_attached && data.controllers.is_empty() {
+        controllers_disconnected(data);
     }
-    let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+    let state = core::mem::replace(
+        &mut data.discovery,
+        controller::Discovery::Attached {
+            retry_at: Duration::ZERO,
+        },
+    );
     let (state, effect) = controller::discover(
         state,
         controller::DiscoveryInput::Poll {
@@ -225,21 +269,25 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
     );
     data.discovery = state;
     if effect == Some(controller::DiscoveryEffect::Scan) {
-        match insert_controller(handle, data.virtual_pad.as_deref()) {
-            Ok(Some((device, token))) => {
-                data.controller = Some(device);
-                data.controller_token = Some(token);
-                let searching = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
-                let (attached, notification) =
-                    controller::discover(searching, controller::DiscoveryInput::Found);
-                data.discovery = attached;
-                if notification == Some(controller::DiscoveryEffect::Reconnected) {
-                    data.compositor
-                        .controller_input(tehuti_core::controller::Input::Reconnected);
-                }
+        insert_controllers(
+            handle,
+            data.virtual_pad.as_deref(),
+            &mut data.controllers,
+            &mut data.controller_tokens,
+        );
+        if !data.controllers.is_empty() {
+            let searching = core::mem::replace(
+                &mut data.discovery,
+                controller::Discovery::Attached {
+                    retry_at: Duration::ZERO,
+                },
+            );
+            let (attached, notification) = controller::discover(searching, controller::DiscoveryInput::Found);
+            data.discovery = attached;
+            if notification == Some(controller::DiscoveryEffect::Reconnected) {
+                data.compositor
+                    .controller_input(tehuti_core::controller::Input::Reconnected);
             }
-            Ok(None) => {}
-            Err(error) => warn!(%error, "controller registration failed; retrying"),
         }
     }
 }
@@ -270,20 +318,41 @@ fn insert_wayland_sources(
     Ok(socket_name)
 }
 
-fn insert_controller(
+fn insert_controllers(
     handle: &calloop::LoopHandle<'_, LoopData>,
     virtual_pad: Option<&str>,
-) -> Result<Option<(EvdevPad, calloop::RegistrationToken)>, Box<dyn Error>> {
-    let Some(device) = controller::open_grabbed(virtual_pad) else {
-        return Ok(None);
-    };
-    info!(name = device.name(), "controller grabbed");
-    let controller_fd = device.as_fd().try_clone_to_owned()?;
-    let controller_token = handle.insert_source(
-        Generic::new(controller_fd, Interest::READ, calloop::Mode::Level),
-        |_, _, data| Ok(route_controller_input(data)),
-    )?;
-    Ok(Some((device, controller_token)))
+    controllers: &mut BTreeMap<PathBuf, AttachedController>,
+    tokens: &mut BTreeMap<PathBuf, calloop::RegistrationToken>,
+) {
+    let attached = controllers.keys().cloned().collect();
+    for (path, pad) in controller::open_grabbed(virtual_pad, &attached) {
+        let registration = pad
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| -> Box<dyn Error> { Box::new(error) })
+            .and_then(|controller_fd| {
+                handle
+                    .insert_source(
+                        Generic::new(controller_fd, Interest::READ, calloop::Mode::Level),
+                        |_, _, data| Ok(route_controller_input(data)),
+                    )
+                    .map_err(|error| -> Box<dyn Error> { Box::new(error) })
+            });
+        match registration {
+            Ok(token) => {
+                info!(name = pad.name(), "controller grabbed");
+                let _previous_token = tokens.insert(path.clone(), token);
+                let _previous_controller = controllers.insert(
+                    path,
+                    AttachedController {
+                        pad,
+                        watchdog: controller::Watchdog::default(),
+                    },
+                );
+            }
+            Err(error) => warn!(%error, "controller registration failed; retrying"),
+        }
+    }
 }
 
 /// Starts plugins from `<context-directory>/plugins` when it exists.
@@ -346,39 +415,35 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
     Ok(())
 }
 
-/// Routes ready controller input. A controller that fails to read is dropped with its event source.
+/// Routes pending events from every pad; failed registrations are removed on the next loop turn.
 fn route_controller_input(data: &mut LoopData) -> PostAction {
     advance_time(data);
-    let Some(device) = data.controller.as_mut() else {
-        return PostAction::Remove;
-    };
-    match input::route_counted(&mut data.compositor, device) {
-        Ok(0) => PostAction::Continue,
-        Ok(_) => {
-            data.watchdog = controller::watch(
-                core::mem::take(&mut data.watchdog),
-                controller::WatchInput::Events,
-            )
-            .0;
-            PostAction::Continue
-        }
-        Err(error) => {
-            error!(%error, "controller read failed; dropping it");
-            drop_controller(data);
-            PostAction::Remove
+    let was_attached = !data.controllers.is_empty();
+    let (events, _) = input::drain_pads(&mut data.controllers);
+    for event in events {
+        data.compositor
+            .controller_input(tehuti_core::controller::Input::Event(event));
+        if data.compositor.quit_requested() {
+            break;
         }
     }
+    if was_attached && data.controllers.is_empty() {
+        controllers_disconnected(data);
+    }
+    PostAction::Continue
 }
 
-fn drop_controller(data: &mut LoopData) {
-    data.controller = None;
-    data.controller_token = None;
-    data.watchdog = controller::Watchdog::default();
+fn controllers_disconnected(data: &mut LoopData) {
     data.compositor
         .speech_input(tehuti_core::speech::SpeechInput::Disconnected);
     data.compositor
         .controller_input(tehuti_core::controller::Input::Disconnected);
-    let state = core::mem::replace(&mut data.discovery, controller::Discovery::Attached);
+    let state = core::mem::replace(
+        &mut data.discovery,
+        controller::Discovery::Attached {
+            retry_at: Duration::ZERO,
+        },
+    );
     data.discovery = controller::discover(
         state,
         controller::DiscoveryInput::Disconnected {
@@ -389,37 +454,39 @@ fn drop_controller(data: &mut LoopData) {
 }
 
 fn advance_time(data: &mut LoopData) {
-    if let Some(pad) = &data.controller {
-        match pad.sticks() {
-            Ok(sticks) => data.compositor.sample_sticks(sticks),
+    let mut sampled = tehuti_core::dispatch::Sticks::default();
+    for controller in data.controllers.values_mut() {
+        match controller.pad.sticks() {
+            Ok(sticks) => {
+                if sticks != tehuti_core::dispatch::Sticks::default() {
+                    sampled = sticks;
+                }
+            }
             Err(error) => {
-                data.compositor
-                    .sample_sticks(tehuti_core::dispatch::Sticks::default());
                 warn!(%error, "controller stick sample failed");
-                data.watchdog.request_reopen();
+                controller.watchdog.request_reopen();
             }
         }
-    }
-    if let Some(pad) = &data.controller {
-        match pad.activity() {
+        match controller.pad.activity() {
             Ok(fingerprint) => {
                 let (watchdog, verdict) = controller::watch(
-                    core::mem::take(&mut data.watchdog),
+                    core::mem::take(&mut controller.watchdog),
                     controller::WatchInput::Sample {
                         now: data.discovery_epoch.elapsed(),
                         fingerprint,
                     },
                 );
-                data.watchdog = watchdog;
+                controller.watchdog = watchdog;
                 if verdict == controller::WatchVerdict::Reopen {
-                    data.watchdog.request_reopen();
+                    controller.watchdog.request_reopen();
                 }
             }
             Err(error) => {
                 warn!(%error, "controller state query failed");
-                data.watchdog.request_reopen();
+                controller.watchdog.request_reopen();
             }
         }
     }
+    data.compositor.sample_sticks(sampled);
     data.compositor.advance_time();
 }

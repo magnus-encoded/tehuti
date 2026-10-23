@@ -96,3 +96,24 @@ pub fn finish_quit(
     }
     Ok(())
 }
+
+/// Drains every connected pad, removing only pads whose reads fail.
+/// Returns merged events and the paths whose event registrations must be removed.
+pub fn drain_pads<S: InputSource>(
+    pads: &mut std::collections::BTreeMap<std::path::PathBuf, S>,
+) -> (Vec<Event>, Vec<std::path::PathBuf>) {
+    let mut events = Vec::new();
+    let mut removed = Vec::new();
+    pads.retain(|path, pad| match pad.drain() {
+        Ok(pending) => {
+            events.extend(pending);
+            true
+        }
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "controller read failed; dropping it");
+            removed.push(path.clone());
+            false
+        }
+    });
+    (events, removed)
+}
