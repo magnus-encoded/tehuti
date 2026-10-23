@@ -16,7 +16,7 @@ mod layout_actions {
     use tehuti_protocol::{Action, ButtonName, ButtonState, Event, LayoutAction, Text, parse_context};
 
     /// The meaning of each action, written out independently of `command_for`.
-    const TABLE: [(LayoutAction, &str, Command); 13] = [
+    const TABLE: [(LayoutAction, &str, Command); 14] = [
         (
             LayoutAction::FocusColumnLeft,
             "focus-column-left",
@@ -51,6 +51,11 @@ mod layout_actions {
             LayoutAction::SwitchPresetColumnWidth,
             "switch-preset-column-width",
             Command::SwitchPresetColumnWidth,
+        ),
+        (
+            LayoutAction::SwitchPresetColumnWidthBack,
+            "switch-preset-column-width-back",
+            Command::SwitchPresetColumnWidthBack,
         ),
         (
             LayoutAction::FocusWorkspaceDown,
@@ -147,6 +152,30 @@ mod layout_actions {
                 )
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn narrower_global_phrase_maps_to_the_back_command() {
+        let context = parse_context(include_str!("../../../examples/global/context.toml")).unwrap();
+        let action = context.speech_action("Narrower.").unwrap();
+        assert_eq!(
+            action,
+            Action::Layout {
+                action: LayoutAction::SwitchPresetColumnWidthBack
+            }
+        );
+        assert_eq!(
+            layout::command_for(LayoutAction::SwitchPresetColumnWidthBack),
+            Command::SwitchPresetColumnWidthBack
+        );
+    }
+
+    #[test]
+    fn new_windows_open_at_one_third_width() {
+        let snapshot = layout(2).snapshot();
+        for column in &snapshot.outputs[0].workspaces[0].columns {
+            assert_eq!(column.width, Some(layout::PresetSize::Proportion(1.0 / 3.0)));
         }
     }
 

@@ -5,3 +5,7 @@ app_id = "*"
 [keyboard]
 on_text_field = "button"
 button = "Y"
+
+[speech]
+"Wider." = { layout = "switch-preset-column-width" }
+"Narrower." = { layout = "switch-preset-column-width-back" }
