@@ -2460,6 +2460,7 @@ fn y_opening_obeys_fields_terminals_and_context_overrides() {
             }
         }
     }
+}
 
 proptest! {
     #[test]
