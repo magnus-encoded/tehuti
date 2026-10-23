@@ -136,6 +136,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
+    compositor.set_decorations(tehuti::decorations::from_env());
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory)));
     install_plugins(
         &event_loop,

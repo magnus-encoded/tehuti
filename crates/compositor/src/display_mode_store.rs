@@ -2,6 +2,18 @@
 
 use std::{io, io::Write as _, path::PathBuf};
 
+/// `$XDG_CONFIG_HOME`, otherwise `$HOME/.config`.
+///
+/// # Errors
+/// Returns an error when neither config directory nor home is available.
+pub fn config_root() -> io::Result<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "config directory unavailable"))
+}
+
 #[derive(Debug)]
 pub struct Store {
     path: PathBuf,
@@ -16,12 +28,7 @@ impl Store {
     /// # Errors
     /// Returns an error when neither config directory nor home is available.
     pub fn from_env() -> io::Result<Self> {
-        let root = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "config directory unavailable"))?;
-        Ok(Self::new(root.join("tehuti/display-mode")))
+        Ok(Self::new(config_root()?.join("tehuti/display-mode")))
     }
 
     /// # Errors

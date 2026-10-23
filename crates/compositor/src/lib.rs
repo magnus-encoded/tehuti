@@ -39,6 +39,7 @@ pub mod bar;
 pub mod osk;
 pub mod wallpaper;
 
+pub mod decorations;
 pub mod display_mode_store;
 pub mod settings;
 pub mod system_menu;
