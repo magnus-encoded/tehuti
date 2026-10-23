@@ -27,11 +27,21 @@ use smithay::reexports::calloop::ping::Ping;
 struct Request {
     size: Size<i32, Physical>,
     redraw: Option<Ping>,
+    phrases: Vec<(String, String)>,
+    generation: u64,
+}
+
+#[derive(Debug)]
+struct Prepared {
+    size: Size<i32, Physical>,
+    buffer: Option<MemoryRenderBuffer>,
+    generation: u64,
 }
 
 #[derive(Debug)]
 pub struct Wallpaper {
     image: Option<image::DynamicImage>,
+    hints: Vec<crate::desktop_hints::Hint>,
     buffers: std::collections::HashMap<(i32, i32), MemoryRenderBuffer>,
 }
 
@@ -47,8 +57,15 @@ impl Wallpaper {
         };
         Self {
             image,
+            hints: Vec::new(),
             buffers: std::collections::HashMap::new(),
         }
+    }
+
+    /// Replaces launch hints and discards artwork prepared for the old hints.
+    pub fn set_hints(&mut self, hints: Vec<crate::desktop_hints::Hint>) {
+        self.hints = hints;
+        self.buffers.clear();
     }
 
     /// # Errors
@@ -70,6 +87,12 @@ impl Wallpaper {
                     .to_rgba8()
             },
         );
+        if !self.hints.is_empty() {
+            let raw = crate::desktop_hints::draw(pixels.into_raw(), (size.w, size.h), &self.hints)
+                .ok_or("desktop hint canvas unavailable")?;
+            pixels =
+                image::RgbaImage::from_raw(width, height, raw).ok_or("desktop hint pixels unavailable")?;
+        }
         for pixel in pixels.pixels_mut() {
             let alpha = u16::from(pixel.0.last().copied().unwrap_or(255));
             for channel in pixel.0.iter_mut().take(3) {
@@ -93,7 +116,9 @@ impl Wallpaper {
 pub struct WallpaperCache {
     requests: std::sync::mpsc::SyncSender<Request>,
     redraw: Option<Ping>,
-    buffers: std::sync::mpsc::Receiver<(Size<i32, Physical>, Option<MemoryRenderBuffer>)>,
+    buffers: std::sync::mpsc::Receiver<Prepared>,
+    generation: u64,
+    phrases: Vec<(String, String)>,
     ready: std::collections::HashMap<(i32, i32), Option<MemoryRenderBuffer>>,
     pending: std::collections::HashSet<(i32, i32)>,
 }
@@ -107,19 +132,33 @@ impl WallpaperCache {
             .name("wallpaper".into())
             .spawn(move || {
                 let mut wallpaper = Wallpaper::load(&path);
-                while let Ok(Request { size, redraw }) = sizes.recv() {
-                    let buffer = if wallpaper.image.is_some() {
-                        match wallpaper.buffer(size) {
-                            Ok(buffer) => Some(buffer),
-                            Err(error) => {
-                                tracing::warn!(%error, "wallpaper preparation failed; using black");
-                                None
-                            }
+                let mut current_phrases = Vec::new();
+                while let Ok(Request {
+                    size,
+                    redraw,
+                    phrases,
+                    generation,
+                }) = sizes.recv()
+                {
+                    if current_phrases != phrases {
+                        wallpaper.set_hints(crate::desktop_hints::load(&phrases));
+                        current_phrases = phrases;
+                    }
+                    let buffer = match wallpaper.buffer(size) {
+                        Ok(buffer) => Some(buffer),
+                        Err(error) => {
+                            tracing::warn!(%error, "wallpaper preparation failed; using black");
+                            None
                         }
-                    } else {
-                        None
                     };
-                    if prepared.send((size, buffer)).is_err() {
+                    if prepared
+                        .send(Prepared {
+                            size,
+                            buffer,
+                            generation,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                     if let Some(redraw) = redraw {
@@ -134,8 +173,20 @@ impl WallpaperCache {
             requests,
             redraw: None,
             buffers,
+            phrases: Vec::new(),
+            generation: 0,
             ready: std::collections::HashMap::new(),
             pending: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Rebuilds output artwork when the configured voice hints change.
+    pub fn set_launch_phrases(&mut self, phrases: Vec<(String, String)>) {
+        if self.phrases != phrases {
+            self.phrases = phrases;
+            self.generation = self.generation.saturating_add(1);
+            self.ready.clear();
+            self.pending.clear();
         }
     }
 
@@ -144,7 +195,15 @@ impl WallpaperCache {
     }
 
     pub fn buffer(&mut self, size: Size<i32, Physical>) -> Option<MemoryRenderBuffer> {
-        while let Ok((prepared_size, buffer)) = self.buffers.try_recv() {
+        while let Ok(Prepared {
+            size: prepared_size,
+            buffer,
+            generation,
+        }) = self.buffers.try_recv()
+        {
+            if generation != self.generation {
+                continue;
+            }
             let _removed = self.pending.remove(&(prepared_size.w, prepared_size.h));
             let _previous = self.ready.insert((prepared_size.w, prepared_size.h), buffer);
         }
@@ -155,6 +214,8 @@ impl WallpaperCache {
             match self.requests.try_send(Request {
                 size,
                 redraw: self.redraw.clone(),
+                phrases: self.phrases.clone(),
+                generation: self.generation,
             }) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
@@ -177,6 +238,17 @@ pub fn set_redraw_ping(ping: Ping) -> Result<(), Box<dyn Error>> {
         .lock()
         .map_err(|_| "wallpaper cache unavailable")?
         .set_redraw_ping(ping);
+    Ok(())
+}
+
+/// Installs the current global voice hints.
+///
+/// # Errors
+/// The wallpaper cache is poisoned.
+pub fn set_launch_phrases(phrases: Vec<(String, String)>) -> Result<(), Box<dyn Error>> {
+    let mut cache = wallpaper().lock().map_err(|_| "wallpaper cache unavailable")?;
+    cache.set_launch_phrases(phrases);
+    drop(cache);
     Ok(())
 }
 

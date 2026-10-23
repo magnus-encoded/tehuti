@@ -137,6 +137,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory)));
+    tehuti::wallpaper::set_launch_phrases(tehuti::desktop_hints::launch_phrases(compositor.contexts()))?;
     install_plugins(
         &event_loop,
         std::path::Path::new(&context_directory),
@@ -400,6 +401,11 @@ fn reload_contexts(data: &mut LoopData) {
         .and_then(|watch| watch.poll(std::time::Instant::now()))
     {
         data.compositor.reload_contexts(reload);
+        if let Err(error) = tehuti::wallpaper::set_launch_phrases(tehuti::desktop_hints::launch_phrases(
+            data.compositor.contexts(),
+        )) {
+            warn!(%error, "desktop hints unavailable");
+        }
     }
 }
 
