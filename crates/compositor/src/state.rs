@@ -451,6 +451,11 @@ impl Compositor {
         self.pointer.clone().button(self, &event);
         self.pointer.clone().frame(self);
     }
+    #[must_use]
+    pub fn pad_passthrough(&self) -> bool {
+        self.dispatch.core().passthrough()
+    }
+
     pub fn sample_sticks(&mut self, sticks: tehuti_core::dispatch::Sticks) {
         let _rejection = self.dispatch(DispatchInput::Sticks(sticks));
     }

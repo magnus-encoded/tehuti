@@ -195,6 +195,8 @@ pub struct State {
     text_field: bool,
     terminal_field: bool,
     opening_button: Option<ButtonName>,
+    passthrough_buttons: Vec<ButtonName>,
+    passthrough_ptt: bool,
     frames: Vec<Frame>,
     settings: Settings,
 }
@@ -210,6 +212,8 @@ impl State {
             text_field: false,
             terminal_field: false,
             opening_button: None,
+            passthrough_buttons: Vec::new(),
+            passthrough_ptt: false,
             frames: Vec::new(),
             settings: Settings::default(),
         }
@@ -273,10 +277,21 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
 
 /// Advances routing by one input. Performs no I/O.
 #[must_use]
-pub fn step(state: State, input: Input) -> (State, Vec<Effect>) {
+pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let menu_open = state.core.menu().is_some();
     let level = state.core.level();
+    if matches!(
+        &input,
+        Input::Event {
+            event: Event::Focus { .. },
+            ..
+        } | Input::ControllerDisconnected
+    ) {
+        state.passthrough_buttons.clear();
+        state.passthrough_ptt = false;
+    }
     let (mut state, mut effects) = step_input(state, input);
+    release_passthrough_overlays(&mut state, &mut effects);
     if !menu_open && state.core.menu().is_some() {
         state.mouse.release(&mut effects);
         state.keyboard.release_all();
@@ -386,7 +401,7 @@ fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
 }
 
 fn update_sticks(state: &mut State, sticks: Sticks) {
-    if state.core.menu().is_none() {
+    if !state.core.passthrough() && state.core.menu().is_none() {
         state.keyboard.left_stick(sticks.left.0);
         state.mouse.sticks = sticks;
     }
@@ -410,6 +425,17 @@ fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate
         && state.core.keyboard_config().0 == tehuti_protocol::OnTextField::Open
     {
         state.keyboard.open();
+    }
+}
+
+fn release_passthrough_overlays(state: &mut State, effects: &mut Vec<Effect>) {
+    if state.core.passthrough() {
+        state.mouse.disconnect(effects);
+        state.keyboard.release_all();
+        state.keyboard.close();
+        state.core.menu = None;
+        state.core.guide_tap = None;
+        state.settings.close(effects);
     }
 }
 
@@ -628,6 +654,12 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
 }
 
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if state.core.passthrough() && matches!(event, Event::Button { .. } | Event::Tick { .. }) {
+        let (next, actions) = crate::step(core::mem::take(&mut state.core), &event);
+        state.core = next;
+        effects.extend(actions.into_iter().map(Effect::Apply));
+        return;
+    }
     route_tick(state, &event, effects);
     let Some(route_frame) = state.frames.last_mut() else {
         return;
@@ -752,7 +784,46 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
     false
 }
 
+fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if state.keyboard.password_field_active() && matches!(event, Event::Speech { .. }) {
+        effects.push(Effect::PasswordSpeechIgnored);
+        return;
+    }
+    if let Event::Button { name, state: button } = &event {
+        state.passthrough_buttons.retain(|held| held != name);
+        if *button == ButtonState::Pressed {
+            state.passthrough_buttons.push(*name);
+        }
+        let held = state
+            .core
+            .passthrough_push_to_talk()
+            .iter()
+            .all(|member| state.passthrough_buttons.contains(member));
+        if held != state.passthrough_ptt {
+            state.passthrough_ptt = held;
+            if state.keyboard.password_field_active() {
+                effects.push(Effect::PasswordSpeechIgnored);
+                return;
+            }
+            speech(
+                state,
+                if held {
+                    SpeechInput::Press
+                } else {
+                    SpeechInput::Release
+                },
+                effects,
+            );
+        }
+    }
+    route_event(state, event, effects);
+}
+
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if state.core.passthrough() {
+        passthrough_controller(state, event, effects);
+        return;
+    }
     if reserved_input(state, &event, effects) {
         return;
     }

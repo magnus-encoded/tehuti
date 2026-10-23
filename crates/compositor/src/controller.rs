@@ -133,12 +133,20 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
     Ok(watcher)
 }
 
-/// A grabbed kernel evdev controller, such as an Xbox pad on xpad.
+/// An open kernel evdev controller with context-controlled exclusive ownership.
 #[derive(Debug)]
-pub struct EvdevPad<D = Device>(PadHandles<D>, DpadHat);
+pub struct EvdevPad<D = Device> {
+    handles: PadHandles<D>,
+    translator: DpadHat,
+    grabbed: bool,
+}
 
 /// Kernel operations used by a controller client.
 pub trait PadDevice {
+    /// Acquires exclusive input ownership.
+    /// # Errors
+    /// The kernel refused the grab.
+    fn grab(&mut self) -> io::Result<()>;
     /// Reads held keys.
     /// # Errors
     /// The client could not query key state.
@@ -158,6 +166,9 @@ pub trait PadDevice {
 }
 
 impl PadDevice for Device {
+    fn grab(&mut self) -> io::Result<()> {
+        Self::grab(self)
+    }
     fn get_key_state(&self) -> io::Result<Vec<u16>> {
         Ok(Self::get_key_state(self)?.iter().map(KeyCode::code).collect())
     }
@@ -204,15 +215,35 @@ impl<D> PadHandles<D> {
 impl EvdevPad {
     #[must_use]
     pub fn name(&self) -> &str {
-        self.0.events.name().unwrap_or("unnamed")
+        self.handles.events.name().unwrap_or("unnamed")
     }
 }
 
 impl<D: PadDevice> EvdevPad<D> {
-    /// Uses independently opened event and probe clients with the selected layout.
+    /// Matches exclusive ownership to the focused context, keeping the event client open.
+    /// # Errors
+    /// The kernel refused the ownership change.
+    pub fn set_passthrough(&mut self, passthrough: bool) -> io::Result<()> {
+        let grabbed = !passthrough;
+        if grabbed != self.grabbed {
+            if grabbed {
+                self.handles.events().grab()?;
+            } else {
+                self.handles.events().ungrab()?;
+            }
+            self.grabbed = grabbed;
+        }
+        Ok(())
+    }
+
+    /// Uses a grabbed event client and an independently opened probe with the selected layout.
     #[must_use]
     pub const fn new(events: D, probe: D, translator: DpadHat) -> Self {
-        Self(PadHandles::new(events, probe), translator)
+        Self {
+            handles: PadHandles::new(events, probe),
+            translator,
+            grabbed: true,
+        }
     }
 
     /// Samples the current calibrated stick axes, including a 15 percent deadzone.
@@ -221,7 +252,7 @@ impl<D: PadDevice> EvdevPad<D> {
     pub fn sticks(&self) -> io::Result<tehuti_core::dispatch::Sticks> {
         use evdev::AbsoluteAxisCode;
         let mut sticks = tehuti_core::dispatch::Sticks::default();
-        for (axis, info) in self.0.probe().get_absinfo()? {
+        for (axis, info) in self.handles.probe().get_absinfo()? {
             let value = stick_axis(info.value(), info.minimum(), info.maximum());
             match axis {
                 AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
@@ -240,9 +271,9 @@ impl<D: PadDevice> EvdevPad<D> {
     /// # Errors
     /// The kernel could not read the controller state, as when the node is gone.
     pub fn activity(&self) -> io::Result<u64> {
-        let keys = self.0.probe().get_key_state()?;
+        let keys = self.handles.probe().get_key_state()?;
         let axes: Vec<_> = self
-            .0
+            .handles
             .probe()
             .get_absinfo()?
             .into_iter()
@@ -268,17 +299,17 @@ pub fn fingerprint(keys: &[u16], axes: &[(u16, i32)]) -> u64 {
 
 impl AsFd for EvdevPad {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.events.as_fd()
+        self.handles.events.as_fd()
     }
 }
 
 impl<D: PadDevice> InputSource for EvdevPad<D> {
     fn release(&mut self) -> io::Result<()> {
-        self.0.events().ungrab()
+        self.handles.events().ungrab()
     }
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
-        self.0.events().drain(&mut self.1)
+        self.handles.events().drain(&mut self.translator)
     }
 }
 

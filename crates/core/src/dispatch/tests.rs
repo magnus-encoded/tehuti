@@ -1325,9 +1325,19 @@ fn application_keyboard_options_inherit_the_global_context() {
 
 #[test]
 fn password_fields_ignore_record_and_speech_even_with_keyboard_closed() {
+    for passthrough in [false, true] {
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = 'org.example.Emulator'\nbuttons = {{}}\n[pad]\npassthrough = {passthrough}"
+        ))
+        .unwrap();
+        password_fields_in_context(&configured(vec![context], "org.example.Emulator"));
+    }
+}
+
+fn password_fields_in_context(base: &State) {
     for open in [false, true] {
         let mut world = World::default();
-        let mut state = world.run(State::default(), Input::Speech(SpeechInput::Available));
+        let mut state = world.run(base.clone(), Input::Speech(SpeechInput::Available));
         state = world.run(
             state,
             Input::TextField {
@@ -1361,7 +1371,7 @@ fn password_fields_ignore_record_and_speech_even_with_keyboard_closed() {
                 },
             );
         }
-        assert_eq!(state.keyboard().is_open(), open);
+        assert_eq!(state.keyboard().is_open(), open && !state.core().passthrough());
         assert!(state.keyboard().password_field_active());
         assert_eq!(state.keyboard().draft(), "");
         assert_eq!(
@@ -2307,4 +2317,66 @@ fn display_scale_changes_immediately_without_mode_confirmation() {
     );
     state = settings_button(&mut world, state, ButtonName::DpadLeft);
     assert_eq!(state.settings().scale.get(), 2);
+}
+proptest! {
+    #[test]
+    fn passthrough_keeps_only_escape_and_record(
+        mapping in arbitrary_mapping(),
+        mut contexts in arbitrary_contexts(),
+        buttons in prop::collection::vec(prop::sample::select(vec![ButtonName::South, ButtonName::East, ButtonName::North, ButtonName::West, ButtonName::Select, ButtonName::LeftBumper, ButtonName::RightBumper, ButtonName::Start]), 1..32),
+    ) {
+        let context = tehuti_protocol::parse_context(&format!("app_id = 'org.example.Emulator'\n[buttons]\neast = {mapping}\nnorth = {mapping}\n[pad]\npassthrough = true")).unwrap();
+        contexts.insert(0, context);
+        let mut state = configured(contexts, "org.example.Emulator");
+        let mut world = World { plugin_active: true, ..World::default() };
+        state = world.run(state, Input::Speech(SpeechInput::Available));
+        for name in buttons {
+            for button in [ButtonState::Pressed, ButtonState::Released] {
+                state = world.run(state, pad_button(name, button));
+            }
+        }
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::DispatchPlugin { .. } | Effect::ConfirmSecret(_) | Effect::Chord(_) | Effect::Click { .. } | Effect::MouseMode(_) | Effect::SpeechCommand(_))), "passthrough suppresses other controller actions");
+        state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
+        state = world.run(state, pad_button(ButtonName::Record, ButtonState::Released));
+        let commands: Vec<_> = world.trace.iter().filter_map(|effect| if let Effect::SpeechCommand(command) = effect { Some(command.clone()) } else { None }).collect();
+        prop_assert_eq!(commands, vec![SpeechEffect::Start { session: 0 }, SpeechEffect::Stop { session: 0, transcribe: true }]);
+        for name in [ButtonName::Guide, ButtonName::Start] {
+            state = world.run(state, pad_button(name, ButtonState::Pressed));
+        }
+        state = world.run(state, Input::Tick { elapsed: Duration::from_secs(3) });
+        prop_assert!(world.trace.contains(&Effect::Apply(Action::Quit)));
+        prop_assert!(state.core().menu().is_none());
+        prop_assert_eq!(state.core().level(), crate::Level::App);
+        state = world.event(state, focus("org.example.Editor"));
+        prop_assert!(!state.core().passthrough());
+        world.trace.clear();
+        let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+        prop_assert!(world.trace.iter().any(|effect| matches!(effect, Effect::ConfirmSecret(_))));
+    }
+}
+
+proptest! {
+    #[test]
+    fn passthrough_ptt_chord_starts_once_and_stops_on_either_release(reverse in any::<bool>()) {
+        let context = tehuti_protocol::parse_context(include_str!("../../../../examples/emulator/context.toml")).unwrap();
+        let mut state = configured(vec![context], "org.example.Emulator");
+        let mut world = World::default();
+        state = world.run(state, Input::Speech(SpeechInput::Available));
+        let buttons = if reverse { [ButtonName::LeftBumper, ButtonName::Select] } else { [ButtonName::Select, ButtonName::LeftBumper] };
+        state = world.run(state, pad_button(buttons[0], ButtonState::Pressed));
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SpeechCommand(_))));
+        state = world.run(state, pad_button(buttons[1], ButtonState::Pressed));
+        state = world.run(state, pad_button(buttons[1], ButtonState::Pressed));
+        state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+        state = world.run(state, pad_button(buttons[0], ButtonState::Released));
+        let commands: Vec<_> = world.trace.iter().filter_map(|effect| if let Effect::SpeechCommand(command) = effect { Some(command.clone()) } else { None }).collect();
+        prop_assert_eq!(commands, vec![SpeechEffect::Start { session: 0 }, SpeechEffect::Stop { session: 0, transcribe: true }]);
+        state = world.run(state, pad_button(buttons[0], ButtonState::Pressed));
+        state = world.event(state, focus("org.example.Editor"));
+        prop_assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Stop { session: 1, transcribe: false })), "focus cancels passthrough PTT");
+        state = world.event(state, focus("org.example.Emulator"));
+        world.trace.clear();
+        let _state = world.run(state, pad_button(buttons[0], ButtonState::Pressed));
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SpeechCommand(_))));
+    }
 }

@@ -6,6 +6,50 @@ mod context {
     use tehuti_protocol::{KeyName, parse_context};
 
     #[test]
+    fn passthrough_ptt_rejects_unsafe_or_invalid_chords() {
+        for buttons in [
+            "[]",
+            "['start']",
+            "['south']",
+            "['east']",
+            "['north']",
+            "['west']",
+            "['guide', 'select']",
+            "['select', 'select']",
+            "['unknown']",
+        ] {
+            assert!(
+                parse_context(&format!(
+                    "app_id = 'org.example.Emulator'\nbuttons = {{}}\n[pad]\npush_to_talk = {buttons}"
+                ))
+                .is_err(),
+                "{buttons}"
+            );
+        }
+        for buttons in ["['record']", "['select']", "['select', 'left_bumper']"] {
+            assert!(
+                parse_context(&format!(
+                    "app_id = 'org.example.Emulator'\nbuttons = {{}}\n[pad]\npush_to_talk = {buttons}"
+                ))
+                .is_ok(),
+                "{buttons}"
+            );
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn pad_passthrough_is_explicit_and_boolean(enabled in proptest::bool::ANY) {
+            let base = "app_id = 'org.example.Emulator'\nbuttons = {}\n";
+            proptest::prop_assert!(!parse_context(base).unwrap().passthrough());
+            let context = parse_context(&format!("{base}[pad]\npassthrough = {enabled}\n")).unwrap();
+            proptest::prop_assert_eq!(context.passthrough(), enabled);
+            proptest::prop_assert!(parse_context(&format!("{base}[pad]\npassthrough = '{enabled}'\n")).is_err(), "reject string values");
+            proptest::prop_assert!(parse_context(&format!("{base}[pad]\nunknown = {enabled}\n")).is_err(), "reject unknown fields");
+        }
+    }
+
+    #[test]
     fn firefox_context_maps_buttons_and_speech_to_modifier_actions() {
         use tehuti_protocol::{Action, ButtonName, Modifier};
         let context = parse_context(include_str!("../../../dist/contexts/firefox/context.toml")).unwrap();

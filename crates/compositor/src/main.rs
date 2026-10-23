@@ -216,6 +216,7 @@ fn run(
         advance_time(data);
         reload_contexts(data);
         reconnect_controller(data, &handle);
+        sync_pad_grab(data);
         for pad in data.controllers.values_mut() {
             if let Err(error) = input::finish_quit(&data.compositor, pad, &signal) {
                 error!(%error, "controller release failed");
@@ -426,6 +427,7 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
 
 /// Routes pending events from every pad; failed registrations are removed on the next loop turn.
 fn route_controller_input(data: &mut LoopData) -> PostAction {
+    sync_pad_grab(data);
     advance_time(data);
     let was_attached = !data.controllers.is_empty();
     let (events, _) = input::drain_pads(&mut data.controllers);
@@ -498,4 +500,13 @@ fn advance_time(data: &mut LoopData) {
     }
     data.compositor.sample_sticks(sampled);
     data.compositor.advance_time();
+}
+
+fn sync_pad_grab(data: &mut LoopData) {
+    for pad in data.controllers.values_mut() {
+        if let Err(error) = pad.pad.set_passthrough(data.compositor.pad_passthrough()) {
+            warn!(%error, "controller ownership change failed; reopening");
+            pad.watchdog.request_reopen();
+        }
+    }
 }

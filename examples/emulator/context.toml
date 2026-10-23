@@ -1,0 +1,6 @@
+app_id = "org.example.Emulator"
+buttons = {}
+
+[pad]
+passthrough = true
+push_to_talk = ["select", "left_bumper"]
