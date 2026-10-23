@@ -107,6 +107,21 @@ fn print_version() -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn insert_backend(
+    event_loop: &EventLoop<LoopData>,
+    display: &smithay::reexports::wayland_server::DisplayHandle,
+    compositor: &mut Compositor,
+) -> Result<(), Box<dyn Error>> {
+    match tehuti::backend::select(
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        std::env::var_os("DISPLAY").as_deref(),
+    ) {
+        tehuti::backend::Backend::Nested => nested::insert(event_loop, display, compositor)?,
+        tehuti::backend::Backend::Tty => tty::insert(event_loop, display, compositor)?,
+    }
+    Ok(())
+}
+
 #[expect(clippy::too_many_lines, reason = "speech spawn stays in startup")]
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut application = std::env::args_os().skip(1);
@@ -136,13 +151,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     if let Err(error) = insert_controller_watch(&event_loop) {
         warn!(%error, "controller watch unavailable; periodic discovery continues");
     }
-    match tehuti::backend::select(
-        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
-        std::env::var_os("DISPLAY").as_deref(),
-    ) {
-        tehuti::backend::Backend::Nested => nested::insert(&event_loop, &display.handle(), &mut compositor)?,
-        tehuti::backend::Backend::Tty => tty::insert(&event_loop, &display.handle(), &mut compositor)?,
-    }
+    insert_backend(&event_loop, &display.handle(), &mut compositor)?;
     let mut controllers = BTreeMap::new();
     let mut controller_tokens = BTreeMap::new();
     insert_controllers(

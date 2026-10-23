@@ -132,6 +132,7 @@ mod level_dim {
             let xdg = wm_base.get_xdg_surface(&surface, &handle, ());
             let toplevel = xdg.get_toplevel(&handle, ());
             toplevel.set_app_id(format!("org.example.Window{index}"));
+            toplevel.set_title(format!("Document {index}"));
             surface.commit();
             let _configured = queue.roundtrip(&mut app).unwrap();
             attach(&shm, &surface, &handle, [50, 100, 200, 255], 128);
@@ -183,6 +184,10 @@ mod level_dim {
     }
 
     fn scene(count: usize, check: impl FnOnce(&mut Compositor, &Output)) {
+        scene_scaled(count, 1, check);
+    }
+
+    fn scene_scaled(count: usize, scale: i32, check: impl FnOnce(&mut Compositor, &Output)) {
         let mut display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         let output = Output::new(
@@ -201,7 +206,7 @@ mod level_dim {
                 size: (800, 600).into(),
                 refresh: 60_000,
             },
-            1,
+            scale,
         );
         compositor.space.map_output(&output, (0, 0));
         compositor.output = Some(output.clone());
@@ -281,7 +286,7 @@ mod level_dim {
             ];
             let mut bar = tehuti::bar::Buffer::default();
             overlays.push(
-                bar.element(&mut self.renderer, output, compositor.voice_bar(), "12:00")
+                bar.element(&mut self.renderer, output, &compositor.voice_bar(), "12:00")
                     .unwrap()
                     .unwrap(),
             );
@@ -326,6 +331,100 @@ mod level_dim {
         for (channel, target) in actual.into_iter().zip(expected) {
             assert!(channel.abs_diff(target) <= 1, "{channel} differs from {target}");
         }
+    }
+
+    #[test]
+    fn focus_outline_is_two_logical_pixels_on_only_the_focused_window_at_both_levels() {
+        for scale in [1, 2] {
+            scene_scaled(2, scale, |compositor, output| {
+                let mut capture = Capture::new();
+                capture.damage = OutputDamageTracker::new((800, 600), f64::from(scale), Transform::Normal);
+                for _ in 0..2 {
+                    let image = capture.pixels(compositor, output);
+                    let windows = compositor.space.elements().collect::<Vec<_>>();
+                    for (index, window) in windows.iter().enumerate() {
+                        let location = compositor.space.element_location(window).unwrap();
+                        let bounds = Rectangle::new(location, window.layout_size())
+                            .to_physical_precise_round::<f64, i32>(f64::from(scale));
+                        let x = u32::try_from(bounds.loc.x).unwrap();
+                        let y = u32::try_from(bounds.loc.y).unwrap();
+                        let right = x + u32::try_from(bounds.size.w).unwrap() - 1;
+                        let bottom = y + u32::try_from(bounds.size.h).unwrap() - 1;
+                        let width = u32::try_from(2 * scale).unwrap();
+                        let expected = if index == 1 { [255; 4] } else { [134, 67, 34, 255] };
+                        for offset in 0..width {
+                            if index == 1 {
+                                assert_colour(pixel(&image, (x + offset, y + 10)), expected);
+                                assert_colour(pixel(&image, (x + 10, y + offset)), expected);
+                                assert_colour(pixel(&image, (right - offset, y + 10)), expected);
+                                assert_colour(pixel(&image, (x + 10, bottom - offset)), expected);
+                            } else {
+                                assert_ne!(pixel(&image, (x + offset, y + 10)), [255; 4]);
+                            }
+                        }
+                        assert_ne!(pixel(&image, (x + width, y + 10)), [255; 4]);
+                    }
+                    tap(compositor);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn shoulders_transfer_the_title_highlight_and_outline_at_columns_level() {
+        use tehuti_core::bar::{Segment, Tone};
+        scene(2, |compositor, output| {
+            tap(compositor);
+            let mut capture = Capture::new();
+            for focused in [1, 0] {
+                assert_eq!(
+                    compositor.voice_bar().segments(),
+                    vec![
+                        Segment {
+                            text: "Document 0".into(),
+                            tone: if focused == 0 {
+                                Tone::Context
+                            } else {
+                                Tone::Unfocused
+                            }
+                        },
+                        Segment {
+                            text: "Document 1".into(),
+                            tone: if focused == 1 {
+                                Tone::Context
+                            } else {
+                                Tone::Unfocused
+                            }
+                        },
+                    ]
+                );
+                let image = capture.pixels(compositor, output);
+                for (index, window) in compositor.space.elements().enumerate() {
+                    let location = compositor.space.element_location(window).unwrap();
+                    let point = (
+                        u32::try_from(location.x + 1).unwrap(),
+                        u32::try_from(location.y + 10).unwrap(),
+                    );
+                    assert_eq!(pixel(&image, point) == [255; 4], index == focused);
+                }
+                for state in [ButtonState::Pressed, ButtonState::Released] {
+                    compositor.handle(&Event::Button {
+                        name: ButtonName::LeftBumper,
+                        state,
+                    });
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn no_focus_has_no_outline() {
+        scene(0, |compositor, output| {
+            for _ in 0..2 {
+                assert!(compositor.focus_outline(output).is_empty());
+                tap(compositor);
+            }
+        });
     }
 
     #[test]
@@ -404,6 +503,7 @@ mod level_dim {
                     .flat_map(|column| &column.tiles)
                     .any(|tile| tile.mode == tehuti_core::layout::TileMode::Fullscreen)
             );
+            assert!(compositor.focus_outline(output).is_empty());
             let fullscreen_point = window_points(compositor)[0];
             capture.expect(compositor, output, fullscreen_point, [200, 100, 50, 255]);
         });

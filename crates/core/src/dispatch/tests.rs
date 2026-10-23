@@ -526,7 +526,7 @@ fn voice_bar_follows_capture_routing_and_expiry_through_dispatch() {
             elapsed: crate::bar::RESULT_LIFETIME,
         },
     );
-    assert_eq!(state.core().bar().segments().len(), 2, "context and level chips");
+    assert_eq!(state.core().bar().segments().len(), 1, "focused context chip");
 }
 
 #[test]
@@ -550,16 +550,10 @@ fn focus_clears_voice_bar_and_rejects_old_capture_through_dispatch() {
     );
     assert_eq!(
         state.core().bar().segments(),
-        vec![
-            crate::bar::Segment {
-                text: "new".into(),
-                tone: crate::bar::Tone::Context,
-            },
-            crate::bar::Segment {
-                text: "app level".into(),
-                tone: crate::bar::Tone::Context,
-            }
-        ]
+        vec![crate::bar::Segment {
+            text: "new".into(),
+            tone: crate::bar::Tone::Context,
+        }]
     );
 }
 

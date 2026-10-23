@@ -11,6 +11,7 @@ pub const RESULT_LIFETIME: Duration = Duration::from_secs(3);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
     Context,
+    Unfocused,
     Live,
     Result,
     Error,
@@ -26,6 +27,7 @@ pub struct Segment {
 pub struct Bar {
     context: Option<String>,
     agents: Vec<String>,
+    windows: Vec<(String, bool)>,
     feedback: Option<Segment>,
     remaining: Option<Duration>,
     level: crate::Level,
@@ -63,6 +65,7 @@ impl Bar {
         Self {
             context: None,
             agents: Vec::new(),
+            windows: Vec::new(),
             feedback: None,
             remaining: None,
             level: crate::Level::App,
@@ -76,16 +79,28 @@ impl Bar {
 
     #[must_use]
     pub fn segments(&self) -> Vec<Segment> {
-        let mut segments = vec![Segment {
-            text: self.context.clone().unwrap_or_else(|| "Desktop".into()),
-            tone: Tone::Context,
-        }];
+        let mut segments: Vec<Segment> = if self.level == crate::Level::Columns && !self.windows.is_empty() {
+            self.windows
+                .iter()
+                .map(|(title, focused)| Segment {
+                    text: title.clone(),
+                    tone: if *focused { Tone::Context } else { Tone::Unfocused },
+                })
+                .collect()
+        } else {
+            vec![Segment {
+                text: self.context.clone().unwrap_or_else(|| "Desktop".into()),
+                tone: Tone::Context,
+            }]
+        };
         segments.extend(self.feedback.clone());
-        segments.push(Segment {
-            text: self.level.label().into(),
-            tone: Tone::Context,
-        });
         segments
+    }
+
+    #[must_use]
+    pub fn with_windows(mut self, windows: Vec<(String, bool)>) -> Self {
+        self.windows = windows;
+        self
     }
 
     pub(crate) const fn set_level(&mut self, level: crate::Level) {

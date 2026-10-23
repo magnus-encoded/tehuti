@@ -72,6 +72,49 @@ mod tests {
     }
 
     #[test]
+    fn many_long_titles_keep_the_last_window_and_clock_visible() {
+        use tehuti_core::bar::Tone;
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let (state, _) = step(
+            State::new(),
+            &Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Pressed,
+            },
+        );
+        let (state, _) = step(
+            state,
+            &Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Released,
+            },
+        );
+        for scale in [1, 2] {
+            let output = output(1280 * scale, 720 * scale, scale);
+            let bar = state.bar().clone().with_windows(
+                (0..8)
+                    .map(|index| ("Long title ".repeat(100), index == 7))
+                    .collect(),
+            );
+            assert_eq!(bar.segments()[7].tone, Tone::Context);
+            let mut buffer = Buffer::default();
+            let (memory, _) = buffer.update(&output, &bar, "12:34").unwrap();
+            let mut memory = memory.clone();
+            memory
+                .render()
+                .draw(|bytes| {
+                    let width = usize::try_from(1280 * scale).unwrap();
+                    let unit = usize::try_from(scale).unwrap();
+                    let row = &bytes[width * 4..width * 8];
+                    assert_eq!(&row[1100 * unit * 4..1100 * unit * 4 + 4], &[88, 65, 47, 255]);
+                    assert_eq!(&row[1200 * unit * 4..1200 * unit * 4 + 4], &[88, 65, 47, 255]);
+                    Ok::<_, core::convert::Infallible>(Vec::new())
+                })
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn live_and_result_chips_change_pixels_and_long_text_keeps_the_clock() {
         let output = output(1280, 720, 1);
         let mut buffer = Buffer::default();

@@ -42,7 +42,7 @@ mod levels {
         }
     }
 
-    fn bar_level(state: &State) -> String {
+    fn bar_text(state: &State) -> String {
         state
             .bar()
             .segments()
@@ -52,17 +52,75 @@ mod levels {
     }
 
     #[test]
-    fn starts_at_app_level_and_shows_it() {
+    fn starts_at_app_level_without_a_level_chip() {
         let state = State::new();
         assert_eq!(state.level(), Level::App);
-        assert_eq!(bar_level(&state), "app level");
+        assert_eq!(bar_text(&state), "Desktop");
+    }
+
+    #[test]
+    fn neither_level_adds_any_label_to_the_bar() {
+        use tehuti_core::bar::{Segment, Tone};
+        let (app, _) = run(State::new(), &[focus("org.example.Editor")]);
+        let (columns, _) = run(app.clone(), &tap());
+        for state in [app, columns] {
+            for windows in [vec![], vec![("Notes".into(), true)]] {
+                let bar = state.bar().clone().with_windows(windows.clone());
+                let text = if state.level() == Level::Columns && !windows.is_empty() {
+                    "Notes"
+                } else {
+                    "org.example.Editor"
+                };
+                assert_eq!(
+                    bar.segments(),
+                    vec![Segment {
+                        text: text.into(),
+                        tone: Tone::Context
+                    }]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn columns_list_titles_in_order_and_mark_only_the_focused_window() {
+        use tehuti_core::bar::{Segment, Tone};
+        let (state, _) = run(State::new(), &tap());
+        let bar = state.bar().clone().with_windows(vec![
+            ("Notes".into(), false),
+            ("Terminal".into(), true),
+            ("Browser".into(), false),
+        ]);
+        assert_eq!(
+            bar.segments(),
+            vec![
+                Segment {
+                    text: "Notes".into(),
+                    tone: Tone::Unfocused
+                },
+                Segment {
+                    text: "Terminal".into(),
+                    tone: Tone::Context
+                },
+                Segment {
+                    text: "Browser".into(),
+                    tone: Tone::Unfocused
+                },
+            ]
+        );
+        let app = State::new()
+            .bar()
+            .clone()
+            .with_windows(vec![("Notes".into(), true)]);
+        assert_eq!(app.segments().len(), 1);
+        assert_eq!(app.segments()[0].text, "Desktop");
     }
 
     #[test]
     fn columns_level_moves_column_focus() {
         let (state, toggled) = run(State::new(), &tap());
         assert_eq!(toggled, Vec::new());
-        assert_eq!(bar_level(&state), "columns level");
+        assert_eq!(bar_text(&state), "Desktop");
         let (_, actions) = run(
             state,
             &[
@@ -137,7 +195,7 @@ mod levels {
             events.extend(apps.iter().map(|app| focus(app)));
             let (state, _) = run(State::new(), &events);
             prop_assert_eq!(state.level(), Level::Columns);
-            prop_assert_eq!(bar_level(&state), "columns level");
+            prop_assert_eq!(bar_text(&state), apps.last().copied().unwrap_or("Desktop"));
         }
     }
 }
