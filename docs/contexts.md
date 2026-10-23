@@ -82,30 +82,25 @@ output scale. Existing notices keep their overlay and focus behaviour.
 
 ## Keyboard intent
 
-`[keyboard]` sets `on_text_field` to `"button"` (the default), `"open"`, or
-`"off"`. `button = "Y"` selects the default opening button; protocol button names
-such as `"west"` also work. A context with `app_id = "*"` supplies global keyboard
-options. Application contexts inherit each option they omit.
+The keyboard opens only from Y or the spoken word "keyboard". Entering app
+level or columns level and enabling a text field keep it closed.
 
-`"button"` opens while a text-input-v3 field is enabled; outside a field the
-button follows normal routing. Mouse mode uses the same button. `"open"` opens
-once per field. After B closes it, ordinary field updates keep it closed until
-the client enables another field. `"off"` disables field opening. Saying
-"keyboard" remains available in every application. See `examples/global/context.toml`.
+In `[keyboard]`, `on_text_field = "button"` (the default) lets Y open
+while a text field is active or in a terminal. Without either, Y follows normal
+application routing. `"open"` lets Y open even without a text field, and
+`"off"` passes Y to the application. These options never open the keyboard
+automatically. A context with `app_id = "*"` supplies defaults; the active
+context overrides options it supplies. Saying "keyboard" opens in every
+application regardless of these options. Y types a space while the keyboard is
+open. B closes it; Menu sends the draft and keeps it open.
+The legacy `button` and `open_on_app_level` options remain accepted but
+do not change the opening triggers. See `examples/global/context.toml`.
 
-A terminal is an application whose field reports the terminal purpose, or one
-whose context sets `terminal = true`. Focusing a terminal never opens the
-keyboard, and neither does the opening button. A Guide tap into the app
-level opens it unless `open_on_app_level = false`. A terminal keeps the
-normal letters and adds a strip row above them: Esc, Tab, Ctrl, Alt, the arrow
-keys, Page Up, Page Down, `/`, `-`, `|` and `~`. Strip keys send the draft and
-then tap the key. Ctrl and Alt latch for the next key, strip key or letter, so
-Ctrl then `c` sends Ctrl-C. The symbols layer carries `|`, `<`, `>` and the
-backtick. In a terminal, Start and send type the draft, press Enter and keep the keyboard
-open for the next command. B sends Ctrl-C while the shell has
-a program in the foreground and closes the keyboard otherwise. Inside tmux,
-screen or ssh, B always closes. Dictation into a terminal drops commas and full
-stops that end a word.
+A terminal reports the terminal field purpose or has `terminal = true`.
+Its layout adds Esc, Tab, Ctrl, Alt, arrows, paging keys and shell symbols.
+Strip keys send the draft then tap the key. Ctrl and Alt latch for the next
+key. Menu and send also press Enter and keep the keyboard open. Dictation
+into a terminal drops commas and full stops that end a word.
 
 ## Level dimming
 

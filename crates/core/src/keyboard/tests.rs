@@ -324,7 +324,7 @@ fn b_closes_and_discards_the_draft() {
 }
 
 #[test]
-fn menu_sends_the_draft_and_closes() {
+fn menu_sends_the_draft_and_stays_open() {
     let mut keyboard = with_draft("hello there");
     assert_eq!(
         keyboard.button(ButtonName::Start, ButtonState::Pressed, true),
@@ -335,7 +335,7 @@ fn menu_sends_the_draft_and_closes() {
         keyboard.button(ButtonName::Start, ButtonState::Released, true),
         Response::Send("hello there".into())
     );
-    assert!(!keyboard.is_open());
+    assert!(keyboard.is_open());
 }
 
 #[test]
@@ -355,13 +355,14 @@ fn the_send_key_sends_the_draft() {
     let mut keyboard = with_draft("hi");
     go_to(&mut keyboard, 1, 11);
     assert_eq!(tap(&mut keyboard, ButtonName::South), Response::Send("hi".into()));
+    assert!(keyboard.is_open());
 }
 
 #[test]
-fn sending_an_empty_draft_only_closes() {
+fn sending_an_empty_draft_keeps_the_keyboard_open() {
     let mut keyboard = opened();
     assert_eq!(tap(&mut keyboard, ButtonName::Start), Response::Consumed);
-    assert!(!keyboard.is_open());
+    assert!(keyboard.is_open());
 }
 
 #[test]
@@ -496,7 +497,7 @@ fn password_reveals_only_last_typed_character_for_one_and_a_half_seconds() {
     keyboard.dictate("ignored");
     assert_eq!(keyboard.draft(), "qw");
     assert_eq!(tap(&mut keyboard, ButtonName::Start), Response::Consumed);
-    assert!(!keyboard.is_open());
+    assert!(keyboard.is_open());
     assert!(keyboard.password_field_active());
 }
 
@@ -573,12 +574,12 @@ fn a_terminal_field_picks_the_terminal_layer() {
 }
 
 #[test]
-fn b_in_a_terminal_leaves_the_choice_to_the_caller() {
+fn b_in_a_terminal_closes_and_discards_the_draft() {
     let mut keyboard = terminal();
     keyboard.dictate("make");
-    assert_eq!(tap(&mut keyboard, ButtonName::East), Response::InterruptOrClose);
-    assert!(keyboard.is_open());
-    assert_eq!(keyboard.draft(), "make");
+    assert_eq!(tap(&mut keyboard, ButtonName::East), Response::Consumed);
+    assert!(!keyboard.is_open());
+    assert_eq!(keyboard.draft(), "");
 }
 
 #[test]
