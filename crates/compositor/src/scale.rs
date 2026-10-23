@@ -1,4 +1,4 @@
-//! Integer output scale from `TEHUTI_SCALE`, applied to a Smithay output.
+//! Persisted integer output scale, initialized from `TEHUTI_SCALE`.
 
 use std::ffi::OsStr;
 
@@ -39,9 +39,18 @@ pub fn choose(value: Option<&OsStr>, mode_width: i32) -> Result<i32, (i32, Strin
     }
 }
 
-/// Reads `TEHUTI_SCALE`, warning and falling back to the default on invalid values.
+/// Restores the saved scale, otherwise reads `TEHUTI_SCALE` with a default fallback.
 #[must_use]
 pub fn from_env(mode_width: i32) -> i32 {
+    if let Some(scale) = crate::display_mode_store::Store::from_env()
+        .and_then(|store| store.read_scale())
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "saved display scale unavailable");
+            None
+        })
+    {
+        return scale;
+    }
     let value = std::env::var_os("TEHUTI_SCALE");
     choose(value.as_deref(), mode_width).unwrap_or_else(|(scale, warning)| {
         tracing::warn!("{warning}");

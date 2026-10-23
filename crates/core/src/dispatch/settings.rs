@@ -12,13 +12,14 @@ enum Status {
     Failed,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub open: bool,
     pub display: bool,
     pub selected: usize,
     pub current: usize,
     pub modes: Vec<String>,
+    pub scale: core::num::NonZeroU32,
     pub remaining: Option<Duration>,
     previous: Option<usize>,
     status: Status,
@@ -154,6 +155,27 @@ impl Settings {
     }
 
     fn button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        if self.display && self.selected == self.modes.len() && self.remaining.is_none() {
+            let scale = if name == ButtonName::DpadLeft {
+                self.scale.get().saturating_sub(1).max(1)
+            } else if name == ButtonName::DpadRight {
+                self.scale.get().saturating_add(1).min(i32::MAX.cast_unsigned())
+            } else {
+                self.scale.get()
+            };
+            if let Some(scale) = core::num::NonZeroU32::new(scale)
+                && scale != self.scale
+            {
+                self.scale = scale;
+                effects.push(Effect::SettingsScale(scale));
+            }
+            if matches!(
+                name,
+                ButtonName::DpadLeft | ButtonName::DpadRight | ButtonName::South
+            ) {
+                return;
+            }
+        }
         match name {
             ButtonName::East => self.close(effects),
             ButtonName::South => {
@@ -174,10 +196,7 @@ impl Settings {
                 self.selected = self.selected.saturating_sub(1);
             }
             ButtonName::DpadDown | ButtonName::DpadRight if self.remaining.is_none() => {
-                self.selected = self
-                    .selected
-                    .saturating_add(1)
-                    .min(self.modes.len().saturating_sub(1));
+                self.selected = self.selected.saturating_add(1).min(self.modes.len());
             }
             ButtonName::North
             | ButtonName::West
@@ -201,4 +220,23 @@ fn is_open_phrase(text: &str) -> bool {
     text.trim()
         .trim_end_matches('.')
         .eq_ignore_ascii_case("pop the hood")
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            open: false,
+            display: false,
+            selected: 0,
+            current: 0,
+            modes: Vec::new(),
+            scale: core::num::NonZeroU32::MIN,
+            remaining: None,
+            previous: None,
+            status: Status::Ready,
+            cancel_preview: false,
+            south: None,
+            held: Vec::new(),
+        }
+    }
 }

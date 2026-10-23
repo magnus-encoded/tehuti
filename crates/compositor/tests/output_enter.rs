@@ -38,6 +38,7 @@ mod output_enter {
         order: Vec<&'static str>,
         buffer_scale: Option<i32>,
         fractional: Option<u32>,
+        output_scale: Option<i32>,
     }
 
     impl Dispatch<WlRegistry, GlobalListContents> for App {
@@ -141,7 +142,7 @@ mod output_enter {
             _: &QueueHandle<Self>,
         ) {
             if let wl_output::Event::Scale { factor } = event {
-                assert_eq!(factor, 2);
+                app.output_scale = Some(factor);
                 app.order.push("scale");
             }
             if matches!(event, wl_output::Event::Done) {
@@ -150,7 +151,7 @@ mod output_enter {
         }
     }
 
-    fn client(stream: UnixStream, version: u32) -> App {
+    fn client(stream: UnixStream, version: u32, change: Option<std::sync::mpsc::Sender<()>>) -> App {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -166,20 +167,32 @@ mod output_enter {
         let mut app = App::default();
         let _first = queue.roundtrip(&mut app).unwrap();
         let _second = queue.roundtrip(&mut app).unwrap();
+        if let Some(change) = change {
+            change.send(()).unwrap();
+            while app.output_scale != Some(3) || app.fractional != Some(360) {
+                let _dispatched = queue.blocking_dispatch(&mut app).unwrap();
+            }
+        }
         app
     }
 
     #[test]
     fn version_six_clients_receive_scale_then_done_then_enter_before_configure() {
-        check_scale_delivery(6);
+        check_scale_delivery(6, false);
     }
 
     #[test]
     fn version_four_clients_receive_output_and_fractional_scale_before_configure() {
-        check_scale_delivery(4);
+        check_scale_delivery(4, false);
     }
 
-    fn check_scale_delivery(version: u32) {
+    #[test]
+    fn running_clients_receive_changed_output_and_surface_scales() {
+        check_scale_delivery(6, true);
+        check_scale_delivery(4, true);
+    }
+
+    fn check_scale_delivery(version: u32, runtime_change: bool) {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         let output = Output::new(
@@ -205,19 +218,29 @@ mod output_enter {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let thread = thread::spawn(move || client(stream, version));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let thread = thread::spawn(move || client(stream, version, runtime_change.then_some(sender)));
         let started = Instant::now();
         while !thread.is_finished() {
             assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
             let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
             compositor.space.refresh();
+            if receiver.try_recv().is_ok() {
+                compositor.change_display_scale(core::num::NonZeroU32::new(3).unwrap());
+            }
             display.flush_clients().unwrap();
             thread::sleep(Duration::from_millis(1));
         }
         let app = thread.join().unwrap();
+        assert_scale_delivery(app, version, runtime_change);
+    }
+
+    fn assert_scale_delivery(app: App, version: u32, runtime_change: bool) {
         let order = app.order;
-        assert_eq!(app.buffer_scale, (version >= 6).then_some(2));
-        assert_eq!(app.fractional, Some(240));
+        let expected = if runtime_change { 3 } else { 2 };
+        assert_eq!(app.output_scale, Some(expected));
+        assert_eq!(app.buffer_scale, (version >= 6).then_some(expected));
+        assert_eq!(app.fractional, Some(if runtime_change { 360 } else { 240 }));
         assert_eq!(order.first(), Some(&"scale"), "{order:?}");
         let scale = order.iter().position(|event| *event == "scale").unwrap();
         let done = order.iter().position(|event| *event == "done").unwrap();
