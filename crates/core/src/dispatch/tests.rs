@@ -2380,3 +2380,57 @@ proptest! {
         prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SpeechCommand(_))));
     }
 }
+
+#[test]
+fn title_updates_reach_plugins_without_cancelling_capture() {
+    let mut world = World::default();
+    let mut state = world.event(State::default(), focus("editor"));
+    for input in [SpeechInput::Available, SpeechInput::Press] {
+        state = world.run(state, Input::Speech(input));
+    }
+    world.trace.clear();
+    state = world.run(
+        state,
+        Input::FocusTitle {
+            app_id: Some("editor".into()),
+            title: "Updated document".into(),
+        },
+    );
+    assert!(world.trace.iter().any(|effect| matches!(
+        effect,
+        Effect::DispatchPlugin { event: Event::Focus { title, .. }, .. }
+            if title == "Updated document"
+    )));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SpeechCommand(SpeechEffect::Stop { .. })))
+    );
+    world.trace.clear();
+    let _state = world.run(state, Input::Speech(SpeechInput::Release));
+    assert!(world.trace.iter().any(|effect| matches!(
+        effect,
+        Effect::SpeechCommand(SpeechEffect::Stop { transcribe: true, .. })
+    )));
+}
+
+#[test]
+fn focus_changes_cancel_capture_even_with_the_same_application() {
+    for app_id in ["editor", "browser"] {
+        let mut world = World::default();
+        let mut state = world.event(State::default(), focus("editor"));
+        for input in [SpeechInput::Available, SpeechInput::Press] {
+            state = world.run(state, Input::Speech(input));
+        }
+        world.trace.clear();
+        let _state = world.event(state, focus(app_id));
+        assert!(world.trace.iter().any(|effect| matches!(
+            effect,
+            Effect::SpeechCommand(SpeechEffect::Stop {
+                transcribe: false,
+                ..
+            })
+        )));
+    }
+}
