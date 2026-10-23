@@ -99,6 +99,47 @@ mod tests {
     }
 
     #[test]
+    fn view_hold_changes_the_kernel_grab_and_release_preserves_it() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let display: Display<Compositor> = Display::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.set_contexts(vec![tehuti_protocol::parse_context(
+            "app_id = 'org.example.Game'\nbuttons = {}\n[pad]\npassthrough = true",
+        )?]);
+        compositor.handle(&tehuti_protocol::Event::Focus {
+            app_id: Some("org.example.Game".into()),
+            title: String::new(),
+        });
+        let client = Client::default();
+        let grabbed = Rc::clone(&client.1);
+        grabbed.set(true);
+        let mut pad = EvdevPad::new(client, Client::default(), DpadHat::default());
+        pad.set_passthrough(compositor.pad_passthrough())?;
+        assert!(!grabbed.get());
+        for expected in [true, false] {
+            let mut source = tehuti::input::SyntheticPad::default();
+            source.push(tehuti_protocol::Event::Button {
+                name: ButtonName::Select,
+                state: tehuti_protocol::ButtonState::Pressed,
+            });
+            source.push(tehuti_protocol::Event::Tick {
+                elapsed: Duration::from_millis(500),
+            });
+            tehuti::input::route(&mut compositor, &mut source)?;
+            pad.set_passthrough(compositor.pad_passthrough())?;
+            assert_eq!(grabbed.get(), expected);
+            source.push(tehuti_protocol::Event::Button {
+                name: ButtonName::Select,
+                state: tehuti_protocol::ButtonState::Released,
+            });
+            tehuti::input::route(&mut compositor, &mut source)?;
+            pad.set_passthrough(compositor.pad_passthrough())?;
+            assert_eq!(grabbed.get(), expected);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn querying_state_preserves_a_queued_button_and_escape_chord() -> Result<(), Box<dyn core::error::Error>>
     {
         let events = Client::default();

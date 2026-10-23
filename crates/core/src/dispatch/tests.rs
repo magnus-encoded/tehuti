@@ -2462,6 +2462,18 @@ fn y_opening_obeys_fields_terminals_and_context_overrides() {
     }
 }
 
+fn takeback_context(ptt: &str) -> State {
+    configured(
+        vec![
+            tehuti_protocol::parse_context(&format!(
+                "app_id = 'org.example.Game'\nbuttons = {{}}\n[pad]\npassthrough = true\npush_to_talk = {ptt}"
+            ))
+            .unwrap(),
+        ],
+        "org.example.Game",
+    )
+}
+
 proptest! {
     #[test]
     fn passthrough_sticks_and_global_buttons_stay_with_the_application(
@@ -2539,4 +2551,110 @@ proptest! {
         let _state = world.run(state, Input::Tick { elapsed: Duration::from_secs(3) });
         prop_assert!(world.trace.contains(&Effect::Apply(Action::Quit)));
     }
+}
+
+proptest! {
+    #[test]
+    fn solo_view_hold_toggles_once_and_release_keeps_the_mode(extra_ms in 0u64..5000) {
+        let mut world = World::default();
+        let mut state = takeback_context("['select']");
+        state = world.run(state, Input::Speech(SpeechInput::Available));
+        for expected in [false, true] {
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+            prop_assert_eq!(state.core().passthrough(), !expected);
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(499) });
+            prop_assert_eq!(state.core().passthrough(), !expected);
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(1) });
+            prop_assert_eq!(state.core().passthrough(), expected);
+            state = world.run(state, Input::Tick { elapsed: Duration::from_millis(extra_ms) });
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+            prop_assert_eq!(state.core().passthrough(), expected);
+        }
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SpeechCommand(_) | Effect::MouseMode(_))));
+    }
+
+    #[test]
+    fn short_view_keeps_passthrough_and_defers_single_button_ptt(millis in 0u64..500) {
+        let mut world = World::default();
+        let mut state = takeback_context("['select']");
+        state = world.run(state, Input::Speech(SpeechInput::Available));
+        state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+        state = world.run(state, Input::Tick { elapsed: Duration::from_millis(millis) });
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SpeechCommand(_))));
+        state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        prop_assert!(state.core().passthrough());
+        let commands: Vec<_> = world.trace.iter().filter_map(|effect| if let Effect::SpeechCommand(command) = effect { Some(command.clone()) } else { None }).collect();
+        prop_assert_eq!(commands, vec![SpeechEffect::Start { session: 0 }, SpeechEffect::Stop { session: 0, transcribe: true }]);
+    }
+
+    #[test]
+    fn another_button_cancels_view_hold_and_focus_restores_context(reverse in any::<bool>()) {
+        let mut world = World::default();
+        let mut state = takeback_context("['select', 'left_bumper']");
+        state = world.run(state, Input::Speech(SpeechInput::Available));
+        let buttons = if reverse { [ButtonName::Select, ButtonName::LeftBumper] } else { [ButtonName::LeftBumper, ButtonName::Select] };
+        for name in buttons {
+            state = world.run(state, pad_button(name, ButtonState::Pressed));
+        }
+        state = world.run(state, Input::Tick { elapsed: Duration::from_secs(1) });
+        prop_assert!(state.core().passthrough());
+        prop_assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Start { session: 0 })), "chord starts capture");
+        for name in buttons {
+            state = world.run(state, pad_button(name, ButtonState::Released));
+        }
+        state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+        state = world.run(state, Input::Tick { elapsed: Duration::from_millis(500) });
+        prop_assert!(!state.core().passthrough());
+        state = world.event(state, focus("org.example.Game"));
+        prop_assert!(state.core().passthrough());
+        state = world.run(state, Input::Tick { elapsed: Duration::from_secs(1) });
+        prop_assert!(state.core().passthrough());
+    }
+}
+
+#[test]
+fn guide_hold_opens_and_closes_menu_in_passthrough() {
+    let mut world = World::default();
+    let mut state = takeback_context("['record']");
+    state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(500),
+        },
+    );
+    assert!(state.core().menu().is_some());
+    state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
+    state = world.run(state, pad_button(ButtonName::East, ButtonState::Pressed));
+    assert!(state.core().menu().is_none());
+    assert!(state.core().passthrough());
+}
+
+#[test]
+fn takeback_survives_title_updates_and_short_view_taps_toggle_mouse() {
+    let mut world = World::default();
+    let mut state = takeback_context("['record']");
+    state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(500),
+        },
+    );
+    state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+    state = world.run(
+        state,
+        Input::FocusTitle {
+            app_id: Some("org.example.Game".into()),
+            title: "Playing".into(),
+        },
+    );
+    assert!(!state.core().passthrough());
+    for _tap in 0..2 {
+        state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+        state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+    }
+    assert!(world.trace.contains(&Effect::MouseMode(true)));
+    state = world.run(state, Input::ControllerDisconnected);
+    assert!(state.core().passthrough());
 }
