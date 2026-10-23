@@ -18,8 +18,7 @@ pub fn open_grabbed(
     virtual_pad: Option<&str>,
     attached: &std::collections::BTreeSet<std::path::PathBuf>,
 ) -> Vec<(std::path::PathBuf, EvdevPad)> {
-    evdev::enumerate()
-        .filter(|(path, _)| !attached.contains(path))
+    pad_candidates(attached)
         .filter(|(path, device)| {
             let sysfs = path
                 .file_name()
@@ -54,6 +53,60 @@ pub fn open_grabbed(
             }
         })
         .collect()
+}
+
+/// Opens the input devices that could be pads. Opening and closing a device is slow on some kernels
+/// (closing waits for an RCU grace period), and the scan runs every few hundred milliseconds,
+/// so devices that sysfs says have no south face button are never opened.
+fn pad_candidates(
+    attached: &std::collections::BTreeSet<std::path::PathBuf>,
+) -> impl Iterator<Item = (std::path::PathBuf, Device)> {
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir("/dev/input")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|node| node.to_str())
+                .is_some_and(|node| node.starts_with("event"))
+        })
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter(|path| !attached.contains(path))
+        .filter(|path| {
+            let capabilities = path.file_name().map(|node| {
+                std::path::Path::new("/sys/class/input")
+                    .join(node)
+                    .join("device/capabilities/key")
+            });
+            // An unreadable or unparsable capability file falls back to opening the device.
+            capabilities
+                .and_then(|file| std::fs::read_to_string(file).ok())
+                .and_then(|text| key_in_capabilities(&text, usize::from(KeyCode::BTN_SOUTH.code())))
+                .unwrap_or(true)
+        })
+        .filter_map(|path| Device::open(&path).ok().map(|device| (path, device)))
+}
+
+/// Whether bit `bit` is set in a sysfs capability bitmap: hexadecimal words, most significant first,
+/// each as wide as the kernel's `long`.
+fn key_in_capabilities(text: &str, bit: usize) -> Option<bool> {
+    let words = text
+        .split_whitespace()
+        .map(|word| usize::from_str_radix(word, 16).ok())
+        .collect::<Option<Vec<usize>>>()?;
+    let word_bits = usize::try_from(usize::BITS).ok()?;
+    let from_end = bit.checked_div(word_bits)?;
+    let word = words
+        .len()
+        .checked_sub(from_end.checked_add(1)?)
+        .and_then(|index| words.get(index))
+        .copied()
+        .unwrap_or(0);
+    Some(word >> bit.checked_rem(word_bits)? & 1 == 1)
 }
 
 /// Whether discovery accepts a physical pad or an explicitly named virtual pad.
@@ -410,6 +463,39 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_capability_bitmaps_distinguish_pads_from_keyboards() {
+        let (pad, keyboard) = if usize::BITS == 64 {
+            (
+                "7fdb000000000000 0 0 0 0",
+                "4 20000023803078 f800d001feffffdf ffefffffffffffff fffffffe",
+            )
+        } else {
+            (
+                "7fdb0000 0 0 0 0 0 0 0 0 0",
+                "4 2000002 3803078 f800d001 feffffdf ffefffff ffffffff fffffffe",
+            )
+        };
+        let south = usize::from(KeyCode::BTN_SOUTH.code());
+        assert_eq!(key_in_capabilities(pad, south), Some(true));
+        assert_eq!(key_in_capabilities(keyboard, south), Some(false));
+        assert_eq!(key_in_capabilities("0", south), Some(false));
+    }
+
+    #[test]
+    fn capability_bitmap_finds_the_south_face_button() {
+        let south = usize::from(KeyCode::BTN_SOUTH.code());
+        // A 32-bit `long` DualShock 4 pad and the keyboard of the same machine, as sysfs prints them.
+        let pad = "7fdb0000 0 0 0 0 0 0 0 0 0";
+        let keyboard = "4 2000002 3803078 f800d001 feffffdf ffefffff ffffffff fffffffe";
+        if usize::BITS == 32 {
+            assert_eq!(key_in_capabilities(pad, south), Some(true));
+            assert_eq!(key_in_capabilities(keyboard, south), Some(false));
+        }
+        assert_eq!(key_in_capabilities("not hex", south), None);
+        assert_eq!(key_in_capabilities("", south), Some(false));
+    }
+
     use super::*;
     use proptest::prelude::*;
 
