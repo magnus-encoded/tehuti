@@ -217,15 +217,13 @@ where
     R::Error: 'static,
 {
     let mut target = renderer.bind(dmabuf)?;
-    let notice = compositor
-        .visible_notice_text()
-        .map(|text| tehuti::notice::notice_buffer(&text));
+    let notice = compositor.notice_for_output(output);
     let mut elements = notice
         .as_ref()
-        .map(|buffer| {
+        .map(|(buffer, location)| {
             MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
-                (16.0, 16.0),
+                *location,
                 buffer,
                 None,
                 None,

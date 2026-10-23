@@ -307,6 +307,35 @@ impl Compositor {
 
     #[must_use]
     pub fn visible_notice_text(&self) -> Option<String> {
+        self.transient_notice_text()
+            .or_else(|| self.mouse_mode.then(|| "MOUSE MODE".into()))
+    }
+
+    pub fn notice_for_output(
+        &self,
+        output: &Output,
+    ) -> Option<(
+        smithay::backend::renderer::element::memory::MemoryRenderBuffer,
+        (f64, f64),
+    )> {
+        if let Some(text) = self.transient_notice_text() {
+            return Some((crate::notice::notice_buffer(&text), (16.0, 16.0)));
+        }
+        if !self.mouse_mode {
+            return None;
+        }
+        let mode = output.current_mode()?;
+        let bar_height = tehuti_core::bar::HEIGHT.saturating_mul(output.current_scale().integer_scale());
+        Some((
+            crate::notice::mouse_mode_buffer(),
+            (
+                16.0,
+                f64::from(mode.size.h.saturating_sub(bar_height).saturating_sub(40)),
+            ),
+        ))
+    }
+
+    fn transient_notice_text(&self) -> Option<String> {
         if let Some(menu) = self.dispatch.core().menu() {
             return Some(menu.text());
         }
@@ -323,7 +352,6 @@ impl Compositor {
                         .unwrap_or_else(|| "NO SPEECH MAPPING".into())
                 })
             })
-            .or_else(|| self.mouse_mode.then(|| "MOUSE MODE".into()))
     }
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {

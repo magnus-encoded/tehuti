@@ -12,9 +12,10 @@ pub fn speech_notice_buffer() -> MemoryRenderBuffer {
 
 #[must_use]
 pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
-    let width = 512usize;
-    let lines = text.lines().count().clamp(2, 10);
-    let height = lines.saturating_mul(32);
+    raster(text, 512, text.lines().count().clamp(2, 10).saturating_mul(32))
+}
+
+fn raster(text: &str, width: usize, height: usize) -> MemoryRenderBuffer {
     let mut pixels = vec![0u8; width.saturating_mul(height).saturating_mul(4)];
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[32, 32, 32, 255]);
@@ -55,11 +56,19 @@ pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
     MemoryRenderBuffer::from_slice(
         &pixels,
         Fourcc::Argb8888,
-        (512, i32::try_from(height).unwrap_or(64)),
+        (
+            i32::try_from(width).unwrap_or(512),
+            i32::try_from(height).unwrap_or(64),
+        ),
         1,
         Transform::Normal,
         None,
     )
+}
+
+#[must_use]
+pub fn mouse_mode_buffer() -> MemoryRenderBuffer {
+    raster("MOUSE MODE", 132, 24)
 }
 
 const fn glyph(character: char) -> [u8; 7] {

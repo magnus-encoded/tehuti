@@ -9,10 +9,7 @@ use smithay::{
         renderer::{
             ImportDma,
             damage::OutputDamageTracker,
-            element::{
-                Kind,
-                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
-            },
+            element::{Kind, memory::MemoryRenderBufferRenderElement},
             gles::GlesRenderer,
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
@@ -37,8 +34,6 @@ struct Nested {
     output: Output,
     damage_tracker: OutputDamageTracker,
     stop: LoopSignal,
-    notice: MemoryRenderBuffer,
-    notice_text: String,
     bar: tehuti::bar::Buffer,
     keyboard: tehuti::osk::Buffer,
 }
@@ -101,8 +96,6 @@ pub(crate) fn insert(
         damage_tracker: OutputDamageTracker::from_output(&output),
         output,
         stop: event_loop.get_signal(),
-        notice: tehuti::notice::speech_notice_buffer(),
-        notice_text: "NO SPEECH MAPPING".into(),
         bar: tehuti::bar::Buffer::default(),
         keyboard: tehuti::osk::Buffer::default(),
     };
@@ -159,15 +152,7 @@ impl Nested {
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
     ) {
         let confirmation_pending = data.compositor.secret_confirmation_text().is_some();
-        let visible_notice = data.compositor.visible_notice_text();
-        if let Some(text) = &visible_notice
-            && text != &self.notice_text
-        {
-            self.notice = tehuti::notice::notice_buffer(text);
-            self.notice_text.clone_from(text);
-        }
-        let (confirmation_element_included, output_drew) =
-            self.draw_bound_output(data, visible_notice.is_some(), confirmation_pending);
+        let (confirmation_element_included, output_drew) = self.draw_bound_output(data, confirmation_pending);
         let submit_succeeded = match self
             .backend
             .borrow_mut()
@@ -184,21 +169,17 @@ impl Nested {
         }
     }
 
-    fn draw_bound_output(
-        &mut self,
-        data: &LoopData,
-        visible_notice: bool,
-        confirmation_pending: bool,
-    ) -> (bool, bool) {
+    fn draw_bound_output(&mut self, data: &LoopData, confirmation_pending: bool) -> (bool, bool) {
         let mut output_drew = false;
         let mut confirmation_element_included = false;
         match self.backend.borrow_mut().bind() {
             Ok((renderer, mut framebuffer)) => {
-                let mut notices = if visible_notice {
+                let notice = data.compositor.notice_for_output(&self.output);
+                let mut notices = if let Some((buffer, location)) = &notice {
                     match MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
-                        (16.0, 16.0),
-                        &self.notice,
+                        *location,
+                        buffer,
                         None,
                         None,
                         None,
