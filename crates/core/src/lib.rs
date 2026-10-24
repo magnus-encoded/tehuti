@@ -560,6 +560,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
 }
 
 pub mod secret;
+pub mod shadowing;
 pub mod speech;
 
 pub mod plugin;

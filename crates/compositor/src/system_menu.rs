@@ -3,6 +3,8 @@
 use std::{collections::BTreeMap, io, path::PathBuf, process::Stdio};
 use tehuti_core::menu::Command;
 
+const COMMANDS: [&str; 5] = ["log_out", "plasma", "reboot", "shut_down", "task_monitor"];
+
 #[derive(Debug, Default)]
 pub struct Config {
     commands: BTreeMap<String, Vec<String>>,
@@ -16,11 +18,20 @@ impl Config {
     pub fn parse(text: &str) -> io::Result<Self> {
         let commands: BTreeMap<String, Vec<String>> = toml::from_str(text).map_err(io::Error::other)?;
         for (name, argv) in &commands {
-            if !["log_out", "plasma", "reboot", "shut_down", "task_monitor"].contains(&name.as_str())
-                || argv.first().is_some_and(String::is_empty)
-                || argv.iter().any(|arg| arg.contains('\0'))
-            {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid menu command"));
+            let problem = if !COMMANDS.contains(&name.as_str()) {
+                Some(format!(
+                    "unknown menu entry {name:?}, expected one of {}",
+                    COMMANDS.join(", ")
+                ))
+            } else if argv.first().is_some_and(String::is_empty) {
+                Some(format!("menu entry {name:?} has an empty program name"))
+            } else if argv.iter().any(|arg| arg.contains('\0')) {
+                Some(format!("menu entry {name:?} has an argument containing NUL"))
+            } else {
+                None
+            };
+            if let Some(problem) = problem {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, problem));
             }
         }
         Ok(Self { commands })

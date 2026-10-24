@@ -4,6 +4,7 @@
     reason = "Smithay and winit pull in duplicate transitive versions outside our control"
 )]
 
+pub mod config_check;
 pub mod controller;
 pub mod input;
 pub mod state;
