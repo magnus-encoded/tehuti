@@ -11,8 +11,13 @@ pub(super) struct Canvas {
     width: usize,
     height: usize,
     scale: (f32, f32),
-    font: Font,
+    font: &'static Font,
 }
+
+static FONT: std::sync::LazyLock<Option<Font>> = std::sync::LazyLock::new(|| {
+    const BYTES: &[u8] = include_bytes!("../../assets/LiberationSans-Regular.ttf");
+    Font::from_bytes(BYTES, FontSettings::default()).ok()
+});
 
 #[expect(
     clippy::cast_precision_loss,
@@ -30,11 +35,7 @@ impl Canvas {
         let width = usize::try_from(size.0).ok().filter(|value| *value > 0)?;
         let height = usize::try_from(size.1).ok().filter(|value| *value > 0)?;
         let length = width.checked_mul(height)?.checked_mul(4)?;
-        let font = Font::from_bytes(
-            include_bytes!("../../assets/LiberationSans-Regular.ttf") as &[u8],
-            FontSettings::default(),
-        )
-        .ok()?;
+        let font = FONT.as_ref()?;
         Some(Self {
             pixels: vec![0; length],
             width,
@@ -50,16 +51,7 @@ impl Canvas {
         }
         let offset = y.saturating_mul(self.width).saturating_add(x).saturating_mul(4);
         if let Some(pixel) = self.pixels.get_mut(offset..offset.saturating_add(4)) {
-            let [_, _, _, opacity] = color;
-            let alpha = f32::from(opacity) / 255.0 * coverage;
-            for (channel, source) in pixel.iter_mut().take(3).zip(color) {
-                *channel = f32::from(*channel)
-                    .mul_add(1.0 - alpha, f32::from(source) * alpha)
-                    .round() as u8;
-            }
-            if let Some(channel) = pixel.get_mut(3) {
-                *channel = f32::from(*channel).mul_add(1.0 - alpha, 255.0 * alpha).round() as u8;
-            }
+            blend_pixel(pixel, color, alpha(color, coverage));
         }
     }
 
@@ -68,11 +60,45 @@ impl Canvas {
         let top = y as f32 * self.scale.1;
         let right = x.saturating_add(width) as f32 * self.scale.0;
         let bottom = y.saturating_add(height) as f32 * self.scale.1;
+        let first_column = (left.floor() as usize).min(self.width);
+        let end_column = (right.ceil() as usize).min(self.width);
+        let column_coverage: Vec<f32> = (first_column..end_column)
+            .map(|column| (right.min(column as f32 + 1.0) - left.max(column as f32)).clamp(0.0, 1.0))
+            .collect();
+        let full = Lookup::new(color, alpha(color, 1.0));
+        let full_row_alphas: Vec<u8> = column_coverage
+            .iter()
+            .map(|coverage| alpha(color, *coverage))
+            .collect();
         for row in (top.floor() as usize)..(bottom.ceil() as usize).min(self.height) {
-            for column in (left.floor() as usize)..(right.ceil() as usize).min(self.width) {
-                let coverage = (right.min(column as f32 + 1.0) - left.max(column as f32)).clamp(0.0, 1.0)
-                    * (bottom.min(row as f32 + 1.0) - top.max(row as f32)).clamp(0.0, 1.0);
-                self.blend(column, row, color, coverage);
+            let row_coverage = (bottom.min(row as f32 + 1.0) - top.max(row as f32)).clamp(0.0, 1.0);
+            let start = row
+                .saturating_mul(self.width)
+                .saturating_add(first_column)
+                .saturating_mul(4);
+            let end = row
+                .saturating_mul(self.width)
+                .saturating_add(end_column)
+                .saturating_mul(4);
+            let Some(pixels) = self.pixels.get_mut(start..end) else {
+                continue;
+            };
+            let partial_row_alphas: Vec<u8>;
+            let row_alphas: &[u8] = if row_coverage >= 1.0 {
+                &full_row_alphas
+            } else {
+                partial_row_alphas = column_coverage
+                    .iter()
+                    .map(|coverage| alpha(color, row_coverage * coverage))
+                    .collect();
+                &partial_row_alphas
+            };
+            for (pixel, &pixel_alpha) in pixels.as_chunks_mut::<4>().0.iter_mut().zip(row_alphas) {
+                if pixel_alpha == full.alpha {
+                    full.apply(pixel);
+                } else {
+                    blend_pixel(pixel, color, pixel_alpha);
+                }
             }
         }
     }
@@ -85,7 +111,7 @@ impl Canvas {
             ..LayoutSettings::default()
         });
         layout.append(
-            &[&self.font],
+            &[self.font],
             &TextStyle::new(text, scale as f32 * 8.0 * self.scale.1, 0),
         );
         for glyph in layout.glyphs() {
@@ -119,5 +145,65 @@ impl Canvas {
                 self.blend(column, row, color, coverage);
             }
         }
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    reason = "the product of an opacity and a clamped coverage lies within 0..=255"
+)]
+#[expect(
+    clippy::float_arithmetic,
+    reason = "coverage is a fraction of a physical pixel"
+)]
+fn alpha(color: [u8; 4], coverage: f32) -> u8 {
+    let [_, _, _, opacity] = color;
+    (f32::from(opacity) * coverage.clamp(0.0, 1.0)).round() as u8
+}
+
+/// Precomputed blends of one colour at one alpha, for the many fully covered pixels of a rectangle.
+struct Lookup {
+    alpha: u8,
+    channels: [[u8; 256]; 4],
+}
+
+impl Lookup {
+    fn new(color: [u8; 4], alpha: u8) -> Self {
+        let mut channels = [[0; 256]; 4];
+        for (destination, value) in (0..=u8::MAX).enumerate() {
+            let mut pixel = [value; 4];
+            blend_pixel(&mut pixel, color, alpha);
+            for (channel, blended) in channels.iter_mut().zip(pixel) {
+                if let Some(entry) = channel.get_mut(destination) {
+                    *entry = blended;
+                }
+            }
+        }
+        Self { alpha, channels }
+    }
+
+    fn apply(&self, pixel: &mut [u8]) {
+        for (channel, table) in pixel.iter_mut().zip(&self.channels) {
+            *channel = table.get(usize::from(*channel)).copied().unwrap_or(*channel);
+        }
+    }
+}
+
+/// Integer source-over blending; `f32::mul_add` is a slow software call on CPUs without FMA.
+fn blend_pixel(pixel: &mut [u8], color: [u8; 4], alpha: u8) {
+    let alpha = u16::from(alpha);
+    let mix = |destination: u8, source: u8| {
+        let mixed = u16::from(destination)
+            .saturating_mul(255_u16.saturating_sub(alpha))
+            .saturating_add(u16::from(source).saturating_mul(alpha))
+            .saturating_add(127)
+            / 255;
+        u8::try_from(mixed).unwrap_or(u8::MAX)
+    };
+    let [red, green, blue, _] = color;
+    for (channel, source) in pixel.iter_mut().zip([red, green, blue, u8::MAX]) {
+        *channel = mix(*channel, source);
     }
 }

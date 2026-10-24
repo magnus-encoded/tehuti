@@ -88,4 +88,36 @@ mod system_menu {
         });
         assert!(compositor.quit_requested());
     }
+
+    #[test]
+    fn settings_entry_opens_the_view_in_place_of_the_on_screen_keyboard() {
+        use core::time::Duration;
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::state::Compositor;
+        use tehuti_core::controller::Input;
+        use tehuti_protocol::{ButtonName, ButtonState, Event, Text};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.handle(&Event::Speech {
+            text: Text::new("keyboard".into()).unwrap(),
+        });
+        assert!(compositor.on_screen_keyboard().is_open());
+        let pad = |target: &mut Compositor, name, state| {
+            target.controller_input(Input::Event(Event::Button { name, state }));
+        };
+        pad(&mut compositor, ButtonName::Guide, ButtonState::Pressed);
+        compositor.handle(&Event::Tick {
+            elapsed: Duration::from_millis(500),
+        });
+        pad(&mut compositor, ButtonName::Guide, ButtonState::Released);
+        for name in [ButtonName::DpadDown; 5].into_iter().chain([ButtonName::South]) {
+            pad(&mut compositor, name, ButtonState::Pressed);
+            pad(&mut compositor, name, ButtonState::Released);
+        }
+        assert!(compositor.settings().open);
+        assert!(!compositor.on_screen_keyboard().is_open());
+        assert!(compositor.visible_notice_text().is_none());
+        assert!(compositor.settings_buffer((1024, 600)).is_some());
+    }
 }

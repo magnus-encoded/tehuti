@@ -15,7 +15,40 @@ pub(crate) struct Display {
 
 #[derive(Debug, Default)]
 pub struct Artwork {
-    cached: Option<(Settings, (i32, i32), MemoryRenderBuffer)>,
+    cached: Option<(View, (i32, i32), MemoryRenderBuffer)>,
+}
+
+/// What the artwork draws. Rasterising a frame takes about 100 ms on a slow CPU,
+/// so input bookkeeping such as held buttons never forces a redraw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct View {
+    display: bool,
+    selected: usize,
+    current: usize,
+    modes: Vec<String>,
+    scale: core::num::NonZeroU32,
+    remaining: Option<Duration>,
+    failed: bool,
+}
+
+impl View {
+    fn from_settings(settings: &Settings) -> Self {
+        Self {
+            display: settings.display,
+            selected: settings.selected,
+            current: settings.current,
+            modes: settings.modes.clone(),
+            scale: settings.scale,
+            remaining: settings.remaining.map(|remaining| {
+                Duration::from_millis(
+                    u64::try_from(remaining.as_millis() / 100)
+                        .unwrap_or_default()
+                        .saturating_mul(100),
+                )
+            }),
+            failed: settings.failed(),
+        }
+    }
 }
 
 impl Artwork {
@@ -24,20 +57,15 @@ impl Artwork {
             self.cached = None;
             return None;
         }
-        let mut key = settings.clone();
-        key.remaining = key.remaining.map(|remaining| {
-            Duration::from_millis(
-                u64::try_from(remaining.as_millis() / 100)
-                    .unwrap_or_default()
-                    .saturating_mul(100),
-            )
-        });
+        let view = View::from_settings(settings);
         if self
             .cached
             .as_ref()
-            .is_none_or(|(previous, previous_size, _)| *previous != key || *previous_size != size)
+            .is_none_or(|(previous, previous_size, _)| *previous != view || *previous_size != size)
         {
-            self.cached = buffer(&key, size).map(|buffer| (key, size, buffer));
+            let mut drawn = settings.clone();
+            drawn.remaining = view.remaining;
+            self.cached = buffer(&drawn, size).map(|buffer| (view, size, buffer));
         }
         self.cached.as_ref().map(|(_, _, buffer)| buffer.clone())
     }
@@ -277,6 +305,67 @@ mod tests {
             );
             assert_eq!(element.src().size, (f64::from(size.0), f64::from(size.1)).into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn artwork_is_rasterised_again_only_when_what_it_shows_changes() -> Result<(), Box<dyn core::error::Error>>
+    {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        let output = Output::new(
+            "settings-test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Tehuti".into(),
+                model: "Test".into(),
+            },
+        );
+        output.change_current_state(
+            Some(Mode {
+                size: (1024, 600).into(),
+                refresh: 60_000,
+            }),
+            Some(Transform::Normal),
+            Some(Scale::Integer(1)),
+            Some((0, 0).into()),
+        );
+        let mut renderer = PixmanRenderer::new()?;
+        let drawn = |target: &mut PixmanRenderer,
+                     state: &Compositor|
+         -> Result<smithay::backend::renderer::element::Id, Box<dyn core::error::Error>> {
+            Ok(super::element(target, state, &output)?
+                .ok_or("settings element unavailable")?
+                .id()
+                .clone())
+        };
+        let opened = drawn(&mut renderer, &compositor)?;
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            compositor.handle(&Event::Button {
+                name: ButtonName::North,
+                state,
+            });
+        }
+        assert_eq!(
+            drawn(&mut renderer, &compositor)?,
+            opened,
+            "an ignored button leaves the artwork alone"
+        );
+        compositor.handle(&Event::Button {
+            name: ButtonName::South,
+            state: ButtonState::Pressed,
+        });
+        assert!(compositor.settings().display);
+        assert_ne!(
+            drawn(&mut renderer, &compositor)?,
+            opened,
+            "entering the display page redraws"
+        );
         Ok(())
     }
 }

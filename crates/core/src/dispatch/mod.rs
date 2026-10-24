@@ -681,13 +681,18 @@ fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
     let was_open = state.settings.open;
     let consumed = state.settings.event(event, effects);
     if !was_open && state.settings.open {
-        state.core.menu = None;
-        state.mouse.release(effects);
-        state.keyboard.release_all();
-        state.keyboard.close();
-        effects.push(Effect::ResetSecretFocus);
+        hand_overlays_to_settings(state, effects);
     }
     consumed
+}
+
+/// The settings view takes the pad from the menu, the pointer and the on-screen keyboard.
+fn hand_overlays_to_settings(state: &mut State, effects: &mut Vec<Effect>) {
+    state.core.menu = None;
+    state.mouse.release(effects);
+    state.keyboard.release_all();
+    state.keyboard.close();
+    effects.push(Effect::ResetSecretFocus);
 }
 
 fn route_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
@@ -727,7 +732,7 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
             if command == crate::menu::Command::Settings {
                 state.settings.open = true;
                 state.settings.display = false;
-                effects.push(Effect::ResetSecretFocus);
+                hand_overlays_to_settings(state, effects);
             } else {
                 effects.push(Effect::RunMenuCommand(command));
             }
