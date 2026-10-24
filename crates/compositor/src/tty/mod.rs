@@ -15,10 +15,7 @@ use smithay::{
     },
     output::{Output, PhysicalProperties, Subpixel},
     reexports::{
-        calloop::{
-            EventLoop,
-            timer::{TimeoutAction, Timer},
-        },
+        calloop::EventLoop,
         drm::control::{Device, Mode, ModeTypeFlags, connector, framebuffer},
         wayland_server::DisplayHandle,
     },
@@ -48,6 +45,37 @@ struct Tty {
     modeset: bool,
     retry_at: Option<std::time::Instant>,
     retry_delay: Duration,
+    /// Frames drawn since start, which dates each scanout buffer's contents.
+    drawn: u64,
+    idle_frame_callbacks: tehuti::pacing::Interval,
+    statistics: FrameStatistics,
+}
+
+/// Frame counters, logged at debug level.
+struct FrameStatistics {
+    drawn: u32,
+    unchanged: u32,
+    report: tehuti::pacing::Interval,
+}
+
+impl FrameStatistics {
+    fn count(&mut self, drawn: bool) {
+        if drawn {
+            self.drawn = self.drawn.saturating_add(1);
+        } else {
+            self.unchanged = self.unchanged.saturating_add(1);
+        }
+        if self.report.due(std::time::Instant::now()) {
+            tracing::debug!(
+                drawn = self.drawn,
+                unchanged = self.unchanged,
+                period = ?tehuti::pacing::STATISTICS_PERIOD,
+                "DRM frames"
+            );
+            self.drawn = 0;
+            self.unchanged = 0;
+        }
+    }
 }
 
 fn insert_device_watch(
@@ -78,7 +106,7 @@ pub(crate) fn insert(
     event_loop: &EventLoop<LoopData>,
     display: &DisplayHandle,
     compositor: &mut Compositor,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<crate::Redraw, Box<dyn Error>> {
     let (session, notifier) = LibSeatSession::new()?;
     let udev = UdevBackend::new(session.seat())?;
     let path = primary_gpu(session.seat())?
@@ -99,7 +127,7 @@ pub(crate) fn insert(
                 backend.pending = false;
                 if data.seat_active
                     && backend.device.is_active()
-                    && let Err(error) = backend.render(data)
+                    && let Err(error) = backend.render(data, true)
                 {
                     warn!(%error, "DRM frame failed");
                     flip_stop.stop();
@@ -113,24 +141,21 @@ pub(crate) fn insert(
     insert_device_watch(event_loop, udev, tty.borrow().device.device_id())?;
     insert_wallpaper_redraw(event_loop, tty.clone())?;
     let render_stop = event_loop.get_signal();
-    let _timer_token = event_loop
-        .handle()
-        .insert_source(Timer::immediate(), move |_, (), data| {
-            let mut backend = tty.borrow_mut();
-            if data.seat_active && backend.device.is_active() && backend.preview.is_some() {
-                backend.settings_request(data);
-            }
-            if data.seat_active
-                && backend.device.is_active()
-                && !backend.pending
-                && let Err(error) = backend.render(data)
-            {
-                warn!(%error, "DRM frame failed");
-                render_stop.stop();
-            }
-            TimeoutAction::ToDuration(Duration::from_millis(16))
-        })?;
-    Ok(())
+    Ok(crate::Redraw(Box::new(move |data| {
+        let mut backend = tty.borrow_mut();
+        if !data.seat_active || !backend.device.is_active() {
+            return;
+        }
+        if backend.preview.is_some() {
+            backend.settings_request(data);
+        }
+        if !backend.pending
+            && let Err(error) = backend.render(data, false)
+        {
+            warn!(%error, "DRM frame failed");
+            render_stop.stop();
+        }
+    })))
 }
 
 fn insert_wallpaper_redraw(
@@ -145,7 +170,7 @@ fn insert_wallpaper_redraw(
         if data.seat_active
             && backend.device.is_active()
             && !backend.pending
-            && let Err(error) = backend.render(data)
+            && let Err(error) = backend.render(data, true)
         {
             warn!(%error, "wallpaper frame failed");
             redraw_stop.stop();
@@ -182,9 +207,11 @@ fn insert_keyboard(event_loop: &EventLoop<LoopData>, tty: &Rc<RefCell<Tty>>) -> 
                             warn!(%error, "VT switch failed");
                         }
                     }
-                    None => data
-                        .compositor
-                        .host_key(event.key_code(), event.state() == KeyState::Pressed),
+                    None => {
+                        data.compositor
+                            .host_key(event.key_code(), event.state() == KeyState::Pressed);
+                        data.pacing.input_arrived = true;
+                    }
                 }
             } else if matches!(event, InputEvent::DeviceRemoved { .. }) {
                 keyboard_tty.borrow_mut().keyboard = tehuti::backend::EscapeKeyboard::default();
@@ -232,6 +259,7 @@ fn insert_seat(
                             stop.stop();
                         }
                         data.seat_active = true;
+                        data.pacing.input_arrived = true;
                         tty.modeset = true;
                         data.rescan_controller = true;
                     }
@@ -320,6 +348,13 @@ fn create_output(
         modeset: true,
         retry_at: None,
         retry_delay: Duration::ZERO,
+        drawn: 0,
+        idle_frame_callbacks: tehuti::pacing::Interval::new(tehuti::pacing::IDLE_FRAME_CALLBACK),
+        statistics: FrameStatistics {
+            drawn: 0,
+            unchanged: 0,
+            report: tehuti::pacing::Interval::new(tehuti::pacing::STATISTICS_PERIOD),
+        },
     };
     Ok((tty, drm_notifier))
 }
@@ -550,14 +585,18 @@ impl Tty {
         }
     }
 
-    fn render(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
+    /// Draws a frame if the output changed. `tick` first advances time, for callers
+    /// the loop's periodic work has not just run for.
+    fn render(&mut self, data: &mut LoopData, tick: bool) -> Result<(), Box<dyn Error>> {
         if self
             .retry_at
             .is_some_and(|deadline| std::time::Instant::now() < deadline)
         {
             return Ok(());
         }
-        crate::advance_time(data);
+        if tick {
+            crate::advance_time(data);
+        }
         self.settings_request(data);
         if self.pending {
             return Ok(());
@@ -591,16 +630,30 @@ impl Tty {
 
     fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
         let started = std::time::Instant::now();
-        let (framebuffer, notice_drawn) = render::draw(
+        let drawn = render::draw(
             &mut self.renderer,
             self.next,
+            render::Pass {
+                drawn: &mut self.drawn,
+                full: self.modeset,
+            },
             &self.output,
             &mut self.damage,
             &data.compositor,
         )?;
+        self.statistics.count(drawn.is_some());
+        let Some(drawn) = drawn else {
+            trace!(elapsed = ?started.elapsed(), "DRM frame unchanged");
+            if self.idle_frame_callbacks.due(started) {
+                self.send_frame_callbacks(data);
+            }
+            data.compositor.space.refresh();
+            data.display.flush_clients()?;
+            return Ok(());
+        };
         trace!(elapsed = ?started.elapsed(), "DRM frame drawn");
         let was_modeset = self.modeset;
-        submit(&self.surface, framebuffer, &mut self.modeset)?;
+        submit(&self.surface, drawn.framebuffer, &mut self.modeset)?;
         if was_modeset {
             self.rollback = None;
             if let Err(error) =
@@ -619,9 +672,17 @@ impl Tty {
         trace!(elapsed = ?started.elapsed(), "DRM frame committed");
         self.pending = true;
         self.next = !self.next;
-        if notice_drawn && data.compositor.secret_confirmation_text().is_some() {
+        if drawn.notice_included && data.compositor.secret_confirmation_text().is_some() {
             data.compositor.note_secret_confirmation_frame_submitted();
         }
+        self.idle_frame_callbacks.restart(started);
+        self.send_frame_callbacks(data);
+        data.compositor.space.refresh();
+        data.display.flush_clients()?;
+        Ok(())
+    }
+
+    fn send_frame_callbacks(&self, data: &LoopData) {
         for window in data.compositor.space.elements() {
             window.send_frame(
                 &self.output,
@@ -630,9 +691,6 @@ impl Tty {
                 |_, _| Some(self.output.clone()),
             );
         }
-        data.compositor.space.refresh();
-        data.display.flush_clients()?;
-        Ok(())
     }
 }
 

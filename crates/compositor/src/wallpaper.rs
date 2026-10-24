@@ -284,6 +284,39 @@ where
     )
 }
 
+/// Like [`render_output`], into a buffer that already holds the frame drawn `age` frames ago.
+///
+/// Age 0 redraws the whole output; otherwise only damage since then is drawn, and an
+/// output with no damage draws nothing.
+///
+/// # Errors
+/// Returns an error when window composition or output rendering fails.
+pub fn render_output_at_age<'damage, R>(
+    output: &Output,
+    renderer: &mut R,
+    framebuffer: &mut R::Framebuffer<'_>,
+    compositor: &Compositor,
+    overlays: &[MemoryRenderBufferRenderElement<R>],
+    damage: &'damage mut OutputDamageTracker,
+    age: usize,
+) -> Result<RenderOutputResult<'damage>, Box<dyn Error>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+    R::Error: 'static,
+{
+    render_output_with_cache_at_age(
+        output,
+        renderer,
+        framebuffer,
+        compositor,
+        overlays,
+        damage,
+        wallpaper(),
+        age,
+    )
+}
+
 /// # Errors
 /// Returns an error when window composition or output rendering fails.
 pub fn render_output_with_cache<'damage, R>(
@@ -294,6 +327,41 @@ pub fn render_output_with_cache<'damage, R>(
     overlays: &[MemoryRenderBufferRenderElement<R>],
     damage: &'damage mut OutputDamageTracker,
     cache: &Mutex<WallpaperCache>,
+) -> Result<RenderOutputResult<'damage>, Box<dyn Error>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+    R::Error: 'static,
+{
+    render_output_with_cache_at_age(
+        output,
+        renderer,
+        framebuffer,
+        compositor,
+        overlays,
+        damage,
+        cache,
+        0,
+    )
+}
+
+/// Like [`render_output_with_cache`], into a buffer `age` frames old; see [`render_output_at_age`].
+///
+/// # Errors
+/// Returns an error when window composition or output rendering fails.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, renderer, target, state, overlays, tracker, cache and age are all independent"
+)]
+pub fn render_output_with_cache_at_age<'damage, R>(
+    output: &Output,
+    renderer: &mut R,
+    framebuffer: &mut R::Framebuffer<'_>,
+    compositor: &Compositor,
+    overlays: &[MemoryRenderBufferRenderElement<R>],
+    damage: &'damage mut OutputDamageTracker,
+    cache: &Mutex<WallpaperCache>,
+    age: usize,
 ) -> Result<RenderOutputResult<'damage>, Box<dyn Error>>
 where
     R: Renderer + ImportAll + ImportMem,
@@ -319,7 +387,7 @@ where
     if let Some(background) = background {
         elements.push(OutputRenderElements::Wallpaper(WallpaperElement(background)));
     }
-    Ok(damage.render_output(renderer, framebuffer, 0, &elements, [0.0, 0.0, 0.0, 1.0])?)
+    Ok(damage.render_output(renderer, framebuffer, age, &elements, [0.0, 0.0, 0.0, 1.0])?)
 }
 
 fn background<R>(

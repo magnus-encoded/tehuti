@@ -40,6 +40,13 @@ Without it, modes wider than 2560 pixels use 2 and others use 1. Invalid values
 (0, negative or not a whole number) log a warning and use that default. The
 nested window honours it too.
 
+Decorations: write `none` to `~/.config/tehuti/decorations` to hide window title
+bars and their buttons, or set `TEHUTI_DECORATIONS=none`; the variable wins over
+the file. Tehuti then tells clients it decorates them and draws nothing. `client`,
+an empty value or no file keeps the title bars apps draw themselves. Other values
+log a warning and keep them. The setting is read once at startup. Clients that
+ignore `xdg-decoration`, such as GTK apps, keep their title bars.
+
 `examples/emulator/context.toml` releases the pad grab for an emulator; Guide+Start still exits and Select+LB controls push-to-talk (`pad.push_to_talk`, default Share/Record).
 
 `examples/foot/context.toml` (foot terminal):
