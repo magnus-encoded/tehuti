@@ -1,6 +1,9 @@
-//! Controller-owned display settings and timed mode confirmation.
+//! Controller-owned settings pages and timed confirmation of risky changes.
 
-use super::Effect;
+use super::{
+    Effect,
+    input_settings::{ControllerChoice, InputRow, InputSettings, cycle},
+};
 use core::time::Duration;
 use tehuti_protocol::{ButtonName, ButtonState, Event};
 
@@ -12,16 +15,42 @@ enum Status {
     Failed,
 }
 
+/// The page the settings view shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Page {
+    /// The list of categories.
+    #[default]
+    Categories,
+    Display,
+    Input,
+}
+
+/// A top-level entry of the settings view.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Category {
+    #[default]
+    Display,
+    Input,
+}
+
+impl Category {
+    pub const ALL: [Self; 2] = [Self::Display, Self::Input];
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub open: bool,
-    pub display: bool,
+    pub page: Page,
+    /// The highlighted category on the categories page.
+    pub category: Category,
+    pub input: InputSettings,
     pub selected: usize,
     pub current: usize,
     pub modes: Vec<String>,
     pub scale: core::num::NonZeroU32,
     pub remaining: Option<Duration>,
     previous: Option<usize>,
+    previous_controller: Option<ControllerChoice>,
     status: Status,
     cancel_preview: bool,
     south: Option<ButtonState>,
@@ -32,10 +61,39 @@ impl Settings {
     #[must_use]
     pub const fn button_hint(&self) -> &'static str {
         if self.remaining.is_some() {
-            "A: KEEP THIS MODE"
+            if self.previous_controller.is_some() {
+                "A ON THE NEW PAD: KEEP IT"
+            } else {
+                "A: KEEP THIS MODE"
+            }
         } else {
-            "D-PAD: MOVE   A: APPLY   B: BACK"
+            match self.page {
+                Page::Categories => "D-PAD: MOVE   A: OPEN   B: CLOSE",
+                Page::Display => "D-PAD: MOVE   A: APPLY   B: BACK",
+                Page::Input => "UP / DOWN: MOVE   LEFT / RIGHT: CHANGE   B: BACK",
+            }
         }
+    }
+
+    /// Sets the connected pad names shown on the Input page.
+    pub(super) fn configure_controllers(&mut self, names: Vec<String>) {
+        self.input.controllers = names;
+    }
+
+    pub(super) fn configure_microphones(&mut self, microphones: Vec<super::Microphone>) {
+        self.input.microphones = microphones;
+    }
+
+    /// Restores saved choices; a pending controller confirmation keeps its own state.
+    pub(super) fn restore_input(
+        &mut self,
+        controller: ControllerChoice,
+        microphone: super::MicrophoneChoice,
+    ) {
+        if self.previous_controller.is_none() {
+            self.input.controller = controller;
+        }
+        self.input.microphone = microphone;
     }
 
     #[must_use]
@@ -85,6 +143,15 @@ impl Settings {
             self.status = Status::Switching;
             effects.push(Effect::SettingsMode(previous));
         }
+        if let Some(previous) = self.previous_controller.take() {
+            self.input.controller = previous.clone();
+            effects.push(Effect::SettingsController(previous));
+        }
+    }
+
+    fn back(&mut self, effects: &mut Vec<Effect>) {
+        self.revert(effects);
+        self.page = Page::Categories;
     }
 
     pub(super) fn close(&mut self, effects: &mut Vec<Effect>) {
@@ -94,7 +161,7 @@ impl Settings {
             self.revert(effects);
         }
         self.open = false;
-        self.display = false;
+        self.page = Page::Categories;
     }
 
     pub(super) fn event(&mut self, event: &Event, effects: &mut Vec<Effect>) -> bool {
@@ -136,7 +203,7 @@ impl Settings {
             if *name == ButtonName::East {
                 self.cancel_preview = true;
                 self.open = false;
-                self.display = false;
+                self.page = Page::Categories;
             }
             return true;
         }
@@ -151,11 +218,130 @@ impl Settings {
             self.revert(effects);
         }
         self.open = !self.open;
-        self.display = false;
+        self.page = Page::Categories;
     }
 
     fn button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
-        if self.display && self.selected == self.modes.len() && self.remaining.is_none() {
+        match self.page {
+            Page::Categories => self.categories_button(name, effects),
+            Page::Display => self.display_button(name, effects),
+            Page::Input => self.input_button(name, effects),
+        }
+    }
+
+    fn categories_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        match name {
+            ButtonName::East => self.close(effects),
+            ButtonName::DpadUp | ButtonName::DpadLeft => self.category = Category::Display,
+            ButtonName::DpadDown | ButtonName::DpadRight => self.category = Category::Input,
+            ButtonName::South => match self.category {
+                Category::Display => {
+                    self.page = Page::Display;
+                    self.selected = self.current;
+                }
+                Category::Input => {
+                    self.page = Page::Input;
+                    self.input.row = InputRow::Controller;
+                    effects.push(Effect::ListMicrophones);
+                }
+            },
+            ButtonName::North
+            | ButtonName::West
+            | ButtonName::LeftBumper
+            | ButtonName::RightBumper
+            | ButtonName::Select
+            | ButtonName::Record
+            | ButtonName::Start
+            | ButtonName::Guide
+            | ButtonName::LeftStick
+            | ButtonName::RightStick => {}
+        }
+    }
+
+    fn input_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        if self.remaining.is_some() {
+            match name {
+                ButtonName::South => {
+                    self.remaining = None;
+                    self.previous_controller = None;
+                    effects.push(Effect::PersistController(self.input.controller.clone()));
+                }
+                ButtonName::East => self.back(effects),
+                ButtonName::North
+                | ButtonName::West
+                | ButtonName::LeftBumper
+                | ButtonName::RightBumper
+                | ButtonName::Select
+                | ButtonName::Record
+                | ButtonName::Start
+                | ButtonName::Guide
+                | ButtonName::LeftStick
+                | ButtonName::RightStick
+                | ButtonName::DpadUp
+                | ButtonName::DpadDown
+                | ButtonName::DpadLeft
+                | ButtonName::DpadRight => {}
+            }
+            return;
+        }
+        let forward = match name {
+            ButtonName::East => return self.back(effects),
+            ButtonName::DpadUp => {
+                self.input.row = InputRow::Controller;
+                return;
+            }
+            ButtonName::DpadDown => {
+                self.input.row = InputRow::Microphone;
+                return;
+            }
+            ButtonName::DpadRight | ButtonName::South => true,
+            ButtonName::DpadLeft => false,
+            ButtonName::North
+            | ButtonName::West
+            | ButtonName::LeftBumper
+            | ButtonName::RightBumper
+            | ButtonName::Select
+            | ButtonName::Record
+            | ButtonName::Start
+            | ButtonName::Guide
+            | ButtonName::LeftStick
+            | ButtonName::RightStick => return,
+        };
+        match self.input.row {
+            InputRow::Controller => self.change_controller(forward, effects),
+            InputRow::Microphone => {
+                let options = self.input.microphone_options();
+                if let Some(next) = cycle(&options, &self.input.microphone, forward)
+                    && next != self.input.microphone
+                {
+                    self.input.microphone = next.clone();
+                    effects.push(Effect::SettingsMicrophone(next));
+                }
+            }
+        }
+    }
+
+    /// Auto keeps every pad, so it applies at once; one named pad must confirm with A within 15 s.
+    fn change_controller(&mut self, forward: bool, effects: &mut Vec<Effect>) {
+        let options = self.input.controller_options();
+        let Some(next) = cycle(&options, &self.input.controller, forward) else {
+            return;
+        };
+        if next == self.input.controller {
+            return;
+        }
+        let previous = core::mem::replace(&mut self.input.controller, next.clone());
+        if next == ControllerChoice::Auto {
+            effects.push(Effect::PersistController(next));
+        } else {
+            self.previous_controller = Some(previous);
+            self.remaining = Some(Duration::from_secs(15));
+            effects.push(Effect::SettingsController(next));
+        }
+    }
+
+    fn display_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        if self.selected == self.modes.len() && self.remaining.is_none() {
             let scale = if name == ButtonName::DpadLeft {
                 self.scale.get().saturating_sub(1).max(1)
             } else if name == ButtonName::DpadRight {
@@ -177,14 +363,11 @@ impl Settings {
             }
         }
         match name {
-            ButtonName::East => self.close(effects),
+            ButtonName::East => self.back(effects),
             ButtonName::South => {
                 if self.remaining.take().is_some() {
                     self.previous = None;
                     effects.push(Effect::PersistMode(self.current));
-                } else if !self.display {
-                    self.display = true;
-                    self.selected = self.current;
                 } else if self.selected != self.current && !self.modes.is_empty() {
                     self.cancel_preview = false;
                     self.previous = Some(self.current);
@@ -226,13 +409,16 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             open: false,
-            display: false,
+            page: Page::Categories,
+            category: Category::Display,
+            input: InputSettings::default(),
             selected: 0,
             current: 0,
             modes: Vec::new(),
             scale: core::num::NonZeroU32::MIN,
             remaining: None,
             previous: None,
+            previous_controller: None,
             status: Status::Ready,
             cancel_preview: false,
             south: None,

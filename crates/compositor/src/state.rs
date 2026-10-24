@@ -86,6 +86,11 @@ pub struct Compositor {
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
     settings_display: crate::settings::Display,
+    /// The pad that drives Tehuti; previews before confirmation too.
+    controller_choice: tehuti_core::dispatch::ControllerChoice,
+    controller_names: Vec<String>,
+    input_choices: Option<crate::input_choice_store::Store>,
+    microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
     dim_elapsed: core::time::Duration,
     focus_outline_ids: [smithay::backend::renderer::element::Id; 4],
@@ -188,6 +193,10 @@ impl Compositor {
                 tehuti_core::State::new().with_bar_agents(vec!["Claude".into(), "Codex".into()]),
             ),
             settings_display: crate::settings::Display::default(),
+            controller_choice: tehuti_core::dispatch::ControllerChoice::Auto,
+            controller_names: Vec::new(),
+            input_choices: None,
+            microphone_listing: None,
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
             focus_outline_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
@@ -588,6 +597,9 @@ impl Compositor {
             | DispatchInput::DisplayModes { .. }
             | DispatchInput::DisplayScale(_)
             | DispatchInput::ModeApplied(_)
+            | DispatchInput::Controllers(_)
+            | DispatchInput::Microphones(_)
+            | DispatchInput::InputChoices { .. }
             | DispatchInput::Speech(_)
             | DispatchInput::PluginReply { .. }
             | DispatchInput::PluginExited { .. }
@@ -749,6 +761,75 @@ impl Compositor {
         }
     }
 
+    /// Restores the saved controller and microphone and saves later choices to `store`.
+    pub fn load_input_choices(&mut self, store: crate::input_choice_store::Store) {
+        let controller = store.controller().unwrap_or_else(|error| {
+            tracing::warn!(%error, "saved controller unreadable; using every pad");
+            tehuti_core::dispatch::ControllerChoice::Auto
+        });
+        let microphone = store.microphone().unwrap_or_else(|error| {
+            tracing::warn!(%error, "saved microphone unreadable; using every microphone");
+            tehuti_core::dispatch::MicrophoneChoice::All
+        });
+        self.controller_choice = controller.clone();
+        self.input_choices = Some(store);
+        let _rejection = self.dispatch(DispatchInput::InputChoices {
+            controller,
+            microphone,
+        });
+    }
+
+    /// Records the connected pad names; the settings view lists them.
+    pub fn configure_controllers(&mut self, names: Vec<String>) {
+        if names != self.controller_names {
+            self.controller_names.clone_from(&names);
+            let _rejection = self.dispatch(DispatchInput::Controllers(names));
+        }
+    }
+
+    /// Whether input from the pad named `name` drives Tehuti.
+    #[must_use]
+    pub fn controller_chosen(&self, name: &str) -> bool {
+        crate::input::chosen(&self.controller_choice, &self.controller_names, name)
+    }
+
+    fn choose_controller(&mut self, choice: tehuti_core::dispatch::ControllerChoice, persist: bool) {
+        tracing::info!(?choice, persist, "controller choice");
+        if persist {
+            self.save_input_choice(|store| store.set_controller(&choice));
+        }
+        self.controller_choice = choice;
+    }
+
+    fn choose_microphone(&mut self, choice: &tehuti_core::dispatch::MicrophoneChoice) {
+        tracing::info!(?choice, "microphone choice");
+        self.save_input_choice(|store| store.set_microphone(choice));
+    }
+
+    fn save_input_choice(
+        &mut self,
+        result: impl FnOnce(&crate::input_choice_store::Store) -> std::io::Result<()>,
+    ) {
+        if let Some(Err(error)) = self.input_choices.as_ref().map(result) {
+            tracing::warn!(%error, "input choice persistence failed");
+            self.show_notice("CHOICE NOT SAVED");
+        }
+    }
+
+    fn poll_microphones(&mut self) {
+        let Some(listing) = &self.microphone_listing else {
+            return;
+        };
+        match listing.try_recv() {
+            Ok(microphones) => {
+                self.microphone_listing = None;
+                let _rejection = self.dispatch(DispatchInput::Microphones(microphones));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.microphone_listing = None,
+        }
+    }
+
     pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
         let _rejection = self.dispatch(DispatchInput::DisplayModes { modes, current });
     }
@@ -808,6 +889,10 @@ impl Compositor {
             effect @ (DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
             | DispatchEffect::SettingsScale(_)
+            | DispatchEffect::SettingsController(_)
+            | DispatchEffect::PersistController(_)
+            | DispatchEffect::SettingsMicrophone(_)
+            | DispatchEffect::ListMicrophones
             | DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::RunMenuCommand(_)
             | DispatchEffect::MovePointer { .. }
@@ -858,12 +943,19 @@ impl Compositor {
     }
 
     /// Runs an effect that needs no reply; `run_effect` answers the queries.
+    #[expect(clippy::too_many_lines, reason = "one flat table of every effect")]
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
             DispatchEffect::SettingsScale(scale) => self.persist_display_scale(scale),
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
+            DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
+            DispatchEffect::PersistController(choice) => self.choose_controller(choice, true),
+            DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
+            DispatchEffect::ListMicrophones => {
+                self.microphone_listing = Some(crate::input_choice_store::list_microphones());
+            }
             DispatchEffect::PasswordSpeechIgnored => {
                 tracing::info!("push-to-talk ignored: password field active");
             }
@@ -880,6 +972,7 @@ impl Compositor {
                 self.poll_secret_lookup();
                 self.poll_launchers();
                 self.desktop_entries.poll();
+                self.poll_microphones();
             }
             DispatchEffect::SouthPressed(pressed) => self.secret_confirmation.south_pressed = pressed,
             DispatchEffect::ResetSecretFocus => {

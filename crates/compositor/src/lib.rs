@@ -43,5 +43,6 @@ pub mod wallpaper;
 
 pub mod decorations;
 pub mod display_mode_store;
+pub mod input_choice_store;
 pub mod settings;
 pub mod system_menu;

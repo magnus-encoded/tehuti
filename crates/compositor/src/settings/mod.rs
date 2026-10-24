@@ -5,7 +5,7 @@ use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::Transform,
 };
-use tehuti_core::dispatch::Settings;
+use tehuti_core::dispatch::{Category, InputRow, Page, Settings};
 
 #[derive(Debug, Default)]
 pub(crate) struct Display {
@@ -22,7 +22,12 @@ pub struct Artwork {
 /// so input bookkeeping such as held buttons never forces a redraw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct View {
-    display: bool,
+    page: Page,
+    category: Category,
+    row: InputRow,
+    controller: String,
+    microphone: String,
+    hint: &'static str,
     selected: usize,
     current: usize,
     modes: Vec<String>,
@@ -34,7 +39,12 @@ struct View {
 impl View {
     fn from_settings(settings: &Settings) -> Self {
         Self {
-            display: settings.display,
+            page: settings.page,
+            category: settings.category,
+            row: settings.input.row,
+            controller: settings.input.controller_label(),
+            microphone: settings.input.microphone_label(),
+            hint: settings.button_hint(),
             selected: settings.selected,
             current: settings.current,
             modes: settings.modes.clone(),
@@ -116,36 +126,81 @@ use canvas::Canvas;
 
 impl Canvas {
     fn contents(&mut self, settings: &Settings) {
-        if settings.display {
-            let first = settings.selected.saturating_sub(2);
-            let rows: Vec<String> = settings
-                .modes
-                .iter()
-                .map(|mode| format!("{} HZ", mode.replace('x', " X ").replace('@', " / ")))
-                .chain(core::iter::once(format!(
-                    "SCALE {}  (LEFT / RIGHT)",
-                    settings.scale
-                )))
-                .collect();
-            for (row, (index, mode)) in rows.iter().enumerate().skip(first).take(5).enumerate() {
-                let y = 244usize.saturating_add(row.saturating_mul(64));
-                if index == settings.selected {
-                    self.rectangle(72, y.saturating_sub(12), 850, 54, [65, 43, 12, 255]);
-                    self.rectangle(72, y.saturating_sub(12), 4, 54, CYAN);
-                }
-                self.text(96, y, mode, 4, WHITE);
-                if index == settings.current && index < settings.modes.len() {
-                    self.text(720, y.saturating_add(6), "ACTIVE", 2, CYAN);
-                }
+        match settings.page {
+            Page::Categories => self.categories(settings.category),
+            Page::Display => self.display(settings),
+            Page::Input => self.input(settings),
+        }
+    }
+
+    fn highlight(&mut self, y: usize, height: usize) {
+        self.rectangle(72, y, 1128, height, [65, 43, 12, 255]);
+        self.rectangle(72, y, 4, height, CYAN);
+    }
+
+    fn categories(&mut self, selected: Category) {
+        for (row, category) in Category::ALL.into_iter().enumerate() {
+            let y = 236usize.saturating_add(row.saturating_mul(96));
+            if category == selected {
+                self.highlight(y, 76);
             }
-            if settings.modes.is_empty() {
-                self.text(96, 568, "NO DRIVER MODES AVAILABLE", 3, AMBER);
+            let (name, detail) = match category {
+                Category::Display => ("DISPLAY", "RESOLUTION / REFRESH / SCALE"),
+                Category::Input => ("INPUT", "CONTROLLER / MICROPHONE"),
+            };
+            self.text(96, y.saturating_add(20), name, 5, WHITE);
+            self.text(600, y.saturating_add(32), detail, 3, CYAN);
+        }
+    }
+
+    fn display(&mut self, settings: &Settings) {
+        let first = settings.selected.saturating_sub(2);
+        let rows: Vec<String> = settings
+            .modes
+            .iter()
+            .map(|mode| format!("{} HZ", mode.replace('x', " X ").replace('@', " / ")))
+            .chain(core::iter::once(format!(
+                "SCALE {}  (LEFT / RIGHT)",
+                settings.scale
+            )))
+            .collect();
+        for (row, (index, mode)) in rows.iter().enumerate().skip(first).take(5).enumerate() {
+            let y = 244usize.saturating_add(row.saturating_mul(64));
+            if index == settings.selected {
+                self.rectangle(72, y.saturating_sub(12), 850, 54, [65, 43, 12, 255]);
+                self.rectangle(72, y.saturating_sub(12), 4, 54, CYAN);
             }
-        } else {
-            self.rectangle(72, 236, 1128, 76, [65, 43, 12, 255]);
-            self.rectangle(72, 236, 4, 76, CYAN);
-            self.text(96, 256, "DISPLAY", 5, WHITE);
-            self.text(600, 268, "RESOLUTION / REFRESH / SCALE", 3, CYAN);
+            self.text(96, y, mode, 4, WHITE);
+            if index == settings.current && index < settings.modes.len() {
+                self.text(720, y.saturating_add(6), "ACTIVE", 2, CYAN);
+            }
+        }
+        if settings.modes.is_empty() {
+            self.text(96, 568, "NO DRIVER MODES AVAILABLE", 3, AMBER);
+        }
+    }
+
+    fn input(&mut self, settings: &Settings) {
+        let rows = [
+            (
+                InputRow::Controller,
+                "CONTROLLER",
+                settings.input.controller_label(),
+            ),
+            (
+                InputRow::Microphone,
+                "MICROPHONE",
+                settings.input.microphone_label(),
+            ),
+        ];
+        for (index, (row, name, value)) in rows.into_iter().enumerate() {
+            let y = 230usize.saturating_add(index.saturating_mul(124));
+            if row == settings.input.row {
+                self.highlight(y, 108);
+            }
+            self.text(96, y.saturating_add(14), name, 4, WHITE);
+            let value: String = value.chars().take(36).collect();
+            self.text(96, y.saturating_add(66), &format!("<  {value}  >"), 3, CYAN);
         }
     }
 
@@ -176,7 +231,11 @@ pub fn buffer(settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffe
     canvas.text(
         80,
         92,
-        if settings.display { "DISPLAY" } else { "SETTINGS" },
+        match settings.page {
+            Page::Categories => "SETTINGS",
+            Page::Display => "DISPLAY",
+            Page::Input => "INPUT",
+        },
         6,
         WHITE,
     );
@@ -188,7 +247,7 @@ pub fn buffer(settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffe
         canvas.text(80, 604, settings.button_hint(), 3, AMBER);
         canvas.text(80, 642, "AUTO REVERT IN 15 SECONDS", 2, WHITE);
     } else {
-        if settings.failed() {
+        if settings.failed() && settings.page == Page::Display {
             canvas.text(80, 606, "MODE REJECTED / PREVIOUS MODE RESTORED", 2, AMBER);
         }
         canvas.text(80, 656, settings.button_hint(), 3, CYAN);
@@ -360,11 +419,58 @@ mod tests {
             name: ButtonName::South,
             state: ButtonState::Pressed,
         });
-        assert!(compositor.settings().display);
+        assert_eq!(compositor.settings().page, tehuti_core::dispatch::Page::Display);
         assert_ne!(
             drawn(&mut renderer, &compositor)?,
             opened,
             "entering the display page redraws"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_input_page_previews_then_saves_one_pad_and_a_microphone() -> Result<(), Box<dyn core::error::Error>>
+    {
+        use tehuti_core::dispatch::{ControllerChoice, MicrophoneChoice};
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let directory = tempfile::tempdir()?;
+        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.load_input_choices(store.clone());
+        compositor.configure_controllers(vec!["Wireless Controller".into(), "Xbox Controller".into()]);
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        let press = |target: &mut Compositor, name| {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                target.handle(&Event::Button { name, state });
+            }
+        };
+        press(&mut compositor, ButtonName::DpadDown);
+        press(&mut compositor, ButtonName::South);
+        assert_eq!(compositor.settings().page, tehuti_core::dispatch::Page::Input);
+        assert!(compositor.settings_buffer((1024, 600)).is_some());
+        press(&mut compositor, ButtonName::DpadRight);
+        assert!(compositor.controller_chosen("Wireless Controller"));
+        assert!(!compositor.controller_chosen("Xbox Controller"));
+        assert_eq!(
+            store.controller()?,
+            ControllerChoice::Auto,
+            "a preview is not saved"
+        );
+        press(&mut compositor, ButtonName::South);
+        assert_eq!(
+            store.controller()?,
+            ControllerChoice::Named("Wireless Controller".into())
+        );
+        press(&mut compositor, ButtonName::DpadDown);
+        press(&mut compositor, ButtonName::DpadRight);
+        assert_eq!(store.microphone()?, MicrophoneChoice::Auto);
+        compositor.configure_controllers(vec!["Xbox Controller".into()]);
+        assert!(
+            compositor.controller_chosen("Xbox Controller"),
+            "every pad drives while the chosen one is away"
         );
         Ok(())
     }

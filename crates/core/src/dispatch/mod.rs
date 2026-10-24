@@ -10,8 +10,11 @@ use std::collections::VecDeque;
 
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
+mod input_settings;
+pub use input_settings::{ControllerChoice, InputRow, InputSettings, Microphone, MicrophoneChoice};
+
 mod settings;
-pub use settings::Settings;
+pub use settings::{Category, Page, Settings};
 
 mod mouse;
 pub use mouse::{PointerButton, Sticks};
@@ -27,6 +30,15 @@ pub enum Input {
     },
     ModeApplied(Option<usize>),
     DisplayScale(core::num::NonZeroU32),
+    /// The names of the connected pads, in discovery order.
+    Controllers(Vec<String>),
+    /// Reply to [`Effect::ListMicrophones`]: the capture sources found.
+    Microphones(Vec<Microphone>),
+    /// The saved input choices, read at startup.
+    InputChoices {
+        controller: ControllerChoice,
+        microphone: MicrophoneChoice,
+    },
     /// Elapsed wall time since the previous tick.
     Tick {
         elapsed: Duration,
@@ -82,6 +94,13 @@ pub enum Effect {
     SettingsMode(usize),
     PersistMode(usize),
     SettingsScale(core::num::NonZeroU32),
+    /// Routes pad input from the chosen controller only, until confirmed or reverted.
+    SettingsController(ControllerChoice),
+    PersistController(ControllerChoice),
+    /// Saves the capture sources the speech sidecar records from.
+    SettingsMicrophone(MicrophoneChoice),
+    /// Lists capture sources; the compositor answers later with [`Input::Microphones`].
+    ListMicrophones,
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
         x: i32,
@@ -323,9 +342,12 @@ fn sync_terminal(state: &mut State) {
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     let tasks: Vec<Task> = match input {
-        Input::DisplayModes { modes, current } => return display_modes(state, modes, current),
-        Input::DisplayScale(scale) => return display_scale(state, scale),
-        Input::ModeApplied(current) => return mode_applied(state, current),
+        input @ (Input::DisplayModes { .. }
+        | Input::DisplayScale(_)
+        | Input::ModeApplied(_)
+        | Input::Controllers(_)
+        | Input::Microphones(_)
+        | Input::InputChoices { .. }) => return settings_input(state, input),
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
         Input::Event { event, elapsed } => event_tasks(event, elapsed),
         Input::FocusTitle { app_id, title } => vec![
@@ -375,14 +397,37 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     run(state, effects)
 }
 
-const fn display_scale(mut state: State, scale: core::num::NonZeroU32) -> (State, Vec<Effect>) {
-    state.settings.scale = scale;
-    (state, Vec::new())
-}
-
-fn mode_applied(mut state: State, current: Option<usize>) -> (State, Vec<Effect>) {
+/// Inputs that only update the settings view.
+fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
-    state.settings.applied(current, &mut effects);
+    match input {
+        Input::DisplayModes { modes, current } => state.settings.configure(modes, current),
+        Input::DisplayScale(scale) => state.settings.scale = scale,
+        Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
+        Input::Controllers(names) => state.settings.configure_controllers(names),
+        Input::Microphones(microphones) => state.settings.configure_microphones(microphones),
+        Input::InputChoices {
+            controller,
+            microphone,
+        } => state.settings.restore_input(controller, microphone),
+        Input::Tick { .. }
+        | Input::Event { .. }
+        | Input::ClockRead(_)
+        | Input::Speech(_)
+        | Input::PluginReply { .. }
+        | Input::PluginExited { .. }
+        | Input::TextField { .. }
+        | Input::ControllerDisconnected
+        | Input::Sticks(_)
+        | Input::PluginActive(_)
+        | Input::PluginRequest(_)
+        | Input::Supervised(_)
+        | Input::SecretConfirmation(_)
+        | Input::SpeechSent(_)
+        | Input::SpeechPolled(_)
+        | Input::FocusTitle { .. }
+        | Input::Resume => {}
+    }
     (state, effects)
 }
 
@@ -397,11 +442,6 @@ fn plugin_reply(
     let mut effects: Vec<_> = actions.into_iter().map(Effect::PluginAction).collect();
     effects.extend(rejection.map(Effect::PluginRejected));
     (state, effects)
-}
-
-fn display_modes(mut state: State, modes: Vec<String>, current: usize) -> (State, Vec<Effect>) {
-    state.settings.configure(modes, current);
-    (state, Vec::new())
 }
 
 fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
@@ -731,7 +771,7 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
         if let Some(command) = crate::menu_input(&mut state.core, event) {
             if command == crate::menu::Command::Settings {
                 state.settings.open = true;
-                state.settings.display = false;
+                state.settings.page = Page::Categories;
                 hand_overlays_to_settings(state, effects);
             } else {
                 effects.push(Effect::RunMenuCommand(command));
