@@ -42,7 +42,28 @@ pub(crate) struct LoopData {
     discovery_epoch: std::time::Instant,
     seat_active: bool,
     log_out: bool,
+    redraw: Option<Redraw>,
+    pacing: LoopPacing,
     context_watch: Option<tehuti::contexts::ContextWatch>,
+}
+
+/// Draws a frame when something on the output changed; the DRM backend installs it.
+pub(crate) struct Redraw(Box<dyn FnMut(&mut LoopData)>);
+
+impl core::fmt::Debug for Redraw {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("Redraw")
+    }
+}
+
+/// When the loop's periodic work and redraws run, with wakeup counters logged at debug level.
+#[derive(Debug)]
+struct LoopPacing {
+    work: tehuti::pacing::Interval,
+    /// Set by sources whose input may change the output, so the next loop turn redraws.
+    input_arrived: bool,
+    turns: u32,
+    report: tehuti::pacing::Interval,
 }
 
 #[derive(Debug)]
@@ -111,15 +132,19 @@ fn insert_backend(
     event_loop: &EventLoop<LoopData>,
     display: &smithay::reexports::wayland_server::DisplayHandle,
     compositor: &mut Compositor,
-) -> Result<(), Box<dyn Error>> {
-    match tehuti::backend::select(
-        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
-        std::env::var_os("DISPLAY").as_deref(),
-    ) {
-        tehuti::backend::Backend::Nested => nested::insert(event_loop, display, compositor)?,
-        tehuti::backend::Backend::Tty => tty::insert(event_loop, display, compositor)?,
-    }
-    Ok(())
+) -> Result<Option<Redraw>, Box<dyn Error>> {
+    Ok(
+        match tehuti::backend::select(
+            std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+            std::env::var_os("DISPLAY").as_deref(),
+        ) {
+            tehuti::backend::Backend::Nested => {
+                nested::insert(event_loop, display, compositor)?;
+                None
+            }
+            tehuti::backend::Backend::Tty => Some(tty::insert(event_loop, display, compositor)?),
+        },
+    )
 }
 
 #[expect(clippy::too_many_lines, reason = "speech spawn stays in startup")]
@@ -152,7 +177,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     if let Err(error) = insert_controller_watch(&event_loop) {
         warn!(%error, "controller watch unavailable; periodic discovery continues");
     }
-    insert_backend(&event_loop, &display.handle(), &mut compositor)?;
+    let redraw = insert_backend(&event_loop, &display.handle(), &mut compositor)?;
     let mut controllers = BTreeMap::new();
     let mut controller_tokens = BTreeMap::new();
     insert_controllers(
@@ -183,6 +208,13 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         discovery_epoch: std::time::Instant::now(),
         seat_active: true,
         log_out: false,
+        redraw,
+        pacing: LoopPacing {
+            work: tehuti::pacing::Interval::new(tehuti::pacing::LOOP_WORK_PERIOD),
+            input_arrived: true,
+            turns: 0,
+            report: tehuti::pacing::Interval::new(tehuti::pacing::STATISTICS_PERIOD),
+        },
         context_watch: insert_context_watch(&event_loop, std::path::Path::new(&context_directory)),
     };
     let result = run(&mut event_loop, &mut data, child);
@@ -212,12 +244,21 @@ fn run(
     let termination = tehuti::shutdown::Termination::register()?;
     let signal = event_loop.get_signal();
     let handle = event_loop.handle();
-    let result = event_loop.run(Some(Duration::from_millis(10)), data, |data| {
+    let result = event_loop.run(Some(tehuti::pacing::LOOP_TIMEOUT), data, |data| {
         termination.stop_if_requested(&signal);
-        advance_time(data);
-        reload_contexts(data);
-        reconnect_controller(data, &handle);
+        let now = std::time::Instant::now();
+        count_wakeup(data, now);
+        let input_arrived = core::mem::take(&mut data.pacing.input_arrived);
+        let work_due = data.pacing.work.due(now);
+        if work_due {
+            advance_time(data);
+            reload_contexts(data);
+            reconnect_controller(data, &handle);
+        }
         sync_pad_grab(data);
+        if work_due || input_arrived {
+            redraw(data);
+        }
         for pad in data.controllers.values_mut() {
             if let Err(error) = input::finish_quit(&data.compositor, pad, &signal) {
                 error!(%error, "controller release failed");
@@ -232,6 +273,26 @@ fn run(
     }
     result?;
     Ok(())
+}
+
+/// Runs the backend's redraw, if it has one.
+fn redraw(data: &mut LoopData) {
+    if let Some(mut redraw) = data.redraw.take() {
+        (redraw.0)(data);
+        data.redraw = Some(redraw);
+    }
+}
+
+fn count_wakeup(data: &mut LoopData, now: std::time::Instant) {
+    data.pacing.turns = data.pacing.turns.saturating_add(1);
+    if data.pacing.report.due(now) {
+        tracing::debug!(
+            turns = data.pacing.turns,
+            period = ?tehuti::pacing::STATISTICS_PERIOD,
+            "event loop wakeups"
+        );
+        data.pacing.turns = 0;
+    }
 }
 
 fn initial_discovery(attached: bool, compositor: &mut Compositor) -> controller::Discovery {
@@ -323,6 +384,7 @@ fn insert_wayland_sources(
         Generic::new(display_fd, Interest::READ, calloop::Mode::Level),
         |_, _, data| {
             let _dispatched = data.display.dispatch_clients(&mut data.compositor)?;
+            data.pacing.input_arrived = true;
             Ok(PostAction::Continue)
         },
     )?;
@@ -428,6 +490,7 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
 
 /// Routes pending events from every pad; failed registrations are removed on the next loop turn.
 fn route_controller_input(data: &mut LoopData) -> PostAction {
+    data.pacing.input_arrived = true;
     sync_pad_grab(data);
     advance_time(data);
     let was_attached = !data.controllers.is_empty();
