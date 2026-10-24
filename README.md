@@ -16,6 +16,11 @@ Run `scripts/try` from a terminal in your desktop. It builds Tehuti, sets up the
 speech venv on first run (in `~/.cache/tehuti-speech-venv`), then opens a window
 with a foot terminal inside. Tehuti takes the controller exclusively while it runs.
 
+One Tehuti session runs per user: a second start on the console exits with
+status 3 while `$XDG_RUNTIME_DIR/tehuti.lock` is held. A nested start inside
+another compositor or X takes no lock. `tehuti --help` and `tehuti --version`
+print and exit without starting a session.
+
 **Emergency escape:** hold Guide (the home button) and Start together for three seconds.
 Start alone follows the app mapping. The hold counts only while both buttons
 are down. The emergency escape releases the controller. In the Tehuti login
