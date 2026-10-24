@@ -7,7 +7,7 @@ use crate::layout_window::LayoutWindow;
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_data_device, delegate_fractional_scale, delegate_output, delegate_seat,
-    delegate_shm, delegate_viewporter, delegate_xdg_shell,
+    delegate_shm, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{Space, Window},
     input::{
         Seat, SeatHandler, SeatState,
@@ -16,7 +16,10 @@ use smithay::{
     },
     output::Output,
     reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_protocols::xdg::{
+            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
+            shell::server::xdg_toplevel,
+        },
         wayland_server::{
             Client, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -35,7 +38,10 @@ use smithay::{
             SelectionHandler,
             data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler},
         },
-        shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
+        shell::xdg::{
+            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+            decoration::{XdgDecorationHandler, XdgDecorationState},
+        },
         shm::{ShmHandler, ShmState},
         viewporter::ViewporterState,
     },
@@ -80,6 +86,11 @@ pub struct Compositor {
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
     settings_display: crate::settings::Display,
+    /// The pad that drives Tehuti; previews before confirmation too.
+    controller_choice: tehuti_core::dispatch::ControllerChoice,
+    controller_names: Vec<String>,
+    input_choices: Option<crate::input_choice_store::Store>,
+    microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
     dim_elapsed: core::time::Duration,
     focus_outline_ids: [smithay::backend::renderer::element::Id; 4],
@@ -107,6 +118,7 @@ pub struct Compositor {
     windows: tehuti_core::windows::Windows<WlSurface>,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
+    decoration_state: Option<XdgDecorationState>,
     shm_state: ShmState,
     _viewporter_state: ViewporterState,
     _fractional_scale_state: FractionalScaleManagerState,
@@ -121,6 +133,7 @@ pub struct Compositor {
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
     keyboard_reserved: i32,
+    display: DisplayHandle,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -180,6 +193,10 @@ impl Compositor {
                 tehuti_core::State::new().with_bar_agents(vec!["Claude".into(), "Codex".into()]),
             ),
             settings_display: crate::settings::Display::default(),
+            controller_choice: tehuti_core::dispatch::ControllerChoice::Auto,
+            controller_names: Vec::new(),
+            input_choices: None,
+            microphone_listing: None,
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
             focus_outline_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
@@ -209,6 +226,7 @@ impl Compositor {
             windows: tehuti_core::windows::Windows::new(),
             surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
+            decoration_state: None,
             shm_state: ShmState::new::<Self>(display, vec![]),
             _viewporter_state: ViewporterState::new::<Self>(display),
             _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
@@ -223,6 +241,7 @@ impl Compositor {
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: 0,
+            display: display.clone(),
         };
         compositor
             .keyboard
@@ -578,6 +597,9 @@ impl Compositor {
             | DispatchInput::DisplayModes { .. }
             | DispatchInput::DisplayScale(_)
             | DispatchInput::ModeApplied(_)
+            | DispatchInput::Controllers(_)
+            | DispatchInput::Microphones(_)
+            | DispatchInput::InputChoices { .. }
             | DispatchInput::Speech(_)
             | DispatchInput::PluginReply { .. }
             | DispatchInput::PluginExited { .. }
@@ -739,6 +761,75 @@ impl Compositor {
         }
     }
 
+    /// Restores the saved controller and microphone and saves later choices to `store`.
+    pub fn load_input_choices(&mut self, store: crate::input_choice_store::Store) {
+        let controller = store.controller().unwrap_or_else(|error| {
+            tracing::warn!(%error, "saved controller unreadable; using every pad");
+            tehuti_core::dispatch::ControllerChoice::Auto
+        });
+        let microphone = store.microphone().unwrap_or_else(|error| {
+            tracing::warn!(%error, "saved microphone unreadable; using every microphone");
+            tehuti_core::dispatch::MicrophoneChoice::All
+        });
+        self.controller_choice = controller.clone();
+        self.input_choices = Some(store);
+        let _rejection = self.dispatch(DispatchInput::InputChoices {
+            controller,
+            microphone,
+        });
+    }
+
+    /// Records the connected pad names; the settings view lists them.
+    pub fn configure_controllers(&mut self, names: Vec<String>) {
+        if names != self.controller_names {
+            self.controller_names.clone_from(&names);
+            let _rejection = self.dispatch(DispatchInput::Controllers(names));
+        }
+    }
+
+    /// Whether input from the pad named `name` drives Tehuti.
+    #[must_use]
+    pub fn controller_chosen(&self, name: &str) -> bool {
+        crate::input::chosen(&self.controller_choice, &self.controller_names, name)
+    }
+
+    fn choose_controller(&mut self, choice: tehuti_core::dispatch::ControllerChoice, persist: bool) {
+        tracing::info!(?choice, persist, "controller choice");
+        if persist {
+            self.save_input_choice(|store| store.set_controller(&choice));
+        }
+        self.controller_choice = choice;
+    }
+
+    fn choose_microphone(&mut self, choice: &tehuti_core::dispatch::MicrophoneChoice) {
+        tracing::info!(?choice, "microphone choice");
+        self.save_input_choice(|store| store.set_microphone(choice));
+    }
+
+    fn save_input_choice(
+        &mut self,
+        result: impl FnOnce(&crate::input_choice_store::Store) -> std::io::Result<()>,
+    ) {
+        if let Some(Err(error)) = self.input_choices.as_ref().map(result) {
+            tracing::warn!(%error, "input choice persistence failed");
+            self.show_notice("CHOICE NOT SAVED");
+        }
+    }
+
+    fn poll_microphones(&mut self) {
+        let Some(listing) = &self.microphone_listing else {
+            return;
+        };
+        match listing.try_recv() {
+            Ok(microphones) => {
+                self.microphone_listing = None;
+                let _rejection = self.dispatch(DispatchInput::Microphones(microphones));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.microphone_listing = None,
+        }
+    }
+
     pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
         let _rejection = self.dispatch(DispatchInput::DisplayModes { modes, current });
     }
@@ -798,6 +889,10 @@ impl Compositor {
             effect @ (DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
             | DispatchEffect::SettingsScale(_)
+            | DispatchEffect::SettingsController(_)
+            | DispatchEffect::PersistController(_)
+            | DispatchEffect::SettingsMicrophone(_)
+            | DispatchEffect::ListMicrophones
             | DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::RunMenuCommand(_)
             | DispatchEffect::MovePointer { .. }
@@ -848,12 +943,19 @@ impl Compositor {
     }
 
     /// Runs an effect that needs no reply; `run_effect` answers the queries.
+    #[expect(clippy::too_many_lines, reason = "one flat table of every effect")]
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
             DispatchEffect::SettingsScale(scale) => self.persist_display_scale(scale),
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
+            DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
+            DispatchEffect::PersistController(choice) => self.choose_controller(choice, true),
+            DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
+            DispatchEffect::ListMicrophones => {
+                self.microphone_listing = Some(crate::input_choice_store::list_microphones());
+            }
             DispatchEffect::PasswordSpeechIgnored => {
                 tracing::info!("push-to-talk ignored: password field active");
             }
@@ -870,6 +972,7 @@ impl Compositor {
                 self.poll_secret_lookup();
                 self.poll_launchers();
                 self.desktop_entries.poll();
+                self.poll_microphones();
             }
             DispatchEffect::SouthPressed(pressed) => self.secret_confirmation.south_pressed = pressed,
             DispatchEffect::ResetSecretFocus => {
@@ -2000,6 +2103,38 @@ impl XdgShellHandler for Compositor {
     fn reposition_request(&mut self, _surface: PopupSurface, _positioner: PositionerState, _token: u32) {}
 }
 
+impl Compositor {
+    /// Applies the decorations setting. With [`Decorations::None`](crate::decorations::Decorations::None)
+    /// it advertises `zxdg_decoration_manager_v1` and answers every toplevel with server-side mode,
+    /// so clients drop their title bars; Tehuti draws none. With `Client` no global is advertised.
+    pub fn set_decorations(&mut self, decorations: crate::decorations::Decorations) {
+        if decorations == crate::decorations::Decorations::None && self.decoration_state.is_none() {
+            self.decoration_state = Some(XdgDecorationState::new::<Self>(&self.display));
+        }
+    }
+}
+
+fn configure_server_side(toplevel: &ToplevelSurface) {
+    toplevel.with_pending_state(|state| state.decoration_mode = Some(DecorationMode::ServerSide));
+    if toplevel.is_initial_configure_sent() {
+        let _serial = toplevel.send_configure();
+    }
+}
+
+impl XdgDecorationHandler for Compositor {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        configure_server_side(&toplevel);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
+        configure_server_side(&toplevel);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        configure_server_side(&toplevel);
+    }
+}
+
 impl SeatHandler for Compositor {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -2040,6 +2175,7 @@ delegate_shm!(Compositor);
 delegate_viewporter!(Compositor);
 delegate_fractional_scale!(Compositor);
 delegate_xdg_shell!(Compositor);
+delegate_xdg_decoration!(Compositor);
 delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
 delegate_output!(Compositor);

@@ -2,7 +2,8 @@
 
 use std::{collections::VecDeque, io};
 
-use tehuti_protocol::Event;
+use tehuti_core::dispatch::ControllerChoice;
+use tehuti_protocol::{ButtonName, ButtonState, Event};
 
 use crate::state::Compositor;
 
@@ -102,11 +103,19 @@ pub fn finish_quit(
 pub fn drain_pads<S: InputSource>(
     pads: &mut std::collections::BTreeMap<std::path::PathBuf, S>,
 ) -> (Vec<Event>, Vec<std::path::PathBuf>) {
+    drain_pads_admitted(pads, |_, _, _| true)
+}
+
+/// Like [`drain_pads`], keeping only the events `admit` accepts.
+pub fn drain_pads_admitted<S: InputSource>(
+    pads: &mut std::collections::BTreeMap<std::path::PathBuf, S>,
+    mut admit: impl FnMut(&std::path::Path, &S, &Event) -> bool,
+) -> (Vec<Event>, Vec<std::path::PathBuf>) {
     let mut events = Vec::new();
     let mut removed = Vec::new();
     pads.retain(|path, pad| match pad.drain() {
         Ok(pending) => {
-            events.extend(pending);
+            events.extend(pending.into_iter().filter(|event| admit(path, pad, event)));
             true
         }
         Err(error) => {
@@ -116,4 +125,44 @@ pub fn drain_pads<S: InputSource>(
         }
     });
     (events, removed)
+}
+
+/// Whether the pad named `pad` drives Tehuti: every pad under Auto, and every pad
+/// while the chosen one is not connected, so a missing pad never locks the user out.
+#[must_use]
+pub fn chosen(choice: &ControllerChoice, connected: &[String], pad: &str) -> bool {
+    match choice {
+        ControllerChoice::Auto => true,
+        ControllerChoice::Named(name) => name == pad || !connected.contains(name),
+    }
+}
+
+/// Drops input from pads that are not chosen, except releases of buttons it let through.
+#[derive(Debug, Default)]
+pub struct PadGate {
+    held: std::collections::BTreeMap<std::path::PathBuf, Vec<ButtonName>>,
+}
+
+impl PadGate {
+    pub fn admit(&mut self, path: &std::path::Path, chosen: bool, event: &Event) -> bool {
+        let Event::Button { name, state } = event else {
+            return chosen;
+        };
+        let held = self.held.entry(path.to_path_buf()).or_default();
+        let was_held = held.contains(name);
+        if *state == ButtonState::Released {
+            held.retain(|button| button != name);
+            was_held || chosen
+        } else {
+            if chosen && !was_held {
+                held.push(*name);
+            }
+            chosen
+        }
+    }
+
+    /// Forgets pads that are gone.
+    pub fn retain(&mut self, connected: impl Fn(&std::path::Path) -> bool) {
+        self.held.retain(|path, _| connected(path));
+    }
 }

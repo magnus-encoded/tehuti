@@ -353,6 +353,28 @@ time.sleep(60)
             else:
                 os.environ["TEHUTI_SPEECH_SOURCE"] = previous
 
+    def test_settings_choice_narrows_discovery_unless_its_source_is_gone(self):
+        listing = json.dumps([{"type": "PipeWire:Interface:Node",
+                               "info": {"props": {"node.name": name,
+                                                  "media.class": "Audio/Source"}}}
+                              for name in ["front", "headset"]]).encode()
+        dump = types.SimpleNamespace(stdout=listing)
+        cases = [(None, ["front", "headset"]), ("all", ["front", "headset"]),
+                 ("auto", [None]), ("headset", ["headset"]), ("unplugged", ["front", "headset"])]
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}), \
+                patch.object(module.subprocess, "run", return_value=dump):
+            os.environ.pop("TEHUTI_SPEECH_SOURCE", None)
+            (Path(directory) / "tehuti").mkdir()
+            for choice, expected in cases:
+                with self.subTest(choice=choice):
+                    path = Path(directory) / "tehuti" / "speech-source"
+                    if choice is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_text(choice + "\n")
+                    self.assertEqual(module.list_sources(), expected)
+
     def test_all_sources_record_at_once_and_failed_sources_are_skipped(self):
         class Model:
             def transcribe(self, path, **options):

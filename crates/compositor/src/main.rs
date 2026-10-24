@@ -35,6 +35,7 @@ pub(crate) struct LoopData {
     display: Display<Compositor>,
     compositor: Compositor,
     controllers: BTreeMap<PathBuf, AttachedController>,
+    pad_gate: input::PadGate,
     virtual_pad: Option<String>,
     controller_tokens: BTreeMap<PathBuf, calloop::RegistrationToken>,
     rescan_controller: bool,
@@ -162,12 +163,17 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
+    compositor.set_decorations(tehuti::decorations::from_env());
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory)));
     install_plugins(
         &event_loop,
         std::path::Path::new(&context_directory),
         &mut compositor,
     )?;
+    match tehuti::input_choice_store::Store::from_env() {
+        Ok(store) => compositor.load_input_choices(store),
+        Err(error) => warn!(%error, "input choices will not be saved"),
+    }
     if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
         compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
     }
@@ -201,6 +207,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         display,
         compositor,
         controllers,
+        pad_gate: input::PadGate::default(),
         controller_tokens,
         virtual_pad,
         rescan_controller: true,
@@ -365,6 +372,19 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
             }
         }
     }
+    sync_controller_names(data);
+}
+
+/// Tells the settings view which pads are connected and forgets the held buttons of gone pads.
+fn sync_controller_names(data: &mut LoopData) {
+    let names = data
+        .controllers
+        .values()
+        .map(|controller| controller.pad.name().to_owned())
+        .collect();
+    data.compositor.configure_controllers(names);
+    let controllers = &data.controllers;
+    data.pad_gate.retain(|path| controllers.contains_key(path));
 }
 
 fn insert_wayland_sources(
@@ -497,7 +517,13 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
 /// on the loop's periodic work; such a read changes nothing and returns at once.
 fn route_controller_input(data: &mut LoopData) -> PostAction {
     let was_attached = !data.controllers.is_empty();
-    let (events, removed) = input::drain_pads(&mut data.controllers);
+    let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
+    let (events, removed) = input::drain_pads_admitted(&mut data.controllers, |path, controller, event| {
+        gate.admit(path, compositor.controller_chosen(controller.pad.name()), event)
+    });
+    if !removed.is_empty() {
+        sync_controller_names(data);
+    }
     if events.is_empty() && removed.is_empty() {
         data.pacing.pad_reads_without_input = data.pacing.pad_reads_without_input.saturating_add(1);
         return PostAction::Continue;
@@ -541,9 +567,10 @@ fn controllers_disconnected(data: &mut LoopData) {
 fn advance_time(data: &mut LoopData) {
     let mut sampled = tehuti_core::dispatch::Sticks::default();
     for controller in data.controllers.values_mut() {
+        let chosen = data.compositor.controller_chosen(controller.pad.name());
         match controller.pad.sticks() {
             Ok(sticks) => {
-                if sticks != tehuti_core::dispatch::Sticks::default() {
+                if chosen && sticks != tehuti_core::dispatch::Sticks::default() {
                     sampled = sticks;
                 }
             }

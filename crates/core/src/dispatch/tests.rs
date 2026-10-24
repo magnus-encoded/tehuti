@@ -77,6 +77,10 @@ impl World {
                     Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::SettingsScale(_)
+                    | Effect::SettingsController(_)
+                    | Effect::PersistController(_)
+                    | Effect::SettingsMicrophone(_)
+                    | Effect::ListMicrophones
                     | Effect::RunMenuCommand(_)
                     | Effect::PasswordSpeechIgnored
                     | Effect::MovePointer { .. }
@@ -1747,7 +1751,7 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
     let mut world = World::default();
     let mut state = open_display(&mut world);
     assert!(state.settings().open);
-    assert!(state.settings().display);
+    assert_eq!(state.settings().page, Page::Display);
     world.trace.clear();
     for _ in 0..5 {
         state = settings_button(&mut world, state, ButtonName::DpadDown);
@@ -1773,8 +1777,10 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
             .any(|effect| matches!(effect, Effect::Apply(_) | Effect::ConfirmSecret(_)))
     );
     state = settings_button(&mut world, state, ButtonName::East);
+    assert!(state.settings().open);
+    assert_eq!(state.settings().page, Page::Categories);
+    state = settings_button(&mut world, state, ButtonName::East);
     assert!(!state.settings().open);
-    assert!(!state.settings().display);
 }
 
 #[test]
@@ -1901,9 +1907,11 @@ fn east_and_the_global_phrase_cancel_mode_preview() {
         let state = settings_button(&mut world, state, ButtonName::South);
         let state = world.run(state, Input::ModeApplied(Some(1)));
         world.trace.clear();
+        let backs = matches!(event, Event::Button { .. });
         let state = settings_event(&mut world, state, event.clone());
         assert!(world.trace.contains(&Effect::SettingsMode(0)));
-        assert!(!state.settings().open);
+        assert_eq!(state.settings().open, backs);
+        assert_eq!(state.settings().page, Page::Categories);
         assert_eq!(state.settings().remaining, None);
     }
 }
@@ -1969,7 +1977,7 @@ fn settings_button_hints_name_a_and_b_through_navigation_and_confirmation() {
     let state = settings_button(&mut world, state, ButtonName::South);
     assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
     let state = settings_button(&mut world, state, ButtonName::East);
-    assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+    assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: OPEN   B: CLOSE");
 }
 
 proptest! {
@@ -2082,10 +2090,12 @@ fn guide_closes_settings_and_preserves_menu_and_emergency_escape() {
 }
 
 #[test]
-fn b_closes_settings_without_forwarding_its_release_to_the_application() {
+fn b_backs_out_of_settings_without_forwarding_its_release_to_the_application() {
     let mut world = World::default();
     let state = open_display(&mut world);
     world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(state.settings().open);
     let state = tap_button(&mut world, state, ButtonName::East);
     assert!(!state.settings().open);
     assert!(!world.trace.iter().any(|effect| matches!(
@@ -2146,9 +2156,9 @@ fn south_held_before_opening_cannot_enter_display_until_released() {
     );
     let state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
     assert!(state.settings().open);
-    assert!(!state.settings().display);
+    assert_eq!(state.settings().page, Page::Categories);
     let state = settings_button(&mut world, state, ButtonName::South);
-    assert!(state.settings().display);
+    assert_eq!(state.settings().page, Page::Display);
 }
 
 #[test]
@@ -2657,4 +2667,213 @@ fn takeback_survives_title_updates_and_short_view_taps_toggle_mouse() {
     assert!(world.trace.contains(&Effect::MouseMode(true)));
     state = world.run(state, Input::ControllerDisconnected);
     assert!(state.core().passthrough());
+}
+
+/// The input-settings effects in the trace, without the routine tick queries.
+fn input_effects(world: &World) -> Vec<Effect> {
+    world
+        .trace
+        .iter()
+        .filter(|effect| {
+            matches!(
+                effect,
+                Effect::SettingsController(_)
+                    | Effect::PersistController(_)
+                    | Effect::SettingsMicrophone(_)
+                    | Effect::ListMicrophones
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn open_input(world: &mut World) -> State {
+    let state = world.run(
+        State::default(),
+        Input::Controllers(vec!["Wireless Controller".into(), "Xbox Controller".into()]),
+    );
+    let state = settings_event(
+        world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood.".into()).unwrap(),
+        },
+    );
+    let state = settings_button(world, state, ButtonName::DpadDown);
+    assert_eq!(state.settings().category, Category::Input);
+    let state = settings_button(world, state, ButtonName::South);
+    assert_eq!(state.settings().page, Page::Input);
+    state
+}
+
+#[test]
+fn opening_the_input_page_lists_microphones_and_starts_on_the_controller_row() {
+    let mut world = World::default();
+    let state = open_input(&mut world);
+    assert!(world.trace.contains(&Effect::ListMicrophones));
+    assert_eq!(state.settings().input.row, InputRow::Controller);
+    assert_eq!(state.settings().input.controller_label(), "AUTO (EVERY PAD)");
+    let state = world.run(
+        state,
+        Input::Microphones(vec![Microphone {
+            name: "alsa_input.analog".into(),
+            description: "Built-in Audio".into(),
+        }]),
+    );
+    assert_eq!(state.settings().input.microphones.len(), 1);
+}
+
+#[test]
+fn a_named_controller_previews_until_a_confirms_it() {
+    let mut world = World::default();
+    let state = open_input(&mut world);
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::DpadRight);
+    let wireless = ControllerChoice::Named("Wireless Controller".into());
+    assert_eq!(
+        input_effects(&world),
+        vec![Effect::SettingsController(wireless.clone())]
+    );
+    assert_eq!(state.settings().remaining, Some(Duration::from_secs(15)));
+    assert_eq!(state.settings().button_hint(), "A ON THE NEW PAD: KEEP IT");
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(
+        input_effects(&world),
+        vec![Effect::PersistController(wireless.clone())]
+    );
+    assert_eq!(state.settings().remaining, None);
+    let state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(30),
+        },
+    );
+    assert_eq!(state.settings().input.controller, wireless);
+}
+
+#[test]
+fn an_unconfirmed_controller_reverts_on_timeout_back_or_close() {
+    for leave in 0..3 {
+        let mut world = World::default();
+        let state = open_input(&mut world);
+        let state = settings_button(&mut world, state, ButtonName::DpadLeft);
+        assert_eq!(
+            state.settings().input.controller,
+            ControllerChoice::Named("Xbox Controller".into())
+        );
+        world.trace.clear();
+        let state = match leave {
+            0 => world.run(
+                state,
+                Input::Tick {
+                    elapsed: Duration::from_secs(15),
+                },
+            ),
+            1 => settings_button(&mut world, state, ButtonName::East),
+            _ => settings_event(
+                &mut world,
+                state,
+                Event::Speech {
+                    text: Text::new("Pop the hood".into()).unwrap(),
+                },
+            ),
+        };
+        assert!(
+            world
+                .trace
+                .contains(&Effect::SettingsController(ControllerChoice::Auto))
+        );
+        assert_eq!(state.settings().input.controller, ControllerChoice::Auto);
+        assert_eq!(state.settings().remaining, None);
+    }
+}
+
+#[test]
+fn going_back_to_auto_applies_and_persists_at_once() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::InputChoices {
+            controller: ControllerChoice::Named("Wireless Controller".into()),
+            microphone: MicrophoneChoice::All,
+        },
+    );
+    let state = world.run(state, Input::Controllers(vec!["Wireless Controller".into()]));
+    let state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood".into()).unwrap(),
+        },
+    );
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::DpadRight);
+    assert_eq!(
+        input_effects(&world),
+        vec![Effect::PersistController(ControllerChoice::Auto)]
+    );
+    assert_eq!(state.settings().remaining, None);
+}
+
+#[test]
+fn a_saved_controller_that_is_not_connected_stays_selectable() {
+    let input = InputSettings {
+        controllers: vec!["Pad".into(), "Pad".into()],
+        controller: ControllerChoice::Named("Gone".into()),
+        ..InputSettings::default()
+    };
+    assert_eq!(
+        input.controller_options(),
+        vec![
+            ControllerChoice::Auto,
+            ControllerChoice::Named("Pad".into()),
+            ControllerChoice::Named("Gone".into()),
+        ]
+    );
+    assert_eq!(input.controller_label(), "GONE (OFF)");
+}
+
+#[test]
+fn the_microphone_row_cycles_all_auto_and_each_source_without_confirmation() {
+    let mut world = World::default();
+    let state = open_input(&mut world);
+    let state = world.run(
+        state,
+        Input::Microphones(vec![Microphone {
+            name: "alsa_input.analog".into(),
+            description: "Built-in Audio".into(),
+        }]),
+    );
+    let mut state = settings_button(&mut world, state, ButtonName::DpadDown);
+    assert_eq!(state.settings().input.row, InputRow::Microphone);
+    assert_eq!(state.settings().input.microphone_label(), "ALL MICROPHONES");
+    let expected = [
+        (MicrophoneChoice::Auto, "AUTO (SYSTEM DEFAULT)"),
+        (
+            MicrophoneChoice::Named("alsa_input.analog".into()),
+            "BUILT-IN AUDIO",
+        ),
+        (MicrophoneChoice::All, "ALL MICROPHONES"),
+    ];
+    for (choice, label) in expected {
+        world.trace.clear();
+        state = settings_button(&mut world, state, ButtonName::DpadRight);
+        assert_eq!(input_effects(&world), vec![Effect::SettingsMicrophone(choice)]);
+        assert_eq!(state.settings().input.microphone_label(), label);
+        assert_eq!(state.settings().remaining, None);
+    }
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::DpadLeft);
+    assert_eq!(
+        input_effects(&world),
+        vec![Effect::SettingsMicrophone(MicrophoneChoice::Named(
+            "alsa_input.analog".into()
+        ))]
+    );
+    let state = settings_button(&mut world, state, ButtonName::East);
+    assert_eq!(state.settings().page, Page::Categories);
+    assert!(state.settings().open);
 }
