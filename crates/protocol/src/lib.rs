@@ -384,7 +384,7 @@ impl Context {
     #[must_use]
     pub fn key_for(&self, button: ButtonName) -> Option<KeyName> {
         self.buttons.get(&button).and_then(|action| match action {
-            MappingAction::Key { key, mods } => mods.is_empty().then_some(*key),
+            MappingAction::Key { key, mods, .. } => mods.is_empty().then_some(*key),
             MappingAction::Text { .. }
             | MappingAction::Secret { .. }
             | MappingAction::Launch { .. }
@@ -397,6 +397,21 @@ impl Context {
     #[must_use]
     pub fn action_for(&self, button: ButtonName) -> Option<Action> {
         self.buttons.get(&button).map(MappingAction::action)
+    }
+
+    /// The key a `hold = true` mapping keeps down while `button` is held.
+    #[must_use]
+    pub fn held_key_for(&self, button: ButtonName) -> Option<KeyName> {
+        match self.buttons.get(&button)? {
+            MappingAction::Key { key, hold: true, .. } => Some(*key),
+            MappingAction::Key { hold: false, .. }
+            | MappingAction::Text { .. }
+            | MappingAction::Secret { .. }
+            | MappingAction::Launch { .. }
+            | MappingAction::Close { .. }
+            | MappingAction::Notify { .. }
+            | MappingAction::Layout { .. } => None,
+        }
     }
 }
 
@@ -437,6 +452,8 @@ enum MappingAction {
         key: KeyName,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mods: Vec<Modifier>,
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        hold: bool,
     },
     Text {
         text: Text,
@@ -472,7 +489,7 @@ impl MappingAction {
             },
             Self::Close { .. } => Action::Close,
             Self::Notify { notify } => Action::Notice { text: notify.clone() },
-            Self::Key { key, mods } => Action::Key {
+            Self::Key { key, mods, .. } => Action::Key {
                 key: *key,
                 mods: mods.clone(),
             },
@@ -504,14 +521,33 @@ fn validate_push_to_talk(buttons: Option<&[ButtonName]>) -> Result<(), String> {
     Ok(())
 }
 
+/// A held key is one plain key on a button: speech has no release, and held modifiers would leak.
+fn validate_holds(context: &ContextFile) -> Result<(), String> {
+    for (button, action) in &context.buttons {
+        if matches!(action, MappingAction::Key { hold: true, mods, .. } if !mods.is_empty()) {
+            return Err(format!("button {button:?} cannot hold a key with mods"));
+        }
+    }
+    for (phrase, action) in &context.speech {
+        if matches!(action, MappingAction::Key { hold: true, .. }) {
+            return Err(format!(
+                "speech phrase {phrase:?} cannot hold a key; hold is for buttons"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Parses a context at the configuration boundary.
 ///
 /// # Errors
-/// The TOML, button names, key names or application id are invalid, or a speech
-/// phrase normalizes to nothing or to the same phrase as another mapping.
+/// The TOML, button names, key names or application id are invalid, a speech
+/// phrase normalizes to nothing or to the same phrase as another mapping, or a
+/// held key has mods or belongs to a phrase.
 pub fn parse_context(source: &str) -> Result<Context, String> {
     let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
+    validate_holds(&context)?;
     if matches!(
         context.keyboard.button,
         Some(ButtonName::Guide | ButtonName::Record)
@@ -562,6 +598,10 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mods: Vec<Modifier>,
     },
+    /// Press `key` in the focused client and keep it down until [`Action::KeyUp`]; reserved for the core.
+    KeyDown { key: KeyName },
+    /// Release a key [`Action::KeyDown`] pressed; reserved for the core.
+    KeyUp { key: KeyName },
     /// Send Unicode text to the focused client.
     Text { text: Text },
     /// Ask the compositor to confirm delivery of a named secret reference.

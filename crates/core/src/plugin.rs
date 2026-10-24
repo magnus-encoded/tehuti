@@ -146,6 +146,8 @@ pub fn validate_actions(actions: Vec<Action>, permissions: &[Permission]) -> Res
     for (index, action) in actions.iter().enumerate() {
         let (name, permission) = match action {
             Action::Key { .. } => ("key", Some(Permission::Key)),
+            Action::KeyDown { .. } => ("key_down", None),
+            Action::KeyUp { .. } => ("key_up", None),
             Action::Text { .. } => ("text", Some(Permission::Text)),
             Action::Quit => ("quit", Some(Permission::Quit)),
             Action::SecretRequest { .. } => ("secret_request", None),

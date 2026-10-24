@@ -95,8 +95,8 @@ second switches the focus level; holding Guide for half a second opens the syste
 menu. Menu buttons stay consumed through release. B or Guide closes the menu.
 Holding Guide+Start together for three seconds requests Quit, including while the
 menu is open; releasing either button early cancels the escape. Start does not
-route while Guide is held. Outside overlays, South presses send Enter and never
-reach plugins; South releases can reach them. Tick is internal and never crosses
+route while Guide is held. Outside overlays, South presses send Enter, or the held key of a
+context that holds one on South, and never reach plugins; South releases can reach them. Tick is internal and never crosses
 the wire.
 
 System menu commands use TOML argument lists in
@@ -220,6 +220,22 @@ Context mappings use the same fields, for
 example `{ key = "left", mods = ["alt"] }`. The shipped Firefox context maps
 East to Back, North to the address bar, and the bumpers to previous/next tab;
 speech commands are "new tab", "reload", and "close tab".
+
+A button mapping with `hold = true` keeps its key down while the button is held,
+for programs such as emulators that read the keyboard once per frame and miss a tap:
+
+```toml
+[buttons]
+south = { key = "x", hold = true }
+```
+
+The key goes down on the press and up on the release. A focus change, a
+controller disconnect, the system menu, the settings view and a passthrough
+context release it early. Two buttons holding one key press it once, and it goes
+up with the last release. A held key takes no `mods` and cannot be a phrase
+mapping. A hold on South replaces the global Enter while no plugin takes the
+button. Plugins cannot hold keys: the `key_down` and `key_up` actions are
+reserved for the core.
 
 Text delivers Unicode through enabled text-input-v3, with keyboard taps as fallback:
 

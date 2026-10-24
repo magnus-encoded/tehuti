@@ -293,4 +293,39 @@ text = "a\u0000b"
             );
         }
     }
+
+    #[test]
+    fn hold_is_an_opt_in_boolean_on_plain_button_keys() {
+        use tehuti_protocol::{Action, ButtonName};
+        let context = parse_context(
+            "app_id = 'mgba-qt'\n[buttons]\nsouth = { key = 'x', hold = true }\neast = { key = 'z', hold = false }\nnorth = { key = 'enter' }",
+        )
+        .unwrap();
+        assert_eq!(context.held_key_for(ButtonName::South), Some(KeyName::X));
+        for button in [ButtonName::East, ButtonName::North, ButtonName::West] {
+            assert_eq!(context.held_key_for(button), None, "{button:?}");
+        }
+        assert_eq!(
+            context.action_for(ButtonName::East),
+            Some(Action::Key {
+                key: KeyName::Z,
+                mods: Vec::new()
+            })
+        );
+    }
+
+    #[test]
+    fn hold_rejects_mods_phrases_and_non_boolean_values() {
+        for source in [
+            "[buttons]\nsouth = { key = 'x', hold = true, mods = ['ctrl'] }",
+            "[buttons]\nsouth = { key = 'x', hold = 'yes' }",
+            "[buttons]\nsouth = { text = 'x', hold = true }",
+            "[buttons]\n[speech]\n'jump' = { key = 'x', hold = true }",
+        ] {
+            assert!(
+                parse_context(&format!("app_id = 'mgba-qt'\n{source}")).is_err(),
+                "{source}"
+            );
+        }
+    }
 }
