@@ -8,7 +8,7 @@
 | Context | A set of input mappings for one application id. |
 | Active context | The context selected for the focused window's application id, or none when no context matches. |
 | Fallback | The final routing layer, which discards input that earlier layers do not consume. |
-| Global layer | The fixed first routing layer, which consumes South presses and sends Enter in every application, unless a context holds a key on South. |
+| Global layer | The fixed first routing layer, which consumes South presses and sends Enter in every application, unless the active context maps South. |
 | Held key | A key a `hold = true` button mapping keeps down until the button's release, sent as the core-only `key_down` and `key_up` actions. |
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |

@@ -317,11 +317,16 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if state.passthrough() && matches!(event, Event::Button { .. }) {
         return (state, Vec::new(), false);
     }
-    if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
+    if let Some(action) = global_layer(event) {
+        let actions = if focused_maps(&state, event) {
+            hold_key(&mut state, event).unwrap_or_else(|| active_context(&state, event).into_iter().collect())
+        } else {
+            vec![action]
+        };
         return (state, actions, false);
     }
-    if let Some(action) = global_layer(event) {
-        return (state, vec![action], false);
+    if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
+        return (state, actions, false);
     }
     if matches!(
         event,
@@ -339,7 +344,15 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     (state, actions, false)
 }
 
-/// A `hold = true` mapping presses its key until the button's release, ahead of the global layer.
+/// Whether the focused context maps the pressed button, which then replaces the global layer.
+fn focused_maps(state: &State, event: &Event) -> bool {
+    let Event::Button { name, .. } = event else {
+        return false;
+    };
+    focused_context(state).is_some_and(|context| context.action_for(*name).is_some())
+}
+
+/// A `hold = true` mapping presses its key until the button's release.
 fn hold_key(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     let Event::Button {
         name,
@@ -367,7 +380,7 @@ fn hold_key(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     })
 }
 
-/// The fixed global mapping takes priority over contexts.
+/// The global default for South; a focused context that maps South replaces it.
 const fn global_layer(event: &Event) -> Option<Action> {
     match *event {
         Event::Button {
