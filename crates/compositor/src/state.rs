@@ -7,7 +7,7 @@ use crate::layout_window::LayoutWindow;
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_data_device, delegate_fractional_scale, delegate_output, delegate_seat,
-    delegate_shm, delegate_viewporter, delegate_xdg_shell,
+    delegate_shm, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{Space, Window},
     input::{
         Seat, SeatHandler, SeatState,
@@ -16,7 +16,10 @@ use smithay::{
     },
     output::Output,
     reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_protocols::xdg::{
+            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
+            shell::server::xdg_toplevel,
+        },
         wayland_server::{
             Client, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -35,7 +38,10 @@ use smithay::{
             SelectionHandler,
             data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler},
         },
-        shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
+        shell::xdg::{
+            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+            decoration::{XdgDecorationHandler, XdgDecorationState},
+        },
         shm::{ShmHandler, ShmState},
         viewporter::ViewporterState,
     },
@@ -107,6 +113,7 @@ pub struct Compositor {
     windows: tehuti_core::windows::Windows<WlSurface>,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
+    decoration_state: Option<XdgDecorationState>,
     shm_state: ShmState,
     _viewporter_state: ViewporterState,
     _fractional_scale_state: FractionalScaleManagerState,
@@ -121,6 +128,7 @@ pub struct Compositor {
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
     keyboard_reserved: i32,
+    display: DisplayHandle,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -209,6 +217,7 @@ impl Compositor {
             windows: tehuti_core::windows::Windows::new(),
             surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
+            decoration_state: None,
             shm_state: ShmState::new::<Self>(display, vec![]),
             _viewporter_state: ViewporterState::new::<Self>(display),
             _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
@@ -223,6 +232,7 @@ impl Compositor {
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: 0,
+            display: display.clone(),
         };
         compositor
             .keyboard
@@ -2000,6 +2010,38 @@ impl XdgShellHandler for Compositor {
     fn reposition_request(&mut self, _surface: PopupSurface, _positioner: PositionerState, _token: u32) {}
 }
 
+impl Compositor {
+    /// Applies the decorations setting. With [`Decorations::None`](crate::decorations::Decorations::None)
+    /// it advertises `zxdg_decoration_manager_v1` and answers every toplevel with server-side mode,
+    /// so clients drop their title bars; Tehuti draws none. With `Client` no global is advertised.
+    pub fn set_decorations(&mut self, decorations: crate::decorations::Decorations) {
+        if decorations == crate::decorations::Decorations::None && self.decoration_state.is_none() {
+            self.decoration_state = Some(XdgDecorationState::new::<Self>(&self.display));
+        }
+    }
+}
+
+fn configure_server_side(toplevel: &ToplevelSurface) {
+    toplevel.with_pending_state(|state| state.decoration_mode = Some(DecorationMode::ServerSide));
+    if toplevel.is_initial_configure_sent() {
+        let _serial = toplevel.send_configure();
+    }
+}
+
+impl XdgDecorationHandler for Compositor {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        configure_server_side(&toplevel);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
+        configure_server_side(&toplevel);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        configure_server_side(&toplevel);
+    }
+}
+
 impl SeatHandler for Compositor {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -2040,6 +2082,7 @@ delegate_shm!(Compositor);
 delegate_viewporter!(Compositor);
 delegate_fractional_scale!(Compositor);
 delegate_xdg_shell!(Compositor);
+delegate_xdg_decoration!(Compositor);
 delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
 delegate_output!(Compositor);
