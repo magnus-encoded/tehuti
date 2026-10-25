@@ -32,6 +32,22 @@ pub struct Bar {
     remaining: Option<Duration>,
     level: crate::Level,
     pub(crate) generation: u64,
+    ticker: Ticker,
+}
+
+/// The mapping ticker's entries, whether it is hidden, and how long it has scrolled.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Ticker {
+    entries: Option<std::sync::Arc<[crate::ticker::Entry]>>,
+    hidden: bool,
+    scrolled: Duration,
+}
+
+/// What the ticker shows now: its entries and the scroll step reached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TickerView {
+    pub entries: std::sync::Arc<[crate::ticker::Entry]>,
+    pub step: u64,
 }
 
 /// The chip text for a focused window. A window titled by its agent launcher
@@ -70,7 +86,46 @@ impl Bar {
             remaining: None,
             level: crate::Level::App,
             generation: 0,
+            ticker: Ticker {
+                entries: None,
+                hidden: false,
+                scrolled: Duration::ZERO,
+            },
         }
+    }
+
+    /// The ticker to draw, or `None` while it is disabled, hidden or empty.
+    #[must_use]
+    pub fn ticker(&self) -> Option<TickerView> {
+        if self.ticker.hidden {
+            return None;
+        }
+        let entries = self
+            .ticker
+            .entries
+            .clone()
+            .filter(|entries| !entries.is_empty())?;
+        let step = self
+            .ticker
+            .scrolled
+            .as_millis()
+            .checked_div(crate::ticker::STEP.as_millis())
+            .and_then(|step| u64::try_from(step).ok())
+            .unwrap_or_default();
+        Some(TickerView { entries, step })
+    }
+
+    /// Replaces the ticker entries, or disables it with `None`; new entries scroll from the start.
+    pub(crate) fn set_ticker(&mut self, entries: Option<Vec<crate::ticker::Entry>>) {
+        let entries = entries.map(std::sync::Arc::from);
+        if entries != self.ticker.entries {
+            self.ticker.entries = entries;
+            self.ticker.scrolled = Duration::ZERO;
+        }
+    }
+
+    pub(crate) const fn toggle_ticker(&mut self) {
+        self.ticker.hidden = !self.ticker.hidden;
     }
 
     pub(crate) fn set_agents(&mut self, agents: Vec<String>) {
@@ -116,6 +171,9 @@ impl Bar {
                 self.remaining = None;
             }
             Event::Tick { elapsed } => {
+                if self.ticker.entries.is_some() && !self.ticker.hidden {
+                    self.ticker.scrolled = self.ticker.scrolled.saturating_add(*elapsed);
+                }
                 if let Some(remaining) = &mut self.remaining {
                     *remaining = remaining.saturating_sub(*elapsed);
                     if remaining.is_zero() {

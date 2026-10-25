@@ -47,6 +47,7 @@ pub struct State {
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
     held_keys: Vec<(ButtonName, KeyName)>,
+    pad_family: ticker::PadFamily,
 }
 
 impl State {
@@ -87,8 +88,8 @@ impl State {
     }
 
     #[must_use]
-    pub const fn with_contexts(contexts: Vec<Context>) -> Self {
-        Self {
+    pub fn with_contexts(contexts: Vec<Context>) -> Self {
+        let mut state = Self {
             contexts,
             focused_app_id: None,
             pad_taken_back: false,
@@ -101,7 +102,10 @@ impl State {
             pending: Vec::new(),
             bar: bar::Bar::new(),
             held_keys: Vec::new(),
-        }
+            pad_family: ticker::PadFamily::Letters,
+        };
+        state.refresh_ticker();
+        state
     }
 
     /// Resolves the focused app's dimming policy over the global context.
@@ -183,6 +187,28 @@ impl State {
     /// Swaps the contexts and keeps focus, held buttons and pending plugin decisions.
     pub fn replace_contexts(&mut self, contexts: Vec<Context>) {
         self.contexts = contexts;
+        self.refresh_ticker();
+    }
+
+    /// Names buttons on the ticker as the pad in use prints them.
+    pub fn set_pad_family(&mut self, family: ticker::PadFamily) {
+        if family != self.pad_family {
+            self.pad_family = family;
+            self.refresh_ticker();
+        }
+    }
+
+    /// Hides a shown mapping ticker or shows a hidden one; the choice outlasts focus changes.
+    pub const fn toggle_ticker(&mut self) {
+        self.bar.toggle_ticker();
+    }
+
+    /// Rebuilds the ticker from the focused context, or disables it there.
+    fn refresh_ticker(&mut self) {
+        let focused = self.focused_app_id.as_deref();
+        let entries = ticker::enabled(&self.contexts, focused)
+            .then(|| ticker::entries(&self.contexts, focused, self.pad_family, self.level));
+        self.bar.set_ticker(entries);
     }
 
     /// The installed contexts, in priority order.
@@ -275,7 +301,11 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
         } => state.release_held_button(*name),
         Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => None,
     };
+    let level = state.level;
     let (mut next, mut actions, routed) = route(state, event, plugin_active);
+    if matches!(event, Event::Focus { .. }) || next.level != level {
+        next.refresh_ticker();
+    }
     if let Some(release) = released {
         actions.insert(0, release);
     }
@@ -574,6 +604,7 @@ pub mod windows;
 pub mod layout;
 
 pub mod bar;
+pub mod ticker;
 
 pub mod keyboard;
 pub mod menu;
