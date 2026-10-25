@@ -11,5 +11,6 @@ fi
 cargo check --manifest-path fuzz/Cargo.toml --locked
 python3 -m unittest discover -s sidecars/speech -p 'test_*.py'
 scripts/test-try
+python3 -m unittest discover -s scripts -p 'test_*.py'
 scripts/test-session
 scripts/prose-lint

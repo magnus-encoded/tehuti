@@ -1,0 +1,41 @@
+# generated begin
+app_id = "org.example.Game"
+label = "Eksempelspill"
+# Whisper priming phrases: "Åpne Eksempelspill, Eksempelspill, Platform Game"
+
+[speech_matching]
+fuzzy = true
+
+[ticker]
+enabled = true
+speech = "icons"
+
+[ticker.names]
+"a" = "shoulder-left"
+"backspace" = "select"
+"down" = "down"
+"enter" = "start"
+"left" = "left"
+"right" = "right"
+"s" = "shoulder-right"
+"up" = "up"
+"x" = "confirm"
+"z" = "action"
+
+[buttons]
+# Unmapped role: "select" = "backspace"
+# Unmapped role: "shoulder-left" = "a"
+# Unmapped role: "shoulder-right" = "s"
+dpad_down = { key = "down", hold = true }
+dpad_left = { key = "left", hold = true }
+dpad_right = { key = "right", hold = true }
+dpad_up = { key = "up", hold = true }
+north = { key = "enter", hold = true }
+south = { key = "x", hold = true }
+west = { key = "z", hold = true }
+
+[speech]
+"Åpne Eksempelspill" = { launch = "sample.desktop" }
+"Eksempelspill" = { launch = "sample.desktop" }
+"Platform Game" = { launch = "sample.desktop" }
+# generated end

@@ -1,0 +1,15 @@
+{
+  "actions": {
+    "action": "z",
+    "confirm": "x",
+    "down": "down",
+    "left": "left",
+    "right": "right",
+    "select": "backspace",
+    "shoulder-left": "a",
+    "shoulder-right": "s",
+    "start": "enter",
+    "up": "up"
+  },
+  "commands": {}
+}
