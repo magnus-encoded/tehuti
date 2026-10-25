@@ -27,7 +27,6 @@ use tracing::{info, trace, warn};
 
 struct Tty {
     keyboard: tehuti::backend::EscapeKeyboard,
-    session: LibSeatSession,
     libinput: smithay::reexports::input::Libinput,
     surface: DrmSurface,
     device: DrmDevice,
@@ -49,6 +48,8 @@ struct Tty {
     drawn: u64,
     idle_frame_callbacks: tehuti::pacing::Interval,
     statistics: FrameStatistics,
+    // The DRM and input resources must close before libseat releases their seat.
+    session: LibSeatSession,
 }
 
 /// Frame counters, logged at debug level.
@@ -332,7 +333,6 @@ fn create_output(
     let libinput = create_libinput(&session)?;
     let tty = Tty {
         keyboard: tehuti::backend::EscapeKeyboard::default(),
-        session,
         libinput,
         surface,
         device,
@@ -355,6 +355,7 @@ fn create_output(
             unchanged: 0,
             report: tehuti::pacing::Interval::new(tehuti::pacing::STATISTICS_PERIOD),
         },
+        session,
     };
     Ok((tty, drm_notifier))
 }

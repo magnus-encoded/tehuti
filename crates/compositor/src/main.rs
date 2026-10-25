@@ -94,13 +94,27 @@ impl input::InputSource for AttachedController {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
-        ExitCode::from(if self.log_out {
-            21
-        } else if self.compositor.quit_requested() {
-            20
-        } else {
-            1
-        })
+        exit_code(self.log_out, self.compositor.quit_requested())
+    }
+}
+
+fn exit_code(log_out: bool, quit_requested: bool) -> ExitCode {
+    ExitCode::from(if log_out {
+        21
+    } else if quit_requested {
+        20
+    } else {
+        0
+    })
+}
+
+#[cfg(test)]
+mod exit_code_tests {
+    use super::exit_code;
+
+    #[test]
+    fn external_shutdown_exits_successfully() {
+        assert_eq!(exit_code(false, false), std::process::ExitCode::SUCCESS);
     }
 }
 
