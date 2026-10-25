@@ -51,6 +51,27 @@ pub fn try_load(directory: &Path) -> Result<Vec<Context>, LoadError> {
     Ok(contexts)
 }
 
+/// One context file's outcome: its path and context, or why it failed.
+pub type FileOutcome = Result<(PathBuf, Context), LoadError>;
+
+/// Parses every context file independently, in load order, for reporting.
+///
+/// A failed file is an `Err` naming its path; the others continue.
+///
+/// # Errors
+///
+/// Fails only when the directory itself cannot be listed.
+pub fn load_each(directory: &Path) -> Result<Vec<FileOutcome>, LoadError> {
+    Ok(context_paths(directory, true)?
+        .into_iter()
+        .filter_map(|path| {
+            load_one(&path)
+                .map(|loaded| loaded.map(|context| (path, context)))
+                .transpose()
+        })
+        .collect())
+}
+
 /// A context file that could not be read or parsed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{path}: {message}")]
