@@ -123,6 +123,24 @@ mod config_check {
     }
 
     #[test]
+    fn generated_contexts_without_gated_fields_pass_the_current_parser() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/generate-context");
+        for parser in ["supertux2", "mgba"] {
+            let directory = tempfile::tempdir().unwrap();
+            let source = std::fs::read_to_string(fixtures.join(format!("{parser}.off.toml"))).unwrap();
+            write(directory.path(), "context.toml", &source);
+            let report = check(directory.path());
+            assert!(!report.has_errors(), "{parser}: {report}");
+            let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
+                .args(["--check-config".as_ref(), directory.path().as_os_str()])
+                .env_clear()
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
+    }
+
+    #[test]
     fn a_missing_directory_is_an_error() {
         let directory = tempfile::tempdir().unwrap();
         let report = check(&directory.path().join("absent"));

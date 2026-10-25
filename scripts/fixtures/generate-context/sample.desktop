@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Sample Game
+Name[nb]=Eksempelspill
+GenericName=Platform Game
+StartupWMClass=org.example.Game
+Exec=sample-game
+Categories=Game;

@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Suggest a context from a desktop entry and an executable JSON role parser."""
+import argparse
+import configparser
+import difflib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unicodedata
+
+BEGIN = '# generated begin\n'
+END = '# generated end\n'
+ROLES = {'jump': 'south', 'confirm': 'south', 'action': 'west',
+         'back': 'east', 'pause': 'east', 'menu': 'north', 'start': 'north',
+         **{name: 'dpad_' + name for name in ('up', 'down', 'left', 'right')}}
+KEYS = set('abcdefghijklmnopqrstuvwxyz0123456789') | set('escape enter space tab backspace up down left right minus equal left_bracket right_bracket semicolon apostrophe grave comma period slash backslash home end page_up page_down insert delete'.split()) | {f'f{i}' for i in range(1, 13)}
+ICONS = {'save': '💾', 'load': '📂', 'volume': '🔊', 'close': '❌', 'fullscreen': '⛶'}
+
+
+def quote(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
+def boolean(value):
+    if value.lower() not in ('1', 'true', '0', 'false'):
+        raise argparse.ArgumentTypeError('expected true, false, 1 or 0')
+    return value.lower() in ('1', 'true')
+
+
+def key_action(binding):
+    parts = binding.lower().split('+')
+    key = parts.pop()
+    if key not in KEYS or any(mod not in ('shift', 'ctrl', 'alt', 'super') for mod in parts):
+        raise ValueError(f'unsupported key binding: {binding!r}')
+    fields = ['key = ' + quote(key)]
+    if parts:
+        fields.append('mods = [' + ', '.join(quote(mod) for mod in parts) + ']')
+    return fields
+
+
+def normalize_phrase(phrase):
+    phrase = unicodedata.normalize('NFC', phrase.lower()).replace('’', "'").replace('ʼ', "'")
+    words = ''.join(char if char.isalnum() or unicodedata.category(char).startswith('M') or char == "'" else ' ' for char in phrase)
+    return ' '.join(word.strip("'") for word in words.split() if word.strip("'"))
+
+
+def desktop_path(application):
+    path = Path(application)
+    if path.is_file():
+        return path
+    roots = [Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share'))]
+    roots += [Path(root) for root in os.environ.get('XDG_DATA_DIRS', '/usr/local/share:/usr/share').split(':') if root]
+    for root in roots:
+        candidate = root / 'applications' / application
+        if candidate.is_file():
+            return candidate
+    raise ValueError('desktop entry not found')
+
+
+def generate(args):
+    features = set(filter(None, args.features.split(',')))
+    if features - {'ticker', 'label', 'hold', 'fuzzy'}:
+        raise ValueError('unknown feature: ' + ', '.join(sorted(features - {'ticker', 'label', 'hold', 'fuzzy'})))
+    if args.ticker_enabled is not None:
+        if args.ticker_enabled:
+            features.add('ticker')
+        else:
+            features.discard('ticker')
+    path = desktop_path(args.application)
+    entry_file = configparser.ConfigParser(interpolation=None, strict=True)
+    entry_file.optionxform = str
+    entry_file.read_string(path.read_text())
+    entry = entry_file['Desktop Entry']
+    name = entry.get('Name[nb]', entry.get('Name', '')).strip()
+    app_id = entry.get('StartupWMClass', '').strip()
+    if not app_id and args.probe:
+        ids = set(re.findall(r'app_id"?\s*[=:]\s*(?:Some\()?"([^"\n]+)"', Path(args.probe).read_text()))
+        if len(ids) != 1:
+            raise ValueError('probe log must contain exactly one application id')
+        app_id = ids.pop()
+    if not app_id.strip() or not name:
+        raise ValueError('Name and StartupWMClass are required (or use --probe LOG for the id)')
+    if path.name.startswith('-'):
+        raise ValueError('invalid desktop entry id')
+    game = args.kind == 'game' or (args.kind is None and 'Game' in entry.get('Categories', '').split(';'))
+    roles = {'actions': {}, 'commands': {}}
+    if args.config and not args.config_parser:
+        raise ValueError('--config requires --config-parser')
+    if args.config_parser:
+        command = [str(Path(args.config_parser).resolve())]
+        if args.config:
+            command.append(args.config)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=True)
+        if result.stderr:
+            print(result.stderr, end='', file=sys.stderr)
+        roles = json.loads(result.stdout)
+    if not isinstance(roles, dict) or set(roles) - {'actions', 'commands'}:
+        raise ValueError('parser must return actions and commands objects')
+    for section in ('actions', 'commands'):
+        values = roles.setdefault(section, {})
+        if not isinstance(values, dict) or any(not isinstance(k, str) or not k.strip() or not isinstance(v, str) for k, v in values.items()):
+            raise ValueError('parser roles and bindings must be nonempty strings')
+        for binding in values.values():
+            key_action(binding)
+    lines = [BEGIN.rstrip(), 'app_id = ' + quote(app_id)]
+    if 'label' in features:
+        lines.append('label = ' + quote(name))
+    phrases = list(dict.fromkeys(['Åpne ' + name, name, entry.get('GenericName[nb]', entry.get('GenericName', '')).strip()]))
+    phrases = [phrase for phrase in phrases if phrase]
+    lines.append('# Whisper priming phrases: ' + quote(', '.join(phrases)))
+    if 'fuzzy' in features:
+        lines += ['', '[speech_matching]', 'fuzzy = true']
+    if 'ticker' in features:
+        enabled = game if args.ticker_enabled is None else args.ticker_enabled
+        lines += ['', '[ticker]', 'enabled = ' + str(enabled).lower(), 'speech = "icons"', '', '[ticker.names]']
+        names = {}
+        for role, binding in sorted(roles['actions'].items()):
+            names.setdefault(binding, role)
+        lines += [quote(binding) + ' = ' + quote(role) for binding, role in sorted(names.items())]
+    lines += ['', '[buttons]']
+    buttons = {}
+    for role, binding in sorted(roles['actions'].items()):
+        if role not in ROLES:
+            lines.append('# Unmapped role: ' + quote(role) + ' = ' + quote(binding))
+            continue
+        button = ROLES[role]
+        if button in buttons and buttons[button] != binding:
+            raise ValueError(f'conflicting roles for {button}')
+        buttons[button] = binding
+    for button, binding in sorted(buttons.items()):
+        fields = key_action(binding)
+        if game and 'hold' in features:
+            fields.append('hold = true')
+        lines.append(button + ' = { ' + ', '.join(fields) + ' }')
+    lines += ['', '[speech]']
+    normalized = {}
+    speech = [(phrase, ['launch = ' + quote(path.name)]) for phrase in phrases]
+    for role, binding in sorted(roles['commands'].items()):
+        fields = key_action(binding)
+        if 'ticker' in features and role.lower() in ICONS:
+            fields.append('icon = ' + quote(ICONS[role.lower()]))
+        speech.append((role, fields))
+    for phrase, fields in speech:
+        canonical = normalize_phrase(phrase)
+        if not canonical:
+            raise ValueError('speech phrase has no words')
+        if canonical in normalized:
+            if normalized[canonical] == fields:
+                continue
+            raise ValueError('speech phrases collide after normalization')
+        normalized[canonical] = fields
+        lines.append(quote(phrase) + ' = { ' + ', '.join(fields) + ' }')
+    return '\n'.join(lines) + '\n' + END
+
+
+def replace_generated(old, block):
+    if not old:
+        return block
+    if old.count(BEGIN) != 1 or old.count(END) != 1:
+        raise ValueError('existing context must contain one generated marker pair')
+    start = old.index(BEGIN)
+    end = old.index(END)
+    if end < start:
+        raise ValueError('generated markers are reversed')
+    return old[:start] + block + old[end + len(END):]
+
+
+def atomic_write(path, content):
+    descriptor, temporary = tempfile.mkstemp(prefix='.context-gen-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(content)
+        if path.exists():
+            shutil.copymode(path, temporary)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def validator():
+    binary = os.environ.get('TEHUTI_BIN', 'tehuti')
+    if not shutil.which(binary):
+        print('tehuti unavailable; config check skipped', file=sys.stderr)
+        return None
+    help_result = subprocess.run([binary, '--help'], capture_output=True, text=True, timeout=15)
+    if '--check-config' not in help_result.stdout + help_result.stderr:
+        print('tehuti does not advertise --check-config; check skipped', file=sys.stderr)
+        return None
+    return binary
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--application', required=True)
+    parser.add_argument('--config-parser')
+    parser.add_argument('--config', help='config path passed as the parser executable argument')
+    parser.add_argument('--out', default='.', help='context directory')
+    parser.add_argument('--write', action='store_true')
+    parser.add_argument('--kind', choices=('game', 'tool'))
+    parser.add_argument('--probe', metavar='LOG', help='read a single application id from a session log')
+    parser.add_argument('--features', default=os.environ.get('TEHUTI_FEATURES', ''))
+    parser.add_argument('--ticker-enabled', nargs='?', const=True, type=boolean,
+                        default=os.environ.get('TEHUTI_TICKER'))
+    args = parser.parse_args()
+    try:
+        path = Path(args.out) / 'context.toml'
+        original = path.read_bytes() if path.exists() else None
+        old = original.decode() if original is not None else ''
+        new = replace_generated(old, generate(args))
+        sys.stdout.writelines(difflib.unified_diff(old.splitlines(True), new.splitlines(True), fromfile='context.toml', tofile='context.toml (suggested)'))
+        if not args.write or new == old:
+            return 0
+        binary = validator()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if original is not None:
+            atomic_write(path.with_name('context.toml.bak-gen'), original)
+        atomic_write(path, new.encode())
+        try:
+            if binary:
+                subprocess.run([binary, '--check-config', str(path.parent)], check=True, timeout=30)
+        except BaseException:
+            if original is None:
+                path.unlink()
+            else:
+                atomic_write(path, original)
+            raise
+        return 0
+    except (OSError, ValueError, KeyError, configparser.Error, subprocess.SubprocessError) as error:
+        print(f'generate-context: {error}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

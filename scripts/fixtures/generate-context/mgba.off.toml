@@ -1,0 +1,21 @@
+# generated begin
+app_id = "org.example.Game"
+# Whisper priming phrases: "Åpne Eksempelspill, Eksempelspill, Platform Game"
+
+[buttons]
+# Unmapped role: "select" = "backspace"
+# Unmapped role: "shoulder-left" = "a"
+# Unmapped role: "shoulder-right" = "s"
+dpad_down = { key = "down" }
+dpad_left = { key = "left" }
+dpad_right = { key = "right" }
+dpad_up = { key = "up" }
+north = { key = "enter" }
+south = { key = "x" }
+west = { key = "z" }
+
+[speech]
+"Åpne Eksempelspill" = { launch = "sample.desktop" }
+"Eksempelspill" = { launch = "sample.desktop" }
+"Platform Game" = { launch = "sample.desktop" }
+# generated end

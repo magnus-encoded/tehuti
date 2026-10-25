@@ -1,0 +1,23 @@
+{
+  "actions": {
+    "action": "backspace",
+    "back": "escape",
+    "cheat-menu": "f1",
+    "debug-menu": "f2",
+    "down": "down",
+    "jump": "enter",
+    "left": "left",
+    "menu-select": "enter",
+    "peek-down": "end",
+    "peek-left": "delete",
+    "peek-right": "page_down",
+    "peek-up": "home",
+    "right": "right",
+    "start": "p",
+    "up": "up"
+  },
+  "commands": {
+    "close": "escape",
+    "pause": "p"
+  }
+}

@@ -1,0 +1,28 @@
+# generated begin
+app_id = "org.example.Game"
+# Whisper priming phrases: "Åpne Eksempelspill, Eksempelspill, Platform Game"
+
+[buttons]
+# Unmapped role: "cheat-menu" = "f1"
+# Unmapped role: "debug-menu" = "f2"
+# Unmapped role: "menu-select" = "enter"
+# Unmapped role: "peek-down" = "end"
+# Unmapped role: "peek-left" = "delete"
+# Unmapped role: "peek-right" = "page_down"
+# Unmapped role: "peek-up" = "home"
+dpad_down = { key = "down" }
+dpad_left = { key = "left" }
+dpad_right = { key = "right" }
+dpad_up = { key = "up" }
+east = { key = "escape" }
+north = { key = "p" }
+south = { key = "enter" }
+west = { key = "backspace" }
+
+[speech]
+"Åpne Eksempelspill" = { launch = "sample.desktop" }
+"Eksempelspill" = { launch = "sample.desktop" }
+"Platform Game" = { launch = "sample.desktop" }
+"close" = { key = "escape" }
+"pause" = { key = "p" }
+# generated end

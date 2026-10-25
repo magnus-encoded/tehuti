@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Read mGBA's Qt or SDL keyboard bindings from config.ini."""
+import configparser
+import json
+import os
+from pathlib import Path
+import sys
+
+from keycodes import binding
+
+
+def main():
+    default = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'mgba/config.ini'
+    path = Path(sys.argv[1]) if len(sys.argv) > 1 else default
+    config = configparser.ConfigParser(interpolation=None)
+    config.optionxform = str
+    config.read_string(path.read_text())
+    section = next((name for name in ('gba.input.QT_K', 'gba.input.SDLK', 'input.SDLK') if name in config), None)
+    if section is None:
+        raise ValueError('no Qt or SDL keyboard bindings in config')
+    actions = {}
+    roles = {'A': 'confirm', 'B': 'action', 'Start': 'start', 'Select': 'select',
+             'Up': 'up', 'Down': 'down', 'Left': 'left', 'Right': 'right', 'L': 'shoulder-left', 'R': 'shoulder-right'}
+    for name, value in config[section].items():
+        if not name.startswith('key'):
+            continue
+        key = binding(int(value), qt=section.endswith('QT_K'))
+        if key is None:
+            print('unsupported keyboard code: ' + value, file=sys.stderr)
+            continue
+        actions[roles.get(name[3:], name[3:].lower())] = key
+    print(json.dumps({'actions': actions, 'commands': {}}, sort_keys=True))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, configparser.Error) as error:
+        sys.exit(str(error))
