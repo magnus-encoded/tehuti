@@ -15,7 +15,7 @@ use smithay::{
     },
     output::{Output, PhysicalProperties, Subpixel},
     reexports::{
-        calloop::EventLoop,
+        calloop::{EventLoop, RegistrationToken},
         drm::control::{Device, Mode, ModeTypeFlags, connector, framebuffer},
         wayland_server::DisplayHandle,
     },
@@ -27,16 +27,16 @@ use tracing::{info, trace, warn};
 
 struct Tty {
     keyboard: tehuti::backend::EscapeKeyboard,
-    libinput: smithay::reexports::input::Libinput,
-    surface: DrmSurface,
-    device: DrmDevice,
     renderer: render::DrmRendering,
-    remaining_modes: std::collections::VecDeque<Mode>,
-    listed_modes: Vec<Mode>,
     // Rollback wins on a failed frame and clears on restore or successful scanout;
     // preview retains the confirmed mode until confirmation or reversion.
     preview: Option<(Mode, render::DrmRendering, bool)>,
     rollback: Option<(Mode, render::DrmRendering, bool)>,
+    libinput: smithay::reexports::input::Libinput,
+    surface: DrmSurface,
+    device: DrmDevice,
+    remaining_modes: std::collections::VecDeque<Mode>,
+    listed_modes: Vec<Mode>,
     output: Output,
     damage: OutputDamageTracker,
     next: bool,
@@ -48,7 +48,7 @@ struct Tty {
     drawn: u64,
     idle_frame_callbacks: tehuti::pacing::Interval,
     statistics: FrameStatistics,
-    // The DRM and input resources must close before libseat releases their seat.
+    // Weak handle; the event loop's notifier owns the seat during teardown.
     session: LibSeatSession,
 }
 
@@ -83,9 +83,9 @@ fn insert_device_watch(
     event_loop: &EventLoop<LoopData>,
     udev: UdevBackend,
     device_id: libc::dev_t,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<RegistrationToken, Box<dyn Error>> {
     let device_stop = event_loop.get_signal();
-    let _udev_token = event_loop
+    let udev_token = event_loop
         .handle()
         .insert_source(udev, move |event, (), _| match event {
             UdevEvent::Changed { device_id: changed } | UdevEvent::Removed { device_id: changed }
@@ -96,12 +96,16 @@ fn insert_device_watch(
             }
             UdevEvent::Added { .. } | UdevEvent::Changed { .. } | UdevEvent::Removed { .. } => {}
         })?;
-    Ok(())
+    Ok(udev_token)
 }
 
 #[expect(
     clippy::redundant_pub_crate,
     reason = "conflicts with the workspace unreachable_pub lint"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "backend setup registers related event sources"
 )]
 pub(crate) fn insert(
     event_loop: &EventLoop<LoopData>,
@@ -115,11 +119,11 @@ pub(crate) fn insert(
         .ok_or("no DRM device on seat")?;
     let (initialized_tty, drm_notifier) = create_output(session, &path, display, compositor)?;
     let tty = Rc::new(RefCell::new(initialized_tty));
-    insert_seat(event_loop, notifier, tty.clone())?;
-    insert_keyboard(event_loop, &tty)?;
+    let seat_token = insert_seat(event_loop, notifier, &tty)?;
+    let keyboard_token = insert_keyboard(event_loop, &tty)?;
     let flip_tty = tty.clone();
     let flip_stop = event_loop.get_signal();
-    let _drm_token = event_loop
+    let drm_token = event_loop
         .handle()
         .insert_source(drm_notifier, move |event, _, data| match event {
             DrmEvent::VBlank(metadata) => {
@@ -139,10 +143,11 @@ pub(crate) fn insert(
                 flip_stop.stop();
             }
         })?;
-    insert_device_watch(event_loop, udev, tty.borrow().device.device_id())?;
-    insert_wallpaper_redraw(event_loop, tty.clone())?;
+    let udev_token = insert_device_watch(event_loop, udev, tty.borrow().device.device_id())?;
+    let wallpaper_token = insert_wallpaper_redraw(event_loop, tty.clone())?;
     let render_stop = event_loop.get_signal();
-    Ok(crate::Redraw(Box::new(move |data| {
+    let shutdown_tty = tty.clone();
+    let draw = Box::new(move |data: &mut LoopData| {
         let mut backend = tty.borrow_mut();
         if !data.seat_active || !backend.device.is_active() {
             return;
@@ -156,17 +161,36 @@ pub(crate) fn insert(
             warn!(%error, "DRM frame failed");
             render_stop.stop();
         }
-    })))
+    });
+    Ok(crate::Redraw {
+        draw,
+        shutdown: Box::new(move |loop_to_stop, seat_active| {
+            let handle = loop_to_stop.handle();
+            if (!seat_active || !shutdown_tty.borrow().session.is_active())
+                && shutdown_tty.borrow().device.is_active()
+            {
+                shutdown_tty.borrow_mut().device.pause();
+            }
+            handle.remove(keyboard_token);
+            handle.remove(drm_token);
+            handle.remove(wallpaper_token);
+            handle.remove(udev_token);
+            // The DRM device, EGL renderer and libinput context are now gone.
+            // The notifier is the strong owner of the libseat seat.
+            drop(shutdown_tty);
+            handle.remove(seat_token);
+        }),
+    })
 }
 
 fn insert_wallpaper_redraw(
     event_loop: &EventLoop<LoopData>,
     tty: Rc<RefCell<Tty>>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<RegistrationToken, Box<dyn Error>> {
     let (ping, source) = smithay::reexports::calloop::ping::make_ping()?;
     let redraw_tty = tty;
     let redraw_stop = event_loop.get_signal();
-    let _wallpaper_token = event_loop.handle().insert_source(source, move |(), (), data| {
+    let wallpaper_token = event_loop.handle().insert_source(source, move |(), (), data| {
         let mut backend = redraw_tty.borrow_mut();
         if data.seat_active
             && backend.device.is_active()
@@ -178,14 +202,17 @@ fn insert_wallpaper_redraw(
         }
     })?;
     tehuti::wallpaper::set_redraw_ping(ping)?;
-    Ok(())
+    Ok(wallpaper_token)
 }
 
-fn insert_keyboard(event_loop: &EventLoop<LoopData>, tty: &Rc<RefCell<Tty>>) -> Result<(), Box<dyn Error>> {
+fn insert_keyboard(
+    event_loop: &EventLoop<LoopData>,
+    tty: &Rc<RefCell<Tty>>,
+) -> Result<RegistrationToken, Box<dyn Error>> {
     let keyboard_tty = tty.clone();
     let keyboard_stop = event_loop.get_signal();
     let input_backend = smithay::backend::libinput::LibinputInputBackend::new(tty.borrow().libinput.clone());
-    let _input_token = event_loop
+    let input_token = event_loop
         .handle()
         .insert_source(input_backend, move |event, (), data| {
             use smithay::backend::input::{InputEvent, KeyState, KeyboardKeyEvent};
@@ -219,19 +246,23 @@ fn insert_keyboard(event_loop: &EventLoop<LoopData>, tty: &Rc<RefCell<Tty>>) -> 
                 data.compositor.release_host_keys();
             }
         })?;
-    Ok(())
+    Ok(input_token)
 }
 
 fn insert_seat(
     event_loop: &EventLoop<LoopData>,
     notifier: smithay::backend::session::libseat::LibSeatSessionNotifier,
-    seat_tty: Rc<RefCell<Tty>>,
-) -> Result<(), Box<dyn Error>> {
+    seat_tty: &Rc<RefCell<Tty>>,
+) -> Result<RegistrationToken, Box<dyn Error>> {
+    let seat_tty = Rc::downgrade(seat_tty);
     let weak_handle = event_loop.handle().downgrade();
     let stop = event_loop.get_signal();
-    let _seat_token = event_loop
+    let seat_token = event_loop
         .handle()
         .insert_source(notifier, move |event, (), data| {
+            let Some(seat_tty) = seat_tty.upgrade() else {
+                return;
+            };
             let mut tty = seat_tty.borrow_mut();
             match event {
                 Event::PauseSession => {
@@ -271,7 +302,7 @@ fn insert_seat(
                 },
             }
         })?;
-    Ok(())
+    Ok(seat_token)
 }
 
 /// The DRM output at its mode and `TEHUTI_SCALE`, advertised to clients.
