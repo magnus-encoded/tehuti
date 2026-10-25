@@ -1291,6 +1291,7 @@ impl Compositor {
             Action::Notice { text } => {
                 self.show_notice(text.as_str());
             }
+            Action::ToggleTicker => {}
         }
     }
 

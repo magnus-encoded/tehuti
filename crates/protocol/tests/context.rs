@@ -298,7 +298,7 @@ text = "a\u0000b"
     fn hold_is_an_opt_in_boolean_on_plain_button_keys() {
         use tehuti_protocol::{Action, ButtonName};
         let context = parse_context(
-            "app_id = 'mgba-qt'\n[buttons]\nsouth = { key = 'x', hold = true }\neast = { key = 'z', hold = false }\nnorth = { key = 'enter' }",
+            "app_id = 'org.example.Game'\n[buttons]\nsouth = { key = 'x', hold = true }\neast = { key = 'z', hold = false }\nnorth = { key = 'enter' }",
         )
         .unwrap();
         assert_eq!(context.held_key_for(ButtonName::South), Some(KeyName::X));
@@ -323,9 +323,87 @@ text = "a\u0000b"
             "[buttons]\n[speech]\n'jump' = { key = 'x', hold = true }",
         ] {
             assert!(
-                parse_context(&format!("app_id = 'mgba-qt'\n{source}")).is_err(),
+                parse_context(&format!("app_id = 'org.example.Game'\n{source}")).is_err(),
                 "{source}"
             );
         }
+    }
+
+    #[test]
+    fn a_speech_icon_is_optional_and_keeps_the_action() {
+        use tehuti_protocol::{Action, Modifier};
+        let context = parse_context(
+            "app_id = 'org.example.Game'\n[buttons]\n[speech]\n\"Lagre spillet.\" = { key = 'f1', mods = ['shift'], icon = '\u{1f4be}' }\n\"Pause.\" = { key = 'p', mods = ['ctrl'] }",
+        )
+        .unwrap();
+        assert_eq!(
+            context.speech_action("lagre spillet"),
+            Some(Action::Key {
+                key: KeyName::F1,
+                mods: vec![Modifier::Shift]
+            })
+        );
+        let mut mappings: Vec<_> = context
+            .speech_mappings()
+            .map(|mapping| (mapping.phrase, mapping.icon))
+            .collect();
+        mappings.sort_unstable();
+        assert_eq!(
+            mappings,
+            [("Lagre spillet.", Some("\u{1f4be}")), ("Pause.", None)],
+            "phrases keep the file's spelling"
+        );
+    }
+
+    #[test]
+    fn a_speech_entry_rejects_unknown_fields_and_bad_icons_beside_an_icon() {
+        for entry in [
+            "{ key = 'enter', icon = 'x', extra = 1 }",
+            "{ icon = 'x' }",
+            "{ key = 'enter', icon = 1 }",
+            "{ key = 'enter', icon = '\0' }",
+            "{ key = 'enter', hold = true, icon = 'x' }",
+        ] {
+            assert!(
+                parse_context(&format!("app_id = 'test'\n[buttons]\n[speech]\n'go' = {entry}")).is_err(),
+                "{entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn ticker_options_are_optional_and_strict() {
+        use tehuti_protocol::{TickerConfig, TickerSpeech};
+        let base = "app_id = 'test'\n[buttons]\n";
+        assert_eq!(parse_context(base).unwrap().ticker(), &TickerConfig::default());
+        let context = parse_context(&format!("{base}[ticker]\nenabled = true\nspeech = 'icons'")).unwrap();
+        assert_eq!(
+            context.ticker(),
+            &TickerConfig {
+                enabled: Some(true),
+                speech: Some(TickerSpeech::Icons)
+            }
+        );
+        for setting in ["enabled = 'yes'", "speech = 'some'", "speed = 2"] {
+            assert!(
+                parse_context(&format!("{base}[ticker]\n{setting}")).is_err(),
+                "{setting}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_button_or_phrase_can_toggle_the_ticker() {
+        use tehuti_protocol::{Action, ButtonName};
+        let context = parse_context(
+            "app_id = 'test'\n[buttons]\nright_stick = { ticker = 'toggle' }\n[speech]\n'ticker' = { ticker = 'toggle' }",
+        )
+        .unwrap();
+        assert_eq!(
+            context.action_for(ButtonName::RightStick),
+            Some(Action::ToggleTicker)
+        );
+        assert_eq!(context.speech_action("Ticker."), Some(Action::ToggleTicker));
+        assert!(parse_context("app_id = 'test'\n[buttons]\neast = { ticker = 'show' }").is_err());
     }
 }
