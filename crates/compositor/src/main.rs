@@ -172,28 +172,72 @@ fn insert_backend(
     )
 }
 
-#[expect(clippy::too_many_lines, reason = "speech spawn stays in startup")]
+/// Exit codes for a start refused before any session setup.
+const EXIT_USAGE: u8 = 2;
+const EXIT_ALREADY_RUNNING: u8 = 3;
+
+fn print_usage() -> Result<ExitCode, Box<dyn Error>> {
+    use std::io::Write;
+    write!(std::io::stdout().lock(), "{}", tehuti::cli::USAGE)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn refuse(message: &dyn core::fmt::Display, code: u8) -> Result<ExitCode, Box<dyn Error>> {
+    use std::io::Write;
+    writeln!(std::io::stderr().lock(), "tehuti: {message}")?;
+    Ok(ExitCode::from(code))
+}
+
 fn main() -> Result<ExitCode, Box<dyn Error>> {
-    let mut application = std::env::args_os().skip(1);
-    let first = application.next();
-    if matches!(first.as_deref(), Some(argument) if argument == "--version" || argument == "-V") {
-        return print_version();
-    }
-    if first.as_deref() == Some(std::ffi::OsStr::new("--check-config")) {
-        return check_config(application);
-    }
+    let (context_directory, program, application) = match tehuti::cli::parse(std::env::args_os().skip(1)) {
+        Ok(tehuti::cli::Invocation::Help) => return print_usage(),
+        Ok(tehuti::cli::Invocation::Version) => return print_version(),
+        Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
+        Ok(tehuti::cli::Invocation::Session {
+            context_directory,
+            application,
+            application_arguments,
+        }) => (context_directory, application, application_arguments),
+        Err(error) => {
+            return refuse(
+                &format_args!("{error}\n{}", tehuti::cli::USAGE.trim_end()),
+                EXIT_USAGE,
+            );
+        }
+    };
+    let _instance = match tehuti::instance::acquire_from_env(tehuti::backend::select(
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        std::env::var_os("DISPLAY").as_deref(),
+    )) {
+        Ok(lock) => lock,
+        Err(error) => {
+            let code = if matches!(error, tehuti::instance::InstanceError::AlreadyRunning { .. }) {
+                EXIT_ALREADY_RUNNING
+            } else {
+                1
+            };
+            return refuse(&error, code);
+        }
+    };
+    start_session(&context_directory, program, application)
+}
+
+#[expect(clippy::too_many_lines, reason = "speech spawn stays in startup")]
+fn start_session(
+    context_directory: &std::ffi::OsStr,
+    program: Option<std::ffi::OsString>,
+    application: Vec<std::ffi::OsString>,
+) -> Result<ExitCode, Box<dyn Error>> {
     initialize_tracing();
-    let context_directory = first.ok_or("usage: tehuti <context-directory> [application] [arguments...]")?;
-    let program = application.next();
 
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     compositor.set_decorations(tehuti::decorations::from_env());
-    compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(&context_directory)));
+    compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(context_directory)));
     install_plugins(
         &event_loop,
-        std::path::Path::new(&context_directory),
+        std::path::Path::new(context_directory),
         &mut compositor,
     )?;
     match tehuti::input_choice_store::Store::from_env() {
@@ -249,7 +293,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             pad_reads_without_input: 0,
             report: tehuti::pacing::Interval::new(tehuti::pacing::STATISTICS_PERIOD),
         },
-        context_watch: insert_context_watch(&event_loop, std::path::Path::new(&context_directory)),
+        context_watch: insert_context_watch(&event_loop, std::path::Path::new(context_directory)),
     };
     let result = run(&mut event_loop, &mut data, child);
     let code = data.exit_code();
