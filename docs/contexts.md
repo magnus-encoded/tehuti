@@ -59,6 +59,20 @@ Without the option, unmatched speech shows “No speech mapping” for three
 seconds above the client without changing focus. Record (Share) controls push-to-talk
 by default. Configured push-to-talk buttons never reach context mappings.
 
+## Checking a config
+
+`tehuti --check-config [directory]` parses every `context.toml` and the
+`menu.toml` in the directory, `~/.config/tehuti` by default, with the parsers
+Tehuti uses. It prints each parse error, unknown fields included, and warns
+about mappings that never take effect: a `[buttons]` entry for Guide (the
+escape chord takes it), for South in the global context unless it sends plain
+Enter (the global layer sends Enter for South wherever the focused context does
+not map it; a focused context's own South mapping replaces that Enter), or for
+a push-to-talk button, and a context whose `app_id` an earlier file already
+claims. Modal screens such as the on-screen keyboard, mouse mode and the
+settings pages take buttons only while open and are not reported. It exits 1 when any file has an error, and 0
+when only warnings remain. It never starts a session.
+
 ## Reload
 
 Tehuti watches the context directory and its child directories. Saving any

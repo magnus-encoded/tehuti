@@ -130,6 +130,29 @@ fn print_version() -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn check_config(mut arguments: impl Iterator<Item = std::ffi::OsString>) -> Result<ExitCode, Box<dyn Error>> {
+    use std::io::Write;
+    let directory = match arguments.next() {
+        Some(directory) => PathBuf::from(directory),
+        None => std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .ok_or("neither XDG_CONFIG_HOME nor HOME is set")?
+            .join("tehuti"),
+    };
+    if arguments.next().is_some() {
+        return Err("usage: tehuti --check-config [config-directory]".into());
+    }
+    let report = tehuti::config_check::check(&directory);
+    write!(std::io::stdout().lock(), "{report}")?;
+    Ok(if report.has_errors() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
 fn insert_backend(
     event_loop: &EventLoop<LoopData>,
     display: &smithay::reexports::wayland_server::DisplayHandle,
@@ -169,6 +192,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     let (context_directory, program, application) = match tehuti::cli::parse(std::env::args_os().skip(1)) {
         Ok(tehuti::cli::Invocation::Help) => return print_usage(),
         Ok(tehuti::cli::Invocation::Version) => return print_version(),
+        Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
         Ok(tehuti::cli::Invocation::Session {
             context_directory,
             application,

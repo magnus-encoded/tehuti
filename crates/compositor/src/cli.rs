@@ -6,6 +6,7 @@ pub const USAGE: &str = "\
 usage: tehuti <context-directory> [application] [arguments...]
        tehuti --help | -h
        tehuti --version | -V
+       tehuti --check-config [config-directory]
 ";
 
 /// What one run of the binary does.
@@ -13,6 +14,8 @@ usage: tehuti <context-directory> [application] [arguments...]
 pub enum Invocation {
     Help,
     Version,
+    /// Check the configuration directory; the rest of the arguments follow the option.
+    CheckConfig(Vec<OsString>),
     /// Start the compositor with this context directory and optional first client.
     Session {
         context_directory: OsString,
@@ -42,6 +45,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
     match first.to_str() {
         Some("--help" | "-h") => Ok(Invocation::Help),
         Some("--version" | "-V") => Ok(Invocation::Version),
+        Some("--check-config") => Ok(Invocation::CheckConfig(arguments.collect())),
         _ if first.as_encoded_bytes().starts_with(b"-") => Err(UsageError::UnknownOption(first)),
         _ => Ok(Invocation::Session {
             context_directory: first,

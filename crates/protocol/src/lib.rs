@@ -322,6 +322,11 @@ struct PadConfig {
 }
 
 impl Context {
+    /// The buttons this context's `[buttons]` table maps, in no particular order.
+    pub fn mapped_buttons(&self) -> impl Iterator<Item = ButtonName> + '_ {
+        self.buttons.keys().copied()
+    }
+
     #[must_use]
     pub fn push_to_talk(&self, button: ButtonName) -> bool {
         self.push_to_talk.contains(&button)
