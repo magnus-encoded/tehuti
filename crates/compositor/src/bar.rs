@@ -1,6 +1,5 @@
 //! Shared raster bar for GLES and pixman output rendering.
 
-use font8x8::UnicodeFonts;
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -15,12 +14,29 @@ use smithay::{
     output::Output,
     utils::Transform,
 };
-use tehuti_core::bar::{Bar, Segment, Tone};
+use tehuti_core::{
+    bar::{Bar, Segment, Tone},
+    ticker,
+};
+
+/// What the bar shows; the buffer is redrawn only when this changes.
+type Key = (
+    Vec<Segment>,
+    String,
+    i32,
+    i32,
+    i32,
+    Option<(std::sync::Arc<str>, usize)>,
+);
+
+/// The space between ticker entries.
+const TICKER_SEPARATOR: &str = "   \u{b7}   ";
 
 #[derive(Debug, Default)]
 pub struct Buffer {
-    key: Option<(Vec<Segment>, String, i32, i32, i32)>,
-    buffer: Option<MemoryRenderBuffer>,
+    key: Option<Key>,
+    image: Option<MemoryRenderBuffer>,
+    ticker_text: Option<(std::sync::Arc<[ticker::Entry]>, std::sync::Arc<str>)>,
 }
 
 impl Buffer {
@@ -64,14 +80,104 @@ impl Buffer {
         let scale = output.current_scale().integer_scale().max(1);
         let height = tehuti_core::bar::HEIGHT.saturating_mul(scale).min(mode.size.h);
         let segments = bar.segments();
-        let key = (segments, clock.to_owned(), mode.size.w, scale, height);
+        let unit = usize::try_from(scale).ok()?;
+        let width = usize::try_from(mode.size.w).ok()?;
+        let layout = Layout::new(&segments, width, unit);
+        let ticker = bar.ticker().map(|view| {
+            let text = self.ticker_text(&view.entries);
+            let content = text.chars().count().saturating_mul(8).saturating_mul(unit);
+            let offset = ticker::scroll_offset(
+                view.step,
+                content,
+                layout.ticker.1.saturating_sub(layout.ticker.0),
+                ticker::STEP_PIXELS.saturating_mul(unit),
+                ticker::REPEAT_GAP.saturating_mul(unit),
+            );
+            (text, offset)
+        });
+        let key = (segments, clock.to_owned(), mode.size.w, scale, height, ticker);
         if self.key.as_ref() != Some(&key) {
-            self.buffer = raster(&key.0, &key.1, mode.size.w, height, scale);
+            self.image = raster(&key, &layout, height);
             self.key = Some(key);
         }
-        self.buffer
+        self.image
             .as_ref()
             .map(|buffer| (buffer, (0.0, f64::from(mode.size.h.saturating_sub(height)))))
+    }
+
+    /// The ticker line for `entries`, built once per entry list.
+    fn ticker_text(&mut self, entries: &std::sync::Arc<[ticker::Entry]>) -> std::sync::Arc<str> {
+        if self
+            .ticker_text
+            .as_ref()
+            .is_none_or(|(built, _)| built != entries)
+        {
+            let text = entries
+                .iter()
+                .map(|entry| entry.text(crate::pictograms::drawable))
+                .collect::<Vec<_>>()
+                .join(TICKER_SEPARATOR);
+            self.ticker_text = Some((entries.clone(), text.into()));
+        }
+        self.ticker_text
+            .as_ref()
+            .map_or_else(|| "".into(), |(_, text)| text.clone())
+    }
+}
+
+/// Where the chips, the ticker and the clock sit along the bar, in pixels.
+struct Layout {
+    unit: usize,
+    width: usize,
+    clock_start: usize,
+    arrow: usize,
+    chips: Vec<(usize, usize)>,
+    ticker: (usize, usize),
+}
+
+impl Layout {
+    fn new(segments: &[Segment], width: usize, unit: usize) -> Self {
+        let clock_width = 104usize.saturating_mul(unit).min(width);
+        let clock_start = width.saturating_sub(clock_width);
+        let arrow = 12usize.saturating_mul(unit);
+        let mut next_start = 0usize;
+        let mut chips = Vec::new();
+        for (index, segment) in segments.iter().enumerate() {
+            let wanted = segment
+                .text
+                .chars()
+                .count()
+                .saturating_mul(16)
+                .saturating_add(36)
+                .saturating_mul(unit);
+            let available = clock_start.saturating_sub(arrow).saturating_sub(next_start);
+            let wanted = wanted.min(
+                available
+                    .checked_div(segments.len().saturating_sub(index))
+                    .unwrap_or_default(),
+            );
+            let end = next_start
+                .saturating_add(wanted)
+                .min(clock_start.saturating_sub(arrow));
+            if end <= next_start {
+                break;
+            }
+            chips.push((next_start, end));
+            next_start = end;
+        }
+        let margin = 8usize.saturating_mul(unit);
+        let ticker = (
+            next_start.saturating_add(arrow).saturating_add(margin),
+            clock_start.saturating_sub(margin),
+        );
+        Self {
+            unit,
+            width,
+            clock_start,
+            arrow,
+            chips,
+            ticker,
+        }
     }
 }
 
@@ -85,67 +191,36 @@ const fn colour(tone: Tone) -> [u8; 4] {
     }
 }
 
-fn raster(
-    segments: &[Segment],
-    clock: &str,
-    width: i32,
-    height: i32,
-    scale: i32,
-) -> Option<MemoryRenderBuffer> {
-    let width_usize = usize::try_from(width).ok()?;
+fn raster(key: &Key, layout: &Layout, height: i32) -> Option<MemoryRenderBuffer> {
+    let (segments, clock, width, scale, _, ticker) = key;
     let height_usize = usize::try_from(height).ok()?;
     let mut canvas = Canvas {
-        width: width_usize,
+        width: layout.width,
         height: height_usize,
-        pixels: vec![0; width_usize.checked_mul(height_usize)?.checked_mul(4)?],
+        pixels: vec![0; layout.width.checked_mul(height_usize)?.checked_mul(4)?],
     };
     for pixel in canvas.pixels.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[30, 24, 20, 255]);
     }
-    let unit = usize::try_from(scale).ok()?;
-    let clock_width = 104usize.saturating_mul(unit).min(width_usize);
-    let clock_start = width_usize.saturating_sub(clock_width);
-    let arrow = 12usize.saturating_mul(unit);
-    let mut next_start = 0usize;
-    let mut chips = Vec::new();
-    for (index, segment) in segments.iter().enumerate() {
-        let wanted = segment
-            .text
-            .chars()
-            .count()
-            .saturating_mul(16)
-            .saturating_add(36)
-            .saturating_mul(unit);
-        let available = clock_start.saturating_sub(arrow).saturating_sub(next_start);
-        let wanted = wanted.min(
-            available
-                .checked_div(segments.len().saturating_sub(index))
-                .unwrap_or_default(),
-        );
-        let end = next_start
-            .saturating_add(wanted)
-            .min(clock_start.saturating_sub(arrow));
-        if end <= next_start {
-            break;
-        }
-        chips.push((next_start, end, segment));
-        next_start = end;
-    }
-    canvas.rectangle(clock_start, width_usize, colour(Tone::Context));
+    let unit = layout.unit;
+    canvas.rectangle(layout.clock_start, layout.width, colour(Tone::Context));
     canvas.text(
         clock,
-        clock_start.saturating_add(16usize.saturating_mul(unit)),
-        width_usize,
+        layout.clock_start.saturating_add(16usize.saturating_mul(unit)),
+        layout.width,
         unit,
     );
-    for (start, end, segment) in chips.into_iter().rev() {
-        canvas.chip(start, end, segment, arrow, clock_start, unit);
+    if let Some((text, offset)) = ticker {
+        canvas.ticker(text, *offset, layout.ticker, unit);
+    }
+    for ((start, end), segment) in layout.chips.iter().zip(segments).rev() {
+        canvas.chip(*start, *end, segment, layout.arrow, layout.clock_start, unit);
     }
     Some(MemoryRenderBuffer::from_slice(
         &canvas.pixels,
         Fourcc::Argb8888,
-        (width, height),
-        scale,
+        (*width, height),
+        *scale,
         Transform::Normal,
         None,
     ))
@@ -217,34 +292,84 @@ impl Canvas {
             let glyph = if character == '…' {
                 [0, 0, 0, 0, 0, 0, 42, 0]
             } else {
-                font8x8::BASIC_FONTS
-                    .get(character)
-                    .or_else(|| font8x8::LATIN_FONTS.get(character))
-                    .unwrap_or([255, 129, 129, 129, 129, 129, 129, 255])
+                crate::pictograms::glyph(character).unwrap_or([255, 129, 129, 129, 129, 129, 129, 255])
             };
-            for (row, bits) in glyph.into_iter().enumerate() {
-                for column in 0..8usize {
-                    if bits
-                        & (1u8
-                            .checked_shl(u32::try_from(column).unwrap_or_default())
-                            .unwrap_or_default())
-                        == 0
-                    {
-                        continue;
+            for (column, row) in lit(glyph) {
+                for vertical in 0..size {
+                    for horizontal in 0..size {
+                        self.pixel(
+                            left.saturating_add(column.saturating_mul(size))
+                                .saturating_add(horizontal),
+                            top.saturating_add(row.saturating_mul(size))
+                                .saturating_add(vertical),
+                            [239, 235, 229, 255],
+                        );
                     }
-                    for vertical in 0..size {
-                        for horizontal in 0..size {
-                            self.pixel(
-                                left.saturating_add(column.saturating_mul(size))
-                                    .saturating_add(horizontal),
-                                top.saturating_add(row.saturating_mul(size))
-                                    .saturating_add(vertical),
-                                [239, 235, 229, 255],
-                            );
+                }
+            }
+        }
+    }
+
+    /// Draws `text` in one-unit glyphs inside `clip`, shifted left by `offset`, with a
+    /// repeat one text width plus the repeat gap later so the line loops.
+    fn ticker(&mut self, text: &str, offset: usize, clip: (usize, usize), unit: usize) {
+        let (start, end) = clip;
+        if end.saturating_sub(start) < 32usize.saturating_mul(unit) {
+            return;
+        }
+        let advance = 8usize.saturating_mul(unit);
+        let glyphs: Vec<[u8; 8]> = crate::pictograms::glyphs(text).collect();
+        let period = glyphs
+            .len()
+            .saturating_mul(advance)
+            .saturating_add(ticker::REPEAT_GAP.saturating_mul(unit));
+        let top = self.height.saturating_sub(advance) / 2;
+        for copy in 0..2usize {
+            for (index, glyph) in glyphs.iter().enumerate() {
+                let left = index
+                    .saturating_mul(advance)
+                    .saturating_add(copy.saturating_mul(period));
+                if left.saturating_add(advance) <= offset
+                    || left >= offset.saturating_add(end.saturating_sub(start))
+                {
+                    continue;
+                }
+                for (column, row) in lit(*glyph) {
+                    for vertical in 0..unit {
+                        for horizontal in 0..unit {
+                            let shifted = left
+                                .saturating_add(column.saturating_mul(unit))
+                                .saturating_add(horizontal);
+                            let Some(on_bar) = shifted
+                                .checked_sub(offset)
+                                .map(|shift| start.saturating_add(shift))
+                            else {
+                                continue;
+                            };
+                            if on_bar < end {
+                                self.pixel(
+                                    on_bar,
+                                    top.saturating_add(row.saturating_mul(unit))
+                                        .saturating_add(vertical),
+                                    [196, 184, 168, 255],
+                                );
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+/// The lit pixels of an 8x8 glyph as (column, row).
+fn lit(glyph: [u8; 8]) -> impl Iterator<Item = (usize, usize)> {
+    glyph.into_iter().enumerate().flat_map(|(row, bits)| {
+        (0..8usize).filter_map(move |column| {
+            let mask = 1u8
+                .checked_shl(u32::try_from(column).unwrap_or_default())
+                .unwrap_or_default();
+            (bits & mask != 0).then_some((column, row))
+        })
+    })
 }

@@ -588,11 +588,20 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
 fn route_controller_input(data: &mut LoopData) -> PostAction {
     let was_attached = !data.controllers.is_empty();
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
+    let mut vendor = None;
     let (events, removed) = input::drain_pads_admitted(&mut data.controllers, |path, controller, event| {
-        gate.admit(path, compositor.controller_chosen(controller.pad.name()), event)
+        let admitted = gate.admit(path, compositor.controller_chosen(controller.pad.name()), event);
+        if admitted {
+            vendor = Some(controller.pad.vendor());
+        }
+        admitted
     });
     if !removed.is_empty() {
         sync_controller_names(data);
+    }
+    if let Some(vendor) = vendor {
+        data.compositor
+            .set_pad_family(tehuti_core::ticker::PadFamily::for_vendor(vendor));
     }
     if events.is_empty() && removed.is_empty() {
         data.pacing.pad_reads_without_input = data.pacing.pad_reads_without_input.saturating_add(1);

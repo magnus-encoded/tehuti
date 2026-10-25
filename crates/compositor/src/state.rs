@@ -264,6 +264,11 @@ impl Compositor {
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
     }
 
+    /// Names ticker buttons after the pad that sent the latest input.
+    pub fn set_pad_family(&mut self, family: tehuti_core::ticker::PadFamily) {
+        self.dispatch.core_mut().set_pad_family(family);
+    }
+
     /// The installed contexts, in priority order.
     #[must_use]
     pub fn contexts(&self) -> &[tehuti_protocol::Context] {
@@ -1291,7 +1296,7 @@ impl Compositor {
             Action::Notice { text } => {
                 self.show_notice(text.as_str());
             }
-            Action::ToggleTicker => {}
+            Action::ToggleTicker => self.dispatch.core_mut().toggle_ticker(),
         }
     }
 

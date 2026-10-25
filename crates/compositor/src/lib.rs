@@ -38,6 +38,7 @@ pub mod rendering;
 pub mod scale;
 
 pub mod bar;
+pub mod pictograms;
 
 pub mod osk;
 pub mod overlays;
