@@ -86,9 +86,9 @@ right_stick = { ticker = "toggle" }
                 Level::App
             )),
             [
-                "Cross -> X (hold)",
-                "Circle -> Escape",
-                "Up -> Up (hold)",
+                "Cross -> [X] hold",
+                "Circle -> [Esc]",
+                "Up -> [\u{2191}] hold",
                 "L1 -> Column left",
                 "R3 -> \u{1f4dc}",
                 "Options -> \u{1f3a4}",
@@ -97,7 +97,7 @@ right_stick = { ticker = "toggle" }
                 "\"Lavere lyd\" / \"Skru ned lyden\" -> \u{1f509}",
                 "\"Lukk\" -> \u{274c}",
                 "\"Pause\" -> \u{23f8}",
-                "\"Last spillet\" -> F1",
+                "\"Last spillet\" -> [F1]",
             ]
         );
         let lettered = ticker::entries(
@@ -106,8 +106,70 @@ right_stick = { ticker = "toggle" }
             PadFamily::Letters,
             Level::App,
         );
-        assert_eq!(lettered[0].text(|_| true), "A -> X (hold)");
-        assert_eq!(lettered[1].text(|_| true), "B -> Escape");
+        assert_eq!(lettered[0].text(|_| true), "A -> [X] hold");
+        assert_eq!(lettered[1].text(|_| true), "B -> [Esc]");
+    }
+
+    #[test]
+    fn buttons_are_symbols_in_the_pads_colours_and_keys_are_keycaps() {
+        use tehuti_protocol::ButtonName;
+        use ticker::{Direction, Piece, Shape};
+        let symbolic = PadFamily::Symbols;
+        let Piece::Glyph { shape, colour } = symbolic.piece(ButtonName::South) else {
+            panic!("Cross is a symbol");
+        };
+        assert_eq!(shape, Shape::Cross, "South on a symbolic pad is the cross");
+        assert!(colour.2 > colour.0, "the cross is blue: {colour:?}");
+        let Piece::Glyph {
+            shape: letter_shape,
+            colour: green,
+        } = PadFamily::Letters.piece(ButtonName::South)
+        else {
+            panic!("A is a symbol");
+        };
+        assert_eq!(
+            letter_shape,
+            Shape::Disc('A'),
+            "South on an lettered pad is a lettered disc"
+        );
+        assert!(green.1 > green.0 && green.1 > green.2, "A is green: {green:?}");
+        assert!(
+            matches!(
+                symbolic.piece(ButtonName::DpadLeft),
+                Piece::Glyph {
+                    shape: Shape::Dpad(Direction::Left),
+                    ..
+                }
+            ),
+            "the D-pad is drawn"
+        );
+        assert_eq!(
+            symbolic.piece(ButtonName::LeftBumper),
+            Piece::Chip("L1".into()),
+            "bumpers are chips"
+        );
+        assert_eq!(
+            ticker::action_pieces(&tehuti_protocol::Action::Key {
+                key: tehuti_protocol::KeyName::O,
+                mods: vec![tehuti_protocol::Modifier::Ctrl],
+            }),
+            [
+                Piece::Key("Ctrl".into()),
+                Piece::Text("+".into()),
+                Piece::Key("O".into())
+            ],
+            "a chord is keycaps joined by +"
+        );
+        assert_eq!(
+            ticker::key_cap(tehuti_protocol::KeyName::Enter),
+            "\u{23ce}",
+            "Enter is a return symbol"
+        );
+        assert_eq!(
+            ticker::key_cap(tehuti_protocol::KeyName::Backspace),
+            "\u{232b}",
+            "Backspace is its symbol"
+        );
     }
 
     #[test]
@@ -119,7 +181,7 @@ right_stick = { ticker = "toggle" }
             PadFamily::Letters,
             Level::App,
         );
-        assert_eq!(entries[0].text(|_| true), "A -> Enter");
+        assert_eq!(entries[0].text(|_| true), "A -> [\u{23ce}]");
     }
 
     #[test]
@@ -152,7 +214,10 @@ right_stick = { ticker = "toggle" }
             words.contains(&"\"Lavere lyd\" / \"Skru ned lyden\" -> Vol-".to_owned()),
             "{words:?}"
         );
-        assert!(words.contains(&"\"Last spillet\" -> F1".to_owned()), "{words:?}");
+        assert!(
+            words.contains(&"\"Last spillet\" -> [F1]".to_owned()),
+            "{words:?}"
+        );
     }
 
     #[test]
@@ -161,7 +226,7 @@ right_stick = { ticker = "toggle" }
             "app_id = 'a'\n[ticker]\nenabled = true\n[buttons]\n[speech]\n'Hopp' = { key = 'space', icon = '🦘' }",
         ]);
         let entries = ticker::entries(&contexts, Some("a"), PadFamily::Letters, Level::App);
-        assert_eq!(entries.last().unwrap().text(|_| false), "\"Hopp\" -> Space");
+        assert_eq!(entries.last().unwrap().text(|_| false), "\"Hopp\" -> [Space]");
         assert_eq!(entries.last().unwrap().text(|_| true), "\"Hopp\" -> \u{1f998}");
     }
 
@@ -194,7 +259,7 @@ right_stick = { ticker = "toggle" }
             PadFamily::Letters,
             Level::App,
         ));
-        assert_eq!(entries[..2], ["Pad -> app", "Hold View+LB -> \u{1f3a4}"]);
+        assert_eq!(entries[..2], ["Pad -> app", "Hold View + LB -> \u{1f3a4}"]);
     }
 
     #[test]
@@ -222,23 +287,23 @@ right_stick = { ticker = "toggle" }
             "org.example.Game",
         );
         let first = state.bar().ticker().unwrap().entries;
-        assert_eq!(first[0].text(|_| true), "A -> X (hold)");
+        assert_eq!(first[0].text(|_| true), "A -> [X] hold");
         let mut state = focus(state, "org.example.Terminal");
         assert_eq!(
             state.bar().ticker().unwrap().entries[0].text(|_| true),
-            "A -> Enter"
+            "A -> [\u{23ce}]"
         );
         state.replace_contexts(contexts(&[
             &GLOBAL.replace("east = { key = \"escape\" }", "south = { key = \"space\" }")
         ]));
         assert_eq!(
             state.bar().ticker().unwrap().entries[0].text(|_| true),
-            "A -> Space"
+            "A -> [Space]"
         );
         state.set_pad_family(PadFamily::Symbols);
         assert_eq!(
             state.bar().ticker().unwrap().entries[0].text(|_| true),
-            "Cross -> Space"
+            "Cross -> [Space]"
         );
     }
 

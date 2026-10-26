@@ -65,6 +65,125 @@ impl PadFamily {
             (_, ButtonName::DpadRight) => "Right",
         }
     }
+
+    /// The button as it looks on this pad: a coloured face symbol, a D-pad arm or a label chip.
+    #[must_use]
+    pub fn piece(self, button: ButtonName) -> Piece {
+        let face = |shape, colour| Piece::Glyph { shape, colour };
+        match (self, button) {
+            (Self::Letters, ButtonName::South) => face(Shape::Disc('A'), Rgb(76, 175, 80)),
+            (Self::Letters, ButtonName::East) => face(Shape::Disc('B'), Rgb(229, 57, 53)),
+            (Self::Letters, ButtonName::West) => face(Shape::Disc('X'), Rgb(30, 136, 229)),
+            (Self::Letters, ButtonName::North) => face(Shape::Disc('Y'), Rgb(253, 216, 53)),
+            (Self::Letters, ButtonName::Select) => face(Shape::View, Rgb::WHITE),
+            (Self::Letters, ButtonName::Start) => face(Shape::Menu, Rgb::WHITE),
+            (Self::Symbols, ButtonName::South) => face(Shape::Cross, Rgb(124, 178, 232)),
+            (Self::Symbols, ButtonName::East) => face(Shape::Ring, Rgb(255, 102, 102)),
+            (Self::Symbols, ButtonName::West) => face(Shape::Square, Rgb(255, 105, 248)),
+            (Self::Symbols, ButtonName::North) => face(Shape::Triangle, Rgb(64, 226, 160)),
+            (_, ButtonName::DpadUp) => face(Shape::Dpad(Direction::Upward), Rgb::WHITE),
+            (_, ButtonName::DpadDown) => face(Shape::Dpad(Direction::Down), Rgb::WHITE),
+            (_, ButtonName::DpadLeft) => face(Shape::Dpad(Direction::Left), Rgb::WHITE),
+            (_, ButtonName::DpadRight) => face(Shape::Dpad(Direction::Right), Rgb::WHITE),
+            _ => Piece::Chip(self.label(button).into()),
+        }
+    }
+}
+
+/// A colour as red, green and blue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Rgb(pub u8, pub u8, pub u8);
+
+impl Rgb {
+    pub const WHITE: Self = Self(239, 235, 229);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    Upward,
+    Down,
+    Left,
+    Right,
+}
+
+/// A small symbol the renderer draws in one colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Shape {
+    /// A letter cut out of a filled disc, as on lettered face buttons.
+    Disc(char),
+    /// The geometric face symbols, on a dark disc.
+    Cross,
+    Ring,
+    Square,
+    Triangle,
+    /// A D-pad with one arm lit.
+    Dpad(Direction),
+    /// View: two overlapping windows.
+    View,
+    /// Menu: three lines.
+    Menu,
+}
+
+impl Shape {
+    /// The word for the symbol, for logs and tests.
+    #[must_use]
+    pub fn word(self) -> String {
+        match self {
+            Self::Disc(letter) => letter.into(),
+            Self::Cross => "Cross".into(),
+            Self::Ring => "Circle".into(),
+            Self::Square => "Square".into(),
+            Self::Triangle => "Triangle".into(),
+            Self::Dpad(Direction::Upward) => "Up".into(),
+            Self::Dpad(direction) => format!("{direction:?}"),
+            Self::View => "View".into(),
+            Self::Menu => "Menu".into(),
+        }
+    }
+}
+
+/// One drawn part of a ticker entry.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Piece {
+    Text(String),
+    /// Quieter text, such as `hold`.
+    Dim(String),
+    Glyph {
+        shape: Shape,
+        colour: Rgb,
+    },
+    /// A rounded label, such as a bumper's `LB` or `L1`.
+    Chip(String),
+    /// A keycap: a boxed key label, which may be a symbol such as ⏎ or ←.
+    Key(String),
+    /// A pictogram, with what to draw instead for renderers that cannot draw it.
+    Icon {
+        icon: String,
+        fallback: Vec<Self>,
+    },
+}
+
+impl Piece {
+    /// Plain text for the piece: `[Z]` for a keycap, the icon when `drawable` accepts it.
+    #[must_use]
+    pub fn text(&self, drawable: &impl Fn(&str) -> bool) -> String {
+        match self {
+            Self::Text(text) | Self::Dim(text) | Self::Chip(text) => text.clone(),
+            Self::Glyph { shape, .. } => shape.word(),
+            Self::Key(key) => format!("[{key}]"),
+            Self::Icon { icon, fallback } => {
+                if drawable(icon) {
+                    icon.clone()
+                } else {
+                    fallback
+                        .iter()
+                        .map(|piece| piece.text(drawable))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                }
+            }
+        }
+    }
 }
 
 /// The order buttons appear in; Guide is reserved for Tehuti and never listed.
@@ -198,6 +317,62 @@ fn key_text(key: KeyName) -> String {
     }
 }
 
+/// Keycaps that show a symbol or a short name instead of the key's own name.
+const KEY_CAPS: [(KeyName, &str); 9] = [
+    (KeyName::Enter, "\u{23ce}"),
+    (KeyName::Backspace, "\u{232b}"),
+    (KeyName::Up, "\u{2191}"),
+    (KeyName::Down, "\u{2193}"),
+    (KeyName::Left, "\u{2190}"),
+    (KeyName::Right, "\u{2192}"),
+    (KeyName::Escape, "Esc"),
+    (KeyName::Delete, "Del"),
+    (KeyName::Insert, "Ins"),
+];
+
+/// The label on a keycap: a symbol for Enter, Backspace and the arrows, else a short name.
+#[must_use]
+pub fn key_cap(key: KeyName) -> String {
+    KEY_CAPS
+        .iter()
+        .find(|(known, _)| *known == key)
+        .map_or_else(|| key_text(key), |(_, cap)| (*cap).into())
+}
+
+const fn modifier_cap(modifier: Modifier) -> &'static str {
+    match modifier {
+        Modifier::Ctrl => "Ctrl",
+        Modifier::Alt => "Alt",
+        Modifier::Shift => "Shift",
+        Modifier::Super => "Super",
+    }
+}
+
+/// What an action does as pieces: keycaps joined by `+` for keys, words for the rest.
+#[must_use]
+pub fn action_pieces(action: &Action) -> Vec<Piece> {
+    match action {
+        Action::Key { key, mods } => {
+            let mut pieces = Vec::new();
+            for modifier in mods {
+                pieces.push(Piece::Key(modifier_cap(*modifier).into()));
+                pieces.push(Piece::Text("+".into()));
+            }
+            pieces.push(Piece::Key(key_cap(*key)));
+            pieces
+        }
+        Action::KeyDown { key } | Action::KeyUp { key } => vec![Piece::Key(key_cap(*key))],
+        Action::Launch { .. }
+        | Action::Close
+        | Action::Text { .. }
+        | Action::Notice { .. }
+        | Action::SecretRequest { .. }
+        | Action::Quit
+        | Action::Layout { .. }
+        | Action::ToggleTicker => vec![Piece::Text(action_text(action))],
+    }
+}
+
 const fn layout_text(action: LayoutAction) -> &'static str {
     match action {
         LayoutAction::FocusColumnLeft => "Column left",
@@ -217,36 +392,39 @@ const fn layout_text(action: LayoutAction) -> &'static str {
     }
 }
 
-/// One ticker item: a trigger, and what it does as an icon with a fallback word.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One ticker item: a trigger, and what it does, each as pieces to draw in a row.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Entry {
-    pub trigger: String,
-    pub icon: Option<String>,
-    pub label: String,
+    pub trigger: Vec<Piece>,
+    pub result: Vec<Piece>,
 }
 
 impl Entry {
-    /// `trigger -> result`, with the icon when `drawable` accepts it and the label otherwise.
+    /// `trigger -> result` as plain text, with icons when `drawable` accepts them and words otherwise.
     #[must_use]
     pub fn text(&self, drawable: impl Fn(&str) -> bool) -> String {
-        let result = self
-            .icon
-            .as_deref()
-            .filter(|icon| drawable(icon))
-            .unwrap_or(&self.label);
-        format!("{} -> {result}", self.trigger)
+        let join = |pieces: &[Piece]| {
+            pieces
+                .iter()
+                .map(|piece| piece.text(&drawable))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        format!("{} -> {}", join(&self.trigger), join(&self.result))
     }
 
-    fn new(trigger: String, action: &Action, icon: Option<&str>) -> Self {
-        let icon = icon.or_else(|| built_in_icon(action));
-        let label = icon
-            .and_then(icon_label)
-            .map_or_else(|| action_text(action), Into::into);
-        Self {
-            trigger,
-            icon: icon.map(Into::into),
-            label,
-        }
+    fn new(trigger: Vec<Piece>, action: &Action, icon: Option<&str>) -> Self {
+        let result = icon.or_else(|| built_in_icon(action)).map_or_else(
+            || action_pieces(action),
+            |icon| {
+                vec![Piece::Icon {
+                    icon: icon.into(),
+                    fallback: icon_label(icon)
+                        .map_or_else(|| action_pieces(action), |label| vec![Piece::Text(label.into())]),
+                }]
+            },
+        );
+        Self { trigger, result }
     }
 }
 
@@ -305,18 +483,17 @@ fn button_entries(
     let talk = global.map_or(&[ButtonName::Record][..], Context::push_to_talk_buttons);
     if active.is_some_and(Context::passthrough) {
         let mut entries = vec![Entry {
-            trigger: "Pad".into(),
-            icon: None,
-            label: "app".into(),
+            trigger: vec![Piece::Text("Pad".into())],
+            result: vec![Piece::Text("app".into())],
         }];
         let chord = active.map_or(&[][..], Context::passthrough_push_to_talk);
-        entries.push(talk_entry(chord_text(chord, pad)));
+        entries.push(talk_entry(chord_pieces(chord, pad)));
         return entries;
     }
     BUTTONS
         .iter()
         .filter_map(|button| {
-            let trigger = pad.label(*button).to_owned();
+            let trigger = vec![pad.piece(*button)];
             if talk.contains(button) {
                 return Some(talk_entry(trigger));
             }
@@ -356,24 +533,32 @@ fn button_entries(
                 .and_then(|context| context.held_key_for(*button))
                 .is_some()
             {
-                entry.label.push_str(" (hold)");
+                entry.result.push(Piece::Dim("hold".into()));
             }
             Some(entry)
         })
         .collect()
 }
 
-fn talk_entry(trigger: String) -> Entry {
+fn talk_entry(trigger: Vec<Piece>) -> Entry {
     Entry {
         trigger,
-        icon: Some("\u{1f3a4}".into()),
-        label: "Talk".into(),
+        result: vec![Piece::Icon {
+            icon: "\u{1f3a4}".into(),
+            fallback: vec![Piece::Text("Talk".into())],
+        }],
     }
 }
 
-fn chord_text(chord: &[ButtonName], pad: PadFamily) -> String {
-    let names: Vec<&str> = chord.iter().map(|button| pad.label(*button)).collect();
-    format!("Hold {}", names.join("+"))
+fn chord_pieces(chord: &[ButtonName], pad: PadFamily) -> Vec<Piece> {
+    let mut pieces = vec![Piece::Dim("Hold".into())];
+    for (index, button) in chord.iter().enumerate() {
+        if index > 0 {
+            pieces.push(Piece::Text("+".into()));
+        }
+        pieces.push(pad.piece(*button));
+    }
+    pieces
 }
 
 fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: TickerSpeech) -> Vec<Entry> {
@@ -428,7 +613,7 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
             if phrases.len() > PHRASES_SHOWN {
                 trigger.push_str(" /\u{2026}");
             }
-            Entry::new(trigger, &action, icon.as_deref())
+            Entry::new(vec![Piece::Text(trigger)], &action, icon.as_deref())
         })
         .collect()
 }

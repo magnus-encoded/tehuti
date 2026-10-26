@@ -26,17 +26,17 @@ type Key = (
     i32,
     i32,
     i32,
-    Option<(std::sync::Arc<str>, usize)>,
+    Option<(std::sync::Arc<[ticker::Entry]>, usize)>,
 );
-
-/// The space between ticker entries.
-const TICKER_SEPARATOR: &str = "   \u{b7}   ";
 
 #[derive(Debug, Default)]
 pub struct Buffer {
     key: Option<Key>,
     image: Option<MemoryRenderBuffer>,
-    ticker_text: Option<(std::sync::Arc<[ticker::Entry]>, std::sync::Arc<str>)>,
+    ticker_strip: Option<(
+        std::sync::Arc<[ticker::Entry]>,
+        std::sync::Arc<crate::ticker_strip::Strip>,
+    )>,
 }
 
 impl Buffer {
@@ -84,8 +84,7 @@ impl Buffer {
         let width = usize::try_from(mode.size.w).ok()?;
         let layout = Layout::new(&segments, width, unit);
         let ticker = bar.ticker().map(|view| {
-            let text = self.ticker_text(&view.entries);
-            let content = text.chars().count().saturating_mul(8).saturating_mul(unit);
+            let content = self.ticker_strip(&view.entries).width().saturating_mul(unit);
             let offset = ticker::scroll_offset(
                 view.step,
                 content,
@@ -93,11 +92,16 @@ impl Buffer {
                 ticker::STEP_PIXELS.saturating_mul(unit),
                 ticker::REPEAT_GAP.saturating_mul(unit),
             );
-            (text, offset)
+            (view.entries, offset)
         });
         let key = (segments, clock.to_owned(), mode.size.w, scale, height, ticker);
         if self.key.as_ref() != Some(&key) {
-            self.image = raster(&key, &layout, height);
+            self.image = raster(
+                &key,
+                &layout,
+                height,
+                self.ticker_strip.as_ref().map(|(_, strip)| &**strip),
+            );
             self.key = Some(key);
         }
         self.image
@@ -105,23 +109,19 @@ impl Buffer {
             .map(|buffer| (buffer, (0.0, f64::from(mode.size.h.saturating_sub(height)))))
     }
 
-    /// The ticker line for `entries`, built once per entry list.
-    fn ticker_text(&mut self, entries: &std::sync::Arc<[ticker::Entry]>) -> std::sync::Arc<str> {
-        if self
-            .ticker_text
-            .as_ref()
-            .is_none_or(|(built, _)| built != entries)
-        {
-            let text = entries
-                .iter()
-                .map(|entry| entry.text(crate::pictograms::drawable))
-                .collect::<Vec<_>>()
-                .join(TICKER_SEPARATOR);
-            self.ticker_text = Some((entries.clone(), text.into()));
+    /// The ticker drawn for `entries`, painted once per entry list.
+    fn ticker_strip(
+        &mut self,
+        entries: &std::sync::Arc<[ticker::Entry]>,
+    ) -> std::sync::Arc<crate::ticker_strip::Strip> {
+        match &self.ticker_strip {
+            Some((built, strip)) if built == entries => strip.clone(),
+            _ => {
+                let strip = std::sync::Arc::new(crate::ticker_strip::Strip::paint(entries));
+                self.ticker_strip = Some((entries.clone(), strip.clone()));
+                strip
+            }
         }
-        self.ticker_text
-            .as_ref()
-            .map_or_else(|| "".into(), |(_, text)| text.clone())
     }
 }
 
@@ -191,7 +191,12 @@ const fn colour(tone: Tone) -> [u8; 4] {
     }
 }
 
-fn raster(key: &Key, layout: &Layout, height: i32) -> Option<MemoryRenderBuffer> {
+fn raster(
+    key: &Key,
+    layout: &Layout,
+    height: i32,
+    strip: Option<&crate::ticker_strip::Strip>,
+) -> Option<MemoryRenderBuffer> {
     let (segments, clock, width, scale, _, ticker) = key;
     let height_usize = usize::try_from(height).ok()?;
     let mut canvas = Canvas {
@@ -210,8 +215,8 @@ fn raster(key: &Key, layout: &Layout, height: i32) -> Option<MemoryRenderBuffer>
         layout.width,
         unit,
     );
-    if let Some((text, offset)) = ticker {
-        canvas.ticker(text, *offset, layout.ticker, unit);
+    if let (Some((_, offset)), Some(strip)) = (ticker, strip) {
+        canvas.ticker(strip, *offset, layout.ticker, unit);
     }
     for ((start, end), segment) in layout.chips.iter().zip(segments).rev() {
         canvas.chip(*start, *end, segment, layout.arrow, layout.clock_start, unit);
@@ -294,7 +299,7 @@ impl Canvas {
             } else {
                 crate::pictograms::glyph(character).unwrap_or([255, 129, 129, 129, 129, 129, 129, 255])
             };
-            for (column, row) in lit(glyph) {
+            for (column, row) in crate::pictograms::lit(glyph) {
                 for vertical in 0..size {
                     for horizontal in 0..size {
                         self.pixel(
@@ -310,66 +315,43 @@ impl Canvas {
         }
     }
 
-    /// Draws `text` in one-unit glyphs inside `clip`, shifted left by `offset`, with a
-    /// repeat one text width plus the repeat gap later so the line loops.
-    fn ticker(&mut self, text: &str, offset: usize, clip: (usize, usize), unit: usize) {
+    /// Copies the ticker strip into `clip`, scaled by `unit` and shifted left by
+    /// `offset`, with a repeat one strip width plus the repeat gap later so the line loops.
+    fn ticker(
+        &mut self,
+        strip: &crate::ticker_strip::Strip,
+        offset: usize,
+        clip: (usize, usize),
+        unit: usize,
+    ) {
         let (start, end) = clip;
-        if end.saturating_sub(start) < 32usize.saturating_mul(unit) {
+        if end.saturating_sub(start) < 32usize.saturating_mul(unit) || unit == 0 {
             return;
         }
-        let advance = 8usize.saturating_mul(unit);
-        let glyphs: Vec<[u8; 8]> = crate::pictograms::glyphs(text).collect();
-        let period = glyphs
-            .len()
-            .saturating_mul(advance)
-            .saturating_add(ticker::REPEAT_GAP.saturating_mul(unit));
-        let top = self.height.saturating_sub(advance) / 2;
-        for copy in 0..2usize {
-            for (index, glyph) in glyphs.iter().enumerate() {
-                let left = index
-                    .saturating_mul(advance)
-                    .saturating_add(copy.saturating_mul(period));
-                if left.saturating_add(advance) <= offset
-                    || left >= offset.saturating_add(end.saturating_sub(start))
-                {
-                    continue;
-                }
-                for (column, row) in lit(*glyph) {
-                    for vertical in 0..unit {
-                        for horizontal in 0..unit {
-                            let shifted = left
-                                .saturating_add(column.saturating_mul(unit))
-                                .saturating_add(horizontal);
-                            let Some(on_bar) = shifted
-                                .checked_sub(offset)
-                                .map(|shift| start.saturating_add(shift))
-                            else {
-                                continue;
-                            };
-                            if on_bar < end {
-                                self.pixel(
-                                    on_bar,
-                                    top.saturating_add(row.saturating_mul(unit))
-                                        .saturating_add(vertical),
-                                    [196, 184, 168, 255],
-                                );
-                            }
-                        }
-                    }
+        let height = crate::ticker_strip::HEIGHT.saturating_mul(unit);
+        let top = self.height.saturating_sub(height) / 2;
+        let period = strip
+            .width()
+            .saturating_add(ticker::REPEAT_GAP)
+            .saturating_mul(unit);
+        for row in 0..height {
+            let strip_row = row.checked_div(unit).unwrap_or_default();
+            for column in start..end {
+                let along = column
+                    .saturating_sub(start)
+                    .saturating_add(offset)
+                    .checked_rem(period)
+                    .unwrap_or_default();
+                if let Some(colour) = strip.pixel(along.checked_div(unit).unwrap_or_default(), strip_row) {
+                    self.pixel(column, top.saturating_add(row), bgra(colour));
                 }
             }
         }
     }
 }
 
-/// The lit pixels of an 8x8 glyph as (column, row).
-fn lit(glyph: [u8; 8]) -> impl Iterator<Item = (usize, usize)> {
-    glyph.into_iter().enumerate().flat_map(|(row, bits)| {
-        (0..8usize).filter_map(move |column| {
-            let mask = 1u8
-                .checked_shl(u32::try_from(column).unwrap_or_default())
-                .unwrap_or_default();
-            (bits & mask != 0).then_some((column, row))
-        })
-    })
+/// A colour in the bar's byte order, Argb8888 stored little-endian.
+const fn bgra(colour: ticker::Rgb) -> [u8; 4] {
+    let ticker::Rgb(red, green, blue) = colour;
+    [blue, green, red, 255]
 }

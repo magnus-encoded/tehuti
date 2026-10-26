@@ -26,7 +26,7 @@ const fn bitmap(rows: [&str; 8]) -> [u8; 8] {
     glyph
 }
 
-const PICTOGRAMS: [(char, [u8; 8]); 13] = [
+const PICTOGRAMS: [(char, [u8; 8]); 20] = [
     (
         '\u{1f4be}',
         bitmap([
@@ -105,6 +105,48 @@ const PICTOGRAMS: [(char, [u8; 8]); 13] = [
             "...##...", "...##...", ".######.", "..####..", "...##...", "#......#", "#......#", "########",
         ]),
     ),
+    (
+        '\u{23ce}',
+        bitmap([
+            "........", "......#.", "......#.", "..#...#.", ".##...#.", "#######.", ".##.....", "..#.....",
+        ]),
+    ),
+    (
+        '\u{232b}',
+        bitmap([
+            "........", "..######", ".#.#..#.", "#...##..", "#...##..", ".#.#..#.", "..######", "........",
+        ]),
+    ),
+    (
+        '\u{2190}',
+        bitmap([
+            "........", "..#.....", ".##.....", "#######.", ".##.....", "..#.....", "........", "........",
+        ]),
+    ),
+    (
+        '\u{2191}',
+        bitmap([
+            "...#....", "..###...", ".#####..", "...#....", "...#....", "...#....", "...#....", "........",
+        ]),
+    ),
+    (
+        '\u{2192}',
+        bitmap([
+            "........", "....#...", "....##..", "#######.", "....##..", "....#...", "........", "........",
+        ]),
+    ),
+    (
+        '\u{2193}',
+        bitmap([
+            "...#....", "...#....", "...#....", "...#....", ".#####..", "..###...", "...#....", "........",
+        ]),
+    ),
+    (
+        '\u{2026}',
+        bitmap([
+            "........", "........", "........", "........", "........", "........", "#..#..#.", "........",
+        ]),
+    ),
 ];
 
 /// Emoji presentation selectors carry no glyph of their own.
@@ -134,6 +176,18 @@ pub fn glyphs(text: &str) -> impl Iterator<Item = [u8; 8]> + '_ {
     text.chars()
         .filter(|character| *character != VARIATION_SELECTOR)
         .map(|character| glyph(character).unwrap_or([255, 129, 129, 129, 129, 129, 129, 255]))
+}
+
+/// The lit pixels of an 8x8 glyph as (column, row).
+pub fn lit(glyph: [u8; 8]) -> impl Iterator<Item = (usize, usize)> {
+    glyph.into_iter().enumerate().flat_map(|(row, bits)| {
+        (0..8usize).filter_map(move |column| {
+            let mask = 1u8
+                .checked_shl(u32::try_from(column).unwrap_or_default())
+                .unwrap_or_default();
+            (bits & mask != 0).then_some((column, row))
+        })
+    })
 }
 
 #[cfg(test)]
