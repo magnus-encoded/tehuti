@@ -97,6 +97,56 @@ The clock sits at the right edge. Context, live text, results and errors use
 different dark backgrounds with chevron edges. Text and bar height follow the
 output scale. Existing notices keep their overlay and focus behaviour.
 
+## Mapping ticker
+
+The bar can scroll one line listing what the focused window's context maps:
+pad buttons, push-to-talk and speech phrases. It sits between the chips and
+the clock in small text. It is off by default; the global `*` context or an
+application's context turns it on, and the application's choice wins.
+
+```toml
+[ticker]
+enabled = true
+speech = "icons"
+```
+
+`speech` is `"all"` (the default), `"icons"` for phrases with an icon only,
+or `"none"`. Buttons resolve as routing does: the context's mapping, then the
+global context's, then Enter on South. Each entry is a row of symbols drawn
+in colour, `trigger → result`. Buttons look as they do on the pad in use: on
+a symbol pad a blue cross, red circle, pink square and green triangle on dark
+discs, and `L1`, `R1`, `L3`, `Share` and `Options` chips; elsewhere the
+lettered discs A (green), B (red), X (blue) and Y (yellow), `LB` and `RB`
+chips, and the View and Menu symbols. The D-pad is a small cross with the
+pressed arm lit. Keys show as keycaps, such as a boxed `Z`; Enter shows ⏎,
+Backspace ⌫ and the arrow keys ←↑→↓, and a chord shows `Ctrl` + `O`. A
+`hold = true` key adds a dim `hold`. Push-to-talk buttons show a microphone,
+and a passthrough context shows `Pad → app` with its push-to-talk chord.
+Phrases with the same action share one entry, such as
+`"Lagre" / "Lagre spillet" → 💾`; entries with icons come first.
+
+A phrase can name its icon:
+
+```toml
+[speech]
+"Lagre spillet." = { key = "f1", mods = ["shift"], icon = "💾" }
+```
+
+Without one, closing gets ❌, `toggle-fullscreen` ⛶, launchers whose desktop
+entry contains `volume-up`, `volume-down` or `mute` get 🔊, 🔉 or 🔇, Ctrl+S 💾,
+Ctrl+O 📂 and Ctrl+P ⏯. The bar draws a bitmap font with pictograms for these
+icons and for 📥, ⏸, 🔄 and 🎤, some in their own colour. An icon it cannot
+draw shows as a word, such as Save, or as the action, such as `Shift` + `F1`
+keycaps.
+
+`{ ticker = "toggle" }` on a button or phrase hides the ticker or shows it
+again; hiding lasts across focus changes. The ticker is drawn once per entry
+list into a strip, and each step copies a window of it, so scrolling costs
+one copy of the ticker's area. It moves 6 pixels every quarter second and
+redraws only the bar. Text that fits stays still. While
+it is off or hidden, time causes no redraws. Focus changes and context
+reloads rebuild the entries and start the scroll from the beginning.
+
 ## Keyboard intent
 
 The keyboard opens only from Y or the spoken word "keyboard". Entering app

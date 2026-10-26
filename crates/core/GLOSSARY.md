@@ -13,6 +13,7 @@
 | Active context | The context selected for the focused window's application id, or none when no context matches. |
 | Global context | The context with application id `*`. Its mapped buttons and phrases apply wherever the active context maps none; a phrase it maps beats the active context's `unmatched_speech` typing. |
 | Fallback | The final routing layer, which discards input that earlier layers do not consume. |
+| Mapping ticker | An opt-in scrolling line on the bar listing the focused context's button and phrase mappings as coloured pad symbols, keycaps and icons for recognisable actions. Time moves it only while it is shown. |
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |
 | Escape chord | Holding Guide and Start together for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |

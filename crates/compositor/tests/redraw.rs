@@ -158,4 +158,60 @@ mod redraw {
         );
         Ok(())
     }
+
+    fn ticker_contexts(enabled: bool) -> Vec<tehuti_protocol::Context> {
+        use core::fmt::Write as _;
+        let mut source = format!("app_id = '*'\n[ticker]\nenabled = {enabled}\n[buttons]\n[speech]\n");
+        for index in 0..40 {
+            writeln!(
+                source,
+                "'Phrase number {index}' = {{ text = 'typed text {index}' }}"
+            )
+            .unwrap();
+        }
+        vec![tehuti_protocol::parse_context(&source).unwrap()]
+    }
+
+    fn tick(compositor: &mut Compositor, millis: u64) {
+        compositor.handle(&tehuti_protocol::Event::Tick {
+            elapsed: core::time::Duration::from_millis(millis),
+        });
+    }
+
+    #[test]
+    fn a_disabled_ticker_draws_nothing_as_time_passes() -> Result<(), Box<dyn Error>> {
+        let mut screen = Screen::new()?;
+        let mut compositor = Compositor::new(&screen.display.handle())?;
+        compositor.set_contexts(ticker_contexts(false));
+        let _first = screen.draw(&compositor, 0, 0, "12:00")?;
+        for _ in 0..8 {
+            tick(&mut compositor, 250);
+            assert_eq!(
+                screen.draw(&compositor, 0, 1, "12:00")?,
+                None,
+                "no ticker, no frames"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_scrolling_ticker_redraws_only_the_bar_once_per_step() -> Result<(), Box<dyn Error>> {
+        let mut screen = Screen::new()?;
+        let mut compositor = Compositor::new(&screen.display.handle())?;
+        compositor.set_contexts(ticker_contexts(true));
+        let _first = screen.draw(&compositor, 0, 0, "12:00")?;
+        tick(&mut compositor, 100);
+        assert_eq!(
+            screen.draw(&compositor, 0, 1, "12:00")?,
+            None,
+            "the ticker holds still between steps"
+        );
+        tick(&mut compositor, 150);
+        let damage = screen
+            .draw(&compositor, 0, 1, "12:00")?
+            .ok_or("a full step moves the ticker")?;
+        assert!(within(&damage, bar_rows()), "only the bar changed: {damage:?}");
+        Ok(())
+    }
 }

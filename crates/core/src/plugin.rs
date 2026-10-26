@@ -155,6 +155,7 @@ pub fn validate_actions(actions: Vec<Action>, permissions: &[Permission]) -> Res
             Action::Close => ("close", None),
             Action::Notice { .. } => ("notice", None),
             Action::Layout { .. } => ("layout", None),
+            Action::ToggleTicker => ("toggle_ticker", None),
         };
         match permission {
             Some(permission) if permissions.contains(&permission) => {}

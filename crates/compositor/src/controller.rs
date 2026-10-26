@@ -270,6 +270,11 @@ impl EvdevPad {
     pub fn name(&self) -> &str {
         self.handles.events.name().unwrap_or("unnamed")
     }
+
+    #[must_use]
+    pub fn vendor(&self) -> u16 {
+        self.handles.events.input_id().vendor()
+    }
 }
 
 impl<D: PadDevice> EvdevPad<D> {
@@ -390,7 +395,7 @@ pub struct DpadHat {
 enum FaceLayout {
     #[default]
     Positional,
-    Xbox,
+    Letters,
 }
 
 impl DpadHat {
@@ -399,7 +404,7 @@ impl DpadHat {
     pub fn for_vendor(vendor: u16) -> Self {
         Self {
             face_layout: match vendor {
-                0x045e => FaceLayout::Xbox,
+                0x045e => FaceLayout::Letters,
                 _ => FaceLayout::Positional,
             },
             ..Self::default()
@@ -408,8 +413,8 @@ impl DpadHat {
 
     const fn face_code(&self, code: KeyCode) -> KeyCode {
         match (&self.face_layout, code) {
-            (FaceLayout::Xbox, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
-            (FaceLayout::Xbox, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+            (FaceLayout::Letters, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
+            (FaceLayout::Letters, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
             _ => code,
         }
     }
@@ -669,7 +674,7 @@ mod tests {
             "uinput pad spoofing USB"
         );
         assert!(!is_physical(BusType::BUS_VIRTUAL, Some(usb)), "virtual bus");
-        assert!(is_physical(BusType::BUS_USB, Some(usb)), "real Xbox pad");
+        assert!(is_physical(BusType::BUS_USB, Some(usb)), "real Letters pad");
         assert!(is_physical(BusType::BUS_BLUETOOTH, None), "no sysfs");
         let uhid = Path::new("/sys/devices/virtual/misc/uhid/0005:045E:0B13.0003/input/input30/event21");
         assert!(

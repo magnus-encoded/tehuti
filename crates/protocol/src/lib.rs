@@ -298,17 +298,60 @@ pub struct DimConfig {
     pub fade_ms: Option<u16>,
 }
 
+/// Which speech phrases the mapping ticker lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TickerSpeech {
+    All,
+    /// Only phrases with an icon, given or built in.
+    Icons,
+    None,
+}
+
+/// Optional overrides of the global mapping ticker policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TickerConfig {
+    pub enabled: Option<bool>,
+    pub speech: Option<TickerSpeech>,
+}
+
+/// A mapped phrase as the context file spells it, for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpeechMapping<'context> {
+    pub phrase: &'context str,
+    pub action: Action,
+    pub icon: Option<&'context str>,
+}
+
 /// An exact application-id match and its pressed-button mappings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
     app_id: String,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
-    speech: std::collections::HashMap<String, MappingAction>,
+    speech: std::collections::HashMap<String, SpeechEntry>,
     unmatched_speech: Option<UnmatchedSpeech>,
     keyboard: KeyboardConfig,
     dim: DimConfig,
     push_to_talk: Vec<ButtonName>,
     pad: PadConfig,
+    ticker: TickerConfig,
+}
+
+/// A speech mapping with its spelling in the file and an optional ticker icon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpeechEntry {
+    phrase: String,
+    action: MappingAction,
+    icon: Option<Text>,
+}
+
+#[derive(serde::Deserialize)]
+struct SpeechEntryFile {
+    #[serde(default)]
+    icon: Option<Text>,
+    #[serde(flatten)]
+    action: MappingAction,
 }
 
 /// Controller ownership options for an application.
@@ -335,6 +378,26 @@ impl Context {
     #[must_use]
     pub const fn dim(&self) -> &DimConfig {
         &self.dim
+    }
+
+    #[must_use]
+    pub const fn ticker(&self) -> &TickerConfig {
+        &self.ticker
+    }
+
+    /// The buttons that start speech capture, from a global context.
+    #[must_use]
+    pub fn push_to_talk_buttons(&self) -> &[ButtonName] {
+        &self.push_to_talk
+    }
+
+    /// Every mapped phrase, in no particular order.
+    pub fn speech_mappings(&self) -> impl Iterator<Item = SpeechMapping<'_>> {
+        self.speech.values().map(|entry| SpeechMapping {
+            phrase: &entry.phrase,
+            action: entry.action.action(),
+            icon: entry.icon.as_ref().map(Text::as_str),
+        })
     }
 
     #[must_use]
@@ -371,7 +434,7 @@ impl Context {
         }
         self.speech
             .get(&normalize_phrase(phrase))
-            .map(MappingAction::action)
+            .map(|entry| entry.action.action())
     }
 
     /// The action `unmatched_speech` gives a phrase no mapping matched.
@@ -395,7 +458,8 @@ impl Context {
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
             | MappingAction::Notify { .. }
-            | MappingAction::Layout { .. } => None,
+            | MappingAction::Layout { .. }
+            | MappingAction::Ticker { .. } => None,
         })
     }
 
@@ -415,7 +479,8 @@ impl Context {
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
             | MappingAction::Notify { .. }
-            | MappingAction::Layout { .. } => None,
+            | MappingAction::Layout { .. }
+            | MappingAction::Ticker { .. } => None,
         }
     }
 }
@@ -430,13 +495,13 @@ fn default_push_to_talk() -> Vec<ButtonName> {
     vec![ButtonName::Record]
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContextFile {
     app_id: String,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
-    speech: std::collections::HashMap<String, MappingAction>,
+    speech: std::collections::HashMap<String, SpeechEntryFile>,
     #[serde(default)]
     unmatched_speech: Option<UnmatchedSpeech>,
     #[serde(default)]
@@ -447,6 +512,8 @@ struct ContextFile {
     push_to_talk: Vec<ButtonName>,
     #[serde(default)]
     pad: PadConfig,
+    #[serde(default)]
+    ticker: TickerConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -478,12 +545,21 @@ enum MappingAction {
     Layout {
         layout: LayoutAction,
     },
+    Ticker {
+        ticker: TickerMapping,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum CloseMapping {
     #[serde(rename = "focused")]
     Focused,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum TickerMapping {
+    #[serde(rename = "toggle")]
+    Toggle,
 }
 
 impl MappingAction {
@@ -503,6 +579,7 @@ impl MappingAction {
                 reference: secret.clone(),
             },
             Self::Layout { layout } => Action::Layout { action: *layout },
+            Self::Ticker { .. } => Action::ToggleTicker,
         }
     }
 }
@@ -533,8 +610,8 @@ fn validate_holds(context: &ContextFile) -> Result<(), String> {
             return Err(format!("button {button:?} cannot hold a key with mods"));
         }
     }
-    for (phrase, action) in &context.speech {
-        if matches!(action, MappingAction::Key { hold: true, .. }) {
+    for (phrase, entry) in &context.speech {
+        if matches!(entry.action, MappingAction::Key { hold: true, .. }) {
             return Err(format!(
                 "speech phrase {phrase:?} cannot hold a key; hold is for buttons"
             ));
@@ -563,14 +640,19 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         return Err("app_id must not be empty".into());
     }
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
-    for (mapped, action) in context.speech {
+    for (mapped, entry) in context.speech {
         let normalized = normalize_phrase(&mapped);
         if normalized.is_empty() {
             return Err(format!(
                 "speech phrase {mapped:?} has no words after normalization"
             ));
         }
-        if speech.insert(normalized.clone(), action).is_some() {
+        let entry = SpeechEntry {
+            phrase: mapped.clone(),
+            action: entry.action,
+            icon: entry.icon,
+        };
+        if speech.insert(normalized.clone(), entry).is_some() {
             return Err(format!(
                 "speech phrase {mapped:?} duplicates another phrase that also normalizes to {normalized:?}"
             ));
@@ -585,6 +667,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         dim: context.dim,
         push_to_talk: context.push_to_talk,
         pad: context.pad,
+        ticker: context.ticker,
     })
 }
 
@@ -617,6 +700,8 @@ pub enum Action {
     Notice { text: Text },
     /// Change the tiling layout; reserved for the core like `Close`.
     Layout { action: LayoutAction },
+    /// Show or hide the mapping ticker; reserved for the core.
+    ToggleTicker,
 }
 
 /// A tiling action a context maps to a button or phrase, written in kebab case,
