@@ -5,6 +5,7 @@
 )]
 
 mod nested;
+mod segv_backtrace;
 mod tty;
 
 use core::{error::Error, time::Duration};
@@ -49,7 +50,12 @@ pub(crate) struct LoopData {
 }
 
 /// Draws a frame when something on the output changed; the DRM backend installs it.
-pub(crate) struct Redraw(Box<dyn FnMut(&mut LoopData)>);
+pub(crate) struct Redraw {
+    draw: Box<dyn FnMut(&mut LoopData)>,
+    shutdown: BackendShutdown,
+}
+
+type BackendShutdown = Box<dyn FnOnce(&mut EventLoop<LoopData>, bool)>;
 
 impl core::fmt::Debug for Redraw {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -94,14 +100,18 @@ impl input::InputSource for AttachedController {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
-        ExitCode::from(if self.log_out {
-            21
-        } else if self.compositor.quit_requested() {
-            20
-        } else {
-            1
-        })
+        exit_code(self.log_out, self.compositor.quit_requested())
     }
+}
+
+fn exit_code(log_out: bool, quit_requested: bool) -> ExitCode {
+    ExitCode::from(if log_out {
+        21
+    } else if quit_requested {
+        20
+    } else {
+        0
+    })
 }
 
 fn initialize_tracing() {
@@ -229,6 +239,7 @@ fn start_session(
     application: Vec<std::ffi::OsString>,
 ) -> Result<ExitCode, Box<dyn Error>> {
     initialize_tracing();
+    segv_backtrace::install_if_requested()?;
 
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Compositor> = Display::new()?;
@@ -305,12 +316,22 @@ fn start_session(
 /// The nested renderer unbinds EGL from the `wl_display` when dropped, and the
 /// compositor's dmabuf importer shares that renderer. Both must go while the
 /// display is alive, or the NVIDIA EGL driver frees display state twice.
-fn shut_down(event_loop: EventLoop<LoopData>, data: LoopData) {
-    drop(event_loop);
+fn shut_down(mut event_loop: EventLoop<LoopData>, data: LoopData) {
     let LoopData {
-        display, compositor, ..
+        display,
+        compositor,
+        redraw,
+        seat_active,
+        ..
     } = data;
+    // The dmabuf importer holds a renderer reference. Release it before the
+    // backend, while the Wayland display is still alive.
     drop(compositor);
+    if let Some(Redraw { draw, shutdown }) = redraw {
+        drop(draw);
+        shutdown(&mut event_loop, seat_active);
+    }
+    drop(event_loop);
     drop(display);
 }
 
@@ -356,7 +377,7 @@ fn run(
 /// Runs the backend's redraw, if it has one.
 fn redraw(data: &mut LoopData) {
     if let Some(mut redraw) = data.redraw.take() {
-        (redraw.0)(data);
+        (redraw.draw)(data);
         data.redraw = Some(redraw);
     }
 }
@@ -679,5 +700,15 @@ fn sync_pad_grab(data: &mut LoopData) {
             warn!(%error, "controller ownership change failed; reopening");
             pad.watchdog.request_reopen();
         }
+    }
+}
+
+#[cfg(test)]
+mod exit_code_tests {
+    use super::exit_code;
+
+    #[test]
+    fn external_shutdown_exits_successfully() {
+        assert_eq!(exit_code(false, false), std::process::ExitCode::SUCCESS);
     }
 }
