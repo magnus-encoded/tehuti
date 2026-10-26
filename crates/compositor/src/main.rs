@@ -114,16 +114,6 @@ fn exit_code(log_out: bool, quit_requested: bool) -> ExitCode {
     })
 }
 
-#[cfg(test)]
-mod exit_code_tests {
-    use super::exit_code;
-
-    #[test]
-    fn external_shutdown_exits_successfully() {
-        assert_eq!(exit_code(false, false), std::process::ExitCode::SUCCESS);
-    }
-}
-
 fn initialize_tracing() {
     let default = if std::env::var_os("TEHUTI_TIMING").is_some() {
         "trace"
@@ -710,5 +700,15 @@ fn sync_pad_grab(data: &mut LoopData) {
             warn!(%error, "controller ownership change failed; reopening");
             pad.watchdog.request_reopen();
         }
+    }
+}
+
+#[cfg(test)]
+mod exit_code_tests {
+    use super::exit_code;
+
+    #[test]
+    fn external_shutdown_exits_successfully() {
+        assert_eq!(exit_code(false, false), std::process::ExitCode::SUCCESS);
     }
 }
