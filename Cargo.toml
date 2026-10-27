@@ -58,3 +58,11 @@ module_name_repetitions = "allow"
 
 [profile.release]
 panic = "abort"
+
+# Small, fast build for old i686 machines such as the Atom N270.
+[profile.arakne]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

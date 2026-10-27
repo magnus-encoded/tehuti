@@ -39,7 +39,7 @@ echo 'speech' > "$work/package/sidecars/speech/speech.py"
 echo 'dependency' > "$work/package/sidecars/speech/requirements.txt"
 echo 'session' > "$work/package/dist/tehuti-session"
 package() {
-    tar -czf "$FAKE_RELEASE/tehuti-1.0.0-$1.tar.gz" -C "$work/package" .
+    tar -czf "$FAKE_RELEASE/tehuti-1.0.0-$1-linux.tar.gz" -C "$work/package" .
     (cd "$FAKE_RELEASE"; sha256sum ./*.tar.gz | sed 's|  ./|  |' > SHA256SUMS)
 }
 package x86_64
@@ -54,7 +54,7 @@ first=$(readlink -f "$live")
 [ -f "$HOME/.cache/tehuti-speech-venv/.tehuti-requirements" ]
 [ "$(wc -l < "$HOME/pip-calls")" -eq 1 ]
 # A second architecture and explicit tag retain the first build and print rollback.
-rm "$FAKE_RELEASE/tehuti-1.0.0-x86_64.tar.gz"
+rm "$FAKE_RELEASE/tehuti-1.0.0-x86_64-linux.tar.gz"
 printf '2222222222222222222222222222222222222222\n' > "$work/package/VERSION"
 package i686
 TEST_ARCH=i686 "$repo/scripts/install-release" v1.0.0 > "$work/output"
@@ -68,7 +68,7 @@ sh -c "$rollback"
 [ "$(readlink -f "$live")" = "$first" ]
 ln -sf "$second" "$live"
 # Corruption must leave the active build unchanged.
-printf corrupt >> "$FAKE_RELEASE/tehuti-1.0.0-i686.tar.gz"
+printf corrupt >> "$FAKE_RELEASE/tehuti-1.0.0-i686-linux.tar.gz"
 if TEST_ARCH=i686 "$repo/scripts/install-release" > "$work/output" 2>&1; then
     echo 'Corrupt release accepted' >&2; exit 1
 fi
@@ -77,7 +77,7 @@ if TEST_ARCH=armv7l "$repo/scripts/install-release" > "$work/output" 2>&1; then
     echo 'Unsupported architecture accepted' >&2; exit 1
 fi
 # The curl path uses release API metadata without gh on PATH.
-rm "$FAKE_RELEASE/tehuti-1.0.0-i686.tar.gz"
+rm "$FAKE_RELEASE/tehuti-1.0.0-i686-linux.tar.gz"
 printf '3333333333333333333333333333333333333333\n' > "$work/package/VERSION"
 package x86_64
 mkdir "$work/curl-bin"
@@ -97,7 +97,7 @@ esac
 SH
 chmod +x "$work/curl-bin/curl"
 cat > "$FAKE_RELEASE/metadata.json" <<'JSON'
-{"assets":[{"name":"tehuti-1.0.0-x86_64.tar.gz","browser_download_url":"https://github.com/example/project/releases/download/v1.0.0/tehuti-1.0.0-x86_64.tar.gz"},{"name":"SHA256SUMS","browser_download_url":"https://github.com/example/project/releases/download/v1.0.0/SHA256SUMS"}]}
+{"assets":[{"name":"tehuti-1.0.0-x86_64-linux.tar.gz","browser_download_url":"https://github.com/example/project/releases/download/v1.0.0/tehuti-1.0.0-x86_64-linux.tar.gz"},{"name":"SHA256SUMS","browser_download_url":"https://github.com/example/project/releases/download/v1.0.0/SHA256SUMS"}]}
 JSON
 PATH=$work/curl-bin "$repo/scripts/install-release" v1.0.0 > "$work/output"
 [ "$(cat "$(dirname "$(readlink -f "$live")")/VERSION")" = 3333333333333333333333333333333333333333 ]

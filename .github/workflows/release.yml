@@ -51,14 +51,19 @@ jobs:
           if [ "$ARCH" = i686 ]; then
             export PKG_CONFIG_ALLOW_CROSS=1
             export PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
+            # The oldest i686 target is the Atom N270.
+            export RUSTFLAGS="-C target-cpu=bonnell"
+            profile=arakne
+          else
+            profile=release
           fi
-          cargo build --release --locked -p tehuti --target "$ARCH-unknown-linux-gnu"
+          cargo build --locked --profile "$profile" -p tehuti --target "$ARCH-unknown-linux-gnu"
           mkdir package
-          cp "target/$ARCH-unknown-linux-gnu/release/tehuti" package/
+          cp "target/$ARCH-unknown-linux-gnu/$profile/tehuti" package/
           cp -r sidecars dist package/
           find package -type d -name __pycache__ -prune -exec rm -rf {} +
           git rev-parse HEAD > package/VERSION
-          tar -czf "tehuti-${TAG#v}-$ARCH.tar.gz" -C package .
+          tar -czf "tehuti-${TAG#v}-$ARCH-linux.tar.gz" -C package .
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.arch }}

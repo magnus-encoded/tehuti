@@ -12,9 +12,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 if command -v gh >/dev/null 2>&1; then
     if [ "$tag" = latest ]; then
-        gh release download --repo "$repo" --pattern "tehuti-*-$arch.tar.gz" --pattern SHA256SUMS --dir "$work"
+        gh release download --repo "$repo" --pattern "tehuti-*-$arch-linux.tar.gz" --pattern SHA256SUMS --dir "$work"
     else
-        gh release download "$tag" --repo "$repo" --pattern "tehuti-*-$arch.tar.gz" --pattern SHA256SUMS --dir "$work"
+        gh release download "$tag" --repo "$repo" --pattern "tehuti-*-$arch-linux.tar.gz" --pattern SHA256SUMS --dir "$work"
     fi
 else
     if [ "$tag" = latest ]; then
@@ -27,7 +27,7 @@ else
 import json, re, sys
 for asset in json.load(open(sys.argv[1]))['assets']:
     name = asset['name']
-    if name == 'SHA256SUMS' or re.fullmatch(r'tehuti-[A-Za-z0-9._-]+-' + sys.argv[2] + r'\.tar\.gz', name):
+    if name == 'SHA256SUMS' or re.fullmatch(r'tehuti-[A-Za-z0-9._-]+-' + sys.argv[2] + r'-linux\.tar\.gz', name):
         url = asset['browser_download_url']
         if not url.startswith('https://github.com/') or '\n' in url:
             raise SystemExit('Invalid asset URL')
@@ -37,7 +37,7 @@ PY
         curl -fsSL "$url" -o "$work/$name"
     done < "$work/assets"
 fi
-set -- "$work"/tehuti-*-"$arch".tar.gz
+set -- "$work"/tehuti-*-"$arch"-linux.tar.gz
 [ "$#" -eq 1 ] && [ -f "$1" ] || { echo 'Expected one release tarball' >&2; exit 1; }
 archive=${1##*/}
 (cd "$work"; awk -v name="$archive" '$2 == name {print}' SHA256SUMS > selected.sha256
