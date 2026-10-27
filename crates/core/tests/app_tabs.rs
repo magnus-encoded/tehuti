@@ -119,7 +119,7 @@ mod app_tabs {
                 );
             }
             let state = focused(contexts);
-            let passthrough = app.unwrap_or(true);
+            let passthrough = app.unwrap_or(false);
             assert_eq!(state.passthrough(), passthrough);
             for (name, phrase) in [
                 (ButtonName::LeftBumper, "tab left"),
@@ -141,9 +141,35 @@ mod app_tabs {
     }
 
     #[test]
+    fn columns_level_shoulders_move_column_focus_instead_of_sending_tabs() {
+        let state = focused(vec![
+            parse_context(include_str!("../../../examples/global/context.toml")).unwrap(),
+        ]);
+        let state = step(state, &button(ButtonName::Guide, ButtonState::Pressed)).0;
+        let mut state = step(state, &button(ButtonName::Guide, ButtonState::Released)).0;
+        assert_eq!(state.level(), tehuti_core::Level::Columns);
+        for (name, action) in [
+            (
+                ButtonName::LeftBumper,
+                tehuti_protocol::LayoutAction::FocusColumnLeft,
+            ),
+            (
+                ButtonName::RightBumper,
+                tehuti_protocol::LayoutAction::FocusColumnRight,
+            ),
+        ] {
+            let (next, actions) = step(state, &button(name, ButtonState::Pressed));
+            assert_eq!(actions, vec![Action::Layout { action }]);
+            let (next, released) = step(next, &button(name, ButtonState::Released));
+            assert_eq!(released, Vec::<Action>::new());
+            state = next;
+        }
+    }
+
+    #[test]
     fn left_and_right_keep_moving_column_focus_at_both_levels() {
         let mut state = focused(vec![
-            parse_context(include_str!("../../../examples/global/context.toml")).unwrap(),
+            parse_context("app_id = '*'\n[buttons]\n[speech]\nleft = { layout = 'focus-column-left' }\nright = { layout = 'focus-column-right' }").unwrap(),
         ]);
         for _ in 0..2 {
             assert_eq!(

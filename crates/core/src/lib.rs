@@ -53,9 +53,7 @@ pub struct State {
 impl State {
     #[must_use]
     pub fn passthrough_push_to_talk(&self) -> &[ButtonName] {
-        focused_context(self)
-            .or_else(|| global_context(self))
-            .map_or(&[ButtonName::Record], Context::passthrough_push_to_talk)
+        focused_context(self).map_or(&[ButtonName::Record], Context::passthrough_push_to_talk)
     }
 
     #[must_use]
@@ -64,9 +62,7 @@ impl State {
     }
 
     pub(crate) fn passthrough_context(&self) -> bool {
-        focused_context(self)
-            .or_else(|| global_context(self))
-            .is_some_and(Context::passthrough)
+        focused_context(self).is_some_and(Context::passthrough)
     }
 
     #[must_use]
