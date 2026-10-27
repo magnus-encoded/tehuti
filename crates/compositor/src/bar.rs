@@ -22,7 +22,7 @@ use tehuti_core::{
 /// What the bar shows; the buffer is redrawn only when this changes.
 type Key = (
     Vec<Segment>,
-    bool,
+    tehuti_core::Level,
     String,
     i32,
     i32,
@@ -83,7 +83,7 @@ impl Buffer {
         let segments = bar.segments();
         let unit = usize::try_from(scale).ok()?;
         let width = usize::try_from(mode.size.w).ok()?;
-        let layout = Layout::new(&segments, width, unit, bar.level() == tehuti_core::Level::Columns);
+        let layout = Layout::new(&segments, width, unit, bar.level(), bar.focused_window_segment());
         let ticker = bar.ticker().map(|view| {
             let content = self.ticker_strip(&view.entries).width().saturating_mul(unit);
             let offset = ticker::scroll_offset(
@@ -97,7 +97,7 @@ impl Buffer {
         });
         let key = (
             segments,
-            bar.level() == tehuti_core::Level::Columns,
+            bar.level(),
             clock.to_owned(),
             mode.size.w,
             scale,
@@ -146,11 +146,17 @@ struct Layout {
 }
 
 impl Layout {
-    fn new(segments: &[Segment], width: usize, unit: usize, flat: bool) -> Self {
+    fn new(
+        segments: &[Segment],
+        width: usize,
+        unit: usize,
+        level: tehuti_core::Level,
+        focused: Option<usize>,
+    ) -> Self {
         let clock_width = 104usize.saturating_mul(unit).min(width);
         let clock_start = width.saturating_sub(clock_width);
-        if flat {
-            return Self::columns(segments, width, unit, clock_start);
+        if level == tehuti_core::Level::Columns {
+            return Self::columns(segments, width, unit, clock_start, focused);
         }
         let arrow = 12usize.saturating_mul(unit);
         let mut next_start = 0usize;
@@ -194,7 +200,13 @@ impl Layout {
         }
     }
 
-    fn columns(segments: &[Segment], width: usize, unit: usize, clock_start: usize) -> Self {
+    fn columns(
+        segments: &[Segment],
+        width: usize,
+        unit: usize,
+        clock_start: usize,
+        focused: Option<usize>,
+    ) -> Self {
         let mut next = 0usize;
         let chips: Vec<_> = segments
             .iter()
@@ -215,9 +227,8 @@ impl Layout {
             .collect();
         let scroll = chips
             .iter()
-            .zip(segments)
-            .find(|(_, segment)| segment.tone == Tone::Context)
-            .map_or(0, |((_, _, end), _)| end.saturating_sub(clock_start));
+            .find(|(index, _, _)| Some(*index) == focused)
+            .map_or(0, |(_, _, end)| end.saturating_sub(clock_start));
         let ticker = (
             next.saturating_sub(scroll)
                 .saturating_add(8usize.saturating_mul(unit)),
@@ -276,7 +287,7 @@ fn raster(
         let Some(segment) = segments.get(*index) else {
             continue;
         };
-        if key.1 {
+        if key.1 == tehuti_core::Level::Columns {
             let limit = layout.scroll.saturating_add(layout.clock_start);
             let end = (*end).min(limit);
             canvas.rectangle(

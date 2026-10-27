@@ -462,6 +462,70 @@ mod level_dim {
     }
 
     #[test]
+    fn stacked_windows_stay_grouped_in_column_order() {
+        use tehuti_core::{
+            bar::{Segment, Tone},
+            layout::Command,
+        };
+        scene(4, |compositor, _| {
+            compositor.apply_layout_command(Command::FocusColumnLeft);
+            compositor.apply_layout_command(Command::FocusColumnLeft);
+            compositor.apply_layout_command(Command::ConsumeWindowIntoColumn);
+            compositor.apply_layout_command(Command::MoveColumnRight);
+            tap(compositor);
+            assert_eq!(
+                compositor.voice_bar().segments(),
+                vec![
+                    Segment {
+                        text: "Document 0".into(),
+                        tone: Tone::Unfocused
+                    },
+                    Segment {
+                        text: "Document 3".into(),
+                        tone: Tone::Unfocused
+                    },
+                    Segment {
+                        text: "Document 1".into(),
+                        tone: Tone::Context
+                    },
+                    Segment {
+                        text: "Document 2".into(),
+                        tone: Tone::Unfocused
+                    },
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn neither_level_contains_level_text_or_any_extra_text_chip() {
+        scene(2, |compositor, _| {
+            for _ in 0..2 {
+                assert_eq!(
+                    compositor
+                        .voice_bar()
+                        .segments()
+                        .iter()
+                        .map(|segment| segment.text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["org.example.Window1"]
+                );
+                tap(compositor);
+                assert_eq!(
+                    compositor
+                        .voice_bar()
+                        .segments()
+                        .iter()
+                        .map(|segment| segment.text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["Document 0", "Document 1"]
+                );
+                tap(compositor);
+            }
+        });
+    }
+
+    #[test]
     fn no_focus_has_no_outline() {
         scene(0, |compositor, output| {
             for _ in 0..2 {

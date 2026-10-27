@@ -121,7 +121,11 @@ mod tests {
                 let bar = state
                     .bar()
                     .clone()
-                    .with_windows((0..40).map(|index| ("Notes".into(), index == focused)).collect());
+                    .with_windows((0..40).map(|index| ("Notes".into(), index == focused)).collect())
+                    .with_feedback(tehuti_core::bar::Segment {
+                        text: "Ready".into(),
+                        tone: tehuti_core::bar::Tone::Context,
+                    });
                 let (memory, _) = buffer.update(&output, &bar, "12:34").unwrap();
                 let mut memory = memory.clone();
                 memory
@@ -156,6 +160,48 @@ mod tests {
                     .unwrap();
             }
         }
+    }
+
+    #[test]
+    fn context_toned_feedback_does_not_scroll_columns_without_a_focused_window() {
+        use tehuti_core::bar::{Segment, Tone};
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let mut state = State::new();
+        for state_of_button in [ButtonState::Pressed, ButtonState::Released] {
+            (state, _) = step(
+                state,
+                &Event::Button {
+                    name: ButtonName::Guide,
+                    state: state_of_button,
+                },
+            );
+        }
+        let bar = state
+            .bar()
+            .clone()
+            .with_windows(vec![("Notes".into(), false), ("Editor".into(), false)])
+            .with_feedback(Segment {
+                text: "Ready".into(),
+                tone: Tone::Context,
+            });
+        let output = output(304, 720, 1);
+        let mut buffer = Buffer::default();
+        let (memory, _) = buffer.update(&output, &bar, "12:34").unwrap();
+        let mut memory = memory.clone();
+        memory
+            .render()
+            .draw(|bytes| {
+                let row = &bytes[304 * 4..(304 + 200) * 4];
+                assert!(
+                    row.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|pixel| pixel.as_slice() == [55, 43, 34, 255]),
+                    "feedback must stay beyond the visible window chips"
+                );
+                Ok::<_, core::convert::Infallible>(Vec::new())
+            })
+            .unwrap();
     }
 
     #[test]
