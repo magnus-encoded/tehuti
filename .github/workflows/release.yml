@@ -12,18 +12,27 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    # Debian bookworm has i386 libseat and an older glibc than most installs.
+    container: debian:bookworm
+    defaults:
+      run:
+        shell: bash
     strategy:
+      fail-fast: false
       matrix:
         arch: [x86_64, i686]
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
       CARGO_TARGET_DIR: target
     steps:
+      - name: Base tools
+        run: apt-get update && apt-get install -y git curl ca-certificates build-essential
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - name: Validate tag
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           [[ "$TAG" =~ ^v[0-9][a-zA-Z0-9._-]*$ ]]
           git describe --exact-match --tags HEAD | grep -Fx "$TAG"
       - uses: dtolnay/rust-toolchain@stable
@@ -35,15 +44,15 @@ jobs:
         run: |
           suffix=''
           if [ "$ARCH" = i686 ]; then
-            sudo dpkg --add-architecture i386
+            dpkg --add-architecture i386
             suffix=:i386
           fi
-          sudo apt-get update
+          apt-get update
           packages=()
           for package in libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev; do
             packages+=("$package$suffix")
           done
-          sudo apt-get install -y gcc-multilib pkg-config "${packages[@]}"
+          apt-get install -y gcc-multilib pkg-config "${packages[@]}"
       - name: Build and package
         env:
           ARCH: ${{ matrix.arch }}
