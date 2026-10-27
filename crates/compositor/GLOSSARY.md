@@ -15,7 +15,7 @@
 | Chip | One segment of the powerline. |
 | Password mode | The on-screen keyboard for a field the application marks as a password: every character except the last one typed is hidden, and push-to-talk never dictates into it. |
 | Keyboard intent | Permission to open the keyboard with Y in an active text field or terminal. A context can allow Y everywhere or pass it to the application. Saying keyboard opens it in any application. |
-| Terminal layout | The on-screen keyboard in a terminal: the normal letters plus a strip of Esc, Tab, latching Ctrl and Alt, arrows and paging keys. B closes it. Enter keeps it open. |
+| Terminal layout | The on-screen keyboard in a terminal: a local draft with letters and shell symbols on the base layer. Esc, Tab, Ctrl combinations, arrows and paging keys go straight to the application and keep the draft. B closes it. Menu submits the draft with Enter and keeps it open. |
 | Secret destination | One live Wayland surface during one focus generation; secret insertion checks it again after lookup. |
 
 Starting without a controller logs a warning. Discovery continues every 250 ms and on input directory changes until a controller can be grabbed.

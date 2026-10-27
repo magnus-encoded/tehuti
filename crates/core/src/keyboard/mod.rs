@@ -20,7 +20,7 @@ pub const ROW_UNITS: u8 = 28;
 pub enum Key {
     Char(char),
     Text(&'static str),
-    /// Terminal strip key: sends the draft, then taps the key with any latched modifiers.
+    /// Terminal strip key: taps the key with any latched modifiers, keeping the draft.
     Tap(KeyName),
     /// One-shot modifier: latches until the next key.
     Modifier(Modifier),
@@ -174,11 +174,30 @@ const STRIP: &[Slot] = &[
     tap(KeyName::PageDown),
     letter('/'),
     letter('-'),
-    letter('|'),
-    letter('~'),
+    slot(Key::Char('|'), 4),
 ];
 
-const TERMINAL_LETTERS: [&[Slot]; 4] = [STRIP, LETTERS[0], LETTERS[1], LETTERS[2]];
+const TERMINAL_LETTERS: [&[Slot]; 5] = [
+    STRIP,
+    LETTERS[0],
+    LETTERS[1],
+    LETTERS[2],
+    &[
+        letter('|'),
+        letter('&'),
+        letter('>'),
+        letter('<'),
+        letter(';'),
+        letter('$'),
+        letter('~'),
+        letter('`'),
+        letter('-'),
+        letter('_'),
+        letter('/'),
+        letter('*'),
+        slot(Key::Space, 4),
+    ],
+];
 
 /// Symbols with the pipe, redirections and backtick a shell needs.
 const SHELL_SYMBOLS: [&[Slot]; 4] = [
@@ -397,7 +416,7 @@ impl Keyboard {
                 0
             },
             draft_retention: self.draft_retention,
-            highlight: (self.rows().len().saturating_sub(3), 1),
+            highlight: (usize::from(self.rows().len() > LETTERS.len()), 1),
             captured: core::mem::take(&mut self.captured),
             stick_engaged: self.stick_engaged,
             ..Self::default()
@@ -667,12 +686,16 @@ impl Keyboard {
         Response::Consumed
     }
 
-    /// Hands over the draft with a chord and releases the latched modifiers.
+    /// Sends Enter with the draft, or another chord immediately, and releases modifiers.
     fn chord(&mut self, key: ChordKey) -> Response {
-        let draft = core::mem::take(&mut self.draft);
-        self.caret = 0;
-        self.word = None;
-        self.revealed = None;
+        let draft = if key == ChordKey::Named(KeyName::Enter) {
+            self.caret = 0;
+            self.word = None;
+            self.revealed = None;
+            core::mem::take(&mut self.draft)
+        } else {
+            String::new()
+        };
         let modifiers = core::mem::take(&mut self.latched);
         Response::Chord(draft, Chord { key, modifiers })
     }
@@ -779,13 +802,7 @@ impl Keyboard {
         if self.password_field_active() {
             return;
         }
-        let shell;
-        let text = if self.terminal() {
-            shell = without_sentence_punctuation(text);
-            shell.trim()
-        } else {
-            text.trim()
-        };
+        let text = text.trim();
         if text.is_empty() {
             return;
         }
@@ -960,24 +977,6 @@ fn key_at(keys: &[Slot], doubled: u32) -> usize {
         }
     }
     keys.len().saturating_sub(1)
-}
-
-/// Drops commas and full stops that end a word, which dictation adds and shells reject.
-#[must_use]
-pub fn without_sentence_punctuation(text: &str) -> String {
-    let mut kept = String::with_capacity(text.len());
-    let mut word = String::new();
-    for character in text.chars() {
-        if character.is_whitespace() {
-            kept.push_str(word.trim_end_matches([',', '.']));
-            word.clear();
-            kept.push(character);
-        } else {
-            word.push(character);
-        }
-    }
-    kept.push_str(word.trim_end_matches([',', '.']));
-    kept
 }
 
 /// Whether a transcript asks to open the keyboard.

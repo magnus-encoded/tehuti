@@ -1535,15 +1535,56 @@ fn b_closes_the_keyboard_in_terminals_and_other_applications() {
     for state in [terminal_by_context(None), State::default()] {
         let mut world = World::default();
         let state = with_open_keyboard(&mut world, state);
+        let state = world.run(state, speech_event("echo hello"));
         world.trace.clear();
         let state = tap_button(&mut world, state, ButtonName::East);
         assert!(!state.keyboard().is_open());
-        assert_eq!(applied(&world), Vec::<&Effect>::new());
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::Apply(_) | Effect::Chord(_)))
+        );
     }
 }
 
 #[test]
-fn terminal_strip_keys_send_the_draft_then_the_key() {
+fn menu_types_a_composed_terminal_draft_then_presses_enter() {
+    for initial in [
+        terminal_by_context(None),
+        World::default().run(State::default(), terminal_field()),
+    ] {
+        let mut world = World::default();
+        let state = with_open_keyboard(&mut world, initial);
+        let state = world.run(state, speech_event("echo"));
+        let state = tap_button(&mut world, state, ButtonName::North);
+        let state = tap_button(&mut world, state, ButtonName::South);
+        assert_eq!(state.keyboard().draft(), "echo q");
+        world.trace.clear();
+        let state = tap_button(&mut world, state, ButtonName::Start);
+        assert!(state.keyboard().is_open());
+        assert_eq!(state.keyboard().draft(), "");
+        assert_eq!(
+            world
+                .trace
+                .iter()
+                .filter(|effect| matches!(effect, Effect::Apply(_) | Effect::Chord(_)))
+                .collect::<Vec<_>>(),
+            vec![
+                &Effect::Apply(Action::Text {
+                    text: Text::new("echo q".into()).unwrap()
+                }),
+                &Effect::Chord(crate::keyboard::Chord {
+                    key: crate::keyboard::ChordKey::Named(KeyName::Enter),
+                    modifiers: crate::keyboard::Modifiers::default()
+                })
+            ]
+        );
+    }
+}
+
+#[test]
+fn terminal_strip_keys_send_only_the_key_and_keep_the_draft() {
     let mut world = World::default();
     let mut state = with_open_keyboard(&mut world, terminal_by_context(None));
     state = world.run(state, speech_event("ls"));
@@ -1552,13 +1593,8 @@ fn terminal_strip_keys_send_the_draft_then_the_key() {
     world.trace.clear();
     let state = tap_button(&mut world, state, ButtonName::South);
     assert!(state.keyboard().is_open());
-    assert_eq!(state.keyboard().draft(), "");
-    assert_eq!(
-        applied(&world),
-        vec![&Effect::Apply(Action::Text {
-            text: Text::new("ls".into()).unwrap()
-        })]
-    );
+    assert_eq!(state.keyboard().draft(), "ls");
+    assert_eq!(applied(&world), Vec::<&Effect>::new());
     assert!(world.trace.contains(&Effect::Chord(crate::keyboard::Chord {
         key: crate::keyboard::ChordKey::Named(tehuti_protocol::KeyName::Tab),
         modifiers: crate::keyboard::Modifiers::default(),
@@ -1566,15 +1602,15 @@ fn terminal_strip_keys_send_the_draft_then_the_key() {
 }
 
 #[test]
-fn dictation_into_a_terminal_drops_commas_and_full_stops() {
+fn dictation_into_a_terminal_keeps_commas_and_full_stops() {
     let mut world = World::default();
     let state = with_open_keyboard(&mut world, terminal_by_context(None));
     let state = world.run(state, speech_event("Claude, --model, sonnet. notes.txt"));
-    assert_eq!(state.keyboard().draft(), "Claude --model sonnet notes.txt");
+    assert_eq!(state.keyboard().draft(), "Claude, --model, sonnet. notes.txt");
 }
 
 #[test]
-fn typed_speech_into_a_terminal_drops_commas_and_full_stops() {
+fn typed_speech_into_a_terminal_keeps_commas_and_full_stops() {
     let context = tehuti_protocol::parse_context(
         "app_id = 'console'\nunmatched_speech = 'type'\n[buttons]\n[keyboard]\nterminal = true",
     )
@@ -1585,7 +1621,7 @@ fn typed_speech_into_a_terminal_drops_commas_and_full_stops() {
     assert_eq!(
         applied(&world),
         vec![&Effect::Apply(Action::Text {
-            text: Text::new("git status ".into()).unwrap()
+            text: Text::new("git, status. ".into()).unwrap()
         })]
     );
 }
@@ -3251,7 +3287,7 @@ fn speech_with_an_open_keyboard_syncs_the_context_terminal_option() {
     assert!(!state.keyboard().terminal());
     let state = world.run(state, speech_event("hello, world."));
     assert!(state.keyboard().terminal());
-    assert_eq!(state.keyboard().draft(), "hello world");
+    assert_eq!(state.keyboard().draft(), "hello, world.");
 }
 
 #[test]

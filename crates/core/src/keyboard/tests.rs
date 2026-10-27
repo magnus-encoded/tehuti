@@ -538,7 +538,7 @@ fn terminal() -> Keyboard {
 fn terminals_add_a_strip_above_the_normal_letters() {
     let keyboard = terminal();
     let rows = keyboard.rows();
-    assert_eq!(rows.get(1..), Some(opened().rows()));
+    assert_eq!(rows.get(1..4), Some(opened().rows()));
     let strip: Vec<Key> = rows[0].iter().map(|slot| slot.key).collect();
     for key in [
         KeyName::Escape,
@@ -558,9 +558,8 @@ fn terminals_add_a_strip_above_the_normal_letters() {
 }
 
 #[test]
-fn shell_symbols_live_on_the_terminal_symbols_layer() {
-    let mut keyboard = terminal();
-    press(&mut keyboard, ButtonName::LeftStick);
+fn shell_symbols_live_on_the_terminal_base_layer() {
+    let keyboard = terminal();
     let keys: Vec<Key> = keyboard
         .rows()
         .iter()
@@ -569,6 +568,14 @@ fn shell_symbols_live_on_the_terminal_symbols_layer() {
     for symbol in ['|', '&', '>', '<', ';', '$', '~', '`', '-', '_', '/', '*'] {
         assert!(keys.contains(&Key::Char(symbol)), "{symbol} reachable");
     }
+}
+
+#[test]
+fn tilde_is_on_the_terminal_base_row_without_a_duplicate_on_the_strip() {
+    let keyboard = terminal();
+    let rows = keyboard.rows();
+    assert!(!rows[0].iter().any(|slot| slot.key == Key::Char('~')));
+    assert!(rows[4].iter().any(|slot| slot.key == Key::Char('~')));
 }
 
 #[test]
@@ -587,6 +594,9 @@ fn a_terminal_field_picks_the_terminal_layer() {
     let mut keyboard = opened();
     keyboard.set_field_kind(FieldKind::Terminal, true);
     assert_eq!(keyboard.rows(), terminal().rows());
+    keyboard.close();
+    keyboard.open();
+    assert_eq!(keyboard.highlighted_key(), Some(Key::Char('q')));
 }
 
 #[test]
@@ -627,21 +637,66 @@ fn strip_key(keyboard: &mut Keyboard, key: Key) -> Response {
 }
 
 #[test]
-fn strip_keys_hand_over_the_draft_and_stay_open() {
-    let mut keyboard = terminal();
-    keyboard.dictate("cd sr");
-    assert_eq!(
-        strip_key(&mut keyboard, Key::Tap(KeyName::Tab)),
-        Response::Chord(
-            "cd sr".into(),
-            Chord {
-                key: ChordKey::Named(KeyName::Tab),
-                modifiers: Modifiers::default()
-            }
-        )
-    );
-    assert!(keyboard.is_open());
-    assert_eq!(keyboard.draft(), "");
+fn immediate_terminal_keys_leave_the_draft_unchanged() {
+    let immediate_keys = [
+        KeyName::Escape,
+        KeyName::Tab,
+        KeyName::Left,
+        KeyName::Up,
+        KeyName::Down,
+        KeyName::Right,
+        KeyName::PageUp,
+        KeyName::PageDown,
+    ];
+    for key in immediate_keys {
+        let mut keyboard = terminal();
+        keyboard.dictate("cd src");
+        assert_eq!(
+            strip_key(&mut keyboard, Key::Tap(key)),
+            Response::Chord(
+                String::new(),
+                Chord {
+                    key: ChordKey::Named(key),
+                    modifiers: Modifiers::default()
+                }
+            )
+        );
+        assert!(keyboard.is_open());
+        assert_eq!(keyboard.draft(), "cd src");
+        assert_eq!(keyboard.caret(), 6);
+    }
+    for character in ['c', 'd', 'z'] {
+        let mut keyboard = terminal();
+        keyboard.dictate("cd src");
+        let _latch = strip_key(&mut keyboard, Key::Modifier(Modifier::Control));
+        let (row, index) = keyboard
+            .rows()
+            .iter()
+            .enumerate()
+            .find_map(|(row, keys)| {
+                keys.iter()
+                    .position(|slot| slot.key == Key::Char(character))
+                    .map(|index| (row, index))
+            })
+            .unwrap();
+        go_to(&mut keyboard, row, index);
+        assert_eq!(
+            tap(&mut keyboard, ButtonName::South),
+            Response::Chord(
+                String::new(),
+                Chord {
+                    key: ChordKey::Char(character),
+                    modifiers: Modifiers {
+                        control: true,
+                        alt: false
+                    }
+                }
+            )
+        );
+        assert_eq!(keyboard.draft(), "cd src");
+        assert_eq!(keyboard.caret(), 6);
+        assert_eq!(keyboard.latched(), Modifiers::default());
+    }
 }
 
 #[test]
@@ -681,28 +736,12 @@ fn alt_latches_onto_the_next_strip_key() {
     );
 }
 
-#[test]
-fn sentence_punctuation_goes_but_dotted_names_stay() {
-    assert_eq!(
-        without_sentence_punctuation("claude, --model, sonnet."),
-        "claude --model sonnet"
-    );
-    assert_eq!(
-        without_sentence_punctuation("cat notes.txt, then 1.5."),
-        "cat notes.txt then 1.5"
-    );
-}
-
 proptest! {
     #[test]
-    fn terminal_dictation_never_leaves_a_comma_or_full_stop_before_a_space(text in "[a-z.,]{0,6}( [a-z.,]{0,6}){0,4}") {
-        let kept = without_sentence_punctuation(&text);
-        prop_assert!(!kept.contains(", ") && !kept.contains(". ") && !kept.ends_with(['.', ',']));
-    }
-
-    #[test]
-    fn dictation_outside_terminals_keeps_punctuation(text in "[a-z]{1,6}[.,]( [a-z]{1,6}[.,]){0,3}") {
-        let keyboard = with_draft(&text);
+    fn dictation_keeps_punctuation_in_every_application(text in "[a-z]{1,6}[.,]( [a-z]{1,6}[.,]){0,3}", terminal_app in any::<bool>()) {
+        let mut keyboard = opened();
+        keyboard.set_terminal(terminal_app);
+        keyboard.dictate(&text);
         prop_assert_eq!(keyboard.draft(), text.as_str());
     }
 }
