@@ -1549,6 +1549,41 @@ fn b_closes_the_keyboard_in_terminals_and_other_applications() {
 }
 
 #[test]
+fn menu_types_a_composed_terminal_draft_then_presses_enter() {
+    for initial in [
+        terminal_by_context(None),
+        World::default().run(State::default(), terminal_field()),
+    ] {
+        let mut world = World::default();
+        let state = with_open_keyboard(&mut world, initial);
+        let state = world.run(state, speech_event("echo"));
+        let state = tap_button(&mut world, state, ButtonName::North);
+        let state = tap_button(&mut world, state, ButtonName::South);
+        assert_eq!(state.keyboard().draft(), "echo q");
+        world.trace.clear();
+        let state = tap_button(&mut world, state, ButtonName::Start);
+        assert!(state.keyboard().is_open());
+        assert_eq!(state.keyboard().draft(), "");
+        assert_eq!(
+            world
+                .trace
+                .iter()
+                .filter(|effect| matches!(effect, Effect::Apply(_) | Effect::Chord(_)))
+                .collect::<Vec<_>>(),
+            vec![
+                &Effect::Apply(Action::Text {
+                    text: Text::new("echo q".into()).unwrap()
+                }),
+                &Effect::Chord(crate::keyboard::Chord {
+                    key: crate::keyboard::ChordKey::Named(KeyName::Enter),
+                    modifiers: crate::keyboard::Modifiers::default()
+                })
+            ]
+        );
+    }
+}
+
+#[test]
 fn terminal_strip_keys_send_only_the_key_and_keep_the_draft() {
     let mut world = World::default();
     let mut state = with_open_keyboard(&mut world, terminal_by_context(None));

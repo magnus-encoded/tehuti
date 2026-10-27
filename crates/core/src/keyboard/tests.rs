@@ -571,6 +571,14 @@ fn shell_symbols_live_on_the_terminal_base_layer() {
 }
 
 #[test]
+fn tilde_is_on_the_terminal_base_row_without_a_duplicate_on_the_strip() {
+    let keyboard = terminal();
+    let rows = keyboard.rows();
+    assert!(!rows[0].iter().any(|slot| slot.key == Key::Char('~')));
+    assert!(rows[4].iter().any(|slot| slot.key == Key::Char('~')));
+}
+
+#[test]
 fn every_terminal_row_spans_the_same_width() {
     let mut keyboard = terminal();
     for _ in 0..2 {

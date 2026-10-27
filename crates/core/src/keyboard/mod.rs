@@ -174,8 +174,7 @@ const STRIP: &[Slot] = &[
     tap(KeyName::PageDown),
     letter('/'),
     letter('-'),
-    letter('|'),
-    letter('~'),
+    slot(Key::Char('|'), 4),
 ];
 
 const TERMINAL_LETTERS: [&[Slot]; 5] = [
