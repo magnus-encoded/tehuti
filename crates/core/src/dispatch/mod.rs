@@ -813,22 +813,15 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
 }
 
 fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
-    if state.keyboard.is_open() && matches!(event, Event::Speech { .. }) {
-        if state.keyboard.password_field_active() {
-            effects.push(Effect::PasswordSpeechIgnored);
-        } else {
-            let _consumed = keyboard(state, event, effects);
-        }
-        return true;
-    }
-    if matches!(event, Event::Speech { .. }) && settings_event(state, event, effects) {
+    let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
+    if !dictation && matches!(event, Event::Speech { .. }) && settings_event(state, event, effects) {
         return true;
     }
     sync_keyboard_config(state);
     if crate::menu_button_release(&mut state.core, event) {
         return true;
     }
-    if system_menu(state, event, effects) {
+    if !dictation && system_menu(state, event, effects) {
         return true;
     }
     if state.keyboard.password_field_active()
@@ -839,7 +832,7 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
         return true;
     }
 
-    if settings_event(state, event, effects) {
+    if !dictation && settings_event(state, event, effects) {
         return true;
     }
     if keyboard(state, event, effects) {

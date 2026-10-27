@@ -3242,6 +3242,49 @@ fn left_stick_moves_the_draft_caret_between_lines() {
 }
 
 #[test]
+fn speech_with_an_open_keyboard_syncs_the_context_terminal_option() {
+    let mut world = World::default();
+    let mut state = with_open_keyboard(&mut world, configured(Vec::new(), "editor"));
+    let context =
+        tehuti_protocol::parse_context("app_id = 'editor'\n[buttons]\n[keyboard]\nterminal = true").unwrap();
+    state.core_mut().replace_contexts(vec![context]);
+    assert!(!state.keyboard().terminal());
+    let state = world.run(state, speech_event("hello, world."));
+    assert!(state.keyboard().terminal());
+    assert_eq!(state.keyboard().draft(), "hello world");
+}
+
+#[test]
+fn settings_phrase_is_ignored_with_an_open_password_keyboard() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::TextField {
+            active: true,
+            changed: true,
+            kind: crate::keyboard::FieldKind::Password,
+        },
+    );
+    let state = tap_button(&mut world, state, ButtonName::North);
+    assert!(state.keyboard().is_open());
+    world.trace.clear();
+    let state = world.run(state, speech_event("pop the hood"));
+    assert!(state.keyboard().is_open());
+    assert_eq!(state.keyboard().draft(), "");
+    assert!(!state.settings().open);
+    assert!(world.trace.contains(&Effect::PasswordSpeechIgnored));
+    assert!(!world.trace.iter().any(|effect| matches!(
+        effect,
+        Effect::Apply(_)
+            | Effect::QueryPlugin(Event::Speech { .. })
+            | Effect::DispatchPlugin {
+                event: Event::Speech { .. },
+                ..
+            }
+    )));
+}
+
+#[test]
 fn settings_phrase_is_dictation_while_the_keyboard_is_open() {
     let mut world = World::default();
     let state = with_open_keyboard(&mut world, State::default());
