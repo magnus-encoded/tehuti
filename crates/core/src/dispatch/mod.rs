@@ -262,6 +262,16 @@ impl State {
         &self.keyboard
     }
 
+    /// Records delivery of the keyboard's live edit.
+    pub const fn keyboard_edit_applied(&mut self) {
+        self.keyboard.edit_applied();
+    }
+
+    /// Applies the application's committed surrounding text to the keyboard.
+    pub fn set_keyboard_surrounding(&mut self, surrounding: Option<(String, usize, usize)>) {
+        self.keyboard.set_surrounding(surrounding);
+    }
+
     #[must_use]
     pub const fn settings(&self) -> &Settings {
         &self.settings
@@ -374,6 +384,9 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             kind,
         } => {
             update_text_field(&mut state, active, changed, kind);
+            if !active {
+                state.keyboard.set_surrounding(None);
+            }
             if state.keyboard.password_field_active() {
                 vec![Task::Speech(SpeechInput::Cancel)]
             } else {

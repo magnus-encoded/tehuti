@@ -24,6 +24,13 @@ pub(crate) struct TextInput {
     instances: Vec<Instance>,
 }
 
+#[derive(Debug, Default)]
+enum SurroundingUpdate {
+    #[default]
+    Unchanged,
+    Reported(Option<(String, usize, usize)>),
+}
+
 #[derive(Debug)]
 struct Instance {
     resource: ZwpTextInputV3,
@@ -32,12 +39,32 @@ struct Instance {
     serial: u32,
     kind: FieldKind,
     pending_kind: Option<FieldKind>,
+    surrounding: Option<(String, usize, usize)>,
+    pending_surrounding: SurroundingUpdate,
 }
 
 impl Instance {
+    fn set_surrounding(&mut self, text: String, cursor: i32, anchor: i32) {
+        self.pending_surrounding = SurroundingUpdate::Reported(
+            usize::try_from(cursor)
+                .ok()
+                .zip(usize::try_from(anchor).ok())
+                .filter(|(cursor, anchor)| {
+                    text.len() <= 4000 && text.is_char_boundary(*cursor) && text.is_char_boundary(*anchor)
+                })
+                .map(|(cursor, anchor)| (text, cursor, anchor)),
+        );
+    }
+
     fn commit(&mut self, focused: bool) -> bool {
         self.serial = self.serial.wrapping_add(1);
         let changed = self.pending_enabled == Some(true);
+        if changed {
+            self.surrounding = None;
+        }
+        if let SurroundingUpdate::Reported(surrounding) = core::mem::take(&mut self.pending_surrounding) {
+            self.surrounding = surrounding;
+        }
         if let Some(kind) = self.pending_kind.take() {
             self.kind = kind;
         }
@@ -49,6 +76,18 @@ impl Instance {
 }
 
 impl TextInput {
+    fn resource_status(&self, resource: &ZwpTextInputV3) -> (bool, bool) {
+        let focused = self
+            .focus
+            .as_ref()
+            .is_some_and(|surface| resource.id().same_client_as(&surface.id()));
+        let another_enabled = self
+            .instances
+            .iter()
+            .any(|instance| instance.resource != *resource && instance.enabled);
+        (focused, another_enabled)
+    }
+
     pub(crate) fn new(display: &DisplayHandle) -> Self {
         let _global = display.create_global::<Compositor, ZwpTextInputManagerV3, _>(1, ());
         Self::default()
@@ -65,6 +104,8 @@ impl TextInput {
             instance.pending_enabled = None;
             instance.kind = FieldKind::Normal;
             instance.pending_kind = None;
+            instance.surrounding = None;
+            instance.pending_surrounding = SurroundingUpdate::Unchanged;
             if let Some(surface) = &focus
                 && instance.resource.id().same_client_as(&surface.id())
             {
@@ -72,6 +113,66 @@ impl TextInput {
             }
         }
         self.focus = focus;
+    }
+
+    pub(crate) fn edit_keyboard(
+        &self,
+        previous: &tehuti_core::keyboard::Keyboard,
+        current: &tehuti_core::keyboard::Keyboard,
+    ) -> usize {
+        let old = previous.draft();
+        let new = current.draft();
+        let position = previous.caret();
+        let anchor = previous.application_anchor().unwrap_or(position);
+        let selection = position.min(anchor)..position.max(anchor);
+        let prefix = old
+            .chars()
+            .zip(new.chars())
+            .take_while(|(left, right)| left == right)
+            .map(|(character, _)| character.len_utf8())
+            .sum::<usize>()
+            .min(selection.start);
+        let suffix = old
+            .get(prefix..)
+            .unwrap_or_default()
+            .chars()
+            .rev()
+            .zip(new.get(prefix..).unwrap_or_default().chars().rev())
+            .take_while(|(left, right)| left == right)
+            .map(|(character, _)| character.len_utf8())
+            .sum::<usize>()
+            .min(old.len().saturating_sub(selection.end));
+        let end = new.len().saturating_sub(suffix);
+        let Some(text) = new.get(prefix..end) else {
+            return position;
+        };
+        self.edit(
+            selection.start.saturating_sub(prefix),
+            old.len().saturating_sub(selection.end).saturating_sub(suffix),
+            text,
+        );
+        end
+    }
+
+    pub(crate) fn edit(&self, before: usize, after: usize, text: &str) {
+        let (Ok(before), Ok(after)) = (u32::try_from(before), u32::try_from(after)) else {
+            return;
+        };
+        for instance in &self.instances {
+            if instance.enabled
+                && self
+                    .focus
+                    .as_ref()
+                    .is_some_and(|surface| instance.resource.id().same_client_as(&surface.id()))
+            {
+                instance.resource.delete_surrounding_text(before, after);
+                if text.is_empty() {
+                    instance.resource.commit_string(Some(String::new()));
+                    instance.resource.done(instance.serial);
+                }
+            }
+        }
+        let _sent = self.send(text);
     }
 
     pub(crate) fn send(&self, text: &str) -> bool {
@@ -136,6 +237,8 @@ impl Dispatch<ZwpTextInputManagerV3, ()> for Compositor {
                 serial: 0,
                 kind: FieldKind::Normal,
                 pending_kind: None,
+                surrounding: None,
+                pending_surrounding: SurroundingUpdate::Unchanged,
             });
         }
     }
@@ -151,16 +254,7 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
-        let focused = state
-            .text_input
-            .focus
-            .as_ref()
-            .is_some_and(|surface| resource.id().same_client_as(&surface.id()));
-        let another_enabled = state
-            .text_input
-            .instances
-            .iter()
-            .any(|instance| instance.resource != *resource && instance.enabled);
+        let (focused, another_enabled) = state.text_input.resource_status(resource);
         let mut field = None;
         if let Some(instance) = state
             .text_input
@@ -175,13 +269,25 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
                 }
                 zwp_text_input_v3::Request::Disable => instance.pending_enabled = Some(false),
                 zwp_text_input_v3::Request::Commit => {
+                    let surrounding_changed =
+                        matches!(instance.pending_surrounding, SurroundingUpdate::Reported(_))
+                            || instance.pending_enabled == Some(true);
                     let changed = instance.commit(focused);
                     if focused && !another_enabled {
-                        field = Some((instance.enabled, changed, instance.kind));
+                        field = Some((
+                            instance.enabled,
+                            changed,
+                            instance.kind,
+                            instance.surrounding.clone(),
+                            surrounding_changed,
+                        ));
                     }
                 }
                 zwp_text_input_v3::Request::SetContentType { purpose, .. } if focused => {
                     instance.pending_kind = Some(field_kind(purpose));
+                }
+                zwp_text_input_v3::Request::SetSurroundingText { text, cursor, anchor } if focused => {
+                    instance.set_surrounding(text, cursor, anchor);
                 }
                 zwp_text_input_v3::Request::Destroy
                 | zwp_text_input_v3::Request::Enable
@@ -195,12 +301,15 @@ impl Dispatch<ZwpTextInputV3, ()> for Compositor {
                 _ => tracing::warn!("unsupported text-input request"),
             }
         }
-        if let Some((active, changed, kind)) = field {
+        if let Some((active, changed, kind, surrounding, surrounding_changed)) = field {
             let _rejection = state.dispatch(tehuti_core::dispatch::Input::TextField {
                 active,
                 changed,
                 kind,
             });
+            if surrounding_changed || !active {
+                state.set_keyboard_surrounding(if active { surrounding } else { None });
+            }
         }
     }
 

@@ -372,8 +372,18 @@ enum DraftRetention {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum DraftMode {
+    #[default]
+    Draft,
+    Synced {
+        anchor: usize,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Keyboard {
     open: bool,
+    mode: DraftMode,
     field_kind: FieldKind,
     app: AppKind,
     latched: Modifiers,
@@ -403,14 +413,16 @@ impl Keyboard {
         }
         *self = Self {
             open: true,
+            mode: self.mode.clone(),
+            word: self.word.clone(),
             field_kind: self.field_kind,
             app: self.app,
-            draft: if self.draft_retention == DraftRetention::Keep {
+            draft: if self.synced() || self.draft_retention == DraftRetention::Keep {
                 core::mem::take(&mut self.draft)
             } else {
                 String::new()
             },
-            caret: if self.draft_retention == DraftRetention::Keep {
+            caret: if self.synced() || self.draft_retention == DraftRetention::Keep {
                 self.caret
             } else {
                 0
@@ -427,7 +439,7 @@ impl Keyboard {
     pub fn close(&mut self) {
         self.open = false;
         self.revealed = None;
-        if self.draft_retention == DraftRetention::Discard {
+        if !self.synced() && self.draft_retention == DraftRetention::Discard {
             self.draft.clear();
             self.caret = 0;
         }
@@ -470,9 +482,62 @@ impl Keyboard {
         &self.draft
     }
 
+    /// Mirrors validated application text, excluding password fields.
+    pub fn set_surrounding(&mut self, surrounding: Option<(String, usize, usize)>) {
+        let surrounding = surrounding.filter(|(text, cursor, anchor)| {
+            !self.password_field_active()
+                && text.len() <= 4000
+                && text.is_char_boundary(*cursor)
+                && text.is_char_boundary(*anchor)
+        });
+        if let Some((text, cursor, anchor)) = surrounding {
+            self.draft = text;
+            self.caret = cursor;
+            self.word = (cursor != anchor).then_some(cursor.min(anchor)..cursor.max(anchor));
+            self.mode = DraftMode::Synced { anchor };
+            self.revealed = None;
+        } else if self.synced() {
+            self.mode = DraftMode::Draft;
+            self.draft.clear();
+            self.caret = 0;
+            self.word = None;
+        }
+    }
+
+    #[must_use]
+    pub const fn synced(&self) -> bool {
+        matches!(self.mode, DraftMode::Synced { .. })
+    }
+
+    /// Application selection anchor, before the next live edit.
+    #[must_use]
+    pub const fn application_anchor(&self) -> Option<usize> {
+        match self.mode {
+            DraftMode::Draft => None,
+            DraftMode::Synced { anchor } => Some(anchor),
+        }
+    }
+
+    /// Records that a live edit collapsed the application's selection.
+    pub const fn edit_applied(&mut self) {
+        if self.synced() {
+            self.mode = DraftMode::Synced { anchor: self.caret };
+        }
+    }
+
+    #[must_use]
+    pub const fn mode_label(&self) -> &'static str {
+        if self.synced() {
+            "synced"
+        } else {
+            "draft · not synced"
+        }
+    }
+
     /// Updates the committed field purpose; a different field discards the draft.
     pub fn set_field_kind(&mut self, kind: FieldKind, changed: bool) {
         if changed || self.field_kind != kind {
+            self.mode = DraftMode::Draft;
             self.draft.clear();
             self.caret = 0;
             self.word = None;
@@ -688,7 +753,7 @@ impl Keyboard {
 
     /// Sends Enter with the draft, or another chord immediately, and releases modifiers.
     fn chord(&mut self, key: ChordKey) -> Response {
-        let draft = if key == ChordKey::Named(KeyName::Enter) {
+        let draft = if key == ChordKey::Named(KeyName::Enter) && !self.synced() {
             self.caret = 0;
             self.word = None;
             self.revealed = None;
@@ -712,7 +777,7 @@ impl Keyboard {
 
     /// Sends the draft and keeps the keyboard open; terminals also tap Enter.
     fn send(&mut self) -> Response {
-        if self.terminal() {
+        if self.synced() || self.terminal() {
             return self.chord(ChordKey::Named(KeyName::Enter));
         }
         let draft = core::mem::take(&mut self.draft);

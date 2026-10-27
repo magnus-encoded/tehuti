@@ -110,8 +110,12 @@ mod synthetic_pad {
         keyboard_text: String,
         keymap_source: String,
         pending_text: String,
+        commit_lengths: Vec<usize>,
         suppress_enable: bool,
         content_purpose: Option<zwp_text_input_v3::ContentPurpose>,
+        surrounding: Option<(String, i32, i32)>,
+        deletions: Vec<(u32, u32)>,
+        pending_deletion: (u32, u32),
         modifiers: (u32, u32, u32),
         key_modifiers: Vec<(u32, u32)>,
         /// Every `wl_keyboard.modifiers` depressed mask and each key press, in arrival order.
@@ -515,21 +519,47 @@ mod synthetic_pad {
                         if let Some(purpose) = app.content_purpose {
                             input.set_content_type(zwp_text_input_v3::ContentHint::empty(), purpose);
                         }
+                        if let Some((text, cursor, anchor)) = &app.surrounding {
+                            input.set_surrounding_text(text.clone(), *cursor, *anchor);
+                        }
                         input.commit();
                     }
                 }
                 zwp_text_input_v3::Event::CommitString { text } => {
                     if let Some(text) = text {
+                        app.commit_lengths.push(text.len());
                         app.pending_text.push_str(&text);
                     }
                 }
                 zwp_text_input_v3::Event::Done { serial } => {
                     assert_eq!(serial, 1);
+                    if let Some((text, cursor, anchor)) = &mut app.surrounding {
+                        let cursor_byte = usize::try_from(*cursor).unwrap();
+                        let anchor_byte = usize::try_from(*anchor).unwrap();
+                        let start = cursor_byte
+                            .min(anchor_byte)
+                            .saturating_sub(usize::try_from(app.pending_deletion.0).unwrap());
+                        let end = cursor_byte
+                            .max(anchor_byte)
+                            .saturating_add(usize::try_from(app.pending_deletion.1).unwrap());
+                        if text.is_char_boundary(start) && text.is_char_boundary(end) {
+                            text.replace_range(start..end, &app.pending_text);
+                            *cursor = i32::try_from(start.saturating_add(app.pending_text.len())).unwrap();
+                            *anchor = *cursor;
+                        }
+                    }
+                    app.pending_deletion = (0, 0);
                     app.text.push_str(&core::mem::take(&mut app.pending_text));
+                }
+                zwp_text_input_v3::Event::DeleteSurroundingText {
+                    before_length,
+                    after_length,
+                } => {
+                    app.deletions.push((before_length, after_length));
+                    app.pending_deletion = (before_length, after_length);
                 }
                 zwp_text_input_v3::Event::Leave { .. }
                 | zwp_text_input_v3::Event::PreeditString { .. }
-                | zwp_text_input_v3::Event::DeleteSurroundingText { .. }
                 | zwp_text_input_v3::Event::Action { .. }
                 | zwp_text_input_v3::Event::Language { .. }
                 | zwp_text_input_v3::Event::PreeditHint { .. } => {}
@@ -931,14 +961,7 @@ mod synthetic_pad {
         toplevel.set_title("Synthetic-window-title-1234567890".into());
         toplevel.set_app_id(initial_app_id.into());
         surface.commit();
-        let mut app = App {
-            content_purpose: if let ClientTextState::Purpose(purpose) = text_state {
-                Some(purpose)
-            } else {
-                None
-            },
-            ..App::default()
-        };
+        let mut app = text_state.app();
         let _initial_dispatch = queue.roundtrip(&mut app).unwrap();
         toplevel.set_app_id(app_id.into());
         let _focus_dispatch = queue.roundtrip(&mut app).unwrap();
@@ -1748,11 +1771,35 @@ mod synthetic_pad {
 
     #[derive(Clone, Copy)]
     enum ClientTextState {
+        Surrounding(zwp_text_input_v3::ContentPurpose),
+        Selected,
+        ReversedSelection,
+        UnicodeSurrounding,
+        InvalidSurrounding,
         Purpose(zwp_text_input_v3::ContentPurpose),
         Enabled,
         Absent,
         Disabled,
         FocusChanged,
+    }
+
+    impl ClientTextState {
+        fn app(self) -> App {
+            App {
+                surrounding: matches!(self, Self::Surrounding(_))
+                    .then(|| ("hello world".into(), 5, 5))
+                    .or_else(|| matches!(self, Self::UnicodeSurrounding).then(|| ("hé world".into(), 3, 3)))
+                    .or_else(|| matches!(self, Self::ReversedSelection).then(|| ("hello world".into(), 0, 5)))
+                    .or_else(|| matches!(self, Self::Selected).then(|| ("hello world".into(), 5, 0)))
+                    .or_else(|| matches!(self, Self::InvalidSurrounding).then(|| ("é".into(), 1, 1))),
+                content_purpose: if let Self::Purpose(purpose) | Self::Surrounding(purpose) = self {
+                    Some(purpose)
+                } else {
+                    None
+                },
+                ..App::default()
+            }
+        }
     }
 
     fn exchange_with_text_state(
@@ -3019,6 +3066,171 @@ else:
                 dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
                 let _app = client.join().unwrap();
             }
+        }
+    }
+
+    #[test]
+    fn surrounding_text_drives_live_keyboard_edits_and_password_fallback() {
+        use zwp_text_input_v3::ContentPurpose;
+        check_surrounding_keyboard(
+            ClientTextState::Surrounding(ContentPurpose::Normal),
+            ("llo wor", Some(3)),
+            &[(1, 0), (0, 0)],
+            Some(("hellq world", 5)),
+        );
+        check_surrounding_keyboard(
+            ClientTextState::UnicodeSurrounding,
+            ("hé worl", Some(2)),
+            &[(2, 0), (0, 0)],
+            Some(("hq world", 2)),
+        );
+        for text_state in [
+            ClientTextState::Surrounding(ContentPurpose::Password),
+            ClientTextState::Enabled,
+            ClientTextState::InvalidSurrounding,
+        ] {
+            check_surrounding_keyboard(text_state, ("", Some(0)), &[], None);
+        }
+    }
+
+    fn check_surrounding_keyboard(
+        text_state: ClientTextState,
+        row: (&str, Option<usize>),
+        deletions: &[(u32, u32)],
+        contents: Option<(&str, i32)>,
+    ) {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client =
+            thread::spawn(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let mut pad = SyntheticPad::default();
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(Event::Button {
+                name: ButtonName::North,
+                state,
+            });
+        }
+        route(&mut compositor, &mut pad).unwrap();
+        let keyboard = compositor.on_screen_keyboard();
+        assert_eq!(
+            keyboard.mode_label(),
+            if contents.is_some() {
+                "synced"
+            } else {
+                "draft · not synced"
+            }
+        );
+        let draft = tehuti::osk::draft_row(keyboard, 7);
+        assert_eq!((draft.text.as_str(), draft.caret), row);
+        for name in [ButtonName::West, ButtonName::South, ButtonName::Start] {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button { name, state });
+            }
+        }
+        route(&mut compositor, &mut pad).unwrap();
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        let app = client.join().unwrap();
+        assert_eq!(app.deletions, deletions);
+        if let Some((text, cursor)) = contents {
+            assert_eq!(app.text, "q");
+            assert_eq!(app.surrounding, Some((text.into(), cursor, cursor)));
+        }
+    }
+
+    #[test]
+    fn synced_dictation_fits_text_input_messages() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(
+                client,
+                "test",
+                "test",
+                ClientTextState::Surrounding(zwp_text_input_v3::ContentPurpose::Normal),
+                &sender,
+            )
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let mut pad = SyntheticPad::default();
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(Event::Button {
+                name: ButtonName::North,
+                state,
+            });
+        }
+        pad.push(Event::Speech {
+            text: tehuti_protocol::Text::new("é".repeat(2100)).unwrap(),
+        });
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(Event::Button {
+                name: ButtonName::Start,
+                state,
+            });
+        }
+        route(&mut compositor, &mut pad).unwrap();
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        let app = client.join().unwrap();
+        assert_eq!(app.commit_lengths, vec![3999, 202]);
+        assert_eq!(app.text, format!(" {}", "é".repeat(2100)));
+    }
+
+    #[test]
+    fn application_selection_is_replaced_without_deleting_adjacent_text() {
+        for text_state in [ClientTextState::Selected, ClientTextState::ReversedSelection] {
+            let mut display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+            let (server, client) = UnixStream::pair().unwrap();
+            let _client = display
+                .handle()
+                .insert_client(server, Arc::new(ClientState::default()))
+                .unwrap();
+            let (sender, receiver) = mpsc::channel();
+            let client =
+                thread::spawn(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
+            let started = Instant::now();
+            dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+            let mut pad = SyntheticPad::default();
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button {
+                    name: ButtonName::North,
+                    state,
+                });
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            let keyboard = compositor.on_screen_keyboard();
+            assert_eq!(keyboard.mode_label(), "synced");
+            let row = tehuti::osk::draft_row(keyboard, 7);
+            assert_eq!(row.text, "hello w");
+            assert_eq!(row.picked, Some(0..5));
+            for name in [ButtonName::South, ButtonName::Start] {
+                for state in [ButtonState::Pressed, ButtonState::Released] {
+                    pad.push(Event::Button { name, state });
+                }
+            }
+            route(&mut compositor, &mut pad).unwrap();
+            dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+            let app = client.join().unwrap();
+            assert_eq!(app.deletions, vec![(0, 0)]);
+            assert_eq!(app.text, "q");
+            assert_eq!(app.surrounding, Some(("q world".into(), 1, 1)));
         }
     }
 
