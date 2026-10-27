@@ -3240,3 +3240,57 @@ fn left_stick_moves_the_draft_caret_between_lines() {
     assert_eq!(state.keyboard().caret(), 15);
     assert_eq!(state.keyboard().draft(), "alpha\nbéta\nend");
 }
+
+#[test]
+fn settings_phrase_is_dictation_while_the_keyboard_is_open() {
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, State::default());
+    world.trace.clear();
+    let state = world.run(state, speech_event("pop the hood"));
+    assert!(state.keyboard().is_open());
+    assert_eq!(state.keyboard().draft(), "pop the hood");
+    assert!(!state.settings().open);
+}
+
+proptest! {
+    #[test]
+    fn push_to_talk_keeps_interim_on_the_powerline_and_finishes_at_the_draft_aim(
+        contexts in arbitrary_contexts(),
+        picked in any::<bool>(),
+        phrase in prop_oneof![Just("delete".to_owned()), Just("pop the hood".to_owned()), "[a-z]{1,8}( [a-z]{1,8}){0,3}"],
+    ) {
+        let mut world = World { plugin_active: true, ..World::default() };
+        let app = contexts[0].app_id().to_owned();
+        let state = with_open_keyboard(&mut world, configured(contexts, &app));
+        let mut state = world.run(state, speech_event("hello world"));
+        if picked {
+            state = world.run(state, Input::Sticks(Sticks { left: (-1000, 0), right: (0, 0) }));
+            state = world.run(state, Input::Sticks(Sticks::default()));
+            prop_assert_eq!(state.keyboard().picked_word(), Some(6..11));
+        }
+        state = world.run(state, Input::Speech(SpeechInput::Available));
+        world.trace.clear();
+        state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
+        prop_assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Start { session: 0 })), "press starts capture");
+        state = world.run(state, Input::Speech(SpeechInput::Interim {
+            session: 0, text: Text::new("unfinished".into()).unwrap(),
+        }));
+        prop_assert_eq!(&state.core().bar().segments()[1].text, "unfinished");
+        prop_assert_eq!(state.keyboard().draft(), "hello world");
+        state = world.run(state, pad_button(ButtonName::Record, ButtonState::Released));
+        prop_assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Stop { session: 0, transcribe: true })), "release transcribes");
+        prop_assert_eq!(state.keyboard().draft(), "hello world");
+        world.trace.clear();
+        let state = world.run(state, Input::Speech(SpeechInput::Transcript {
+            session: 0, text: Text::new(phrase.clone()).unwrap(),
+        }));
+        let expected = if picked { format!("hello {phrase}") } else { format!("hello world {phrase}") };
+        prop_assert_eq!(state.keyboard().draft(), expected);
+        prop_assert_eq!(state.keyboard().picked_word(), None);
+        prop_assert!(state.keyboard().is_open());
+        prop_assert!(!state.settings().open);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect,
+            Effect::Apply(_) | Effect::QueryPlugin(Event::Speech { .. }) | Effect::DispatchPlugin { event: Event::Speech { .. }, .. } | Effect::SpeechRouted { .. }
+        )), "finished speech never routes as a command");
+    }
+}

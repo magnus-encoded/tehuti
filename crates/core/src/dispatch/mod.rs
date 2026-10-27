@@ -813,6 +813,14 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
 }
 
 fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if state.keyboard.is_open() && matches!(event, Event::Speech { .. }) {
+        if state.keyboard.password_field_active() {
+            effects.push(Effect::PasswordSpeechIgnored);
+        } else {
+            let _consumed = keyboard(state, event, effects);
+        }
+        return true;
+    }
     if matches!(event, Event::Speech { .. }) && settings_event(state, event, effects) {
         return true;
     }
