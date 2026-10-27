@@ -1,0 +1,128 @@
+#!/bin/sh
+set -eu
+[ "$#" -le 1 ] || { echo 'Usage: install-release [TAG]' >&2; exit 1; }
+tag=${1:-latest}
+repo=magnus-encoded/tehuti
+case $(uname -m) in
+    x86_64) arch=x86_64 ;;
+    i386|i486|i586|i686) arch=i686 ;;
+    *) echo 'Unsupported architecture' >&2; exit 1 ;;
+esac
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+if command -v gh >/dev/null 2>&1; then
+    if [ "$tag" = latest ]; then
+        gh release download --repo "$repo" --pattern "tehuti-*-$arch-linux.tar.gz" --pattern SHA256SUMS --dir "$work"
+    else
+        gh release download "$tag" --repo "$repo" --pattern "tehuti-*-$arch-linux.tar.gz" --pattern SHA256SUMS --dir "$work"
+    fi
+else
+    if [ "$tag" = latest ]; then
+        endpoint=latest
+    else
+        endpoint=tags/$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")
+    fi
+    curl -fsSL "https://api.github.com/repos/$repo/releases/$endpoint" -o "$work/release.json"
+    python3 - "$work/release.json" "$arch" > "$work/assets" <<'PY'
+import json, re, sys
+for asset in json.load(open(sys.argv[1]))['assets']:
+    name = asset['name']
+    if name == 'SHA256SUMS' or re.fullmatch(r'tehuti-[A-Za-z0-9._-]+-' + sys.argv[2] + r'-linux\.tar\.gz', name):
+        url = asset['browser_download_url']
+        if not url.startswith('https://github.com/') or '\n' in url:
+            raise SystemExit('Invalid asset URL')
+        print(name, url)
+PY
+    while read -r name url; do
+        curl -fsSL "$url" -o "$work/$name"
+    done < "$work/assets"
+fi
+set -- "$work"/tehuti-*-"$arch"-linux.tar.gz
+[ "$#" -eq 1 ] && [ -f "$1" ] || { echo 'Expected one release tarball' >&2; exit 1; }
+archive=${1##*/}
+(cd "$work"; awk -v name="$archive" '$2 == name {print}' SHA256SUMS > selected.sha256
+ [ "$(wc -l < selected.sha256)" -eq 1 ]; sha256sum -c selected.sha256)
+root=$HOME/.local/lib/tehuti
+mkdir -p "$root/builds" "$HOME/.local/bin"
+mkdir "$work/unpacked"
+python3 - "$work/$archive" <<'PY'
+import pathlib, sys, tarfile
+with tarfile.open(sys.argv[1]) as archive:
+    for member in archive:
+        path = pathlib.PurePosixPath(member.name)
+        if path.is_absolute() or '..' in path.parts or not (member.isfile() or member.isdir()):
+            raise SystemExit('Unsafe release archive member: ' + member.name)
+PY
+tar -xzf "$work/$archive" -C "$work/unpacked" --no-same-owner
+sha=$(cat "$work/unpacked/VERSION")
+[ "${#sha}" -eq 40 ] || { echo 'Invalid VERSION' >&2; exit 1; }
+case $sha in *[!0-9a-f]*) echo 'Invalid VERSION' >&2; exit 1 ;; esac
+[ -x "$work/unpacked/tehuti" ]
+[ -f "$work/unpacked/sidecars/speech/speech.py" ]
+[ -f "$work/unpacked/sidecars/speech/requirements.txt" ]
+[ -d "$work/unpacked/dist" ]
+venv=${TEHUTI_SPEECH_VENV:-$HOME/.cache/tehuti-speech-venv}
+if [ "${TEHUTI_NO_SPEECH:-}" = '' ]; then
+    stamp=$venv/.tehuti-requirements
+    if [ ! -x "$venv/bin/python" ]; then
+        python3 -m venv "$venv"
+        rm -f "$stamp"
+    fi
+    if ! cmp -s "$work/unpacked/sidecars/speech/requirements.txt" "$stamp"; then
+        "$venv/bin/pip" install -r "$work/unpacked/sidecars/speech/requirements.txt"
+        cp "$work/unpacked/sidecars/speech/requirements.txt" "$stamp"
+    fi
+fi
+build=$root/builds/$(date -u +%Y%m%dT%H%M%S.%NZ)-$(printf %.12s "$sha")
+[ ! -e "$build" ] || { echo 'Build directory already exists; retry later' >&2; exit 1; }
+mv "$work/unpacked" "$build"
+previous=
+if [ -e "$root/tehuti" ]; then
+    previous=$(readlink -f "$root/tehuti")
+fi
+if [ -f "$root/tehuti" ] && [ ! -L "$root/tehuti" ]; then
+    cp -p "$root/tehuti" "$build/previous-tehuti"
+    previous=$build/previous-tehuti
+fi
+cat > "$build/launcher" <<'SH'
+#!/bin/sh
+binary=$(readlink -f "$HOME/.local/lib/tehuti/tehuti")
+TEHUTI_RELEASE_DIRECTORY=$(dirname "$binary")
+export TEHUTI_RELEASE_DIRECTORY
+if [ "${TEHUTI_NO_SPEECH:-}" = '' ]; then
+    export TEHUTI_SPEECH_SIDECAR="${TEHUTI_SPEECH_SIDECAR:-$HOME/.local/bin/tehuti-speech}"
+fi
+exec "$binary" "$@"
+SH
+cat > "$build/speech-launcher" <<'SH'
+#!/bin/sh
+binary=$(readlink -f "$HOME/.local/lib/tehuti/tehuti")
+venv=${TEHUTI_SPEECH_VENV:-$HOME/.cache/tehuti-speech-venv}
+if [ "${TEHUTI_SPEECH_DEVICE:-}" = '' ] && ! "$venv/bin/python" -c '
+import numpy
+from faster_whisper import WhisperModel
+model = WhisperModel("tiny", device="cuda", compute_type="float16")
+list(model.transcribe(numpy.zeros(16000, dtype=numpy.float32))[0])
+' >/dev/null 2>&1; then
+    export TEHUTI_SPEECH_DEVICE=cpu
+fi
+exec "$venv/bin/python" "${TEHUTI_RELEASE_DIRECTORY:-$(dirname "$binary")}/sidecars/speech/speech.py"
+SH
+chmod +x "$build/launcher" "$build/speech-launcher"
+for entry in tehuti tehuti-speech; do
+    case $entry in tehuti) target=$build/launcher ;; *) target=$build/speech-launcher ;; esac
+    ln -s "$target" "$HOME/.local/bin/.$entry-$$"
+    mv -Tf "$HOME/.local/bin/.$entry-$$" "$HOME/.local/bin/$entry"
+done
+ln -s "$build/tehuti" "$root/.tehuti-$$"
+mv -Tf "$root/.tehuti-$$" "$root/tehuti"
+printf 'Installed %s. Running sessions keep running.\n' "$sha"
+if [ -n "$previous" ]; then
+    python3 - "$previous" "$root" <<'PYROLLBACK'
+import shlex, sys
+previous, root = sys.argv[1:]
+quote = shlex.quote
+print('Rollback: ln -s ' + quote(previous) + ' ' + quote(root + '/.rollback')
+      + ' && mv -Tf ' + quote(root + '/.rollback') + ' ' + quote(root + '/tehuti'))
+PYROLLBACK
+fi

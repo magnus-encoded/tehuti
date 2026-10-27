@@ -1,5 +1,31 @@
 # Tehuti login session
 
+## Installing from a release
+
+Run `scripts/install-release` for the latest GitHub release, or
+`scripts/install-release v1.0.0` for a tag. It supports x86_64 and i686 Linux,
+verifies SHA256SUMS, and installs without building. Install gh or curl, Python 3
+with venv support, tar, and sha256sum first. The host also needs the runtime
+libraries for Wayland, xkbcommon, EGL/GLES, udev, libseat, libinput, GBM, DRM,
+and Pixman. Releases are built on Ubuntu 22.04 and require glibc 2.35 or newer.
+
+Each release lives in `~/.local/lib/tehuti/builds/<UTC timestamp>-<shortsha>/`,
+with `tehuti`, `sidecars/`, `dist/`, and the full commit SHA in `VERSION`.
+`~/.local/lib/tehuti/tehuti` points to its binary. The installer creates
+`~/.local/bin/tehuti` and `tehuti-speech` launchers; speech follows the active
+binary's sidecars. Existing builds stay available. The printed rollback command
+atomically re-points the binary link. Installation and rollback leave running
+sessions alone; the next session uses the selected build.
+
+Speech uses the requirements stamp and venv from `scripts/try`, including
+`TEHUTI_SPEECH_VENV`. Set `TEHUTI_NO_SPEECH=1` to install without speech dependencies.
+The speech launcher probes CUDA and falls back to CPU. The faster-whisper stack
+requires a supported CTranslate2 Python distribution; its [published Linux wheels](https://opennmt.net/CTranslate2/installation)
+cover x86_64 and AArch64, so use `TEHUTI_NO_SPEECH=1` on i686 unless you provide that dependency.
+Session registration remains a separate owner action described below.
+
+## Building locally
+
 Build with `cargo build --release -p tehuti`. The build needs the libseat,
 libudev, libinput and Pixman development libraries, alongside the nested
 backend dependencies. Put `target/release/tehuti` at `~/.local/bin/tehuti`.

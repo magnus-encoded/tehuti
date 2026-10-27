@@ -1,0 +1,124 @@
+#!/bin/sh
+set -eu
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+unset TEHUTI_NO_SPEECH TEHUTI_SPEECH_VENV TEHUTI_SPEECH_SIDECAR TEHUTI_SPEECH_DEVICE TEHUTI_RELEASE_DIRECTORY
+export HOME=$work/home
+export FAKE_RELEASE=$work/release
+mkdir -p "$HOME" "$FAKE_RELEASE" "$work/bin" "$work/package/sidecars/speech" "$work/package/dist"
+export PATH=$work/bin:$PATH
+cat > "$work/bin/gh" <<'SH'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = --dir ]; then destination=$2; shift; fi
+    shift
+done
+cp "$FAKE_RELEASE"/* "$destination/"
+SH
+cat > "$work/bin/uname" <<'SH'
+#!/bin/sh
+echo "${TEST_ARCH:-x86_64}"
+SH
+cat > "$work/bin/python3" <<'SH'
+#!/bin/sh
+if [ "$1" = -m ] && [ "$2" = venv ]; then
+    mkdir -p "$3/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$3/bin/python"
+    printf '#!/bin/sh\necho pip >> "$HOME/pip-calls"\n' > "$3/bin/pip"
+    chmod +x "$3/bin/python" "$3/bin/pip"
+else
+    exec /usr/bin/python3 "$@"
+fi
+SH
+chmod +x "$work/bin/"*
+printf '#!/bin/sh\necho release-binary\n' > "$work/package/tehuti"
+chmod +x "$work/package/tehuti"
+printf '1111111111111111111111111111111111111111\n' > "$work/package/VERSION"
+echo 'speech' > "$work/package/sidecars/speech/speech.py"
+echo 'dependency' > "$work/package/sidecars/speech/requirements.txt"
+echo 'session' > "$work/package/dist/tehuti-session"
+package() {
+    tar -czf "$FAKE_RELEASE/tehuti-1.0.0-$1-linux.tar.gz" -C "$work/package" .
+    (cd "$FAKE_RELEASE"; sha256sum ./*.tar.gz | sed 's|  ./|  |' > SHA256SUMS)
+}
+package x86_64
+"$repo/scripts/install-release" > "$work/output"
+if grep -q '^Rollback:' "$work/output"; then
+    echo 'First install printed an invalid rollback' >&2; exit 1
+fi
+live=$HOME/.local/lib/tehuti/tehuti
+first=$(readlink -f "$live")
+[ "$($HOME/.local/bin/tehuti)" = release-binary ]
+[ -f "$(dirname "$first")/dist/tehuti-session" ]
+[ -f "$HOME/.cache/tehuti-speech-venv/.tehuti-requirements" ]
+[ "$(wc -l < "$HOME/pip-calls")" -eq 1 ]
+# A second architecture and explicit tag retain the first build and print rollback.
+rm "$FAKE_RELEASE/tehuti-1.0.0-x86_64-linux.tar.gz"
+printf '2222222222222222222222222222222222222222\n' > "$work/package/VERSION"
+package i686
+TEST_ARCH=i686 "$repo/scripts/install-release" v1.0.0 > "$work/output"
+[ -f "$first" ]
+[ "$(readlink -f "$live")" != "$first" ]
+grep -F "$first" "$work/output" >/dev/null
+[ "$(wc -l < "$HOME/pip-calls")" -eq 1 ]
+second=$(readlink -f "$live")
+rollback=$(sed -n 's/^Rollback: //p' "$work/output")
+sh -c "$rollback"
+[ "$(readlink -f "$live")" = "$first" ]
+ln -sf "$second" "$live"
+# Corruption must leave the active build unchanged.
+printf corrupt >> "$FAKE_RELEASE/tehuti-1.0.0-i686-linux.tar.gz"
+if TEST_ARCH=i686 "$repo/scripts/install-release" > "$work/output" 2>&1; then
+    echo 'Corrupt release accepted' >&2; exit 1
+fi
+[ "$(readlink -f "$live")" = "$second" ]
+if TEST_ARCH=armv7l "$repo/scripts/install-release" > "$work/output" 2>&1; then
+    echo 'Unsupported architecture accepted' >&2; exit 1
+fi
+# The curl path uses release API metadata without gh on PATH.
+rm "$FAKE_RELEASE/tehuti-1.0.0-i686-linux.tar.gz"
+printf '3333333333333333333333333333333333333333\n' > "$work/package/VERSION"
+package x86_64
+mkdir "$work/curl-bin"
+for tool in uname python3; do ln -s "$work/bin/$tool" "$work/curl-bin/$tool"; done
+for tool in mktemp rm mkdir cat tar gzip awk wc sha256sum cmp cp mv date chmod ln readlink dirname; do
+    ln -s "$(command -v "$tool")" "$work/curl-bin/$tool"
+done
+cat > "$work/curl-bin/curl" <<'SH'
+#!/bin/sh
+url=$2
+destination=$4
+case $url in
+    https://api.github.com/*) cp "$FAKE_RELEASE/metadata.json" "$destination" ;;
+    https://github.com/*) cp "$FAKE_RELEASE/${url##*/}" "$destination" ;;
+    *) exit 1 ;;
+esac
+SH
+chmod +x "$work/curl-bin/curl"
+cat > "$FAKE_RELEASE/metadata.json" <<'JSON'
+{"assets":[{"name":"tehuti-1.0.0-x86_64-linux.tar.gz","browser_download_url":"https://github.com/example/project/releases/download/v1.0.0/tehuti-1.0.0-x86_64-linux.tar.gz"},{"name":"SHA256SUMS","browser_download_url":"https://github.com/example/project/releases/download/v1.0.0/SHA256SUMS"}]}
+JSON
+PATH=$work/curl-bin "$repo/scripts/install-release" v1.0.0 > "$work/output"
+[ "$(cat "$(dirname "$(readlink -f "$live")")/VERSION")" = 3333333333333333333333333333333333333333 ]
+[ "$(wc -l < "$HOME/pip-calls")" -eq 1 ]
+# A pip failure leaves the selected build and launchers intact.
+printf 'dependency changed\n' > "$work/package/sidecars/speech/requirements.txt"
+package x86_64
+printf '#!/bin/sh\nexit 1\n' > "$HOME/.cache/tehuti-speech-venv/bin/pip"
+third=$(readlink -f "$live")
+if "$repo/scripts/install-release" > "$work/output" 2>&1; then
+    echo 'Failed speech setup accepted' >&2; exit 1
+fi
+[ "$(readlink -f "$live")" = "$third" ]
+TEHUTI_NO_SPEECH=1 "$repo/scripts/install-release" > "$work/output"
+[ -f "$third" ]
+# Verified archives still cannot contain symlinks outside the build.
+ln -s /tmp "$work/package/escape"
+package x86_64
+selected=$(readlink -f "$live")
+if TEHUTI_NO_SPEECH=1 "$repo/scripts/install-release" > "$work/output" 2>&1; then
+    echo 'Unsafe archive accepted' >&2; exit 1
+fi
+[ "$(readlink -f "$live")" = "$selected" ]
+printf '%s\n' 'install-release tests passed'
