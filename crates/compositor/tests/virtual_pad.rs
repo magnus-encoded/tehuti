@@ -31,3 +31,16 @@ fn physical_pads_remain_accepted_regardless_of_name_opt_in() {
         ));
     }
 }
+
+#[test]
+fn xone_pad_on_virtual_bus_under_a_usb_device_is_accepted_without_opt_in() {
+    let sysfs = Some(Path::new(
+        "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3:1.0/gip0/gip0.0/input/input25/event18",
+    ));
+    assert!(accepts_pad(
+        BusType::BUS_VIRTUAL,
+        sysfs,
+        Some("Microsoft Xbox Controller"),
+        None
+    ));
+}

@@ -125,17 +125,18 @@ pub fn accepts_pad(
 
 /// Whether a device is real hardware rather than a virtual one.
 ///
-/// Virtual devices, such as uinput pads made by
-/// other tools, report `BUS_VIRTUAL` or live under `/sys/devices/virtual`.
+/// The sysfs path decides when it is known: virtual devices, such as uinput pads made by
+/// other tools, live under `/sys/devices/virtual`.
 /// UHID devices also live there, but `BlueZ` uses UHID for real Bluetooth pads,
 /// so `/sys/devices/virtual/misc/uhid` counts as physical.
-/// An unknown sysfs path counts as physical so a sysfs-less system still finds pads.
+/// The bus type alone is not trusted: the xone driver reports `BUS_VIRTUAL` for real USB pads
+/// (<https://github.com/dlundqvist/xone/blob/master/driver/common.c>).
+/// Without a sysfs path, any bus other than `BUS_VIRTUAL` counts as physical.
 #[must_use]
 pub fn is_physical(bus: evdev::BusType, sysfs: Option<&std::path::Path>) -> bool {
-    bus != evdev::BusType::BUS_VIRTUAL
-        && !sysfs.is_some_and(|path| {
-            path.starts_with("/sys/devices/virtual") && !path.starts_with("/sys/devices/virtual/misc/uhid")
-        })
+    sysfs.map_or(bus != evdev::BusType::BUS_VIRTUAL, |path| {
+        !path.starts_with("/sys/devices/virtual") || path.starts_with("/sys/devices/virtual/misc/uhid")
+    })
 }
 
 /// Device operations needed to acquire exclusive, nonblocking input.
@@ -673,7 +674,21 @@ mod tests {
             !is_physical(BusType::BUS_USB, Some(uinput)),
             "uinput pad spoofing USB"
         );
-        assert!(!is_physical(BusType::BUS_VIRTUAL, Some(usb)), "virtual bus");
+        let xone = Path::new(
+            "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3:1.0/gip0/gip0.0/input/input25/event18",
+        );
+        assert!(
+            is_physical(BusType::BUS_VIRTUAL, Some(xone)),
+            "xone pad reports BUS_VIRTUAL under a real USB device"
+        );
+        assert!(
+            !is_physical(BusType::BUS_VIRTUAL, Some(uinput)),
+            "uinput pad such as Sunshine libvirtualhid"
+        );
+        assert!(
+            !is_physical(BusType::BUS_VIRTUAL, None),
+            "virtual bus without sysfs"
+        );
         assert!(is_physical(BusType::BUS_USB, Some(usb)), "real Letters pad");
         assert!(is_physical(BusType::BUS_BLUETOOTH, None), "no sysfs");
         let uhid = Path::new("/sys/devices/virtual/misc/uhid/0005:045E:0B13.0003/input/input30/event21");
