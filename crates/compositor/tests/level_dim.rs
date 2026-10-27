@@ -418,6 +418,50 @@ mod level_dim {
     }
 
     #[test]
+    fn columns_chips_follow_layout_order_after_a_column_moves() {
+        use tehuti_core::bar::Tone;
+        scene(3, |compositor, _| {
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context(
+                    "app_id = '*'\n[buttons]\nX = { layout = 'move-column-left' }",
+                )
+                .unwrap(),
+            ]);
+            tap(compositor);
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                compositor.handle(&Event::Button {
+                    name: ButtonName::West,
+                    state,
+                });
+            }
+            let segments = compositor.voice_bar().segments();
+            let windows: Vec<_> = segments
+                .iter()
+                .filter(|segment| matches!(segment.tone, Tone::Context | Tone::Unfocused))
+                .map(|segment| (segment.text.as_str(), segment.tone))
+                .collect();
+            assert_eq!(
+                windows,
+                vec![
+                    ("Document 0", Tone::Unfocused),
+                    ("Document 2", Tone::Context),
+                    ("Document 1", Tone::Unfocused),
+                ]
+            );
+            tap(compositor);
+            assert_eq!(
+                compositor
+                    .voice_bar()
+                    .segments()
+                    .iter()
+                    .filter(|segment| matches!(segment.tone, Tone::Context | Tone::Unfocused))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
     fn no_focus_has_no_outline() {
         scene(0, |compositor, output| {
             for _ in 0..2 {

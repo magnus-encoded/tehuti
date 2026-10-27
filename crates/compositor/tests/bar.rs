@@ -72,6 +72,93 @@ mod tests {
     }
 
     #[test]
+    fn columns_chips_have_flat_edges() {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let mut state = State::new();
+        for state_of_button in [ButtonState::Pressed, ButtonState::Released] {
+            (state, _) = step(
+                state,
+                &Event::Button {
+                    name: ButtonName::Guide,
+                    state: state_of_button,
+                },
+            );
+        }
+        let bar = state.bar().clone().with_windows(vec![("Notes".into(), true)]);
+        let output = output(1280, 720, 1);
+        let mut buffer = Buffer::default();
+        let (memory, _) = buffer.update(&output, &bar, "12:34").unwrap();
+        let mut memory = memory.clone();
+        memory
+            .render()
+            .draw(|bytes| {
+                let pixel = |x: usize, y: usize| &bytes[(y * 1280 + x) * 4..(y * 1280 + x) * 4 + 4];
+                assert_eq!(pixel(116, 1), pixel(116, 16));
+                assert_eq!(pixel(115, 1), &[88, 65, 47, 255]);
+                assert_eq!(pixel(116, 16), &[30, 24, 20, 255]);
+                Ok::<_, core::convert::Infallible>(Vec::new())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn overflowing_columns_keep_the_focused_chip_readable_at_either_scale() {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let mut state = State::new();
+        for state_of_button in [ButtonState::Pressed, ButtonState::Released] {
+            (state, _) = step(
+                state,
+                &Event::Button {
+                    name: ButtonName::Guide,
+                    state: state_of_button,
+                },
+            );
+        }
+        for scale in [1, 2] {
+            let output = output(1280 * scale, 720 * scale, scale);
+            let mut buffer = Buffer::default();
+            for focused in [0, 20, 39, 0] {
+                let bar = state
+                    .bar()
+                    .clone()
+                    .with_windows((0..40).map(|index| ("Notes".into(), index == focused)).collect());
+                let (memory, _) = buffer.update(&output, &bar, "12:34").unwrap();
+                let mut memory = memory.clone();
+                memory
+                    .render()
+                    .draw(|bytes| {
+                        let unit = usize::try_from(scale).unwrap();
+                        let row = &bytes[1280 * unit * 4..(1280 + 1176) * unit * 4];
+                        let focused_pixels = row
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .filter(|pixel| pixel.as_slice() == [88, 65, 47, 255])
+                            .count();
+                        assert_eq!(focused_pixels, 116 * unit, "focused window {focused}");
+                        let start = row
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .position(|pixel| pixel.as_slice() == [88, 65, 47, 255])
+                            .unwrap();
+                        assert!(
+                            bytes.chunks_exact(1280 * unit * 4).any(|scanline| scanline
+                                [start * 4..(start + 116 * unit) * 4]
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
+                                .any(|pixel| pixel.as_slice() == [239, 235, 229, 255])),
+                            "the focused title has visible text"
+                        );
+                        Ok::<_, core::convert::Infallible>(Vec::new())
+                    })
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn many_long_titles_keep_the_last_window_and_clock_visible() {
         use tehuti_core::bar::Tone;
         use tehuti_protocol::{ButtonName, ButtonState};

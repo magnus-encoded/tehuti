@@ -133,6 +133,11 @@ impl Bar {
     }
 
     #[must_use]
+    pub const fn level(&self) -> crate::Level {
+        self.level
+    }
+
+    #[must_use]
     pub fn segments(&self) -> Vec<Segment> {
         let mut segments: Vec<Segment> = if self.level == crate::Level::Columns && !self.windows.is_empty() {
             self.windows

@@ -22,6 +22,7 @@ use tehuti_core::{
 /// What the bar shows; the buffer is redrawn only when this changes.
 type Key = (
     Vec<Segment>,
+    bool,
     String,
     i32,
     i32,
@@ -82,7 +83,7 @@ impl Buffer {
         let segments = bar.segments();
         let unit = usize::try_from(scale).ok()?;
         let width = usize::try_from(mode.size.w).ok()?;
-        let layout = Layout::new(&segments, width, unit);
+        let layout = Layout::new(&segments, width, unit, bar.level() == tehuti_core::Level::Columns);
         let ticker = bar.ticker().map(|view| {
             let content = self.ticker_strip(&view.entries).width().saturating_mul(unit);
             let offset = ticker::scroll_offset(
@@ -94,7 +95,15 @@ impl Buffer {
             );
             (view.entries, offset)
         });
-        let key = (segments, clock.to_owned(), mode.size.w, scale, height, ticker);
+        let key = (
+            segments,
+            bar.level() == tehuti_core::Level::Columns,
+            clock.to_owned(),
+            mode.size.w,
+            scale,
+            height,
+            ticker,
+        );
         if self.key.as_ref() != Some(&key) {
             self.image = raster(
                 &key,
@@ -131,14 +140,18 @@ struct Layout {
     width: usize,
     clock_start: usize,
     arrow: usize,
-    chips: Vec<(usize, usize)>,
+    chips: Vec<(usize, usize, usize)>,
+    scroll: usize,
     ticker: (usize, usize),
 }
 
 impl Layout {
-    fn new(segments: &[Segment], width: usize, unit: usize) -> Self {
+    fn new(segments: &[Segment], width: usize, unit: usize, flat: bool) -> Self {
         let clock_width = 104usize.saturating_mul(unit).min(width);
         let clock_start = width.saturating_sub(clock_width);
+        if flat {
+            return Self::columns(segments, width, unit, clock_start);
+        }
         let arrow = 12usize.saturating_mul(unit);
         let mut next_start = 0usize;
         let mut chips = Vec::new();
@@ -162,7 +175,7 @@ impl Layout {
             if end <= next_start {
                 break;
             }
-            chips.push((next_start, end));
+            chips.push((index, next_start, end));
             next_start = end;
         }
         let margin = 8usize.saturating_mul(unit);
@@ -176,6 +189,47 @@ impl Layout {
             clock_start,
             arrow,
             chips,
+            scroll: 0,
+            ticker,
+        }
+    }
+
+    fn columns(segments: &[Segment], width: usize, unit: usize, clock_start: usize) -> Self {
+        let mut next = 0usize;
+        let chips: Vec<_> = segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| {
+                let start = next;
+                let wanted = segment
+                    .text
+                    .chars()
+                    .count()
+                    .saturating_mul(16)
+                    .saturating_add(36)
+                    .saturating_mul(unit)
+                    .min(clock_start);
+                next = next.saturating_add(wanted);
+                (index, start, next)
+            })
+            .collect();
+        let scroll = chips
+            .iter()
+            .zip(segments)
+            .find(|(_, segment)| segment.tone == Tone::Context)
+            .map_or(0, |((_, _, end), _)| end.saturating_sub(clock_start));
+        let ticker = (
+            next.saturating_sub(scroll)
+                .saturating_add(8usize.saturating_mul(unit)),
+            clock_start.saturating_sub(8usize.saturating_mul(unit)),
+        );
+        Self {
+            unit,
+            width,
+            clock_start,
+            arrow: 0,
+            chips,
+            scroll,
             ticker,
         }
     }
@@ -197,7 +251,7 @@ fn raster(
     height: i32,
     strip: Option<&crate::ticker_strip::Strip>,
 ) -> Option<MemoryRenderBuffer> {
-    let (segments, clock, width, scale, _, ticker) = key;
+    let (segments, _, clock, width, scale, _, ticker) = key;
     let height_usize = usize::try_from(height).ok()?;
     let mut canvas = Canvas {
         width: layout.width,
@@ -218,8 +272,30 @@ fn raster(
     if let (Some((_, offset)), Some(strip)) = (ticker, strip) {
         canvas.ticker(strip, *offset, layout.ticker, unit);
     }
-    for ((start, end), segment) in layout.chips.iter().zip(segments).rev() {
-        canvas.chip(*start, *end, segment, layout.arrow, layout.clock_start, unit);
+    for (index, start, end) in layout.chips.iter().rev() {
+        let Some(segment) = segments.get(*index) else {
+            continue;
+        };
+        if key.1 {
+            let limit = layout.scroll.saturating_add(layout.clock_start);
+            let end = (*end).min(limit);
+            canvas.rectangle(
+                start.saturating_sub(layout.scroll).min(layout.clock_start),
+                end.saturating_sub(layout.scroll),
+                colour(segment.tone),
+            );
+            canvas.scrolled_text(
+                &segment.text,
+                (
+                    start.saturating_add(18usize.saturating_mul(unit)),
+                    end.saturating_sub(4usize.saturating_mul(unit)),
+                ),
+                unit,
+                layout.scroll,
+            );
+        } else {
+            canvas.chip(*start, *end, segment, layout.arrow, layout.clock_start, unit);
+        }
     }
     Some(MemoryRenderBuffer::from_slice(
         &canvas.pixels,
@@ -281,6 +357,11 @@ impl Canvas {
     }
 
     fn text(&mut self, text: &str, start: usize, end: usize, unit: usize) {
+        self.scrolled_text(text, (start, end), unit, 0);
+    }
+
+    fn scrolled_text(&mut self, text: &str, clip: (usize, usize), unit: usize, offset: usize) {
+        let (start, end) = clip;
         let size = 2usize.saturating_mul(unit);
         let advance = 8usize.saturating_mul(size);
         let top = self.height.saturating_sub(8usize.saturating_mul(size)) / 2;
@@ -302,13 +383,18 @@ impl Canvas {
             for (column, row) in crate::pictograms::lit(glyph) {
                 for vertical in 0..size {
                     for horizontal in 0..size {
-                        self.pixel(
-                            left.saturating_add(column.saturating_mul(size))
-                                .saturating_add(horizontal),
-                            top.saturating_add(row.saturating_mul(size))
-                                .saturating_add(vertical),
-                            [239, 235, 229, 255],
-                        );
+                        if let Some(column) = left
+                            .saturating_add(column.saturating_mul(size))
+                            .saturating_add(horizontal)
+                            .checked_sub(offset)
+                        {
+                            self.pixel(
+                                column,
+                                top.saturating_add(row.saturating_mul(size))
+                                    .saturating_add(vertical),
+                                [239, 235, 229, 255],
+                            );
+                        }
                     }
                 }
             }
