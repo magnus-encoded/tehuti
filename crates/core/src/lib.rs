@@ -53,7 +53,9 @@ pub struct State {
 impl State {
     #[must_use]
     pub fn passthrough_push_to_talk(&self) -> &[ButtonName] {
-        focused_context(self).map_or(&[ButtonName::Record], Context::passthrough_push_to_talk)
+        focused_context(self)
+            .or_else(|| global_context(self))
+            .map_or(&[ButtonName::Record], Context::passthrough_push_to_talk)
     }
 
     #[must_use]
@@ -62,7 +64,9 @@ impl State {
     }
 
     pub(crate) fn passthrough_context(&self) -> bool {
-        focused_context(self).is_some_and(Context::passthrough)
+        focused_context(self)
+            .or_else(|| global_context(self))
+            .is_some_and(Context::passthrough)
     }
 
     #[must_use]
@@ -430,6 +434,26 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
             return None;
         }
         let phrase = text.as_str();
+        if state.level == Level::App {
+            let button = match tehuti_protocol::normalize_phrase(phrase).as_str() {
+                "tab left" => Some(ButtonName::LeftBumper),
+                "tab right" => Some(ButtonName::RightBumper),
+                _ => None,
+            };
+            if let Some(name) = button {
+                return (!state.passthrough())
+                    .then(|| {
+                        active_context(
+                            state,
+                            &Event::Button {
+                                name,
+                                state: ButtonState::Pressed,
+                            },
+                        )
+                    })
+                    .flatten();
+            }
+        }
         let focused = focused_context(state);
         let global = global_context(state);
         return focused

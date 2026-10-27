@@ -1,11 +1,21 @@
 app_id = "*"
 
 [buttons]
+left_bumper = { key = "tab", mods = ["shift"] }
+right_bumper = { key = "tab" }
+# left_bumper = { key = "page_up", mods = ["ctrl"] }
+# right_bumper = { key = "page_down", mods = ["ctrl"] }
+
+# For pad passthrough, uncomment this table. Application contexts override it.
+# [pad]
+# passthrough = true
 
 [keyboard]
 on_text_field = "button"
 button = "Y"
 
 [speech]
+"Left." = { layout = "focus-column-left" }
+"Right." = { layout = "focus-column-right" }
 "Wider." = { layout = "switch-preset-column-width" }
 "Narrower." = { layout = "switch-preset-column-width-back" }
