@@ -133,6 +133,11 @@ impl Bar {
     }
 
     #[must_use]
+    pub const fn level(&self) -> crate::Level {
+        self.level
+    }
+
+    #[must_use]
     pub fn segments(&self) -> Vec<Segment> {
         let mut segments: Vec<Segment> = if self.level == crate::Level::Columns && !self.windows.is_empty() {
             self.windows
@@ -152,9 +157,22 @@ impl Bar {
         segments
     }
 
+    /// The segment belonging to the focused window, independent of feedback tones.
+    #[must_use]
+    pub fn focused_window_segment(&self) -> Option<usize> {
+        self.windows.iter().position(|(_, focused)| *focused)
+    }
+
     #[must_use]
     pub fn with_windows(mut self, windows: Vec<(String, bool)>) -> Self {
         self.windows = windows;
+        self
+    }
+
+    /// Adds feedback to a bar view without changing its window focus.
+    #[must_use]
+    pub fn with_feedback(mut self, feedback: Segment) -> Self {
+        self.feedback = Some(feedback);
         self
     }
 

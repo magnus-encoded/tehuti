@@ -1531,7 +1531,12 @@ impl Compositor {
     }
 
     fn apply_layout(&mut self, action: tehuti_protocol::LayoutAction) {
-        self.layout.apply(tehuti_core::layout::command_for(action));
+        self.apply_layout_command(tehuti_core::layout::command_for(action));
+    }
+
+    /// Applies a tiling command and places the mapped windows.
+    pub fn apply_layout_command(&mut self, command: tehuti_core::layout::Command) {
+        self.layout.apply(command);
         self.place_layout();
     }
 
