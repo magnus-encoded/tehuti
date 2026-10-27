@@ -722,19 +722,56 @@ impl Keyboard {
         self.repeat = Some((direction, remaining.saturating_sub(elapsed)));
     }
 
-    /// Samples the left stick's horizontal deflection; a flick picks the next or previous word.
-    pub fn left_stick(&mut self, x: i16) {
-        if x.unsigned_abs() < WORD_PICK_RELEASE.unsigned_abs() {
+    /// A left-stick flick picks a word horizontally or moves the caret one line vertically.
+    pub fn left_stick(&mut self, x: i16, y: i16) {
+        let deflection = x.unsigned_abs().max(y.unsigned_abs());
+        if deflection < WORD_PICK_RELEASE.unsigned_abs() {
             self.stick_engaged = false;
             return;
         }
-        if self.stick_engaged || x.unsigned_abs() < WORD_PICK_DEFLECTION.unsigned_abs() {
+        if self.stick_engaged || deflection < WORD_PICK_DEFLECTION.unsigned_abs() {
             return;
         }
         self.stick_engaged = true;
         if self.open {
-            self.pick_word(x > 0);
+            if x.unsigned_abs() >= y.unsigned_abs() {
+                self.pick_word(x > 0);
+            } else {
+                self.move_line(y > 0);
+            }
         }
+    }
+
+    fn move_line(&mut self, down: bool) {
+        let Some((prefix, suffix)) = self.draft.split_at_checked(self.caret) else {
+            return;
+        };
+        let start = prefix.rfind('\n').map_or(0, |index| index.saturating_add(1));
+        let column = prefix.rsplit('\n').next().unwrap_or_default().chars().count();
+        let target = if down {
+            let Some(end) = suffix.find('\n') else {
+                return;
+            };
+            self.caret.saturating_add(end).saturating_add(1)
+        } else {
+            let Some(end) = start.checked_sub(1) else {
+                return;
+            };
+            prefix
+                .get(..end)
+                .and_then(|lines| lines.rfind('\n'))
+                .map_or(0, |index| index.saturating_add(1))
+        };
+        let Some(remaining) = self.draft.get(target..) else {
+            return;
+        };
+        let line = remaining.split('\n').next().unwrap_or_default();
+        let offset = line
+            .char_indices()
+            .nth(column)
+            .map_or(line.len(), |(index, _)| index);
+        self.caret = target.saturating_add(offset);
+        self.word = None;
     }
 
     /// Inserts dictated text at the caret, or over the picked word, keeping words apart.

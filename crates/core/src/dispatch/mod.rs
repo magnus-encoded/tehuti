@@ -459,7 +459,7 @@ fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
 
 fn update_sticks(state: &mut State, sticks: Sticks) {
     if !state.core.passthrough() && state.core.menu().is_none() {
-        state.keyboard.left_stick(sticks.left.0);
+        state.keyboard.left_stick(sticks.left.0, sticks.left.1);
         state.mouse.sticks = sticks;
     }
 }
