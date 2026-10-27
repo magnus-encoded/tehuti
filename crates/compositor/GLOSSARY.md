@@ -9,7 +9,7 @@
 | Apply | Carry out an action from the core step, such as sending a key tap to the focused client. |
 | Secret confirmation notice | An overlay naming one secret reference and the focused application before a controller press can authorize lookup. |
 | On-screen keyboard | The compositor's own keyboard overlay, docked low. One highlight moves over the keys with the D-pad, the way console keyboards work. |
-| Draft | The one-row text buffer the keyboard edits, local or mirroring the application. Closing the keyboard discards the local draft. |
+| Draft | The one-row text buffer the keyboard edits, local or mirroring the application. Closing the keyboard discards the local draft unless its context keeps it between openings. |
 | Synced | A draft that mirrors the application’s own text and edits it live. |
 | Powerline | The bar along the bottom edge of every output. |
 | Chip | One segment of the powerline. |

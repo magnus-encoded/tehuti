@@ -159,7 +159,12 @@ application routing. `"open"` lets Y open even without a text field, and
 automatically. A context with `app_id = "*"` supplies defaults; the active
 context overrides options it supplies. Saying "keyboard" opens in every
 application regardless of these options. Y types a space while the keyboard is
-open. B closes it; Menu sends the draft and keeps it open.
+open. B closes it; Menu types the draft, presses Enter and keeps it open.
+With an empty draft Menu presses only Enter. Closing drops the draft by
+default; `keep_draft = true` in `[keyboard]` keeps it between openings.
+A different text field still clears it.
+The draft row sits below the keys, beside the powerline, and shows a window
+of text around the caret or picked word.
 The legacy `button` and `open_on_app_level` options remain accepted but
 do not change the opening triggers. See `examples/global/context.toml`.
 

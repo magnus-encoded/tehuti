@@ -159,6 +159,18 @@ impl State {
         (mode, button)
     }
 
+    /// Resolves draft retention over the global context, defaulting to discard.
+    #[must_use]
+    pub fn keep_keyboard_draft(&self) -> bool {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        self.contexts
+            .iter()
+            .find(|context| Some(context.app_id()) == self.focused_app_id.as_deref())
+            .and_then(|context| context.keyboard().keep_draft)
+            .or_else(|| global.and_then(|context| context.keyboard().keep_draft))
+            .unwrap_or(false)
+    }
+
     /// Whether the focused context marks a terminal, plus its legacy level-opening option.
     #[must_use]
     pub fn terminal_config(&self) -> (bool, bool) {

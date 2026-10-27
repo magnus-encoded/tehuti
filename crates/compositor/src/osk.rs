@@ -234,7 +234,7 @@ fn raster(keyboard: &Keyboard, width: i32, height: i32, scale: i32) -> Option<Me
     canvas.rectangle(0, 0, width_usize, height_usize, BACKGROUND);
     draw_draft(&mut canvas, keyboard, row_height, unit);
     for (row, keys) in keyboard.rows().iter().enumerate() {
-        let top = row.saturating_add(1).saturating_mul(row_height);
+        let top = row.saturating_mul(row_height);
         for (index, (slot, (left, right))) in keys.iter().zip(key_spans(keys, width_usize, unit)).enumerate()
         {
             let colour = if keyboard.highlight() == (row, index) {
@@ -272,6 +272,50 @@ fn raster(keyboard: &Keyboard, width: i32, height: i32, scale: i32) -> Option<Me
     ))
 }
 
+/// The visible draft row, with character offsets relative to its text.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DraftRow {
+    pub top: i32,
+    pub text: String,
+    pub caret: Option<usize>,
+    pub picked: Option<core::ops::Range<usize>>,
+}
+
+/// Shows a window around the caret or picked word, reserving room for the caret.
+#[must_use]
+pub fn draft_row(keyboard: &Keyboard, capacity: usize) -> DraftRow {
+    let draft = keyboard.draft();
+    let offset = |byte| draft.get(..byte).map_or(0, |prefix| prefix.chars().count());
+    let caret = offset(keyboard.caret());
+    let picked = keyboard
+        .picked_word()
+        .map(|word| offset(word.start)..offset(word.end));
+    let aim = picked
+        .as_ref()
+        .map_or(caret, |word| word.start.saturating_add(word.len() / 2));
+    let skip = aim
+        .saturating_sub(capacity / 2)
+        .min(draft.chars().count().saturating_add(1).saturating_sub(capacity));
+    let text = keyboard
+        .displayed_draft()
+        .chars()
+        .skip(skip)
+        .take(capacity)
+        .collect();
+    let caret = (picked.is_none() && capacity > 0).then(|| caret.saturating_sub(skip));
+    let picked = picked.map(|word| {
+        word.start.saturating_sub(skip).min(capacity)..word.end.saturating_sub(skip).min(capacity)
+    });
+    DraftRow {
+        top: i32::try_from(keyboard.rows().len())
+            .unwrap_or(i32::MAX)
+            .saturating_mul(tehuti_core::bar::HEIGHT),
+        text,
+        caret,
+        picked,
+    }
+}
+
 fn draw_draft(canvas: &mut Canvas, keyboard: &Keyboard, row_height: usize, unit: usize) {
     let glyph = unit.saturating_mul(2);
     let advance = glyph.saturating_mul(8);
@@ -280,37 +324,30 @@ fn draw_draft(canvas: &mut Canvas, keyboard: &Keyboard, row_height: usize, unit:
         .width
         .saturating_sub(margin.saturating_mul(2))
         .checked_div(advance)
-        .unwrap_or_default()
-        .max(1);
-    let draft = keyboard.draft();
-    let caret = draft
-        .get(..keyboard.caret())
-        .map_or(0, |prefix| prefix.chars().count());
-    let skip = caret.saturating_sub(visible.saturating_sub(1));
-    if let Some(word) = keyboard.picked_word() {
-        let first = draft.get(..word.start).map_or(0, |prefix| prefix.chars().count());
-        let length = draft.get(word).map_or(0, |picked| picked.chars().count());
-        let left = margin.saturating_add(first.saturating_sub(skip).saturating_mul(advance));
+        .unwrap_or_default();
+    let row = draft_row(keyboard, visible);
+    let top = usize::try_from(row.top).unwrap_or_default().saturating_mul(unit);
+    if let Some(word) = row.picked {
         canvas.rectangle(
-            left,
-            unit,
-            length.saturating_mul(advance),
+            margin.saturating_add(word.start.saturating_mul(advance)),
+            top.saturating_add(unit),
+            word.len().saturating_mul(advance),
             row_height.saturating_sub(unit.saturating_mul(2)),
             PICKED,
         );
     }
-    let shown: String = keyboard
-        .displayed_draft()
-        .chars()
-        .skip(skip)
-        .take(visible)
-        .collect();
-    canvas.text(margin, 0, canvas.width, row_height, &shown, glyph);
-    if keyboard.picked_word().is_none() {
-        let left = margin.saturating_add(caret.saturating_sub(skip).saturating_mul(advance));
+    canvas.text(
+        margin,
+        top,
+        canvas.width.saturating_sub(margin),
+        row_height,
+        &row.text,
+        glyph,
+    );
+    if let Some(caret) = row.caret {
         canvas.rectangle(
-            left,
-            unit.saturating_mul(4),
+            margin.saturating_add(caret.saturating_mul(advance)),
+            top.saturating_add(unit.saturating_mul(4)),
             unit,
             row_height.saturating_sub(unit.saturating_mul(8)),
             INK,

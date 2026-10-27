@@ -1089,7 +1089,7 @@ proptest! {
 }
 
 #[test]
-fn menu_sends_the_draft_as_text_to_the_focused_app() {
+fn menu_types_the_draft_then_presses_enter_and_stays_open() {
     let mut world = World::default();
     let state = with_open_keyboard(&mut world, State::default());
     let state = world.run(state, speech_event("see you soon"));
@@ -1100,11 +1100,17 @@ fn menu_sends_the_draft_as_text_to_the_focused_app() {
         world
             .trace
             .iter()
-            .filter(|effect| matches!(effect, Effect::Apply(_)))
+            .filter(|effect| matches!(effect, Effect::Apply(_) | Effect::Chord(_)))
             .collect::<Vec<_>>(),
-        vec![&Effect::Apply(Action::Text {
-            text: Text::new("see you soon".into()).unwrap()
-        })]
+        vec![
+            &Effect::Apply(Action::Text {
+                text: Text::new("see you soon".into()).unwrap()
+            }),
+            &Effect::Chord(crate::keyboard::Chord {
+                key: crate::keyboard::ChordKey::Named(KeyName::Enter),
+                modifiers: crate::keyboard::Modifiers::default()
+            })
+        ]
     );
 }
 
@@ -3125,4 +3131,50 @@ fn tab_phrases_dictate_while_the_keyboard_is_open() {
             .iter()
             .any(|effect| matches!(effect, Effect::Apply(_)))
     );
+}
+
+#[test]
+fn menu_with_an_empty_draft_presses_only_enter_and_stays_open() {
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, State::default());
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::Start);
+    assert!(state.keyboard().is_open());
+    assert_eq!(
+        world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Apply(_) | Effect::Chord(_)))
+            .collect::<Vec<_>>(),
+        vec![&Effect::Chord(crate::keyboard::Chord {
+            key: crate::keyboard::ChordKey::Named(KeyName::Enter),
+            modifiers: crate::keyboard::Modifiers::default(),
+        })]
+    );
+}
+
+proptest! {
+    #[test]
+    fn closing_keeps_the_draft_only_when_the_context_opts_in(
+        global in prop::option::of(any::<bool>()),
+        local in prop::option::of(any::<bool>()),
+        text in "[a-zé]{1,80}",
+    ) {
+        let context = |app: &str, keep: Option<bool>| {
+            let option = keep.map_or_else(String::new, |keep| format!("keep_draft = {keep}"));
+            tehuti_protocol::parse_context(&format!("app_id = '{app}'\n[buttons]\n[keyboard]\n{option}")).unwrap()
+        };
+        let mut world = World::default();
+        let state = configured(vec![context("*", global), context("editor", local)], "editor");
+        let state = with_open_keyboard(&mut world, state);
+        let state = world.run(state, speech_event(&text));
+        let state = tap_button(&mut world, state, ButtonName::East);
+        prop_assert!(!state.keyboard().is_open());
+        let expected = if local.or(global).unwrap_or(false) { text.as_str() } else { "" };
+        prop_assert_eq!(state.keyboard().draft(), expected);
+        let state = with_open_keyboard(&mut world, state);
+        prop_assert_eq!(state.keyboard().draft(), expected);
+        let state = tap_button(&mut world, state, ButtonName::North);
+        prop_assert_eq!(state.keyboard().draft(), format!("{expected} "));
+    }
 }

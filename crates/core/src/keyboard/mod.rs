@@ -345,6 +345,13 @@ enum Layer {
     },
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum DraftRetention {
+    #[default]
+    Discard,
+    Keep,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Keyboard {
     open: bool,
@@ -355,6 +362,7 @@ pub struct Keyboard {
     layer: Layer,
     highlight: (usize, usize),
     draft: String,
+    draft_retention: DraftRetention,
     caret: usize,
     word: Option<Range<usize>>,
     captured: Vec<ButtonName>,
@@ -369,7 +377,7 @@ impl Keyboard {
         self.open
     }
 
-    /// Opens with an empty draft and the highlight on the first letter.
+    /// Opens with the highlight on the first letter.
     pub fn open(&mut self) {
         if self.open {
             return;
@@ -378,6 +386,17 @@ impl Keyboard {
             open: true,
             field_kind: self.field_kind,
             app: self.app,
+            draft: if self.draft_retention == DraftRetention::Keep {
+                core::mem::take(&mut self.draft)
+            } else {
+                String::new()
+            },
+            caret: if self.draft_retention == DraftRetention::Keep {
+                self.caret
+            } else {
+                0
+            },
+            draft_retention: self.draft_retention,
             highlight: (self.rows().len().saturating_sub(3), 1),
             captured: core::mem::take(&mut self.captured),
             stick_engaged: self.stick_engaged,
@@ -385,16 +404,27 @@ impl Keyboard {
         };
     }
 
-    /// Closes and discards the draft; releases of buttons it consumed stay consumed.
+    /// Closes, keeping the draft only when configured; consumed releases stay consumed.
     pub fn close(&mut self) {
         self.open = false;
         self.revealed = None;
-        self.draft.clear();
-        self.caret = 0;
+        if self.draft_retention == DraftRetention::Discard {
+            self.draft.clear();
+            self.caret = 0;
+        }
         self.word = None;
         self.repeat = None;
         self.layer = Layer::Letters;
         self.latched = Modifiers::default();
+    }
+
+    /// Chooses whether closing keeps the local draft.
+    pub const fn set_keep_draft(&mut self, keep: bool) {
+        self.draft_retention = if keep {
+            DraftRetention::Keep
+        } else {
+            DraftRetention::Discard
+        };
     }
 
     /// Whether a press of `name` was consumed and its release is still due.
@@ -551,7 +581,7 @@ impl Keyboard {
         if state == ButtonState::Released {
             if name == ButtonName::Start && core::mem::take(&mut self.send_on_start_release) {
                 self.captured.retain(|held| *held != name);
-                return self.send();
+                return self.chord(ChordKey::Named(KeyName::Enter));
             }
             let Some(index) = self.captured.iter().position(|held| *held == name) else {
                 return Response::Pass;
