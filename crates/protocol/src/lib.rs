@@ -242,6 +242,8 @@ pub enum OnTextField {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyboardConfig {
+    /// Keeps the local draft between keyboard openings.
+    pub keep_draft: Option<bool>,
     pub on_text_field: Option<OnTextField>,
     pub button: Option<ButtonName>,
     /// Marks the application as a terminal, for apps that never report a terminal field.

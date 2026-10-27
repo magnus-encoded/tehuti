@@ -56,6 +56,32 @@ mod osk {
         );
     }
 
+    #[test]
+    fn draft_row_is_below_the_keys_and_shows_a_window_around_the_aim() {
+        let mut keyboard = tehuti_core::keyboard::Keyboard::default();
+        keyboard.open();
+        keyboard.dictate("abcdefghijklmno");
+        let row = tehuti::osk::draft_row(&keyboard, 5);
+        assert_eq!(row.top, 3 * tehuti_core::bar::HEIGHT);
+        assert_eq!(row.text, "lmno");
+        assert_eq!(row.caret, Some(4));
+        for _ in 0..8 {
+            let _pressed = keyboard.button(ButtonName::LeftBumper, ButtonState::Pressed, true);
+            let _released = keyboard.button(ButtonName::LeftBumper, ButtonState::Released, true);
+        }
+        let middle = tehuti::osk::draft_row(&keyboard, 5);
+        assert_eq!(middle.text, "fghij");
+        assert_eq!(middle.caret, Some(2));
+        keyboard.close();
+        keyboard.open();
+        keyboard.dictate("one two three four");
+        keyboard.left_stick(-1000);
+        let picked = tehuti::osk::draft_row(&keyboard, 7);
+        assert_eq!(picked.text, "e four");
+        assert_eq!(picked.caret, None);
+        assert_eq!(picked.picked, Some(2..6));
+    }
+
     proptest! {
         #[test]
         fn the_keyboard_sits_on_the_bar_and_fits_the_output(height in 0i32..4000, scale in 1i32..4, terminal in any::<bool>()) {

@@ -333,7 +333,13 @@ fn menu_sends_the_draft_and_stays_open() {
     );
     assert_eq!(
         keyboard.button(ButtonName::Start, ButtonState::Released, true),
-        Response::Send("hello there".into())
+        Response::Chord(
+            "hello there".into(),
+            Chord {
+                key: ChordKey::Named(KeyName::Enter),
+                modifiers: Modifiers::default()
+            }
+        )
     );
     assert!(keyboard.is_open());
 }
@@ -361,7 +367,17 @@ fn the_send_key_sends_the_draft() {
 #[test]
 fn sending_an_empty_draft_keeps_the_keyboard_open() {
     let mut keyboard = opened();
-    assert_eq!(tap(&mut keyboard, ButtonName::Start), Response::Consumed);
+    let _pressed = keyboard.button(ButtonName::Start, ButtonState::Pressed, true);
+    assert_eq!(
+        keyboard.button(ButtonName::Start, ButtonState::Released, true),
+        Response::Chord(
+            String::new(),
+            Chord {
+                key: ChordKey::Named(KeyName::Enter),
+                modifiers: Modifiers::default()
+            }
+        )
+    );
     assert!(keyboard.is_open());
 }
 

@@ -336,8 +336,9 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     run(state, effects)
 }
 
-/// Picks the terminal layout when the field or the focused app's context says terminal.
-fn sync_terminal(state: &mut State) {
+/// Applies the focused context’s draft retention and terminal layout.
+fn sync_keyboard_config(state: &mut State) {
+    state.keyboard.set_keep_draft(state.core.keep_keyboard_draft());
     let terminal = state.terminal_field || state.core.terminal_config().0;
     if terminal != state.keyboard.terminal() {
         state.keyboard.set_terminal(terminal);
@@ -474,7 +475,7 @@ fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate
     );
     state.text_field = active;
     state.terminal_field = active && kind == crate::keyboard::FieldKind::Terminal;
-    sync_terminal(state);
+    sync_keyboard_config(state);
 }
 
 /// Lifts every key a held pad button keeps down.
@@ -815,7 +816,7 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
     if matches!(event, Event::Speech { .. }) && settings_event(state, event, effects) {
         return true;
     }
-    sync_terminal(state);
+    sync_keyboard_config(state);
     if crate::menu_button_release(&mut state.core, event) {
         return true;
     }
