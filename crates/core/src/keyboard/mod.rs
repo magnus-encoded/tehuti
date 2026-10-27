@@ -380,9 +380,19 @@ enum DraftMode {
     },
 }
 
+/// One live replacement, with byte counts outside the application's selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    pub before: usize,
+    pub after: usize,
+    pub text: String,
+    pub caret: usize,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Keyboard {
     open: bool,
+    edits: Vec<Edit>,
     mode: DraftMode,
     field_kind: FieldKind,
     app: AppKind,
@@ -515,6 +525,26 @@ impl Keyboard {
         match self.mode {
             DraftMode::Draft => None,
             DraftMode::Synced { anchor } => Some(anchor),
+        }
+    }
+
+    /// Drains live replacements in the order they were made.
+    pub fn take_edits(&mut self) -> Vec<Edit> {
+        core::mem::take(&mut self.edits)
+    }
+
+    fn record_edit(&mut self, range: Range<usize>, text: &str) {
+        if let Some(anchor) = self.application_anchor() {
+            let start = self.caret.min(anchor);
+            let end = self.caret.max(anchor);
+            let caret = range.start.saturating_add(text.len());
+            self.edits.push(Edit {
+                before: start.saturating_sub(range.start),
+                after: range.end.saturating_sub(end),
+                text: text.into(),
+                caret,
+            });
+            self.mode = DraftMode::Synced { anchor: caret };
         }
     }
 
@@ -886,6 +916,8 @@ impl Keyboard {
     }
 
     fn type_text(&mut self, text: &str) {
+        let range = self.word.clone().unwrap_or(self.caret..self.caret);
+        self.record_edit(range, text);
         if let Some(word) = self.word.take() {
             self.draft.replace_range(word.clone(), "");
             self.caret = word.start;
@@ -903,11 +935,13 @@ impl Keyboard {
     fn backspace(&mut self) {
         self.revealed = None;
         if let Some(word) = self.word.take() {
+            self.record_edit(word.clone(), "");
             self.draft.replace_range(word.clone(), "");
             self.caret = word.start;
             return;
         }
         if let Some(previous) = self.previous_boundary() {
+            self.record_edit(previous..self.caret, "");
             self.draft.replace_range(previous..self.caret, "");
             self.caret = previous;
         }

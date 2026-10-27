@@ -262,6 +262,11 @@ impl State {
         &self.keyboard
     }
 
+    /// Drains the keyboard's explicit live replacements.
+    pub fn take_keyboard_edits(&mut self) -> Vec<crate::keyboard::Edit> {
+        self.keyboard.take_edits()
+    }
+
     /// Records delivery of the keyboard's live edit.
     pub const fn keyboard_edit_applied(&mut self) {
         self.keyboard.edit_applied();

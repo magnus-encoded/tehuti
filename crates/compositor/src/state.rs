@@ -631,12 +631,12 @@ impl Compositor {
             let previous = self
                 .dispatch
                 .keyboard()
-                .synced()
-                .then(|| self.dispatch.keyboard().clone());
+                .application_anchor()
+                .map(|anchor| (self.dispatch.keyboard().caret(), anchor));
             let (next, effects) = tehuti_core::dispatch::step(core::mem::take(&mut self.dispatch), input);
             self.dispatch = next;
             if let Some(previous) = previous {
-                self.sync_keyboard_edit(&previous);
+                self.sync_keyboard_edit(previous);
             }
             let mut reply = DispatchInput::Resume;
             for effect in effects {
@@ -662,30 +662,30 @@ impl Compositor {
         self.dispatch.set_keyboard_surrounding(surrounding);
     }
 
-    fn sync_keyboard_edit(&mut self, previous: &tehuti_core::keyboard::Keyboard) {
+    fn sync_keyboard_edit(&mut self, previous: (usize, usize)) {
         use tehuti_core::keyboard::{Chord, ChordKey, Modifiers};
+        let edits = self.dispatch.take_keyboard_edits();
+        let edited = !edits.is_empty();
+        let mut position = previous.0;
+        for edit in edits {
+            self.text_input.edit_keyboard(&edit);
+            position = edit.caret;
+        }
         let current = self.dispatch.keyboard();
-        if !previous.synced() || !current.synced() || !current.is_open() {
+        if !current.synced() || !current.is_open() {
             return;
         }
-        let old = previous.draft();
-        let new = current.draft();
-        let mut position = previous.caret();
-        let anchor = previous.application_anchor().unwrap_or(position);
-        let selection = position.min(anchor)..position.max(anchor);
-        if old != new {
-            position = self.text_input.edit_keyboard(previous, current);
-        }
+        let selection = previous.0.min(previous.1)..previous.0.max(previous.1);
         let target = current.caret();
         let key = if target < position {
             tehuti_protocol::KeyName::Left
         } else {
             tehuti_protocol::KeyName::Right
         };
-        if old == new && previous.caret() == target {
+        if !edited && previous.0 == target {
             return;
         }
-        if old == new && !selection.is_empty() {
+        if !edited && !selection.is_empty() {
             position = if target < position {
                 selection.start
             } else {

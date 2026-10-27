@@ -3070,7 +3070,7 @@ else:
     }
 
     #[test]
-    fn surrounding_text_drives_live_keyboard_edits_and_password_fallback() {
+    fn surrounding_text_drives_live_keyboard_edits_and_draft_fallback() {
         use zwp_text_input_v3::ContentPurpose;
         check_surrounding_keyboard(
             ClientTextState::Surrounding(ContentPurpose::Normal),
@@ -3084,13 +3084,19 @@ else:
             &[(2, 0), (0, 0)],
             Some(("hq world", 2)),
         );
-        for text_state in [
-            ClientTextState::Surrounding(ContentPurpose::Password),
-            ClientTextState::Enabled,
-            ClientTextState::InvalidSurrounding,
-        ] {
+        for text_state in [ClientTextState::Enabled, ClientTextState::InvalidSurrounding] {
             check_surrounding_keyboard(text_state, ("", Some(0)), &[], None);
         }
+    }
+
+    #[test]
+    fn password_surrounding_text_is_never_mirrored() {
+        check_surrounding_keyboard(
+            ClientTextState::Surrounding(zwp_text_input_v3::ContentPurpose::Password),
+            ("", Some(0)),
+            &[],
+            None,
+        );
     }
 
     fn check_surrounding_keyboard(

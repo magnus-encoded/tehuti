@@ -115,43 +115,8 @@ impl TextInput {
         self.focus = focus;
     }
 
-    pub(crate) fn edit_keyboard(
-        &self,
-        previous: &tehuti_core::keyboard::Keyboard,
-        current: &tehuti_core::keyboard::Keyboard,
-    ) -> usize {
-        let old = previous.draft();
-        let new = current.draft();
-        let position = previous.caret();
-        let anchor = previous.application_anchor().unwrap_or(position);
-        let selection = position.min(anchor)..position.max(anchor);
-        let prefix = old
-            .chars()
-            .zip(new.chars())
-            .take_while(|(left, right)| left == right)
-            .map(|(character, _)| character.len_utf8())
-            .sum::<usize>()
-            .min(selection.start);
-        let suffix = old
-            .get(prefix..)
-            .unwrap_or_default()
-            .chars()
-            .rev()
-            .zip(new.get(prefix..).unwrap_or_default().chars().rev())
-            .take_while(|(left, right)| left == right)
-            .map(|(character, _)| character.len_utf8())
-            .sum::<usize>()
-            .min(old.len().saturating_sub(selection.end));
-        let end = new.len().saturating_sub(suffix);
-        let Some(text) = new.get(prefix..end) else {
-            return position;
-        };
-        self.edit(
-            selection.start.saturating_sub(prefix),
-            old.len().saturating_sub(selection.end).saturating_sub(suffix),
-            text,
-        );
-        end
+    pub(crate) fn edit_keyboard(&self, edit: &tehuti_core::keyboard::Edit) {
+        self.edit(edit.before, edit.after, &edit.text);
     }
 
     pub(crate) fn edit(&self, before: usize, after: usize, text: &str) {
