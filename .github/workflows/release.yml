@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-22.04
     # Debian bookworm has i386 libseat and an older glibc than most installs.
     container: debian:bookworm
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
