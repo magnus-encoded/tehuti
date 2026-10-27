@@ -3106,3 +3106,23 @@ fn holding_guide_opens_the_menu_whatever_a_context_maps_on_guide() {
         }
     }
 }
+
+#[test]
+fn tab_phrases_dictate_while_the_keyboard_is_open() {
+    let global =
+        tehuti_protocol::parse_context(include_str!("../../../../examples/global/context.toml")).unwrap();
+    let mut world = World::default();
+    let state = configured(vec![global], "org.example.Editor");
+    let mut state = with_open_keyboard(&mut world, state);
+    world.trace.clear();
+    for phrase in ["tab left", "tab right"] {
+        state = world.run(state, speech_event(phrase));
+    }
+    assert_eq!(state.keyboard().draft(), "tab left tab right");
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(_)))
+    );
+}

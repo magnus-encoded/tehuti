@@ -225,3 +225,22 @@ The pad's `push_to_talk` list defines a chord in passthrough mode. A chord
 containing View cancels the solo hold and records while the complete chord is
 held. If View is the only push-to-talk button, capture starts and stops only
 on a release before 500 ms. A solo hold never starts capture.
+
+## App level tabs
+
+At app level, the global example maps LB to Shift+Tab and RB to Tab.
+Its commented Ctrl+PageUp and Ctrl+PageDown mappings offer another choice.
+An application context's button mapping overrides the global mapping.
+Tab often moves focus within a page; choose the application's tab shortcuts
+in its context when needed.
+
+“Tab left” and “tab right” use the same LB and RB mappings at app level,
+including application overrides. While the keyboard is open, these phrases
+are dictation. “Left” and “right” in the global example move column focus
+at either level. At columns level, LB and RB move column focus.
+
+For applications that read the pad directly, use `[pad] passthrough = true`.
+The global example includes this option as commented lines. An application
+context overrides the global pad policy; its default is normal handling.
+In passthrough mode, app level shoulders stay with the application and the
+tab phrases send no keys.

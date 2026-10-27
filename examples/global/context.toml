@@ -1,6 +1,10 @@
 app_id = "*"
 
 [buttons]
+left_bumper = { key = "tab", mods = ["shift"] }
+right_bumper = { key = "tab" }
+# left_bumper = { key = "page_up", mods = ["ctrl"] }
+# right_bumper = { key = "page_down", mods = ["ctrl"] }
 
 [keyboard]
 on_text_field = "button"

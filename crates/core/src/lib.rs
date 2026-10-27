@@ -430,6 +430,26 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
             return None;
         }
         let phrase = text.as_str();
+        if state.level == Level::App {
+            let button = match tehuti_protocol::normalize_phrase(phrase).as_str() {
+                "tab left" => Some(ButtonName::LeftBumper),
+                "tab right" => Some(ButtonName::RightBumper),
+                _ => None,
+            };
+            if let Some(name) = button {
+                return (!state.passthrough())
+                    .then(|| {
+                        active_context(
+                            state,
+                            &Event::Button {
+                                name,
+                                state: ButtonState::Pressed,
+                            },
+                        )
+                    })
+                    .flatten();
+            }
+        }
         let focused = focused_context(state);
         let global = global_context(state);
         return focused
