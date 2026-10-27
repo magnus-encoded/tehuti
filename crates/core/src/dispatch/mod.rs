@@ -555,18 +555,6 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
     }
 }
 
-/// Strips dictation's sentence punctuation from typed speech, for shells.
-fn drop_sentence_punctuation(actions: &mut [Action]) {
-    for action in actions {
-        if let Action::Text { text } = action
-            && let Ok(shell) =
-                tehuti_protocol::Text::new(crate::keyboard::without_sentence_punctuation(text.as_str()))
-        {
-            *text = shell;
-        }
-    }
-}
-
 /// Completes routing once the plugin layer has answered.
 fn finish_route(
     state: &mut State,
@@ -596,9 +584,6 @@ fn finish_route(
         actions.append(&mut routed);
     }
     if let Event::Speech { text } = event {
-        if state.keyboard.terminal() {
-            drop_sentence_punctuation(&mut actions);
-        }
         effects.push(Effect::SpeechRouted {
             text,
             first: actions.first().cloned(),
