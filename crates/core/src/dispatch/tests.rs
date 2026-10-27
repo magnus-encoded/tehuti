@@ -3212,3 +3212,31 @@ proptest! {
         prop_assert_eq!(state.keyboard().draft(), format!("{expected} "));
     }
 }
+
+#[test]
+fn left_stick_moves_the_draft_caret_between_lines() {
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, State::default());
+    let state = world.run(state, speech_event("alpha\nbéta\nend"));
+    let highlight = state.keyboard().highlight();
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (0, -1000),
+            right: (0, 0),
+        }),
+    );
+    assert_eq!(state.keyboard().caret(), 10);
+    assert_eq!(state.keyboard().picked_word(), None);
+    assert_eq!(state.keyboard().highlight(), highlight);
+    let state = world.run(state, Input::Sticks(Sticks::default()));
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (0, 1000),
+            right: (0, 0),
+        }),
+    );
+    assert_eq!(state.keyboard().caret(), 15);
+    assert_eq!(state.keyboard().draft(), "alpha\nbéta\nend");
+}

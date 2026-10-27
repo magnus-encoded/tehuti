@@ -75,7 +75,7 @@ mod osk {
         keyboard.close();
         keyboard.open();
         keyboard.dictate("one two three four");
-        keyboard.left_stick(-1000);
+        keyboard.left_stick(-1000, 0);
         let picked = tehuti::osk::draft_row(&keyboard, 7);
         assert_eq!(picked.text, "e four");
         assert_eq!(picked.caret, None);

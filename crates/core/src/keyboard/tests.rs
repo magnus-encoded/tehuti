@@ -33,8 +33,8 @@ fn go_to(keyboard: &mut Keyboard, row: usize, index: usize) {
 }
 
 fn flick(keyboard: &mut Keyboard, x: i16) {
-    keyboard.left_stick(x);
-    keyboard.left_stick(0);
+    keyboard.left_stick(x, 0);
+    keyboard.left_stick(0, 0);
 }
 
 const ALL_BUTTONS: [ButtonName; 16] = [
@@ -132,7 +132,7 @@ proptest! {
         let mut keyboard = with_draft("one two three");
         let before = keyboard.highlight();
         for x in samples {
-            keyboard.left_stick(x);
+            keyboard.left_stick(x, 0);
         }
         prop_assert_eq!(keyboard.highlight(), before);
     }
@@ -269,7 +269,7 @@ fn left_stick_picks_whole_words_from_the_caret() {
 fn a_held_stick_picks_only_one_word() {
     let mut keyboard = with_draft("one two three");
     for _ in 0..5 {
-        keyboard.left_stick(-900);
+        keyboard.left_stick(-900, 0);
     }
     assert_eq!(keyboard.picked_word(), Some(8..13));
 }
@@ -704,5 +704,69 @@ proptest! {
     fn dictation_outside_terminals_keeps_punctuation(text in "[a-z]{1,6}[.,]( [a-z]{1,6}[.,]){0,3}") {
         let keyboard = with_draft(&text);
         prop_assert_eq!(keyboard.draft(), text.as_str());
+    }
+}
+
+#[test]
+fn line_moves_stop_at_line_ends_and_draft_edges() {
+    let mut keyboard = with_draft("longer\né\nlast");
+    keyboard.left_stick(0, 1000);
+    assert_eq!(keyboard.caret(), 14);
+    keyboard.left_stick(0, 0);
+    keyboard.left_stick(0, -1000);
+    assert_eq!(keyboard.caret(), 9);
+    for _ in 0..5 {
+        keyboard.left_stick(0, -1000);
+    }
+    assert_eq!(keyboard.caret(), 9, "a held stick moves only one line");
+    keyboard.left_stick(0, 0);
+    keyboard.left_stick(0, -1000);
+    assert_eq!(keyboard.caret(), 1);
+    keyboard.left_stick(0, 0);
+    keyboard.left_stick(0, -1000);
+    assert_eq!(keyboard.caret(), 1);
+}
+
+#[test]
+fn line_moves_cross_empty_lines_and_clear_a_picked_word() {
+    let mut keyboard = with_draft("one\n\nthree");
+    flick(&mut keyboard, -1000);
+    assert_eq!(keyboard.picked_word(), Some(5..10));
+    keyboard.left_stick(0, -1000);
+    assert_eq!(keyboard.caret(), 4);
+    assert_eq!(keyboard.picked_word(), None);
+    keyboard.left_stick(0, 0);
+    keyboard.left_stick(0, -1000);
+    assert_eq!(keyboard.caret(), 0);
+}
+
+#[test]
+fn vertical_stick_leaves_a_single_line_draft_unchanged() {
+    let mut keyboard = with_draft("one two");
+    for y in [-1000, 1000] {
+        keyboard.left_stick(0, y);
+        keyboard.left_stick(0, 0);
+        assert_eq!(keyboard.caret(), 7);
+        assert_eq!(keyboard.picked_word(), None);
+        assert_eq!(keyboard.draft(), "one two");
+    }
+}
+
+proptest! {
+    #[test]
+    fn dpad_moves_only_the_highlight(moves in prop::collection::vec(dpad(), 1..40), picked in any::<bool>()) {
+        let mut keyboard = with_draft("one two three");
+        if picked {
+            flick(&mut keyboard, -1000);
+        }
+        let caret = keyboard.caret();
+        let word = keyboard.picked_word();
+        for name in moves {
+            press(&mut keyboard, name);
+            keyboard.tick(REPEAT_DELAY);
+            prop_assert_eq!(keyboard.caret(), caret);
+            prop_assert_eq!(keyboard.picked_word(), word.clone());
+            prop_assert_eq!(keyboard.draft(), "one two three");
+        }
     }
 }
