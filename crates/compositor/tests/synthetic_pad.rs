@@ -807,11 +807,46 @@ mod synthetic_pad {
         }
     }
 
+    fn deflect_sticks_in_passthrough(compositor: &mut Compositor, pad: &mut SyntheticPad) {
+        toggle_pointer_mode(compositor);
+        compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+            left: (1000, 1000),
+            right: (1000, 1000),
+        });
+        pad.push(Event::Focus {
+            app_id: Some("org.example.Game".into()),
+            title: String::new(),
+        });
+        route(compositor, pad).unwrap();
+        assert!(compositor.pad_passthrough());
+        compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+            left: (1000, 1000),
+            right: (1000, 1000),
+        });
+        pad.push(Event::Tick {
+            elapsed: Duration::from_millis(10),
+        });
+        route(compositor, pad).unwrap();
+        assert_eq!(compositor.cursor_location(), None);
+        pad.push(Event::Focus {
+            app_id: Some("other-window".into()),
+            title: String::new(),
+        });
+        route(compositor, pad).unwrap();
+        assert!(!compositor.pad_passthrough());
+    }
+
     #[test]
-    fn right_stick_scroll_targets_keyboard_focus_and_mouse_mode_targets_pointer_focus() {
+    fn right_stick_scrolls_only_outside_passthrough_and_targets_the_mode_focus() {
         for mouse_mode in [false, true] {
             let mut display: Display<Compositor> = Display::new().unwrap();
             let mut compositor = Compositor::new(&display.handle()).unwrap();
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context(
+                    "app_id = 'org.example.Game'\nbuttons = {}\n[pad]\npassthrough = true",
+                )
+                .unwrap(),
+            ]);
             let (server, client) = UnixStream::pair().unwrap();
             let _client = display
                 .handle()
@@ -829,6 +864,7 @@ mod synthetic_pad {
                 let _events = display.dispatch_clients(&mut compositor).unwrap();
                 if !sent && receiver.try_recv().is_ok() {
                     let mut pad = SyntheticPad::default();
+                    deflect_sticks_in_passthrough(&mut compositor, &mut pad);
                     toggle_pointer_mode(&mut compositor);
                     let cursor = compositor.cursor_location();
                     if !mouse_mode {
