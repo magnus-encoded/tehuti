@@ -1,0 +1,83 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed tag to release
+        required: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        arch: [x86_64, i686]
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      CARGO_TARGET_DIR: target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - name: Validate tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9][a-zA-Z0-9._-]*$ ]]
+          git describe --exact-match --tags HEAD | grep -Fx "$TAG"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-unknown-linux-gnu
+      - name: Native dependencies
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          suffix=''
+          if [ "$ARCH" = i686 ]; then
+            sudo dpkg --add-architecture i386
+            suffix=:i386
+          fi
+          sudo apt-get update
+          packages=()
+          for package in libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev; do
+            packages+=("$package$suffix")
+          done
+          sudo apt-get install -y gcc-multilib pkg-config "${packages[@]}"
+      - name: Build and package
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          if [ "$ARCH" = i686 ]; then
+            export PKG_CONFIG_ALLOW_CROSS=1
+            export PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
+          fi
+          cargo build --release --locked -p tehuti --target "$ARCH-unknown-linux-gnu"
+          mkdir package
+          cp "target/$ARCH-unknown-linux-gnu/release/tehuti" package/
+          cp -r sidecars dist package/
+          find package -type d -name __pycache__ -prune -exec rm -rf {} +
+          git rev-parse HEAD > package/VERSION
+          tar -czf "tehuti-${TAG#v}-$ARCH.tar.gz" -C package .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: tehuti-*.tar.gz
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+      - run: |
+          sha256sum tehuti-*.tar.gz > SHA256SUMS
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          gh release upload "$TAG" tehuti-*.tar.gz SHA256SUMS --clobber
