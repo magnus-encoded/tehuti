@@ -3155,6 +3155,40 @@ fn menu_with_an_empty_draft_presses_only_enter_and_stays_open() {
 
 proptest! {
     #[test]
+    fn a_different_text_field_clears_even_a_retained_draft(
+        global in any::<bool>(),
+        closed in any::<bool>(),
+        text in "[a-zé]{1,80}",
+    ) {
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = '{}'\n[buttons]\n[keyboard]\nkeep_draft = true",
+            if global { "*" } else { "editor" },
+        )).unwrap();
+        let mut world = World::default();
+        let mut state = configured(vec![context], "editor");
+        let field = |changed| Input::TextField {
+            active: true,
+            changed,
+            kind: crate::keyboard::FieldKind::Normal,
+        };
+        state = world.run(state, field(true));
+        state = with_open_keyboard(&mut world, state);
+        state = world.run(state, speech_event(&text));
+        if closed {
+            state = tap_button(&mut world, state, ButtonName::East);
+            prop_assert!(!state.keyboard().is_open());
+        }
+        state = world.run(state, field(false));
+        prop_assert_eq!(state.keyboard().draft(), text.as_str());
+        state = world.run(state, field(true));
+        prop_assert_eq!(state.keyboard().draft(), "");
+        if !state.keyboard().is_open() {
+            state = with_open_keyboard(&mut world, state);
+        }
+        prop_assert_eq!(state.keyboard().draft(), "");
+    }
+
+    #[test]
     fn closing_keeps_the_draft_only_when_the_context_opts_in(
         global in prop::option::of(any::<bool>()),
         local in prop::option::of(any::<bool>()),
