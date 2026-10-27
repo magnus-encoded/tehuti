@@ -441,8 +441,8 @@ pub fn enabled(contexts: &[Context], focused: Option<&str>) -> bool {
 /// What the ticker lists while `focused` has focus: buttons in a fixed order, then phrases.
 ///
 /// Buttons resolve like routing: the active context, then the global context, then
-/// Enter on South. Push-to-talk buttons show as talk. In passthrough the pad belongs to
-/// the application, so one entry says so. Phrases with the same action and icon
+/// Enter on South. Push-to-talk buttons show as talk. In passthrough at the app level the
+/// pad belongs to the application, so one entry says so. Phrases with the same action and icon
 /// form one entry; phrases with an icon come first.
 #[must_use]
 pub fn entries(
@@ -481,7 +481,7 @@ fn button_entries(
     level: crate::Level,
 ) -> Vec<Entry> {
     let talk = global.map_or(&[ButtonName::Record][..], Context::push_to_talk_buttons);
-    if active.is_some_and(Context::passthrough) {
+    if level == crate::Level::App && active.is_some_and(Context::passthrough) {
         let mut entries = vec![Entry {
             trigger: vec![Piece::Text("Pad".into())],
             result: vec![Piece::Text("app".into())],

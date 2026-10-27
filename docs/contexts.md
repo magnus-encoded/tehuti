@@ -210,8 +210,11 @@ New columns default to one-third of the available width, the narrowest preset.
 ## Pad passthrough
 
 A context with `[pad] passthrough = true` lets the focused application read the
-pad directly. Hold View (Select) alone for 500 ms to take the pad back for
-normal keyboard, window focus and mouse handling. Release keeps that mode;
+pad directly at the app level. The columns level takes the pad back, so a Guide
+tap gives every button its normal mapping, such as the right stick toggling
+fullscreen, and another tap returns the pad. Hold View (Select) alone for
+500 ms to take the pad back for normal keyboard, window focus and mouse
+handling. Release keeps that mode;
 another solo hold gives the pad back. Any other button cancels the pending
 hold. Changing focused windows restores the context's configured mode, even
 between windows with the same application id. Title updates keep the mode.
