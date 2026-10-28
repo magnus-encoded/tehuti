@@ -129,7 +129,7 @@ const CYAN: [u8; 4] = [240, 218, 64, 255];
 const AMBER: [u8; 4] = [56, 184, 255, 255];
 const WHITE: [u8; 4] = [244, 240, 225, 255];
 
-mod canvas;
+pub(crate) mod canvas;
 use canvas::Canvas;
 
 impl Canvas {

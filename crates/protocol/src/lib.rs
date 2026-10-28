@@ -333,6 +333,7 @@ pub struct Context {
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, SpeechEntry>,
     unmatched_speech: Option<UnmatchedSpeech>,
+    launch_phrases: Vec<(String, String)>,
     keyboard: KeyboardConfig,
     dim: DimConfig,
     push_to_talk: Vec<ButtonName>,
@@ -367,6 +368,12 @@ struct PadConfig {
 }
 
 impl Context {
+    /// First configured launch phrase for each desktop entry, in file order.
+    #[must_use]
+    pub fn launch_phrases(&self) -> &[(String, String)] {
+        &self.launch_phrases
+    }
+
     /// The buttons this context's `[buttons]` table maps, in no particular order.
     pub fn mapped_buttons(&self) -> impl Iterator<Item = ButtonName> + '_ {
         self.buttons.keys().copied()
@@ -503,7 +510,7 @@ struct ContextFile {
     app_id: String,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
-    speech: std::collections::HashMap<String, SpeechEntryFile>,
+    speech: toml::Table,
     #[serde(default)]
     unmatched_speech: Option<UnmatchedSpeech>,
     #[serde(default)]
@@ -612,13 +619,6 @@ fn validate_holds(context: &ContextFile) -> Result<(), String> {
             return Err(format!("button {button:?} cannot hold a key with mods"));
         }
     }
-    for (phrase, entry) in &context.speech {
-        if matches!(entry.action, MappingAction::Key { hold: true, .. }) {
-            return Err(format!(
-                "speech phrase {phrase:?} cannot hold a key; hold is for buttons"
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -642,7 +642,23 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         return Err("app_id must not be empty".into());
     }
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
-    for (mapped, entry) in context.speech {
+    let mut launch_phrases = Vec::new();
+    for (mapped, value) in context.speech {
+        let entry: SpeechEntryFile = value
+            .try_into()
+            .map_err(|error: toml::de::Error| error.to_string())?;
+        if matches!(entry.action, MappingAction::Key { hold: true, .. }) {
+            return Err(format!(
+                "speech phrase {mapped:?} cannot hold a key; hold is for buttons"
+            ));
+        }
+        if let MappingAction::Launch { launch } = &entry.action
+            && !launch_phrases
+                .iter()
+                .any(|(desktop_entry, _)| desktop_entry == launch.as_str())
+        {
+            launch_phrases.push((launch.as_str().to_owned(), mapped.clone()));
+        }
         let normalized = normalize_phrase(&mapped);
         if normalized.is_empty() {
             return Err(format!(
@@ -664,6 +680,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         app_id: context.app_id,
         buttons: context.buttons,
         speech,
+        launch_phrases,
         unmatched_speech: context.unmatched_speech,
         keyboard: context.keyboard,
         dim: context.dim,
