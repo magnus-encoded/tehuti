@@ -100,12 +100,18 @@ impl input::InputSource for AttachedController {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
-        exit_code(self.log_out, self.compositor.quit_requested())
+        exit_code(
+            self.log_out,
+            self.compositor.quit_requested(),
+            self.compositor.restart_requested(),
+        )
     }
 }
 
-fn exit_code(log_out: bool, quit_requested: bool) -> ExitCode {
-    ExitCode::from(if log_out {
+fn exit_code(log_out: bool, quit_requested: bool, restart_requested: bool) -> ExitCode {
+    ExitCode::from(if restart_requested {
+        75
+    } else if log_out {
         21
     } else if quit_requested {
         20
@@ -242,6 +248,29 @@ fn start_session(
     segv_backtrace::install_if_requested()?;
 
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
+    if std::env::var_os("TEHUTI_SAY").is_some_and(|value| value == "1") {
+        let runtime_directory =
+            std::env::var_os("XDG_RUNTIME_DIR").ok_or("TEHUTI_SAY=1 requires XDG_RUNTIME_DIR")?;
+        let fifo = tehuti::say::SayFifo::create(std::path::Path::new(&runtime_directory))?;
+        let _say_token = event_loop.handle().insert_source(
+            Generic::new(fifo, Interest::READ, calloop::Mode::Level),
+            |_, fifo, data| {
+                match fifo.drain() {
+                    Ok(lines) => {
+                        for text in lines {
+                            data.compositor.say(text);
+                            data.pacing.input_arrived = true;
+                        }
+                    }
+                    Err(error) => {
+                        warn!(%error, "typed speech FIFO failed");
+                        return Ok(PostAction::Remove);
+                    }
+                }
+                Ok(PostAction::Continue)
+            },
+        )?;
+    }
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     compositor.set_decorations(tehuti::decorations::from_env());
@@ -716,7 +745,17 @@ mod exit_code_tests {
     use super::exit_code;
 
     #[test]
+    fn restart_exits_with_session_restart_status() {
+        for (log_out, quit_requested) in [(false, false), (false, true), (true, true)] {
+            assert_eq!(
+                exit_code(log_out, quit_requested, true),
+                std::process::ExitCode::from(75)
+            );
+        }
+    }
+
+    #[test]
     fn external_shutdown_exits_successfully() {
-        assert_eq!(exit_code(false, false), std::process::ExitCode::SUCCESS);
+        assert_eq!(exit_code(false, false, false), std::process::ExitCode::SUCCESS);
     }
 }

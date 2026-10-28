@@ -58,7 +58,7 @@ impl State {
 
     #[must_use]
     pub fn passthrough(&self) -> bool {
-        self.passthrough_context() && !self.pad_taken_back
+        self.passthrough_context() && !self.pad_taken_back && self.level == Level::App
     }
 
     pub(crate) fn passthrough_context(&self) -> bool {

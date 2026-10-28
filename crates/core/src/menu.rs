@@ -6,6 +6,7 @@ use tehuti_protocol::{ButtonName, ButtonState, Event};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     LogOut,
+    Restart,
     Plasma,
     Reboot,
     ShutDown,
@@ -26,6 +27,7 @@ impl Command {
     const fn presentation(self) -> (&'static str, &'static str) {
         match self {
             Self::LogOut => ("log_out", "LOG OUT"),
+            Self::Restart => ("restart", "RESTART TEHUTI"),
             Self::Plasma => ("plasma", "SWITCH TO PLASMA"),
             Self::Reboot => ("reboot", "REBOOT"),
             Self::ShutDown => ("shut_down", "SHUT DOWN"),
@@ -35,8 +37,9 @@ impl Command {
     }
 }
 
-const ITEMS: [Command; 6] = [
+const ITEMS: [Command; 7] = [
     Command::LogOut,
+    Command::Restart,
     Command::Plasma,
     Command::Reboot,
     Command::ShutDown,

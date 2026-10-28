@@ -97,6 +97,7 @@ pub struct Compositor {
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    restart_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
     secret_gate: tehuti_core::secret::SecretConfirmationGate,
     secret_provider: Option<RedactedSecretProvider>,
@@ -205,6 +206,7 @@ impl Compositor {
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
+            restart_requested: false,
             speech_process: None,
             secret_gate: tehuti_core::secret::SecretConfirmationGate::new(),
             secret_provider: Some(RedactedSecretProvider(Box::new(
@@ -383,6 +385,12 @@ impl Compositor {
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
         let _rejection = self.dispatch(DispatchInput::Speech(input));
+    }
+
+    /// Routes a typed phrase through the same event path as an admitted transcript.
+    pub fn say(&mut self, text: tehuti_protocol::Text) {
+        tracing::info!(text = text.as_str(), "speech transcript received");
+        self.handle(&Event::Speech { text });
     }
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
@@ -644,8 +652,16 @@ impl Compositor {
         let mut input = input;
         let mut rejection = None;
         loop {
+            let previous = self
+                .dispatch
+                .keyboard()
+                .application_anchor()
+                .map(|anchor| (self.dispatch.keyboard().caret(), anchor));
             let (next, effects) = tehuti_core::dispatch::step(core::mem::take(&mut self.dispatch), input);
             self.dispatch = next;
+            if let Some(previous) = previous {
+                self.sync_keyboard_edit(previous);
+            }
             let mut reply = DispatchInput::Resume;
             for effect in effects {
                 if let DispatchEffect::PluginRejected(rejected) = effect {
@@ -663,6 +679,59 @@ impl Compositor {
                 return rejection;
             }
             input = reply;
+        }
+    }
+
+    pub(crate) fn set_keyboard_surrounding(&mut self, surrounding: Option<(String, usize, usize)>) {
+        self.dispatch.set_keyboard_surrounding(surrounding);
+    }
+
+    fn sync_keyboard_edit(&mut self, previous: (usize, usize)) {
+        use tehuti_core::keyboard::{Chord, ChordKey, Modifiers};
+        let edits = self.dispatch.take_keyboard_edits();
+        let edited = !edits.is_empty();
+        let mut position = previous.0;
+        for edit in edits {
+            self.text_input.edit_keyboard(&edit);
+            position = edit.caret;
+        }
+        let current = self.dispatch.keyboard();
+        if !current.synced() || !current.is_open() {
+            return;
+        }
+        let selection = previous.0.min(previous.1)..previous.0.max(previous.1);
+        let target = current.caret();
+        let key = if target < position {
+            tehuti_protocol::KeyName::Left
+        } else {
+            tehuti_protocol::KeyName::Right
+        };
+        if !edited && previous.0 == target {
+            return;
+        }
+        if !edited && !selection.is_empty() {
+            position = if target < position {
+                selection.start
+            } else {
+                selection.end
+            };
+            self.tap_chord(Chord {
+                key: ChordKey::Named(key),
+                modifiers: Modifiers::default(),
+            });
+        }
+        let count = self
+            .dispatch
+            .keyboard()
+            .draft()
+            .get(target.min(position)..target.max(position))
+            .map_or(0, |text| text.chars().count());
+        self.dispatch.keyboard_edit_applied();
+        for _ in 0..count {
+            self.tap_chord(Chord {
+                key: ChordKey::Named(key),
+                modifiers: Modifiers::default(),
+            });
         }
     }
 
@@ -960,7 +1029,18 @@ impl Compositor {
     }
 
     fn run_menu_command(&mut self, command: tehuti_core::menu::Command) {
-        if let Err(error) = crate::system_menu::execute(command) {
+        if command == tehuti_core::menu::Command::Restart {
+            self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
+            self.restart_requested = true;
+            self.quit_requested = true;
+            return;
+        }
+        let result = self
+            .launch_socket
+            .as_deref()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotConnected, "no compositor socket"))
+            .and_then(|socket| crate::system_menu::execute(command, socket));
+        if let Err(error) = result {
             tracing::warn!(?command, %error, "system menu command failed");
             self.show_notice("MENU COMMAND UNAVAILABLE");
         }
@@ -1058,6 +1138,11 @@ impl Compositor {
     #[must_use]
     pub const fn quit_requested(&self) -> bool {
         self.quit_requested
+    }
+
+    #[must_use]
+    pub const fn restart_requested(&self) -> bool {
+        self.restart_requested
     }
 
     /// Requests a one-use controller confirmation for the focused surface.

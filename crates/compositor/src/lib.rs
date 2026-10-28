@@ -17,12 +17,14 @@ pub(crate) mod text_input;
 
 pub mod plugins;
 
+pub mod say;
 pub mod speech;
 
 pub mod notice;
 
 pub mod secret_delivery;
 
+pub mod client_env;
 pub mod desktop;
 
 pub mod backend;

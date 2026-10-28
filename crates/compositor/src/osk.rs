@@ -320,11 +320,25 @@ fn draw_draft(canvas: &mut Canvas, keyboard: &Keyboard, row_height: usize, unit:
     let glyph = unit.saturating_mul(2);
     let advance = glyph.saturating_mul(8);
     let margin = advance;
+    let status_width = keyboard
+        .mode_label()
+        .chars()
+        .count()
+        .saturating_mul(unit.saturating_mul(8));
     let visible = canvas
         .width
+        .saturating_sub(status_width)
         .saturating_sub(margin.saturating_mul(2))
         .checked_div(advance)
         .unwrap_or_default();
+    canvas.text(
+        canvas.width.saturating_sub(status_width),
+        keyboard.rows().len().saturating_mul(row_height),
+        canvas.width,
+        row_height,
+        keyboard.mode_label(),
+        unit,
+    );
     let row = draft_row(keyboard, visible);
     let top = usize::try_from(row.top).unwrap_or_default().saturating_mul(unit);
     if let Some(word) = row.picked {

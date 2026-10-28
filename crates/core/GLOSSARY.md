@@ -20,7 +20,7 @@
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |
 | Escape chord | Holding Guide and Start together for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |
-| Level | What LB and RB drive. The app level (the start state) routes them to the focused app like other buttons; columns moves focus one column left or right. A Guide tap shorter than half a second, with Start untouched, toggles the level; the bar lists open window titles at columns level and the focused context at app level. Focus changes keep it. |
+| Level | What LB and RB drive. The app level (the start state) routes them to the focused app like other buttons; columns moves focus one column left or right. A Guide tap shorter than half a second, with Start untouched, toggles the level; the bar lists open window titles at columns level and the focused context at app level. A passthrough context gives the application the pad only at app level. Focus changes keep it. |
 | Capture session | A core-owned speech start paired with exactly one stop, independently of sidecar I/O. |
 | Secret destination | One focused surface during one focus generation; returning to the same surface creates a different destination. |
 | Secret confirmation | A one-use controller approval bound to a named reference and secret destination, with a short expiry. |

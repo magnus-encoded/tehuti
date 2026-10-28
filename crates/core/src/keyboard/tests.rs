@@ -877,3 +877,54 @@ fn alt_latch_and_caret_keys_preserve_their_directions() {
     assert_eq!(tap(&mut keyboard, ButtonName::South), Response::Consumed);
     assert_eq!(keyboard.caret(), 3);
 }
+
+#[test]
+fn synced_replacement_emits_an_edit_even_when_text_is_unchanged() {
+    let mut keyboard = opened();
+    keyboard.set_surrounding(Some(("qéq".into(), 1, 0)));
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.draft(), "qéq");
+    assert_eq!(
+        keyboard.take_edits(),
+        vec![Edit {
+            before: 0,
+            after: 0,
+            text: "q".into(),
+            caret: 1,
+        }]
+    );
+    assert_eq!(keyboard.take_edits(), vec![]);
+}
+
+#[test]
+fn synced_selection_survives_opening_and_uses_each_pad_family() {
+    for family in [crate::pad::PadFamily::Letters, crate::pad::PadFamily::Symbols] {
+        let mut keyboard = Keyboard::default();
+        keyboard.set_pad_family(family);
+        keyboard.set_surrounding(Some(("hello".into(), 5, 0)));
+        keyboard.open();
+        assert_eq!(keyboard.mode_label(), "synced");
+        assert_eq!(keyboard.picked_word(), Some(0..5));
+        assert_eq!(
+            tap(&mut keyboard, family.button(crate::pad::Role::Confirm)),
+            Response::Consumed
+        );
+        assert_eq!(keyboard.draft(), "q");
+        assert_eq!(
+            keyboard.take_edits(),
+            vec![Edit {
+                before: 0,
+                after: 0,
+                text: "q".into(),
+                caret: 1,
+            }]
+        );
+        assert_eq!(
+            tap(&mut keyboard, family.button(crate::pad::Role::Back)),
+            Response::Consumed
+        );
+        keyboard.open();
+        assert_eq!(keyboard.mode_label(), "synced");
+        assert_eq!(keyboard.draft(), "q");
+    }
+}

@@ -1,3 +1,4 @@
+# All program names below are placeholders. Replace them with installed commands.
 log_out = ["session-logout"]
 plasma = ["session-switch", "plasma"]
 reboot = ["session-reboot"]

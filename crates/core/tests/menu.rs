@@ -10,7 +10,7 @@ mod menu {
 
     proptest! {
         #[test]
-        fn session_commands_require_two_distinct_presses(row in 0usize..4, repeats in 0usize..20) {
+        fn session_commands_require_two_distinct_presses(row in 0usize..5, repeats in 0usize..20) {
             let mut menu = Some(Menu::default());
             for _ in 0..row {
                 assert_eq!(button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed), None);
@@ -27,7 +27,7 @@ mod menu {
         }
 
         #[test]
-        fn back_cancels_confirmation(row in 0usize..4, guide in any::<bool>()) {
+        fn back_cancels_confirmation(row in 0usize..5, guide in any::<bool>()) {
             let mut menu = Some(Menu::default());
             for _ in 0..row {
                 assert_eq!(button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed), None);
@@ -43,7 +43,7 @@ mod menu {
         let mut menu = Some(Menu::default());
         assert_eq!(
             menu.as_ref().unwrap().text(),
-            "SYSTEM MENU\n> LOG OUT\n  SWITCH TO PLASMA\n  REBOOT\n  SHUT DOWN\n  TASK MONITOR\n  SETTINGS\nB OR GUIDE CLOSE"
+            "SYSTEM MENU\n> LOG OUT\n  RESTART TEHUTI\n  SWITCH TO PLASMA\n  REBOOT\n  SHUT DOWN\n  TASK MONITOR\n  SETTINGS\nB OR GUIDE CLOSE"
         );
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
         assert!(menu.as_ref().unwrap().text().contains("\n> SETTINGS"));
@@ -58,6 +58,7 @@ mod menu {
     fn command_keys_name_the_selected_session_action() {
         for (command, key) in [
             (Command::LogOut, "log_out"),
+            (Command::Restart, "restart"),
             (Command::Plasma, "plasma"),
             (Command::Reboot, "reboot"),
             (Command::ShutDown, "shut_down"),
@@ -87,6 +88,24 @@ mod menu {
                 .contains("Cross CONFIRM / Circle CANCEL")
         );
         assert_eq!(button(&mut menu, ButtonName::East, ButtonState::Pressed), None);
+        assert!(menu.is_none());
+    }
+
+    #[test]
+    fn restart_requires_confirmation_and_uses_restart_key() {
+        assert_eq!(Command::Restart.key(), "restart");
+        let mut menu = Some(Menu::default());
+        assert!(menu.as_ref().unwrap().text().contains("RESTART TEHUTI"));
+        assert_eq!(
+            button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed),
+            None
+        );
+        assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Pressed), None);
+        assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Released), None);
+        assert_eq!(
+            button(&mut menu, ButtonName::South, ButtonState::Pressed),
+            Some(Command::Restart)
+        );
         assert!(menu.is_none());
     }
 
