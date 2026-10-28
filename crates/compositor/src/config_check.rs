@@ -102,8 +102,13 @@ pub fn check(directory: &Path) -> Report {
     match std::fs::read_to_string(&menu) {
         Ok(text) => {
             report.checked = report.checked.saturating_add(1);
-            if let Err(error) = crate::system_menu::Config::parse(&text) {
-                report.push(&menu, Severity::Error, error.to_string());
+            match crate::system_menu::Config::parse(&text) {
+                Ok(config) => {
+                    for notice in config.notices() {
+                        report.push(&menu, Severity::Error, notice.clone());
+                    }
+                }
+                Err(error) => report.push(&menu, Severity::Error, error.to_string()),
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
