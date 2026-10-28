@@ -334,6 +334,31 @@ mod level_dim {
     }
 
     #[test]
+    fn choice_list_shows_wallpaper_and_closing_restores_the_application() {
+        scene(1, |compositor, output| {
+            let mut capture = Capture::new();
+            let point = window_points(compositor)[0];
+            let before = pixel(&capture.pixels(compositor, output), point);
+            assert_ne!(before, [0, 0, 0, 255]);
+            compositor.open_choice_list(tehuti_core::choice_list::Slots {
+                title: "Choose".into(),
+                ..tehuti_core::choice_list::Slots::default()
+            });
+            capture.expect(compositor, output, point, [0, 0, 0, 255]);
+            let mut pad = tehuti::input::SyntheticPad::default();
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                pad.push(Event::Button {
+                    name: ButtonName::East,
+                    state,
+                });
+            }
+            tehuti::input::route(compositor, &mut pad).unwrap();
+            capture.expect(compositor, output, point, before);
+            assert_eq!(compositor.space.elements().count(), 1);
+        });
+    }
+
+    #[test]
     fn focus_outline_is_two_logical_pixels_on_only_the_focused_window_at_both_levels() {
         for scale in [1, 2] {
             scene_scaled(2, scale, |compositor, output| {

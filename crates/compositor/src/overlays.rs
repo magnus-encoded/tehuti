@@ -20,6 +20,7 @@ use tehuti_core::overlay::{Overlay, STACK};
 #[derive(Debug, Default)]
 pub struct Overlays {
     bar: crate::bar::Buffer,
+    choices: crate::choice_list::Buffer,
     keyboard: crate::osk::Buffer,
     cursor: Option<MemoryRenderBuffer>,
     notice: Option<(Overlay, String, MemoryRenderBuffer)>,
@@ -92,6 +93,7 @@ impl Overlays {
         }
         match layer {
             Overlay::Cursor => self.cursor_element(renderer, output, compositor),
+            Overlay::ChoiceList => self.choices.element(renderer, compositor, output),
             Overlay::Settings => crate::settings::element(renderer, compositor, output),
             Overlay::Bar => self.bar.element(renderer, output, &compositor.voice_bar(), clock),
             Overlay::Keyboard => self

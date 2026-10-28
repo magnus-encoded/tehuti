@@ -382,6 +382,7 @@ impl Compositor {
             Overlay::MouseNotice => self.mouse_mode.then(|| "MOUSE MODE".into()),
             Overlay::Cursor
             | Overlay::Settings
+            | Overlay::ChoiceList
             | Overlay::Bar
             | Overlay::Keyboard
             | Overlay::Mouse
@@ -630,7 +631,8 @@ impl Compositor {
             DispatchInput::Tick { elapsed }
             | DispatchInput::Event { elapsed, .. }
             | DispatchInput::ClockRead(elapsed) => *elapsed,
-            DispatchInput::FocusTitle { .. }
+            DispatchInput::ChoiceList(_)
+            | DispatchInput::FocusTitle { .. }
             | DispatchInput::DisplayModes { .. }
             | DispatchInput::DisplayScale(_)
             | DispatchInput::ModeApplied(_)
@@ -842,6 +844,20 @@ impl Compositor {
             .artwork
             .borrow_mut()
             .buffer(self.settings(), size)
+    }
+
+    pub fn open_choice_list(&mut self, slots: tehuti_core::choice_list::Slots) {
+        let _rejection = self.dispatch(DispatchInput::ChoiceList(slots));
+    }
+
+    #[must_use]
+    pub const fn choice_list(&self) -> Option<&tehuti_core::choice_list::List> {
+        self.dispatch.choice_list()
+    }
+
+    #[must_use]
+    pub const fn pad_family(&self) -> tehuti_core::pad::PadFamily {
+        self.dispatch.core().pad_family()
     }
 
     pub fn change_display_scale(&mut self, scale: core::num::NonZeroU32) {

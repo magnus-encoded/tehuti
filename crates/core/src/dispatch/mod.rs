@@ -25,6 +25,7 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    ChoiceList(crate::choice_list::Slots),
     DisplayModes {
         modes: Vec<String>,
         current: usize,
@@ -238,6 +239,8 @@ pub struct State {
     takeback: Takeback,
     frames: Vec<Frame>,
     settings: Settings,
+    choice_list: Option<crate::choice_list::List>,
+    choice_buttons: Vec<ButtonName>,
     overlay_stack: Vec<Overlay>,
     secret_prompt: SecretPrompt,
 }
@@ -258,6 +261,8 @@ impl State {
             takeback: Takeback::Idle,
             frames: Vec::new(),
             settings: Settings::default(),
+            choice_list: None,
+            choice_buttons: Vec::new(),
             overlay_stack: Vec::new(),
             secret_prompt: SecretPrompt::Hidden,
         }
@@ -301,6 +306,17 @@ impl State {
     #[must_use]
     pub const fn secret_prompt_visible(&self) -> bool {
         matches!(self.secret_prompt, SecretPrompt::Visible)
+    }
+
+    #[must_use]
+    pub const fn choice_list(&self) -> Option<&crate::choice_list::List> {
+        self.choice_list.as_ref()
+    }
+
+    fn choice_list_open(&self) -> bool {
+        self.choice_list
+            .as_ref()
+            .is_some_and(crate::choice_list::List::is_open)
     }
 
     /// Frames still waiting for replies or resumption.
@@ -386,6 +402,10 @@ fn sync_keyboard_config(state: &mut State) {
 
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
+        Input::ChoiceList(slots) => {
+            state.choice_list = Some(crate::choice_list::List::new(slots));
+            (state, Vec::new())
+        }
         input @ (Input::DisplayModes { .. }
         | Input::DisplayScale(_)
         | Input::Wallpapers { .. }
@@ -430,7 +450,8 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         ],
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
-        Input::DisplayModes { .. }
+        Input::ChoiceList(_)
+        | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
         | Input::DisplayScale(_)
@@ -480,7 +501,8 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
             }
         }
         Input::ControllerDisconnected => disconnect_controller(&mut state, &mut effects),
-        Input::DisplayModes { .. }
+        Input::ChoiceList(_)
+        | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
         | Input::DisplayScale(_)
@@ -533,7 +555,8 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             controller,
             microphone,
         } => state.settings.restore_input(controller, microphone),
-        Input::Tick { .. }
+        Input::ChoiceList(_)
+        | Input::Tick { .. }
         | Input::Event { .. }
         | Input::ClockRead(_)
         | Input::Speech(_)
@@ -571,11 +594,12 @@ fn plugin_reply(
 fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
     release_pad(state, Handoff::Disconnect, effects);
     state.opening_button = None;
+    state.choice_buttons.clear();
     state.core.controller_disconnected();
 }
 
 fn update_sticks(state: &mut State, sticks: Sticks) {
-    if !state.core.passthrough() && state.core.menu().is_none() {
+    if !state.choice_list_open() && !state.core.passthrough() && state.core.menu().is_none() {
         state.keyboard.left_stick(sticks.left.0, sticks.left.1);
         state.mouse.sticks = sticks;
     }
@@ -631,6 +655,7 @@ fn release_layer(state: &mut State, layer: Overlay, handoff: Handoff, effects: &
         Overlay::Application => release_held_keys(state, effects),
         Overlay::Cursor
         | Overlay::Settings
+        | Overlay::ChoiceList
         | Overlay::SystemMenu
         | Overlay::Secret
         | Overlay::SecretUnavailable
@@ -653,7 +678,12 @@ fn finish_handoff(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>
             state.core.menu = None;
             effects.push(Effect::ResetSecretFocus);
         }
-        Handoff::Passthrough => state.settings.close(effects),
+        Handoff::Passthrough => {
+            state.settings.close(effects);
+            if let Some(list) = &mut state.choice_list {
+                list.cancel();
+            }
+        }
         Handoff::Open(Overlay::SystemMenu) => {
             if let Some(frame) = state.frames.last_mut() {
                 frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
@@ -674,6 +704,7 @@ fn open_overlays(state: &State) -> Vec<Overlay> {
         .into_iter()
         .filter(|layer| match layer {
             Overlay::Settings => state.settings.open,
+            Overlay::ChoiceList => state.choice_list_open(),
             Overlay::SystemMenu => state.core.menu().is_some(),
             Overlay::Secret => state.secret_prompt == SecretPrompt::Visible,
             Overlay::Keyboard => state.keyboard.is_open(),
@@ -958,6 +989,7 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if let Event::Tick { elapsed } = event
         && state.core.menu().is_none()
         && !state.settings.open
+        && state.choice_list.as_ref().is_none_or(|list| !list.is_open())
         && tick_pad(&mut state.keyboard, &mut state.mouse, elapsed, effects)
     {
         for button in [ButtonState::Released, ButtonState::Pressed] {
@@ -1042,6 +1074,15 @@ fn guide_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
 }
 
 fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if let Event::Button {
+        name,
+        state: ButtonState::Released,
+    } = event
+        && state.choice_buttons.contains(name)
+    {
+        state.choice_buttons.retain(|held| held != name);
+        return true;
+    }
     sync_keyboard_config(state);
     let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
     if settings_phrase(state, event, dictation, effects)
@@ -1056,7 +1097,10 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
 }
 
 fn settings_phrase(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
-    !dictation && matches!(event, Event::Speech { .. }) && settings_event(state, event, effects)
+    !state.choice_list_open()
+        && !dictation
+        && matches!(event, Event::Speech { .. })
+        && settings_event(state, event, effects)
 }
 
 fn reserved_safety(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
@@ -1095,6 +1139,7 @@ fn overlay_input(
     effects: &mut Vec<Effect>,
 ) -> bool {
     match layer {
+        Overlay::ChoiceList => choice_list_input(state, event),
         Overlay::Settings => settings_input_layer(state, event, dictation, effects),
         Overlay::SystemMenu => !dictation && system_menu(state, event, effects),
         Overlay::Secret => secret_input(state, event),
@@ -1107,6 +1152,31 @@ fn overlay_input(
         | Overlay::Bar
         | Overlay::Application => false,
     }
+}
+
+fn choice_list_input(state: &mut State, event: &Event) -> bool {
+    let Event::Button { name, state: button } = event else {
+        return state.choice_list_open() && matches!(event, Event::Speech { .. });
+    };
+    if !state.choice_list_open() {
+        return false;
+    }
+    if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {
+        state.choice_buttons.push(*name);
+        let family = state.core.pad_family();
+        if let Some(list) = &mut state.choice_list {
+            if *name == family.button(crate::pad::Role::Back) {
+                list.cancel();
+            } else if *name == family.button(crate::pad::Role::Confirm) || *name == ButtonName::Start {
+                list.confirm();
+            } else if *name == ButtonName::DpadUp {
+                list.move_selection(false);
+            } else if *name == ButtonName::DpadDown {
+                list.move_selection(true);
+            }
+        }
+    }
+    true
 }
 
 fn secret_input(state: &mut State, event: &Event) -> bool {
@@ -1123,8 +1193,8 @@ fn secret_input(state: &mut State, event: &Event) -> bool {
     true
 }
 
-const fn lower_view_owns_pad(state: &State) -> bool {
-    state.settings.open || state.keyboard.is_open() || state.mouse.active()
+fn lower_view_owns_pad(state: &State) -> bool {
+    state.choice_list_open() || state.settings.open || state.keyboard.is_open() || state.mouse.active()
 }
 
 fn queue_secret_confirmation(state: &mut State, button: ButtonState, event: Event) {
