@@ -100,12 +100,18 @@ impl input::InputSource for AttachedController {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
-        exit_code(self.log_out, self.compositor.quit_requested())
+        exit_code(
+            self.log_out,
+            self.compositor.quit_requested(),
+            self.compositor.restart_requested(),
+        )
     }
 }
 
-fn exit_code(log_out: bool, quit_requested: bool) -> ExitCode {
-    ExitCode::from(if log_out {
+fn exit_code(log_out: bool, quit_requested: bool, restart_requested: bool) -> ExitCode {
+    ExitCode::from(if restart_requested {
+        75
+    } else if log_out {
         21
     } else if quit_requested {
         20
@@ -717,7 +723,17 @@ mod exit_code_tests {
     use super::exit_code;
 
     #[test]
+    fn restart_exits_with_session_restart_status() {
+        for (log_out, quit_requested) in [(false, false), (false, true), (true, true)] {
+            assert_eq!(
+                exit_code(log_out, quit_requested, true),
+                std::process::ExitCode::from(75)
+            );
+        }
+    }
+
+    #[test]
     fn external_shutdown_exits_successfully() {
-        assert_eq!(exit_code(false, false), std::process::ExitCode::SUCCESS);
+        assert_eq!(exit_code(false, false, false), std::process::ExitCode::SUCCESS);
     }
 }
