@@ -43,6 +43,7 @@ pub struct State {
     start_held: bool,
     level: Level,
     menu: Option<menu::Menu>,
+    menu_entries: Vec<String>,
     menu_buttons: Vec<ButtonName>,
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
@@ -51,6 +52,10 @@ pub struct State {
 }
 
 impl State {
+    pub fn set_menu_entries(&mut self, entries: Vec<String>) {
+        self.menu_entries = entries;
+    }
+
     #[must_use]
     pub fn passthrough_push_to_talk(&self) -> &[ButtonName] {
         focused_context(self).map_or(&[ButtonName::Record], Context::passthrough_push_to_talk)
@@ -98,6 +103,7 @@ impl State {
             start_held: false,
             level: Level::App,
             menu: None,
+            menu_entries: Vec::new(),
             menu_buttons: Vec::new(),
             pending: Vec::new(),
             bar: bar::Bar::new(),
@@ -650,7 +656,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             }
             if !state.start_held && state.guide_tap.is_some_and(|held| held >= GUIDE_TAP_WINDOW) {
                 state.guide_tap = None;
-                state.menu = Some(menu::Menu::new(state.pad_family));
+                state.menu = Some(menu::Menu::new(state.pad_family).with_entries(state.menu_entries.clone()));
             }
             if state.start_held
                 && let Some(held) = &mut state.guide_held
