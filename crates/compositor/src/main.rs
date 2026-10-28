@@ -248,6 +248,29 @@ fn start_session(
     segv_backtrace::install_if_requested()?;
 
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
+    if std::env::var_os("TEHUTI_SAY").is_some_and(|value| value == "1") {
+        let runtime_directory =
+            std::env::var_os("XDG_RUNTIME_DIR").ok_or("TEHUTI_SAY=1 requires XDG_RUNTIME_DIR")?;
+        let fifo = tehuti::say::SayFifo::create(std::path::Path::new(&runtime_directory))?;
+        let _say_token = event_loop.handle().insert_source(
+            Generic::new(fifo, Interest::READ, calloop::Mode::Level),
+            |_, fifo, data| {
+                match fifo.drain() {
+                    Ok(lines) => {
+                        for text in lines {
+                            data.compositor.say(text);
+                            data.pacing.input_arrived = true;
+                        }
+                    }
+                    Err(error) => {
+                        warn!(%error, "typed speech FIFO failed");
+                        return Ok(PostAction::Remove);
+                    }
+                }
+                Ok(PostAction::Continue)
+            },
+        )?;
+    }
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     compositor.set_decorations(tehuti::decorations::from_env());

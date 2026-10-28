@@ -372,6 +372,12 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Speech(input));
     }
 
+    /// Routes a typed phrase through the same event path as an admitted transcript.
+    pub fn say(&mut self, text: tehuti_protocol::Text) {
+        tracing::info!(text = text.as_str(), "speech transcript received");
+        self.handle(&Event::Speech { text });
+    }
+
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
         let _rejection = self.dispatch(DispatchInput::PluginExited { plugin });
     }

@@ -3,8 +3,11 @@
 #[cfg(test)]
 mod speech_process {
     use core::time::Duration;
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::time::Instant;
 
+    use tehuti::say::{FIFO_NAME, SayFifo};
     use tehuti::speech::SpeechProcess;
     use tehuti_core::{
         State,
@@ -15,6 +18,74 @@ mod speech_process {
 
     fn child(source: &str) -> SpeechProcess {
         SpeechProcess::new(vec!["python3".into(), "-u".into(), "-c".into(), source.into()])
+    }
+
+    #[test]
+    fn typed_lines_arrive_without_a_speech_session_and_fifo_is_private() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::state::Compositor;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(FIFO_NAME);
+        let fifo = SayFifo::create(directory.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(SayFifo::create(directory.path()).is_err());
+        assert_eq!(fifo.drain().unwrap(), Vec::<Text>::new());
+
+        let mut writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        writer.write_all(b"first\nsec").unwrap();
+        assert_eq!(fifo.drain().unwrap(), vec![Text::new("first".into()).unwrap()]);
+        writer.write_all(b"ond\nnotice\n").unwrap();
+        let lines = fifo.drain().unwrap();
+        assert_eq!(
+            lines,
+            vec![
+                Text::new("second".into()).unwrap(),
+                Text::new("notice".into()).unwrap()
+            ]
+        );
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(
+                "app_id = 'test'\n[buttons]\n[speech]\nnotice = { notify = 'Ready' }",
+            )
+            .unwrap(),
+        ]);
+        compositor.handle(&Event::Focus {
+            app_id: Some("test".into()),
+            title: String::new(),
+        });
+        for text in lines {
+            compositor.say(text);
+        }
+        assert_eq!(compositor.visible_notice_text().as_deref(), Some("Ready"));
+        drop(writer);
+        drop(fifo);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn invalid_and_overlong_lines_do_not_discard_the_next_phrase() {
+        let directory = tempfile::tempdir().unwrap();
+        let fifo = SayFifo::create(directory.path()).unwrap();
+        let path = directory.path().join(FIFO_NAME);
+        let mut writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        for _ in 0..17 {
+            writer.write_all(&[b'x'; 4096]).unwrap();
+            assert_eq!(fifo.drain().unwrap(), Vec::<Text>::new());
+        }
+        writer.write_all(b"\n\xff\n\nready\r\n").unwrap();
+        assert_eq!(fifo.drain().unwrap(), vec![Text::new("ready".into()).unwrap()]);
+        drop(writer);
+        assert_eq!(fifo.drain().unwrap(), Vec::<Text>::new());
+        let mut reconnected_writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        reconnected_writer.write_all(b"again\n").unwrap();
+        assert_eq!(fifo.drain().unwrap(), vec![Text::new("again".into()).unwrap()]);
     }
 
     fn wait_for(process: &mut SpeechProcess, expected: &SpeechInput) {
