@@ -392,7 +392,8 @@ text = "a\u0000b"
             context.ticker(),
             &TickerConfig {
                 enabled: Some(true),
-                speech: Some(TickerSpeech::Icons)
+                speech: Some(TickerSpeech::Icons),
+                ..TickerConfig::default()
             }
         );
         for setting in ["enabled = 'yes'", "speech = 'some'", "speed = 2"] {
@@ -401,6 +402,51 @@ text = "a\u0000b"
                 "{setting}"
             );
         }
+    }
+
+    #[test]
+    fn ticker_names_parse_and_look_up_keys_and_chords() {
+        use tehuti_protocol::{KeyName, Modifier};
+        let context = parse_context(
+            "app_id = 'test'\n[buttons]\n[ticker.names]\nenter = 'Jump'\n'shift+ctrl+s' = 'Save'\nEscape = 'Pause'",
+        )
+        .unwrap();
+        assert_eq!(context.ticker_name(KeyName::Enter, &[]), Some("Jump"));
+        assert_eq!(context.ticker_name(KeyName::Escape, &[]), Some("Pause"));
+        assert_eq!(
+            context.ticker_name(KeyName::S, &[Modifier::Ctrl, Modifier::Shift]),
+            Some("Save")
+        );
+        assert_eq!(context.ticker_name(KeyName::S, &[Modifier::Ctrl]), None);
+        assert_eq!(context.ticker_name(KeyName::Up, &[]), None);
+        let none = parse_context("app_id = 'test'\n[buttons]\n").unwrap();
+        assert_eq!(none.ticker_name(KeyName::Enter, &[]), None);
+    }
+
+    #[test]
+    fn ticker_names_reject_bad_input() {
+        let long = "x".repeat(25);
+        let maximum_length = "x".repeat(24);
+        let base = "app_id = 'test'\n[buttons]\n[ticker.names]\n";
+        assert!(parse_context(&format!("{base}enter = '{maximum_length}'")).is_ok());
+        for bad in [
+            "enter = ''".to_owned(),
+            "enter = '   '".to_owned(),
+            "enter = ' Jump'".to_owned(),
+            format!("enter = '{long}'"),
+            "enter = \"a\\nb\"".to_owned(),
+            "banana = 'Jump'".to_owned(),
+            "'hyper+s' = 'Save'".to_owned(),
+            "'ctrl+' = 'Save'".to_owned(),
+            "enter = 3".to_owned(),
+            "enter = 'A'\n'Enter' = 'B'".to_owned(),
+        ] {
+            assert!(parse_context(&format!("{base}{bad}")).is_err(), "{bad}");
+        }
+        let control_error = parse_context(&format!("{base}enter = \"a\\nb\"")).unwrap_err();
+        assert!(control_error.contains("control characters"), "{control_error}");
+        let error = parse_context(&format!("{base}banana = 'Jump'")).unwrap_err();
+        assert!(error.contains("banana"), "{error}");
     }
 
     #[test]

@@ -198,6 +198,31 @@ and a passthrough context shows `Pad → app` with its push-to-talk chord.
 Phrases with the same action share one entry, such as
 `"Lagre" / "Lagre spillet" → 💾`; entries with icons come first.
 
+A context can say what its keys do in the application, taken from the
+application's own settings. `[ticker.names]` maps a Tehuti key name, as in
+`key = "..."` mappings, to a short name; a chord is written with its
+modifiers, such as `"ctrl+s"` (modifier order does not matter). A pad button
+mapped to a named key or chord shows the name as text instead of the keycap,
+with the dim `hold` when `hold = true`. Keys without a name keep their keycap,
+and speech entries are unaffected. Names must be non-empty, trimmed, at most
+24 characters and without control characters; unknown key or modifier names
+and duplicates make the file fail to load. A named chord replaces its built-in
+icon. The table is empty by default and applies only to its own context (the
+global context's names apply to buttons resolved through it).
+
+```toml
+# SuperTux: South jumps, West runs and shoots, East pauses.
+[buttons]
+south = { key = "enter", hold = true }
+west = { key = "backspace", hold = true }
+east = { key = "escape" }
+
+[ticker.names]
+enter = "Jump"
+backspace = "Action"
+escape = "Pause"
+```
+
 A phrase can name its icon:
 
 ```toml
