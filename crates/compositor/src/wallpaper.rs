@@ -138,7 +138,15 @@ impl Collection {
             })
             .as_deref()
             == Some("1");
-        let entries = load_entries(roots, release, true);
+        let mut entries = load_entries(roots, release, true);
+        let legacy = roots
+            .iter()
+            .find_map(|root| image::open(root.join("wallpaper.png")).ok())
+            .map(|image| {
+                let index = entries.len();
+                entries.push(("wallpaper.png".into(), image));
+                index
+            });
         let locked = entry_locks(&entries, release, all || unlocked);
         let thumbnails = entries
             .iter()
@@ -158,24 +166,15 @@ impl Collection {
                 .position(|(name, _)| name == saved)
                 .filter(|index| !locked.get(*index).copied().unwrap_or(true))
         });
-        let legacy = saved_current
-            .is_none()
-            .then(|| {
-                roots
-                    .iter()
-                    .find_map(|root| image::open(root.join("wallpaper.png")).ok())
-            })
-            .flatten();
         let current = saved_current
+            .or(legacy)
             .or_else(|| {
                 CODENAMES
                     .get(release)
                     .and_then(|default| entries.iter().position(|(name, _)| name == default))
             })
             .or_else(|| locked.iter().position(|locked| !locked));
-        let current = current.filter(|_| legacy.is_none());
-        let image =
-            legacy.or_else(|| current.and_then(|index| entries.get(index).map(|(_, image)| image.clone())));
+        let image = current.and_then(|index| entries.get(index).map(|(_, image)| image.clone()));
         Self {
             locked,
             thumbnails,
@@ -258,7 +257,6 @@ impl Collection {
             .entries
             .get(index)
             .ok_or_else(|| std::io::Error::other("wallpaper unavailable"))?;
-        self.current = Some(index);
         self.wallpaper.image = Some(image.clone());
         self.wallpaper.buffers.clear();
         Ok(())
@@ -266,7 +264,7 @@ impl Collection {
 
     /// # Errors
     /// Returns an error when the wallpaper is locked or saving fails.
-    pub fn save(&self, index: usize) -> std::io::Result<()> {
+    pub fn save(&mut self, index: usize) -> std::io::Result<()> {
         if self.locked.get(index).copied().unwrap_or(true) {
             return Err(std::io::Error::other("wallpaper locked"));
         }
@@ -275,7 +273,9 @@ impl Collection {
             .get(index)
             .ok_or_else(|| std::io::Error::other("wallpaper unavailable"))?
             .0;
-        self.store.write(name)
+        self.store.write(name)?;
+        self.current = Some(index);
+        Ok(())
     }
 
     /// # Errors
@@ -453,9 +453,9 @@ impl WallpaperCache {
 
     /// # Errors
     /// Returns an error when the wallpaper is locked or saving fails.
-    pub fn save(&self, index: usize) -> std::io::Result<()> {
+    pub fn save(&mut self, index: usize) -> std::io::Result<()> {
         self.collection
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| std::io::Error::other("wallpaper collection unavailable"))?
             .save(index)
     }

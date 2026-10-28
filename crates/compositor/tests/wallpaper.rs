@@ -435,3 +435,47 @@ mod collection {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod legacy {
+
+    #[test]
+    fn cancelling_a_preview_restores_the_legacy_wallpaper() -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti::{
+            display_mode_store::Store,
+            wallpaper::{Collection, WallpaperCache},
+        };
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir_all(directory.path().join("wallpapers"))?;
+        for (path, red) in [("wallpaper.png", 80), ("wallpapers/apteribis.png", 10)] {
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([red, 0, 0, 255]))
+                .save(directory.path().join(path))?;
+        }
+        let collection = Collection::discover(
+            &[directory.path().to_path_buf()],
+            Store::new(directory.path().join("config/wallpaper")),
+            0,
+            false,
+        );
+        let mut cache = WallpaperCache::from_collection(collection);
+        let (_, _, original) = cache.choices();
+        cache.preview(0)?;
+        cache.preview(original)?;
+        let mut ready = None;
+        for _ in 0..1000 {
+            if let Some(buffer) = cache.buffer((2, 2).into()) {
+                ready = Some(buffer);
+                break;
+            }
+            std::thread::sleep(core::time::Duration::from_millis(2));
+        }
+        ready
+            .ok_or("wallpaper worker timed out")?
+            .render()
+            .draw(|pixels| {
+                assert_eq!(pixels.first(), Some(&80));
+                Ok::<_, std::io::Error>(Vec::new())
+            })?;
+        Ok(())
+    }
+}

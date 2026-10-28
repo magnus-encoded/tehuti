@@ -31,6 +31,10 @@ struct View {
     selected: usize,
     current: usize,
     modes: Vec<String>,
+    wallpapers: Vec<String>,
+    wallpaper_locked: Vec<bool>,
+    wallpaper_selected: usize,
+    wallpaper_current: usize,
     scale: core::num::NonZeroU32,
     remaining: Option<Duration>,
     failed: bool,
@@ -48,6 +52,10 @@ impl View {
             selected: settings.selected,
             current: settings.current,
             modes: settings.modes.clone(),
+            wallpapers: settings.wallpapers.clone(),
+            wallpaper_locked: settings.wallpaper_locked.clone(),
+            wallpaper_selected: settings.wallpaper_selected,
+            wallpaper_current: settings.wallpaper_current,
             scale: settings.scale,
             remaining: settings.remaining.map(|remaining| {
                 Duration::from_millis(
@@ -130,6 +138,7 @@ impl Canvas {
             Page::Categories => self.categories(settings.category),
             Page::Display => self.display(settings),
             Page::Input => self.input(settings),
+            Page::Wallpaper => self.wallpaper(settings),
         }
     }
 
@@ -147,6 +156,7 @@ impl Canvas {
             let (name, detail) = match category {
                 Category::Display => ("DISPLAY", "RESOLUTION / REFRESH / SCALE"),
                 Category::Input => ("INPUT", "CONTROLLER / MICROPHONE"),
+                Category::Wallpaper => ("WALLPAPER", "RELEASE COLLECTION"),
             };
             self.text(96, y.saturating_add(20), name, 5, WHITE);
             self.text(600, y.saturating_add(32), detail, 3, CYAN);
@@ -178,6 +188,47 @@ impl Canvas {
         if settings.modes.is_empty() {
             self.text(96, 568, "NO DRIVER MODES AVAILABLE", 3, AMBER);
         }
+        if let Some(mode) = settings.modes.get(settings.selected) {
+            self.mode_preview(mode);
+        }
+    }
+
+    fn mode_preview(&mut self, mode: &str) {
+        let Some((size, refresh)) = mode.split_once('@') else {
+            return;
+        };
+        let Some((width, height)) = size.split_once('x') else {
+            return;
+        };
+        let (Ok(width), Ok(height), Ok(refresh)) = (
+            width.parse::<usize>(),
+            height.parse::<usize>(),
+            refresh.parse::<f32>(),
+        ) else {
+            return;
+        };
+        if width == 0 || height == 0 {
+            return;
+        }
+        let preview_width = 200.min(width.saturating_mul(120).checked_div(height).unwrap_or_default());
+        let preview_height = 120.min(height.saturating_mul(200).checked_div(width).unwrap_or_default());
+        self.rectangle(960, 230, preview_width, 2, CYAN);
+        self.rectangle(960, 230, 2, preview_height, CYAN);
+        self.rectangle(
+            960,
+            230usize.saturating_add(preview_height),
+            preview_width,
+            2,
+            CYAN,
+        );
+        self.rectangle(
+            960usize.saturating_add(preview_width),
+            230,
+            2,
+            preview_height,
+            CYAN,
+        );
+        self.wave(960, 445, refresh);
     }
 
     fn input(&mut self, settings: &Settings) {
@@ -201,6 +252,53 @@ impl Canvas {
             self.text(96, y.saturating_add(14), name, 4, WHITE);
             let value: String = value.chars().take(36).collect();
             self.text(96, y.saturating_add(66), &format!("<  {value}  >"), 3, CYAN);
+        }
+    }
+
+    fn wallpaper(&mut self, settings: &Settings) {
+        if settings.wallpapers.is_empty() {
+            self.text(96, 300, "NO WALLPAPERS AVAILABLE", 4, AMBER);
+            return;
+        }
+        let first = settings.wallpaper_selected.saturating_sub(2);
+        for (row, (index, name)) in settings
+            .wallpapers
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(5)
+            .enumerate()
+        {
+            let y = 220usize.saturating_add(row.saturating_mul(72));
+            if index == settings.wallpaper_selected {
+                self.highlight(y, 64);
+            }
+            let locked = settings.wallpaper_locked.get(index).copied().unwrap_or(true);
+            self.text(
+                96,
+                y.saturating_add(12),
+                &name.to_uppercase(),
+                4,
+                if locked { AMBER } else { WHITE },
+            );
+            if locked {
+                self.text(560, y.saturating_add(18), "LOCKED", 2, AMBER);
+            }
+            if index == settings.wallpaper_current {
+                self.text(560, y.saturating_add(18), "SAVED", 2, CYAN);
+            }
+        }
+        if let Some(image) = crate::wallpaper::thumbnail(settings.wallpaper_selected) {
+            self.thumbnail(
+                760,
+                230,
+                &image,
+                settings
+                    .wallpaper_locked
+                    .get(settings.wallpaper_selected)
+                    .copied()
+                    .unwrap_or(true),
+            );
         }
     }
 
@@ -235,6 +333,7 @@ pub fn buffer(settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffe
             Page::Categories => "SETTINGS",
             Page::Display => "DISPLAY",
             Page::Input => "INPUT",
+            Page::Wallpaper => "WALLPAPER",
         },
         6,
         WHITE,

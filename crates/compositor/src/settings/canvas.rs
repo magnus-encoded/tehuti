@@ -127,6 +127,47 @@ impl Canvas {
         }
     }
 
+    pub(super) fn thumbnail(&mut self, x: usize, y: usize, image: &image::RgbaImage, locked: bool) {
+        for row in
+            (y as f32 * self.scale.1) as usize..((y.saturating_add(135)) as f32 * self.scale.1) as usize
+        {
+            for column in
+                (x as f32 * self.scale.0) as usize..((x.saturating_add(240)) as f32 * self.scale.0) as usize
+            {
+                let source_x = ((column as f32 / self.scale.0 - x as f32) as u32).min(239);
+                let source_y = ((row as f32 / self.scale.1 - y as f32) as u32).min(134);
+                let pixel = image.get_pixel(source_x, source_y).0;
+                let [red, green, blue, alpha] = pixel;
+                let dim = if locked { 3 } else { 1 };
+                self.blend(
+                    column,
+                    row,
+                    [
+                        blue.checked_div(dim).unwrap_or_default(),
+                        green.checked_div(dim).unwrap_or_default(),
+                        red.checked_div(dim).unwrap_or_default(),
+                        alpha,
+                    ],
+                    1.0,
+                );
+            }
+        }
+    }
+
+    pub(super) fn wave(&mut self, x: usize, y: usize, hertz: f32) {
+        let wavelength = 2400.0 / hertz.clamp(1.0, 1000.0);
+        for column in 0..150 {
+            let offset = (column as f32 / wavelength * core::f32::consts::TAU).sin() * 10.0;
+            self.rectangle(
+                x.saturating_add(column),
+                (y as f32 + offset) as usize,
+                2,
+                2,
+                super::CYAN,
+            );
+        }
+    }
+
     pub(super) fn countdown(&mut self, remaining: Duration) {
         let fraction = remaining.as_secs_f32() / 15.0;
         let pixel_width = 1.0 / self.scale.0.min(self.scale.1);
