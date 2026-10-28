@@ -788,7 +788,7 @@ impl Compositor {
                     && visible.len() > 1
                     && !focused
                 {
-                    (1.0 - strength).mul_add(-progress, 1.0)
+                    dimmed_brightness(strength, progress)
                 } else {
                     1.0
                 };
@@ -2343,6 +2343,25 @@ impl Compositor {
             self.decoration_state = Some(XdgDecorationState::new::<Self>(&self.display));
         }
     }
+}
+
+#[cfg(not(target_arch = "x86"))]
+#[expect(
+    clippy::float_arithmetic,
+    reason = "linear colour fade over validated duration"
+)]
+fn dimmed_brightness(strength: f32, progress: f32) -> f32 {
+    (1.0 - strength).mul_add(-progress, 1.0)
+}
+
+#[cfg(target_arch = "x86")]
+#[expect(
+    clippy::float_arithmetic,
+    clippy::suboptimal_flops,
+    reason = "32-bit x86 CPUs without FMA otherwise call software fmaf"
+)]
+fn dimmed_brightness(strength: f32, progress: f32) -> f32 {
+    1.0 - (1.0 - strength) * progress
 }
 
 fn configure_server_side(toplevel: &ToplevelSurface) {
