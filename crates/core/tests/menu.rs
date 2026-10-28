@@ -8,6 +8,15 @@ mod menu {
         handle(menu, &Event::Button { name, state })
     }
 
+    #[test]
+    fn nintendo_menu_confirms_on_east_and_cancels_on_south() {
+        let mut menu = Some(Menu::new(tehuti_core::pad::PadFamily::Nintendo));
+        assert_eq!(button(&mut menu, ButtonName::East, ButtonState::Pressed), None);
+        assert!(menu.as_ref().unwrap().text().contains("A CONFIRM / B CANCEL"));
+        assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Pressed), None);
+        assert!(menu.is_none());
+    }
+
     proptest! {
         #[test]
         fn session_commands_require_two_distinct_presses(row in 0usize..5, repeats in 0usize..20) {

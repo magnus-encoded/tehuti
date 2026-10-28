@@ -3,7 +3,11 @@ use proptest::prelude::*;
 
 #[test]
 fn every_pad_family_confirms_and_closes_the_keyboard() {
-    for family in [crate::pad::PadFamily::Letters, crate::pad::PadFamily::Symbols] {
+    for family in [
+        crate::pad::PadFamily::Letters,
+        crate::pad::PadFamily::Symbols,
+        crate::pad::PadFamily::Nintendo,
+    ] {
         let mut keyboard = Keyboard::default();
         keyboard.set_pad_family(family);
         keyboard.open();
@@ -898,7 +902,11 @@ fn synced_replacement_emits_an_edit_even_when_text_is_unchanged() {
 
 #[test]
 fn synced_selection_survives_opening_and_uses_each_pad_family() {
-    for family in [crate::pad::PadFamily::Letters, crate::pad::PadFamily::Symbols] {
+    for family in [
+        crate::pad::PadFamily::Letters,
+        crate::pad::PadFamily::Symbols,
+        crate::pad::PadFamily::Nintendo,
+    ] {
         let mut keyboard = Keyboard::default();
         keyboard.set_pad_family(family);
         keyboard.set_surrounding(Some(("hello".into(), 5, 0)));
