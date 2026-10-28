@@ -216,6 +216,9 @@ for line in sys.stdin:
             | Effect::SettingsController(_)
             | Effect::PersistController(_)
             | Effect::SettingsMicrophone(_)
+            | Effect::WallpaperPreview(_)
+            | Effect::WallpaperSave(_)
+            | Effect::UnlockWallpapers
             | Effect::ListMicrophones
             | Effect::MovePointer { .. }
             | Effect::Scroll { .. }
