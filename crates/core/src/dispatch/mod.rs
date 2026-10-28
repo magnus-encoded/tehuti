@@ -975,11 +975,11 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
             }
             return true;
         }
-        let (mode, _) = state.core.keyboard_config();
+        let (mode, opening) = state.core.keyboard_config();
         if !state.keyboard.is_open()
             && (state.text_field || state.keyboard.terminal() || mode == tehuti_protocol::OnTextField::Open)
             && mode != tehuti_protocol::OnTextField::Off
-            && *name == ButtonName::North
+            && *name == opening
             && *button == ButtonState::Pressed
         {
             state.opening_button = Some(*name);

@@ -1265,7 +1265,7 @@ fn start_first_escape_chord_quits_without_sending_while_open() {
 
 proptest! {
     #[test]
-    fn field_policy_requires_y_even_with_a_configured_button(
+    fn field_policy_uses_the_configured_button(
         mode in prop::sample::select(vec!["open", "button", "off"]),
         opening in prop::sample::select(vec![("Y", ButtonName::North), ("west", ButtonName::West)]),
         mouse in prop::bool::ANY,
@@ -1285,7 +1285,7 @@ proptest! {
         prop_assert!(!state.keyboard().is_open());
         state = tap_button(&mut world, state, ButtonName::East);
         for event in events {
-            let opens = mode != "off" && matches!(event, Event::Button { name, state: ButtonState::Pressed } if name == ButtonName::North);
+            let opens = mode != "off" && matches!(event, Event::Button { name, state: ButtonState::Pressed } if name == opening.1);
             state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
             if state.keyboard().is_open() {
                 prop_assert!(opens);
@@ -3372,4 +3372,27 @@ proptest! {
             Effect::Apply(_) | Effect::QueryPlugin(Event::Speech { .. }) | Effect::DispatchPlugin { event: Event::Speech { .. }, .. } | Effect::SpeechRouted { .. }
         )), "finished speech never routes as a command");
     }
+}
+
+#[test]
+fn configured_button_opens_the_keyboard() {
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'editor'\n[buttons]\n[keyboard]\non_text_field = 'button'\nbutton = 'west'",
+    )
+    .unwrap();
+    let mut world = World::default();
+    let state = configured(vec![context], "editor");
+    let state = world.run(
+        state,
+        Input::TextField {
+            active: true,
+            changed: true,
+            kind: crate::keyboard::FieldKind::Normal,
+        },
+    );
+    let state = tap_button(&mut world, state, ButtonName::West);
+    assert!(
+        state.keyboard().is_open(),
+        "the configured opening button opens the keyboard"
+    );
 }
