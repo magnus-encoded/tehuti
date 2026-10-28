@@ -6,6 +6,17 @@ mod context {
     use tehuti_protocol::{KeyName, parse_context};
 
     #[test]
+    fn favourites_preserve_order_and_default_to_empty() {
+        let plain = parse_context("app_id = '*'\n[buttons]").unwrap();
+        assert_eq!(plain.favourites(), Vec::<String>::new());
+        let configured =
+            parse_context("app_id = '*'\nfavourites = ['reader.desktop', 'browser.desktop']\n[buttons]")
+                .unwrap();
+        assert_eq!(configured.favourites(), ["reader.desktop", "browser.desktop"]);
+        assert!(parse_context("app_id = '*'\nfavorite = ['reader.desktop']\n[buttons]").is_err());
+    }
+
+    #[test]
     fn passthrough_ptt_rejects_unsafe_or_invalid_chords() {
         for buttons in [
             "[]",

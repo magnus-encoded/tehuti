@@ -3855,3 +3855,124 @@ fn choice_list_navigation_resumes_after_releasing_a_button_under_the_system_menu
         Some(Choice::Candidate(2))
     );
 }
+
+#[test]
+fn favourites_navigate_and_launch_with_each_pad_confirm_role() {
+    for family in [
+        crate::pad::PadFamily::Letters,
+        crate::pad::PadFamily::Symbols,
+        crate::pad::PadFamily::Nintendo,
+    ] {
+        let context = tehuti_protocol::parse_context("app_id = '*'\nfavourites = ['browser.desktop', 'missing.desktop', 'reader.desktop', 'browser.desktop']\n[buttons]\n[speech]\nRead = { launch = 'reader.desktop' }\nBrowse = { launch = 'browser.desktop' }").unwrap();
+        let mut state = State::new(crate::State::with_contexts(vec![context]));
+        state.core_mut().set_pad_family(family);
+        let mut world = World::default();
+        state = tap_button(&mut world, state, ButtonName::DpadRight);
+        state = tap_button(&mut world, state, ButtonName::DpadDown);
+        world.trace.clear();
+        state = tap_button(&mut world, state, family.button(crate::pad::Role::Confirm));
+        assert_eq!(
+            world
+                .trace
+                .iter()
+                .filter_map(|effect| {
+                    if let Effect::Apply(Action::Launch { desktop_entry }) = effect {
+                        Some(desktop_entry.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>(),
+            ["reader.desktop"]
+        );
+        state = tap_button(&mut world, state, ButtonName::DpadLeft);
+        state = tap_button(&mut world, state, ButtonName::DpadUp);
+        world.trace.clear();
+        let _state = tap_button(&mut world, state, family.button(crate::pad::Role::Confirm));
+        assert!(world.trace.contains(&Effect::Apply(Action::Launch {
+            desktop_entry: Text::new("browser.desktop".into()).unwrap()
+        })));
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::Apply(Action::Key { .. })))
+        );
+    }
+}
+
+#[test]
+fn favourites_yield_to_overlays_and_focused_applications_and_follow_reload() {
+    let context = tehuti_protocol::parse_context("app_id = '*'\nfavourites = ['reader.desktop', 'browser.desktop']\n[buttons]\n[speech]\nRead = { launch = 'reader.desktop' }\nBrowse = { launch = 'browser.desktop' }").unwrap();
+    let mut world = World::default();
+    let mut state = State::new(crate::State::with_contexts(vec![context]));
+    assert_eq!(state.desktop_focus(), Some(0));
+    state = world.run(state, speech_event("pop the hood"));
+    assert_eq!(state.desktop_focus(), None);
+    world.trace.clear();
+    state = tap_button(&mut world, state, ButtonName::South);
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(Action::Launch { .. })))
+    );
+    state = tap_button(&mut world, state, ButtonName::East);
+    state = tap_button(&mut world, state, ButtonName::East);
+    assert_eq!(state.desktop_focus(), Some(0));
+    state = world.event(state, focus("editor"));
+    assert_eq!(state.desktop_focus(), None);
+    world.trace.clear();
+    state = tap_button(&mut world, state, ButtonName::South);
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(Action::Launch { .. })))
+    );
+    state = world.event(
+        state,
+        Event::Focus {
+            app_id: None,
+            title: String::new(),
+        },
+    );
+    state = tap_button(&mut world, state, ButtonName::DpadRight);
+    assert_eq!(state.desktop_focus(), Some(1));
+    let replacement = tehuti_protocol::parse_context("app_id = '*'\nfavourites = ['other.desktop']\n[buttons]\n[speech]\nOther = { launch = 'other.desktop' }").unwrap();
+    state.core_mut().replace_contexts(vec![replacement]);
+    assert_eq!(state.desktop_focus(), Some(0));
+    world.trace.clear();
+    state = tap_button(&mut world, state, ButtonName::South);
+    assert!(world.trace.contains(&Effect::Apply(Action::Launch {
+        desktop_entry: Text::new("other.desktop".into()).unwrap()
+    })));
+    state.core_mut().replace_contexts(Vec::new());
+    assert_eq!(state.desktop_focus(), None);
+}
+
+#[test]
+fn favourites_do_not_launch_from_back_or_push_to_talk() {
+    for setting in ["", "push_to_talk = ['east']"] {
+        let context = tehuti_protocol::parse_context(&format!("app_id = '*'\nfavourites = ['reader.desktop']\n{setting}\n[buttons]\n[speech]\nRead = {{ launch = 'reader.desktop' }}")).unwrap();
+        let mut state = State::new(crate::State::with_contexts(vec![context]));
+        state.core_mut().set_pad_family(crate::pad::PadFamily::Nintendo);
+        let mut world = World::default();
+        state = tap_button(
+            &mut world,
+            state,
+            if setting.is_empty() {
+                ButtonName::South
+            } else {
+                ButtonName::East
+            },
+        );
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::Apply(Action::Launch { .. })))
+        );
+        assert_eq!(state.desktop_focus(), Some(0));
+    }
+}

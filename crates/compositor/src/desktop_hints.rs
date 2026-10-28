@@ -18,7 +18,17 @@ pub fn launch_phrases(contexts: &[tehuti_protocol::Context]) -> Vec<(String, Str
     contexts
         .iter()
         .find(|context| context.app_id() == "*")
-        .map(|context| context.launch_phrases().to_vec())
+        .map(|context| {
+            let mut phrases = context.launch_phrases().to_vec();
+            phrases.sort_by_key(|(desktop_entry, _)| {
+                context
+                    .favourites()
+                    .iter()
+                    .position(|entry| entry == desktop_entry)
+                    .unwrap_or(usize::MAX)
+            });
+            phrases
+        })
         .unwrap_or_default()
 }
 
