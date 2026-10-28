@@ -391,6 +391,7 @@ pub struct Edit {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Keyboard {
+    pad_family: crate::pad::PadFamily,
     open: bool,
     edits: Vec<Edit>,
     mode: DraftMode,
@@ -411,6 +412,10 @@ pub struct Keyboard {
 }
 
 impl Keyboard {
+    pub const fn set_pad_family(&mut self, family: crate::pad::PadFamily) {
+        self.pad_family = family;
+    }
+
     #[must_use]
     pub const fn is_open(&self) -> bool {
         self.open
@@ -423,6 +428,7 @@ impl Keyboard {
         }
         *self = Self {
             open: true,
+            pad_family: self.pad_family,
             mode: self.mode.clone(),
             word: self.word.clone(),
             field_kind: self.field_kind,
@@ -725,16 +731,28 @@ impl Keyboard {
             self.repeat = Some((direction, REPEAT_DELAY));
             return Response::Consumed;
         }
+        if name == self.pad_family.button(crate::pad::Role::Confirm) {
+            return self.activate();
+        }
+        if name == self.pad_family.button(crate::pad::Role::Back) {
+            self.close();
+            return Response::Consumed;
+        }
+        self.edit_button(name);
+        Response::Consumed
+    }
+
+    fn edit_button(&mut self, name: ButtonName) {
         match name {
-            ButtonName::South => return self.activate(),
             ButtonName::West => self.backspace(),
             ButtonName::North => self.type_text(" "),
-            ButtonName::East => self.close(),
             ButtonName::Start => self.send_on_start_release = true,
             ButtonName::LeftBumper => self.move_caret(false),
             ButtonName::RightBumper => self.move_caret(true),
             ButtonName::LeftStick => self.toggle_symbols(),
-            ButtonName::RightStick
+            ButtonName::South
+            | ButtonName::East
+            | ButtonName::RightStick
             | ButtonName::Select
             | ButtonName::Record
             | ButtonName::Guide
@@ -743,42 +761,70 @@ impl Keyboard {
             | ButtonName::DpadLeft
             | ButtonName::DpadRight => {}
         }
-        Response::Consumed
     }
 
     fn activate(&mut self) -> Response {
         match self.highlighted_key() {
-            Some(Key::Char(character)) if self.latched != Modifiers::default() => {
-                return self.chord(ChordKey::Char(character));
+            Some(Key::Char(character)) => self.activate_character(character),
+            Some(Key::Tap(key)) => self.chord(ChordKey::Named(key)),
+            Some(Key::Send) => self.send(),
+            Some(Key::Modifier(modifier)) => {
+                self.toggle_modifier(modifier);
+                Response::Consumed
             }
-            Some(Key::Char(character)) => {
-                let character = if self.shifted() {
-                    character.to_uppercase().next().unwrap_or(character)
-                } else {
-                    character
-                };
-                self.type_text(character.encode_utf8(&mut [0; 4]));
-            }
-            Some(Key::Text(text)) => self.type_text(text),
-            Some(Key::Tap(key)) => return self.chord(ChordKey::Named(key)),
-            Some(Key::Modifier(Modifier::Control)) => self.latched.control = !self.latched.control,
-            Some(Key::Modifier(Modifier::Alt)) => self.latched.alt = !self.latched.alt,
             Some(Key::Shift) => {
-                self.layer = if self.shifted() {
-                    Layer::Letters
-                } else {
-                    Layer::Capitals
-                };
+                self.toggle_shift();
+                Response::Consumed
             }
-            Some(Key::Symbols) => self.toggle_symbols(),
-            Some(Key::Backspace) => self.backspace(),
-            Some(Key::Send) => return self.send(),
-            Some(Key::CaretLeft) => self.move_caret(false),
-            Some(Key::CaretRight) => self.move_caret(true),
-            Some(Key::Space) => self.type_text(" "),
-            None => {}
+            Some(Key::Symbols) => {
+                self.toggle_symbols();
+                Response::Consumed
+            }
+            Some(key) => {
+                self.activate_edit_key(key);
+                Response::Consumed
+            }
+            None => Response::Consumed,
         }
+    }
+
+    fn activate_character(&mut self, character: char) -> Response {
+        if self.latched != Modifiers::default() {
+            return self.chord(ChordKey::Char(character));
+        }
+        let character = if self.shifted() {
+            character.to_uppercase().next().unwrap_or(character)
+        } else {
+            character
+        };
+        self.type_text(character.encode_utf8(&mut [0; 4]));
         Response::Consumed
+    }
+
+    const fn toggle_modifier(&mut self, modifier: Modifier) {
+        match modifier {
+            Modifier::Control => self.latched.control = !self.latched.control,
+            Modifier::Alt => self.latched.alt = !self.latched.alt,
+        }
+    }
+
+    const fn toggle_shift(&mut self) {
+        self.layer = if self.shifted() {
+            Layer::Letters
+        } else {
+            Layer::Capitals
+        };
+    }
+
+    fn activate_edit_key(&mut self, key: Key) {
+        match key {
+            Key::Text(text) => self.type_text(text),
+            Key::Backspace => self.backspace(),
+            Key::CaretLeft => self.move_caret(false),
+            Key::CaretRight => self.move_caret(true),
+            Key::Space => self.type_text(" "),
+            Key::Char(_) | Key::Tap(_) | Key::Modifier(_) | Key::Shift | Key::Symbols | Key::Send => {}
+        }
     }
 
     /// Sends Enter with the draft, or another chord immediately, and releases modifiers.

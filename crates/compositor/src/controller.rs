@@ -32,11 +32,11 @@ pub fn open_grabbed(
         })
         .filter_map(|(path, mut device)| match grab_nonblocking(&mut device) {
             Ok(()) => {
-                let translator = DpadHat::for_vendor(device.input_id().vendor());
+                let translator = DpadHat::for_device(device.input_id().vendor(), device.input_id().product());
                 tracing::debug!(
                     name = device.name().unwrap_or("unnamed"),
                     vendor = device.input_id().vendor(),
-                    face_layout = ?translator.face_layout,
+                    identity = ?translator.identity,
                     "controller face layout selected"
                 );
                 match Device::open(&path) {
@@ -273,8 +273,9 @@ impl EvdevPad {
     }
 
     #[must_use]
-    pub fn vendor(&self) -> u16 {
-        self.handles.events.input_id().vendor()
+    pub fn identity(&self) -> tehuti_core::pad::Identity {
+        let input_id = self.handles.events.input_id();
+        tehuti_core::pad::Identity::for_device(input_id.vendor(), input_id.product())
     }
 }
 
@@ -387,35 +388,29 @@ fn drain_device(device: &mut Device, hat: &mut DpadHat) -> io::Result<Vec<Event>
 /// (`ABS_HAT0X`, `ABS_HAT0Y`) into d-pad button events.
 #[derive(Debug, Default)]
 pub struct DpadHat {
-    face_layout: FaceLayout,
+    identity: tehuti_core::pad::Identity,
     horizontal: i32,
     vertical: i32,
 }
 
-#[derive(Debug, Default)]
-enum FaceLayout {
-    #[default]
-    Positional,
-    Letters,
-}
-
 impl DpadHat {
-    /// Selects the face layout for a controller's USB vendor ID.
     #[must_use]
     pub fn for_vendor(vendor: u16) -> Self {
+        Self::for_device(vendor, 0)
+    }
+
+    #[must_use]
+    pub fn for_device(vendor: u16, product: u16) -> Self {
         Self {
-            face_layout: match vendor {
-                0x045e => FaceLayout::Letters,
-                _ => FaceLayout::Positional,
-            },
+            identity: tehuti_core::pad::Identity::for_device(vendor, product),
             ..Self::default()
         }
     }
 
     const fn face_code(&self, code: KeyCode) -> KeyCode {
-        match (&self.face_layout, code) {
-            (FaceLayout::Letters, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
-            (FaceLayout::Letters, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+        match (self.identity.swap_north_west, code) {
+            (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
+            (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
             _ => code,
         }
     }

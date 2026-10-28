@@ -1,6 +1,25 @@
 use super::*;
 use proptest::prelude::*;
 
+#[test]
+fn every_pad_family_confirms_and_closes_the_keyboard() {
+    for family in [crate::pad::PadFamily::Letters, crate::pad::PadFamily::Symbols] {
+        let mut keyboard = Keyboard::default();
+        keyboard.set_pad_family(family);
+        keyboard.open();
+        assert_eq!(
+            tap(&mut keyboard, family.button(crate::pad::Role::Confirm)),
+            Response::Consumed
+        );
+        assert_eq!(keyboard.draft(), "q");
+        assert_eq!(
+            tap(&mut keyboard, family.button(crate::pad::Role::Back)),
+            Response::Consumed
+        );
+        assert!(!keyboard.is_open());
+    }
+}
+
 fn opened() -> Keyboard {
     let mut keyboard = Keyboard::default();
     keyboard.open();
@@ -20,6 +39,14 @@ fn press(keyboard: &mut Keyboard, name: ButtonName) {
 fn with_draft(text: &str) -> Keyboard {
     let mut keyboard = opened();
     keyboard.dictate(text);
+    keyboard
+}
+
+fn with_picked_word(text: &str, words_back: usize) -> Keyboard {
+    let mut keyboard = with_draft(text);
+    for _ in 0..words_back {
+        flick(&mut keyboard, -1000);
+    }
     keyboard
 }
 
@@ -256,8 +283,7 @@ fn shoulders_pass_when_they_drive_columns() {
 
 #[test]
 fn left_stick_picks_whole_words_from_the_caret() {
-    let mut keyboard = with_draft("hello big world");
-    flick(&mut keyboard, -1000);
+    let mut keyboard = with_picked_word("hello big world", 1);
     assert_eq!(keyboard.picked_word(), Some(10..15));
     flick(&mut keyboard, -1000);
     assert_eq!(keyboard.picked_word(), Some(6..9));
@@ -276,9 +302,7 @@ fn a_held_stick_picks_only_one_word() {
 
 #[test]
 fn dictation_overwrites_the_picked_word() {
-    let mut keyboard = with_draft("hello big world");
-    flick(&mut keyboard, -1000);
-    flick(&mut keyboard, -1000);
+    let mut keyboard = with_picked_word("hello big world", 2);
     keyboard.dictate("small");
     assert_eq!(keyboard.draft(), "hello small world");
     assert_eq!(keyboard.picked_word(), None);
@@ -286,17 +310,16 @@ fn dictation_overwrites_the_picked_word() {
 
 #[test]
 fn typing_a_key_overwrites_the_picked_word() {
-    let mut keyboard = with_draft("hello big world");
-    flick(&mut keyboard, -1000);
-    press(&mut keyboard, ButtonName::South);
+    let mut keyboard = with_picked_word("hello big world", 1);
+    assert_eq!(tap(&mut keyboard, ButtonName::South), Response::Consumed);
     assert_eq!(keyboard.draft(), "hello big q");
+    assert_eq!(keyboard.picked_word(), None);
+    assert_eq!(keyboard.caret(), 11);
 }
 
 #[test]
 fn x_deletes_the_picked_word() {
-    let mut keyboard = with_draft("hello big world");
-    flick(&mut keyboard, -1000);
-    flick(&mut keyboard, -1000);
+    let mut keyboard = with_picked_word("hello big world", 2);
     press(&mut keyboard, ButtonName::West);
     assert_eq!(keyboard.draft(), "hello  world");
     assert_eq!(keyboard.caret(), 6);
@@ -304,9 +327,7 @@ fn x_deletes_the_picked_word() {
 
 #[test]
 fn shoulders_drop_to_a_character_caret_at_the_word_edge() {
-    let mut keyboard = with_draft("hello big world");
-    flick(&mut keyboard, -1000);
-    flick(&mut keyboard, -1000);
+    let mut keyboard = with_picked_word("hello big world", 2);
     press(&mut keyboard, ButtonName::LeftBumper);
     assert_eq!((keyboard.picked_word(), keyboard.caret()), (None, 6));
     flick(&mut keyboard, 1000);
@@ -699,6 +720,29 @@ fn immediate_terminal_keys_leave_the_draft_unchanged() {
     }
 }
 
+proptest! {
+    #[test]
+    fn modifier_queries_follow_latches_and_the_next_chord(
+        modifiers in prop::collection::vec(prop::sample::select(vec![Modifier::Control, Modifier::Alt]), 0..20),
+    ) {
+        let mut keyboard = terminal();
+        let mut control = false;
+        let mut alt = false;
+        for modifier in modifiers {
+            let _response = strip_key(&mut keyboard, Key::Modifier(modifier));
+            match modifier {
+                Modifier::Control => control = !control,
+                Modifier::Alt => alt = !alt,
+            }
+            prop_assert_eq!(keyboard.is_latched(Modifier::Control), control);
+            prop_assert_eq!(keyboard.is_latched(Modifier::Alt), alt);
+        }
+        let _response = strip_key(&mut keyboard, Key::Tap(KeyName::Left));
+        prop_assert!(!keyboard.is_latched(Modifier::Control));
+        prop_assert!(!keyboard.is_latched(Modifier::Alt));
+    }
+}
+
 #[test]
 fn ctrl_latches_for_one_letter_then_releases() {
     let mut keyboard = terminal();
@@ -811,6 +855,30 @@ proptest! {
 }
 
 #[test]
+fn alt_latch_and_caret_keys_preserve_their_directions() {
+    let mut keyboard = terminal();
+    assert_eq!(
+        strip_key(&mut keyboard, Key::Modifier(Modifier::Alt)),
+        Response::Consumed
+    );
+    assert!(keyboard.is_latched(Modifier::Alt));
+    assert_eq!(
+        strip_key(&mut keyboard, Key::Modifier(Modifier::Alt)),
+        Response::Consumed
+    );
+    assert!(!keyboard.is_latched(Modifier::Alt));
+    keyboard.set_terminal(false);
+    keyboard.dictate("abc");
+    go_to(&mut keyboard, 2, 0);
+    assert_eq!(tap(&mut keyboard, ButtonName::South), Response::Consumed);
+    assert_eq!(keyboard.caret(), 2);
+    let right = keyboard.rows()[2].len() - 1;
+    go_to(&mut keyboard, 2, right);
+    assert_eq!(tap(&mut keyboard, ButtonName::South), Response::Consumed);
+    assert_eq!(keyboard.caret(), 3);
+}
+
+#[test]
 fn synced_replacement_emits_an_edit_even_when_text_is_unchanged() {
     let mut keyboard = opened();
     keyboard.set_surrounding(Some(("qéq".into(), 1, 0)));
@@ -826,4 +894,37 @@ fn synced_replacement_emits_an_edit_even_when_text_is_unchanged() {
         }]
     );
     assert_eq!(keyboard.take_edits(), vec![]);
+}
+
+#[test]
+fn synced_selection_survives_opening_and_uses_each_pad_family() {
+    for family in [crate::pad::PadFamily::Letters, crate::pad::PadFamily::Symbols] {
+        let mut keyboard = Keyboard::default();
+        keyboard.set_pad_family(family);
+        keyboard.set_surrounding(Some(("hello".into(), 5, 0)));
+        keyboard.open();
+        assert_eq!(keyboard.mode_label(), "synced");
+        assert_eq!(keyboard.picked_word(), Some(0..5));
+        assert_eq!(
+            tap(&mut keyboard, family.button(crate::pad::Role::Confirm)),
+            Response::Consumed
+        );
+        assert_eq!(keyboard.draft(), "q");
+        assert_eq!(
+            keyboard.take_edits(),
+            vec![Edit {
+                before: 0,
+                after: 0,
+                text: "q".into(),
+                caret: 1,
+            }]
+        );
+        assert_eq!(
+            tap(&mut keyboard, family.button(crate::pad::Role::Back)),
+            Response::Consumed
+        );
+        keyboard.open();
+        assert_eq!(keyboard.mode_label(), "synced");
+        assert_eq!(keyboard.draft(), "q");
+    }
 }

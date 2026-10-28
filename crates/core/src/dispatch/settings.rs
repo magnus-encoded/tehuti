@@ -4,6 +4,7 @@ use super::{
     Effect,
     input_settings::{ControllerChoice, InputRow, InputSettings, cycle},
 };
+use crate::pad::{PadFamily, Role};
 use core::time::Duration;
 use tehuti_protocol::{ButtonName, ButtonState, Event};
 
@@ -41,6 +42,7 @@ impl Category {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
+    pub(super) pad_family: PadFamily,
     pub open: bool,
     pub page: Page,
     /// The highlighted category on the categories page.
@@ -59,25 +61,27 @@ pub struct Settings {
     previous_controller: Option<ControllerChoice>,
     status: Status,
     cancel_preview: bool,
-    south: Option<ButtonState>,
+    confirm: Option<ButtonState>,
     held: Vec<ButtonName>,
 }
 
 impl Settings {
     #[must_use]
-    pub const fn button_hint(&self) -> &'static str {
+    pub fn button_hint(&self) -> String {
+        let confirm = self.pad_family.label(self.pad_family.button(Role::Confirm));
+        let back = self.pad_family.label(self.pad_family.button(Role::Back));
         if self.remaining.is_some() {
             if self.previous_controller.is_some() {
-                "A ON THE NEW PAD: KEEP IT"
+                format!("{confirm} ON THE NEW PAD: KEEP IT")
             } else {
-                "A: KEEP THIS MODE"
+                format!("{confirm}: KEEP THIS MODE")
             }
         } else {
             match self.page {
-                Page::Categories => "D-PAD: MOVE   A: OPEN   B: CLOSE",
-                Page::Display => "D-PAD: MOVE   A: APPLY   B: BACK",
-                Page::Input => "UP / DOWN: MOVE   LEFT / RIGHT: CHANGE   B: BACK",
-                Page::Wallpaper => "D-PAD: PREVIEW   A: SAVE   B: CANCEL",
+                Page::Categories => format!("D-PAD: MOVE   {confirm}: OPEN   {back}: CLOSE"),
+                Page::Display => format!("D-PAD: MOVE   {confirm}: APPLY   {back}: BACK"),
+                Page::Input => format!("UP / DOWN: MOVE   LEFT / RIGHT: CHANGE   {back}: BACK"),
+                Page::Wallpaper => format!("D-PAD: PREVIEW   {confirm}: SAVE   {back}: CANCEL"),
             }
         }
     }
@@ -165,12 +169,16 @@ impl Settings {
         self.page = Page::Categories;
     }
 
-    pub(super) fn close(&mut self, effects: &mut Vec<Effect>) {
+    fn end_preview(&mut self, effects: &mut Vec<Effect>) {
         if self.status == Status::Switching {
             self.cancel_preview = true;
         } else {
             self.revert(effects);
         }
+    }
+
+    pub(super) fn close(&mut self, effects: &mut Vec<Effect>) {
+        self.end_preview(effects);
         self.open = false;
         if self.page == Page::Wallpaper && self.wallpaper_selected != self.wallpaper_current {
             self.wallpaper_selected = self.wallpaper_current;
@@ -196,58 +204,59 @@ impl Settings {
             self.toggle(effects);
             return true;
         }
-        let stale_south = if let Event::Button {
-            name: ButtonName::South,
-            state,
-        } = event
-        {
-            let previous = self.south.replace(*state);
-            previous == Some(ButtonState::Pressed) && *state == ButtonState::Pressed
-        } else {
-            false
-        };
         let Event::Button { name, state } = event else {
             return false;
         };
+        self.button_event(*name, *state, effects)
+    }
+
+    fn button_event(&mut self, name: ButtonName, state: ButtonState, effects: &mut Vec<Effect>) -> bool {
         if matches!(name, ButtonName::Guide | ButtonName::Start | ButtonName::Record) {
             return false;
         }
-        let was_held = self.held.contains(name);
-        if *state == ButtonState::Released {
-            self.held.retain(|held| held != name);
-        } else if self.open && !was_held {
-            self.held.push(*name);
-        }
+        let (was_held, stale_confirm) = self.track_button(name, state);
         if !self.open {
             return was_held;
         }
-        if *state == ButtonState::Released || stale_south {
+        if state == ButtonState::Released || stale_confirm {
             return true;
         }
         if self.status == Status::Switching {
-            if *name == ButtonName::East {
+            if name == self.pad_family.button(Role::Back) {
                 self.cancel_preview = true;
                 self.open = false;
                 self.page = Page::Categories;
             }
             return true;
         }
-        self.button(*name, effects);
+        self.button(name, effects);
         true
     }
 
-    fn toggle(&mut self, effects: &mut Vec<Effect>) {
-        if self.open && self.page == Page::Wallpaper && self.wallpaper_selected != self.wallpaper_current {
-            self.wallpaper_selected = self.wallpaper_current;
-            effects.push(Effect::WallpaperPreview(self.wallpaper_current));
-        }
-        if self.status == Status::Switching {
-            self.cancel_preview = true;
+    fn track_button(&mut self, name: ButtonName, state: ButtonState) -> (bool, bool) {
+        let stale_confirm = if name == self.pad_family.button(Role::Confirm) {
+            let previous = self.confirm.replace(state);
+            previous == Some(ButtonState::Pressed) && state == ButtonState::Pressed
         } else {
-            self.revert(effects);
+            false
+        };
+        let was_held = self.held.contains(&name);
+        if state == ButtonState::Released {
+            self.held.retain(|held| *held != name);
+        } else if self.open && !was_held {
+            self.held.push(name);
         }
-        self.open = !self.open;
-        self.page = Page::Categories;
+        (was_held, stale_confirm)
+    }
+
+    fn toggle(&mut self, effects: &mut Vec<Effect>) {
+        if self.open {
+            self.close(effects);
+        } else {
+            self.end_preview(effects);
+            self.open = true;
+            self.page = Page::Categories;
+        }
     }
 
     fn button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
@@ -261,7 +270,7 @@ impl Settings {
 
     fn categories_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
         match name {
-            ButtonName::East => self.close(effects),
+            name if name == self.pad_family.button(Role::Back) => self.close(effects),
             ButtonName::DpadUp | ButtonName::DpadLeft => {
                 self.category = Category::ALL
                     .get(self.category_index().saturating_sub(1))
@@ -274,7 +283,7 @@ impl Settings {
                     .copied()
                     .unwrap_or(Category::Wallpaper);
             }
-            ButtonName::South => match self.category {
+            name if name == self.pad_family.button(Role::Confirm) => match self.category {
                 Category::Display => {
                     self.page = Page::Display;
                     self.selected = self.current;
@@ -289,7 +298,9 @@ impl Settings {
                     self.wallpaper_selected = self.wallpaper_current;
                 }
             },
-            ButtonName::North
+            ButtonName::South
+            | ButtonName::East
+            | ButtonName::North
             | ButtonName::West
             | ButtonName::LeftBumper
             | ButtonName::RightBumper
@@ -324,8 +335,8 @@ impl Settings {
 
     fn wallpaper_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
         match name {
-            ButtonName::East => self.back(effects),
-            ButtonName::South if !self.wallpapers.is_empty() => {
+            name if name == self.pad_family.button(Role::Back) => self.back(effects),
+            name if name == self.pad_family.button(Role::Confirm) && !self.wallpapers.is_empty() => {
                 effects.push(Effect::WallpaperSave(self.wallpaper_selected));
             }
             ButtonName::DpadUp | ButtonName::DpadLeft => {
@@ -346,6 +357,7 @@ impl Settings {
                 }
             }
             ButtonName::South
+            | ButtonName::East
             | ButtonName::North
             | ButtonName::West
             | ButtonName::LeftBumper
@@ -363,32 +375,11 @@ impl Settings {
 
     fn input_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
         if self.remaining.is_some() {
-            match name {
-                ButtonName::South => {
-                    self.remaining = None;
-                    self.previous_controller = None;
-                    effects.push(Effect::PersistController(self.input.controller.clone()));
-                }
-                ButtonName::East => self.back(effects),
-                ButtonName::North
-                | ButtonName::West
-                | ButtonName::LeftBumper
-                | ButtonName::RightBumper
-                | ButtonName::Select
-                | ButtonName::Record
-                | ButtonName::Start
-                | ButtonName::Guide
-                | ButtonName::LeftStick
-                | ButtonName::RightStick
-                | ButtonName::DpadUp
-                | ButtonName::DpadDown
-                | ButtonName::DpadLeft
-                | ButtonName::DpadRight => {}
-            }
+            self.confirm_controller(name, effects);
             return;
         }
         let forward = match name {
-            ButtonName::East => return self.back(effects),
+            name if name == self.pad_family.button(Role::Back) => return self.back(effects),
             ButtonName::DpadUp => {
                 self.input.row = InputRow::Controller;
                 return;
@@ -397,9 +388,12 @@ impl Settings {
                 self.input.row = InputRow::Microphone;
                 return;
             }
-            ButtonName::DpadRight | ButtonName::South => true,
+            name if name == self.pad_family.button(Role::Confirm) => true,
+            ButtonName::DpadRight => true,
             ButtonName::DpadLeft => false,
-            ButtonName::North
+            ButtonName::South
+            | ButtonName::East
+            | ButtonName::North
             | ButtonName::West
             | ButtonName::LeftBumper
             | ButtonName::RightBumper
@@ -410,6 +404,37 @@ impl Settings {
             | ButtonName::LeftStick
             | ButtonName::RightStick => return,
         };
+        self.change_input(forward, effects);
+    }
+
+    fn confirm_controller(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        match name {
+            name if name == self.pad_family.button(Role::Confirm) => {
+                self.remaining = None;
+                self.previous_controller = None;
+                effects.push(Effect::PersistController(self.input.controller.clone()));
+            }
+            name if name == self.pad_family.button(Role::Back) => self.back(effects),
+            ButtonName::South
+            | ButtonName::East
+            | ButtonName::North
+            | ButtonName::West
+            | ButtonName::LeftBumper
+            | ButtonName::RightBumper
+            | ButtonName::Select
+            | ButtonName::Record
+            | ButtonName::Start
+            | ButtonName::Guide
+            | ButtonName::LeftStick
+            | ButtonName::RightStick
+            | ButtonName::DpadUp
+            | ButtonName::DpadDown
+            | ButtonName::DpadLeft
+            | ButtonName::DpadRight => {}
+        }
+    }
+
+    fn change_input(&mut self, forward: bool, effects: &mut Vec<Effect>) {
         match self.input.row {
             InputRow::Controller => self.change_controller(forward, effects),
             InputRow::Microphone => {
@@ -424,7 +449,7 @@ impl Settings {
         }
     }
 
-    /// Auto keeps every pad, so it applies at once; one named pad must confirm with A within 15 s.
+    /// Auto keeps every pad, so it applies at once; one named pad must confirm within 15 s.
     fn change_controller(&mut self, forward: bool, effects: &mut Vec<Effect>) {
         let options = self.input.controller_options();
         let Some(next) = cycle(&options, &self.input.controller, forward) else {
@@ -443,7 +468,7 @@ impl Settings {
         }
     }
 
-    fn display_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+    fn scale_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) -> bool {
         if self.selected == self.modes.len() && self.remaining.is_none() {
             let scale = if name == ButtonName::DpadLeft {
                 self.scale.get().saturating_sub(1).max(1)
@@ -458,33 +483,31 @@ impl Settings {
                 self.scale = scale;
                 effects.push(Effect::SettingsScale(scale));
             }
-            if matches!(
-                name,
-                ButtonName::DpadLeft | ButtonName::DpadRight | ButtonName::South
-            ) {
-                return;
+            if matches!(name, ButtonName::DpadLeft | ButtonName::DpadRight)
+                || name == self.pad_family.button(Role::Confirm)
+            {
+                return true;
             }
         }
+        false
+    }
+
+    fn display_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        if self.scale_button(name, effects) {
+            return;
+        }
         match name {
-            ButtonName::East => self.back(effects),
-            ButtonName::South => {
-                if self.remaining.take().is_some() {
-                    self.previous = None;
-                    effects.push(Effect::PersistMode(self.current));
-                } else if self.selected != self.current && !self.modes.is_empty() {
-                    self.cancel_preview = false;
-                    self.previous = Some(self.current);
-                    self.status = Status::Switching;
-                    effects.push(Effect::SettingsMode(self.selected));
-                }
-            }
+            name if name == self.pad_family.button(Role::Back) => self.back(effects),
+            name if name == self.pad_family.button(Role::Confirm) => self.confirm_mode(effects),
             ButtonName::DpadUp | ButtonName::DpadLeft if self.remaining.is_none() => {
                 self.selected = self.selected.saturating_sub(1);
             }
             ButtonName::DpadDown | ButtonName::DpadRight if self.remaining.is_none() => {
                 self.selected = self.selected.saturating_add(1).min(self.modes.len());
             }
-            ButtonName::North
+            ButtonName::South
+            | ButtonName::East
+            | ButtonName::North
             | ButtonName::West
             | ButtonName::LeftBumper
             | ButtonName::RightBumper
@@ -500,6 +523,18 @@ impl Settings {
             | ButtonName::DpadRight => {}
         }
     }
+
+    fn confirm_mode(&mut self, effects: &mut Vec<Effect>) {
+        if self.remaining.take().is_some() {
+            self.previous = None;
+            effects.push(Effect::PersistMode(self.current));
+        } else if self.selected != self.current && !self.modes.is_empty() {
+            self.cancel_preview = false;
+            self.previous = Some(self.current);
+            self.status = Status::Switching;
+            effects.push(Effect::SettingsMode(self.selected));
+        }
+    }
 }
 
 fn is_open_phrase(text: &str) -> bool {
@@ -512,6 +547,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             open: false,
+            pad_family: PadFamily::default(),
             page: Page::Categories,
             category: Category::Display,
             input: InputSettings::default(),
@@ -528,7 +564,7 @@ impl Default for Settings {
             previous_controller: None,
             status: Status::Ready,
             cancel_preview: false,
-            south: None,
+            confirm: None,
             held: Vec::new(),
         }
     }

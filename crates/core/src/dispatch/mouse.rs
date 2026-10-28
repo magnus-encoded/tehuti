@@ -1,4 +1,5 @@
 use super::Effect;
+use crate::pad::{PadFamily, Role};
 use core::time::Duration;
 use tehuti_protocol::{ButtonName, ButtonState, Event};
 
@@ -19,6 +20,7 @@ pub struct Sticks {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct State {
+    pub(super) pad_family: PadFamily,
     active: bool,
     hold: Option<Duration>,
     toggled: bool,
@@ -28,6 +30,10 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) const fn active(&self) -> bool {
+        self.active
+    }
+
     pub(super) fn button(&mut self, event: &Event, effects: &mut Vec<Effect>) -> bool {
         let Event::Button { name, state } = event else {
             return false;
@@ -39,23 +45,12 @@ impl State {
         if !self.active || matches!(name, ButtonName::Record | ButtonName::Guide | ButtonName::Start) {
             return false;
         }
-        let click = match name {
-            ButtonName::South => Some((0, PointerButton::Left)),
-            ButtonName::East => Some((1, PointerButton::Right)),
-            ButtonName::North
-            | ButtonName::West
-            | ButtonName::LeftBumper
-            | ButtonName::RightBumper
-            | ButtonName::Select
-            | ButtonName::Record
-            | ButtonName::Start
-            | ButtonName::Guide
-            | ButtonName::LeftStick
-            | ButtonName::RightStick
-            | ButtonName::DpadUp
-            | ButtonName::DpadDown
-            | ButtonName::DpadLeft
-            | ButtonName::DpadRight => None,
+        let click = if *name == self.pad_family.button(Role::Confirm) {
+            Some((0, PointerButton::Left))
+        } else if *name == self.pad_family.button(Role::Back) {
+            Some((1, PointerButton::Right))
+        } else {
+            None
         };
         if let Some((index, button)) = click {
             let pressed = *state == ButtonState::Pressed;
@@ -98,17 +93,7 @@ impl State {
         left_stick_moves_pointer: bool,
         effects: &mut Vec<Effect>,
     ) -> bool {
-        let mut single_tap = false;
-        if let Some(hold) = &mut self.hold {
-            *hold = hold.saturating_add(elapsed);
-        }
-        if let Some(previous) = &mut self.previous_tap {
-            *previous = previous.saturating_add(elapsed);
-            if *previous > VIEW_DOUBLE_TAP_WINDOW {
-                self.previous_tap = None;
-                single_tap = !self.active;
-            }
-        }
+        let single_tap = self.tick_view(elapsed);
         let nanos = i64::try_from(elapsed.as_nanos().min(100_000_000)).unwrap_or(100_000_000);
         let motion = |axis: i16| {
             let axis = i64::from(axis).clamp(-1000, 1000);
@@ -135,6 +120,21 @@ impl State {
                 x: motion(scroll_x).saturating_div(4).saturating_mul(3),
                 y: motion(scroll_y).saturating_div(4).saturating_mul(3),
             });
+        }
+        single_tap
+    }
+
+    fn tick_view(&mut self, elapsed: Duration) -> bool {
+        let mut single_tap = false;
+        if let Some(hold) = &mut self.hold {
+            *hold = hold.saturating_add(elapsed);
+        }
+        if let Some(previous) = &mut self.previous_tap {
+            *previous = previous.saturating_add(elapsed);
+            if *previous > VIEW_DOUBLE_TAP_WINDOW {
+                self.previous_tap = None;
+                single_tap = !self.active;
+            }
         }
         single_tap
     }

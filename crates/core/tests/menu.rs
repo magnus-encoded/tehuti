@@ -30,7 +30,7 @@ mod menu {
         fn back_cancels_confirmation(row in 0usize..5, guide in any::<bool>()) {
             let mut menu = Some(Menu::default());
             for _ in 0..row {
-                let _command = button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed);
+                assert_eq!(button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed), None);
             }
             prop_assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Pressed), None);
             prop_assert_eq!(button(&mut menu, if guide { ButtonName::Guide } else { ButtonName::East }, ButtonState::Pressed), None);
@@ -39,11 +39,67 @@ mod menu {
     }
 
     #[test]
+    fn menu_text_marks_the_selected_command_and_wraps_forward() {
+        let mut menu = Some(Menu::default());
+        assert_eq!(
+            menu.as_ref().unwrap().text(),
+            "SYSTEM MENU\n> LOG OUT\n  RESTART TEHUTI\n  SWITCH TO PLASMA\n  REBOOT\n  SHUT DOWN\n  TASK MONITOR\n  SETTINGS\nB OR GUIDE CLOSE"
+        );
+        assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
+        assert!(menu.as_ref().unwrap().text().contains("\n> SETTINGS"));
+        assert_eq!(
+            button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed),
+            None
+        );
+        assert!(menu.as_ref().unwrap().text().contains("\n> LOG OUT"));
+    }
+
+    #[test]
+    fn command_keys_name_the_selected_session_action() {
+        for (command, key) in [
+            (Command::LogOut, "log_out"),
+            (Command::Restart, "restart"),
+            (Command::Plasma, "plasma"),
+            (Command::Reboot, "reboot"),
+            (Command::ShutDown, "shut_down"),
+            (Command::TaskMonitor, "task_monitor"),
+            (Command::Settings, "settings"),
+        ] {
+            assert_eq!(command.key(), key);
+        }
+    }
+
+    #[test]
+    fn an_open_menu_updates_its_hints_when_the_pad_changes() {
+        let mut menu = Menu::default();
+        menu.set_pad_family(tehuti_core::pad::PadFamily::Symbols);
+        assert!(menu.text().contains("Circle OR GUIDE CLOSE"));
+    }
+
+    #[test]
+    fn symbol_pad_menu_names_its_confirm_and_back_buttons() {
+        let mut menu = Some(Menu::new(tehuti_core::pad::PadFamily::Symbols));
+        assert!(menu.as_ref().unwrap().text().contains("Circle OR GUIDE CLOSE"));
+        assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Pressed), None);
+        assert!(
+            menu.as_ref()
+                .unwrap()
+                .text()
+                .contains("Cross CONFIRM / Circle CANCEL")
+        );
+        assert_eq!(button(&mut menu, ButtonName::East, ButtonState::Pressed), None);
+        assert!(menu.is_none());
+    }
+
+    #[test]
     fn restart_requires_confirmation_and_uses_restart_key() {
         assert_eq!(Command::Restart.key(), "restart");
         let mut menu = Some(Menu::default());
         assert!(menu.as_ref().unwrap().text().contains("RESTART TEHUTI"));
-        let _command = button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed);
+        assert_eq!(
+            button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed),
+            None
+        );
         assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Pressed), None);
         assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Released), None);
         assert_eq!(
@@ -57,7 +113,10 @@ mod menu {
     fn moving_after_confirmation_requires_two_fresh_presses() {
         for direction in [ButtonName::DpadUp, ButtonName::DpadDown] {
             let mut menu = Some(Menu::default());
-            let _command = button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed);
+            assert_eq!(
+                button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed),
+                None
+            );
             assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Pressed), None);
             assert_eq!(button(&mut menu, ButtonName::South, ButtonState::Released), None);
             assert_eq!(button(&mut menu, direction, ButtonState::Pressed), None);

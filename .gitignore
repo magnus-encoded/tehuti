@@ -7,3 +7,5 @@ mutants.out.old/
 /fuzz/corpus
 
 __pycache__/
+
+/.metrics/

@@ -47,7 +47,7 @@ pub struct State {
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
     held_keys: Vec<(ButtonName, KeyName)>,
-    pad_family: ticker::PadFamily,
+    pad_family: pad::PadFamily,
 }
 
 impl State {
@@ -102,7 +102,7 @@ impl State {
             pending: Vec::new(),
             bar: bar::Bar::new(),
             held_keys: Vec::new(),
-            pad_family: ticker::PadFamily::Letters,
+            pad_family: pad::PadFamily::Letters,
         };
         state.refresh_ticker();
         state
@@ -155,7 +155,7 @@ impl State {
         let button = active
             .and_then(|context| context.keyboard().button)
             .or_else(|| global.and_then(|context| context.keyboard().button))
-            .unwrap_or(tehuti_protocol::ButtonName::North);
+            .unwrap_or_else(|| self.pad_family.button(pad::Role::Keyboard));
         (mode, button)
     }
 
@@ -189,6 +189,12 @@ impl State {
         (marked, opens)
     }
 
+    /// The role positions and glyphs of the connected pad.
+    #[must_use]
+    pub const fn pad_family(&self) -> pad::PadFamily {
+        self.pad_family
+    }
+
     /// Configures the launcher names recognized in focused window titles.
     #[must_use]
     pub fn with_bar_agents(mut self, agents: Vec<String>) -> Self {
@@ -203,9 +209,12 @@ impl State {
     }
 
     /// Names buttons on the ticker as the pad in use prints them.
-    pub fn set_pad_family(&mut self, family: ticker::PadFamily) {
+    pub fn set_pad_family(&mut self, family: pad::PadFamily) {
         if family != self.pad_family {
             self.pad_family = family;
+            if let Some(menu) = &mut self.menu {
+                menu.set_pad_family(family);
+            }
             self.refresh_ticker();
         }
     }
@@ -359,7 +368,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if state.passthrough() && matches!(event, Event::Button { .. }) {
         return (state, Vec::new(), false);
     }
-    if let Some(action) = global_layer(event) {
+    if let Some(action) = global_layer(&state, event) {
         let actions = if focused_maps(&state, event) {
             hold_key(&mut state, event).unwrap_or_else(|| active_context(&state, event).into_iter().collect())
         } else {
@@ -422,13 +431,13 @@ fn hold_key(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     })
 }
 
-/// The global default for South; a focused context that maps South replaces it.
-const fn global_layer(event: &Event) -> Option<Action> {
+/// The global confirm default; a focused mapping of its position replaces it.
+fn global_layer(state: &State, event: &Event) -> Option<Action> {
     match *event {
         Event::Button {
-            name: ButtonName::South,
+            name,
             state: ButtonState::Pressed,
-        } => Some(Action::Key {
+        } if name == state.pad_family.button(pad::Role::Confirm) => Some(Action::Key {
             key: KeyName::Enter,
             mods: Vec::new(),
         }),
@@ -604,7 +613,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             }
             if !state.start_held && state.guide_tap.is_some_and(|held| held >= GUIDE_TAP_WINDOW) {
                 state.guide_tap = None;
-                state.menu = Some(menu::Menu::default());
+                state.menu = Some(menu::Menu::new(state.pad_family));
             }
             if state.start_held
                 && let Some(held) = &mut state.guide_held
@@ -636,6 +645,8 @@ pub mod windows;
 pub mod layout;
 
 pub mod bar;
+pub mod overlay;
+pub mod pad;
 pub mod ticker;
 
 pub mod keyboard;
