@@ -31,6 +31,12 @@ mod tests {
         let pixels =
             tehuti::choice_list::raster(&list, PadFamily::Letters, (1920, 1080)).ok_or("missing artwork")?;
         assert_eq!(pixels.get(0..4), Some([0, 0, 0, 0].as_slice()));
+        let header_right_edge = (60_usize * 1920 + 1919) * 4;
+        assert_eq!(
+            pixels.get(header_right_edge..header_right_edge + 4),
+            Some([98, 86, 72, 255].as_slice()),
+            "the header preserves the thin panel outline",
+        );
         let colours: std::collections::HashSet<_> = pixels.as_chunks::<4>().0.iter().copied().collect();
         assert!(colours.len() > 40, "fontdue gives smooth text coverage");
         assert!(

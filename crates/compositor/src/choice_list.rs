@@ -218,7 +218,7 @@ fn paint_header(canvas: &mut Canvas, list: &List, family: PadFamily, height: usi
     canvas.rectangle(
         LEFT.saturating_add(1),
         37,
-        WIDTH.saturating_sub(1),
+        WIDTH.saturating_sub(2),
         height,
         [88, 65, 47, 255],
     );
