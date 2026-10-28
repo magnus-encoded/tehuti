@@ -443,6 +443,45 @@ mod level_dim {
     }
 
     #[test]
+    fn context_labels_follow_windows_and_reload_at_both_levels() {
+        use tehuti_core::bar::Tone;
+        scene(2, |compositor, _| {
+            let contexts = || {
+                vec![
+                    tehuti_protocol::parse_context(
+                        "app_id = 'org.example.Window1'\nlabel = 'Editor'\nbuttons = {}",
+                    )
+                    .unwrap(),
+                ]
+            };
+            compositor.set_contexts(contexts());
+            compositor.handle(&Event::Focus {
+                app_id: Some("org.example.Window1".into()),
+                title: "Document 1".into(),
+            });
+            assert_eq!(compositor.voice_bar().segments()[0].text, "Editor");
+            tap(compositor);
+            let bar = compositor.voice_bar();
+            assert_eq!(bar.focused_window_segment(), Some(1));
+            assert_eq!(
+                bar.segments()
+                    .iter()
+                    .map(|segment| (segment.text.as_str(), segment.tone))
+                    .collect::<Vec<_>>(),
+                vec![("Document 0", Tone::Unfocused), ("Editor", Tone::Context)],
+            );
+            compositor.reload_contexts(Ok(Vec::new()));
+            assert_eq!(compositor.voice_bar().segments()[1].text, "Document 1");
+            compositor.reload_contexts(Ok(contexts()));
+            assert_eq!(compositor.voice_bar().segments()[1].text, "Editor");
+            tap(compositor);
+            assert_eq!(compositor.voice_bar().segments()[0].text, "Editor");
+            compositor.reload_contexts(Ok(Vec::new()));
+            assert_eq!(compositor.voice_bar().segments()[0].text, "org.example.Window1");
+        });
+    }
+
+    #[test]
     fn columns_chips_follow_layout_order_after_a_column_moves() {
         use tehuti_core::bar::Tone;
         scene(3, |compositor, _| {

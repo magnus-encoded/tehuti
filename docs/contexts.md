@@ -21,6 +21,14 @@ Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
 nothing. Unknown fields, buttons and keys are rejected. Application ids must
 contain a non-whitespace character.
 
+An optional top-level `label = "Emulator"` names the application's windows on
+the voice bar. At Columns level it replaces the window title; on the focus
+chip it replaces the application id. Agent launcher titles keep their agent
+or project name on the focus chip. Labels are trimmed and must contain a
+non-whitespace character; NUL is rejected. The first context
+for an application id decides its label. The `*` context's label is ignored.
+Reloading contexts updates the label without another focus change.
+
 The global layer consumes South presses and sends Enter, unless the active
 context maps South; then its mapping, tap or hold, replaces Enter. A South
 mapping in the `*` global context keeps Enter. The active context handles

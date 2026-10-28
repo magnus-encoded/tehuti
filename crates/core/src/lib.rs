@@ -105,6 +105,7 @@ impl State {
             pad_family: pad::PadFamily::Letters,
         };
         state.refresh_ticker();
+        state.refresh_labels();
         state
     }
 
@@ -206,6 +207,28 @@ impl State {
     pub fn replace_contexts(&mut self, contexts: Vec<Context>) {
         self.contexts = contexts;
         self.refresh_ticker();
+        self.refresh_labels();
+    }
+
+    /// The label a context gives windows of `app_id`, for their bar chip.
+    #[must_use]
+    pub fn label(&self, app_id: Option<&str>) -> Option<&str> {
+        let app_id = app_id.filter(|app_id| *app_id != GLOBAL_APP_ID)?;
+        self.contexts
+            .iter()
+            .find(|context| context.app_id() == app_id)
+            .and_then(Context::label)
+    }
+
+    /// Hands the bar every context's label, so the focus chip can use it.
+    fn refresh_labels(&mut self) {
+        let labels = self
+            .contexts
+            .iter()
+            .map(Context::app_id)
+            .filter_map(|app_id| Some((app_id.to_owned(), self.label(Some(app_id))?.to_owned())))
+            .collect();
+        self.bar.set_labels(labels);
     }
 
     /// Names buttons on the ticker as the pad in use prints them.

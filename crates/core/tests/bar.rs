@@ -79,6 +79,100 @@ mod tests {
         );
     }
 
+    fn labelled(contexts: &[&str]) -> State {
+        State::with_contexts(
+            contexts
+                .iter()
+                .map(|source| parse_context(source).unwrap())
+                .collect(),
+        )
+        .with_bar_agents(vec!["Claude".into()])
+    }
+
+    fn focus_titled(state: State, app_id: &str, title: &str) -> State {
+        step(
+            state,
+            &Event::Focus {
+                app_id: Some(app_id.into()),
+                title: title.into(),
+            },
+        )
+        .0
+    }
+
+    #[test]
+    fn a_context_label_names_the_focused_window() {
+        let state = labelled(&["app_id = 'mgba-qt'\nlabel = 'mGBA'\nbuttons = {}"]);
+        let mgba = focus_titled(
+            state.clone(),
+            "mgba-qt",
+            "mGBA - Pokemon - Red Version (USA, Europe)",
+        );
+        assert_eq!(mgba.bar().segments()[0].text, "mGBA");
+        let other = focus_titled(state.clone(), "kitty", "~/Projects");
+        assert_eq!(other.bar().segments()[0].text, "kitty");
+        let agent = focus_titled(state, "kitty", "Claude: atlas");
+        assert_eq!(agent.bar().segments()[0].text, "atlas");
+    }
+
+    #[test]
+    fn agent_titles_win_over_a_label() {
+        let state = labelled(&["app_id = 'kitty'\nlabel = 'Terminal'\nbuttons = {}"]);
+        assert_eq!(
+            focus_titled(state.clone(), "kitty", "Claude: atlas")
+                .bar()
+                .segments()[0]
+                .text,
+            "atlas"
+        );
+        assert_eq!(
+            focus_titled(state, "kitty", "~/Projects").bar().segments()[0].text,
+            "Terminal"
+        );
+    }
+
+    #[test]
+    fn reloading_contexts_relabels_the_focused_window() {
+        let mut state = focus_titled(labelled(&[]), "mgba-qt", "mGBA - 0.10.1");
+        assert_eq!(state.bar().segments()[0].text, "mgba-qt");
+        state.replace_contexts(vec![
+            parse_context("app_id = 'mgba-qt'\nlabel = 'mGBA'\nbuttons = {}").unwrap(),
+        ]);
+        assert_eq!(state.bar().segments()[0].text, "mGBA");
+        state.replace_contexts(Vec::new());
+        assert_eq!(state.bar().segments()[0].text, "mgba-qt");
+    }
+
+    #[test]
+    fn the_first_context_for_an_app_decides_its_label() {
+        let state = labelled(&[
+            "app_id = 'mgba-qt'\nbuttons = {}",
+            "app_id = 'mgba-qt'\nlabel = 'mGBA'\nbuttons = {}",
+            "app_id = '*'\nlabel = 'Everything'\nbuttons = {}",
+        ]);
+        assert_eq!(state.label(Some("mgba-qt")), None);
+        assert_eq!(state.label(Some("*")), None);
+        assert_eq!(
+            focus_titled(state, "mgba-qt", "mGBA").bar().segments()[0].text,
+            "mgba-qt"
+        );
+    }
+
+    #[test]
+    fn window_chips_prefer_the_label_then_title_then_app_id() {
+        use tehuti_core::bar::window_label;
+        assert_eq!(
+            window_label(Some("mGBA"), Some("mGBA - Pokemon"), Some("mgba-qt")),
+            "mGBA"
+        );
+        assert_eq!(
+            window_label(None, Some("mGBA - Pokemon"), Some("mgba-qt")),
+            "mGBA - Pokemon"
+        );
+        assert_eq!(window_label(None, Some(""), Some("mgba-qt")), "mgba-qt");
+        assert_eq!(window_label(None, None, None), "Untitled");
+    }
+
     proptest! {
         #[test]
         fn configured_agent_titles_show_the_project(agent in "[A-Z][a-z]{1,12}", project in "[a-z]{1,12}") {
