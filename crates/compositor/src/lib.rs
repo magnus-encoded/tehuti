@@ -17,6 +17,7 @@ pub(crate) mod text_input;
 
 pub mod plugins;
 
+pub mod say;
 pub mod speech;
 
 pub mod notice;
