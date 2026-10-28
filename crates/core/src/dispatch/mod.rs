@@ -177,6 +177,8 @@ pub enum Effect {
         text: tehuti_protocol::Text,
         first: Option<Action>,
         plugin: bool,
+        /// The phrase the transcript matched only fuzzily, when that match routed it.
+        fuzzy: Option<tehuti_protocol::FuzzyMatch>,
     },
 }
 
@@ -848,10 +850,16 @@ fn finish_route(
         actions.append(&mut routed);
     }
     if let Event::Speech { text } = event {
+        let first = actions.first().cloned();
+        let fuzzy = state
+            .core
+            .fuzzy_speech_match(text.as_str())
+            .filter(|matched| first.as_ref() == Some(&matched.action));
         effects.push(Effect::SpeechRouted {
             text,
-            first: actions.first().cloned(),
+            first,
             plugin: route,
+            fuzzy,
         });
     }
     effects.extend(actions.into_iter().map(Effect::Apply));

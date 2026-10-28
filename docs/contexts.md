@@ -97,6 +97,47 @@ claims. Modal screens such as the on-screen keyboard, mouse mode and the
 settings pages take buttons only while open and are not reported. It exits 1 when any file has an error, and 0
 when only warnings remain. It never starts a session.
 
+### Fuzzy speech matching
+
+Whisper often spells a phrase loosely, such as "Åpne Pokeman Rød" for
+"Åpne Pokémon Rød". Fuzzy matching, off by default, gives such a transcript
+the action of the one phrase it is close to:
+
+```toml
+[speech_matching]
+fuzzy = true
+```
+
+`fuzzy = true` selects a similarity threshold of 0.8; `false` turns it off.
+A numeric value between 0 and 1 sets the threshold; 0 turns it off. A context's
+value overrides the global `*` context's. It applies only when no phrase of
+the focused or global context matches exactly, and before `unmatched_speech`
+types the text. Both phrases are folded into a rough Norwegian sound key:
+case, punctuation and accents go, æ ø å become e o a, `hv`, `hj` and `gj`
+at a word start become `v` and `j`, c, q, w, z and x become k, k, v, s and ks,
+doubled letters merge, and the endings `-ene`, `-et`, `-en`, `-er`, `-e`
+and `-t` are dropped from words of four letters or more. Similarity is one
+less the Damerau-Levenshtein distance per character of the longer key.
+
+Spaces are also ignored without stripping endings, so "Super Tux" matches
+"SuperTux". A bare one-word name can match one word or two joined words
+inside a sentence, such as "Hun er supertux"; that score is capped at 0.9.
+
+A phrase also needs:
+
+- five letters or more in both keys, so "Ned" or "Hva" never match loosely;
+- with two words or more on both sides, first words that are close, at the
+  threshold or within one edit; comparison with spaces also requires close
+  remaining words, so "Åpne panseret" cannot ride on "Åpne";
+- a lead of 0.05 over every phrase with another action, so a transcript
+  between two phrases matches neither;
+- a similarity of 0.9 or more when it closes a window, quits, or launches an
+  entry whose name contains `to-xfce`, `power`, `shutdown`, `reboot`,
+  `logout`, `suspend` or `menu`.
+
+Each fuzzy match is logged as `speech fuzzy matched` with the transcript, the
+phrase and the score, for review.
+
 ## Reload
 
 Tehuti watches the context directory and its child directories. Saving any

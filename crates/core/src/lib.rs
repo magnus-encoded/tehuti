@@ -219,6 +219,12 @@ impl State {
         }
     }
 
+    /// The mapped phrase a transcript reaches only by fuzzy matching, for the log.
+    #[must_use]
+    pub fn fuzzy_speech_match(&self, phrase: &str) -> Option<tehuti_protocol::FuzzyMatch> {
+        fuzzy_speech_match(focused_context(self), global_context(self), phrase)
+    }
+
     /// Hides a shown mapping ticker or shows a hidden one; the choice outlasts focus changes.
     pub const fn toggle_ticker(&mut self) {
         self.bar.toggle_ticker();
@@ -476,6 +482,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         return focused
             .and_then(|context| context.mapped_speech_action(phrase))
             .or_else(|| global.and_then(|context| context.mapped_speech_action(phrase)))
+            .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.action))
             .or_else(|| focused.and_then(|context| context.unmatched_speech_action(phrase)))
             .or_else(|| global.and_then(|context| context.unmatched_speech_action(phrase)))
             .or_else(|| {
@@ -494,6 +501,36 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
     focused_context(state)
         .and_then(|context| context.action_for(*name))
         .or_else(|| global_context(state).and_then(|context| context.action_for(*name)))
+}
+
+/// The phrase `phrase` matches only fuzzily, under the focused context's `fuzzy`
+/// threshold or else the global one; `None` when an exact mapping exists or fuzzy matching is off.
+fn fuzzy_speech_match(
+    focused: Option<&Context>,
+    global: Option<&Context>,
+    phrase: &str,
+) -> Option<tehuti_protocol::FuzzyMatch> {
+    if phrase.trim().is_empty()
+        || focused
+            .into_iter()
+            .chain(global)
+            .any(|context| context.mapped_speech_action(phrase).is_some())
+    {
+        return None;
+    }
+    let threshold = focused
+        .and_then(|context| context.speech_matching().fuzzy)
+        .or_else(|| global.and_then(|context| context.speech_matching().fuzzy))
+        .unwrap_or(tehuti_protocol::Fuzziness::OFF);
+    let mut seen = std::collections::HashSet::new();
+    let candidates: Vec<_> = focused
+        .into_iter()
+        .chain(global.filter(|global| focused.is_none_or(|focused| !core::ptr::eq(*global, focused))))
+        .flat_map(Context::speech_candidates)
+        .filter(|(normalized, _)| seen.insert(*normalized))
+        .map(|(_, candidate)| candidate)
+        .collect();
+    tehuti_protocol::best_match(phrase, candidates, threshold)
 }
 
 /// App id of the global context, whose mappings apply wherever the focused context has none.

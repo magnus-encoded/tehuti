@@ -2099,7 +2099,7 @@ proptest! {
         let expected = Action::Notice { text: Text::new("capture".into()).unwrap() };
         prop_assert!(state.settings().open);
         prop_assert!(world.trace.contains(&Effect::TranscriptReceived { session: 0, text: text.clone(), admitted: true }), "transcript is admitted");
-        prop_assert!(world.trace.contains(&Effect::SpeechRouted { text, first: Some(expected.clone()), plugin: plugin_active }), "transcript is mapped while settings is open");
+        prop_assert!(world.trace.contains(&Effect::SpeechRouted { text, first: Some(expected.clone()), plugin: plugin_active, fuzzy: None }), "transcript is mapped while settings is open");
         prop_assert!(world.trace.contains(&Effect::Apply(expected)));
     }
 }
@@ -2300,6 +2300,7 @@ fn open_settings_takes_only_its_voice_phrase_from_contexts_and_plugins() {
             text,
             first: Some(expected.clone()),
             plugin: plugin_active,
+            fuzzy: None,
         }));
         assert!(world.trace.contains(&Effect::Apply(expected)));
     }
@@ -3975,4 +3976,31 @@ fn favourites_do_not_launch_from_back_or_push_to_talk() {
         );
         assert_eq!(state.desktop_focus(), Some(0));
     }
+}
+
+#[test]
+fn fuzzy_route_reports_the_phrase_and_score_for_logging() {
+    let context = tehuti_protocol::parse_context(
+        "app_id = '*'\n[buttons]\n[speech]\n'Åpne Bærekraft.' = { launch = 'garden.desktop' }\n[speech_matching]\nfuzzy = true",
+    ).unwrap();
+    let mut world = World::default();
+    let text = Text::new("Åpne berekraft.".into()).unwrap();
+    let _state = world.event(
+        configured(vec![context], "editor"),
+        Event::Speech { text: text.clone() },
+    );
+    let action = Action::Launch {
+        desktop_entry: Text::new("garden.desktop".into()).unwrap(),
+    };
+    assert!(world.trace.contains(&Effect::SpeechRouted {
+        text,
+        first: Some(action.clone()),
+        plugin: false,
+        fuzzy: Some(tehuti_protocol::FuzzyMatch {
+            phrase: "Åpne Bærekraft.".into(),
+            action: action.clone(),
+            score: 1000
+        }),
+    }));
+    assert!(world.trace.contains(&Effect::Apply(action)));
 }
