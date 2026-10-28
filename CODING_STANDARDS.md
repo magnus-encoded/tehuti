@@ -54,3 +54,12 @@ A test states a rule about behaviour. It never computes its expected value by co
 - Every documented promise has an automated test, except where a spec or ADR says it is checked by hand.
 - No test needs a real device, uinput, display or microphone. Core tests drive the pure step with generated events; compositor tests use the synthetic pad.
 - Mutation testing measures this: a surviving mutant is a missing test.
+
+## Separable concerns
+
+Tehuti is built so that a part can be swapped out: another window manager or compositor, such as niri, in place of ours, or another shell, input method or speech engine.
+
+- When a change touches a function, ask whether it belongs to a different concern than the file it sits in: display and compositing, window management, interaction policy, desktop shell, text entry, or session integration.
+- If it does and the move is small, make it in the same PR as its own commit. If it is large, open an issue and leave the code where it is.
+- A concern depends on another only through a named interface: a type or a protocol message, never a shared field or a call into its internals.
+- Do not refactor for its own sake, and do not move code in an unrelated PR beyond what the touched function needs.
