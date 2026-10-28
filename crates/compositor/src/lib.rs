@@ -23,6 +23,7 @@ pub mod notice;
 
 pub mod secret_delivery;
 
+pub mod client_env;
 pub mod desktop;
 
 pub mod backend;
