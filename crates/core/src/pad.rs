@@ -37,7 +37,17 @@ const FALLBACK: Profile = Profile {
     faces: &LETTER_FACES,
     labels: LETTER_LABELS,
 };
-const PROFILES: [Profile; 2] = [
+const PROFILES: [Profile; 3] = [
+    Profile {
+        vendor: 0x057e,
+        identity: Identity {
+            family: PadFamily::Nintendo,
+            swap_north_west: false,
+        },
+        roles: [ButtonName::East, ButtonName::South, ButtonName::North],
+        faces: &NINTENDO_FACES,
+        labels: NINTENDO_LABELS,
+    },
     Profile {
         vendor: 0x054c,
         identity: Identity {
@@ -77,6 +87,7 @@ pub enum PadFamily {
     #[default]
     Letters,
     Symbols,
+    Nintendo,
 }
 
 impl PadFamily {
@@ -191,6 +202,43 @@ const LETTER_FACES: [FaceGlyph; 6] = [
         shape: Shape::Menu,
         colour: Rgb::WHITE,
     },
+];
+
+const NINTENDO_FACES: [FaceGlyph; 4] = [
+    FaceGlyph {
+        button: ButtonName::East,
+        label: "A",
+        shape: Shape::Disc('A'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::South,
+        label: "B",
+        shape: Shape::Disc('B'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::North,
+        label: "X",
+        shape: Shape::Disc('X'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::West,
+        label: "Y",
+        shape: Shape::Disc('Y'),
+        colour: Rgb::WHITE,
+    },
+];
+
+const NINTENDO_LABELS: &[(ButtonName, &str)] = &[
+    (ButtonName::LeftBumper, "L"),
+    (ButtonName::RightBumper, "R"),
+    (ButtonName::Select, "−"),
+    (ButtonName::Start, "+"),
+    (ButtonName::Record, "Capture"),
+    (ButtonName::LeftStick, "LS"),
+    (ButtonName::RightStick, "RS"),
 ];
 
 const SYMBOL_FACES: [FaceGlyph; 4] = [

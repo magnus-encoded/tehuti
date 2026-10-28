@@ -26,6 +26,39 @@ mod held_keys {
     }
 
     #[test]
+    fn nintendo_default_enter_uses_east() {
+        let mut state = State::default();
+        state.set_pad_family(tehuti_core::pad::PadFamily::Nintendo);
+        let (state, south) = button(state, ButtonName::South, ButtonState::Pressed);
+        assert_eq!(south, Vec::new());
+        let (_, east) = button(state, ButtonName::East, ButtonState::Pressed);
+        assert_eq!(
+            east,
+            vec![Action::Key {
+                key: KeyName::Enter,
+                mods: vec![]
+            }]
+        );
+    }
+
+    #[test]
+    fn nintendo_context_mappings_keep_positions() {
+        let mut state =
+            focused("app_id = 'editor'\n[buttons]\nsouth = { key = 'x', hold = true }\neast = { key = 'z' }");
+        state.set_pad_family(tehuti_core::pad::PadFamily::Nintendo);
+        let (state, south) = button(state, ButtonName::South, ButtonState::Pressed);
+        assert_eq!(south, vec![Action::KeyDown { key: KeyName::X }]);
+        let (_, east) = button(state, ButtonName::East, ButtonState::Pressed);
+        assert_eq!(
+            east,
+            vec![Action::Key {
+                key: KeyName::Z,
+                mods: vec![]
+            }]
+        );
+    }
+
+    #[test]
     fn a_held_key_goes_down_on_press_and_up_on_release() {
         let state = focused("app_id = 'emulator'\n[buttons]\nwest = { key = 'backspace', hold = true }");
         let (state, pressed) = button(state, ButtonName::West, ButtonState::Pressed);

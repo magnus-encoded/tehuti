@@ -76,6 +76,20 @@ right_stick = { ticker = "toggle" }
     }
 
     #[test]
+    fn nintendo_ticker_places_default_enter_on_a_and_keeps_configured_positions() {
+        let contexts = contexts(&["app_id = 'editor'\n[buttons]\nsouth = { key = 'x' }"]);
+        assert_eq!(
+            texts(&ticker::entries(
+                &contexts,
+                Some("editor"),
+                PadFamily::Nintendo,
+                Level::App
+            )),
+            ["B -> [X]", "A -> [⏎]", "Capture -> 🎤"]
+        );
+    }
+
+    #[test]
     fn buttons_use_the_pads_names_and_fall_back_to_the_global_context() {
         let contexts = contexts(&[GLOBAL, GAME]);
         assert_eq!(

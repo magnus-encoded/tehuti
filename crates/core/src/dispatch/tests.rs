@@ -3513,6 +3513,21 @@ proptest! {
 }
 
 #[test]
+fn nintendo_settings_confirm_on_east_and_go_back_on_south() {
+    let mut world = World::default();
+    let mut state = State::default();
+    state.core_mut().set_pad_family(crate::pad::PadFamily::Nintendo);
+    let state = world.run(state, speech_event("pop the hood"));
+    assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: OPEN   B: CLOSE");
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert_eq!(state.settings().page, Page::Display);
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().page, Page::Categories);
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert!(!state.settings().open);
+}
+
+#[test]
 fn settings_hints_and_navigation_follow_the_connected_pad_family() {
     let mut world = World::default();
     let mut state = State::default();
