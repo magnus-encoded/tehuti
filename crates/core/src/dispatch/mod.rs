@@ -5,6 +5,7 @@
 //! the depth it started at. Effects may re-enter with a new top-level input;
 //! that input runs in its own frame above the waiting one.
 
+use crate::overlay::{Overlay, STACK};
 use core::time::Duration;
 use std::collections::VecDeque;
 
@@ -70,6 +71,8 @@ pub enum Input {
         kind: crate::keyboard::FieldKind,
     },
     ControllerDisconnected,
+    /// Whether the compositor currently presents a pending secret confirmation.
+    SecretPrompt(bool),
     Sticks(Sticks),
     /// Reply to [`Effect::QueryPlugin`].
     PluginActive(bool),
@@ -226,6 +229,8 @@ pub struct State {
     takeback: Takeback,
     frames: Vec<Frame>,
     settings: Settings,
+    overlay_stack: Vec<Overlay>,
+    secret_prompt: SecretPrompt,
 }
 
 impl State {
@@ -244,6 +249,8 @@ impl State {
             takeback: Takeback::Idle,
             frames: Vec::new(),
             settings: Settings::default(),
+            overlay_stack: Vec::new(),
+            secret_prompt: SecretPrompt::Hidden,
         }
     }
 
@@ -265,6 +272,11 @@ impl State {
     #[must_use]
     pub const fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    #[must_use]
+    pub const fn secret_prompt_visible(&self) -> bool {
+        matches!(self.secret_prompt, SecretPrompt::Visible)
     }
 
     /// Frames still waiting for replies or resumption.
@@ -303,10 +315,16 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
     tasks
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum SecretPrompt {
+    #[default]
+    Hidden,
+    Visible,
+}
+
 /// Advances routing by one input. Performs no I/O.
 #[must_use]
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
-    let menu_open = state.core.menu().is_some();
     let mut released = Vec::new();
     if matches!(
         &input,
@@ -324,15 +342,9 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let (mut state, mut routed) = step_input(state, input);
     let mut effects = released;
     effects.append(&mut routed);
+    release_on_open(&mut state, &mut effects);
     release_passthrough_overlays(&mut state, &mut effects);
-    if !menu_open && state.core.menu().is_some() {
-        state.mouse.release(&mut effects);
-        state.keyboard.release_all();
-        release_held_keys(&mut state, &mut effects);
-        if let Some(frame) = state.frames.last_mut() {
-            frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
-        }
-    }
+    state.overlay_stack = open_overlays(&state);
     run(state, effects)
 }
 
@@ -349,14 +361,40 @@ fn sync_keyboard_config(state: &mut State) {
 }
 
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
-    let mut effects = Vec::new();
-    let tasks: Vec<Task> = match input {
+    match input {
         input @ (Input::DisplayModes { .. }
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
-        | Input::InputChoices { .. }) => return settings_input(state, input),
+        | Input::InputChoices { .. }) => settings_input(state, input),
+        input @ (Input::Tick { .. }
+        | Input::Event { .. }
+        | Input::FocusTitle { .. }
+        | Input::Speech(_)
+        | Input::PluginExited { .. }) => frame_input(state, input),
+        input @ (Input::SecretPrompt(_)
+        | Input::Sticks(_)
+        | Input::TextField { .. }
+        | Input::ControllerDisconnected) => state_input(state, &input),
+        Input::PluginReply { key, result } => plugin_reply(state, key, result),
+        reply @ (Input::ClockRead(_)
+        | Input::PluginActive(_)
+        | Input::PluginRequest(_)
+        | Input::Supervised(_)
+        | Input::SecretConfirmation(_)
+        | Input::SpeechSent(_)
+        | Input::SpeechPolled(_)
+        | Input::Resume) => {
+            let mut effects = Vec::new();
+            resume(&mut state, reply, &mut effects);
+            run(state, effects)
+        }
+    }
+}
+
+fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
+    let tasks = match input {
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
         Input::Event { event, elapsed } => event_tasks(event, elapsed),
         Input::FocusTitle { app_id, title } => vec![
@@ -366,39 +404,76 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         ],
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
-        Input::PluginReply { key, result } => return plugin_reply(state, key, result),
-        Input::Sticks(sticks) => {
-            update_sticks(&mut state, sticks);
-            return (state, effects);
-        }
-        Input::TextField {
-            active,
-            changed,
-            kind,
-        } => {
-            update_text_field(&mut state, active, changed, kind);
-            if state.keyboard.password_field_active() {
-                vec![Task::Speech(SpeechInput::Cancel)]
-            } else {
-                return (state, effects);
-            }
-        }
-        Input::ControllerDisconnected => {
-            disconnect_controller(&mut state, &mut effects);
-            return (state, effects);
-        }
-        reply @ (Input::ClockRead(_)
+        Input::DisplayModes { .. }
+        | Input::DisplayScale(_)
+        | Input::ModeApplied(_)
+        | Input::Controllers(_)
+        | Input::Microphones(_)
+        | Input::InputChoices { .. }
+        | Input::SecretPrompt(_)
+        | Input::Sticks(_)
+        | Input::TextField { .. }
+        | Input::ControllerDisconnected
+        | Input::PluginReply { .. }
+        | Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
         | Input::Supervised(_)
         | Input::SecretConfirmation(_)
         | Input::SpeechSent(_)
         | Input::SpeechPolled(_)
-        | Input::Resume) => {
-            resume(&mut state, reply, &mut effects);
-            return run(state, effects);
-        }
+        | Input::Resume => Vec::new(),
     };
+    run_tasks(state, tasks, Vec::new())
+}
+
+fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
+    let mut effects = Vec::new();
+    match input {
+        Input::SecretPrompt(visible) => {
+            state.secret_prompt = if *visible {
+                SecretPrompt::Visible
+            } else {
+                SecretPrompt::Hidden
+            }
+        }
+        Input::Sticks(sticks) => update_sticks(&mut state, *sticks),
+        Input::TextField {
+            active,
+            changed,
+            kind,
+        } => {
+            update_text_field(&mut state, *active, *changed, *kind);
+            if state.keyboard.password_field_active() {
+                return run_tasks(state, vec![Task::Speech(SpeechInput::Cancel)], effects);
+            }
+        }
+        Input::ControllerDisconnected => disconnect_controller(&mut state, &mut effects),
+        Input::DisplayModes { .. }
+        | Input::DisplayScale(_)
+        | Input::ModeApplied(_)
+        | Input::Controllers(_)
+        | Input::Microphones(_)
+        | Input::InputChoices { .. }
+        | Input::Tick { .. }
+        | Input::Event { .. }
+        | Input::FocusTitle { .. }
+        | Input::Speech(_)
+        | Input::PluginExited { .. }
+        | Input::PluginReply { .. }
+        | Input::ClockRead(_)
+        | Input::PluginActive(_)
+        | Input::PluginRequest(_)
+        | Input::Supervised(_)
+        | Input::SecretConfirmation(_)
+        | Input::SpeechSent(_)
+        | Input::SpeechPolled(_)
+        | Input::Resume => {}
+    }
+    (state, effects)
+}
+
+fn run_tasks(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State, Vec<Effect>) {
     state.frames.push(Frame {
         tasks: tasks.into(),
         awaiting: None,
@@ -427,6 +502,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::PluginExited { .. }
         | Input::TextField { .. }
         | Input::ControllerDisconnected
+        | Input::SecretPrompt(_)
         | Input::Sticks(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -454,8 +530,7 @@ fn plugin_reply(
 }
 
 fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
-    state.mouse.disconnect(effects);
-    state.keyboard.release_all();
+    release_pad(state, Handoff::Disconnect, effects);
     state.opening_button = None;
     state.core.controller_disconnected();
 }
@@ -486,14 +561,101 @@ fn release_held_keys(state: &mut State, effects: &mut Vec<Effect>) {
     effects.extend(state.core.release_held_keys().into_iter().map(Effect::Apply));
 }
 
+#[derive(Clone, Copy)]
+enum Handoff {
+    Open(Overlay),
+    Disconnect,
+    Passthrough,
+    Takeback,
+}
+
+fn release_pad(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>) {
+    let owner = match handoff {
+        Handoff::Open(owner) => owner,
+        Handoff::Disconnect | Handoff::Passthrough | Handoff::Takeback => Overlay::Settings,
+    };
+    for layer in owner.below() {
+        release_layer(state, layer, handoff, effects);
+    }
+    finish_handoff(state, handoff, effects);
+}
+
+fn release_layer(state: &mut State, layer: Overlay, handoff: Handoff, effects: &mut Vec<Effect>) {
+    match layer {
+        Overlay::Keyboard => {
+            state.keyboard.release_all();
+            if matches!(handoff, Handoff::Open(Overlay::Settings) | Handoff::Passthrough) {
+                state.keyboard.close();
+            }
+        }
+        Overlay::Mouse => release_pointer(state, handoff, effects),
+        Overlay::Application => release_held_keys(state, effects),
+        Overlay::Cursor
+        | Overlay::Settings
+        | Overlay::SystemMenu
+        | Overlay::Secret
+        | Overlay::SecretUnavailable
+        | Overlay::Notice
+        | Overlay::MouseNotice
+        | Overlay::Bar => {}
+    }
+}
+
+fn release_pointer(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>) {
+    match handoff {
+        Handoff::Disconnect | Handoff::Passthrough => state.mouse.disconnect(effects),
+        Handoff::Open(_) | Handoff::Takeback => state.mouse.release(effects),
+    }
+}
+
+fn finish_handoff(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>) {
+    match handoff {
+        Handoff::Open(Overlay::Settings) => {
+            state.core.menu = None;
+            effects.push(Effect::ResetSecretFocus);
+        }
+        Handoff::Passthrough => state.settings.close(effects),
+        Handoff::Open(Overlay::SystemMenu) => {
+            if let Some(frame) = state.frames.last_mut() {
+                frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
+            }
+        }
+        Handoff::Open(_) | Handoff::Disconnect | Handoff::Takeback => {}
+    }
+}
+
 fn release_passthrough_overlays(state: &mut State, effects: &mut Vec<Effect>) {
     if state.core.passthrough() {
-        state.mouse.disconnect(effects);
-        state.keyboard.release_all();
-        release_held_keys(state, effects);
-        state.keyboard.close();
-        state.settings.close(effects);
+        release_pad(state, Handoff::Passthrough, effects);
     }
+}
+
+fn open_overlays(state: &State) -> Vec<Overlay> {
+    STACK
+        .into_iter()
+        .filter(|layer| match layer {
+            Overlay::Settings => state.settings.open,
+            Overlay::SystemMenu => state.core.menu().is_some(),
+            Overlay::Secret => state.secret_prompt == SecretPrompt::Visible,
+            Overlay::Keyboard => state.keyboard.is_open(),
+            Overlay::Mouse => state.mouse.active(),
+            Overlay::Cursor
+            | Overlay::SecretUnavailable
+            | Overlay::Notice
+            | Overlay::MouseNotice
+            | Overlay::Bar
+            | Overlay::Application => false,
+        })
+        .collect()
+}
+
+fn release_on_open(state: &mut State, effects: &mut Vec<Effect>) {
+    for owner in open_overlays(state) {
+        if !state.overlay_stack.contains(&owner) {
+            release_pad(state, Handoff::Open(owner), effects);
+        }
+    }
+    state.overlay_stack = open_overlays(state);
 }
 
 fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
@@ -504,11 +666,6 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
         return;
     };
     match (awaiting, reply) {
-        (Await::ClockRead, Input::ClockRead(elapsed)) => {
-            for task in tick_tasks(elapsed).into_iter().rev() {
-                frame.tasks.push_front(task);
-            }
-        }
         (Await::PluginActive(event), Input::PluginActive(active)) => {
             let (next, actions, route) =
                 crate::step_with_plugin(core::mem::take(&mut state.core), &event, active);
@@ -531,11 +688,20 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             },
             Input::PluginRequest(request),
         ) => finish_route(state, event, actions, route, request, effects),
-        (Await::Supervised, Input::Supervised(exited)) => {
-            for plugin in exited.into_iter().rev() {
-                frame.tasks.push_front(Task::PluginExited(plugin));
-            }
+        pair @ ((Await::ClockRead, Input::ClockRead(_))
+        | (Await::Supervised, Input::Supervised(_))
+        | (Await::SpeechPolled, Input::SpeechPolled(_))
+        | (Await::SecretConfirmation(_), Input::SecretConfirmation(_))
+        | (Await::SpeechSent, Input::SpeechSent(_))) => queue_reply(frame, pair),
+        (_, _) => {
+            let _aborted = state.frames.pop();
+            effects.push(Effect::InvalidReply);
         }
+    }
+}
+
+fn queue_reply(frame: &mut Frame, pair: (Await, Input)) {
+    match pair {
         (Await::SecretConfirmation(event), Input::SecretConfirmation(consumed)) => {
             if !consumed {
                 frame.tasks.push_front(Task::Route(event));
@@ -546,15 +712,28 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 frame.tasks.push_front(Task::Speech(SpeechInput::Unavailable));
             }
         }
+        pair => queue_batch(frame, pair),
+    }
+}
+
+fn queue_batch(frame: &mut Frame, pair: (Await, Input)) {
+    match pair {
+        (Await::ClockRead, Input::ClockRead(elapsed)) => {
+            for task in tick_tasks(elapsed).into_iter().rev() {
+                frame.tasks.push_front(task);
+            }
+        }
+        (Await::Supervised, Input::Supervised(exited)) => {
+            for plugin in exited.into_iter().rev() {
+                frame.tasks.push_front(Task::PluginExited(plugin));
+            }
+        }
         (Await::SpeechPolled, Input::SpeechPolled(inputs)) => {
             for input in inputs.into_iter().rev() {
                 frame.tasks.push_front(Task::Speech(input));
             }
         }
-        (_, _) => {
-            let _aborted = state.frames.pop();
-            effects.push(Effect::InvalidReply);
-        }
+        (_, _) => {}
     }
 }
 
@@ -616,6 +795,7 @@ fn run(mut state: State, mut effects: Vec<Effect>) -> (State, Vec<Effect>) {
             return (state, effects);
         };
         perform(&mut state, task, &mut effects);
+        release_on_open(&mut state, &mut effects);
     }
 }
 
@@ -631,30 +811,15 @@ fn tick_pad(
 }
 
 fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
-    let Some(frame) = state.frames.last_mut() else {
-        return;
-    };
     match task {
-        Task::ReadClock => {
-            effects.push(Effect::ReadClock);
-            frame.awaiting = Some(Await::ClockRead);
+        task @ (Task::ReadClock | Task::Supervise | Task::ConfirmSecret(_, _) | Task::PollSpeech(_)) => {
+            query_task(state, task, effects);
         }
+        task @ (Task::Speech(_) | Task::SpeechEffect(_)) => speech_task(state, task, effects),
         Task::Controller(event) => controller(state, event, effects),
         Task::Route(event) => route_event(state, event, effects),
-        Task::Supervise => {
-            effects.push(Effect::Supervise);
-            frame.awaiting = Some(Await::Supervised);
-        }
         Task::ConfirmPressed(pressed) => effects.push(Effect::ConfirmPressed(pressed)),
         Task::ResetSecretFocus => effects.push(Effect::ResetSecretFocus),
-        Task::ConfirmSecret(button, event) => {
-            effects.push(Effect::ConfirmSecret(button));
-            frame.awaiting = Some(Await::SecretConfirmation(event));
-        }
-        Task::PollSpeech(elapsed) => {
-            effects.push(Effect::PollSpeech(elapsed));
-            frame.awaiting = Some(Await::SpeechPolled);
-        }
         Task::PollSources => effects.push(Effect::PollSources),
         Task::PluginExited(plugin) => {
             let (next, actions, _) = crate::plugin::step(
@@ -664,18 +829,69 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
             state.core = next;
             effects.extend(actions.into_iter().map(Effect::PluginAction));
         }
+    }
+}
+
+fn query_task(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
+    let Some(frame) = state.frames.last_mut() else {
+        return;
+    };
+    match task {
+        Task::ReadClock => {
+            effects.push(Effect::ReadClock);
+            frame.awaiting = Some(Await::ClockRead);
+        }
+        Task::Supervise => {
+            effects.push(Effect::Supervise);
+            frame.awaiting = Some(Await::Supervised);
+        }
+        Task::ConfirmSecret(button, event) => {
+            effects.push(Effect::ConfirmSecret(button));
+            frame.awaiting = Some(Await::SecretConfirmation(event));
+        }
+        Task::PollSpeech(elapsed) => {
+            effects.push(Effect::PollSpeech(elapsed));
+            frame.awaiting = Some(Await::SpeechPolled);
+        }
+        Task::Controller(_)
+        | Task::Route(_)
+        | Task::ConfirmPressed(_)
+        | Task::ResetSecretFocus
+        | Task::PollSources
+        | Task::PluginExited(_)
+        | Task::Speech(_)
+        | Task::SpeechEffect(_) => {}
+    }
+}
+
+fn speech_task(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
+    match task {
         Task::Speech(input) => speech(state, input, effects),
-        Task::SpeechEffect(effect) => match effect {
-            SpeechEffect::Interim { .. } => {}
-            SpeechEffect::Speech { text, .. } => effects.push(Effect::Handle(Event::Speech { text })),
-            SpeechEffect::Failed { session, reason } => {
-                effects.push(Effect::SpeechFailed { session, reason });
-            }
-            SpeechEffect::Start { .. } | SpeechEffect::Stop { .. } => {
-                effects.push(Effect::SpeechCommand(effect));
+        Task::SpeechEffect(effect) => speech_effect(state, effect, effects),
+        Task::ReadClock
+        | Task::Supervise
+        | Task::ConfirmSecret(_, _)
+        | Task::PollSpeech(_)
+        | Task::Controller(_)
+        | Task::Route(_)
+        | Task::ConfirmPressed(_)
+        | Task::ResetSecretFocus
+        | Task::PollSources
+        | Task::PluginExited(_) => {}
+    }
+}
+
+fn speech_effect(state: &mut State, effect: SpeechEffect, effects: &mut Vec<Effect>) {
+    match effect {
+        SpeechEffect::Interim { .. } => {}
+        SpeechEffect::Speech { text, .. } => effects.push(Effect::Handle(Event::Speech { text })),
+        SpeechEffect::Failed { session, reason } => effects.push(Effect::SpeechFailed { session, reason }),
+        SpeechEffect::Start { .. } | SpeechEffect::Stop { .. } => {
+            effects.push(Effect::SpeechCommand(effect));
+            if let Some(frame) = state.frames.last_mut() {
                 frame.awaiting = Some(Await::SpeechSent);
             }
-        },
+        }
     }
 }
 
@@ -687,9 +903,7 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         if *held >= Duration::from_millis(500) {
             state.takeback = Takeback::Fired;
             state.core.pad_taken_back = !state.core.pad_taken_back;
-            state.mouse.release(effects);
-            state.keyboard.release_all();
-            release_held_keys(state, effects);
+            release_pad(state, Handoff::Takeback, effects);
         }
     }
     if state.core.passthrough() && matches!(event, Event::Button { .. } | Event::Tick { .. }) {
@@ -719,22 +933,7 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
 }
 
 fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
-    let was_open = state.settings.open;
-    let consumed = state.settings.event(event, effects);
-    if !was_open && state.settings.open {
-        hand_overlays_to_settings(state, effects);
-    }
-    consumed
-}
-
-/// The settings view takes the pad from the menu, the pointer and the on-screen keyboard.
-fn hand_overlays_to_settings(state: &mut State, effects: &mut Vec<Effect>) {
-    state.core.menu = None;
-    state.mouse.release(effects);
-    state.keyboard.release_all();
-    release_held_keys(state, effects);
-    state.keyboard.close();
-    effects.push(Effect::ResetSecretFocus);
+    state.settings.event(event, effects)
 }
 
 fn route_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
@@ -751,19 +950,7 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
             ..
         }
     ) {
-        if matches!(
-            event,
-            Event::Button {
-                state: ButtonState::Pressed,
-                ..
-            }
-        ) {
-            state.settings.close(effects);
-        }
-        let _response = state.keyboard.button(ButtonName::Guide, start_state(event), true);
-        if let Some(actions) = crate::escape_chord(&mut state.core, event) {
-            effects.extend(actions.into_iter().map(Effect::Apply));
-        }
+        guide_input(state, event, effects);
         return true;
     }
     if state.core.menu().is_some() {
@@ -774,7 +961,6 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
             if command == crate::menu::Command::Settings {
                 state.settings.open = true;
                 state.settings.page = Page::Categories;
-                hand_overlays_to_settings(state, effects);
             } else {
                 effects.push(Effect::RunMenuCommand(command));
             }
@@ -800,33 +986,150 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
     false
 }
 
+fn guide_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
+    if matches!(
+        event,
+        Event::Button {
+            state: ButtonState::Pressed,
+            ..
+        }
+    ) {
+        state.settings.close(effects);
+    }
+    let _response = state.keyboard.button(ButtonName::Guide, start_state(event), true);
+    if let Some(actions) = crate::escape_chord(&mut state.core, event) {
+        effects.extend(actions.into_iter().map(Effect::Apply));
+    }
+}
+
 fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
     sync_keyboard_config(state);
     let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
-    if !dictation && matches!(event, Event::Speech { .. }) && settings_event(state, event, effects) {
-        return true;
-    }
-    if crate::menu_button_release(&mut state.core, event) {
-        return true;
-    }
-    if !dictation && system_menu(state, event, effects) {
-        return true;
-    }
-    if state.keyboard.password_field_active()
-        && (matches!(event, Event::Button { name, .. } if state.core.push_to_talk(*name))
-            || matches!(event, Event::Speech { .. }))
+    if settings_phrase(state, event, dictation, effects)
+        || crate::menu_button_release(&mut state.core, event)
+        || reserved_safety(state, event, dictation, effects)
     {
+        return true;
+    }
+    STACK
+        .into_iter()
+        .any(|layer| overlay_input(state, layer, event, dictation, effects))
+}
+
+fn settings_phrase(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
+    !dictation && matches!(event, Event::Speech { .. }) && settings_event(state, event, effects)
+}
+
+fn reserved_safety(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
+    if !dictation && emergency_button(state, event) {
+        return system_menu(state, event, effects);
+    }
+    if (dictation || state.core.menu().is_none()) && password_suppresses(state, event) {
         effects.push(Effect::PasswordSpeechIgnored);
         return true;
     }
-
-    if !dictation && settings_event(state, event, effects) {
-        return true;
-    }
-    if keyboard(state, event, effects) {
-        return true;
-    }
     false
+}
+
+const fn emergency_button(state: &State, event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Button {
+            name: ButtonName::Guide,
+            ..
+        }
+    ) || (state.core.guide_held()
+        && matches!(
+            event,
+            Event::Button {
+                name: ButtonName::Start,
+                ..
+            }
+        ))
+}
+
+fn overlay_input(
+    state: &mut State,
+    layer: Overlay,
+    event: &Event,
+    dictation: bool,
+    effects: &mut Vec<Effect>,
+) -> bool {
+    match layer {
+        Overlay::Settings => settings_input_layer(state, event, dictation, effects),
+        Overlay::SystemMenu => !dictation && system_menu(state, event, effects),
+        Overlay::Secret => secret_input(state, event),
+        Overlay::Keyboard => keyboard(state, event, effects),
+        Overlay::Mouse => mouse_event(state, event, effects),
+        Overlay::Cursor
+        | Overlay::SecretUnavailable
+        | Overlay::Notice
+        | Overlay::MouseNotice
+        | Overlay::Bar
+        | Overlay::Application => false,
+    }
+}
+
+fn secret_input(state: &mut State, event: &Event) -> bool {
+    if state.secret_prompt != SecretPrompt::Visible || lower_view_owns_pad(state) {
+        return false;
+    }
+    let Event::Button { name, state: button } = event else {
+        return false;
+    };
+    if *name != state.core.pad_family().button(crate::pad::Role::Confirm) || state.core.push_to_talk(*name) {
+        return false;
+    }
+    queue_secret_confirmation(state, *button, event.clone());
+    true
+}
+
+const fn lower_view_owns_pad(state: &State) -> bool {
+    state.settings.open || state.keyboard.is_open() || state.mouse.active()
+}
+
+fn queue_secret_confirmation(state: &mut State, button: ButtonState, event: Event) {
+    if let Some(frame) = state.frames.last_mut() {
+        frame.tasks.push_front(Task::ConfirmSecret(button, event));
+        frame
+            .tasks
+            .push_front(Task::ConfirmPressed(button == ButtonState::Pressed));
+    }
+}
+
+fn settings_input_layer(
+    state: &mut State,
+    event: &Event,
+    dictation: bool,
+    effects: &mut Vec<Effect>,
+) -> bool {
+    if dictation || state.core.menu().is_some() {
+        return false;
+    }
+    settings_event(state, event, effects)
+}
+
+fn password_suppresses(state: &State, event: &Event) -> bool {
+    state.keyboard.password_field_active()
+        && (matches!(event, Event::Button { name, .. } if state.core.push_to_talk(*name))
+            || matches!(event, Event::Speech { .. }))
+}
+
+fn mouse_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if !state.mouse.button(event, effects) {
+        return false;
+    }
+    if effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::MouseMode(_)))
+        && let Some(frame) = state.frames.last_mut()
+    {
+        frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
+    }
+    if let Some(actions) = crate::escape_chord(&mut state.core, event) {
+        effects.extend(actions.into_iter().map(Effect::Apply));
+    }
+    true
 }
 
 fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
@@ -838,12 +1141,7 @@ fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Eff
         return;
     }
     if let Event::Button { .. } = &event {
-        let held = state.core.passthrough_push_to_talk() != [ButtonName::Select]
-            && state
-                .core
-                .passthrough_push_to_talk()
-                .iter()
-                .all(|member| state.passthrough_buttons.contains(member));
+        let held = passthrough_talk_held(state);
         if held != state.passthrough_ptt {
             state.passthrough_ptt = held;
             if state.keyboard.password_field_active() {
@@ -864,6 +1162,15 @@ fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Eff
     route_event(state, event, effects);
 }
 
+fn passthrough_talk_held(state: &State) -> bool {
+    state.core.passthrough_push_to_talk() != [ButtonName::Select]
+        && state
+            .core
+            .passthrough_push_to_talk()
+            .iter()
+            .all(|member| state.passthrough_buttons.contains(member))
+}
+
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if let Event::Button { name, state: button } = &event {
         let was_held = state.passthrough_buttons.contains(name);
@@ -871,48 +1178,65 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         if *button == ButtonState::Pressed {
             state.passthrough_buttons.push(*name);
         }
-        if state.core.passthrough_context() {
-            if *name != ButtonName::Select {
-                if matches!(state.takeback, Takeback::Holding(_)) {
-                    state.takeback = Takeback::Idle;
-                }
-            } else if *button == ButtonState::Pressed {
-                if !was_held && state.passthrough_buttons.len() == 1 {
-                    state.takeback = Takeback::Holding(Duration::ZERO);
-                }
-                if !matches!(state.takeback, Takeback::Idle) {
-                    return;
-                }
-            } else {
-                let takeback = core::mem::take(&mut state.takeback);
-                let short = matches!(takeback, Takeback::Holding(_));
-                if takeback == Takeback::Fired {
-                    return;
-                }
-                if short && state.core.passthrough() {
-                    if state.core.passthrough_push_to_talk() == [ButtonName::Select]
-                        && !state.keyboard.password_field_active()
-                        && let Some(frame) = state.frames.last_mut()
-                    {
-                        frame.tasks.push_front(Task::Speech(SpeechInput::Release));
-                        frame.tasks.push_front(Task::Speech(SpeechInput::Press));
-                    }
-                    return;
-                }
-                if short {
-                    routed_controller(
-                        state,
-                        Event::Button {
-                            name: ButtonName::Select,
-                            state: ButtonState::Pressed,
-                        },
-                        effects,
-                    );
-                }
-            }
+        if state.core.passthrough_context() && takeback_button(state, *name, *button, was_held, effects) {
+            return;
         }
     }
     routed_controller(state, event, effects);
+}
+
+fn takeback_button(
+    state: &mut State,
+    name: ButtonName,
+    button: ButtonState,
+    was_held: bool,
+    effects: &mut Vec<Effect>,
+) -> bool {
+    if name != ButtonName::Select {
+        if matches!(state.takeback, Takeback::Holding(_)) {
+            state.takeback = Takeback::Idle;
+        }
+        return false;
+    }
+    if button == ButtonState::Released {
+        return takeback_release(state, effects);
+    }
+    if !was_held && state.passthrough_buttons.len() == 1 {
+        state.takeback = Takeback::Holding(Duration::ZERO);
+    }
+    !matches!(state.takeback, Takeback::Idle)
+}
+
+fn takeback_release(state: &mut State, effects: &mut Vec<Effect>) -> bool {
+    match core::mem::take(&mut state.takeback) {
+        Takeback::Fired => true,
+        Takeback::Holding(_) if state.core.passthrough() => {
+            passthrough_view_talk(state);
+            true
+        }
+        Takeback::Holding(_) => {
+            routed_controller(
+                state,
+                Event::Button {
+                    name: ButtonName::Select,
+                    state: ButtonState::Pressed,
+                },
+                effects,
+            );
+            false
+        }
+        Takeback::Idle => false,
+    }
+}
+
+fn passthrough_view_talk(state: &mut State) {
+    if state.core.passthrough_push_to_talk() == [ButtonName::Select]
+        && !state.keyboard.password_field_active()
+        && let Some(frame) = state.frames.last_mut()
+    {
+        frame.tasks.push_front(Task::Speech(SpeechInput::Release));
+        frame.tasks.push_front(Task::Speech(SpeechInput::Press));
+    }
 }
 
 fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
@@ -935,18 +1259,6 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
     let Some(frame) = state.frames.last_mut() else {
         return;
     };
-    if state.mouse.button(&event, effects) {
-        if effects
-            .iter()
-            .any(|effect| matches!(effect, Effect::MouseMode(_)))
-        {
-            frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
-        }
-        if let Some(actions) = crate::escape_chord(&mut state.core, &event) {
-            effects.extend(actions.into_iter().map(Effect::Apply));
-        }
-        return;
-    }
     match event {
         Event::Button { name, state: button } if state.core.push_to_talk(name) => {
             frame.tasks.push_front(Task::Speech(match button {
@@ -970,24 +1282,8 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
 
 /// The open keyboard takes speech as dictation and most buttons; "keyboard" opens it.
 fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
-    if let Event::Button { name, state: button } = event {
-        if state.opening_button == Some(*name) {
-            if *button == ButtonState::Released {
-                state.opening_button = None;
-            }
-            return true;
-        }
-        let (mode, opening) = state.core.keyboard_config();
-        if !state.keyboard.is_open()
-            && (state.text_field || state.keyboard.terminal() || mode == tehuti_protocol::OnTextField::Open)
-            && mode != tehuti_protocol::OnTextField::Off
-            && *name == opening
-            && *button == ButtonState::Pressed
-        {
-            state.opening_button = Some(*name);
-            state.keyboard.open();
-            return true;
-        }
+    if keyboard_opening(state, event) {
+        return true;
     }
     match event {
         Event::Speech { text } if state.keyboard.is_open() => {
@@ -1004,15 +1300,7 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
             name: ButtonName::Start,
             ..
         } if state.keyboard.is_open() || state.keyboard.holds(ButtonName::Start) => {
-            if let Some(actions) = crate::escape_chord(&mut state.core, event) {
-                effects.extend(actions.into_iter().map(Effect::Apply));
-            }
-            let guide_held = state.core.guide_held();
-            let response = state.keyboard.button(ButtonName::Start, start_state(event), true);
-            if guide_held {
-                state.keyboard.cancel_send();
-            }
-            send_response(response, effects)
+            keyboard_start(state, event, effects)
         }
         Event::Button { name, state: button } => {
             let shoulders_move_caret = state.core.level() == crate::Level::App;
@@ -1021,6 +1309,45 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
         }
         Event::Speech { .. } | Event::Focus { .. } | Event::Tick { .. } => false,
     }
+}
+
+fn keyboard_start(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if let Some(actions) = crate::escape_chord(&mut state.core, event) {
+        effects.extend(actions.into_iter().map(Effect::Apply));
+    }
+    let guide_held = state.core.guide_held();
+    let response = state.keyboard.button(ButtonName::Start, start_state(event), true);
+    if guide_held {
+        state.keyboard.cancel_send();
+    }
+    send_response(response, effects)
+}
+
+fn keyboard_opening(state: &mut State, event: &Event) -> bool {
+    let Event::Button { name, state: button } = event else {
+        return false;
+    };
+    if state.opening_button == Some(*name) {
+        if *button == ButtonState::Released {
+            state.opening_button = None;
+        }
+        return true;
+    }
+    if configured_keyboard_press(state, *name, *button) {
+        state.opening_button = Some(*name);
+        state.keyboard.open();
+        return true;
+    }
+    false
+}
+
+fn configured_keyboard_press(state: &State, name: ButtonName, button: ButtonState) -> bool {
+    let (mode, opening) = state.core.keyboard_config();
+    !state.keyboard.is_open()
+        && (state.text_field || state.keyboard.terminal() || mode == tehuti_protocol::OnTextField::Open)
+        && mode != tehuti_protocol::OnTextField::Off
+        && name == opening
+        && button == ButtonState::Pressed
 }
 
 const fn start_state(event: &Event) -> ButtonState {

@@ -30,6 +30,10 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) const fn active(&self) -> bool {
+        self.active
+    }
+
     pub(super) fn button(&mut self, event: &Event, effects: &mut Vec<Effect>) -> bool {
         let Event::Button { name, state } = event else {
             return false;

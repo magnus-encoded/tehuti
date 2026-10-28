@@ -15,6 +15,7 @@
 | Fallback | The final routing layer, which discards input that earlier layers do not consume. |
 | Pad role | A button’s interaction meaning: Confirm accepts, Back cancels or returns, and Keyboard opens text entry unless configuration chooses another button. |
 | Pad family | The role positions and printed button glyphs shared by a group of controllers. |
+| Overlay stack | The fixed order in which overlays take the pad and appear above lower controls. Opening an interactive overlay releases held input below it. |
 | Mapping ticker | An opt-in scrolling line on the bar listing the focused context's button and phrase mappings as coloured pad symbols, keycaps and icons for recognisable actions. Time moves it only while it is shown. |
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |

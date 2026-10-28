@@ -6,15 +6,7 @@ use std::rc::Rc;
 
 use smithay::{
     backend::{
-        renderer::{
-            ImportDma,
-            damage::OutputDamageTracker,
-            element::{
-                Kind,
-                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
-            },
-            gles::GlesRenderer,
-        },
+        renderer::{ImportDma, damage::OutputDamageTracker, gles::GlesRenderer},
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
@@ -37,10 +29,7 @@ struct Nested {
     output: Output,
     damage_tracker: OutputDamageTracker,
     stop: LoopSignal,
-    notice: MemoryRenderBuffer,
-    notice_text: String,
-    bar: tehuti::bar::Buffer,
-    keyboard: tehuti::osk::Buffer,
+    overlays: tehuti::overlays::Overlays,
 }
 
 #[expect(
@@ -101,10 +90,7 @@ pub(crate) fn insert(
         damage_tracker: OutputDamageTracker::from_output(&output),
         output,
         stop: event_loop.get_signal(),
-        notice: tehuti::notice::speech_notice_buffer(),
-        notice_text: "NO SPEECH MAPPING".into(),
-        bar: tehuti::bar::Buffer::default(),
-        keyboard: tehuti::osk::Buffer::default(),
+        overlays: tehuti::overlays::Overlays::default(),
     };
     let _winit_token = event_loop
         .handle()
@@ -159,15 +145,7 @@ impl Nested {
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
     ) {
         let confirmation_pending = data.compositor.secret_confirmation_text().is_some();
-        let visible_notice = data.compositor.visible_notice_text();
-        if let Some(text) = &visible_notice
-            && text != &self.notice_text
-        {
-            self.notice = tehuti::notice::notice_buffer(text);
-            self.notice_text.clone_from(text);
-        }
-        let (confirmation_element_included, output_drew) =
-            self.draw_bound_output(data, visible_notice.is_some(), confirmation_pending);
+        let (confirmation_element_included, output_drew) = self.draw_bound_output(data, confirmation_pending);
         let submit_succeeded = match self
             .backend
             .borrow_mut()
@@ -184,60 +162,29 @@ impl Nested {
         }
     }
 
-    fn draw_bound_output(
-        &mut self,
-        data: &LoopData,
-        visible_notice: bool,
-        confirmation_pending: bool,
-    ) -> (bool, bool) {
+    fn draw_bound_output(&mut self, data: &LoopData, confirmation_pending: bool) -> (bool, bool) {
         let mut output_drew = false;
         let mut confirmation_element_included = false;
         match self.backend.borrow_mut().bind() {
             Ok((renderer, mut framebuffer)) => {
-                let mut notices = if visible_notice {
-                    match MemoryRenderBufferRenderElement::from_buffer(
-                        renderer,
-                        (16.0, 16.0),
-                        &self.notice,
-                        None,
-                        None,
-                        None,
-                        Kind::Unspecified,
-                    ) {
-                        Ok(element) => {
-                            confirmation_element_included = confirmation_pending;
-                            vec![element]
-                        }
-                        Err(error) => {
-                            warn!(?error, "notice render failed");
-                            Vec::new()
-                        }
-                    }
-                } else {
-                    Vec::new()
-                };
                 let clock = chrono::Local::now().format("%H:%M").to_string();
-                match self
-                    .bar
-                    .element(renderer, &self.output, &data.compositor.voice_bar(), &clock)
+                let overlays = match self
+                    .overlays
+                    .elements(renderer, &self.output, &data.compositor, &clock)
                 {
-                    Ok(Some(element)) => notices.push(element),
-                    Ok(None) => {}
-                    Err(error) => warn!(?error, "bar render failed"),
-                }
-                match tehuti::settings::element(renderer, &data.compositor, &self.output) {
-                    Ok(Some(element)) => notices.insert(0, element),
-                    Ok(None) => {}
-                    Err(error) => warn!(?error, "settings render failed"),
-                }
-                append_keyboard(&mut self.keyboard, &self.output, renderer, data, &mut notices);
-                append_cursor(renderer, data, &self.output, &mut notices);
+                    Ok(overlays) => overlays,
+                    Err(error) => {
+                        warn!(?error, "overlay render failed");
+                        return (false, false);
+                    }
+                };
+                confirmation_element_included = confirmation_pending && overlays.notice_included;
                 match tehuti::wallpaper::render_output(
                     &self.output,
                     renderer,
                     &mut framebuffer,
                     &data.compositor,
-                    &notices,
+                    &overlays.elements,
                     &mut self.damage_tracker,
                 ) {
                     Ok(result) if result.damage.is_some() => output_drew = true,
@@ -248,41 +195,5 @@ impl Nested {
             Err(error) => warn!(?error, "bind failed"),
         }
         (confirmation_element_included, output_drew)
-    }
-}
-
-fn append_keyboard(
-    keyboard: &mut tehuti::osk::Buffer,
-    output: &Output,
-    renderer: &mut GlesRenderer,
-    data: &LoopData,
-    notices: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
-) {
-    match keyboard.element(renderer, output, data.compositor.on_screen_keyboard()) {
-        Ok(Some(element)) => notices.push(element),
-        Ok(None) => {}
-        Err(error) => warn!(?error, "keyboard render failed"),
-    }
-}
-
-fn append_cursor(
-    renderer: &mut GlesRenderer,
-    data: &LoopData,
-    output: &Output,
-    notices: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
-) {
-    if let Some(location) = data.compositor.cursor_on(output) {
-        match MemoryRenderBufferRenderElement::from_buffer(
-            renderer,
-            location,
-            &tehuti::notice::cursor_buffer(),
-            None,
-            None,
-            None,
-            Kind::Cursor,
-        ) {
-            Ok(element) => notices.insert(0, element),
-            Err(error) => warn!(?error, "cursor render failed"),
-        }
     }
 }

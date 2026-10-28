@@ -1300,6 +1300,29 @@ proptest! {
 }
 
 #[test]
+fn configured_button_opens_the_keyboard() {
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'editor'\n[buttons]\n[keyboard]\non_text_field = 'button'\nbutton = 'west'",
+    )
+    .unwrap();
+    let mut world = World::default();
+    let state = configured(vec![context], "editor");
+    let state = world.run(
+        state,
+        Input::TextField {
+            active: true,
+            changed: true,
+            kind: crate::keyboard::FieldKind::Normal,
+        },
+    );
+    let state = tap_button(&mut world, state, ButtonName::West);
+    assert!(
+        state.keyboard().is_open(),
+        "the configured opening button opens the keyboard"
+    );
+}
+
+#[test]
 fn inactive_fields_pass_the_opening_button_to_the_context() {
     let context =
         tehuti_protocol::parse_context("app_id = 'editor'\n[buttons]\nnorth = { key = 'tab' }").unwrap();
@@ -1353,7 +1376,7 @@ fn password_fields_in_context(base: &State) {
             },
         );
         if open {
-            state = world.run(state, keyboard_button(ButtonName::North, ButtonState::Pressed));
+            state = world.run(state, pad_button(ButtonName::North, ButtonState::Pressed));
         }
         world.trace.clear();
         for event in [
@@ -1397,13 +1420,6 @@ fn password_fields_in_context(base: &State) {
                     ..
                 }
         )));
-    }
-}
-
-fn keyboard_button(name: ButtonName, state: ButtonState) -> Input {
-    Input::Event {
-        event: Event::Button { name, state },
-        elapsed: Duration::ZERO,
     }
 }
 
@@ -3002,13 +3018,14 @@ fn opening_the_system_menu_releases_a_held_key() {
 }
 
 #[test]
-fn a_release_the_open_keyboard_consumes_still_lifts_the_held_key() {
+fn opening_the_keyboard_lifts_the_held_key_before_its_release() {
     let mut world = World::default();
     let state = held_emulator(&mut world);
     let state = with_open_keyboard(&mut world, state);
-    assert_eq!(held_key_effects(&world), Vec::new());
-    let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Released));
     assert_eq!(held_key_effects(&world), vec![Action::KeyUp { key: KeyName::X }]);
+    world.trace.clear();
+    let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Released));
+    assert_eq!(held_key_effects(&world), Vec::new());
 }
 
 proptest! {
@@ -3374,27 +3391,62 @@ proptest! {
     }
 }
 
-#[test]
-fn configured_button_opens_the_keyboard() {
-    let context = tehuti_protocol::parse_context(
-        "app_id = 'editor'\n[buttons]\n[keyboard]\non_text_field = 'button'\nbutton = 'west'",
-    )
-    .unwrap();
-    let mut world = World::default();
-    let state = configured(vec![context], "editor");
-    let state = world.run(
-        state,
-        Input::TextField {
-            active: true,
-            changed: true,
-            kind: crate::keyboard::FieldKind::Normal,
-        },
-    );
-    let state = tap_button(&mut world, state, ButtonName::West);
-    assert!(
-        state.keyboard().is_open(),
-        "the configured opening button opens the keyboard"
-    );
+proptest! {
+    #[test]
+    fn opening_an_overlay_releases_application_keys(
+        mapping in prop::sample::select(vec![("south", ButtonName::South), ("west", ButtonName::West), ("dpad_up", ButtonName::DpadUp)]),
+        key in prop::sample::select(vec![KeyName::X, KeyName::Z]),
+        overlay in 0_u8..5,
+    ) {
+        let (button, name) = mapping;
+        let key_name = if key == KeyName::X { "x" } else { "z" };
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = 'editor'\n[buttons]\n{button} = {{ key = '{key_name}', hold = true }}",
+        )).unwrap();
+        let mut world = World::default();
+        let state = configured(vec![context], "editor");
+        let state = world.run(state, pad_button(name, ButtonState::Pressed));
+        prop_assert_eq!(held_key_effects(&world), vec![Action::KeyDown { key }]);
+        world.trace.clear();
+        let state = match overlay {
+            0 => hold_guide(&mut world, state),
+            1 => world.run(state, speech_event("pop the hood")),
+            2 => world.run(state, speech_event("keyboard")),
+            3 => {
+                let state = tap_button(&mut world, state, ButtonName::Select);
+                tap_button(&mut world, state, ButtonName::Select)
+            }
+            _ => world.run(state, Input::SecretPrompt(true)),
+        };
+        prop_assert_eq!(held_key_effects(&world), vec![Action::KeyUp { key }]);
+        world.trace.clear();
+        let _state = world.run(state, pad_button(name, ButtonState::Released));
+        prop_assert!(held_key_effects(&world).is_empty(), "the later physical release is already balanced");
+    }
+
+    #[test]
+    fn opening_an_overlay_releases_the_pointer(
+        contexts in arbitrary_contexts(),
+        right in any::<bool>(),
+        overlay in 0_u8..4,
+    ) {
+        let mut world = World::default();
+        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let state = finish_view_double_tap(&mut world, state);
+        let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        let name = if right { ButtonName::East } else { ButtonName::South };
+        let button = if right { PointerButton::Right } else { PointerButton::Left };
+        let state = world.run(state, pad_button(name, ButtonState::Pressed));
+        world.trace.clear();
+        let _state = match overlay {
+            0 => hold_guide(&mut world, state),
+            1 => world.run(state, speech_event("pop the hood")),
+            2 => world.run(state, speech_event("keyboard")),
+            _ => world.run(state, Input::SecretPrompt(true)),
+        };
+        prop_assert!(world.trace.contains(&Effect::Click { button, pressed: false }), "opening releases the drag");
+        prop_assert!(!world.trace.contains(&Effect::MouseMode(false)), "opening an overlay preserves mouse mode");
+    }
 }
 
 #[test]
@@ -3420,6 +3472,42 @@ fn settings_hints_and_navigation_follow_the_connected_pad_family() {
 }
 
 #[test]
+fn interactive_views_keep_the_pad_while_a_secret_prompt_is_visible() {
+    for overlay in 0..3 {
+        let mut world = World {
+            secret_consumes: true,
+            ..World::default()
+        };
+        let state = match overlay {
+            0 => with_open_keyboard(&mut world, State::default()),
+            1 => world.run(State::default(), speech_event("pop the hood")),
+            _ => {
+                let state = tap_button(&mut world, State::default(), ButtonName::Select);
+                tap_button(&mut world, state, ButtonName::Select)
+            }
+        };
+        let state = world.run(state, Input::SecretPrompt(true));
+        world.trace.clear();
+        let state = tap_button(&mut world, state, ButtonName::South);
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::ConfirmSecret(_))),
+            "the active view keeps confirm input"
+        );
+        match overlay {
+            0 => assert_ne!(state.keyboard().draft(), ""),
+            1 => assert_eq!(state.settings().page, Page::Display),
+            _ => assert!(world.trace.contains(&Effect::Click {
+                button: PointerButton::Left,
+                pressed: true
+            })),
+        }
+    }
+}
+
+#[test]
 fn settings_back_cancels_a_mode_change_while_the_backend_applies_it() {
     let mut world = World::default();
     let state = open_display(&mut world);
@@ -3440,4 +3528,56 @@ fn settings_back_cancels_a_mode_change_while_the_backend_applies_it() {
         world.trace.contains(&Effect::SettingsMode(0)),
         "the completed change reverts after Back"
     );
+}
+
+proptest! {
+    #[test]
+    fn configured_push_to_talk_keeps_priority_over_secret_confirmation(
+        mut contexts in arbitrary_contexts(),
+        symbols in any::<bool>(),
+    ) {
+        contexts.insert(0, tehuti_protocol::parse_context(
+            "app_id = '*'\npush_to_talk = ['south']\n[buttons]",
+        ).unwrap());
+        let mut world = World { secret_consumes: true, ..World::default() };
+        let mut state = configured(contexts, "voice-test");
+        if symbols {
+            state.core_mut().set_pad_family(crate::pad::PadFamily::Symbols);
+        }
+        let state = world.run(state, Input::Speech(SpeechInput::Available));
+        let state = world.run(state, Input::SecretPrompt(true));
+        world.trace.clear();
+        let _state = tap_button(&mut world, state, ButtonName::South);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::ConfirmSecret(_))), "configured push-to-talk owns its button");
+        prop_assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Start { session: 0 })), "the press starts capture");
+        prop_assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Stop { session: 0, transcribe: true })), "the release transcribes capture");
+    }
+}
+
+proptest! {
+    #[test]
+    fn a_plugin_exit_applies_its_pending_fallback_once(
+        mut contexts in arbitrary_contexts(),
+        text in "[a-z]{1,12}",
+        plugin in 0_usize..8,
+    ) {
+        contexts.insert(0, tehuti_protocol::parse_context(&format!(
+            "app_id = 'editor'\n[buttons]\n[speech]\ndispatch = {{ text = {} }}",
+            toml::Value::String(text.clone()),
+        )).unwrap());
+        let mut world = World {
+            plugin_active: true,
+            request: Some((RequestKey { plugin, request_id: 1 }, vec![Permission::Text])),
+            ..World::default()
+        };
+        let state = world.run(configured(contexts, "editor"), speech_event("dispatch"));
+        prop_assert_eq!(state.core().pending_decisions(), 1);
+        world.trace.clear();
+        let state = world.run(state, Input::PluginExited { plugin });
+        prop_assert_eq!(state.core().pending_decisions(), 0);
+        prop_assert_eq!(&world.trace, &vec![Effect::PluginAction(Action::Text { text: Text::new(text).unwrap() })]);
+        world.trace.clear();
+        let _state = world.run(state, Input::PluginExited { plugin });
+        prop_assert!(world.trace.is_empty());
+    }
 }

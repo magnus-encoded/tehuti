@@ -645,6 +645,7 @@ pub mod windows;
 pub mod layout;
 
 pub mod bar;
+pub mod overlay;
 pub mod pad;
 pub mod ticker;
 

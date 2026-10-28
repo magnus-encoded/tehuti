@@ -347,23 +347,38 @@ impl Compositor {
 
     #[must_use]
     pub fn visible_notice_text(&self) -> Option<String> {
-        if let Some(menu) = self.dispatch.core().menu() {
-            return Some(menu.text());
+        self.visible_notice().map(|(_, text)| text)
+    }
+
+    #[must_use]
+    pub fn visible_notice(&self) -> Option<(tehuti_core::overlay::Overlay, String)> {
+        tehuti_core::overlay::STACK
+            .into_iter()
+            .find_map(|layer| self.overlay_notice(layer).map(|text| (layer, text)))
+    }
+
+    fn overlay_notice(&self, layer: tehuti_core::overlay::Overlay) -> Option<String> {
+        use tehuti_core::overlay::Overlay;
+        match layer {
+            Overlay::SystemMenu => self.dispatch.core().menu().map(tehuti_core::menu::Menu::text),
+            Overlay::Secret => self.secret_confirmation_text(),
+            Overlay::SecretUnavailable => self
+                .secret_notice_until
+                .is_some_and(|until| Instant::now() < until)
+                .then(|| "SECRET DELIVERY UNAVAILABLE".into()),
+            Overlay::Notice => self.speech_notice_visible().then(|| {
+                self.notice_text
+                    .clone()
+                    .unwrap_or_else(|| "NO SPEECH MAPPING".into())
+            }),
+            Overlay::MouseNotice => self.mouse_mode.then(|| "MOUSE MODE".into()),
+            Overlay::Cursor
+            | Overlay::Settings
+            | Overlay::Bar
+            | Overlay::Keyboard
+            | Overlay::Mouse
+            | Overlay::Application => None,
         }
-        self.secret_confirmation_text()
-            .or_else(|| {
-                self.secret_notice_until
-                    .is_some_and(|until| Instant::now() < until)
-                    .then(|| "SECRET DELIVERY UNAVAILABLE".into())
-            })
-            .or_else(|| {
-                self.speech_notice_visible().then(|| {
-                    self.notice_text
-                        .clone()
-                        .unwrap_or_else(|| "NO SPEECH MAPPING".into())
-                })
-            })
-            .or_else(|| self.mouse_mode.then(|| "MOUSE MODE".into()))
     }
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
@@ -613,6 +628,7 @@ impl Compositor {
             | DispatchInput::PluginExited { .. }
             | DispatchInput::TextField { .. }
             | DispatchInput::ControllerDisconnected
+            | DispatchInput::SecretPrompt(_)
             | DispatchInput::Sticks(_)
             | DispatchInput::PluginActive(_)
             | DispatchInput::PluginRequest(_)
@@ -977,6 +993,7 @@ impl Compositor {
                 self.move_pointer();
             }
             DispatchEffect::PollSources => {
+                self.sync_secret_prompt();
                 self.poll_secret_lookup();
                 self.poll_launchers();
                 self.desktop_entries.poll();
@@ -1035,6 +1052,7 @@ impl Compositor {
             self.secret_surface_id = self.secret_surface_id.wrapping_add(1);
             self.secret_focus_surface = focus;
         }
+        self.sync_secret_prompt();
     }
 
     #[must_use]
@@ -1090,7 +1108,15 @@ impl Compositor {
             self.secret_confirmation.frame_submitted = false;
             self.secret_confirmation.armed = false;
         }
+        self.sync_secret_prompt();
         requested
+    }
+
+    fn sync_secret_prompt(&mut self) {
+        let visible = self.secret_confirmation_text().is_some();
+        if visible != self.dispatch.secret_prompt_visible() {
+            let _rejection = self.dispatch(DispatchInput::SecretPrompt(visible));
+        }
     }
 
     #[must_use]
@@ -1173,6 +1199,7 @@ impl Compositor {
             return true;
         };
         self.secret_confirmation_label = None;
+        self.sync_secret_prompt();
         let Some(mut provider) = self.secret_provider.take() else {
             self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
             return true;
