@@ -85,6 +85,13 @@ echo "$now"
         self.assertEqual(code, 0)
         self.assertEqual(trace, ['tehuti', 'plasma', 'tehuti'])
 
+    def test_restart_relaunches_without_plasma_or_failure_lock(self):
+        code, trace, log = self.run_session([75, 75, 75, 21])
+        self.assertEqual(code, 0)
+        self.assertEqual(trace, ['tehuti'] * 4)
+        self.assertEqual(log.count('Tehuti exited with status 75'), 3)
+        self.assertNotIn('staying in Plasma', log)
+
     def test_crash_and_term_open_plasma(self):
         for status in [1, 139, 143, 0]:
             with self.subTest(status=status):

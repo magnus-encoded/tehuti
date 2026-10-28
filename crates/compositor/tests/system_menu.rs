@@ -90,6 +90,37 @@ mod system_menu {
     }
 
     #[test]
+    fn confirmed_restart_stops_the_compositor_without_a_menu_config() {
+        use core::time::Duration;
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::state::Compositor;
+        use tehuti_core::controller::Input;
+        use tehuti_protocol::{ButtonName, ButtonState, Event};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let pad = |target: &mut Compositor, name, state| {
+            target.controller_input(Input::Event(Event::Button { name, state }));
+        };
+        assert!(!compositor.restart_requested());
+        pad(&mut compositor, ButtonName::Guide, ButtonState::Pressed);
+        compositor.handle(&Event::Tick {
+            elapsed: Duration::from_millis(500),
+        });
+        pad(&mut compositor, ButtonName::Guide, ButtonState::Released);
+        pad(&mut compositor, ButtonName::DpadDown, ButtonState::Pressed);
+        pad(&mut compositor, ButtonName::DpadDown, ButtonState::Released);
+        pad(&mut compositor, ButtonName::South, ButtonState::Pressed);
+        assert!(!compositor.quit_requested());
+        assert!(!compositor.restart_requested());
+        pad(&mut compositor, ButtonName::South, ButtonState::Released);
+        pad(&mut compositor, ButtonName::South, ButtonState::Pressed);
+        assert!(compositor.quit_requested());
+        assert!(compositor.restart_requested());
+        assert!(compositor.visible_notice_text().is_none());
+    }
+
+    #[test]
     fn settings_entry_opens_the_view_in_place_of_the_on_screen_keyboard() {
         use core::time::Duration;
         use smithay::reexports::wayland_server::Display;
@@ -111,7 +142,7 @@ mod system_menu {
             elapsed: Duration::from_millis(500),
         });
         pad(&mut compositor, ButtonName::Guide, ButtonState::Released);
-        for name in [ButtonName::DpadDown; 5].into_iter().chain([ButtonName::South]) {
+        for name in [ButtonName::DpadDown; 6].into_iter().chain([ButtonName::South]) {
             pad(&mut compositor, name, ButtonState::Pressed);
             pad(&mut compositor, name, ButtonState::Released);
         }

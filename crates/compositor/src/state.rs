@@ -97,6 +97,7 @@ pub struct Compositor {
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    restart_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
     secret_gate: tehuti_core::secret::SecretConfirmationGate,
     secret_provider: Option<RedactedSecretProvider>,
@@ -205,6 +206,7 @@ impl Compositor {
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
+            restart_requested: false,
             speech_process: None,
             secret_gate: tehuti_core::secret::SecretConfirmationGate::new(),
             secret_provider: Some(RedactedSecretProvider(Box::new(
@@ -944,6 +946,12 @@ impl Compositor {
     }
 
     fn run_menu_command(&mut self, command: tehuti_core::menu::Command) {
+        if command == tehuti_core::menu::Command::Restart {
+            self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
+            self.restart_requested = true;
+            self.quit_requested = true;
+            return;
+        }
         if let Err(error) = crate::system_menu::execute(command) {
             tracing::warn!(?command, %error, "system menu command failed");
             self.show_notice("MENU COMMAND UNAVAILABLE");
@@ -1040,6 +1048,11 @@ impl Compositor {
     #[must_use]
     pub const fn quit_requested(&self) -> bool {
         self.quit_requested
+    }
+
+    #[must_use]
+    pub const fn restart_requested(&self) -> bool {
+        self.restart_requested
     }
 
     /// Requests a one-use controller confirmation for the focused surface.

@@ -16,6 +16,7 @@ while :; do
         XDG_CURRENT_DESKTOP=Tehuti XDG_SESSION_DESKTOP=Tehuti "$binary" "$contexts" "$@" || status=$?
         echo "Tehuti exited with status $status"
         [ "$status" -ne 21 ] || exit 0
+        [ "$status" -ne 75 ] || continue
         if [ "$status" -ne 20 ]; then
             now=$(date +%s) || now=0
             recent=''

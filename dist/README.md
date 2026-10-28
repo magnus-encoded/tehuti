@@ -73,12 +73,15 @@ select an entry, A to select, and B or Guide to close. Session and power actions
 ask for a second A press; release A between presses. Guide+Start held together
 for three seconds remains the emergency escape while the menu is open.
 
+RESTART TEHUTI exits cleanly with status 75. The session launcher immediately
+starts the compositor again with the same binary, contexts and arguments.
+
 Menu commands come from `$XDG_CONFIG_HOME/tehuti/menu.toml` (or
 `$HOME/.config/tehuti/menu.toml`). `TEHUTI_MENU_CONFIG` overrides the file path.
 The file uses TOML, matching context.toml. Each entry is an argument list,
 executed without a shell. Missing or empty
 entries stay visible but report unavailable when selected. No session or power
-commands run by default. `examples/menu.toml` shows neutral placeholder session
+commands run by default; RESTART TEHUTI is built in. `examples/menu.toml` shows neutral placeholder session
 helpers and a task monitor in a terminal; replace them with commands appropriate
 for the installed session. The `plasma` helper must arrange the desktop switch.
 
