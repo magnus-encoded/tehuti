@@ -809,3 +809,21 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn synced_replacement_emits_an_edit_even_when_text_is_unchanged() {
+    let mut keyboard = opened();
+    keyboard.set_surrounding(Some(("qéq".into(), 1, 0)));
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.draft(), "qéq");
+    assert_eq!(
+        keyboard.take_edits(),
+        vec![Edit {
+            before: 0,
+            after: 0,
+            text: "q".into(),
+            caret: 1,
+        }]
+    );
+    assert_eq!(keyboard.take_edits(), vec![]);
+}

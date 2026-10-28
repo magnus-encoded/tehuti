@@ -628,8 +628,16 @@ impl Compositor {
         let mut input = input;
         let mut rejection = None;
         loop {
+            let previous = self
+                .dispatch
+                .keyboard()
+                .application_anchor()
+                .map(|anchor| (self.dispatch.keyboard().caret(), anchor));
             let (next, effects) = tehuti_core::dispatch::step(core::mem::take(&mut self.dispatch), input);
             self.dispatch = next;
+            if let Some(previous) = previous {
+                self.sync_keyboard_edit(previous);
+            }
             let mut reply = DispatchInput::Resume;
             for effect in effects {
                 if let DispatchEffect::PluginRejected(rejected) = effect {
@@ -647,6 +655,59 @@ impl Compositor {
                 return rejection;
             }
             input = reply;
+        }
+    }
+
+    pub(crate) fn set_keyboard_surrounding(&mut self, surrounding: Option<(String, usize, usize)>) {
+        self.dispatch.set_keyboard_surrounding(surrounding);
+    }
+
+    fn sync_keyboard_edit(&mut self, previous: (usize, usize)) {
+        use tehuti_core::keyboard::{Chord, ChordKey, Modifiers};
+        let edits = self.dispatch.take_keyboard_edits();
+        let edited = !edits.is_empty();
+        let mut position = previous.0;
+        for edit in edits {
+            self.text_input.edit_keyboard(&edit);
+            position = edit.caret;
+        }
+        let current = self.dispatch.keyboard();
+        if !current.synced() || !current.is_open() {
+            return;
+        }
+        let selection = previous.0.min(previous.1)..previous.0.max(previous.1);
+        let target = current.caret();
+        let key = if target < position {
+            tehuti_protocol::KeyName::Left
+        } else {
+            tehuti_protocol::KeyName::Right
+        };
+        if !edited && previous.0 == target {
+            return;
+        }
+        if !edited && !selection.is_empty() {
+            position = if target < position {
+                selection.start
+            } else {
+                selection.end
+            };
+            self.tap_chord(Chord {
+                key: ChordKey::Named(key),
+                modifiers: Modifiers::default(),
+            });
+        }
+        let count = self
+            .dispatch
+            .keyboard()
+            .draft()
+            .get(target.min(position)..target.max(position))
+            .map_or(0, |text| text.chars().count());
+        self.dispatch.keyboard_edit_applied();
+        for _ in 0..count {
+            self.tap_chord(Chord {
+                key: ChordKey::Named(key),
+                modifiers: Modifiers::default(),
+            });
         }
     }
 
