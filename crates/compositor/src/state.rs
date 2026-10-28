@@ -61,7 +61,7 @@ impl core::fmt::Debug for RedactedSecretProvider {
 struct SecretConfirmationState {
     frame_submitted: bool,
     armed: bool,
-    south_pressed: bool,
+    confirm_pressed: bool,
 }
 
 #[derive(Debug)]
@@ -265,7 +265,7 @@ impl Compositor {
     }
 
     /// Names ticker buttons after the pad that sent the latest input.
-    pub fn set_pad_family(&mut self, family: tehuti_core::ticker::PadFamily) {
+    pub fn set_pad_family(&mut self, family: tehuti_core::pad::PadFamily) {
         self.dispatch.core_mut().set_pad_family(family);
     }
 
@@ -909,7 +909,7 @@ impl Compositor {
             | DispatchEffect::MouseMode(_)
             | DispatchEffect::PollSources
             | DispatchEffect::Chord(_)
-            | DispatchEffect::SouthPressed(_)
+            | DispatchEffect::ConfirmPressed(_)
             | DispatchEffect::ResetSecretFocus
             | DispatchEffect::Apply(_)
             | DispatchEffect::PluginAction(_)
@@ -982,7 +982,7 @@ impl Compositor {
                 self.desktop_entries.poll();
                 self.poll_microphones();
             }
-            DispatchEffect::SouthPressed(pressed) => self.secret_confirmation.south_pressed = pressed,
+            DispatchEffect::ConfirmPressed(pressed) => self.secret_confirmation.confirm_pressed = pressed,
             DispatchEffect::ResetSecretFocus => {
                 self.reset_secret_confirmation_for_focus();
             }
@@ -1111,7 +1111,7 @@ impl Compositor {
     pub fn note_secret_confirmation_frame_submitted(&mut self) {
         if self.secret_confirmation_text().is_some() {
             self.secret_confirmation.frame_submitted = true;
-            self.secret_confirmation.armed = !self.secret_confirmation.south_pressed;
+            self.secret_confirmation.armed = !self.secret_confirmation.confirm_pressed;
         }
     }
 
@@ -1142,17 +1142,17 @@ impl Compositor {
         }
         match state {
             tehuti_protocol::ButtonState::Released => {
-                self.secret_confirmation.south_pressed = false;
+                self.secret_confirmation.confirm_pressed = false;
                 if self.secret_confirmation.frame_submitted {
                     self.secret_confirmation.armed = true;
                 }
             }
             tehuti_protocol::ButtonState::Pressed if self.secret_confirmation.armed => {
-                self.secret_confirmation.south_pressed = true;
+                self.secret_confirmation.confirm_pressed = true;
                 self.secret_confirmation.armed = false;
                 let _consumed = self.confirm_pending_secret();
             }
-            tehuti_protocol::ButtonState::Pressed => self.secret_confirmation.south_pressed = true,
+            tehuti_protocol::ButtonState::Pressed => self.secret_confirmation.confirm_pressed = true,
         }
         true
     }

@@ -9,8 +9,8 @@ use crate::GLOBAL_APP_ID;
 pub enum ButtonOwner {
     /// The escape chord consumes every Guide press and release.
     EscapeChord,
-    /// The global layer sends Enter for a South press that no focused context maps, so the
-    /// global context's own South mapping never fires. A focused context's South replaces it.
+    /// The global layer sends Enter for an unmapped Confirm press, so the global
+    /// context's own Confirm mapping never fires. A focused mapping replaces it.
     GlobalEnter,
     /// The global context's `push_to_talk` list records speech with the button.
     PushToTalk,
@@ -37,11 +37,17 @@ const GLOBAL_ENTER: Action = Action::Key {
 /// Lists the shadowed contexts and button mappings of `contexts`, given in load order.
 ///
 /// Indices refer to `contexts`. Button mappings of a shadowed context are not listed, nor is
-/// a global South mapping to a plain Enter, which matches what the global layer sends.
+/// a global Confirm mapping to a plain Enter, which matches what the global layer sends.
 /// Modal layers that take buttons only while open (on-screen keyboard, mouse mode, secret
 /// confirmation, settings pages) are not static shadowing and are not reported.
 #[must_use]
 pub fn shadowed(contexts: &[Context]) -> Vec<Shadowing> {
+    shadowed_for_pad(contexts, crate::pad::PadFamily::default())
+}
+
+/// Lists unreachable mappings for the connected pad's roles.
+#[must_use]
+pub fn shadowed_for_pad(contexts: &[Context], pad: crate::pad::PadFamily) -> Vec<Shadowing> {
     let push_to_talk = |button: ButtonName| {
         contexts
             .iter()
@@ -68,7 +74,8 @@ pub fn shadowed(contexts: &[Context]) -> Vec<Shadowing> {
                     ButtonOwner::EscapeChord
                 } else if push_to_talk(button) {
                     ButtonOwner::PushToTalk
-                } else if button == ButtonName::South && context.app_id() == GLOBAL_APP_ID {
+                } else if button == pad.button(crate::pad::Role::Confirm) && context.app_id() == GLOBAL_APP_ID
+                {
                     if context.action_for(button) == Some(GLOBAL_ENTER) {
                         return None;
                     }

@@ -89,7 +89,7 @@ impl World {
                     | Effect::MouseMode(_)
                     | Effect::PollSources
                     | Effect::Chord(_)
-                    | Effect::SouthPressed(_)
+                    | Effect::ConfirmPressed(_)
                     | Effect::ResetSecretFocus
                     | Effect::Apply(_)
                     | Effect::PluginAction(_)
@@ -262,7 +262,7 @@ proptest! {
             prop_assert!(routed.is_some_and(|routed| supervisions[1] < routed));
         }
         if south {
-            let pressed = position(trace, |effect| matches!(effect, Effect::SouthPressed(_)));
+            let pressed = position(trace, |effect| matches!(effect, Effect::ConfirmPressed(_)));
             let confirm = position(trace, |effect| matches!(effect, Effect::ConfirmSecret(_)));
             prop_assert!(supervisions[1] < pressed && pressed < confirm);
         }
@@ -3394,5 +3394,50 @@ fn configured_button_opens_the_keyboard() {
     assert!(
         state.keyboard().is_open(),
         "the configured opening button opens the keyboard"
+    );
+}
+
+#[test]
+fn settings_hints_and_navigation_follow_the_connected_pad_family() {
+    let mut world = World::default();
+    let mut state = State::default();
+    state.core_mut().set_pad_family(crate::pad::PadFamily::Symbols);
+    let state = world.run(state, speech_event("pop the hood"));
+    assert_eq!(
+        state.settings().button_hint(),
+        "D-PAD: MOVE   Cross: OPEN   Circle: CLOSE"
+    );
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().page, Page::Display);
+    assert_eq!(
+        state.settings().button_hint(),
+        "D-PAD: MOVE   Cross: APPLY   Circle: BACK"
+    );
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert_eq!(state.settings().page, Page::Categories);
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(!state.settings().open);
+}
+
+#[test]
+fn settings_back_cancels_a_mode_change_while_the_backend_applies_it() {
+    let mut world = World::default();
+    let state = open_display(&mut world);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert!(world.trace.contains(&Effect::SettingsMode(1)));
+    let state = settings_button(&mut world, state, ButtonName::West);
+    assert!(
+        state.settings().open,
+        "an unrelated button keeps the pending view open"
+    );
+    let state = settings_button(&mut world, state, ButtonName::East);
+    assert!(!state.settings().open, "Back closes the pending view");
+    world.trace.clear();
+    let _state = world.run(state, Input::ModeApplied(Some(1)));
+    assert!(
+        world.trace.contains(&Effect::SettingsMode(0)),
+        "the completed change reverts after Back"
     );
 }

@@ -6,13 +6,15 @@
 | Dispatch | The pure function `dispatch::step(state, input) -> (state, effects)` that fixes the order of routing work for one tick, button, speech or focus input. It calls the step, the plugin step and the speech step. |
 | Effect | Work dispatch asks the compositor to carry out. A query effect waits for its reply input before dispatch continues. |
 | Layer | One stage of input routing. The escape chord runs first, then the columns level for LB and RB, the global layer, held keys, the active context and the fallback; consumption stops routing. |
-| Global layer | The fixed mapping that applies in every application. It maps South (A) to an Enter tap by default; an active context that maps South replaces it. |
+| Global layer | The fixed mapping that applies in every application. Confirm sends an Enter tap by default; an active context mapping of that button replaces it. |
 | Held key | A key a `hold = true` button mapping keeps down from the button's press to its release, or until focus, a disconnect or an overlay releases it. |
 | Consumed | An event handled by a layer, with or without an action. Later layers never see it. |
 | Context | A set of input mappings for one application id. |
 | Active context | The context selected for the focused window's application id, or none when no context matches. |
 | Global context | The context with application id `*`. Its mapped buttons and phrases apply wherever the active context maps none; a phrase it maps beats the active context's `unmatched_speech` typing. |
 | Fallback | The final routing layer, which discards input that earlier layers do not consume. |
+| Pad role | A button’s interaction meaning: Confirm accepts, Back cancels or returns, and Keyboard opens text entry unless configuration chooses another button. |
+| Pad family | The role positions and printed button glyphs shared by a group of controllers. |
 | Mapping ticker | An opt-in scrolling line on the bar listing the focused context's button and phrase mappings as coloured pad symbols, keycaps and icons for recognisable actions. Time moves it only while it is shown. |
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |
@@ -24,5 +26,5 @@
 
 The system menu opens after holding Guide for half a second. A shorter tap
 keeps switching the focus level. The menu consumes controller input before the
-keyboard, mouse mode, contexts and plugins. B or Guide closes it. Session and
-power commands require confirmation with a second A press.
+keyboard, mouse mode, contexts and plugins. Back or Guide closes it. Session and
+power commands require confirmation with a second Confirm press.

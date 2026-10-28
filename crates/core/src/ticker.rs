@@ -17,78 +17,7 @@ pub const REPEAT_GAP: usize = 48;
 /// Most phrases a group of synonyms shows before it is cut short.
 const PHRASES_SHOWN: usize = 3;
 
-/// The button names printed on a pad, chosen by its USB vendor.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PadFamily {
-    #[default]
-    Letters,
-    Symbols,
-}
-
-impl PadFamily {
-    #[must_use]
-    pub const fn for_vendor(vendor: u16) -> Self {
-        match vendor {
-            0x054c => Self::Symbols,
-            _ => Self::Letters,
-        }
-    }
-
-    #[must_use]
-    pub const fn label(self, button: ButtonName) -> &'static str {
-        match (self, button) {
-            (Self::Letters, ButtonName::South) => "A",
-            (Self::Letters, ButtonName::East) => "B",
-            (Self::Letters, ButtonName::North) => "Y",
-            (Self::Letters, ButtonName::West) => "X",
-            (Self::Letters, ButtonName::LeftBumper) => "LB",
-            (Self::Letters, ButtonName::RightBumper) => "RB",
-            (Self::Letters, ButtonName::Select) => "View",
-            (Self::Letters, ButtonName::Start) => "Menu",
-            (_, ButtonName::Guide) => "Guide",
-            (Self::Letters, ButtonName::Record) | (Self::Symbols, ButtonName::Select) => "Share",
-            (Self::Letters, ButtonName::LeftStick) => "LS",
-            (Self::Letters, ButtonName::RightStick) => "RS",
-            (Self::Symbols, ButtonName::South) => "Cross",
-            (Self::Symbols, ButtonName::East) => "Circle",
-            (Self::Symbols, ButtonName::North) => "Triangle",
-            (Self::Symbols, ButtonName::West) => "Square",
-            (Self::Symbols, ButtonName::LeftBumper) => "L1",
-            (Self::Symbols, ButtonName::RightBumper) => "R1",
-            (Self::Symbols, ButtonName::Start) => "Options",
-            (Self::Symbols, ButtonName::Record) => "Record",
-            (Self::Symbols, ButtonName::LeftStick) => "L3",
-            (Self::Symbols, ButtonName::RightStick) => "R3",
-            (_, ButtonName::DpadUp) => "Up",
-            (_, ButtonName::DpadDown) => "Down",
-            (_, ButtonName::DpadLeft) => "Left",
-            (_, ButtonName::DpadRight) => "Right",
-        }
-    }
-
-    /// The button as it looks on this pad: a coloured face symbol, a D-pad arm or a label chip.
-    #[must_use]
-    pub fn piece(self, button: ButtonName) -> Piece {
-        let face = |shape, colour| Piece::Glyph { shape, colour };
-        match (self, button) {
-            (Self::Letters, ButtonName::South) => face(Shape::Disc('A'), Rgb(76, 175, 80)),
-            (Self::Letters, ButtonName::East) => face(Shape::Disc('B'), Rgb(229, 57, 53)),
-            (Self::Letters, ButtonName::West) => face(Shape::Disc('X'), Rgb(30, 136, 229)),
-            (Self::Letters, ButtonName::North) => face(Shape::Disc('Y'), Rgb(253, 216, 53)),
-            (Self::Letters, ButtonName::Select) => face(Shape::View, Rgb::WHITE),
-            (Self::Letters, ButtonName::Start) => face(Shape::Menu, Rgb::WHITE),
-            (Self::Symbols, ButtonName::South) => face(Shape::Cross, Rgb(124, 178, 232)),
-            (Self::Symbols, ButtonName::East) => face(Shape::Ring, Rgb(255, 102, 102)),
-            (Self::Symbols, ButtonName::West) => face(Shape::Square, Rgb(255, 105, 248)),
-            (Self::Symbols, ButtonName::North) => face(Shape::Triangle, Rgb(64, 226, 160)),
-            (_, ButtonName::DpadUp) => face(Shape::Dpad(Direction::Upward), Rgb::WHITE),
-            (_, ButtonName::DpadDown) => face(Shape::Dpad(Direction::Down), Rgb::WHITE),
-            (_, ButtonName::DpadLeft) => face(Shape::Dpad(Direction::Left), Rgb::WHITE),
-            (_, ButtonName::DpadRight) => face(Shape::Dpad(Direction::Right), Rgb::WHITE),
-            _ => Piece::Chip(self.label(button).into()),
-        }
-    }
-}
+pub use crate::pad::PadFamily;
 
 /// A colour as red, green and blue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -523,7 +452,7 @@ fn button_entries(
             let action = context
                 .and_then(|context| context.action_for(*button))
                 .or_else(|| {
-                    (*button == ButtonName::South).then_some(Action::Key {
+                    (*button == pad.button(crate::pad::Role::Confirm)).then_some(Action::Key {
                         key: KeyName::Enter,
                         mods: Vec::new(),
                     })

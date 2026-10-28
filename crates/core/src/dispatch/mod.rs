@@ -129,7 +129,7 @@ pub enum Effect {
     },
     /// Query: check plugin health. Reply [`Input::Supervised`].
     Supervise,
-    /// Query: offer the South button to a pending secret confirmation. Reply [`Input::SecretConfirmation`].
+    /// Query: offer the confirm button to a pending secret confirmation. Reply [`Input::SecretConfirmation`].
     ConfirmSecret(ButtonState),
     /// Query: send a start or stop to the speech sidecar. Reply [`Input::SpeechSent`].
     SpeechCommand(SpeechEffect),
@@ -139,8 +139,8 @@ pub enum Effect {
     PollSources,
     /// Taps a key with modifiers in the focused client, from the on-screen keyboard.
     Chord(crate::keyboard::Chord),
-    /// Records whether South is held.
-    SouthPressed(bool),
+    /// Records whether confirm is held.
+    ConfirmPressed(bool),
     /// Invalidates secret confirmations for the old focus.
     ResetSecretFocus,
     /// Carries out an action from routing.
@@ -173,7 +173,7 @@ enum Task {
     Route(Event),
     Controller(Event),
     Supervise,
-    SouthPressed(bool),
+    ConfirmPressed(bool),
     ResetSecretFocus,
     ConfirmSecret(ButtonState, Event),
     Speech(SpeechInput),
@@ -338,6 +338,9 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
 
 /// Applies the focused context’s draft retention and terminal layout.
 fn sync_keyboard_config(state: &mut State) {
+    state.keyboard.set_pad_family(state.core.pad_family());
+    state.settings.pad_family = state.core.pad_family();
+    state.mouse.pad_family = state.core.pad_family();
     state.keyboard.set_keep_draft(state.core.keep_keyboard_draft());
     let terminal = state.terminal_field || state.core.terminal_config().0;
     if terminal != state.keyboard.terminal() {
@@ -642,7 +645,7 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
             effects.push(Effect::Supervise);
             frame.awaiting = Some(Await::Supervised);
         }
-        Task::SouthPressed(pressed) => effects.push(Effect::SouthPressed(pressed)),
+        Task::ConfirmPressed(pressed) => effects.push(Effect::ConfirmPressed(pressed)),
         Task::ResetSecretFocus => effects.push(Effect::ResetSecretFocus),
         Task::ConfirmSecret(button, event) => {
             effects.push(Effect::ConfirmSecret(button));
@@ -798,11 +801,11 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
 }
 
 fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    sync_keyboard_config(state);
     let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
     if !dictation && matches!(event, Event::Speech { .. }) && settings_event(state, event, effects) {
         return true;
     }
-    sync_keyboard_config(state);
     if crate::menu_button_release(&mut state.core, event) {
         return true;
     }
@@ -951,14 +954,13 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
                 ButtonState::Released => SpeechInput::Release,
             }));
         }
-        Event::Button {
-            name: ButtonName::South,
-            state: button,
-        } => {
+        Event::Button { name, state: button }
+            if name == state.core.pad_family().button(crate::pad::Role::Confirm) =>
+        {
             frame.tasks.push_front(Task::ConfirmSecret(button, event));
             frame
                 .tasks
-                .push_front(Task::SouthPressed(button == ButtonState::Pressed));
+                .push_front(Task::ConfirmPressed(button == ButtonState::Pressed));
         }
         Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
             frame.tasks.push_front(Task::Route(event));

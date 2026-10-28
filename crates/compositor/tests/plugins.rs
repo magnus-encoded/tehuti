@@ -223,7 +223,7 @@ for line in sys.stdin:
             | Effect::MouseMode(_)
             | Effect::PollSources
             | Effect::Chord(_)
-            | Effect::SouthPressed(_)
+            | Effect::ConfirmPressed(_)
             | Effect::ResetSecretFocus
             | Effect::Apply(_)
             | Effect::PluginAction(_)
