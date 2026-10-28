@@ -10,6 +10,31 @@ pub enum ControllerChoice {
     Named(String),
 }
 
+/// A connected pad's saved kernel name and its visible, numbered label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerInfo {
+    pub name: String,
+    pub label: String,
+}
+
+impl From<&str> for ControllerInfo {
+    fn from(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            label: format!("{} #1", name.to_uppercase()),
+        }
+    }
+}
+
+impl From<String> for ControllerInfo {
+    fn from(name: String) -> Self {
+        Self {
+            label: format!("{} #1", name.to_uppercase()),
+            name,
+        }
+    }
+}
+
 /// Which capture sources push-to-talk records.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum MicrophoneChoice {
@@ -41,8 +66,8 @@ pub enum InputRow {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InputSettings {
     pub row: InputRow,
-    /// Names of the connected pads, in discovery order.
-    pub controllers: Vec<String>,
+    /// Connected pads in device path order.
+    pub controllers: Vec<ControllerInfo>,
     pub controller: ControllerChoice,
     pub microphones: Vec<Microphone>,
     pub microphone: MicrophoneChoice,
@@ -53,8 +78,8 @@ impl InputSettings {
     #[must_use]
     pub fn controller_options(&self) -> Vec<ControllerChoice> {
         let mut options = vec![ControllerChoice::Auto];
-        for name in &self.controllers {
-            let option = ControllerChoice::Named(name.clone());
+        for controller in &self.controllers {
+            let option = ControllerChoice::Named(controller.name.clone());
             if !options.contains(&option) {
                 options.push(option);
             }
@@ -84,9 +109,42 @@ impl InputSettings {
     #[must_use]
     pub fn controller_label(&self) -> String {
         match &self.controller {
-            ControllerChoice::Auto => "AUTO (EVERY PAD)".into(),
-            ControllerChoice::Named(name) if self.controllers.contains(name) => name.to_uppercase(),
-            ControllerChoice::Named(name) => format!("{} (OFF)", name.to_uppercase()),
+            ControllerChoice::Auto => {
+                if self.controllers.is_empty() {
+                    return "AUTO (NO PAD)".into();
+                }
+                let names: Vec<_> = self
+                    .controllers
+                    .iter()
+                    .map(|controller| controller.label.clone())
+                    .collect();
+                let full = format!("AUTO: {}", names.join(", "));
+                if full.chars().count() <= 36 {
+                    return full;
+                }
+                if names.len() == 1 {
+                    return full.chars().take(36).collect();
+                }
+                let suffix = format!(" +{}", names.len().saturating_sub(1));
+                let available = 36usize
+                    .saturating_sub("AUTO: ".len())
+                    .saturating_sub(suffix.len());
+                let first: String = names
+                    .first()
+                    .into_iter()
+                    .flat_map(|name| name.chars())
+                    .take(available)
+                    .collect();
+                format!("AUTO: {first}{suffix}")
+            }
+            ControllerChoice::Named(name) => self
+                .controllers
+                .iter()
+                .find(|controller| controller.name == *name)
+                .map_or_else(
+                    || format!("{} (OFF)", name.to_uppercase()),
+                    |controller| controller.label.clone(),
+                ),
         }
     }
 

@@ -904,11 +904,16 @@ impl Compositor {
     }
 
     /// Records the connected pad names; the settings view lists them.
-    pub fn configure_controllers(&mut self, names: Vec<String>) {
-        if names != self.controller_names {
-            self.controller_names.clone_from(&names);
-            let _rejection = self.dispatch(DispatchInput::Controllers(names));
+    pub fn configure_controllers(&mut self, controllers: Vec<tehuti_core::dispatch::ControllerInfo>) {
+        if controllers == self.settings().input.controllers {
+            return;
         }
+        let names: Vec<_> = controllers
+            .iter()
+            .map(|controller| controller.name.clone())
+            .collect();
+        self.controller_names = names;
+        let _rejection = self.dispatch(DispatchInput::Controllers(controllers));
     }
 
     /// Whether input from the pad named `name` drives Tehuti.

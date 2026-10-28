@@ -537,7 +537,20 @@ mod tests {
         let display = Display::<Compositor>::new()?;
         let mut compositor = Compositor::new(&display.handle())?;
         compositor.load_input_choices(store.clone());
-        compositor.configure_controllers(vec!["Wireless Controller".into(), "Xbox Controller".into()]);
+        compositor.configure_controllers(crate::controller::numbered_controllers([
+            (
+                "/dev/input/event2".into(),
+                "Wireless Controller".into(),
+                0x054c,
+                0x09cc,
+            ),
+            (
+                "/dev/input/event9".into(),
+                "Xbox Controller".into(),
+                0x045e,
+                0x0b13,
+            ),
+        ]));
         compositor.handle(&Event::Speech {
             text: Text::new("Pop the hood.".into())?,
         });
@@ -549,8 +562,13 @@ mod tests {
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::South);
         assert_eq!(compositor.settings().page, tehuti_core::dispatch::Page::Input);
+        assert_eq!(
+            compositor.settings().input.controller_label(),
+            "AUTO: DUALSHOCK 4 #1 +1"
+        );
         assert!(compositor.settings_buffer((1024, 600)).is_some());
         press(&mut compositor, ButtonName::DpadRight);
+        assert_eq!(compositor.settings().input.controller_label(), "DUALSHOCK 4 #1");
         assert!(compositor.controller_chosen("Wireless Controller"));
         assert!(!compositor.controller_chosen("Xbox Controller"));
         assert_eq!(

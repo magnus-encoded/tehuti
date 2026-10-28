@@ -87,8 +87,8 @@ impl Settings {
     }
 
     /// Sets the connected pad names shown on the Input page.
-    pub(super) fn configure_controllers(&mut self, names: Vec<String>) {
-        self.input.controllers = names;
+    pub(super) fn configure_controllers(&mut self, controllers: Vec<super::ControllerInfo>) {
+        self.input.controllers = controllers;
     }
 
     pub(super) fn configure_microphones(&mut self, microphones: Vec<super::Microphone>) {
