@@ -258,6 +258,12 @@ impl Compositor {
                 (keycode, keymap.num_layouts_for_key(keycode))
             })
             .collect();
+        let (names, locked, current) = crate::wallpaper::choices();
+        let _rejection = compositor.dispatch(DispatchInput::Wallpapers {
+            names,
+            locked,
+            current,
+        });
         Ok(compositor)
     }
 
@@ -644,6 +650,8 @@ impl Compositor {
             | DispatchInput::SecretConfirmation(_)
             | DispatchInput::SpeechSent(_)
             | DispatchInput::SpeechPolled(_)
+            | DispatchInput::Wallpapers { .. }
+            | DispatchInput::WallpaperSaved(_)
             | DispatchInput::Resume => core::time::Duration::ZERO,
         };
         self.dim_elapsed = self.dim_elapsed.saturating_add(elapsed);
@@ -671,15 +679,19 @@ impl Compositor {
                 }
             }
             if self.dispatch.busy() <= depth {
-                if level != self.dispatch.core().level() {
-                    self.dim_elapsed = core::time::Duration::ZERO;
-                }
-                self.update_window_dimming();
-                self.reserve_keyboard_height();
+                self.finish_dispatch_view(level);
                 return rejection;
             }
             input = reply;
         }
+    }
+
+    fn finish_dispatch_view(&mut self, previous: tehuti_core::Level) {
+        if previous != self.dispatch.core().level() {
+            self.dim_elapsed = core::time::Duration::ZERO;
+        }
+        self.update_window_dimming();
+        self.reserve_keyboard_height();
     }
 
     pub(crate) fn set_keyboard_surrounding(&mut self, surrounding: Option<(String, usize, usize)>) {
@@ -948,6 +960,7 @@ impl Compositor {
         self.dispatch.settings()
     }
 
+    #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         match effect {
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
@@ -979,9 +992,27 @@ impl Compositor {
             DispatchEffect::PollSpeech(elapsed) => {
                 Some(DispatchInput::SpeechPolled(self.poll_speech(elapsed)))
             }
+            DispatchEffect::UnlockWallpapers => {
+                match crate::wallpaper::unlock() {
+                    Ok(_) => self.show_notice("WALLPAPERS UNLOCKED"),
+                    Err(error) => {
+                        tracing::warn!(%error, "wallpaper unlock failed");
+                        self.show_notice("UNLOCK NOT SAVED");
+                    }
+                }
+                let (names, locked, current) = crate::wallpaper::choices();
+                let _rejection = self.dispatch(DispatchInput::Wallpapers {
+                    names,
+                    locked,
+                    current,
+                });
+                None
+            }
             effect @ (DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
             | DispatchEffect::SettingsScale(_)
+            | DispatchEffect::WallpaperPreview(_)
+            | DispatchEffect::WallpaperSave(_)
             | DispatchEffect::SettingsController(_)
             | DispatchEffect::PersistController(_)
             | DispatchEffect::SettingsMicrophone(_)
@@ -1052,6 +1083,20 @@ impl Compositor {
         use tehuti_core::speech::SpeechFailure;
         match effect {
             DispatchEffect::SettingsScale(scale) => self.persist_display_scale(scale),
+            DispatchEffect::WallpaperPreview(index) => {
+                if let Err(error) = crate::wallpaper::preview(index) {
+                    tracing::warn!(%error, "wallpaper preview failed");
+                }
+            }
+            DispatchEffect::WallpaperSave(index) => match crate::wallpaper::save(index) {
+                Ok(()) => {
+                    let _rejection = self.dispatch(DispatchInput::WallpaperSaved(index));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "wallpaper save failed");
+                    self.show_notice("WALLPAPER NOT SAVED");
+                }
+            },
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
             DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
@@ -1094,7 +1139,8 @@ impl Compositor {
             | DispatchEffect::Supervise
             | DispatchEffect::ConfirmSecret(_)
             | DispatchEffect::SpeechCommand(_)
-            | DispatchEffect::PollSpeech(_) => {}
+            | DispatchEffect::PollSpeech(_)
+            | DispatchEffect::UnlockWallpapers => {}
             DispatchEffect::Handle(event) => {
                 self.handle(&event);
             }

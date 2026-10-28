@@ -8,6 +8,7 @@ use tehuti_protocol::{KeyName, Text};
 #[derive(Default)]
 struct World {
     plugin_active: bool,
+    wallpaper_save_fails: bool,
     secret_consumes: bool,
     speech_output: VecDeque<Vec<SpeechInput>>,
     exits: VecDeque<Vec<usize>>,
@@ -47,6 +48,10 @@ impl World {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the harness answers every dispatch effect in one table"
+    )]
     fn run_at_depth(&mut self, state: State, input: Input, depth: usize) -> State {
         let (mut state, mut effects) = step(state, input);
         loop {
@@ -74,9 +79,15 @@ impl World {
                     Effect::Apply(Action::Close) | Effect::PluginAction(Action::Close) => {
                         state = self.close_focus(state);
                     }
+                    Effect::WallpaperSave(index) if !self.wallpaper_save_fails => {
+                        state = self.run(state, Input::WallpaperSaved(index));
+                    }
                     Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::SettingsScale(_)
+                    | Effect::WallpaperPreview(_)
+                    | Effect::WallpaperSave(_)
+                    | Effect::UnlockWallpapers
                     | Effect::SettingsController(_)
                     | Effect::PersistController(_)
                     | Effect::SettingsMicrophone(_)
@@ -1802,6 +1813,39 @@ fn settings_button(world: &mut World, state: State, name: ButtonName) -> State {
             state: ButtonState::Pressed,
         },
     )
+}
+
+#[test]
+fn wallpaper_preview_saves_and_cancel_restores_saved_choice() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Wallpapers {
+            names: vec!["apteribis".into(), "bostrychia".into()],
+            locked: vec![false, false],
+            current: 0,
+        },
+    );
+    let state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood.".into()).unwrap(),
+        },
+    );
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().page, Page::Wallpaper);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    assert!(world.trace.contains(&Effect::WallpaperPreview(1)));
+    let state = settings_button(&mut world, state, ButtonName::East);
+    assert!(world.trace.contains(&Effect::WallpaperPreview(0)));
+    let state = settings_button(&mut world, state, ButtonName::South);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().wallpaper_current, 1);
+    assert!(world.trace.contains(&Effect::WallpaperSave(1)));
 }
 
 #[test]
@@ -3598,5 +3642,112 @@ proptest! {
         world.trace.clear();
         let _state = world.run(state, Input::PluginExited { plugin });
         prop_assert!(world.trace.is_empty());
+    }
+}
+
+#[test]
+fn spoken_wallpaper_unlock_is_consumed_before_context_dictation() {
+    let mut world = World::default();
+    let state = settings_event(
+        &mut world,
+        State::default(),
+        Event::Speech {
+            text: Text::new(" Birds of a feather. ".into()).unwrap(),
+        },
+    );
+    assert!(!state.settings().open);
+    assert!(world.trace.contains(&Effect::UnlockWallpapers));
+    assert!(!world.trace.iter().any(|effect| matches!(
+        effect,
+        Effect::DispatchPlugin { route: true, .. } | Effect::Apply(Action::Text { .. })
+    )));
+}
+
+#[test]
+fn wallpaper_is_not_marked_saved_before_persistence_succeeds() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Wallpapers {
+            names: vec!["apteribis".into(), "bostrychia".into()],
+            locked: vec![false, false],
+            current: 0,
+        },
+    );
+    let state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("pop the hood".into()).unwrap(),
+        },
+    );
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    world.wallpaper_save_fails = true;
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert!(world.trace.contains(&Effect::WallpaperSave(1)));
+    assert_eq!(state.settings().wallpaper_current, 0);
+}
+
+#[test]
+fn wallpaper_hints_and_save_follow_the_connected_pad_family() {
+    let mut world = World::default();
+    let mut state = State::default();
+    state.core_mut().set_pad_family(crate::pad::PadFamily::Symbols);
+    let state = world.run(
+        state,
+        Input::Wallpapers {
+            names: vec!["first".into(), "second".into()],
+            locked: vec![false, false],
+            current: 0,
+        },
+    );
+    let state = world.run(state, speech_event("pop the hood"));
+    let state = tap_button(&mut world, state, ButtonName::DpadDown);
+    let state = tap_button(&mut world, state, ButtonName::DpadDown);
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().page, Page::Wallpaper);
+    assert_eq!(
+        state.settings().button_hint(),
+        "D-PAD: PREVIEW   Cross: SAVE   Circle: CANCEL"
+    );
+    let state = tap_button(&mut world, state, ButtonName::DpadDown);
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert_eq!(state.settings().wallpaper_current, 1);
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert_eq!(state.settings().page, Page::Categories);
+}
+
+#[test]
+fn closing_wallpaper_settings_restores_preview_before_the_next_overlay() {
+    for guide in [false, true] {
+        let mut world = World::default();
+        let state = world.run(
+            State::default(),
+            Input::Wallpapers {
+                names: vec!["first".into(), "second".into()],
+                locked: vec![false, false],
+                current: 0,
+            },
+        );
+        let state = world.run(state, speech_event("pop the hood"));
+        let state = tap_button(&mut world, state, ButtonName::DpadDown);
+        let state = tap_button(&mut world, state, ButtonName::DpadDown);
+        let state = tap_button(&mut world, state, ButtonName::South);
+        let state = tap_button(&mut world, state, ButtonName::DpadDown);
+        world.trace.clear();
+        let state = if guide {
+            hold_guide(&mut world, state)
+        } else {
+            world.run(state, speech_event("pop the hood"))
+        };
+        assert!(!state.settings().open);
+        assert_eq!(state.settings().wallpaper_selected, 0);
+        assert!(world.trace.contains(&Effect::WallpaperPreview(0)));
+        if guide {
+            assert!(state.core().menu().is_some());
+        }
     }
 }

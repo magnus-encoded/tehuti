@@ -24,6 +24,7 @@ pub enum Page {
     Categories,
     Display,
     Input,
+    Wallpaper,
 }
 
 /// A top-level entry of the settings view.
@@ -32,10 +33,11 @@ pub enum Category {
     #[default]
     Display,
     Input,
+    Wallpaper,
 }
 
 impl Category {
-    pub const ALL: [Self; 2] = [Self::Display, Self::Input];
+    pub const ALL: [Self; 3] = [Self::Display, Self::Input, Self::Wallpaper];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +51,10 @@ pub struct Settings {
     pub selected: usize,
     pub current: usize,
     pub modes: Vec<String>,
+    pub wallpapers: Vec<String>,
+    pub wallpaper_locked: Vec<bool>,
+    pub wallpaper_selected: usize,
+    pub wallpaper_current: usize,
     pub scale: core::num::NonZeroU32,
     pub remaining: Option<Duration>,
     previous: Option<usize>,
@@ -75,6 +81,7 @@ impl Settings {
                 Page::Categories => format!("D-PAD: MOVE   {confirm}: OPEN   {back}: CLOSE"),
                 Page::Display => format!("D-PAD: MOVE   {confirm}: APPLY   {back}: BACK"),
                 Page::Input => format!("UP / DOWN: MOVE   LEFT / RIGHT: CHANGE   {back}: BACK"),
+                Page::Wallpaper => format!("D-PAD: PREVIEW   {confirm}: SAVE   {back}: CANCEL"),
             }
         }
     }
@@ -155,6 +162,10 @@ impl Settings {
 
     fn back(&mut self, effects: &mut Vec<Effect>) {
         self.revert(effects);
+        if self.page == Page::Wallpaper && self.wallpaper_selected != self.wallpaper_current {
+            self.wallpaper_selected = self.wallpaper_current;
+            effects.push(Effect::WallpaperPreview(self.wallpaper_current));
+        }
         self.page = Page::Categories;
     }
 
@@ -169,10 +180,24 @@ impl Settings {
     pub(super) fn close(&mut self, effects: &mut Vec<Effect>) {
         self.end_preview(effects);
         self.open = false;
+        if self.page == Page::Wallpaper && self.wallpaper_selected != self.wallpaper_current {
+            self.wallpaper_selected = self.wallpaper_current;
+            effects.push(Effect::WallpaperPreview(self.wallpaper_current));
+        }
         self.page = Page::Categories;
     }
 
     pub(super) fn event(&mut self, event: &Event, effects: &mut Vec<Effect>) -> bool {
+        if let Event::Speech { text } = event
+            && text
+                .as_str()
+                .trim()
+                .trim_end_matches('.')
+                .eq_ignore_ascii_case("birds of a feather")
+        {
+            effects.push(Effect::UnlockWallpapers);
+            return true;
+        }
         if let Event::Speech { text } = event
             && is_open_phrase(text.as_str())
         {
@@ -225,9 +250,13 @@ impl Settings {
     }
 
     fn toggle(&mut self, effects: &mut Vec<Effect>) {
-        self.end_preview(effects);
-        self.open = !self.open;
-        self.page = Page::Categories;
+        if self.open {
+            self.close(effects);
+        } else {
+            self.end_preview(effects);
+            self.open = true;
+            self.page = Page::Categories;
+        }
     }
 
     fn button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
@@ -235,14 +264,25 @@ impl Settings {
             Page::Categories => self.categories_button(name, effects),
             Page::Display => self.display_button(name, effects),
             Page::Input => self.input_button(name, effects),
+            Page::Wallpaper => self.wallpaper_button(name, effects),
         }
     }
 
     fn categories_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
         match name {
             name if name == self.pad_family.button(Role::Back) => self.close(effects),
-            ButtonName::DpadUp | ButtonName::DpadLeft => self.category = Category::Display,
-            ButtonName::DpadDown | ButtonName::DpadRight => self.category = Category::Input,
+            ButtonName::DpadUp | ButtonName::DpadLeft => {
+                self.category = Category::ALL
+                    .get(self.category_index().saturating_sub(1))
+                    .copied()
+                    .unwrap_or(Category::Display);
+            }
+            ButtonName::DpadDown | ButtonName::DpadRight => {
+                self.category = Category::ALL
+                    .get(self.category_index().saturating_add(1))
+                    .copied()
+                    .unwrap_or(Category::Wallpaper);
+            }
             name if name == self.pad_family.button(Role::Confirm) => match self.category {
                 Category::Display => {
                     self.page = Page::Display;
@@ -252,6 +292,10 @@ impl Settings {
                     self.page = Page::Input;
                     self.input.row = InputRow::Controller;
                     effects.push(Effect::ListMicrophones);
+                }
+                Category::Wallpaper => {
+                    self.page = Page::Wallpaper;
+                    self.wallpaper_selected = self.wallpaper_current;
                 }
             },
             ButtonName::South
@@ -266,6 +310,66 @@ impl Settings {
             | ButtonName::Guide
             | ButtonName::LeftStick
             | ButtonName::RightStick => {}
+        }
+    }
+
+    fn category_index(&self) -> usize {
+        Category::ALL
+            .iter()
+            .position(|category| *category == self.category)
+            .unwrap_or(0)
+    }
+
+    pub(super) fn configure_wallpapers(&mut self, names: Vec<String>, locked: Vec<bool>, current: usize) {
+        self.wallpapers = names;
+        self.wallpaper_locked = locked;
+        self.wallpaper_current = current.min(self.wallpapers.len().saturating_sub(1));
+        self.wallpaper_selected = self.wallpaper_current;
+    }
+
+    pub(super) fn wallpaper_saved(&mut self, index: usize) {
+        if index < self.wallpapers.len() && !self.wallpaper_locked.get(index).copied().unwrap_or(true) {
+            self.wallpaper_current = index;
+        }
+    }
+
+    fn wallpaper_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        match name {
+            name if name == self.pad_family.button(Role::Back) => self.back(effects),
+            name if name == self.pad_family.button(Role::Confirm) && !self.wallpapers.is_empty() => {
+                effects.push(Effect::WallpaperSave(self.wallpaper_selected));
+            }
+            ButtonName::DpadUp | ButtonName::DpadLeft => {
+                if let Some(index) = (0..self.wallpaper_selected)
+                    .rev()
+                    .find(|index| !self.wallpaper_locked.get(*index).copied().unwrap_or(true))
+                {
+                    self.wallpaper_selected = index;
+                    effects.push(Effect::WallpaperPreview(index));
+                }
+            }
+            ButtonName::DpadDown | ButtonName::DpadRight if !self.wallpapers.is_empty() => {
+                if let Some(index) = (self.wallpaper_selected.saturating_add(1)..self.wallpapers.len())
+                    .find(|index| !self.wallpaper_locked.get(*index).copied().unwrap_or(true))
+                {
+                    self.wallpaper_selected = index;
+                    effects.push(Effect::WallpaperPreview(index));
+                }
+            }
+            ButtonName::South
+            | ButtonName::East
+            | ButtonName::North
+            | ButtonName::West
+            | ButtonName::LeftBumper
+            | ButtonName::RightBumper
+            | ButtonName::Select
+            | ButtonName::Record
+            | ButtonName::Start
+            | ButtonName::Guide
+            | ButtonName::LeftStick
+            | ButtonName::RightStick
+            | ButtonName::DpadDown
+            | ButtonName::DpadRight => {}
         }
     }
 
@@ -450,6 +554,10 @@ impl Default for Settings {
             selected: 0,
             current: 0,
             modes: Vec::new(),
+            wallpapers: Vec::new(),
+            wallpaper_locked: Vec::new(),
+            wallpaper_selected: 0,
+            wallpaper_current: 0,
             scale: core::num::NonZeroU32::MIN,
             remaining: None,
             previous: None,

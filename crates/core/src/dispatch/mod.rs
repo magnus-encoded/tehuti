@@ -30,7 +30,13 @@ pub enum Input {
         current: usize,
     },
     ModeApplied(Option<usize>),
+    WallpaperSaved(usize),
     DisplayScale(core::num::NonZeroU32),
+    Wallpapers {
+        names: Vec<String>,
+        locked: Vec<bool>,
+        current: usize,
+    },
     /// The names of the connected pads, in discovery order.
     Controllers(Vec<String>),
     /// Reply to [`Effect::ListMicrophones`]: the capture sources found.
@@ -97,6 +103,9 @@ pub enum Effect {
     SettingsMode(usize),
     PersistMode(usize),
     SettingsScale(core::num::NonZeroU32),
+    WallpaperPreview(usize),
+    WallpaperSave(usize),
+    UnlockWallpapers,
     /// Routes pad input from the chosen controller only, until confirmed or reverted.
     SettingsController(ControllerChoice),
     PersistController(ControllerChoice),
@@ -379,6 +388,8 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         input @ (Input::DisplayModes { .. }
         | Input::DisplayScale(_)
+        | Input::Wallpapers { .. }
+        | Input::WallpaperSaved(_)
         | Input::ModeApplied(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
@@ -420,6 +431,8 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
         Input::DisplayModes { .. }
+        | Input::Wallpapers { .. }
+        | Input::WallpaperSaved(_)
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
         | Input::Controllers(_)
@@ -468,6 +481,8 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         }
         Input::ControllerDisconnected => disconnect_controller(&mut state, &mut effects),
         Input::DisplayModes { .. }
+        | Input::Wallpapers { .. }
+        | Input::WallpaperSaved(_)
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
         | Input::Controllers(_)
@@ -505,6 +520,12 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::DisplayModes { modes, current } => state.settings.configure(modes, current),
         Input::DisplayScale(scale) => state.settings.scale = scale,
+        Input::Wallpapers {
+            names,
+            locked,
+            current,
+        } => state.settings.configure_wallpapers(names, locked, current),
+        Input::WallpaperSaved(index) => state.settings.wallpaper_saved(index),
         Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
         Input::Controllers(names) => state.settings.configure_controllers(names),
         Input::Microphones(microphones) => state.settings.configure_microphones(microphones),
