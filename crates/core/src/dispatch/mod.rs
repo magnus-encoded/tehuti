@@ -241,6 +241,8 @@ pub struct State {
     settings: Settings,
     choice_list: Option<crate::choice_list::List>,
     choice_buttons: Vec<ButtonName>,
+    desktop_buttons: Vec<ButtonName>,
+    desktop_selection: usize,
     overlay_stack: Vec<Overlay>,
     secret_prompt: SecretPrompt,
 }
@@ -263,6 +265,8 @@ impl State {
             settings: Settings::default(),
             choice_list: None,
             choice_buttons: Vec::new(),
+            desktop_buttons: Vec::new(),
+            desktop_selection: 0,
             overlay_stack: Vec::new(),
             secret_prompt: SecretPrompt::Hidden,
         }
@@ -275,6 +279,14 @@ impl State {
 
     pub const fn core_mut(&mut self) -> &mut crate::State {
         &mut self.core
+    }
+
+    /// The selected wallpaper launch hint while the desktop owns input.
+    #[must_use]
+    pub fn desktop_focus(&self) -> Option<usize> {
+        let entries = desktop_favourites(self);
+        (self.core.focused_app_id.is_none() && open_overlays(self).is_empty() && !entries.is_empty())
+            .then(|| self.desktop_selection.min(entries.len().saturating_sub(1)))
     }
 
     /// The on-screen keyboard, for drawing it.
@@ -1078,9 +1090,10 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
         name,
         state: ButtonState::Released,
     } = event
-        && state.choice_buttons.contains(name)
+        && (state.choice_buttons.contains(name) || state.desktop_buttons.contains(name))
     {
         state.choice_buttons.retain(|held| held != name);
+        state.desktop_buttons.retain(|held| held != name);
         return true;
     }
     sync_keyboard_config(state);
@@ -1145,13 +1158,84 @@ fn overlay_input(
         Overlay::Secret => secret_input(state, event),
         Overlay::Keyboard => keyboard(state, event, effects),
         Overlay::Mouse => mouse_event(state, event, effects),
+        Overlay::Application => desktop_input(state, event, effects),
         Overlay::Cursor
         | Overlay::SecretUnavailable
         | Overlay::Notice
         | Overlay::MouseNotice
-        | Overlay::Bar
-        | Overlay::Application => false,
+        | Overlay::Bar => false,
     }
+}
+
+fn desktop_favourites(state: &State) -> Vec<&String> {
+    let Some(global) = state
+        .core
+        .contexts()
+        .iter()
+        .find(|context| context.app_id() == "*")
+    else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for entry in global.favourites() {
+        if global
+            .launch_phrases()
+            .iter()
+            .any(|(desktop_entry, _)| desktop_entry == entry)
+            && !entries.contains(&entry)
+        {
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
+fn desktop_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    let Event::Button {
+        name,
+        state: ButtonState::Pressed,
+    } = event
+    else {
+        return false;
+    };
+    if state.core.push_to_talk(*name) {
+        return false;
+    }
+    let Some(index) = state.desktop_focus() else {
+        return false;
+    };
+    let entries = desktop_favourites(state);
+    let next = match name {
+        ButtonName::DpadLeft | ButtonName::DpadUp => index.saturating_sub(1),
+        ButtonName::DpadRight | ButtonName::DpadDown => {
+            index.saturating_add(1).min(entries.len().saturating_sub(1))
+        }
+        name if *name == state.core.pad_family().button(crate::pad::Role::Confirm) => {
+            if let Some(entry) = entries.get(index)
+                && let Ok(desktop_entry) = tehuti_protocol::Text::new((*entry).clone())
+            {
+                effects.push(Effect::Apply(Action::Launch { desktop_entry }));
+            }
+            index
+        }
+        ButtonName::South
+        | ButtonName::East
+        | ButtonName::North
+        | ButtonName::West
+        | ButtonName::LeftBumper
+        | ButtonName::RightBumper
+        | ButtonName::Select
+        | ButtonName::Record
+        | ButtonName::Start
+        | ButtonName::Guide
+        | ButtonName::LeftStick
+        | ButtonName::RightStick => return false,
+    };
+    state.desktop_selection = next;
+    if !state.desktop_buttons.contains(name) {
+        state.desktop_buttons.push(*name);
+    }
+    true
 }
 
 fn choice_list_input(state: &mut State, event: &Event) -> bool {

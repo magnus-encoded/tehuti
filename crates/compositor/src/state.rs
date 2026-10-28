@@ -270,6 +270,7 @@ impl Compositor {
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, contexts: Vec<tehuti_protocol::Context>) {
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
+        crate::wallpaper::set_focus(self.dispatch.desktop_focus());
     }
 
     /// Names ticker buttons after the pad that sent the latest input.
@@ -292,6 +293,7 @@ impl Compositor {
             Ok(contexts) => {
                 tracing::info!(count = contexts.len(), "contexts reloaded");
                 self.dispatch.core_mut().replace_contexts(contexts);
+                crate::wallpaper::set_focus(self.dispatch.desktop_focus());
                 self.update_window_dimming();
                 self.show_notice("CONTEXTS RELOADED");
             }
@@ -689,6 +691,7 @@ impl Compositor {
     }
 
     fn finish_dispatch_view(&mut self, previous: tehuti_core::Level) {
+        crate::wallpaper::set_focus(self.dispatch.desktop_focus());
         if previous != self.dispatch.core().level() {
             self.dim_elapsed = core::time::Duration::ZERO;
         }

@@ -334,6 +334,7 @@ pub struct Context {
     speech: std::collections::HashMap<String, SpeechEntry>,
     unmatched_speech: Option<UnmatchedSpeech>,
     launch_phrases: Vec<(String, String)>,
+    favourites: Vec<String>,
     keyboard: KeyboardConfig,
     dim: DimConfig,
     push_to_talk: Vec<ButtonName>,
@@ -368,6 +369,12 @@ struct PadConfig {
 }
 
 impl Context {
+    /// Ordered desktop entry ids eligible for desktop grid focus.
+    #[must_use]
+    pub fn favourites(&self) -> &[String] {
+        &self.favourites
+    }
+
     /// First configured launch phrase for each desktop entry, in file order.
     #[must_use]
     pub fn launch_phrases(&self) -> &[(String, String)] {
@@ -508,6 +515,8 @@ fn default_push_to_talk() -> Vec<ButtonName> {
 #[serde(deny_unknown_fields)]
 struct ContextFile {
     app_id: String,
+    #[serde(default)]
+    favourites: Vec<String>,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
     speech: toml::Table,
@@ -681,6 +690,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         buttons: context.buttons,
         speech,
         launch_phrases,
+        favourites: context.favourites,
         unmatched_speech: context.unmatched_speech,
         keyboard: context.keyboard,
         dim: context.dim,

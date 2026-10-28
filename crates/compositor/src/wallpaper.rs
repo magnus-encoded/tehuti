@@ -74,6 +74,16 @@ impl Wallpaper {
         self.buffers.clear();
     }
 
+    /// Selects a configured launch phrase among the hints that loaded successfully.
+    pub fn set_launch_focus(&mut self, phrases: &[(String, String)], focus: Option<usize>) {
+        let visible = focus
+            .and_then(|index| phrases.get(index))
+            .and_then(|(_, caption)| self.hints.iter().position(|hint| hint.caption == *caption));
+        if self.focus != visible {
+            self.set_focus(visible);
+        }
+    }
+
     pub fn set_focus(&mut self, focus: Option<usize>) {
         self.focus = focus;
         self.buffers.clear();
@@ -393,7 +403,6 @@ fn prepare_wallpapers(
     let mut wallpaper = Wallpaper::load(path);
     let mut worker_generation = u64::MAX;
     let mut current_phrases = Vec::new();
-    let mut current_focus = None;
     while let Ok(Request {
         size,
         redraw,
@@ -412,10 +421,7 @@ fn prepare_wallpapers(
             wallpaper.set_hints(crate::desktop_hints::load(&phrases));
             current_phrases = phrases;
         }
-        if current_focus != focus {
-            wallpaper.set_focus(focus);
-            current_focus = focus;
-        }
+        wallpaper.set_launch_focus(&current_phrases, focus);
         let buffer = match wallpaper.buffer(size) {
             Ok(buffer) => Some(buffer),
             Err(error) => {
@@ -653,7 +659,9 @@ pub fn set_launch_phrases(phrases: Vec<(String, String)>) -> Result<(), Box<dyn 
 
 /// Updates the desktop hint selection and requests a frame.
 pub fn set_focus(focus: Option<usize>) {
-    if let Ok(mut cache) = wallpaper().lock() {
+    if let Ok(mut cache) = wallpaper().lock()
+        && cache.focus != focus
+    {
         cache.set_focus(focus);
         if let Some(ping) = &cache.redraw {
             ping.ping();

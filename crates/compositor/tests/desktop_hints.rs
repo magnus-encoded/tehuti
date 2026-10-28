@@ -4,6 +4,52 @@
 mod tests {
     use tehuti::desktop_hints::{entry_metadata, icon_path, layout};
 
+    #[test]
+    fn favourites_lead_hints_in_configured_order() {
+        let context = tehuti_protocol::parse_context("app_id = '*'\nfavourites = ['browser.desktop', 'absent.desktop', 'reader.desktop', 'browser.desktop']\n[buttons]\n[speech]\nRead = { launch = 'reader.desktop' }\nOther = { launch = 'other.desktop' }\nBrowse = { launch = 'browser.desktop' }").unwrap();
+        assert_eq!(
+            tehuti::desktop_hints::launch_phrases(&[context]),
+            vec![
+                ("browser.desktop".into(), "Browse".into()),
+                ("reader.desktop".into(), "Read".into()),
+                ("other.desktop".into(), "Other".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn selection_tracks_loaded_hints_when_an_entry_is_missing() -> Result<(), Box<dyn core::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let mut wallpaper = tehuti::wallpaper::Wallpaper::load(&directory.path().join("missing.png"));
+        wallpaper.set_hints(vec![tehuti::desktop_hints::Hint {
+            caption: "Browse".into(),
+            name: "Browser".into(),
+            icon: None,
+        }]);
+        let phrases = vec![
+            ("reader.desktop".into(), "Read".into()),
+            ("browser.desktop".into(), "Browse".into()),
+        ];
+        let pixels =
+            |artwork: &mut tehuti::wallpaper::Wallpaper| -> Result<Vec<u8>, Box<dyn core::error::Error>> {
+                let mut result = Vec::new();
+                artwork.buffer((352, 200).into())?.render().draw(|rendered| {
+                    result = rendered.to_vec();
+                    Ok::<_, std::io::Error>(Vec::new())
+                })?;
+                Ok(result)
+            };
+        let unselected = pixels(&mut wallpaper)?;
+        wallpaper.set_launch_focus(&phrases, Some(0));
+        assert_eq!(pixels(&mut wallpaper)?, unselected);
+        wallpaper.set_launch_focus(&phrases, Some(1));
+        let selected = pixels(&mut wallpaper)?;
+        assert_ne!(selected, unselected);
+        wallpaper.set_focus(Some(0));
+        assert_eq!(pixels(&mut wallpaper)?, selected);
+        Ok(())
+    }
+
     fn rendered_caption(caption: &str) -> Result<Vec<u8>, Box<dyn core::error::Error>> {
         let directory = tempfile::tempdir()?;
         let mut wallpaper = tehuti::wallpaper::Wallpaper::load(&directory.path().join("missing.png"));
