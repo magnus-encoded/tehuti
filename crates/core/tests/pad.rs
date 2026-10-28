@@ -141,4 +141,26 @@ mod tests {
             assert_eq!(family.glyph(role), Piece::Glyph { shape, colour });
         }
     }
+
+    #[test]
+    fn device_models_distinguish_products_and_preserve_unknown_names() {
+        use tehuti_core::pad::Identity;
+        for (vendor, product, expected) in [
+            (0x054c, 0x05c4, "DUALSHOCK 4"),
+            (0x054c, 0x09cc, "DUALSHOCK 4"),
+            (0x054c, 0x0ce6, "DUALSENSE"),
+            (0x054c, 0x0268, "DUALSHOCK 3"),
+            (0x045e, 0x0b13, "XBOX CONTROLLER"),
+            (0x057e, 0x2009, "SWITCH PRO"),
+            (0x057e, 0x2006, "JOY-CON"),
+            (0x057e, 0x2007, "JOY-CON"),
+            (0x054c, 0xffff, "GENERIC PAD"),
+            (0, 0, "GENERIC PAD"),
+        ] {
+            assert_eq!(
+                Identity::for_device(vendor, product).model_name("Generic Pad"),
+                expected
+            );
+        }
+    }
 }

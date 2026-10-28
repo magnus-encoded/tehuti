@@ -12,7 +12,9 @@ use std::collections::VecDeque;
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
 mod input_settings;
-pub use input_settings::{ControllerChoice, InputRow, InputSettings, Microphone, MicrophoneChoice};
+pub use input_settings::{
+    ControllerChoice, ControllerInfo, InputRow, InputSettings, Microphone, MicrophoneChoice,
+};
 
 mod settings;
 pub use settings::{Category, Page, Settings};
@@ -38,8 +40,8 @@ pub enum Input {
         locked: Vec<bool>,
         current: usize,
     },
-    /// The names of the connected pads, in discovery order.
-    Controllers(Vec<String>),
+    /// The connected pads and their labels, in device path order.
+    Controllers(Vec<ControllerInfo>),
     /// Reply to [`Effect::ListMicrophones`]: the capture sources found.
     Microphones(Vec<Microphone>),
     /// The saved input choices, read at startup.

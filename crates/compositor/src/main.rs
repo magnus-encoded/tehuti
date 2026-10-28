@@ -498,12 +498,16 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
 
 /// Tells the settings view which pads are connected and forgets the held buttons of gone pads.
 fn sync_controller_names(data: &mut LoopData) {
-    let names = data
+    let devices: Vec<_> = data
         .controllers
-        .values()
-        .map(|controller| controller.pad.name().to_owned())
+        .iter()
+        .map(|(path, controller)| {
+            let (vendor, product) = controller.pad.usb_id();
+            (path.clone(), controller.pad.name().to_owned(), vendor, product)
+        })
         .collect();
-    data.compositor.configure_controllers(names);
+    data.compositor
+        .configure_controllers(controller::numbered_controllers(devices));
     let controllers = &data.controllers;
     data.pad_gate.retain(|path| controllers.contains_key(path));
 }

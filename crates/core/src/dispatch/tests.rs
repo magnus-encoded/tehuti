@@ -2834,7 +2834,10 @@ fn opening_the_input_page_lists_microphones_and_starts_on_the_controller_row() {
     let state = open_input(&mut world);
     assert!(world.trace.contains(&Effect::ListMicrophones));
     assert_eq!(state.settings().input.row, InputRow::Controller);
-    assert_eq!(state.settings().input.controller_label(), "AUTO (EVERY PAD)");
+    assert_eq!(
+        state.settings().input.controller_label(),
+        "AUTO: WIRELESS CONTROLLER #1 +1"
+    );
     let state = world.run(
         state,
         Input::Microphones(vec![Microphone {
@@ -4003,4 +4006,29 @@ fn fuzzy_route_reports_the_phrase_and_score_for_logging() {
         }),
     }));
     assert!(world.trace.contains(&Effect::Apply(action)));
+}
+
+#[test]
+fn auto_controller_label_lists_connected_pads_within_the_input_row() {
+    let mut input = InputSettings::default();
+    assert_eq!(input.controller_label(), "AUTO (NO PAD)");
+    input.controllers = vec!["Wireless Controller".into()];
+    assert_eq!(input.controller_label(), "AUTO: WIRELESS CONTROLLER #1");
+    input.controllers.push("Xbox Controller".into());
+    assert_eq!(input.controller_label(), "AUTO: WIRELESS CONTROLLER #1 +1");
+    input.controllers = vec!["A".into(), "B".into()];
+    assert_eq!(input.controller_label(), "AUTO: A #1, B #1");
+}
+
+proptest! {
+    #[test]
+    fn auto_controller_labels_fit_the_input_row_for_unicode_names(
+        names in prop::collection::vec(".{0,80}", 0..20),
+    ) {
+        let input = InputSettings {
+            controllers: names.into_iter().map(ControllerInfo::from).collect(),
+            ..InputSettings::default()
+        };
+        prop_assert!(input.controller_label().chars().count() <= 36);
+    }
 }

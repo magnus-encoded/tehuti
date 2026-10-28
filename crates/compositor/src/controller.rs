@@ -11,6 +11,28 @@ use tracing::warn;
 
 use crate::input::InputSource;
 
+/// Labels pads in path order, counting each model independently.
+#[must_use]
+pub fn numbered_controllers(
+    devices: impl IntoIterator<Item = (std::path::PathBuf, String, u16, u16)>,
+) -> Vec<tehuti_core::dispatch::ControllerInfo> {
+    let mut devices: Vec<_> = devices.into_iter().collect();
+    devices.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    devices
+        .into_iter()
+        .map(|(_, name, vendor, product)| {
+            let model = tehuti_core::pad::Identity::for_device(vendor, product).model_name(&name);
+            let count = counts.entry(model.clone()).or_default();
+            *count = count.saturating_add(1);
+            tehuti_core::dispatch::ControllerInfo {
+                name,
+                label: format!("{model} #{count}"),
+            }
+        })
+        .collect()
+}
+
 /// Opens and grabs every pad with a south face button that no other program holds,
 /// so only Tehuti sees its input. Pads that fail to grab are logged and skipped.
 #[must_use]
@@ -273,6 +295,12 @@ impl EvdevPad {
     }
 
     #[must_use]
+    pub fn usb_id(&self) -> (u16, u16) {
+        let input_id = self.handles.events.input_id();
+        (input_id.vendor(), input_id.product())
+    }
+
+    #[must_use]
     pub fn identity(&self) -> tehuti_core::pad::Identity {
         let input_id = self.handles.events.input_id();
         tehuti_core::pad::Identity::for_device(input_id.vendor(), input_id.product())
@@ -495,6 +523,50 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usb_ids_give_distinct_models_and_keep_kernel_names() {
+        let pads = super::numbered_controllers([
+            (
+                "/dev/input/event9".into(),
+                "Xbox Wireless Controller".into(),
+                0x045e,
+                0x0b13,
+            ),
+            (
+                "/dev/input/event2".into(),
+                "Wireless Controller".into(),
+                0x054c,
+                0x09cc,
+            ),
+        ]);
+        assert_eq!(pads[0].name, "Wireless Controller");
+        assert_eq!(pads[0].label, "DUALSHOCK 4 #1");
+        assert_eq!(pads[1].name, "Xbox Wireless Controller");
+        assert_eq!(pads[1].label, "XBOX CONTROLLER #1");
+    }
+
+    #[test]
+    fn matching_models_are_numbered_by_device_path() {
+        let pads = super::numbered_controllers([
+            (
+                "/dev/input/event9".into(),
+                "Wireless Controller".into(),
+                0x054c,
+                0x05c4,
+            ),
+            (
+                "/dev/input/event2".into(),
+                "Wireless Controller".into(),
+                0x054c,
+                0x09cc,
+            ),
+        ]);
+        assert_eq!(
+            pads.iter().map(|pad| pad.label.as_str()).collect::<Vec<_>>(),
+            ["DUALSHOCK 4 #1", "DUALSHOCK 4 #2"]
+        );
+    }
+
     #[test]
     fn native_capability_bitmaps_distinguish_pads_from_keyboards() {
         let (pad, keyboard) = if usize::BITS == 64 {

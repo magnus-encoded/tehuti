@@ -15,6 +15,7 @@ pub enum Role {
 pub struct Identity {
     pub family: PadFamily,
     pub swap_north_west: bool,
+    model: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -32,6 +33,7 @@ const FALLBACK: Profile = Profile {
     identity: Identity {
         family: PadFamily::Letters,
         swap_north_west: false,
+        model: None,
     },
     roles: STANDARD_ROLES,
     faces: &LETTER_FACES,
@@ -43,6 +45,7 @@ const PROFILES: [Profile; 3] = [
         identity: Identity {
             family: PadFamily::Nintendo,
             swap_north_west: false,
+            model: None,
         },
         roles: [ButtonName::East, ButtonName::South, ButtonName::North],
         faces: &NINTENDO_FACES,
@@ -53,6 +56,7 @@ const PROFILES: [Profile; 3] = [
         identity: Identity {
             family: PadFamily::Symbols,
             swap_north_west: false,
+            model: None,
         },
         roles: STANDARD_ROLES,
         faces: &SYMBOL_FACES,
@@ -63,6 +67,7 @@ const PROFILES: [Profile; 3] = [
         identity: Identity {
             family: PadFamily::Letters,
             swap_north_west: true,
+            model: None,
         },
         roles: STANDARD_ROLES,
         faces: &LETTER_FACES,
@@ -72,12 +77,28 @@ const PROFILES: [Profile; 3] = [
 
 impl Identity {
     #[must_use]
-    pub fn for_device(vendor: u16, _product: u16) -> Self {
-        PROFILES
+    pub fn for_device(vendor: u16, product: u16) -> Self {
+        let mut identity = PROFILES
             .iter()
             .find(|profile| profile.vendor == vendor)
             .unwrap_or(&FALLBACK)
-            .identity
+            .identity;
+        identity.model = match (vendor, product) {
+            (0x054c, 0x05c4 | 0x09cc) => Some("DUALSHOCK 4"),
+            (0x054c, 0x0ce6) => Some("DUALSENSE"),
+            (0x054c, 0x0268) => Some("DUALSHOCK 3"),
+            (0x045e, _) => Some("XBOX CONTROLLER"),
+            (0x057e, 0x2009) => Some("SWITCH PRO"),
+            (0x057e, 0x2006 | 0x2007) => Some("JOY-CON"),
+            _ => None,
+        };
+        identity
+    }
+
+    #[must_use]
+    pub fn model_name(self, kernel_name: &str) -> String {
+        self.model
+            .map_or_else(|| kernel_name.to_uppercase(), str::to_owned)
     }
 }
 
