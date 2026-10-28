@@ -597,6 +597,35 @@ mod level_dim {
     }
 
     #[test]
+    fn unfocused_fade_preserves_linear_brightness_at_each_quarter() {
+        scene(2, |compositor, output| {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::create_dir(directory.path().join("global")).unwrap();
+            std::fs::write(
+                directory.path().join("global/context.toml"),
+                "app_id = '*'\n[buttons]\n[dim]\nstrength = 0.2\nfade_ms = 200\n",
+            )
+            .unwrap();
+            compositor.reload_contexts(tehuti::contexts::try_load(directory.path()));
+            tap(compositor);
+            tap(compositor);
+            let points = window_points(compositor);
+            let mut capture = Capture::new();
+            capture.expect(compositor, output, points[0], [200, 100, 50, 255]);
+            for expected in [
+                [160, 80, 40, 255],
+                [120, 60, 30, 255],
+                [80, 40, 20, 255],
+                [40, 20, 10, 255],
+            ] {
+                tick(compositor, 50);
+                capture.expect(compositor, output, points[0], expected);
+                capture.expect(compositor, output, points[1], [200, 100, 50, 255]);
+            }
+        });
+    }
+
+    #[test]
     fn one_visible_window_including_fullscreen_stays_bright() {
         scene(2, |compositor, output| {
             tick(compositor, 150);
