@@ -333,6 +333,66 @@ right_stick = { ticker = "toggle" }
         );
     }
 
+    const NAMED_GAME: &str = r#"
+app_id = "game"
+
+[buttons]
+south = { key = "enter", hold = true }
+west = { key = "backspace" }
+north = { key = "s", mods = ["ctrl"] }
+east = { key = "escape" }
+dpad_up = { key = "up" }
+
+[ticker.names]
+enter = "Jump"
+backspace = "Action"
+"ctrl+s" = "Save"
+"#;
+
+    #[test]
+    fn named_keys_show_as_text_and_others_keep_their_keycap() {
+        let contexts = contexts(&[GLOBAL, NAMED_GAME]);
+        let entries = ticker::entries(&contexts, Some("game"), PadFamily::Letters, Level::App);
+        let texts = texts(&entries);
+        assert_eq!(texts[0], "A -> Jump hold");
+        assert!(texts.contains(&"X -> Action".to_owned()), "{texts:?}");
+        assert!(texts.contains(&"Y -> Save".to_owned()), "{texts:?}");
+        assert!(texts.contains(&"B -> [Esc]".to_owned()), "{texts:?}");
+        assert!(texts.contains(&"Up -> [\u{2191}]".to_owned()), "{texts:?}");
+        let jump = &entries[0].result;
+        assert_eq!(jump[0], ticker::Piece::Text("Jump".into()));
+        assert_eq!(jump[1], ticker::Piece::Dim("hold".into()));
+        assert!(
+            ticker::entries(
+                &contexts,
+                Some("org.example.Terminal"),
+                PadFamily::Letters,
+                Level::App
+            )
+            .iter()
+            .all(|entry| !entry.text(|_| true).contains("Jump"))
+        );
+    }
+
+    #[test]
+    fn names_do_not_touch_speech_and_reload_updates_them() {
+        let with_speech = NAMED_GAME.replace(
+            "[ticker.names]",
+            "[speech]\n\"Hopp.\" = { key = \"enter\" }\n[ticker.names]",
+        );
+        let mut state = focus(State::with_contexts(contexts(&[GLOBAL, &with_speech])), "game");
+        let texts_now = texts(&state.bar().ticker().unwrap().entries);
+        assert!(
+            texts_now.contains(&"\"Hopp\" -> [\u{23ce}]".to_owned()),
+            "{texts_now:?}"
+        );
+        state.replace_contexts(contexts(&[GLOBAL, &with_speech.replace("\"Jump\"", "\"Leap\"")]));
+        assert_eq!(
+            state.bar().ticker().unwrap().entries[0].text(|_| true),
+            "A -> Leap hold"
+        );
+    }
+
     #[test]
     fn scroll_steps_advance_four_times_a_second_and_restart_on_focus() {
         let state = State::with_contexts(contexts(&[GLOBAL, GAME]));

@@ -457,16 +457,42 @@ fn button_entries(
                         mods: Vec::new(),
                     })
                 })?;
-            let mut entry = Entry::new(trigger, &action, None);
-            if context
-                .and_then(|context| context.held_key_for(*button))
-                .is_some()
-            {
-                entry.result.push(Piece::Dim("hold".into()));
-            }
-            Some(entry)
+            Some(mapped_entry(trigger, context, *button, &action))
         })
         .collect()
+}
+
+/// The entry for a mapped button: the key's `[ticker.names]` name or its keycap, then `hold`.
+fn mapped_entry(
+    trigger: Vec<Piece>,
+    context: Option<&Context>,
+    button: ButtonName,
+    action: &Action,
+) -> Entry {
+    let mut entry = Entry::new(trigger, action, None);
+    if let Some(name) = context.and_then(|context| key_name(context, action)) {
+        entry.result = vec![Piece::Text(name.into())];
+    }
+    if context.and_then(|context| context.held_key_for(button)).is_some() {
+        entry.result.push(Piece::Dim("hold".into()));
+    }
+    entry
+}
+
+/// What the context's `[ticker.names]` calls the key or chord an action sends.
+fn key_name<'context>(context: &'context Context, action: &Action) -> Option<&'context str> {
+    match action {
+        Action::Key { key, mods } => context.ticker_name(*key, mods),
+        Action::KeyDown { key } | Action::KeyUp { key } => context.ticker_name(*key, &[]),
+        Action::Launch { .. }
+        | Action::Close
+        | Action::Text { .. }
+        | Action::Notice { .. }
+        | Action::SecretRequest { .. }
+        | Action::Quit
+        | Action::Layout { .. }
+        | Action::ToggleTicker => None,
+    }
 }
 
 fn talk_entry(trigger: Vec<Piece>) -> Entry {

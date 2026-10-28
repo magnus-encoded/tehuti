@@ -316,6 +316,89 @@ pub enum TickerSpeech {
 pub struct TickerConfig {
     pub enabled: Option<bool>,
     pub speech: Option<TickerSpeech>,
+    /// What keys do in this application, as the file spells them (`enter`, `ctrl+s`).
+    #[serde(default)]
+    pub names: std::collections::BTreeMap<String, String>,
+}
+
+/// Longest name a `[ticker.names]` entry may show, in characters.
+pub const TICKER_NAME_MAX: usize = 24;
+
+/// A key chord with a name the ticker shows instead of its keycap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TickerName {
+    key: KeyName,
+    mods: Vec<Modifier>,
+    name: String,
+}
+
+const fn modifier_rank(modifier: Modifier) -> u8 {
+    match modifier {
+        Modifier::Ctrl => 0,
+        Modifier::Alt => 1,
+        Modifier::Shift => 2,
+        Modifier::Super => 3,
+    }
+}
+
+fn sorted_mods(mods: &[Modifier]) -> Vec<Modifier> {
+    let mut mods = mods.to_vec();
+    mods.sort_by_key(|modifier| modifier_rank(*modifier));
+    mods.dedup();
+    mods
+}
+
+fn parse_ticker_names(names: &std::collections::BTreeMap<String, String>) -> Result<Vec<TickerName>, String> {
+    fn word<'de, T: serde::Deserialize<'de>>(word: &'de str) -> Option<T> {
+        T::deserialize(serde::de::value::StrDeserializer::<serde::de::value::Error>::new(
+            word,
+        ))
+        .ok()
+    }
+    let mut parsed: Vec<TickerName> = Vec::with_capacity(names.len());
+    for (spelled, name) in names {
+        let mut parts: Vec<&str> = spelled.split('+').map(str::trim).collect();
+        let key_word = parts.pop().unwrap_or_default();
+        let key: KeyName = word(key_word).ok_or_else(|| {
+            format!("ticker.names key {spelled:?} is not a key name (use names like enter, escape or ctrl+s)")
+        })?;
+        let mut mods = Vec::with_capacity(parts.len());
+        for part in parts {
+            mods.push(
+                word::<Modifier>(part)
+                    .ok_or_else(|| format!("ticker.names key {spelled:?} has unknown modifier {part:?}"))?,
+            );
+        }
+        let mods = sorted_mods(&mods);
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(format!("ticker.names {spelled:?} must not be empty"));
+        }
+        if trimmed != name {
+            return Err(format!(
+                "ticker.names {spelled:?} must not have leading or trailing spaces"
+            ));
+        }
+        if trimmed.chars().count() > TICKER_NAME_MAX {
+            return Err(format!(
+                "ticker.names {spelled:?} is longer than {TICKER_NAME_MAX} characters"
+            ));
+        }
+        if trimmed.chars().any(char::is_control) {
+            return Err(format!(
+                "ticker.names {spelled:?} must not contain control characters"
+            ));
+        }
+        if parsed.iter().any(|other| other.key == key && other.mods == mods) {
+            return Err(format!("ticker.names {spelled:?} duplicates another entry"));
+        }
+        parsed.push(TickerName {
+            key,
+            mods,
+            name: trimmed.to_owned(),
+        });
+    }
+    Ok(parsed)
 }
 
 /// A mapped phrase as the context file spells it, for display.
@@ -341,6 +424,7 @@ pub struct Context {
     push_to_talk: Vec<ButtonName>,
     pad: PadConfig,
     ticker: TickerConfig,
+    ticker_names: Vec<TickerName>,
     speech_matching: SpeechMatching,
 }
 
@@ -402,6 +486,16 @@ impl Context {
     #[must_use]
     pub const fn ticker(&self) -> &TickerConfig {
         &self.ticker
+    }
+
+    /// The name `[ticker.names]` gives a key chord, if any; modifier order does not matter.
+    #[must_use]
+    pub fn ticker_name(&self, key: KeyName, mods: &[Modifier]) -> Option<&str> {
+        let mods = sorted_mods(mods);
+        self.ticker_names
+            .iter()
+            .find(|entry| entry.key == key && entry.mods == mods)
+            .map(|entry| entry.name.as_str())
     }
 
     #[must_use]
@@ -734,6 +828,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         dim: context.dim,
         push_to_talk: context.push_to_talk,
         pad: context.pad,
+        ticker_names: parse_ticker_names(&context.ticker.names)?,
         ticker: context.ticker,
         speech_matching: context.speech_matching,
     })
