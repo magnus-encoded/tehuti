@@ -1013,7 +1013,12 @@ impl Compositor {
             self.quit_requested = true;
             return;
         }
-        if let Err(error) = crate::system_menu::execute(command) {
+        let result = self
+            .launch_socket
+            .as_deref()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotConnected, "no compositor socket"))
+            .and_then(|socket| crate::system_menu::execute(command, socket));
+        if let Err(error) = result {
             tracing::warn!(?command, %error, "system menu command failed");
             self.show_notice("MENU COMMAND UNAVAILABLE");
         }

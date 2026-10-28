@@ -70,10 +70,10 @@ fn config_path() -> io::Result<PathBuf> {
 ///
 /// # Errors
 /// The configuration could not be read or the command could not be started.
-pub fn execute(command: Command) -> io::Result<()> {
+pub fn execute(command: Command, socket: &std::ffi::OsStr) -> io::Result<()> {
     let config = Config::parse(&std::fs::read_to_string(config_path()?)?)?;
     config.run(command, |program, args| {
-        let mut child = std::process::Command::new(program)
+        let mut child = crate::client_env::command(std::ffi::OsStr::new(program), socket)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
