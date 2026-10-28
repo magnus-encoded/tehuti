@@ -340,12 +340,14 @@ pub struct Context {
     push_to_talk: Vec<ButtonName>,
     pad: PadConfig,
     ticker: TickerConfig,
+    speech_matching: SpeechMatching,
 }
 
-/// A speech mapping with its spelling in the file and an optional ticker icon.
+/// A speech mapping with its spelling in the file, its fuzzy key and an optional ticker icon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SpeechEntry {
     phrase: String,
+    folded: String,
     action: MappingAction,
     icon: Option<Text>,
 }
@@ -399,6 +401,25 @@ impl Context {
     #[must_use]
     pub const fn ticker(&self) -> &TickerConfig {
         &self.ticker
+    }
+
+    #[must_use]
+    pub const fn speech_matching(&self) -> &SpeechMatching {
+        &self.speech_matching
+    }
+
+    /// Every mapped phrase with its normalized form, for fuzzy matching.
+    pub fn speech_candidates(&self) -> impl Iterator<Item = (&str, Candidate<'_>)> {
+        self.speech.iter().map(|(normalized, entry)| {
+            (
+                normalized.as_str(),
+                Candidate {
+                    phrase: &entry.phrase,
+                    folded: &entry.folded,
+                    action: entry.action.action(),
+                },
+            )
+        })
     }
 
     /// The buttons that start speech capture, from a global context.
@@ -532,6 +553,8 @@ struct ContextFile {
     pad: PadConfig,
     #[serde(default)]
     ticker: TickerConfig,
+    #[serde(default)]
+    speech_matching: SpeechMatching,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -668,13 +691,9 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         {
             launch_phrases.push((launch.as_str().to_owned(), mapped.clone()));
         }
-        let normalized = normalize_phrase(&mapped);
-        if normalized.is_empty() {
-            return Err(format!(
-                "speech phrase {mapped:?} has no words after normalization"
-            ));
-        }
+        let normalized = normalized_speech_phrase(&mapped)?;
         let entry = SpeechEntry {
+            folded: fold_phrase(&mapped),
             phrase: mapped.clone(),
             action: entry.action,
             icon: entry.icon,
@@ -697,7 +716,18 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         push_to_talk: context.push_to_talk,
         pad: context.pad,
         ticker: context.ticker,
+        speech_matching: context.speech_matching,
     })
+}
+
+fn normalized_speech_phrase(mapped: &str) -> Result<String, String> {
+    let normalized = normalize_phrase(mapped);
+    if normalized.is_empty() {
+        return Err(format!(
+            "speech phrase {mapped:?} has no words after normalization"
+        ));
+    }
+    Ok(normalized)
 }
 
 /// What the core asks its edges to do.
@@ -757,7 +787,9 @@ pub enum LayoutAction {
     MaximizeColumn,
 }
 
+mod fuzzy;
 mod plugin;
+pub use fuzzy::*;
 pub use plugin::*;
 
 /// Folds case, whitespace and punctuation between and around words, so Whisper's

@@ -17,3 +17,4 @@
 | Record | The Share button, KEY_RECORD, reserved for push-to-talk. |
 | Notice | A core action displaying unmatched speech feedback without changing focus. |
 | Unmatched speech | A transcript with no phrase mapping. A context may opt into typing it with a trailing space through `unmatched_speech = "type"`. |
+| Fuzzy speech match | An opt-in match by a folded Norwegian spelling key when no exact phrase matches, with a unique action above the similarity threshold. |

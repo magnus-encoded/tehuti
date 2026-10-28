@@ -1177,7 +1177,20 @@ impl Compositor {
             } => {
                 log_transcript(session, &text, admitted);
             }
-            DispatchEffect::SpeechRouted { text, first, plugin } => {
+            DispatchEffect::SpeechRouted {
+                text,
+                first,
+                plugin,
+                fuzzy,
+            } => {
+                if let Some(matched) = fuzzy {
+                    tracing::info!(
+                        text = text.as_str(),
+                        phrase = matched.phrase,
+                        score = %thousandths(matched.score),
+                        "speech fuzzy matched"
+                    );
+                }
                 log_speech_route(&text, first.as_ref(), plugin);
             }
         }
@@ -2407,6 +2420,15 @@ fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin
         None if plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
         None => tracing::info!(text = text.as_str(), "speech produced no action"),
     }
+}
+
+/// A score in thousandths as a decimal fraction, such as `0.875`.
+fn thousandths(score: u16) -> String {
+    format!(
+        "{}.{:03}",
+        score.checked_div(1000).unwrap_or_default(),
+        score.checked_rem(1000).unwrap_or_default()
+    )
 }
 
 fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
