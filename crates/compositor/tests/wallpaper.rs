@@ -327,3 +327,111 @@ mod wallpaper {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod collection {
+    use core::error::Error;
+    use std::path::Path;
+    use tehuti::{display_mode_store::Store, wallpaper::Collection};
+
+    fn image(root: &Path, name: &str, red: u8) -> Result<(), Box<dyn Error>> {
+        std::fs::create_dir_all(root.join("wallpapers"))?;
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([red, 0, 0, 255]))
+            .save(root.join("wallpapers").join(format!("{name}.png")))?;
+        Ok(())
+    }
+
+    fn red(collection: &mut Collection) -> Result<u8, Box<dyn Error>> {
+        let mut result = 0;
+        collection.buffer((2, 2).into())?.render().draw(|pixels| {
+            result = pixels.first().copied().ok_or("empty buffer")?;
+            Ok::<_, Box<dyn Error>>(Vec::new())
+        })?;
+        Ok(result)
+    }
+
+    #[test]
+    fn release_default_shows_locked_future_thumbnails() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        for (name, color) in [
+            ("apteribis", 10),
+            ("bostrychia", 20),
+            ("cercibis", 30),
+            ("eudocimus", 40),
+            ("geronticus", 50),
+        ] {
+            image(directory.path(), name, color)?;
+        }
+        let roots = [directory.path().to_path_buf()];
+        let store = || Store::new(directory.path().join("selection"));
+        let mut first = Collection::discover(&roots, store(), 0, false);
+        assert_eq!(first.names().len(), 5);
+        assert_eq!(first.locks(), [false, true, true, true, true]);
+        assert_eq!(first.thumbnails().len(), 5);
+        assert_eq!(first.thumbnails()[4].dimensions(), (240, 135));
+        assert_eq!(first.version(4), Some(4));
+        assert!(first.select(4).is_err());
+        let thumbnail = first.thumbnails()[4].as_ptr();
+        first.unlock()?;
+        assert_eq!(first.locks(), [false; 5]);
+        assert_eq!(first.thumbnails()[4].as_ptr(), thumbnail);
+        assert_eq!(red(&mut first)?, 10);
+        std::fs::remove_file(directory.path().join("wallpapers-unlocked"))?;
+        let mut fourth = Collection::discover(&roots, store(), 4, false);
+        assert_eq!(
+            fourth.names(),
+            ["apteribis", "bostrychia", "cercibis", "eudocimus", "geronticus"]
+        );
+        assert_eq!(red(&mut fourth)?, 50);
+        assert_eq!(Collection::discover(&roots, store(), 0, true).names().len(), 5);
+        store().write("geronticus")?;
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 0, false))?, 10);
+        Ok(())
+    }
+
+    #[test]
+    fn lookup_prefers_user_then_installed_then_first_available_then_plain() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let user = directory.path().join("user");
+        let installed = directory.path().join("installed");
+        let roots = [user.clone(), installed.clone()];
+        let store = || Store::new(directory.path().join("selection"));
+        image(&installed, "geronticus", 50)?;
+        image(&user, "geronticus", 60)?;
+        image(&installed, "apteribis", 10)?;
+        image(&user, "bostrychia", 20)?;
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 4, false))?, 60);
+        std::fs::write(user.join("wallpapers/geronticus.png"), "invalid")?;
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 4, false))?, 50);
+        std::fs::remove_file(installed.join("wallpapers/geronticus.png"))?;
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 4, false))?, 10);
+        std::fs::remove_file(installed.join("wallpapers/apteribis.png"))?;
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 4, false))?, 20);
+        std::fs::remove_file(user.join("wallpapers/bostrychia.png"))?;
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 4, false))?, 0);
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([80, 0, 0, 255])).save(user.join("wallpaper.png"))?;
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 4, false))?, 80);
+        Ok(())
+    }
+
+    #[test]
+    fn applied_selection_replaces_cached_pixels_and_survives_startup() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        image(directory.path(), "apteribis", 10)?;
+        image(directory.path(), "bostrychia", 20)?;
+        let roots = [directory.path().to_path_buf()];
+        let store = || Store::new(directory.path().join("config/wallpaper"));
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([80, 0, 0, 255]))
+            .save(directory.path().join("wallpaper.png"))?;
+        let mut collection = Collection::discover(&roots, store(), 0, true);
+        assert_eq!(red(&mut collection)?, 80);
+        collection.select(1)?;
+        assert_eq!(red(&mut collection)?, 20);
+        assert_eq!(store().read()?.as_deref(), Some("bostrychia"));
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 0, true))?, 20);
+        std::fs::remove_file(directory.path().join("wallpaper.png"))?;
+        store().write("../../untrusted")?;
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 0, true))?, 10);
+        Ok(())
+    }
+}

@@ -1,7 +1,10 @@
 //! File wallpaper, cached at each output size.
 
 use core::error::Error;
-use std::sync::Mutex;
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use smithay::{
     backend::{
@@ -27,6 +30,8 @@ use smithay::reexports::calloop::ping::Ping;
 struct Request {
     size: Size<i32, Physical>,
     redraw: Option<Ping>,
+    image: Option<image::DynamicImage>,
+    generation: u64,
 }
 
 #[derive(Debug)]
@@ -89,13 +94,260 @@ impl Wallpaper {
     }
 }
 
+pub const CODENAMES: &[&str] = &[
+    "apteribis",
+    "bostrychia",
+    "cercibis",
+    "eudocimus",
+    "geronticus",
+    "lophotibis",
+    "mesembrinibis",
+    "nipponia",
+    "phimosus",
+    "plegadis",
+    "pseudibis",
+    "theristicus",
+    "threskiornis",
+];
+const CURRENT_RELEASE: usize = 0;
+
+#[derive(Debug)]
+pub struct Collection {
+    locked: Vec<bool>,
+    thumbnails: Vec<image::RgbaImage>,
+    entries: Vec<(String, image::DynamicImage)>,
+    pub(crate) current: Option<usize>,
+    wallpaper: Wallpaper,
+    store: crate::display_mode_store::Store,
+}
+
+impl Collection {
+    #[must_use]
+    pub fn discover(
+        roots: &[PathBuf],
+        store: crate::display_mode_store::Store,
+        release: usize,
+        all: bool,
+    ) -> Self {
+        let unlocked = store
+            .sibling("wallpapers-unlocked")
+            .read()
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "wallpaper unlock unavailable");
+                None
+            })
+            .as_deref()
+            == Some("1");
+        let entries = load_entries(roots, release, true);
+        let locked = entry_locks(&entries, release, all || unlocked);
+        let thumbnails = entries
+            .iter()
+            .map(|(_, image)| {
+                image
+                    .resize_to_fill(240, 135, image::imageops::FilterType::Lanczos3)
+                    .to_rgba8()
+            })
+            .collect();
+        let saved = store.read().unwrap_or_else(|error| {
+            tracing::warn!(%error, "wallpaper selection unavailable");
+            None
+        });
+        let saved_current = saved.as_ref().and_then(|saved| {
+            entries
+                .iter()
+                .position(|(name, _)| name == saved)
+                .filter(|index| !locked.get(*index).copied().unwrap_or(true))
+        });
+        let legacy = saved_current
+            .is_none()
+            .then(|| {
+                roots
+                    .iter()
+                    .find_map(|root| image::open(root.join("wallpaper.png")).ok())
+            })
+            .flatten();
+        let current = saved_current
+            .or_else(|| {
+                CODENAMES
+                    .get(release)
+                    .and_then(|default| entries.iter().position(|(name, _)| name == default))
+            })
+            .or_else(|| locked.iter().position(|locked| !locked));
+        let current = current.filter(|_| legacy.is_none());
+        let image =
+            legacy.or_else(|| current.and_then(|index| entries.get(index).map(|(_, image)| image.clone())));
+        Self {
+            locked,
+            thumbnails,
+            entries,
+            current,
+            wallpaper: Wallpaper {
+                image,
+                buffers: std::collections::HashMap::new(),
+            },
+            store,
+        }
+    }
+
+    #[must_use]
+    pub fn from_env() -> Self {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut roots = Vec::new();
+        if let Some(data) = std::env::var_os("XDG_DATA_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home.as_ref().map(|home| home.join(".local/share")))
+        {
+            roots.push(data.join("tehuti"));
+        }
+        roots.extend(
+            std::env::split_paths(
+                &std::env::var_os("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into()),
+            )
+            .map(|root| root.join("tehuti")),
+        );
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home.map(|home| home.join(".config")))
+            .unwrap_or_else(|| Path::new("/nonexistent").to_path_buf());
+        Self::discover(
+            &roots,
+            crate::display_mode_store::Store::new(config.join("tehuti/wallpaper")),
+            CURRENT_RELEASE,
+            std::env::var("TEHUTI_ALL_WALLPAPERS").is_ok_and(|value| value == "1"),
+        )
+    }
+
+    /// # Errors
+    /// Returns an error when the permanent unlock cannot be saved.
+    pub fn unlock(&mut self) -> std::io::Result<()> {
+        self.store.sibling("wallpapers-unlocked").write("1")?;
+        self.locked.fill(false);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn locks(&self) -> Vec<bool> {
+        self.locked.clone()
+    }
+
+    #[must_use]
+    pub fn thumbnails(&self) -> &[image::RgbaImage] {
+        &self.thumbnails
+    }
+
+    #[must_use]
+    pub fn version(&self, index: usize) -> Option<usize> {
+        let (name, _) = self.entries.get(index)?;
+        CODENAMES.iter().position(|entry| *entry == name)
+    }
+
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        self.entries.iter().map(|(name, _)| name.clone()).collect()
+    }
+
+    /// # Errors
+    /// Returns an error when the selection cannot be saved or is unavailable.
+    pub fn preview(&mut self, index: usize) -> std::io::Result<()> {
+        if self.locked.get(index).copied().unwrap_or(true) {
+            return Err(std::io::Error::other("wallpaper locked"));
+        }
+        let (_, image) = self
+            .entries
+            .get(index)
+            .ok_or_else(|| std::io::Error::other("wallpaper unavailable"))?;
+        self.current = Some(index);
+        self.wallpaper.image = Some(image.clone());
+        self.wallpaper.buffers.clear();
+        Ok(())
+    }
+
+    /// # Errors
+    /// Returns an error when the wallpaper is locked or saving fails.
+    pub fn save(&self, index: usize) -> std::io::Result<()> {
+        if self.locked.get(index).copied().unwrap_or(true) {
+            return Err(std::io::Error::other("wallpaper locked"));
+        }
+        let name = &self
+            .entries
+            .get(index)
+            .ok_or_else(|| std::io::Error::other("wallpaper unavailable"))?
+            .0;
+        self.store.write(name)
+    }
+
+    /// # Errors
+    /// Returns an error when the wallpaper is locked or saving fails.
+    pub fn select(&mut self, index: usize) -> std::io::Result<()> {
+        self.preview(index)?;
+        self.save(index)
+    }
+
+    /// # Errors
+    /// Returns an error when output dimensions are not positive.
+    pub fn buffer(&mut self, size: Size<i32, Physical>) -> Result<MemoryRenderBuffer, Box<dyn Error>> {
+        self.wallpaper.buffer(size)
+    }
+}
+
+fn entry_locks(entries: &[(String, image::DynamicImage)], release: usize, unlocked: bool) -> Vec<bool> {
+    entries
+        .iter()
+        .map(|(name, _)| {
+            !unlocked
+                && CODENAMES
+                    .iter()
+                    .position(|entry| *entry == name)
+                    .is_some_and(|index| index > release)
+        })
+        .collect()
+}
+
+fn load_entries(roots: &[PathBuf], release: usize, all: bool) -> Vec<(String, image::DynamicImage)> {
+    let packs: Vec<_> = roots
+        .iter()
+        .map(|root| {
+            let path = root.join("wallpapers.pak");
+            match crate::wallpaper_pack::Pack::read(&path) {
+                Ok(pack) => Some(pack),
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        tracing::warn!(%error, path = %path.display(), "wallpaper pack unavailable");
+                    }
+                    None
+                }
+            }
+        })
+        .collect();
+    CODENAMES
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| all || *index <= release)
+        .filter_map(|(_, name)| {
+            roots
+                .iter()
+                .zip(&packs)
+                .find_map(|(root, pack)| {
+                    pack.as_ref()
+                        .and_then(|pack| pack.image(name))
+                        .or_else(|| image::open(root.join("wallpapers").join(format!("{name}.png"))).ok())
+                })
+                .map(|image| ((*name).to_owned(), image))
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 pub struct WallpaperCache {
     requests: std::sync::mpsc::SyncSender<Request>,
     redraw: Option<Ping>,
-    buffers: std::sync::mpsc::Receiver<(Size<i32, Physical>, Option<MemoryRenderBuffer>)>,
+    buffers: std::sync::mpsc::Receiver<(Size<i32, Physical>, u64, Option<MemoryRenderBuffer>)>,
     ready: std::collections::HashMap<(i32, i32), Option<MemoryRenderBuffer>>,
     pending: std::collections::HashSet<(i32, i32)>,
+    collection: Option<Collection>,
+    generation: u64,
 }
 
 impl WallpaperCache {
@@ -107,7 +359,19 @@ impl WallpaperCache {
             .name("wallpaper".into())
             .spawn(move || {
                 let mut wallpaper = Wallpaper::load(&path);
-                while let Ok(Request { size, redraw }) = sizes.recv() {
+                let mut worker_generation = u64::MAX;
+                while let Ok(Request {
+                    size,
+                    redraw,
+                    image,
+                    generation,
+                }) = sizes.recv()
+                {
+                    if generation != worker_generation && image.is_some() {
+                        wallpaper.image = image;
+                        wallpaper.buffers.clear();
+                    }
+                    worker_generation = generation;
                     let buffer = if wallpaper.image.is_some() {
                         match wallpaper.buffer(size) {
                             Ok(buffer) => Some(buffer),
@@ -119,7 +383,7 @@ impl WallpaperCache {
                     } else {
                         None
                     };
-                    if prepared.send((size, buffer)).is_err() {
+                    if prepared.send((size, generation, buffer)).is_err() {
                         break;
                     }
                     if let Some(redraw) = redraw {
@@ -136,7 +400,64 @@ impl WallpaperCache {
             buffers,
             ready: std::collections::HashMap::new(),
             pending: std::collections::HashSet::new(),
+            collection: None,
+            generation: 0,
         }
+    }
+
+    #[must_use]
+    pub fn from_collection(collection: Collection) -> Self {
+        let mut cache = Self::new(PathBuf::from("/nonexistent/tehuti/wallpaper.png"));
+        cache.collection = Some(collection);
+        cache
+    }
+
+    #[must_use]
+    pub fn choices(&self) -> (Vec<String>, Vec<bool>, usize) {
+        self.collection.as_ref().map_or_else(
+            || (Vec::new(), Vec::new(), 0),
+            |collection| {
+                (
+                    collection.names(),
+                    collection.locks(),
+                    collection.current.unwrap_or(0),
+                )
+            },
+        )
+    }
+
+    /// # Errors
+    /// Returns an error when the unlock marker cannot be written.
+    pub fn unlock(&mut self) -> std::io::Result<()> {
+        self.collection
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("wallpaper collection unavailable"))?
+            .unlock()
+    }
+
+    /// # Errors
+    /// Returns an error when the wallpaper is locked or unavailable.
+    pub fn preview(&mut self, index: usize) -> std::io::Result<()> {
+        self.collection
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("wallpaper collection unavailable"))?
+            .preview(index)?;
+        self.generation = self.generation.wrapping_add(1);
+        self.ready.clear();
+        self.pending.clear();
+        if let Some(ping) = &self.redraw {
+            ping.ping();
+        }
+        Ok(())
+    }
+
+    /// # Errors
+    /// Returns an error when the wallpaper is locked or saving fails.
+    pub fn save(&self, index: usize) -> std::io::Result<()> {
+        self.collection
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("wallpaper collection unavailable"))?
+            .save(index)
     }
 
     pub fn set_redraw_ping(&mut self, ping: Ping) {
@@ -144,7 +465,10 @@ impl WallpaperCache {
     }
 
     pub fn buffer(&mut self, size: Size<i32, Physical>) -> Option<MemoryRenderBuffer> {
-        while let Ok((prepared_size, buffer)) = self.buffers.try_recv() {
+        while let Ok((prepared_size, generation, buffer)) = self.buffers.try_recv() {
+            if generation != self.generation {
+                continue;
+            }
             let _removed = self.pending.remove(&(prepared_size.w, prepared_size.h));
             let _previous = self.ready.insert((prepared_size.w, prepared_size.h), buffer);
         }
@@ -155,6 +479,11 @@ impl WallpaperCache {
             match self.requests.try_send(Request {
                 size,
                 redraw: self.redraw.clone(),
+                image: self
+                    .collection
+                    .as_ref()
+                    .map_or_else(|| None, |collection| collection.wallpaper.image.clone()),
+                generation: self.generation,
             }) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
@@ -180,21 +509,50 @@ pub fn set_redraw_ping(ping: Ping) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[must_use]
+pub fn choices() -> (Vec<String>, Vec<bool>, usize) {
+    wallpaper()
+        .lock()
+        .map_or_else(|_| (Vec::new(), Vec::new(), 0), |cache| cache.choices())
+}
+
+/// # Errors
+/// Returns an error when the wallpaper is locked or unavailable.
+pub fn preview(index: usize) -> std::io::Result<()> {
+    wallpaper()
+        .lock()
+        .map_err(|_| std::io::Error::other("wallpaper cache unavailable"))?
+        .preview(index)
+}
+
+/// # Errors
+/// Returns an error when the wallpaper is locked or saving fails.
+pub fn save(index: usize) -> std::io::Result<()> {
+    wallpaper()
+        .lock()
+        .map_err(|_| std::io::Error::other("wallpaper cache unavailable"))?
+        .save(index)
+}
+
+/// # Errors
+/// Returns an error when the unlock marker cannot be written.
+pub fn unlock() -> std::io::Result<(Vec<String>, Vec<bool>, usize)> {
+    let mut cache = wallpaper()
+        .lock()
+        .map_err(|_| std::io::Error::other("wallpaper cache unavailable"))?;
+    cache.unlock()?;
+    Ok(cache.choices())
+}
+
+#[must_use]
+pub fn thumbnail(index: usize) -> Option<image::RgbaImage> {
+    let cache = wallpaper().lock().ok()?;
+    Some(cache.collection.as_ref()?.thumbnails().get(index)?.clone())
+}
+
 fn wallpaper() -> &'static Mutex<WallpaperCache> {
     static WALLPAPER: std::sync::OnceLock<Mutex<WallpaperCache>> = std::sync::OnceLock::new();
-    WALLPAPER.get_or_init(|| {
-        let data = std::env::var_os("XDG_DATA_HOME")
-            .filter(|path| !path.is_empty())
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
-            });
-        let path = data.map_or_else(
-            || std::path::PathBuf::from("/nonexistent/tehuti/wallpaper.png"),
-            |data| data.join("tehuti/wallpaper.png"),
-        );
-        Mutex::new(WallpaperCache::new(path))
-    })
+    WALLPAPER.get_or_init(|| Mutex::new(WallpaperCache::from_collection(Collection::from_env())))
 }
 
 #[derive(Debug)]

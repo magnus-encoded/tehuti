@@ -31,6 +31,10 @@ impl Store {
         Ok(Self::new(config_root()?.join("tehuti/display-mode")))
     }
 
+    pub(crate) fn sibling(&self, name: &str) -> Self {
+        Self::new(self.path.with_file_name(name))
+    }
+
     /// # Errors
     /// Returns file read errors other than a missing file.
     pub fn read(&self) -> io::Result<Option<String>> {
