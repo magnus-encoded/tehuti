@@ -56,3 +56,5 @@ pub mod settings;
 pub mod system_menu;
 
 pub mod desktop_hints;
+
+pub mod choice_list;

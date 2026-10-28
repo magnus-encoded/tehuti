@@ -3766,3 +3766,92 @@ fn closing_wallpaper_settings_restores_preview_before_the_next_overlay() {
         }
     }
 }
+
+#[test]
+fn choice_list_owns_pad_without_closing_the_keyboard_and_returns_the_original_index() {
+    use crate::choice_list::{Candidate, Choice, Outcome, Slots};
+    for family in [
+        crate::pad::PadFamily::Letters,
+        crate::pad::PadFamily::Symbols,
+        crate::pad::PadFamily::Nintendo,
+    ] {
+        let mut world = World::default();
+        let mut state = State::default();
+        state.core_mut().set_pad_family(family);
+        state = world.run(state, speech_event("keyboard"));
+        assert!(state.keyboard().is_open());
+        state = world.run(
+            state,
+            Input::ChoiceList(Slots {
+                title: "Choose".into(),
+                heard: "beta".into(),
+                candidates: vec![
+                    Candidate {
+                        name: "zebra".into(),
+                        meta: None,
+                    },
+                    Candidate {
+                        name: "beta".into(),
+                        meta: None,
+                    },
+                ],
+                action: "Open".into(),
+                ..Slots::default()
+            }),
+        );
+        world.trace.clear();
+        state = tap_button(&mut world, state, family.button(crate::pad::Role::Confirm));
+        assert_eq!(
+            state.choice_list().map(crate::choice_list::List::outcome),
+            Some(Outcome::Picked(Choice::Candidate(1)))
+        );
+        assert!(state.keyboard().is_open());
+        assert!(
+            !world.trace.iter().any(|effect| matches!(
+                effect,
+                Effect::Apply(_) | Effect::Chord(_) | Effect::ConfirmSecret(_)
+            )),
+            "choice presses and releases stay above lower layers"
+        );
+    }
+}
+
+#[test]
+fn choice_list_cancels_when_a_passthrough_context_owns_the_pad() {
+    let mut world = World::default();
+    let context =
+        tehuti_protocol::parse_context("app_id = 'example-game'\nbuttons = {}\n[pad]\npassthrough = true")
+            .unwrap();
+    let state = configured(vec![context], "example-game");
+    let state = world.run(state, Input::ChoiceList(crate::choice_list::Slots::default()));
+    assert_eq!(
+        state.choice_list().map(crate::choice_list::List::outcome),
+        Some(crate::choice_list::Outcome::Cancelled)
+    );
+}
+
+#[test]
+fn choice_list_navigation_resumes_after_releasing_a_button_under_the_system_menu() {
+    use crate::choice_list::{Candidate, Choice, Slots};
+    let mut world = World::default();
+    let slots = Slots {
+        candidates: ["Alpha", "Beta", "Gamma"]
+            .into_iter()
+            .map(|name| Candidate {
+                name: name.into(),
+                meta: None,
+            })
+            .collect(),
+        ..Slots::default()
+    };
+    let state = world.run(State::default(), Input::ChoiceList(slots));
+    let state = world.run(state, pad_button(ButtonName::DpadDown, ButtonState::Pressed));
+    let state = hold_guide(&mut world, state);
+    let state = world.run(state, pad_button(ButtonName::DpadDown, ButtonState::Released));
+    let state = tap_button(&mut world, state, ButtonName::East);
+    let state = tap_button(&mut world, state, ButtonName::DpadDown);
+    assert_eq!(
+        state.choice_list().and_then(crate::choice_list::List::selected),
+        Some(Choice::Candidate(2))
+    );
+}

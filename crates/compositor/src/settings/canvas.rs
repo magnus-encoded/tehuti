@@ -64,6 +64,50 @@ impl Canvas {
         })
     }
 
+    pub(crate) fn reference(&mut self, width: usize, height: usize) {
+        self.scale = (
+            self.width as f32 / width as f32,
+            self.height as f32 / height as f32,
+        );
+    }
+
+    pub(crate) fn line(
+        &mut self,
+        bounds: (usize, usize, usize, usize),
+        runs: &[(&str, [u8; 4])],
+        size: usize,
+    ) {
+        let (left, top, width, height) = bounds;
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        layout.reset(&LayoutSettings {
+            x: left as f32 * self.scale.0,
+            y: top as f32 * self.scale.1,
+            ..LayoutSettings::default()
+        });
+        for (text, colour) in runs {
+            layout.append(
+                &[self.font],
+                &TextStyle::with_user_data(text, size as f32 * self.scale.1, 0, *colour),
+            );
+        }
+        for glyph in layout.glyphs() {
+            let (_, coverage) = self.font.rasterize_config(glyph.key);
+            for (index, alpha) in coverage.into_iter().enumerate() {
+                let column =
+                    (glyph.x as usize).saturating_add(index.checked_rem(glyph.width).unwrap_or_default());
+                let row =
+                    (glyph.y as usize).saturating_add(index.checked_div(glyph.width).unwrap_or_default());
+                if column >= (left as f32 * self.scale.0) as usize
+                    && column < (left.saturating_add(width) as f32 * self.scale.0) as usize
+                    && row >= (top as f32 * self.scale.1) as usize
+                    && row < (top.saturating_add(height) as f32 * self.scale.1) as usize
+                {
+                    self.blend(column, row, glyph.user_data, f32::from(alpha) / 255.0);
+                }
+            }
+        }
+    }
+
     pub(crate) fn image(&mut self, x: usize, y: usize, image: &image::RgbaImage) {
         for (column, row, pixel) in image.enumerate_pixels() {
             self.blend(
