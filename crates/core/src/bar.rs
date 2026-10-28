@@ -26,6 +26,8 @@ pub struct Segment {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bar {
     context: Option<String>,
+    focus: Option<(Option<String>, String)>,
+    labels: Vec<(String, String)>,
     agents: Vec<String>,
     windows: Vec<(String, bool)>,
     feedback: Option<Segment>,
@@ -50,11 +52,18 @@ pub struct TickerView {
     pub step: u64,
 }
 
-/// The chip text for a focused window. A window titled by its agent launcher
-/// (`agent`, or `agent: <project>`) shows the agent or the project; every
-/// other window shows its app id.
+/// The chip text for a focused window.
+///
+/// A window titled by its agent launcher
+/// (`agent`, or `agent: <project>`) shows the agent or the project; a window
+/// whose context sets `label` shows the label; every other window shows its app id.
 #[must_use]
-pub fn context_label(app_id: Option<&str>, title: &str, agents: &[String]) -> Option<String> {
+pub fn context_label(
+    app_id: Option<&str>,
+    title: &str,
+    label: Option<&str>,
+    agents: &[String],
+) -> Option<String> {
     for agent in agents
         .iter()
         .map(String::as_str)
@@ -72,7 +81,18 @@ pub fn context_label(app_id: Option<&str>, title: &str, agents: &[String]) -> Op
             return Some(project.into());
         }
     }
-    app_id.map(Into::into)
+    label.or(app_id).map(Into::into)
+}
+
+/// The chip text for a window at columns level: its context's label, else its
+/// title, else its app id, else `Untitled`.
+#[must_use]
+pub fn window_label(label: Option<&str>, title: Option<&str>, app_id: Option<&str>) -> String {
+    label
+        .or_else(|| title.filter(|title| !title.is_empty()))
+        .or(app_id)
+        .unwrap_or("Untitled")
+        .into()
 }
 
 impl Bar {
@@ -80,6 +100,8 @@ impl Bar {
     pub const fn new() -> Self {
         Self {
             context: None,
+            focus: None,
+            labels: Vec::new(),
             agents: Vec::new(),
             windows: Vec::new(),
             feedback: None,
@@ -130,6 +152,29 @@ impl Bar {
 
     pub(crate) fn set_agents(&mut self, agents: Vec<String>) {
         self.agents = agents;
+    }
+
+    /// Sets the per-application chip labels and relabels the focused window.
+    pub(crate) fn set_labels(&mut self, labels: Vec<(String, String)>) {
+        if labels != self.labels {
+            self.labels = labels;
+            if let Some((app_id, title)) = &self.focus {
+                self.context = context_label(
+                    app_id.as_deref(),
+                    title,
+                    self.label(app_id.as_deref()),
+                    &self.agents,
+                );
+            }
+        }
+    }
+
+    fn label(&self, app_id: Option<&str>) -> Option<&str> {
+        let app_id = app_id?;
+        self.labels
+            .iter()
+            .find(|(labelled, _)| labelled == app_id)
+            .map(|(_, label)| label.as_str())
     }
 
     #[must_use]
@@ -184,7 +229,13 @@ impl Bar {
         match event {
             Event::Focus { app_id, title } => {
                 self.generation = self.generation.saturating_add(1);
-                self.context = context_label(app_id.as_deref(), title, &self.agents);
+                self.context = context_label(
+                    app_id.as_deref(),
+                    title,
+                    self.label(app_id.as_deref()),
+                    &self.agents,
+                );
+                self.focus = Some((app_id.clone(), title.clone()));
                 self.feedback = None;
                 self.remaining = None;
             }

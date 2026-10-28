@@ -1807,12 +1807,11 @@ impl Compositor {
                             let attributes = attributes
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            attributes
-                                .title
-                                .clone()
-                                .filter(|title| !title.is_empty())
-                                .or_else(|| attributes.app_id.clone())
-                                .unwrap_or_else(|| "Untitled".into())
+                            tehuti_core::bar::window_label(
+                                self.dispatch.core().label(attributes.app_id.as_deref()),
+                                attributes.title.as_deref(),
+                                attributes.app_id.as_deref(),
+                            )
                         })
                 })?;
                 Some((title, snapshot.focused_window == Some(tile.window)))

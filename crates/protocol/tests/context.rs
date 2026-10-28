@@ -417,4 +417,15 @@ text = "a\u0000b"
         assert_eq!(context.speech_action("Ticker."), Some(Action::ToggleTicker));
         assert!(parse_context("app_id = 'test'\n[buttons]\neast = { ticker = 'show' }").is_err());
     }
+
+    #[test]
+    fn a_context_may_name_its_windows() {
+        let context = parse_context("app_id = 'mgba-qt'\nlabel = ' mGBA '\nbuttons = {}").unwrap();
+        assert_eq!(context.label(), Some("mGBA"));
+        let unlabelled = parse_context("app_id = 'mgba-qt'\nbuttons = {}").unwrap();
+        assert_eq!(unlabelled.label(), None);
+        assert!(parse_context("app_id = 'mgba-qt'\nlabel = '  '\nbuttons = {}").is_err());
+        assert!(parse_context("app_id = 'mgba-qt'\nlabel = \"a\\u0000b\"\nbuttons = {}").is_err());
+        assert!(parse_context("app_id = 'mgba-qt'\nlabel = 3\nbuttons = {}").is_err());
+    }
 }

@@ -330,6 +330,7 @@ pub struct SpeechMapping<'context> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
     app_id: String,
+    label: Option<String>,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, SpeechEntry>,
     unmatched_speech: Option<UnmatchedSpeech>,
@@ -457,6 +458,12 @@ impl Context {
         &self.app_id
     }
 
+    /// The short name the voice bar shows for this application's windows.
+    #[must_use]
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
     #[must_use]
     pub fn speech_action(&self, phrase: &str) -> Option<Action> {
         self.mapped_speech_action(phrase)
@@ -536,6 +543,8 @@ fn default_push_to_talk() -> Vec<ButtonName> {
 #[serde(deny_unknown_fields)]
 struct ContextFile {
     app_id: String,
+    #[serde(default)]
+    label: Option<Text>,
     #[serde(default)]
     favourites: Vec<String>,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
@@ -654,6 +663,14 @@ fn validate_holds(context: &ContextFile) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
+    let label = label.map(|label| label.as_str().trim().to_owned());
+    if label.as_ref().is_some_and(String::is_empty) {
+        return Err("label must not be empty".into());
+    }
+    Ok(label)
+}
+
 /// Parses a context at the configuration boundary.
 ///
 /// # Errors
@@ -673,6 +690,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     if context.app_id.trim().is_empty() {
         return Err("app_id must not be empty".into());
     }
+    let label = parse_label(context.label)?;
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
@@ -706,6 +724,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     }
     Ok(Context {
         app_id: context.app_id,
+        label,
         buttons: context.buttons,
         speech,
         launch_phrases,
