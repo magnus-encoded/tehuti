@@ -263,6 +263,18 @@ right_stick = { ticker = "toggle" }
     }
 
     #[test]
+    fn columns_level_lists_buttons_for_a_passthrough_context() {
+        let contexts = contexts(&[GLOBAL, "app_id = 'game'\n[buttons]\n[pad]\npassthrough = true"]);
+        let entries = texts(&ticker::entries(
+            &contexts,
+            Some("game"),
+            PadFamily::Letters,
+            Level::Columns,
+        ));
+        assert!(!entries.iter().any(|entry| entry == "Pad -> app"), "{entries:?}");
+    }
+
+    #[test]
     fn the_ticker_is_off_unless_a_context_turns_it_on() {
         let off = State::with_contexts(contexts(&["app_id = '*'\n[buttons]\neast = { key = 'escape' }"]));
         assert!(off.bar().ticker().is_none(), "off by default");

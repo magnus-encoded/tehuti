@@ -2586,6 +2586,25 @@ proptest! {
     }
 
     #[test]
+    fn columns_level_takes_the_pad_from_passthrough(mapping in arbitrary_mapping()) {
+        let context = tehuti_protocol::parse_context("app_id = 'org.example.Game'\nbuttons = {}\n[pad]\npassthrough = true").unwrap();
+        let global = tehuti_protocol::parse_context(&format!("app_id = '*'\n[buttons]\nright_stick = {mapping}")).unwrap();
+        let mut state = configured(vec![context, global], "org.example.Game");
+        let mut world = World::default();
+        for columns in [false, true, false] {
+            prop_assert_eq!(state.core().passthrough(), !columns);
+            world.trace.clear();
+            for button in [ButtonState::Pressed, ButtonState::Released] {
+                state = world.run(state, pad_button(ButtonName::RightStick, button));
+            }
+            prop_assert_eq!(world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_))), columns);
+            for button in [ButtonState::Pressed, ButtonState::Released] {
+                state = world.run(state, pad_button(ButtonName::Guide, button));
+            }
+        }
+    }
+
+    #[test]
     fn passthrough_held_guide_opens_system_menu(mapping in arbitrary_mapping(), mut contexts in arbitrary_contexts()) {
         let context = tehuti_protocol::parse_context(&format!("app_id = 'org.example.Game'\n[buttons]\nguide = {mapping}\n[pad]\npassthrough = true")).unwrap();
         contexts.insert(0, context);
