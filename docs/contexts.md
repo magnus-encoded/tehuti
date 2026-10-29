@@ -313,11 +313,40 @@ buttons = {}
 open_fullscreen = true
 ```
 
-The option defaults to false. The first exact application-id match decides it;
-the global `*` context does not supply a default. Tehuti applies it on the
+The option defaults to false. The matching application context or its inherited
+launcher context decides it; the global `*` context does not supply a default. Tehuti applies it on the
 first surface commit, before the initial configure, with the fullscreen client
 size. This lets applications that choose their drawing area at startup use
 the full available area. Context reloads affect newly opened windows.
+
+## Opening window sizes
+
+A matching context can set the opening column width and window height:
+
+```toml
+app_id = "org.example.Reader"
+buttons = {}
+
+[window]
+column_width = "one-half"
+height = 0.75
+```
+
+Both values accept a fraction greater than 0 and at most 1, or a named preset:
+`"one-third"`, `"one-half"`, `"two-thirds"` or `"full"`. Fractions refer to the
+available working area, with layout gaps and borders applied. Omit `height`
+to fill the column vertically; omit `column_width` to use the layout default.
+Fullscreen takes precedence over these sizes.
+
+The first exact application-id match supplies the opening rules. Without one,
+the nearest matching launcher context supplies them, through XDG parents then
+parent processes. The global `*` context does not supply opening rules.
+Reloads affect newly opened windows.
+
+Every window receives its layout size in the first configure, before drawing
+its first frame. A client that commits a smaller window geometry is centred
+inside its slot. The focus outline follows that geometry. Tehuti does not
+inspect the surface content for letterboxing.
 
 ## Column widths
 

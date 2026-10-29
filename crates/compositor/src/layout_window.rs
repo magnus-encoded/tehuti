@@ -1,4 +1,4 @@
-//! Assigned layout geometry stays independent of client resize commits.
+//! Assigned sizes and committed client geometry for layout placement.
 use core::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -15,7 +15,6 @@ type Deferred = (Output, Rectangle<i32, Logical>);
 pub struct LayoutWindow {
     window: Window,
     size: Rc<Cell<Size<i32, Logical>>>,
-    size_held: Rc<Cell<bool>>,
     brightness: Rc<Cell<f32>>,
     dim_revision: Rc<Cell<usize>>,
     /// Output overlaps reported while the surface had no buffer yet.
@@ -27,7 +26,6 @@ impl LayoutWindow {
         Self {
             window,
             size: Rc::new(Cell::new(Size::default())),
-            size_held: Rc::new(Cell::new(false)),
             brightness: Rc::new(Cell::new(1.0)),
             dim_revision: Rc::new(Cell::new(0)),
             deferred: Rc::new(RefCell::new(Vec::new())),
@@ -44,13 +42,8 @@ impl LayoutWindow {
         self.size.get()
     }
 
-    /// Whether the size hint in the first configure is being withheld.
-    pub fn size_held(&self) -> bool {
-        self.size_held.get()
-    }
-
-    pub fn hold_size(&self, held: bool) {
-        self.size_held.set(held);
+    pub fn client_geometry(&self) -> Rectangle<i32, Logical> {
+        self.window.geometry()
     }
 
     /// Smithay's output tracking sends `wl_surface.leave` for a surface that
@@ -94,7 +87,11 @@ impl IsAlive for LayoutWindow {
 
 impl SpaceElement for LayoutWindow {
     fn geometry(&self) -> Rectangle<i32, Logical> {
-        Rectangle::new(self.window.geometry().loc, self.size.get())
+        if self.mapped() {
+            self.window.geometry()
+        } else {
+            Rectangle::new(self.window.geometry().loc, self.size.get())
+        }
     }
 
     fn bbox(&self) -> Rectangle<i32, Logical> {

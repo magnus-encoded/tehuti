@@ -15,6 +15,35 @@ mod layout_wiring {
     }
 
     #[test]
+    fn smaller_clients_are_centred_inside_their_slot() -> Result<(), LayoutError> {
+        let mut layout = Layout::try_new(LayoutConfig {
+            gaps: 0.0,
+            border: 0.0,
+            ..LayoutConfig::default()
+        })?;
+        layout.add_output(OutputId(0), geometry(1200.0), None)?;
+        layout.add_window(WindowId(0), WindowRules::default())?;
+        let snapshot = layout.snapshot();
+        let tile = &snapshot.outputs[0].workspaces[0].columns[0].tiles[0];
+        assert_eq!(
+            tile.place_client(
+                tehuti_core::layout::Size {
+                    width: 200.0,
+                    height: 100.0
+                },
+                0.0
+            ),
+            Rect {
+                x: 100.0,
+                y: 250.0,
+                width: 200.0,
+                height: 100.0
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
     fn committed_client_width_places_the_next_column() -> Result<(), LayoutError> {
         let mut layout = Layout::try_new(LayoutConfig {
             gaps: 10.0,

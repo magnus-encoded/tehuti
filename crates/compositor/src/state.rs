@@ -1802,7 +1802,7 @@ impl Compositor {
             location.x.saturating_sub(area.loc.x),
             location.y.saturating_sub(area.loc.y),
         );
-        let bounds = Rectangle::new(location.into(), window.layout_size());
+        let bounds = Rectangle::new(location.into(), window.client_geometry().size);
         crate::focus_outline::elements(
             bounds,
             output.current_scale().fractional_scale(),
@@ -1901,10 +1901,6 @@ impl Compositor {
         self.place_layout();
     }
 
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "client positions include the layout border"
-    )]
     fn place_layout(&mut self) {
         let snapshot = self.layout.snapshot();
         for (identity, window) in &self.layout_windows {
@@ -1927,14 +1923,6 @@ impl Compositor {
                 self.space.unmap_elem(window);
                 continue;
             };
-            let border = if matches!(
-                tile.mode,
-                tehuti_core::layout::TileMode::Fullscreen | tehuti_core::layout::TileMode::MaximizedToEdges
-            ) {
-                0.0
-            } else {
-                border
-            };
             window.set_size(
                 smithay::utils::Size::<f64, smithay::utils::Logical>::from((
                     tile.requested_client.width,
@@ -1942,13 +1930,22 @@ impl Compositor {
                 ))
                 .to_i32_round(),
             );
+            let client_size = if window.mapped() {
+                window.client_geometry().size
+            } else {
+                window.layout_size()
+            };
+            let placement = tile.place_client(
+                tehuti_core::layout::Size {
+                    width: f64::from(client_size.w),
+                    height: f64::from(client_size.h),
+                },
+                border,
+            );
             self.space.map_element(
                 window.clone(),
-                smithay::utils::Point::<f64, smithay::utils::Logical>::from((
-                    tile.tile.x + border,
-                    tile.tile.y + border,
-                ))
-                .to_i32_round(),
+                smithay::utils::Point::<f64, smithay::utils::Logical>::from((placement.x, placement.y))
+                    .to_i32_round(),
                 snapshot.focused_window == Some(*identity),
             );
             // Space only reports output entry once a buffer gives the window a
@@ -1960,12 +1957,7 @@ impl Compositor {
                 Self::announce_scale(output, toplevel.wl_surface());
             }
             if let Some(toplevel) = window.toplevel() {
-                Self::configure_layout_window(
-                    toplevel,
-                    tile,
-                    snapshot.focused_window == Some(*identity),
-                    !window.size_held(),
-                );
+                Self::configure_layout_window(toplevel, tile, snapshot.focused_window == Some(*identity));
             }
         }
         self.sync_window_focus();
@@ -1976,7 +1968,6 @@ impl Compositor {
         toplevel: &ToplevelSurface,
         tile: &tehuti_core::layout::TileView,
         focused: bool,
-        send: bool,
     ) {
         toplevel.with_pending_state(|pending| {
             pending.size = Some(
@@ -1997,7 +1988,7 @@ impl Compositor {
                 }
             }
         });
-        if send && toplevel.is_initial_configure_sent() {
+        if toplevel.is_initial_configure_sent() {
             let _serial = toplevel.send_pending_configure();
         }
     }
@@ -2269,22 +2260,13 @@ impl CompositorHandler for Compositor {
         {
             self.map_toplevel(toplevel);
         }
-        if let Some(window) = self.window_for_root(&root) {
+        if let Some(window) = self.window_for_root(&root).cloned() {
             window.on_commit();
-            if let Some(toplevel) = window.toplevel() {
-                if !toplevel.is_initial_configure_sent() {
-                    window.hold_size(true);
-                    toplevel.with_pending_state(|pending| {
-                        if !pending.states.contains(xdg_toplevel::State::Fullscreen) {
-                            pending.size = None;
-                        }
-                    });
-                    let _serial = toplevel.send_configure();
-                    toplevel.with_pending_state(|pending| pending.size = Some(window.layout_size()));
-                } else if window.size_held() && window.mapped() {
-                    window.hold_size(false);
-                    let _serial = toplevel.send_pending_configure();
-                }
+            self.place_layout();
+            if let Some(toplevel) = window.toplevel()
+                && !toplevel.is_initial_configure_sent()
+            {
+                let _serial = toplevel.send_configure();
             }
         }
     }
@@ -2341,18 +2323,32 @@ impl Compositor {
                 .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
                 .and_then(|attributes| attributes.lock().ok()?.app_id.clone())
         });
-        let open_fullscreen = app_id
+        let windows = self
+            .layout_windows
+            .iter()
+            .filter_map(|(_, window)| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()))
+            .collect::<Vec<_>>();
+        let ancestors = crate::window_context::ancestors(surface.wl_surface(), &windows, &self.display);
+        let context = app_id
             .as_deref()
-            .filter(|app_id| *app_id != "*")
-            .and_then(|app_id| self.contexts().iter().find(|context| context.app_id() == app_id))
-            .is_some_and(tehuti_protocol::Context::open_fullscreen);
-        match self.layout.add_window(
-            identity,
-            tehuti_core::layout::WindowRules {
-                open_fullscreen,
-                ..Default::default()
-            },
-        ) {
+            .into_iter()
+            .chain(ancestors.iter().map(String::as_str))
+            .find_map(|app_id| {
+                self.contexts()
+                    .iter()
+                    .find(|context| app_id != "*" && context.app_id() == app_id)
+            });
+        let rules = tehuti_core::layout::WindowRules {
+            open_fullscreen: context.is_some_and(tehuti_protocol::Context::open_fullscreen),
+            default_column_width: context
+                .and_then(tehuti_protocol::Context::window_column_width)
+                .map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
+            default_window_height: context
+                .and_then(tehuti_protocol::Context::window_height)
+                .map(tehuti_core::layout::PresetSize::Proportion),
+            ..Default::default()
+        };
+        match self.layout.add_window(identity, rules) {
             Ok(()) => {
                 self.layout_windows
                     .push((identity, LayoutWindow::new(Window::new_wayland_window(surface))));

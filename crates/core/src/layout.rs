@@ -323,6 +323,38 @@ pub struct TileView {
     pub height: WindowHeight,
 }
 
+impl TileView {
+    /// Places committed client geometry inside the slot, centred on each smaller axis.
+    #[must_use]
+    pub fn place_client(&self, client: Size, border: f64) -> Rect {
+        let border = if matches!(self.mode, TileMode::Fullscreen | TileMode::MaximizedToEdges) {
+            0.0
+        } else {
+            border
+        };
+        Rect {
+            x: self.tile.x.add(border).add(
+                self.tile
+                    .width
+                    .sub(2.0_f64.mul(border))
+                    .sub(client.width)
+                    .max(0.0)
+                    .div(2.0),
+            ),
+            y: self.tile.y.add(border).add(
+                self.tile
+                    .height
+                    .sub(2.0_f64.mul(border))
+                    .sub(client.height)
+                    .max(0.0)
+                    .div(2.0),
+            ),
+            width: client.width,
+            height: client.height,
+        }
+    }
+}
+
 fn presets() -> Vec<PresetSize> {
     vec![
         PresetSize::Proportion(1.0_f64.div(3.0)),

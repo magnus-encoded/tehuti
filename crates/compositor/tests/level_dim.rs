@@ -275,7 +275,7 @@ mod level_dim {
             let mut overlays = vec![
                 MemoryRenderBufferRenderElement::from_buffer(
                     &mut self.renderer,
-                    (16.0, 200.0),
+                    (16.0, 480.0),
                     &notice,
                     None,
                     None,
@@ -369,7 +369,7 @@ mod level_dim {
                     let windows = compositor.space.elements().collect::<Vec<_>>();
                     for (index, window) in windows.iter().enumerate() {
                         let location = compositor.space.element_location(window).unwrap();
-                        let bounds = Rectangle::new(location, window.layout_size())
+                        let bounds = Rectangle::new(location, window.client_geometry().size)
                             .to_physical_precise_round::<f64, i32>(f64::from(scale));
                         let x = u32::try_from(bounds.loc.x).unwrap();
                         let y = u32::try_from(bounds.loc.y).unwrap();
@@ -625,7 +625,7 @@ mod level_dim {
             let popup = (points[0].0 - 70, points[0].1 - 70);
             assert_colour(pixel(&baseline, popup), [240, 120, 60, 255]);
             assert_colour(pixel(&dimmed, popup), [161, 80, 40, 255]);
-            for point in [(16, 200), (799, 599)] {
+            for point in [(16, 480), (799, 599)] {
                 assert_eq!(pixel(&dimmed, point), pixel(&baseline, point));
             }
             tick(compositor, 10_000);
