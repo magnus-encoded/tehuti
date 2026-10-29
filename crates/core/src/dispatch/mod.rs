@@ -662,6 +662,11 @@ fn release_pad(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>) {
 fn release_layer(state: &mut State, layer: Overlay, handoff: Handoff, effects: &mut Vec<Effect>) {
     match layer {
         Overlay::Keyboard => {
+            if state.keyboard.talking()
+                && let Some(frame) = state.frames.last_mut()
+            {
+                frame.tasks.push_front(Task::Speech(SpeechInput::Cancel));
+            }
             state.keyboard.release_all();
             if matches!(handoff, Handoff::Open(Overlay::Settings) | Handoff::Passthrough) {
                 state.keyboard.close();
@@ -891,17 +896,6 @@ fn run(mut state: State, mut effects: Vec<Effect>) -> (State, Vec<Effect>) {
     }
 }
 
-/// Advances keyboard repeat and mouse motion; true when a lone View tap is due.
-fn tick_pad(
-    keyboard: &mut crate::keyboard::Keyboard,
-    mouse: &mut mouse::State,
-    elapsed: Duration,
-    effects: &mut Vec<Effect>,
-) -> bool {
-    keyboard.tick(elapsed);
-    mouse.tick(elapsed, !keyboard.is_open(), effects)
-}
-
 fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
     match task {
         task @ (Task::ReadClock | Task::Supervise | Task::ConfirmSecret(_, _) | Task::PollSpeech(_)) => {
@@ -1012,13 +1006,17 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         && state.core.menu().is_none()
         && !state.settings.open
         && state.choice_list.as_ref().is_none_or(|list| !list.is_open())
-        && tick_pad(&mut state.keyboard, &mut state.mouse, elapsed, effects)
     {
-        for button in [ButtonState::Released, ButtonState::Pressed] {
-            route_frame.tasks.push_front(Task::Route(Event::Button {
-                name: ButtonName::Select,
-                state: button,
-            }));
+        if state.keyboard.tick(elapsed) {
+            route_frame.tasks.push_front(Task::Speech(SpeechInput::Press));
+        }
+        if state.mouse.tick(elapsed, !state.keyboard.is_open(), effects) {
+            for button in [ButtonState::Released, ButtonState::Pressed] {
+                route_frame.tasks.push_front(Task::Route(Event::Button {
+                    name: ButtonName::Select,
+                    state: button,
+                }));
+            }
         }
     }
     effects.push(Effect::QueryPlugin(event.clone()));
@@ -1508,6 +1506,12 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
         Event::Button { name, state: button } => {
             let shoulders_move_caret = state.core.level() == crate::Level::App;
             let response = state.keyboard.button(*name, *button, shoulders_move_caret);
+            if response == crate::keyboard::Response::StopTalking {
+                if let Some(frame) = state.frames.last_mut() {
+                    frame.tasks.push_front(Task::Speech(SpeechInput::Release));
+                }
+                return true;
+            }
             send_response(response, effects)
         }
         Event::Speech { .. } | Event::Focus { .. } | Event::Tick { .. } => false,
@@ -1564,7 +1568,7 @@ const fn start_state(event: &Event) -> ButtonState {
 fn send_response(response: crate::keyboard::Response, effects: &mut Vec<Effect>) -> bool {
     match response {
         crate::keyboard::Response::Pass => false,
-        crate::keyboard::Response::Consumed => true,
+        crate::keyboard::Response::Consumed | crate::keyboard::Response::StopTalking => true,
         crate::keyboard::Response::Send(draft) => {
             if let Ok(text) = tehuti_protocol::Text::new(draft) {
                 effects.push(Effect::Apply(Action::Text { text }));

@@ -224,14 +224,14 @@ fn holding_a_direction_repeats_after_a_delay() {
     let mut keyboard = opened();
     let _pressed = keyboard.button(ButtonName::DpadRight, ButtonState::Pressed, true);
     assert_eq!(keyboard.highlight(), (0, 2));
-    keyboard.tick(REPEAT_DELAY.saturating_sub(Duration::from_millis(1)));
+    assert!(!keyboard.tick(REPEAT_DELAY.saturating_sub(Duration::from_millis(1))));
     assert_eq!(keyboard.highlight(), (0, 2));
-    keyboard.tick(Duration::from_millis(1));
+    assert!(!keyboard.tick(Duration::from_millis(1)));
     assert_eq!(keyboard.highlight(), (0, 3));
-    keyboard.tick(REPEAT_INTERVAL.saturating_mul(2));
+    assert!(!keyboard.tick(REPEAT_INTERVAL.saturating_mul(2)));
     assert_eq!(keyboard.highlight(), (0, 5));
     let _released = keyboard.button(ButtonName::DpadRight, ButtonState::Released, true);
-    keyboard.tick(Duration::from_secs(1));
+    assert!(!keyboard.tick(Duration::from_secs(1)));
     assert_eq!(keyboard.highlight(), (0, 5));
 }
 
@@ -526,9 +526,9 @@ fn password_reveals_only_last_typed_character_for_one_and_a_half_seconds() {
     press(&mut keyboard, ButtonName::DpadRight);
     press(&mut keyboard, ButtonName::South);
     assert_eq!(keyboard.displayed_draft(), "*w");
-    keyboard.tick(Duration::from_millis(1499));
+    assert!(!keyboard.tick(Duration::from_millis(1499)));
     assert_eq!(keyboard.displayed_draft(), "*w");
-    keyboard.tick(Duration::from_millis(1));
+    assert!(!keyboard.tick(Duration::from_millis(1)));
     assert_eq!(keyboard.displayed_draft(), "**");
     press(&mut keyboard, ButtonName::LeftBumper);
     press(&mut keyboard, ButtonName::South);
@@ -850,7 +850,7 @@ proptest! {
         let word = keyboard.picked_word();
         for name in moves {
             press(&mut keyboard, name);
-            keyboard.tick(REPEAT_DELAY);
+            assert!(!keyboard.tick(REPEAT_DELAY));
             prop_assert_eq!(keyboard.caret(), caret);
             prop_assert_eq!(keyboard.picked_word(), word.clone());
             prop_assert_eq!(keyboard.draft(), "one two three");
@@ -935,4 +935,54 @@ fn synced_selection_survives_opening_and_uses_each_pad_family() {
         assert_eq!(keyboard.mode_label(), "synced");
         assert_eq!(keyboard.draft(), "q");
     }
+}
+
+#[test]
+fn holding_y_talks_instead_of_typing_a_space() {
+    let mut keyboard = with_draft("ab");
+    let _pressed = keyboard.button(ButtonName::North, ButtonState::Pressed, true);
+    assert!(!keyboard.tick(TALK_HOLD.saturating_sub(Duration::from_millis(1))));
+    assert!(keyboard.tick(Duration::from_millis(1)));
+    assert!(!keyboard.tick(Duration::from_secs(1)), "talk starts once");
+    assert_eq!(
+        keyboard.button(ButtonName::North, ButtonState::Released, true),
+        Response::StopTalking
+    );
+    assert_eq!(keyboard.draft(), "ab");
+}
+
+#[test]
+fn a_y_hold_in_a_password_field_still_types_a_space() {
+    let mut keyboard = Keyboard::default();
+    keyboard.set_field_kind(FieldKind::Password, true);
+    keyboard.open();
+    let _pressed = keyboard.button(ButtonName::North, ButtonState::Pressed, true);
+    assert!(!keyboard.tick(Duration::from_secs(1)));
+    assert_eq!(
+        keyboard.button(ButtonName::North, ButtonState::Released, true),
+        Response::Consumed
+    );
+    assert_eq!(keyboard.draft(), " ");
+}
+
+#[test]
+fn closing_the_keyboard_mid_talk_still_stops_talking_on_release() {
+    let mut keyboard = opened();
+    let _pressed = keyboard.button(ButtonName::North, ButtonState::Pressed, true);
+    assert!(keyboard.tick(TALK_HOLD));
+    keyboard.close();
+    assert_eq!(
+        keyboard.button(ButtonName::North, ButtonState::Released, true),
+        Response::StopTalking
+    );
+}
+
+#[test]
+fn a_y_tap_on_a_closed_keyboard_types_nothing() {
+    let mut keyboard = opened();
+    let _pressed = keyboard.button(ButtonName::North, ButtonState::Pressed, true);
+    keyboard.close();
+    assert!(!keyboard.tick(TALK_HOLD));
+    let _released = keyboard.button(ButtonName::North, ButtonState::Released, true);
+    assert_eq!(keyboard.draft(), "");
 }

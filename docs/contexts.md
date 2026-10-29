@@ -256,8 +256,9 @@ application routing. `"open"` lets Y open even without a text field, and
 `"off"` passes Y to the application. These options never open the keyboard
 automatically. A context with `app_id = "*"` supplies defaults; the active
 context overrides options it supplies. Saying "keyboard" opens in every
-application regardless of these options. Y types a space while the keyboard is
-open. B closes it; Menu types the draft, presses Enter and keeps it open.
+application regardless of these options. While the keyboard is open, a Y tap
+types a space and holding Y for 300 ms dictates into the draft until release;
+password fields keep the space. B closes it; Menu types the draft, presses Enter and keeps it open.
 With an empty draft Menu presses only Enter. Closing drops the draft by
 default; `keep_draft = true` in `[keyboard]` keeps it between openings.
 A different text field still clears it.
