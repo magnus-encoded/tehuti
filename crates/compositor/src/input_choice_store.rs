@@ -5,7 +5,7 @@
 //! at each press.
 
 use core::time::Duration;
-use std::{io, io::Write as _, path::PathBuf, process::Command};
+use std::{io, io::Write as _, path::PathBuf};
 
 use tehuti_core::dispatch::{ControllerChoice, Microphone, MicrophoneChoice};
 
@@ -153,7 +153,7 @@ pub fn list_microphones() -> std::sync::mpsc::Receiver<Vec<Microphone>> {
 }
 
 fn run_pw_dump() -> io::Result<Vec<Microphone>> {
-    let mut child = Command::new("pw-dump")
+    let mut child = crate::child_process::command("pw-dump")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

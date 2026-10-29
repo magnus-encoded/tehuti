@@ -60,3 +60,6 @@ pub mod desktop_hints;
 pub mod choice_list;
 
 pub mod window_context;
+pub mod xwayland;
+
+pub mod child_process;
