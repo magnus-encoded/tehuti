@@ -271,8 +271,10 @@ impl Compositor {
     }
 
     /// Installs contexts before accepting clients.
-    pub fn set_contexts(&mut self, contexts: Vec<tehuti_protocol::Context>) {
+    pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {
+        crate::speech_vocabulary::configure_session_projects(&mut contexts);
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
+        self.refresh_speech_vocabulary();
         crate::wallpaper::set_focus(self.dispatch.desktop_focus());
     }
 
@@ -293,9 +295,11 @@ impl Compositor {
         reload: Result<Vec<tehuti_protocol::Context>, crate::contexts::LoadError>,
     ) {
         match reload {
-            Ok(contexts) => {
+            Ok(mut contexts) => {
+                crate::speech_vocabulary::configure_session_projects(&mut contexts);
                 tracing::info!(count = contexts.len(), "contexts reloaded");
                 self.dispatch.core_mut().replace_contexts(contexts);
+                self.refresh_speech_vocabulary();
                 crate::wallpaper::set_focus(self.dispatch.desktop_focus());
                 self.update_window_dimming();
                 self.show_notice("CONTEXTS RELOADED");
@@ -342,8 +346,22 @@ impl Compositor {
         self.dispatch(DispatchInput::PluginReply { key, result })
     }
 
-    pub fn set_speech(&mut self, process: crate::speech::SpeechProcess) {
+    pub fn set_speech(&mut self, mut process: crate::speech::SpeechProcess) {
+        if let Err(error) = process.set_vocabulary(&crate::speech_vocabulary::load(self.contexts())) {
+            tracing::warn!(%error, "speech vocabulary unavailable");
+        }
         self.speech_process = Some(process);
+    }
+
+    fn refresh_speech_vocabulary(&mut self) {
+        if self.speech_process.is_some() {
+            let words = crate::speech_vocabulary::load(self.contexts());
+            if let Some(process) = &mut self.speech_process
+                && let Err(error) = process.set_vocabulary(&words)
+            {
+                tracing::warn!(%error, "speech vocabulary unavailable");
+            }
+        }
     }
 
     #[must_use]

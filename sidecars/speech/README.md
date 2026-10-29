@@ -83,3 +83,45 @@ tail and chooses the strongest recording, including audio received during the
 tail. A new press or cancellation discards the pending tail. Values must be
 between 0 and 60000 ms. Invalid entries warn and use the default; an invalid
 `default` uses the built-in value.
+
+## Vocabulary and prefix commands
+
+The compositor sends `{"vocabulary":["Orchid","Open browser"]}` before capture,
+on successful context reload, and after a sidecar restart. Candidates include all
+loaded speech phrases, immediate folders in `~/Projects`, skill folders in
+`~/.agents/skills` and `~/.claude/skills`, and the base `Name` and `GenericName`
+from installed `.desktop` files in the XDG data directories. Add personal names,
+one per line, to `$XDG_CONFIG_HOME/tehuti/vocabulary.txt` (default
+`~/.config/tehuti/vocabulary.txt`); blank lines and lines starting with `#` are
+ignored. Editing this file triggers the context reload watcher. Folder and
+application changes are picked up on the next successful reload.
+
+The sidecar deduplicates candidates and admits whole entries while they fit
+within 64 Whisper tokens, in order: personal names, projects, skills, phrases,
+applications. The candidate message is capped at 30 KiB. Every application is a
+candidate, including applications without a context. Oversized entries are
+skipped. Transcription, live preview and the VAD retry use the same hotwords.
+`initial_prompt` is omitted: the measured combined priming exceeded Whisper's
+decoder position limit. The short hotword budget bounds decoder prompt work.
+
+Contexts can map a prefix followed by a free tail:
+
+```toml
+[speech]
+"Invoke <name>" = { text = "/{name} " }
+"Work on <project>" = { text = "cd -- {project}" }
+```
+
+`Invoke review-code.` types `/review-code `. Fixed mappings take precedence.
+`Work on blue bird.` resolves the unique closest folder in `~/Projects`, at
+similarity 0.8 or better with a lead of at least 0.05, and substitutes its
+absolute path as a quoted shell argument. Missing or ambiguous projects do not
+match. These templates apply only where configured; the terminal example maps
+`Work on <project>`. Neither template submits the resulting text automatically.
+
+`Type slash a one Enter Backspace.` emits `/`, A, 1, Enter and Backspace in
+order. Symbol names include brackets, braces, parentheses, quotes and shell
+punctuation; letters, digits and key names are accepted. An unknown token rejects
+the whole sequence with `UNKNOWN SPOKEN KEY`. Exact context mappings and plugin
+routing take precedence. The on-screen keyboard keeps its existing dictation
+routing.

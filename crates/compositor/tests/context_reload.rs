@@ -101,9 +101,11 @@ mod context_reload {
     }
 
     #[test]
-    fn only_context_files_and_top_level_directories_are_relevant() {
+    fn context_files_vocabulary_and_top_level_directories_are_relevant() {
         assert!(contexts::relevant(Some(b"context.toml"), false, true, false));
         assert!(contexts::relevant(Some(b"context.toml"), false, false, false));
+        assert!(contexts::relevant(Some(b"vocabulary.txt"), false, true, false));
+        assert!(!contexts::relevant(Some(b"vocabulary.txt"), false, false, false));
         assert!(contexts::relevant(Some(b"foot"), true, true, false));
         assert!(!contexts::relevant(Some(b"foot"), true, false, false));
         assert!(!contexts::relevant(

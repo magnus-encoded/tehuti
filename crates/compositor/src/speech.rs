@@ -18,6 +18,7 @@ struct Running {
     output: VecDeque<u8>,
     input: Vec<u8>,
     ready: bool,
+    vocabulary: Option<Vec<u8>>,
     age: core::time::Duration,
 }
 
@@ -38,6 +39,7 @@ pub struct SpeechProcess {
     restart: crate::child_process::Restart,
     outage: bool,
     notices: VecDeque<&'static str>,
+    vocabulary: Vec<u8>,
 }
 
 impl SpeechProcess {
@@ -49,6 +51,7 @@ impl SpeechProcess {
             restart: crate::child_process::Restart::default(),
             outage: false,
             notices: VecDeque::new(),
+            vocabulary: Vec::new(),
         }
     }
 
@@ -90,6 +93,7 @@ impl SpeechProcess {
                 output: VecDeque::new(),
                 input: Vec::new(),
                 ready: false,
+                vocabulary: (!self.vocabulary.is_empty()).then(|| self.vocabulary.clone()),
                 age: core::time::Duration::ZERO,
             }),
             Err(error) => {
@@ -97,6 +101,25 @@ impl SpeechProcess {
                 Err(error)
             }
         }
+    }
+
+    /// Replaces the vocabulary and replays it to each restarted sidecar.
+    ///
+    /// # Errors
+    /// The encoded vocabulary exceeds half the bounded output queue.
+    pub fn set_vocabulary(&mut self, words: &[String]) -> io::Result<()> {
+        let mut bytes = serde_json::to_vec(&serde_json::json!({"vocabulary": words}))?;
+        bytes.push(b'\n');
+        if bytes.len() > MAX_MESSAGE_BYTES / 2 {
+            return Err(io::Error::other("speech vocabulary exceeds limit"));
+        }
+        if bytes != self.vocabulary {
+            if let Some(running) = &mut self.running {
+                running.vocabulary = Some(bytes.clone());
+            }
+            self.vocabulary = bytes;
+        }
+        Ok(())
     }
 
     /// Queues a capture command without waiting for the child.
@@ -118,6 +141,7 @@ impl SpeechProcess {
             .running
             .as_mut()
             .ok_or_else(|| io::Error::other("speech unavailable"))?;
+        running.queue_vocabulary()?;
         if running.output.len().saturating_add(bytes.len()).saturating_add(1) > MAX_MESSAGE_BYTES {
             return Err(io::Error::other("speech output queue full"));
         }
@@ -178,6 +202,17 @@ impl SpeechProcess {
 }
 
 impl Running {
+    fn queue_vocabulary(&mut self) -> io::Result<()> {
+        if let Some(bytes) = &self.vocabulary {
+            if self.output.len().saturating_add(bytes.len()) > MAX_MESSAGE_BYTES {
+                return Err(io::Error::other("speech output queue full"));
+            }
+            self.output.extend(bytes);
+            self.vocabulary = None;
+        }
+        Ok(())
+    }
+
     fn poll(&mut self) -> io::Result<Vec<SpeechInput>> {
         if let Some(status) = self.child.try_wait()? {
             tracing::warn!(%status, "speech sidecar exited");
@@ -186,6 +221,7 @@ impl Running {
         if !self.ready && self.age >= core::time::Duration::from_secs(120) {
             return Err(io::Error::other("speech readiness timed out"));
         }
+        let _queued = self.queue_vocabulary();
         for _attempt in 0..16 {
             let (bytes, _) = self.output.as_slices();
             if bytes.is_empty() {
