@@ -126,7 +126,8 @@ pub fn normalize(mut pixels: Vec<u8>, width: usize, flipped: bool) -> Vec<u8> {
     pixels
 }
 
-/// Reads the bound framebuffer back and saves it as a PNG.
+/// Reads the bound framebuffer back and saves it as a PNG in scene orientation.
+/// `transform` is the output transform used to render the framebuffer.
 ///
 /// # Errors
 /// The framebuffer could not be read or the file could not be written.
@@ -134,6 +135,7 @@ pub fn capture<R>(
     renderer: &mut R,
     framebuffer: &<R as smithay::backend::renderer::RendererSuper>::Framebuffer<'_>,
     size: (i32, i32),
+    transform: smithay::utils::Transform,
     path: &Path,
 ) -> io::Result<()>
 where
@@ -151,10 +153,30 @@ where
         .to_vec();
     let width = u32::try_from(size.0).map_err(io::Error::other)?;
     let height = u32::try_from(size.1).map_err(io::Error::other)?;
-    save_png(
-        path,
-        width,
-        height,
-        &normalize(pixels, usize::try_from(width).unwrap_or(0), flipped),
-    )
+    let row_width = usize::try_from(width).map_err(io::Error::other)?;
+    let pixels = normalize(pixels, row_width, flipped);
+    let buffer_size = smithay::utils::Size::<u32, smithay::utils::Buffer>::from((width, height));
+    let upright_size = transform.transform_size(buffer_size);
+    let mut upright = Vec::with_capacity(pixels.len());
+    for row in 0..upright_size.h {
+        for column in 0..upright_size.w {
+            let source = transform
+                .transform_rect_in(
+                    smithay::utils::Rectangle::new((column, row).into(), (1, 1).into()),
+                    &upright_size,
+                )
+                .loc;
+            let offset = usize::try_from(
+                u64::from(source.y)
+                    .saturating_mul(u64::from(width))
+                    .saturating_add(u64::from(source.x))
+                    .saturating_mul(4),
+            )
+            .map_err(io::Error::other)?;
+            upright.extend_from_slice(pixels.get(offset..offset.saturating_add(4)).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "pixel count does not match size")
+            })?);
+        }
+    }
+    save_png(path, upright_size.w, upright_size.h, &upright)
 }

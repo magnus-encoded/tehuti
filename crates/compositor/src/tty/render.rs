@@ -248,7 +248,7 @@ where
         let size = output
             .current_mode()
             .map_or((0, 0), |mode| (mode.size.w, mode.size.h));
-        tehuti::system::capture(renderer, &target, size, path)
+        tehuti::system::capture(renderer, &target, size, output.current_transform(), path)
     });
     Ok((!elements.is_empty() && frame.damage.is_some(), saved))
 }

@@ -229,7 +229,13 @@ impl Nested {
                                 .output
                                 .current_mode()
                                 .map_or((0, 0), |mode| (mode.size.w, mode.size.h));
-                            let saved = tehuti::system::capture(renderer, &framebuffer, size, &path);
+                            let saved = tehuti::system::capture(
+                                renderer,
+                                &framebuffer,
+                                size,
+                                self.output.current_transform(),
+                                &path,
+                            );
                             *screenshot_result = Some(saved);
                         }
                     }
