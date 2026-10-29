@@ -26,6 +26,10 @@ mod synthetic_pad {
         globals::{GlobalListContents, registry_queue_init},
         protocol::{
             wl_compositor::WlCompositor,
+            wl_data_device::{self, WlDataDevice},
+            wl_data_device_manager::WlDataDeviceManager,
+            wl_data_offer::{self, WlDataOffer},
+            wl_data_source::WlDataSource,
             wl_keyboard::{self, KeyState, WlKeyboard},
             wl_registry::WlRegistry,
             wl_seat::WlSeat,
@@ -105,6 +109,9 @@ mod synthetic_pad {
             f64,
         )>,
         focused: Option<wayland_client::backend::ObjectId>,
+        focus_serial: u32,
+        selection: Option<WlDataOffer>,
+        offered_mime_types: Vec<String>,
         close_requested: bool,
         text: String,
         keyboard_text: String,
@@ -420,9 +427,118 @@ mod synthetic_pad {
         }
     }
 
+    impl Dispatch<WlDataDevice, ()> for App {
+        fn event(
+            app: &mut Self,
+            _: &WlDataDevice,
+            event: wl_data_device::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let wl_data_device::Event::Selection { id: selection } = event {
+                app.selection = selection;
+            }
+        }
+
+        wayland_client::event_created_child!(App, WlDataDevice, [
+            0 => (WlDataOffer, ())
+        ]);
+    }
+
+    impl Dispatch<WlDataOffer, ()> for App {
+        fn event(
+            app: &mut Self,
+            _: &WlDataOffer,
+            event: wl_data_offer::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let wl_data_offer::Event::Offer { mime_type } = event {
+                app.offered_mime_types.push(mime_type);
+            }
+        }
+    }
+
+    delegate_noop!(App: ignore WlDataDeviceManager);
+    delegate_noop!(App: ignore WlDataSource);
+
+    #[test]
+    fn selection_is_offered_to_another_client_after_keyboard_focus_changes() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let streams: Vec<_> = (0..2)
+            .map(|_| {
+                let (server, client) = UnixStream::pair().unwrap();
+                let _client = display
+                    .handle()
+                    .insert_client(server, Arc::new(ClientState::default()))
+                    .unwrap();
+                client
+            })
+            .collect();
+        let client = thread::spawn(move || check_clipboard_clients(streams));
+        let began = Instant::now();
+        while !client.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "clipboard client timed out"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        client.join().unwrap();
+    }
+
+    fn check_clipboard_clients(streams: Vec<UnixStream>) {
+        let mut clients = Vec::new();
+        for (index, stream) in streams.into_iter().enumerate() {
+            let connection = Connection::from_socket(stream).unwrap();
+            let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+            let handle = queue.handle();
+            let wayland: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+            let shell: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+            let seat: WlSeat = globals.bind(&handle, 1..=1, ()).unwrap();
+            let keyboard = seat.get_keyboard(&handle, ());
+            let manager: WlDataDeviceManager = globals.bind(&handle, 3..=3, ()).unwrap();
+            let device = manager.get_data_device(&seat, &handle, ());
+            let mut app = App::default();
+            let _unfocused = queue.roundtrip(&mut app).unwrap();
+            assert!(app.selection.is_none());
+            assert_eq!(app.offered_mime_types, Vec::<String>::new());
+            let surface = wayland.create_surface(&handle, ());
+            let xdg = shell.get_xdg_surface(&surface, &handle, ());
+            let toplevel = xdg.get_toplevel(&handle, ());
+            toplevel.set_app_id("clipboard-test".into());
+            surface.commit();
+            let _created = queue.roundtrip(&mut app).unwrap();
+            let _focused = queue.roundtrip(&mut app).unwrap();
+            assert_eq!(app.focused, Some(wayland_client::Proxy::id(&surface)));
+            let source = manager.create_data_source(&handle, ());
+            if index == 0 {
+                source.offer("text/plain;charset=utf-8".into());
+                device.set_selection(Some(&source), app.focus_serial);
+                let _selected = queue.roundtrip(&mut app).unwrap();
+            } else {
+                assert!(
+                    app.selection.is_some(),
+                    "the newly focused client receives the selection"
+                );
+                assert_eq!(app.offered_mime_types, ["text/plain;charset=utf-8"]);
+            }
+            clients.push((
+                connection, queue, surface, xdg, toplevel, keyboard, device, source,
+            ));
+        }
+        assert_eq!(clients.len(), 2);
+    }
+
     fn update_client_focus(app: &mut App, event: &wl_keyboard::Event) {
         match event {
-            wl_keyboard::Event::Enter { surface, .. } => {
+            wl_keyboard::Event::Enter { surface, serial, .. } => {
+                app.focus_serial = *serial;
                 app.focused = Some(wayland_client::Proxy::id(surface));
             }
             wl_keyboard::Event::Leave { .. } => app.focused = None,

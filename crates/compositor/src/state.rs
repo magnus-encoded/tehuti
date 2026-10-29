@@ -36,7 +36,10 @@ use smithay::{
         output::{OutputHandler, OutputManagerState},
         selection::{
             SelectionHandler,
-            data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler},
+            data_device::{
+                ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+                set_data_device_focus,
+            },
         },
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -2398,7 +2401,12 @@ impl SeatHandler for Compositor {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        set_data_device_focus(
+            &self.display,
+            seat,
+            focused.and_then(smithay::reexports::wayland_server::Resource::client),
+        );
         self.text_input.focus(focused.cloned());
         let _rejection = self.dispatch(DispatchInput::TextField {
             active: false,
