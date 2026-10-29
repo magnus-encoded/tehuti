@@ -84,18 +84,24 @@ pub fn context_label(
     label.or(app_id).map(Into::into)
 }
 
-/// The chip text for a window at columns level: its context's label, else its
-/// title, else its app id, else `Untitled`.
+/// The short chip text for a window at columns level.
 #[must_use]
-pub fn window_label(label: Option<&str>, title: Option<&str>, app_id: Option<&str>) -> String {
-    label
-        .or_else(|| title.filter(|title| !title.is_empty()))
-        .or(app_id)
-        .unwrap_or("Untitled")
-        .into()
+pub fn window_label(
+    label: Option<&str>,
+    title: Option<&str>,
+    app_id: Option<&str>,
+    agents: &[String],
+) -> String {
+    context_label(app_id, title.unwrap_or_default(), label, agents).unwrap_or_else(|| "Untitled".into())
 }
 
 impl Bar {
+    /// The short name of a window using the configured agent launchers.
+    #[must_use]
+    pub fn window_label(&self, label: Option<&str>, title: Option<&str>, app_id: Option<&str>) -> String {
+        window_label(label, title, app_id, &self.agents)
+    }
+
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -198,6 +204,16 @@ impl Bar {
                 tone: Tone::Context,
             }]
         };
+        if self.level == crate::Level::App
+            && let Some((_, title)) = &self.focus
+            && !title.is_empty()
+            && self.context.as_deref() != Some(title.as_str())
+        {
+            segments.push(Segment {
+                text: title.clone(),
+                tone: Tone::Unfocused,
+            });
+        }
         segments.extend(self.feedback.clone());
         segments
     }

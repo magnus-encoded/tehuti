@@ -406,7 +406,7 @@ mod level_dim {
                     compositor.voice_bar().segments(),
                     vec![
                         Segment {
-                            text: "Document 0".into(),
+                            text: "org.example.Window0".into(),
                             tone: if focused == 0 {
                                 Tone::Context
                             } else {
@@ -414,7 +414,7 @@ mod level_dim {
                             }
                         },
                         Segment {
-                            text: "Document 1".into(),
+                            text: "org.example.Window1".into(),
                             tone: if focused == 1 {
                                 Tone::Context
                             } else {
@@ -468,10 +468,13 @@ mod level_dim {
                     .iter()
                     .map(|segment| (segment.text.as_str(), segment.tone))
                     .collect::<Vec<_>>(),
-                vec![("Document 0", Tone::Unfocused), ("Editor", Tone::Context)],
+                vec![
+                    ("org.example.Window0", Tone::Unfocused),
+                    ("Editor", Tone::Context)
+                ],
             );
             compositor.reload_contexts(Ok(Vec::new()));
-            assert_eq!(compositor.voice_bar().segments()[1].text, "Document 1");
+            assert_eq!(compositor.voice_bar().segments()[1].text, "org.example.Window1");
             compositor.reload_contexts(Ok(contexts()));
             assert_eq!(compositor.voice_bar().segments()[1].text, "Editor");
             tap(compositor);
@@ -507,9 +510,9 @@ mod level_dim {
             assert_eq!(
                 windows,
                 vec![
-                    ("Document 0", Tone::Unfocused),
-                    ("Document 2", Tone::Context),
-                    ("Document 1", Tone::Unfocused),
+                    ("org.example.Window0", Tone::Unfocused),
+                    ("org.example.Window2", Tone::Context),
+                    ("org.example.Window1", Tone::Unfocused),
                 ]
             );
             tap(compositor);
@@ -520,7 +523,7 @@ mod level_dim {
                     .iter()
                     .filter(|segment| matches!(segment.tone, Tone::Context | Tone::Unfocused))
                     .count(),
-                1
+                2
             );
         });
     }
@@ -541,19 +544,19 @@ mod level_dim {
                 compositor.voice_bar().segments(),
                 vec![
                     Segment {
-                        text: "Document 0".into(),
+                        text: "org.example.Window0".into(),
                         tone: Tone::Unfocused
                     },
                     Segment {
-                        text: "Document 3".into(),
+                        text: "org.example.Window3".into(),
                         tone: Tone::Unfocused
                     },
                     Segment {
-                        text: "Document 1".into(),
+                        text: "org.example.Window1".into(),
                         tone: Tone::Context
                     },
                     Segment {
-                        text: "Document 2".into(),
+                        text: "org.example.Window2".into(),
                         tone: Tone::Unfocused
                     },
                 ]
@@ -562,7 +565,7 @@ mod level_dim {
     }
 
     #[test]
-    fn neither_level_contains_level_text_or_any_extra_text_chip() {
+    fn app_level_adds_the_title_and_columns_show_only_short_names() {
         scene(2, |compositor, _| {
             for _ in 0..2 {
                 assert_eq!(
@@ -572,7 +575,7 @@ mod level_dim {
                         .iter()
                         .map(|segment| segment.text.as_str())
                         .collect::<Vec<_>>(),
-                    vec!["org.example.Window1"]
+                    vec!["org.example.Window1", "Document 1"]
                 );
                 tap(compositor);
                 assert_eq!(
@@ -582,7 +585,7 @@ mod level_dim {
                         .iter()
                         .map(|segment| segment.text.as_str())
                         .collect::<Vec<_>>(),
-                    vec!["Document 0", "Document 1"]
+                    vec!["org.example.Window0", "org.example.Window1"]
                 );
                 tap(compositor);
             }

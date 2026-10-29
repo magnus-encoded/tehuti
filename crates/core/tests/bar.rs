@@ -41,6 +41,32 @@ mod tests {
     }
 
     #[test]
+    fn app_level_shows_the_full_title_beside_the_context() {
+        let state = focus_titled(
+            labelled(&["app_id = 'editor'\nlabel = 'Editor'\nbuttons = {}"]),
+            "editor",
+            "notes.txt - Editor",
+        );
+        let texts: Vec<_> = state
+            .bar()
+            .segments()
+            .into_iter()
+            .map(|segment| segment.text)
+            .collect();
+        assert_eq!(texts, ["Editor", "notes.txt - Editor"]);
+        let state = focus_titled(state, "editor", "draft.txt - Editor");
+        assert_eq!(state.bar().segments()[1].text, "draft.txt - Editor");
+        let state = focus_titled(state, "editor", "");
+        let fallback_texts: Vec<_> = state
+            .bar()
+            .segments()
+            .into_iter()
+            .map(|segment| segment.text)
+            .collect();
+        assert_eq!(fallback_texts, ["Editor"]);
+    }
+
+    #[test]
     fn only_configured_agents_override_the_app_id() {
         assert_eq!(chip_with_agents("kitty", "Claude: project", vec![]), "kitty");
         assert_eq!(
@@ -159,18 +185,24 @@ mod tests {
     }
 
     #[test]
-    fn window_chips_prefer_the_label_then_title_then_app_id() {
+    fn columns_chips_use_short_names() {
         use tehuti_core::bar::window_label;
         assert_eq!(
-            window_label(Some("mGBA"), Some("mGBA - Pokemon"), Some("mgba-qt")),
+            window_label(Some("mGBA"), Some("mGBA - Pokemon"), Some("mgba-qt"), &[]),
             "mGBA"
         );
         assert_eq!(
-            window_label(None, Some("mGBA - Pokemon"), Some("mgba-qt")),
-            "mGBA - Pokemon"
+            window_label(None, Some("mGBA - Pokemon"), Some("mgba-qt"), &[]),
+            "mgba-qt"
         );
-        assert_eq!(window_label(None, Some(""), Some("mgba-qt")), "mgba-qt");
-        assert_eq!(window_label(None, None, None), "Untitled");
+        assert_eq!(window_label(None, Some(""), Some("mgba-qt"), &[]), "mgba-qt");
+        assert_eq!(window_label(None, None, None, &[]), "Untitled");
+        let bar = State::new().with_bar_agents(vec!["Helper".into()]).bar().clone();
+        assert_eq!(
+            bar.window_label(Some("Terminal"), Some("Helper: atlas"), Some("terminal")),
+            "atlas"
+        );
+        assert_eq!(bar.window_label(None, Some("Helper"), Some("terminal")), "Helper");
     }
 
     proptest! {
@@ -188,7 +220,9 @@ mod tests {
 
     fn feedback(state: &State) -> Option<Segment> {
         let segments = state.bar().segments();
-        (segments.len() == 2).then(|| segments.get(1).cloned()).flatten()
+        segments
+            .into_iter()
+            .find(|segment| matches!(segment.tone, Tone::Live | Tone::Result | Tone::Error))
     }
 
     fn segment(text: &str, tone: Tone) -> Segment {
