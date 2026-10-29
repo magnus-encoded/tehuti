@@ -427,6 +427,7 @@ pub struct Context {
     ticker: TickerConfig,
     ticker_names: Vec<TickerName>,
     speech_matching: SpeechMatching,
+    projects: Vec<(String, String)>,
 }
 
 /// A speech mapping with its spelling in the file, its fuzzy key and an optional ticker icon.
@@ -436,6 +437,12 @@ struct SpeechEntry {
     folded: String,
     action: MappingAction,
     icon: Option<Text>,
+}
+
+impl SpeechEntry {
+    fn is_template(&self) -> bool {
+        self.phrase.ends_with("<name>") || self.phrase.ends_with("<project>")
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -517,16 +524,19 @@ impl Context {
 
     /// Every mapped phrase with its normalized form, for fuzzy matching.
     pub fn speech_candidates(&self) -> impl Iterator<Item = (&str, Candidate<'_>)> {
-        self.speech.iter().map(|(normalized, entry)| {
-            (
-                normalized.as_str(),
-                Candidate {
-                    phrase: &entry.phrase,
-                    folded: &entry.folded,
-                    action: entry.action.action(),
-                },
-            )
-        })
+        self.speech
+            .iter()
+            .filter(|(_, entry)| !entry.is_template())
+            .map(|(normalized, entry)| {
+                (
+                    normalized.as_str(),
+                    Candidate {
+                        phrase: &entry.phrase,
+                        folded: &entry.folded,
+                        action: entry.action.action(),
+                    },
+                )
+            })
     }
 
     /// The buttons that start speech capture, from a global context.
@@ -584,7 +594,20 @@ impl Context {
         }
         self.speech
             .get(&normalize_phrase(phrase))
+            .filter(|entry| !entry.is_template())
             .map(|entry| entry.action.action())
+            .or_else(|| {
+                let mut matches = self.speech.values().filter_map(|entry| {
+                    speech_templates::expand(&entry.phrase, &entry.action, phrase, &self.projects)
+                });
+                let first = matches.next()?;
+                matches.all(|action| action == first).then_some(first)
+            })
+    }
+
+    /// Supplies discovered project names and absolute paths for `<project>` templates.
+    pub fn set_projects(&mut self, projects: Vec<(String, String)>) {
+        self.projects = projects;
     }
 
     /// The action `unmatched_speech` gives a phrase no mapping matched.
@@ -795,9 +818,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     ) {
         return Err("keyboard button cannot reserve Guide or Record".into());
     }
-    if context.app_id.trim().is_empty() {
-        return Err("app_id must not be empty".into());
-    }
+    validate_app_id(&context.app_id)?;
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
@@ -816,6 +837,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         {
             launch_phrases.push((launch.as_str().to_owned(), mapped.clone()));
         }
+        speech_templates::validate(&mapped, &entry.action)?;
         let normalized = normalized_speech_phrase(&mapped)?;
         let entry = SpeechEntry {
             folded: fold_phrase(&mapped),
@@ -845,6 +867,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         ticker_names: parse_ticker_names(&context.ticker.names)?,
         ticker: context.ticker,
         speech_matching: context.speech_matching,
+        projects: Vec::new(),
     })
 }
 
@@ -941,4 +964,13 @@ pub fn normalize_phrase(phrase: &str) -> String {
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+mod speech_templates;
+
+fn validate_app_id(app_id: &str) -> Result<(), String> {
+    if app_id.trim().is_empty() {
+        return Err("app_id must not be empty".into());
+    }
+    Ok(())
 }

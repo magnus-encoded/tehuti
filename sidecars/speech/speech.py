@@ -11,6 +11,7 @@ import threading
 import time
 import wave
 
+MAX_HOTWORD_TOKENS = 64
 MAX_LINE = 65536
 MAX_AUDIO_SECONDS = 60
 INTERIM_BYTES = 16000 * 2
@@ -161,6 +162,7 @@ def choose(recordings):
 class Speech:
     def __init__(self, model, sources=list_sources):
         self.model = model
+        self.hotwords = ""
         self.sources = sources
         self.tails = speech_tails(os.environ.get("TEHUTI_SPEECH_TAIL_MS"))
         self.releasing = None
@@ -169,6 +171,18 @@ class Speech:
         self.model_lock = threading.Lock()
         self.transcriptions = threading.BoundedSemaphore(2)
         self.interims = threading.BoundedSemaphore(1)
+
+    def set_vocabulary(self, vocabulary):
+        words, seen = [], set()
+        for word in vocabulary:
+            word = " ".join(word.split())
+            if not word or word.casefold() in seen:
+                continue
+            seen.add(word.casefold())
+            candidate = ", ".join([*words, word])
+            if len(self.model.hf_tokenizer.encode(" " + candidate, add_special_tokens=False).ids) <= MAX_HOTWORD_TOKENS:
+                words.append(word)
+        self.hotwords = ", ".join(words)
 
     def cancel_tail(self):
         if self.releasing is not None:
@@ -222,6 +236,7 @@ class Speech:
             capture.send_signal(signal.SIGINT)
 
     def transcribe_audio(self, audio):
+        priming = {"hotwords": self.hotwords} if self.hotwords else {}
         with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
             with wave.open(recording.name, "wb") as output:
                 output.setnchannels(1)
@@ -229,7 +244,7 @@ class Speech:
                 output.setframerate(16000)
                 output.writeframes(audio)
             segments, _ = self.model.transcribe(
-                recording.name, beam_size=5, language="en", vad_filter=True,
+                recording.name, beam_size=5, language="en", vad_filter=True, **priming,
                 vad_parameters={"threshold": 0.3, "min_speech_duration_ms": 80,
                                 "speech_pad_ms": 300},
             )
@@ -239,7 +254,7 @@ class Speech:
             log(f"VAD returned empty text for clip ({len(audio)} bytes)")
             log("retrying clip without VAD")
             segments, _ = self.model.transcribe(
-                recording.name, beam_size=5, language="en", vad_filter=False,
+                recording.name, beam_size=5, language="en", vad_filter=False, **priming,
             )
             return transcript(segments)
 
@@ -355,6 +370,10 @@ def run(stream, speech):
                   and type(command["stop"]) is int and command["stop"] >= 0
                   and type(command["transcribe"]) is bool):
                 speech.stop(command["stop"], command["transcribe"])
+            elif (set(command) == {"vocabulary"} and isinstance(command["vocabulary"], list)
+                  and all(isinstance(word, str) and "\0" not in word
+                          for word in command["vocabulary"])):
+                speech.set_vocabulary(command["vocabulary"])
             else:
                 raise ValueError("invalid speech command")
     finally:

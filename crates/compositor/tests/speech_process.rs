@@ -100,6 +100,95 @@ mod speech_process {
     }
 
     #[test]
+    fn vocabulary_reaches_children_before_capture_and_refreshes_after_restart() {
+        let mut process = child(
+            r"import sys,json
+print(json.dumps({'ready':True}),flush=True)
+words=[]
+for line in sys.stdin:
+ c=json.loads(line)
+ if 'vocabulary' in c: words=c['vocabulary']
+ if 'start' in c:
+  print(json.dumps({'session':c['start'],'text':','.join(words)}),flush=True)
+ if 'stop' in c: raise SystemExit(1)
+",
+        );
+        process.set_vocabulary(&["Orchid".into()]).unwrap();
+        wait_for(&mut process, &SpeechInput::Available);
+        for (session, word) in [(0, "Orchid"), (1, "Atlas"), (2, "Atlas")] {
+            if session == 1 {
+                process.set_vocabulary(&["Atlas".into()]).unwrap();
+            }
+            process.send(&SpeechEffect::Start { session }).unwrap();
+            wait_for(
+                &mut process,
+                &SpeechInput::Transcript {
+                    session,
+                    text: Text::new(word.into()).unwrap(),
+                },
+            );
+            if session == 1 {
+                process
+                    .send(&SpeechEffect::Stop {
+                        session,
+                        transcribe: false,
+                    })
+                    .unwrap();
+                wait_for(&mut process, &SpeechInput::Unavailable);
+                wait_for(&mut process, &SpeechInput::Available);
+            }
+        }
+        assert!(process.set_vocabulary(&["x".repeat(65536)]).is_err());
+    }
+
+    #[test]
+    fn context_reload_delivers_the_new_phrases_to_the_sidecar() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{contexts, state::Compositor};
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("words");
+        let source = format!(
+            r"import sys,json,pathlib
+print(json.dumps({{'ready':True}}),flush=True)
+for line in sys.stdin:
+ c=json.loads(line)
+ if 'vocabulary' in c:
+  words=[w for w in c['vocabulary'] if w in ['First Signal','Second Signal']]
+  pathlib.Path({:?}).write_text(','.join(words))
+",
+            marker.to_str().unwrap()
+        );
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let path = directory.path().join("context.toml");
+        std::fs::write(
+            &path,
+            "app_id = '*'\n[buttons]\n[speech]\n'First Signal' = { key = 'enter' }",
+        )
+        .unwrap();
+        compositor.set_contexts(contexts::load(directory.path()));
+        compositor.set_speech(child(&source));
+        for expected in ["First Signal", "Second Signal"] {
+            if expected == "Second Signal" {
+                std::fs::write(
+                    &path,
+                    "app_id = '*'\n[buttons]\n[speech]\n'Second Signal' = { key = 'enter' }",
+                )
+                .unwrap();
+                compositor.reload_contexts(contexts::try_load(directory.path()));
+            }
+            let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+            while std::fs::read_to_string(&marker).unwrap_or_default() != expected {
+                compositor.handle(&Event::Tick {
+                    elapsed: Duration::from_millis(10),
+                });
+                assert!(Instant::now() < deadline, "vocabulary did not refresh");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[test]
     fn release_reaches_source_tail_scheduler_without_transport_delay() {
         let mut process = child(
             r"import sys,json

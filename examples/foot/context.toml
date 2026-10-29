@@ -21,3 +21,5 @@ start = { notify = "Tehuti is listening to this controller" }
 "Hello." = { text = "echo hello from Tehuti" }
 "Enter." = { key = "enter" }
 "Clear." = { text = "clear" }
+
+"Work on <project>" = { text = "cd -- {project}" }

@@ -18,6 +18,50 @@ spec.loader.exec_module(module)
 
 
 class SpeechTests(unittest.TestCase):
+    def test_vocabulary_primes_both_vad_attempts_with_a_short_hotword_list(self):
+        class Model:
+            hf_tokenizer = types.SimpleNamespace(encode=lambda text, **_: types.SimpleNamespace(ids=list(text.encode("utf-8"))))
+
+            def __init__(self):
+                self.calls = []
+
+            def transcribe(self, path, **options):
+                self.calls.append(options)
+                return iter([]), None
+
+        model = Model()
+        speech = module.Speech(model)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            speech.set_vocabulary(["Orchid", "Orchid", "Open browser", "x" * 500, "y" * 48, "Atlas"])
+            speech.transcribe_audio(b"\x00\x10" * 160)
+            for options in model.calls:
+                self.assertEqual(options["hotwords"], "Orchid, Open browser, Atlas")
+                self.assertNotIn("initial_prompt", options)
+            model.calls.clear()
+            speech.set_vocabulary([])
+            speech.transcribe_audio(b"\x00\x10" * 160)
+            self.assertNotIn("hotwords", model.calls[0])
+
+    def test_transport_refreshes_vocabulary_and_rejects_invalid_words(self):
+        class Speech:
+            def __init__(self):
+                self.words = None
+
+            def set_vocabulary(self, words):
+                self.words = words
+
+            def close(self):
+                pass
+
+        speech = Speech()
+        with contextlib.redirect_stdout(io.StringIO()):
+            module.run(io.StringIO('{"vocabulary":["Orchid"]}\n{"vocabulary":[]}\n'), speech)
+            self.assertEqual(speech.words, [])
+            for value in [None, "word", [1], ["bad\0word"]]:
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    module.run(io.StringIO(json.dumps({"vocabulary": value}) + "\n"), speech)
+
     def test_tail_map_validates_entries_and_warns_with_fallback(self):
         for invalid in ["-1", "1.5", "nan", "inf", "60001", "9" * 5000, ""]:
             with self.subTest(invalid=invalid), contextlib.redirect_stderr(io.StringIO()) as warning:

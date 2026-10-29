@@ -200,7 +200,10 @@ const WATCH_FLAGS: rustix::fs::inotify::WatchFlags = rustix::fs::inotify::WatchF
 /// the top directory, or a queue overflow, after which any change may have been lost.
 #[must_use]
 pub fn relevant(name: Option<&[u8]>, is_directory: bool, in_top: bool, overflow: bool) -> bool {
-    overflow || name == Some(b"context.toml".as_slice()) || (is_directory && in_top && name.is_some())
+    overflow
+        || name == Some(b"context.toml".as_slice())
+        || (in_top && name == Some(b"vocabulary.txt".as_slice()))
+        || (is_directory && in_top && name.is_some())
 }
 
 impl ContextWatch {

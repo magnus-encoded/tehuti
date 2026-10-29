@@ -413,11 +413,28 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
         return (state, Vec::new(), true);
     }
+    if let Some(actions) = spoken_key_actions(&state, event) {
+        return (state, actions, false);
+    }
     let actions = active_context(&state, event)
         .or_else(|| fallback(event))
         .into_iter()
         .collect();
     (state, actions, false)
+}
+
+fn spoken_key_actions(state: &State, event: &Event) -> Option<Vec<Action>> {
+    let Event::Speech { text } = event else {
+        return None;
+    };
+    if [focused_context(state), global_context(state)]
+        .into_iter()
+        .flatten()
+        .any(|context| context.mapped_speech_action(text.as_str()).is_some())
+    {
+        return None;
+    }
+    spoken_keys::actions(text.as_str())
 }
 
 /// Whether the focused context maps the pressed button, which then replaces the global layer.
@@ -721,3 +738,5 @@ pub mod keyboard;
 pub mod menu;
 
 pub mod choice_list;
+
+mod spoken_keys;
