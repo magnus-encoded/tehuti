@@ -2230,8 +2230,8 @@ mod layout_laws {
             Step::Open,
             Step::Open,
             Step::Open,
-            Step::Close(1_192_730_189_438_836_716),
-            Step::Close(10_320_365_627_896_110_324),
+            Step::Close(0),
+            Step::Close(4),
         ];
         world.run(&ops)?;
         let snap = world.snap();
