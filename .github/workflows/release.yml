@@ -66,6 +66,8 @@ jobs:
           else
             profile=release
           fi
+          export TEHUTI_VERSION="${TAG#v}"
+          export SOURCE_DATE_EPOCH="$(date -u +%s)"
           cargo build --locked --profile "$profile" -p tehuti --target "$ARCH-unknown-linux-gnu"
           mkdir package
           cp "target/$ARCH-unknown-linux-gnu/$profile/tehuti" package/

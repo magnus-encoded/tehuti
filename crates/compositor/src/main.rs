@@ -138,10 +138,12 @@ fn print_version() -> Result<ExitCode, Box<dyn Error>> {
     use std::io::Write;
     writeln!(
         std::io::stdout().lock(),
-        "tehuti {} ({} {})",
-        env!("CARGO_PKG_VERSION"),
-        env!("TEHUTI_GIT_HASH"),
-        env!("TEHUTI_BUILD_DATE")
+        "{}",
+        tehuti::cli::format_version(
+            option_env!("TEHUTI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+            env!("TEHUTI_GIT_HASH"),
+            env!("TEHUTI_BUILD_DATE")
+        )
     )?;
     Ok(ExitCode::SUCCESS)
 }
