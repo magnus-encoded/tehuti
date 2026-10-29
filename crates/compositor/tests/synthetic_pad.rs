@@ -113,6 +113,7 @@ mod synthetic_pad {
         selection: Option<WlDataOffer>,
         offered_mime_types: Vec<String>,
         close_requested: bool,
+        window_configures: Vec<(i32, i32, bool)>,
         text: String,
         keyboard_text: String,
         keymap_source: String,
@@ -697,6 +698,19 @@ mod synthetic_pad {
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
+            if let wayland_protocols::xdg::shell::client::xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } = &event
+            {
+                let fullscreen = states
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|state| u32::from_ne_bytes(*state) == 2);
+                app.window_configures.push((*width, *height, fullscreen));
+            }
             if matches!(
                 event,
                 wayland_protocols::xdg::shell::client::xdg_toplevel::Event::Close
@@ -1653,6 +1667,51 @@ mod synthetic_pad {
         let output = &snapshot.outputs[0];
         let workspace = &output.workspaces[output.active_workspace];
         (workspace.focused_column, snapshot.focused_window)
+    }
+
+    #[test]
+    fn windows_open_fullscreen_only_when_their_context_requests_it() {
+        for (context_id, setting, expected) in [
+            ("other", "open_fullscreen = true", true),
+            ("other", "open_fullscreen = false", false),
+            ("other", "", false),
+            ("unmatched", "open_fullscreen = true", false),
+            ("*", "open_fullscreen = true", false),
+        ] {
+            let mut display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context(&format!(
+                    "app_id = '{context_id}'\nbuttons = {{}}\n[window]\n{setting}"
+                ))
+                .unwrap(),
+            ]);
+            let client = start_action_client(&mut display, &mut compositor);
+            let snapshot = compositor.layout_snapshot();
+            let output = &snapshot.outputs[0];
+            let tile = &output.workspaces[output.active_workspace].columns[0].tiles[0];
+            assert_eq!(tile.fullscreen_requested, expected, "{context_id}: {setting}");
+            if expected {
+                assert_eq!(tile.requested_client.width, output.geometry.usable.width);
+            }
+            compositor.handle(&Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed,
+            });
+            let began = Instant::now();
+            while !client.is_finished() {
+                assert!(began.elapsed() < Duration::from_secs(5));
+                let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+                display.flush_clients().unwrap();
+                thread::sleep(Duration::from_millis(1));
+            }
+            let app = client.join().unwrap();
+            assert_eq!(app.window_configures[0].2, expected);
+            if expected {
+                assert!(app.window_configures[0].0 > 0);
+                assert!(app.window_configures[0].1 > 0);
+            }
+        }
     }
 
     #[test]

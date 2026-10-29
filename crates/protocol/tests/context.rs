@@ -6,6 +6,19 @@ mod context {
     use tehuti_protocol::{KeyName, parse_context};
 
     #[test]
+    fn window_fullscreen_is_optional_and_boolean() {
+        let base = "app_id = 'org.example.Game'\nbuttons = {}\n";
+        assert!(!parse_context(base).unwrap().open_fullscreen());
+        for enabled in [false, true] {
+            let context = parse_context(&format!("{base}[window]\nopen_fullscreen = {enabled}")).unwrap();
+            assert_eq!(context.open_fullscreen(), enabled);
+        }
+        for field in ["open_fullscreen = 'true'", "unknown = true"] {
+            assert!(parse_context(&format!("{base}[window]\n{field}")).is_err());
+        }
+    }
+
+    #[test]
     fn favourites_preserve_order_and_default_to_empty() {
         let plain = parse_context("app_id = '*'\n[buttons]").unwrap();
         assert_eq!(plain.favourites(), Vec::<String>::new());
