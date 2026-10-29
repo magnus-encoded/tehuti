@@ -2321,6 +2321,86 @@ fn open_settings_takes_only_its_voice_phrase_from_contexts_and_plugins() {
 }
 
 #[test]
+fn menu_taps_send_and_configured_holds_dictate_into_the_open_keyboard() {
+    for configured_ptt in [false, true] {
+        for held_ms in [0, 299, 300, 700] {
+            let context = tehuti_protocol::parse_context(&format!(
+                "app_id = '*'\npush_to_talk = [{}]\n[buttons]",
+                if configured_ptt { "'start'" } else { "'record'" }
+            ))
+            .unwrap();
+            let mut world = World::default();
+            let state = State::new(crate::State::with_contexts(vec![context]));
+            let state = world.run(state, Input::Speech(SpeechInput::Available));
+            let state = with_open_keyboard(&mut world, state);
+            let state = world.run(state, speech_event("hello"));
+            world.trace.clear();
+            let state = world.run(state, pad_button(ButtonName::Start, ButtonState::Pressed));
+            let state = world.run(
+                state,
+                Input::Tick {
+                    elapsed: Duration::from_millis(held_ms),
+                },
+            );
+            let talks = configured_ptt && held_ms >= 300;
+            assert_eq!(
+                world
+                    .trace
+                    .contains(&Effect::SpeechCommand(SpeechEffect::Start { session: 0 })),
+                talks,
+                "configured={configured_ptt}, held={held_ms}"
+            );
+            let state = world.run(state, pad_button(ButtonName::Start, ButtonState::Released));
+            assert_eq!(
+                world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Stop {
+                    session: 0,
+                    transcribe: true
+                })),
+                talks
+            );
+            assert_menu_draft_delivery(&world, talks);
+            assert!(state.keyboard().is_open());
+            assert_eq!(state.keyboard().draft(), if talks { "hello" } else { "" });
+            if talks {
+                let state = world.run(
+                    state,
+                    Input::Speech(SpeechInput::Transcript {
+                        session: 0,
+                        text: Text::new("world".into()).unwrap(),
+                    }),
+                );
+                assert_eq!(state.keyboard().draft(), "hello world");
+            }
+        }
+    }
+}
+
+fn assert_menu_draft_delivery(world: &World, talks: bool) {
+    let sent: Vec<_> = world
+        .trace
+        .iter()
+        .filter(|effect| matches!(effect, Effect::Apply(_) | Effect::Chord(_)))
+        .cloned()
+        .collect();
+    assert_eq!(
+        sent,
+        if talks {
+            vec![]
+        } else {
+            vec![
+                Effect::Apply(Action::Text {
+                    text: Text::new("hello".into()).unwrap(),
+                }),
+                Effect::Chord(crate::keyboard::Chord {
+                    key: crate::keyboard::ChordKey::Named(KeyName::Enter),
+                    modifiers: crate::keyboard::Modifiers::default(),
+                }),
+            ]
+        }
+    );
+}
+
+#[test]
 fn holding_y_on_the_open_keyboard_dictates_and_a_tap_types_a_space() {
     for (held, talks) in [
         (Duration::from_millis(100), false),

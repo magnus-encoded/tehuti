@@ -421,6 +421,7 @@ pub struct Keyboard {
     stick_engaged: bool,
     send_on_start_release: bool,
     space: Option<SpaceHold>,
+    start: Option<SpaceHold>,
 }
 
 impl Keyboard {
@@ -492,15 +493,25 @@ impl Keyboard {
         self.captured.contains(&name)
     }
 
-    /// Whether a Y hold is dictating.
+    /// Makes the held Menu dictate at the hold threshold instead of sending.
+    pub const fn arm_start_dictation(&mut self) {
+        if self.send_on_start_release && self.start.is_none() {
+            self.start = Some(SpaceHold::Waiting(Duration::ZERO));
+        }
+    }
+
+    /// Whether a keyboard button hold is dictating.
     #[must_use]
     pub fn talking(&self) -> bool {
-        self.space == Some(SpaceHold::Talking)
+        self.space == Some(SpaceHold::Talking) || self.start == Some(SpaceHold::Talking)
     }
 
     /// Keeps the held Start from sending, because it became part of the escape chord.
     pub const fn cancel_send(&mut self) {
         self.send_on_start_release = false;
+        if matches!(self.start, Some(SpaceHold::Waiting(_))) {
+            self.start = None;
+        }
     }
 
     /// Forgets held buttons, for a disconnected controller.
@@ -508,6 +519,7 @@ impl Keyboard {
         self.captured.clear();
         self.send_on_start_release = false;
         self.space = None;
+        self.start = None;
         self.repeat = None;
         self.stick_engaged = false;
     }
@@ -718,6 +730,10 @@ impl Keyboard {
             self.cancel_send();
         }
         if state == ButtonState::Released {
+            if name == ButtonName::Start && self.start.take() == Some(SpaceHold::Talking) {
+                self.captured.retain(|held| *held != name);
+                return Response::StopTalking;
+            }
             if name == ButtonName::Start && core::mem::take(&mut self.send_on_start_release) {
                 self.captured.retain(|held| *held != name);
                 return self.chord(ChordKey::Named(KeyName::Enter));
@@ -768,7 +784,9 @@ impl Keyboard {
         match name {
             ButtonName::West => self.backspace(),
             ButtonName::North => self.space = Some(SpaceHold::Waiting(Duration::ZERO)),
-            ButtonName::Start => self.send_on_start_release = true,
+            ButtonName::Start => {
+                self.send_on_start_release = true;
+            }
             ButtonName::LeftBumper => self.move_caret(false),
             ButtonName::RightBumper => self.move_caret(true),
             ButtonName::LeftStick => self.toggle_symbols(),
@@ -899,11 +917,24 @@ impl Keyboard {
         }
     }
 
-    /// Advances D-pad hold-repeat and the Y hold; true when the hold starts dictation.
+    /// Advances D-pad hold-repeat and button holds; true when a hold starts dictation.
     pub fn tick(&mut self, elapsed: Duration) -> bool {
-        let talk = self.tick_space(elapsed);
+        let talk = self.tick_space(elapsed) | self.tick_start(elapsed);
         self.tick_reveal_and_repeat(elapsed);
         talk
+    }
+
+    fn tick_start(&mut self, elapsed: Duration) -> bool {
+        let Some(SpaceHold::Waiting(held)) = &mut self.start else {
+            return false;
+        };
+        *held = held.saturating_add(elapsed);
+        if *held < TALK_HOLD || !self.open || self.password_field_active() {
+            return false;
+        }
+        self.start = Some(SpaceHold::Talking);
+        self.send_on_start_release = false;
+        true
     }
 
     fn tick_space(&mut self, elapsed: Duration) -> bool {
