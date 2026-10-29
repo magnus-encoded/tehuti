@@ -2307,6 +2307,46 @@ fn open_settings_takes_only_its_voice_phrase_from_contexts_and_plugins() {
 }
 
 #[test]
+fn holding_y_on_the_open_keyboard_dictates_and_a_tap_types_a_space() {
+    for (held, talks) in [
+        (Duration::from_millis(100), false),
+        (crate::keyboard::TALK_HOLD, true),
+    ] {
+        let mut world = World::default();
+        let state = world.run(State::default(), Input::Speech(SpeechInput::Available));
+        let state = with_open_keyboard(&mut world, state);
+        world.trace.clear();
+        let state = world.run(state, pad_button(ButtonName::North, ButtonState::Pressed));
+        let state = world.run(state, Input::Tick { elapsed: held });
+        let state = world.run(state, pad_button(ButtonName::North, ButtonState::Released));
+        let commands: Vec<_> = world
+            .trace
+            .iter()
+            .filter_map(|effect| {
+                if let Effect::SpeechCommand(command) = effect {
+                    Some(command.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let expected = if talks {
+            vec![
+                SpeechEffect::Start { session: 0 },
+                SpeechEffect::Stop {
+                    session: 0,
+                    transcribe: true,
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(commands, expected, "{held:?}");
+        assert_eq!(state.keyboard().draft(), if talks { "" } else { " " });
+    }
+}
+
+#[test]
 fn controller_ptt_uses_global_buttons_and_defaults_to_share() {
     for (setting, name, talks) in [
         ("", ButtonName::Record, true),

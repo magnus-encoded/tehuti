@@ -7,6 +7,8 @@ use tehuti_protocol::{ButtonName, ButtonState, KeyName};
 
 /// How long a D-pad direction is held before the highlight starts repeating.
 pub const REPEAT_DELAY: Duration = Duration::from_millis(400);
+/// How long Y stays held before it dictates instead of typing a space.
+pub const TALK_HOLD: Duration = Duration::from_millis(300);
 /// Time between highlight moves while a D-pad direction stays held.
 pub const REPEAT_INTERVAL: Duration = Duration::from_millis(80);
 /// Left stick deflection, in thousandths, that picks the next or previous word.
@@ -309,6 +311,15 @@ pub enum Response {
     Send(String),
     /// Deliver this draft, which may be empty, then tap the chord.
     Chord(String, Chord),
+    /// Y was released after a hold that started dictation; stop capturing.
+    StopTalking,
+}
+
+/// Y on the open keyboard: a tap types a space, a hold dictates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpaceHold {
+    Waiting(Duration),
+    Talking,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,6 +420,7 @@ pub struct Keyboard {
     repeat: Option<(Direction, Duration)>,
     stick_engaged: bool,
     send_on_start_release: bool,
+    space: Option<SpaceHold>,
 }
 
 impl Keyboard {
@@ -480,6 +492,12 @@ impl Keyboard {
         self.captured.contains(&name)
     }
 
+    /// Whether a Y hold is dictating.
+    #[must_use]
+    pub fn talking(&self) -> bool {
+        self.space == Some(SpaceHold::Talking)
+    }
+
     /// Keeps the held Start from sending, because it became part of the escape chord.
     pub const fn cancel_send(&mut self) {
         self.send_on_start_release = false;
@@ -489,6 +507,7 @@ impl Keyboard {
     pub fn release_all(&mut self) {
         self.captured.clear();
         self.send_on_start_release = false;
+        self.space = None;
         self.repeat = None;
         self.stick_engaged = false;
     }
@@ -707,6 +726,9 @@ impl Keyboard {
                 return Response::Pass;
             };
             let _released = self.captured.remove(index);
+            if name == ButtonName::North {
+                return self.release_space();
+            }
             if self
                 .repeat
                 .is_some_and(|_| Direction::from_button(name).is_some())
@@ -745,7 +767,7 @@ impl Keyboard {
     fn edit_button(&mut self, name: ButtonName) {
         match name {
             ButtonName::West => self.backspace(),
-            ButtonName::North => self.type_text(" "),
+            ButtonName::North => self.space = Some(SpaceHold::Waiting(Duration::ZERO)),
             ButtonName::Start => self.send_on_start_release = true,
             ButtonName::LeftBumper => self.move_caret(false),
             ButtonName::RightBumper => self.move_caret(true),
@@ -866,8 +888,37 @@ impl Keyboard {
         }
     }
 
-    /// Advances D-pad hold-repeat.
-    pub fn tick(&mut self, elapsed: Duration) {
+    fn release_space(&mut self) -> Response {
+        match self.space.take() {
+            Some(SpaceHold::Talking) => Response::StopTalking,
+            Some(SpaceHold::Waiting(_)) if self.open => {
+                self.type_text(" ");
+                Response::Consumed
+            }
+            Some(SpaceHold::Waiting(_)) | None => Response::Consumed,
+        }
+    }
+
+    /// Advances D-pad hold-repeat and the Y hold; true when the hold starts dictation.
+    pub fn tick(&mut self, elapsed: Duration) -> bool {
+        let talk = self.tick_space(elapsed);
+        self.tick_reveal_and_repeat(elapsed);
+        talk
+    }
+
+    fn tick_space(&mut self, elapsed: Duration) -> bool {
+        let Some(SpaceHold::Waiting(held)) = &mut self.space else {
+            return false;
+        };
+        *held = held.saturating_add(elapsed);
+        if *held < TALK_HOLD || !self.open || self.password_field_active() {
+            return false;
+        }
+        self.space = Some(SpaceHold::Talking);
+        true
+    }
+
+    fn tick_reveal_and_repeat(&mut self, elapsed: Duration) {
         if let Some((_, remaining)) = &mut self.revealed {
             *remaining = remaining.saturating_sub(elapsed);
             if remaining.is_zero() {
