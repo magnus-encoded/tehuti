@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Checks and lints all workspace targets against 32-bit native dependencies.
+# Needs i686-unknown-linux-gnu and the i386 (Debian/Ubuntu) or lib32 (Arch)
+# development packages. CI runs this in the required check job.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+target=i686-unknown-linux-gnu
+if command -v rustup >/dev/null && ! rustup target list --installed | grep -qx "$target"; then
+    echo "check-i686: run 'rustup target add $target' first" >&2
+    exit 1
+fi
+if [ -z "${PKG_CONFIG_LIBDIR:-}" ]; then
+    for directory in /usr/lib/i386-linux-gnu/pkgconfig /usr/lib32/pkgconfig; do
+        if [ -d "$directory" ]; then
+            export PKG_CONFIG_LIBDIR="$directory:/usr/share/pkgconfig"
+            break
+        fi
+    done
+fi
+export PKG_CONFIG_ALLOW_CROSS=1
+cargo check --workspace --all-targets --locked --target "$target"
+cargo clippy --workspace --all-targets --locked --target "$target" -- -D warnings
