@@ -422,6 +422,7 @@ pub struct Context {
     keyboard: KeyboardConfig,
     dim: DimConfig,
     push_to_talk: Vec<ButtonName>,
+    window: WindowConfig,
     pad: PadConfig,
     ticker: TickerConfig,
     ticker_names: Vec<TickerName>,
@@ -455,7 +456,18 @@ struct PadConfig {
     push_to_talk: Option<Vec<ButtonName>>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct WindowConfig {
+    open_fullscreen: bool,
+}
+
 impl Context {
+    #[must_use]
+    pub const fn open_fullscreen(&self) -> bool {
+        self.window.open_fullscreen
+    }
+
     /// Ordered desktop entry ids eligible for desktop grid focus.
     #[must_use]
     pub fn favourites(&self) -> &[String] {
@@ -655,6 +667,8 @@ struct ContextFile {
     #[serde(default)]
     pad: PadConfig,
     #[serde(default)]
+    window: WindowConfig,
+    #[serde(default)]
     ticker: TickerConfig,
     #[serde(default)]
     speech_matching: SpeechMatching,
@@ -784,7 +798,6 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     if context.app_id.trim().is_empty() {
         return Err("app_id must not be empty".into());
     }
-    let label = parse_label(context.label)?;
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
@@ -818,7 +831,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     }
     Ok(Context {
         app_id: context.app_id,
-        label,
+        label: parse_label(context.label)?,
         buttons: context.buttons,
         speech,
         launch_phrases,
@@ -828,6 +841,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         dim: context.dim,
         push_to_talk: context.push_to_talk,
         pad: context.pad,
+        window: context.window,
         ticker_names: parse_ticker_names(&context.ticker.names)?,
         ticker: context.ticker,
         speech_matching: context.speech_matching,

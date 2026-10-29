@@ -301,6 +301,24 @@ The defaults shown above apply when the values are absent.
 
 The global context accepts `push_to_talk = ['start']` before `[buttons]` to use Menu for push-to-talk. The default is `['record']`; `[]` disables controller push-to-talk. Listed buttons replace their context bindings; Guide+Start still escapes.
 
+## Opening windows fullscreen
+
+A matching application context can open its windows fullscreen:
+
+```toml
+app_id = "steam_app_12345"
+buttons = {}
+
+[window]
+open_fullscreen = true
+```
+
+The option defaults to false. The first exact application-id match decides it;
+the global `*` context does not supply a default. Tehuti applies it on the
+first surface commit, before the initial configure, with the fullscreen client
+size. This lets applications that choose their drawing area at startup use
+the full available area. Context reloads affect newly opened windows.
+
 ## Column widths
 
 The global context maps "Wider." to `switch-preset-column-width` and

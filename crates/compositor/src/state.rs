@@ -2241,12 +2241,26 @@ impl CompositorHandler for Compositor {
         while let Some(parent) = get_parent(&root) {
             root = parent;
         }
+        if self.window_for_root(&root).is_none()
+            && let Some(toplevel) = self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .find(|toplevel| toplevel.wl_surface() == &root)
+                .cloned()
+        {
+            self.map_toplevel(toplevel);
+        }
         if let Some(window) = self.window_for_root(&root) {
             window.on_commit();
             if let Some(toplevel) = window.toplevel() {
                 if !toplevel.is_initial_configure_sent() {
                     window.hold_size(true);
-                    toplevel.with_pending_state(|pending| pending.size = None);
+                    toplevel.with_pending_state(|pending| {
+                        if !pending.states.contains(xdg_toplevel::State::Fullscreen) {
+                            pending.size = None;
+                        }
+                    });
                     let _serial = toplevel.send_configure();
                     toplevel.with_pending_state(|pending| pending.size = Some(window.layout_size()));
                 } else if window.size_held() && window.mapped() {
@@ -2295,22 +2309,32 @@ impl ShmHandler for Compositor {
     }
 }
 
-impl XdgShellHandler for Compositor {
-    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
-        &mut self.xdg_shell_state
-    }
-
-    fn new_toplevel(&mut self, surface: ToplevelSurface) {
+impl Compositor {
+    fn map_toplevel(&mut self, surface: ToplevelSurface) {
         let _effect = self
             .windows
             .step(tehuti_core::windows::Input::Map(surface.wl_surface().clone()));
         self.fill_output();
         let identity = tehuti_core::layout::WindowId(self.next_window);
         self.next_window = self.next_window.saturating_add(1);
-        match self
-            .layout
-            .add_window(identity, tehuti_core::layout::WindowRules::default())
-        {
+        let app_id = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .and_then(|attributes| attributes.lock().ok()?.app_id.clone())
+        });
+        let open_fullscreen = app_id
+            .as_deref()
+            .filter(|app_id| *app_id != "*")
+            .and_then(|app_id| self.contexts().iter().find(|context| context.app_id() == app_id))
+            .is_some_and(tehuti_protocol::Context::open_fullscreen);
+        match self.layout.add_window(
+            identity,
+            tehuti_core::layout::WindowRules {
+                open_fullscreen,
+                ..Default::default()
+            },
+        ) {
             Ok(()) => {
                 self.layout_windows
                     .push((identity, LayoutWindow::new(Window::new_wayland_window(surface))));
@@ -2319,6 +2343,14 @@ impl XdgShellHandler for Compositor {
             Err(error) => tracing::warn!(%error, "window layout failed"),
         }
     }
+}
+
+impl XdgShellHandler for Compositor {
+    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
+        &mut self.xdg_shell_state
+    }
+
+    fn new_toplevel(&mut self, _surface: ToplevelSurface) {}
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
         self.update_focus(&surface);
