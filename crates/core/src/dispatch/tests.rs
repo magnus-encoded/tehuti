@@ -639,18 +639,32 @@ proptest! {
 
     #[test]
     fn mouse_mode_swallows_pointer_buttons_before_plugins_and_mappings(
-        contexts in arbitrary_contexts(),
+        mut contexts in arbitrary_contexts(),
         name in prop::sample::select(vec![ButtonName::South, ButtonName::East, ButtonName::West, ButtonName::North, ButtonName::LeftBumper, ButtonName::RightBumper, ButtonName::DpadUp, ButtonName::DpadDown, ButtonName::DpadLeft, ButtonName::DpadRight, ButtonName::LeftStick, ButtonName::RightStick]),
         plugin_active in prop::bool::ANY,
     ) {
         let mut world = World { plugin_active, ..World::default() };
-        let state = world.run(configured_mouse(contexts), pad_button(ButtonName::Select, ButtonState::Pressed));
+        let mut mappings = String::from("app_id = 'pointer-test'\n[buttons]\n");
+        for button in ["south", "east", "west", "north", "left_bumper", "right_bumper", "dpad_up", "dpad_down", "dpad_left", "dpad_right", "left_stick", "right_stick"] {
+            writeln!(mappings, "{button} = {{ key = 'tab' }}").unwrap();
+        }
+        contexts.insert(0, tehuti_protocol::parse_context(&mappings).unwrap());
+        let initial = configured_mouse(contexts);
+        let mut normal = World { plugin_active, ..World::default() };
+        let normal_state = normal.run(initial.clone(), pad_button(name, ButtonState::Pressed));
+        let _normal_state = normal.run(normal_state, pad_button(name, ButtonState::Released));
+        let state = world.run(initial, pad_button(ButtonName::Select, ButtonState::Pressed));
         let state = finish_view_double_tap(&mut world, state);
         let state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
         world.trace.clear();
         let state = world.run(state, pad_button(name, ButtonState::Pressed));
         let _state = world.run(state, pad_button(name, ButtonState::Released));
-        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::SpeechCommand(_) | Effect::ConfirmSecret(_) | Effect::QueryPlugin(Event::Button { .. }) | Effect::DispatchPlugin { event: Event::Button { .. }, .. })), "mouse buttons stay in core");
+        if matches!(name, ButtonName::South | ButtonName::East) {
+            prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Apply(_) | Effect::SpeechCommand(_) | Effect::ConfirmSecret(_) | Effect::QueryPlugin(Event::Button { .. }) | Effect::DispatchPlugin { event: Event::Button { .. }, .. })), "click buttons stay in core");
+        } else {
+            prop_assert!(world.trace.contains(&Effect::Apply(Action::Key { key: KeyName::Tab, mods: Vec::new() })), "other buttons reach their mappings");
+            prop_assert_eq!(&world.trace, &normal.trace, "other buttons keep normal plugin and mapping routing");
+        }
         let clicks: Vec<_> = world.trace.into_iter().filter(|effect| matches!(effect, Effect::Click { .. })).collect();
         let button = match name { ButtonName::South => Some(PointerButton::Left), ButtonName::East => Some(PointerButton::Right), ButtonName::North | ButtonName::West | ButtonName::LeftBumper | ButtonName::RightBumper | ButtonName::Select | ButtonName::Record | ButtonName::Start | ButtonName::Guide | ButtonName::LeftStick | ButtonName::RightStick | ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight => None };
         let expected = button.map_or_else(Vec::new, |button| vec![Effect::Click { button, pressed: true }, Effect::Click { button, pressed: false }]);

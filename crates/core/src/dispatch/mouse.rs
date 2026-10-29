@@ -42,24 +42,22 @@ impl State {
             self.view_button(*state, effects);
             return true;
         }
-        if !self.active || matches!(name, ButtonName::Record | ButtonName::Guide | ButtonName::Start) {
+        if !self.active {
             return false;
         }
-        let click = if *name == self.pad_family.button(Role::Confirm) {
-            Some((0, PointerButton::Left))
+        let (index, button) = if *name == self.pad_family.button(Role::Confirm) {
+            (0, PointerButton::Left)
         } else if *name == self.pad_family.button(Role::Back) {
-            Some((1, PointerButton::Right))
+            (1, PointerButton::Right)
         } else {
-            None
+            return false;
         };
-        if let Some((index, button)) = click {
-            let pressed = *state == ButtonState::Pressed;
-            if let Some(held) = self.clicks.get_mut(index)
-                && *held != pressed
-            {
-                *held = pressed;
-                effects.push(Effect::Click { button, pressed });
-            }
+        let pressed = *state == ButtonState::Pressed;
+        if let Some(held) = self.clicks.get_mut(index)
+            && *held != pressed
+        {
+            *held = pressed;
+            effects.push(Effect::Click { button, pressed });
         }
         true
     }
