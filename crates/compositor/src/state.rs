@@ -2085,6 +2085,7 @@ impl Compositor {
                 self.update_focus(toplevel);
             }
         } else {
+            self.dispatch.core_mut().set_context_ancestors(None, Vec::new());
             self.handle(&Event::Focus {
                 app_id: None,
                 title: String::new(),
@@ -2094,6 +2095,18 @@ impl Compositor {
 
     fn update_focus(&mut self, surface: &ToplevelSurface) {
         if let Some(event) = self.focus_event(surface) {
+            if let Event::Focus { app_id, .. } = &event {
+                let windows = self
+                    .layout_windows
+                    .iter()
+                    .filter_map(|(_, window)| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()))
+                    .collect::<Vec<_>>();
+                let ancestors =
+                    crate::window_context::ancestors(surface.wl_surface(), &windows, &self.display);
+                self.dispatch
+                    .core_mut()
+                    .set_context_ancestors(app_id.clone(), ancestors);
+            }
             self.handle(&event);
         }
     }

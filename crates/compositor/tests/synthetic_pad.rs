@@ -1043,6 +1043,112 @@ mod synthetic_pad {
         }
     }
 
+    #[test]
+    fn a_contextless_xdg_child_receives_its_parent_button_mapping() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context("app_id = 'launcher'\n[buttons]\nwest = { key = 'escape' }")
+                .unwrap(),
+        ]);
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_parent(
+                stream,
+                "player",
+                "player",
+                ClientTextState::Absent,
+                &sender,
+                Some("launcher"),
+            )
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let mut pad = SyntheticPad::default();
+        pad.push(Event::Button {
+            name: ButtonName::West,
+            state: ButtonState::Pressed,
+        });
+        route(&mut compositor, &mut pad).unwrap();
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        assert_eq!(
+            client.join().unwrap().keys,
+            vec![(1, KeyState::Pressed), (1, KeyState::Released)]
+        );
+    }
+
+    #[test]
+    fn a_contextless_process_child_receives_its_launcher_button_mapping() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("wayland");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let shell = std::fs::canonicalize("/bin/sh").unwrap();
+        let launcher = shell.file_name().unwrap().to_str().unwrap();
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(&format!(
+                "app_id = '{launcher}'\n[buttons]\nwest = {{ key = 'escape' }}"
+            ))
+            .unwrap(),
+        ]);
+        let mut process = std::process::Command::new(shell)
+            .args(["-c", "\"$@\" & wait \"$!\"", "launcher"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "synthetic_pad::process_child_client",
+                "--test-threads=1",
+            ])
+            .env("TEHUTI_TEST_CONTEXT_SOCKET", &socket)
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        let mut connected = false;
+        while process.try_wait().unwrap().is_none() {
+            if started.elapsed() >= Duration::from_secs(10) {
+                let _killed = process.kill();
+                let _waited = process.wait();
+                panic!("process child did not receive its launcher mapping");
+            }
+            if !connected && let Ok((stream, _)) = listener.accept() {
+                let _client = display
+                    .handle()
+                    .insert_client(stream, Arc::new(ClientState::default()))
+                    .unwrap();
+                connected = true;
+            }
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            compositor.handle(&Event::Button {
+                name: ButtonName::West,
+                state: ButtonState::Pressed,
+            });
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(connected);
+        assert!(process.wait().unwrap().success());
+    }
+
+    #[test]
+    fn process_child_client() {
+        let Some(socket) = std::env::var_os("TEHUTI_TEST_CONTEXT_SOCKET") else {
+            return;
+        };
+        let stream = UnixStream::connect(socket).unwrap();
+        let (sender, _receiver) = mpsc::channel();
+        let app = run_client_with_app_id(stream, "player", "player", ClientTextState::Absent, &sender);
+        assert!(app.keys.contains(&(1, KeyState::Pressed)));
+        assert!(app.keys.contains(&(1, KeyState::Released)));
+    }
+
     /// Opens one toplevel and returns every key it receives once it has seen one full key tap.
     fn run_client(
         stream: UnixStream,
@@ -1061,6 +1167,17 @@ mod synthetic_pad {
         text_state: ClientTextState,
         ready: &mpsc::Sender<()>,
     ) -> App {
+        run_client_with_parent(stream, app_id, initial_app_id, text_state, ready, None)
+    }
+
+    fn run_client_with_parent(
+        stream: UnixStream,
+        app_id: &str,
+        initial_app_id: &str,
+        text_state: ClientTextState,
+        ready: &mpsc::Sender<()>,
+        parent_app_id: Option<&str>,
+    ) -> App {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -1071,9 +1188,20 @@ mod synthetic_pad {
         let manager: ZwpTextInputManagerV3 = globals.bind(&handle, 1..=1, ()).unwrap();
         let text_input = (!matches!(text_state, ClientTextState::Absent))
             .then(|| manager.get_text_input(&seat, &handle, ()));
+        let parent = parent_app_id.map(|parent_id| {
+            let surface = compositor.create_surface(&handle, ());
+            let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
+            let toplevel = xdg_surface.get_toplevel(&handle, ());
+            toplevel.set_app_id(parent_id.into());
+            surface.commit();
+            (surface, xdg_surface, toplevel)
+        });
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
+        if let Some((_, _, parent)) = &parent {
+            toplevel.set_parent(Some(parent));
+        }
         toplevel.set_title("Synthetic-window-title-1234567890".into());
         toplevel.set_app_id(initial_app_id.into());
         surface.commit();
