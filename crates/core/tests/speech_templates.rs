@@ -1,6 +1,7 @@
 //! Prefix commands run through the same context and core seams as fixed phrases.
 #[cfg(test)]
 mod speech_templates {
+    use proptest::prelude::*;
     use tehuti_core::{State, step};
     use tehuti_protocol::{Action, Event, KeyName, Text, parse_context};
 
@@ -145,5 +146,46 @@ mod speech_templates {
                 },
             ]
         );
+    }
+    fn configured_for_spoken_keys(app_id: &str, phrase: &str, global: bool, focused: bool) -> State {
+        let context = parse_context(&format!(
+            "app_id = '{}'\n[buttons]\nsouth = {{ text = 'configured' }}\n[speech]\n'{phrase}' = {{ text = 'mapped' }}",
+            if global { "*" } else { app_id },
+        )).unwrap();
+        step(
+            State::with_contexts(vec![context]),
+            &Event::Focus {
+                app_id: focused.then(|| app_id.to_owned()),
+                title: String::new(),
+            },
+        )
+        .0
+    }
+
+    proptest! {
+        #[test]
+        fn spoken_key_sequences_compose_in_every_context(
+            app_id in "[a-z]{1,16}",
+            phrase in "fixed[a-z]{1,16}",
+            global in any::<bool>(),
+            focused in any::<bool>(),
+            names in prop::collection::vec(prop::sample::select(vec![
+                "a", "z", "zero", "nine", "slash", "double quote", "left bracket",
+                "page up", "enter", "space", "backspace",
+            ]), 2..20),
+        ) {
+            let state = configured_for_spoken_keys(&app_id, &phrase, global, focused);
+            let expected: Vec<_> = names.iter().flat_map(|name| step(state.clone(), &Event::Speech {
+                text: Text::new(format!("Type {name}.")).unwrap(),
+            }).1).collect();
+            let (_, actual) = step(state.clone(), &Event::Speech {
+                text: Text::new(format!("Type {}.", names.join(" "))).unwrap(),
+            });
+            prop_assert_eq!(actual, expected);
+            let (_, rejected) = step(state, &Event::Speech {
+                text: Text::new(format!("Type {} unknown-key.", names.join(" "))).unwrap(),
+            });
+            prop_assert!(matches!(rejected.as_slice(), [Action::Notice { .. }]), "invalid sequence emits only a notice");
+        }
     }
 }
