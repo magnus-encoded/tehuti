@@ -6,6 +6,45 @@ mod context {
     use tehuti_protocol::{KeyName, parse_context};
 
     #[test]
+    fn window_sizes_accept_fractions_and_named_presets() {
+        let plain = parse_context("app_id = 'org.example.App'\nbuttons = {}").unwrap();
+        assert_eq!(plain.window_column_width(), None);
+        assert_eq!(plain.window_height(), None);
+        for (value, expected) in [
+            ("0.5", 0.5),
+            ("1", 1.0),
+            ("'one-third'", 0.333_333_333_333_333_3),
+            ("'one-half'", 0.5),
+            ("'two-thirds'", 0.666_666_666_666_666_6),
+            ("'full'", 1.0),
+        ] {
+            let context = parse_context(&format!("app_id = 'org.example.App'\nbuttons = {{}}\n[window]\ncolumn_width = {value}\nheight = {value}")).unwrap();
+            assert_eq!(context.window_column_width(), Some(expected), "{value}");
+            assert_eq!(context.window_height(), Some(expected), "{value}");
+        }
+        for value in [
+            "0",
+            "-0.1",
+            "1.1",
+            "nan",
+            "inf",
+            "'half'",
+            "true",
+            "{ preset = 1 }",
+        ] {
+            for key in ["column_width", "height"] {
+                assert!(
+                    parse_context(&format!(
+                        "app_id = 'org.example.App'\nbuttons = {{}}\n[window]\n{key} = {value}"
+                    ))
+                    .is_err(),
+                    "{key}: {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn window_fullscreen_is_optional_and_boolean() {
         let base = "app_id = 'org.example.Game'\nbuttons = {}\n";
         assert!(!parse_context(base).unwrap().open_fullscreen());

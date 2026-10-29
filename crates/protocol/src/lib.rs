@@ -460,12 +460,62 @@ struct PadConfig {
 #[serde(default, deny_unknown_fields)]
 struct WindowConfig {
     open_fullscreen: bool,
+    column_width: Option<WindowFraction>,
+    height: Option<WindowFraction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WindowFraction(f64);
+
+impl Eq for WindowFraction {}
+
+impl<'de> serde::Deserialize<'de> for WindowFraction {
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "named presets resolve to working-area fractions"
+    )]
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Setting {
+            Fraction(f64),
+            Preset(String),
+        }
+        let value = match Setting::deserialize(deserializer)? {
+            Setting::Fraction(value) => value,
+            Setting::Preset(name) => match name.as_str() {
+                "one-third" => 1.0 / 3.0,
+                "one-half" => 0.5,
+                "two-thirds" => 2.0 / 3.0,
+                "full" => 1.0,
+                _ => return Err(serde::de::Error::custom("unknown window size preset")),
+            },
+        };
+        if !value.is_finite() || value <= 0.0 || value > 1.0 {
+            return Err(serde::de::Error::custom(
+                "window size must be greater than 0 and at most 1",
+            ));
+        }
+        Ok(Self(value))
+    }
 }
 
 impl Context {
     #[must_use]
     pub const fn open_fullscreen(&self) -> bool {
         self.window.open_fullscreen
+    }
+
+    /// Opening column width as a fraction of the working area.
+    #[must_use]
+    pub fn window_column_width(&self) -> Option<f64> {
+        self.window.column_width.map(|value| value.0)
+    }
+
+    /// Opening window height as a fraction of the working area.
+    #[must_use]
+    pub fn window_height(&self) -> Option<f64> {
+        self.window.height.map(|value| value.0)
     }
 
     /// Ordered desktop entry ids eligible for desktop grid focus.

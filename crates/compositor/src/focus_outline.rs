@@ -1,4 +1,4 @@
-//! Bright focus edges inside the assigned window box.
+//! Bright focus edges inside the committed window geometry.
 use smithay::{
     backend::renderer::element::{Id, Kind, solid::SolidColorRenderElement},
     utils::{Logical, Rectangle, Size},
