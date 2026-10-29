@@ -54,3 +54,8 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
         }),
     }
 }
+
+#[must_use]
+pub fn format_version(version: &str, hash: &str, date: &str) -> String {
+    format!("tehuti {version} ({hash} {date})")
+}

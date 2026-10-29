@@ -9,6 +9,18 @@ mod version {
     use std::process::Command;
 
     #[test]
+    fn version_format_includes_version_hash_and_date() {
+        assert_eq!(
+            tehuti::cli::format_version("1.2.3", "abcdef123", "2026-10-29"),
+            "tehuti 1.2.3 (abcdef123 2026-10-29)"
+        );
+        assert_eq!(
+            tehuti::cli::format_version("0.0.0", "unknown", "unknown"),
+            "tehuti 0.0.0 (unknown unknown)"
+        );
+    }
+
+    #[test]
     fn version_flags_exit_before_starting_the_compositor() {
         for flag in ["--version", "-V"] {
             let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
@@ -23,7 +35,7 @@ mod version {
                 text,
                 format!(
                     "tehuti {} ({} {})\n",
-                    env!("CARGO_PKG_VERSION"),
+                    option_env!("TEHUTI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
                     env!("TEHUTI_GIT_HASH"),
                     env!("TEHUTI_BUILD_DATE")
                 )
