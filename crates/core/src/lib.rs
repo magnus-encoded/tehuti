@@ -498,12 +498,10 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         }
         let focused = focused_context(state);
         let global = global_context(state);
-        if tehuti_protocol::normalize_phrase(phrase) == "close" {
-            return Some(Action::Close);
-        }
         return focused
             .and_then(|context| context.mapped_speech_action(phrase))
             .or_else(|| global.and_then(|context| context.mapped_speech_action(phrase)))
+            .or_else(|| (tehuti_protocol::normalize_phrase(phrase) == "close").then_some(Action::Close))
             .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.action))
             .or_else(|| focused.and_then(|context| context.unmatched_speech_action(phrase)))
             .or_else(|| global.and_then(|context| context.unmatched_speech_action(phrase)))

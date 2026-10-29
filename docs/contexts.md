@@ -38,8 +38,8 @@ context maps South; then its mapping, tap or hold, replaces Enter. A South
 mapping in the `*` global context keeps Enter. The active context handles
 other mapped presses. The fallback discards events that neither handles.
 Focus changes select the window's own context or its launcher context.
-Saying “Close.” closes the focused window in every context, even without any
-context files.
+Without an explicit phrase mapping, saying “Close.” closes the focused window,
+even without any context files.
 
 The escape chord consumes every Guide press and release before context routing.
 A context mapping on Guide never fires. Holding Guide for 500 ms opens the

@@ -137,4 +137,48 @@ mod inherited_context {
         );
         assert_eq!(step(state, &button).1, Vec::<Action>::new());
     }
+    #[test]
+    fn an_explicit_close_phrase_keeps_the_active_context_mapping() {
+        use tehuti_protocol::KeyName;
+        let context = parse_context("app_id = 'editor'\n[buttons]\n[speech.Close]\nkey = 'escape'").unwrap();
+        let (state, _) = step(
+            State::with_contexts(vec![context]),
+            &Event::Focus {
+                app_id: Some("editor".into()),
+                title: String::new(),
+            },
+        );
+        let (_, actions) = step(
+            state,
+            &Event::Speech {
+                text: Text::new("Close.".into()).unwrap(),
+            },
+        );
+        assert_eq!(
+            actions,
+            vec![Action::Key {
+                key: KeyName::Escape,
+                mods: Vec::new()
+            }]
+        );
+    }
+    #[test]
+    fn default_close_precedes_fuzzy_matching_and_unmatched_dictation() {
+        let context = parse_context("app_id = 'editor'\nunmatched_speech = 'type'\n[buttons]\n[speech_matching]\nfuzzy = true\n[speech.Closes]\nnotify = 'other'").unwrap();
+        let (state, _) = step(
+            State::with_contexts(vec![context]),
+            &Event::Focus {
+                app_id: Some("editor".into()),
+                title: String::new(),
+            },
+        );
+        assert_eq!(state.fuzzy_speech_match("Close."), None);
+        let (_, actions) = step(
+            state,
+            &Event::Speech {
+                text: Text::new("Close.".into()).unwrap(),
+            },
+        );
+        assert_eq!(actions, vec![Action::Close]);
+    }
 }
