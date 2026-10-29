@@ -2533,6 +2533,7 @@ fn title_updates_reach_plugins_without_cancelling_capture() {
             title: "Updated document".into(),
         },
     );
+    assert_eq!(state.core().bar().segments()[1].text, "Updated document");
     assert!(world.trace.iter().any(|effect| matches!(
         effect,
         Effect::DispatchPlugin { event: Event::Focus { title, .. }, .. }

@@ -1815,7 +1815,7 @@ impl Compositor {
                             let attributes = attributes
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            tehuti_core::bar::window_label(
+                            self.dispatch.core().bar().window_label(
                                 self.dispatch.core().label(attributes.app_id.as_deref()),
                                 attributes.title.as_deref(),
                                 attributes.app_id.as_deref(),
