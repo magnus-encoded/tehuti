@@ -1526,6 +1526,13 @@ fn keyboard_start(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
     let response = state.keyboard.button(ButtonName::Start, start_state(event), true);
     if guide_held {
         state.keyboard.cancel_send();
+    } else if start_state(event) == ButtonState::Pressed && state.core.push_to_talk(ButtonName::Start) {
+        state.keyboard.arm_start_dictation();
+    }
+    if response == crate::keyboard::Response::StopTalking
+        && let Some(frame) = state.frames.last_mut()
+    {
+        frame.tasks.push_front(Task::Speech(SpeechInput::Release));
     }
     send_response(response, effects)
 }
