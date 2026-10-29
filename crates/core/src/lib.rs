@@ -37,6 +37,7 @@ impl Level {
 pub struct State {
     contexts: Vec<Context>,
     focused_app_id: Option<String>,
+    context_ancestors: Option<(Option<String>, Vec<String>)>,
     pad_taken_back: bool,
     guide_held: Option<core::time::Duration>,
     guide_tap: Option<core::time::Duration>,
@@ -92,6 +93,7 @@ impl State {
         let mut state = Self {
             contexts,
             focused_app_id: None,
+            context_ancestors: None,
             pad_taken_back: false,
             guide_held: None,
             guide_tap: None,
@@ -109,6 +111,12 @@ impl State {
         state
     }
 
+    /// Supplies nearest-first launcher application ids for one focused window.
+    pub fn set_context_ancestors(&mut self, app_id: Option<String>, ancestors: Vec<String>) {
+        self.context_ancestors = Some((app_id, ancestors));
+        self.refresh_ticker();
+    }
+
     /// Resolves the focused app's dimming policy over the global context.
     #[must_use]
     pub fn dim_config(&self) -> (bool, f32, core::time::Duration) {
@@ -117,11 +125,7 @@ impl State {
             .iter()
             .find(|context| context.app_id() == "*")
             .map(Context::dim);
-        let active = self
-            .contexts
-            .iter()
-            .find(|context| Some(context.app_id()) == self.focused_app_id.as_deref())
-            .map(Context::dim);
+        let active = focused_context(self).map(Context::dim);
         let enabled = active
             .and_then(|config| config.enabled)
             .or_else(|| global.and_then(|config| config.enabled))
@@ -145,10 +149,7 @@ impl State {
     #[must_use]
     pub fn keyboard_config(&self) -> (tehuti_protocol::OnTextField, tehuti_protocol::ButtonName) {
         let global = self.contexts.iter().find(|context| context.app_id() == "*");
-        let active = self
-            .contexts
-            .iter()
-            .find(|context| Some(context.app_id()) == self.focused_app_id.as_deref());
+        let active = focused_context(self);
         let mode = active
             .and_then(|context| context.keyboard().on_text_field)
             .or_else(|| global.and_then(|context| context.keyboard().on_text_field))
@@ -164,9 +165,7 @@ impl State {
     #[must_use]
     pub fn keep_keyboard_draft(&self) -> bool {
         let global = self.contexts.iter().find(|context| context.app_id() == "*");
-        self.contexts
-            .iter()
-            .find(|context| Some(context.app_id()) == self.focused_app_id.as_deref())
+        focused_context(self)
             .and_then(|context| context.keyboard().keep_draft)
             .or_else(|| global.and_then(|context| context.keyboard().keep_draft))
             .unwrap_or(false)
@@ -176,10 +175,7 @@ impl State {
     #[must_use]
     pub fn terminal_config(&self) -> (bool, bool) {
         let global = self.contexts.iter().find(|context| context.app_id() == "*");
-        let active = self
-            .contexts
-            .iter()
-            .find(|context| Some(context.app_id()) == self.focused_app_id.as_deref());
+        let active = focused_context(self);
         let marked = active
             .and_then(|context| context.keyboard().terminal)
             .unwrap_or(false);
@@ -255,7 +251,7 @@ impl State {
 
     /// Rebuilds the ticker from the focused context, or disables it there.
     fn refresh_ticker(&mut self) {
-        let focused = self.focused_app_id.as_deref();
+        let focused = focused_context(self).map(Context::app_id);
         let entries = ticker::enabled(&self.contexts, focused)
             .then(|| ticker::entries(&self.contexts, focused, self.pad_family, self.level));
         self.bar.set_ticker(entries);
@@ -502,6 +498,9 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         }
         let focused = focused_context(state);
         let global = global_context(state);
+        if tehuti_protocol::normalize_phrase(phrase) == "close" {
+            return Some(Action::Close);
+        }
         return focused
             .and_then(|context| context.mapped_speech_action(phrase))
             .or_else(|| global.and_then(|context| context.mapped_speech_action(phrase)))
@@ -560,10 +559,21 @@ fn fuzzy_speech_match(
 pub const GLOBAL_APP_ID: &str = "*";
 
 fn focused_context(state: &State) -> Option<&Context> {
-    state
-        .contexts
-        .iter()
-        .find(|context| Some(context.app_id()) == state.focused_app_id.as_deref())
+    let own = state.contexts.iter().find(|context| {
+        context.app_id() != GLOBAL_APP_ID && Some(context.app_id()) == state.focused_app_id.as_deref()
+    });
+    own.or_else(|| {
+        let (app_id, ancestors) = state.context_ancestors.as_ref()?;
+        if app_id != &state.focused_app_id {
+            return None;
+        }
+        ancestors.iter().find_map(|ancestor| {
+            state
+                .contexts
+                .iter()
+                .find(|context| context.app_id() != GLOBAL_APP_ID && context.app_id() == ancestor)
+        })
+    })
 }
 
 fn global_context(state: &State) -> Option<&Context> {

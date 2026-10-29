@@ -3,7 +3,11 @@
 Start with `tehuti <context-directory> <application> [arguments...]`.
 The directory can contain a `context.toml` and child directories with their own
 `context.toml`. Files load in path order. The first exact application-id match
-selects the active context. Invalid files are logged and skipped.
+selects the active context. When no context matches the window, it inherits the
+nearest matching launcher context: XDG parent windows first, then parent
+processes, using their window application ids or executable names. Missing or
+inaccessible ancestry leaves the global context's mappings available. Invalid
+files are logged and skipped.
 
 ```toml
 app_id = "org.example.App"
@@ -33,7 +37,9 @@ The global layer consumes South presses and sends Enter, unless the active
 context maps South; then its mapping, tap or hold, replaces Enter. A South
 mapping in the `*` global context keeps Enter. The active context handles
 other mapped presses. The fallback discards events that neither handles.
-Focus changes select a context by the focused toplevel's current application id.
+Focus changes select the window's own context or its launcher context.
+Saying “Close.” closes the focused window in every context, even without any
+context files.
 
 The escape chord consumes every Guide press and release before context routing.
 A context mapping on Guide never fires. Holding Guide for 500 ms opens the

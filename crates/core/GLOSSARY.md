@@ -10,7 +10,7 @@
 | Held key | A key a `hold = true` button mapping keeps down from the button's press to its release, or until focus, a disconnect or an overlay releases it. |
 | Consumed | An event handled by a layer, with or without an action. Later layers never see it. |
 | Context | A set of input mappings for one application id. |
-| Active context | The context selected for the focused window's application id, or none when no context matches. |
+| Active context | The context selected for the focused window's application id, or its nearest launcher ancestor with a context when it has none of its own. |
 | Global context | The context with application id `*`. Its mapped buttons and phrases apply wherever the active context maps none; a phrase it maps beats the active context's `unmatched_speech` typing. |
 | Fallback | The final routing layer, which discards input that earlier layers do not consume. |
 | Pad role | A button’s interaction meaning: Confirm accepts, Back cancels or returns, and Keyboard opens text entry unless configuration chooses another button. |
