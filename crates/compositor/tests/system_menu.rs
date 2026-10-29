@@ -4,13 +4,13 @@ mod system_menu {
     use tehuti_core::menu::Command;
 
     #[test]
-    fn menu_command_receives_the_compositor_socket() {
+    fn menu_command_receives_the_compositor_socket_and_session_display() {
         let directory = tempfile::tempdir().unwrap();
         let capture = directory.path().join("capture");
         let config = directory.path().join("menu.toml");
         std::fs::write(
             &config,
-            r#"task_monitor = ["/bin/sh", "-c", "printf '%s' \"$WAYLAND_DISPLAY\" > \"$TEHUTI_MENU_CAPTURE\""]"#,
+            r#"task_monitor = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY\" > \"$TEHUTI_MENU_CAPTURE\""]"#,
         )
         .unwrap();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
@@ -18,6 +18,7 @@ mod system_menu {
             .env("TEHUTI_MENU_CONFIG", config)
             .env("TEHUTI_MENU_CAPTURE", &capture)
             .env_remove("WAYLAND_DISPLAY")
+            .env("DISPLAY", ":99")
             .output()
             .unwrap();
         assert!(
@@ -27,7 +28,7 @@ mod system_menu {
         );
         assert_eq!(
             std::fs::read_to_string(capture).unwrap(),
-            "example-compositor-socket"
+            "example-compositor-socket :42"
         );
     }
 
@@ -42,6 +43,7 @@ mod system_menu {
             return;
         };
 
+        tehuti::child_process::configure_display(Some(":42".into())).unwrap();
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_launch_socket("example-compositor-socket".into());

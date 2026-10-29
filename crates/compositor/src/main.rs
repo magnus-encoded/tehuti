@@ -9,13 +9,7 @@ mod segv_backtrace;
 mod tty;
 
 use core::{error::Error, time::Duration};
-use std::{
-    collections::BTreeMap,
-    os::fd::AsFd,
-    path::PathBuf,
-    process::{Command, ExitCode},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, os::fd::AsFd, path::PathBuf, process::ExitCode, sync::Arc};
 
 use smithay::{
     reexports::{
@@ -278,11 +272,6 @@ fn start_session(
     compositor.set_decorations(tehuti::decorations::from_env());
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(context_directory)));
     tehuti::wallpaper::set_launch_phrases(tehuti::desktop_hints::launch_phrases(compositor.contexts()))?;
-    install_plugins(
-        &event_loop,
-        std::path::Path::new(context_directory),
-        &mut compositor,
-    )?;
     match tehuti::input_choice_store::Store::from_env() {
         Ok(store) => compositor.load_input_choices(store),
         Err(error) => warn!(%error, "input choices will not be saved"),
@@ -292,6 +281,12 @@ fn start_session(
     }
     let virtual_pad = std::env::var("TEHUTI_VIRTUAL_PAD").ok();
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
+    install_xwayland(&event_loop, &socket_name)?;
+    install_plugins(
+        &event_loop,
+        std::path::Path::new(context_directory),
+        &mut compositor,
+    )?;
     compositor.set_launch_socket(socket_name.clone());
     if let Err(error) = insert_controller_watch(&event_loop) {
         warn!(%error, "controller watch unavailable; periodic discovery continues");
@@ -309,9 +304,8 @@ fn start_session(
 
     let child = program
         .map(|program| {
-            Command::new(program)
+            tehuti::client_env::command(&program, &socket_name)
                 .args(application)
-                .env("WAYLAND_DISPLAY", &socket_name)
                 .spawn()
         })
         .transpose()?;
@@ -343,6 +337,31 @@ fn start_session(
     shut_down(event_loop, data);
     result?;
     Ok(code)
+}
+
+fn install_xwayland(
+    event_loop: &EventLoop<LoopData>,
+    socket: &std::ffi::OsStr,
+) -> Result<(), Box<dyn Error>> {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    let satellite = tehuti::xwayland::discover();
+    tehuti::child_process::configure_display(satellite.as_ref().map(|(_, display)| display.into()))?;
+    if let Some((binary, display)) = satellite {
+        let mut process = tehuti::xwayland::Satellite::new(binary, display, socket.to_owned());
+        process.poll(core::time::Duration::ZERO);
+        let interval = core::time::Duration::from_millis(100);
+        let mut previous = std::time::Instant::now();
+        let _token = event_loop
+            .handle()
+            .insert_source(Timer::from_duration(interval), move |_, (), _| {
+                let now = std::time::Instant::now();
+                process.poll(now.duration_since(previous));
+                previous = now;
+                TimeoutAction::ToDuration(interval)
+            })
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+    }
+    Ok(())
 }
 
 /// The nested renderer unbinds EGL from the `wl_display` when dropped, and the

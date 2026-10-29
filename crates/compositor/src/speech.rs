@@ -5,7 +5,7 @@ use std::{
     ffi::OsString,
     io::{self, Read, Write},
     os::unix::process::CommandExt,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Stdio},
 };
 use tehuti_core::speech::{SpeechEffect, SpeechFailure, SpeechInput};
 use tehuti_protocol::{MAX_MESSAGE_BYTES, Text};
@@ -35,20 +35,18 @@ fn terminate(child: &mut Child) {
 pub struct SpeechProcess {
     command: Vec<OsString>,
     running: Option<Running>,
-    retry: core::time::Duration,
-    failures: usize,
+    restart: crate::child_process::Restart,
     outage: bool,
     notices: VecDeque<&'static str>,
 }
 
 impl SpeechProcess {
     #[must_use]
-    pub const fn new(command: Vec<OsString>) -> Self {
+    pub fn new(command: Vec<OsString>) -> Self {
         Self {
             command,
             running: None,
-            retry: core::time::Duration::ZERO,
-            failures: 0,
+            restart: crate::child_process::Restart::default(),
             outage: false,
             notices: VecDeque::new(),
         }
@@ -64,7 +62,7 @@ impl SpeechProcess {
             .command
             .split_first()
             .ok_or_else(|| io::Error::other("empty speech command"))?;
-        let mut child = Command::new(program)
+        let mut child = crate::child_process::command(program)
             .args(arguments)
             .process_group(0)
             .stdin(Stdio::piped())
@@ -138,15 +136,13 @@ impl SpeechProcess {
             self.outage = true;
             self.notices.push_back("Speech is down, restarting");
         }
-        let seconds = [0, 1, 2, 5, 10, 20].get(self.failures).copied().unwrap_or(30);
-        self.retry = core::time::Duration::from_secs(seconds);
-        self.failures = self.failures.saturating_add(1);
+        self.restart.failed();
     }
 
     /// Polls bounded pipe work and supervises children with capped restart backoff.
     pub fn poll(&mut self, elapsed: core::time::Duration) -> Vec<SpeechInput> {
-        self.retry = self.retry.saturating_sub(elapsed);
-        if self.running.is_none() && self.retry.is_zero() {
+        self.restart.advance(elapsed, self.running.is_some());
+        if self.running.is_none() && self.restart.ready() {
             match self.start() {
                 Ok(running) => {
                     self.running = Some(running);
@@ -163,9 +159,6 @@ impl SpeechProcess {
             return Vec::new();
         };
         running.age = running.age.saturating_add(elapsed);
-        if running.age >= core::time::Duration::from_secs(60) {
-            self.failures = 0;
-        }
         match running.poll() {
             Ok(inputs) => {
                 if self.outage && running.ready {
