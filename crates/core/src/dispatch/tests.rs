@@ -82,7 +82,8 @@ impl World {
                     Effect::WallpaperSave(index) if !self.wallpaper_save_fails => {
                         state = self.run(state, Input::WallpaperSaved(index));
                     }
-                    Effect::SettingsMode(_)
+                    Effect::OpenLauncher(_)
+                    | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::SettingsScale(_)
                     | Effect::WallpaperPreview(_)
@@ -4119,10 +4120,10 @@ fn favourites_do_not_launch_from_back_or_push_to_talk() {
 #[test]
 fn fuzzy_route_reports_the_phrase_and_score_for_logging() {
     let context = tehuti_protocol::parse_context(
-        "app_id = '*'\n[buttons]\n[speech]\n'Åpne Bærekraft.' = { launch = 'garden.desktop' }\n[speech_matching]\nfuzzy = true",
+        "app_id = '*'\n[buttons]\n[speech]\n'Start Bærekraft.' = { launch = 'garden.desktop' }\n[speech_matching]\nfuzzy = true",
     ).unwrap();
     let mut world = World::default();
-    let text = Text::new("Åpne berekraft.".into()).unwrap();
+    let text = Text::new("Start berekraft.".into()).unwrap();
     let _state = world.event(
         configured(vec![context], "editor"),
         Event::Speech { text: text.clone() },
@@ -4135,7 +4136,7 @@ fn fuzzy_route_reports_the_phrase_and_score_for_logging() {
         first: Some(action.clone()),
         plugin: false,
         fuzzy: Some(tehuti_protocol::FuzzyMatch {
-            phrase: "Åpne Bærekraft.".into(),
+            phrase: "Start Bærekraft.".into(),
             action: action.clone(),
             score: 1000
         }),
@@ -4165,5 +4166,158 @@ proptest! {
             ..InputSettings::default()
         };
         prop_assert!(input.controller_label().chars().count() <= 36);
+    }
+}
+
+#[test]
+fn reserved_unit_verbs_request_a_scoped_launcher_before_contexts_or_plugins() {
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'editor'\n[buttons]\n[speech]\n'Open blue bird' = { notify = 'shadow' }",
+    )
+    .unwrap();
+    let state = State::new(crate::State::with_contexts(vec![context]));
+    let mut world = World {
+        plugin_active: true,
+        ..World::default()
+    };
+    let state = world.event(state, focus("editor"));
+    world.trace.clear();
+    let _state = world.event(
+        state,
+        Event::Speech {
+            text: Text::new("Open blue bird".into()).unwrap(),
+        },
+    );
+    assert!(
+        world
+            .trace
+            .contains(&Effect::OpenLauncher(crate::unit_verbs::LauncherRequest {
+                kind: crate::unit_verbs::DestinationKind::Application,
+                query: "blue bird".into(),
+            })),
+        "{:?}",
+        world.trace
+    );
+    assert!(!world.trace.iter().any(|effect| matches!(
+        effect,
+        Effect::DispatchPlugin {
+            event: Event::Speech { .. },
+            ..
+        } | Effect::Apply(_)
+    )));
+}
+
+#[test]
+fn unit_verbs_accept_arbitrary_query_words_and_require_a_whole_prefix() {
+    use crate::unit_verbs::{DestinationKind, LauncherRequest, launcher_request};
+    for (phrase, kind, query) in [
+        ("OPEN blue bird!", DestinationKind::Application, "blue bird"),
+        ("  ÅPNE  blå bok. ", DestinationKind::Application, "blå bok"),
+        (
+            "Work ON unknown project",
+            DestinationKind::Project,
+            "unknown project",
+        ),
+    ] {
+        assert_eq!(
+            launcher_request(phrase),
+            Some(LauncherRequest {
+                kind,
+                query: query.into()
+            })
+        );
+    }
+    for phrase in [
+        "open",
+        "åpne!",
+        "work on",
+        "opening notes",
+        "reopen notes",
+        "work online",
+        "please open notes",
+    ] {
+        assert_eq!(launcher_request(phrase), None, "{phrase}");
+    }
+}
+
+#[test]
+fn reserved_unit_verbs_remain_dictation_in_the_keyboard_and_are_ignored_in_password_fields() {
+    let mut world = World::default();
+    let state = world.event(
+        State::default(),
+        Event::Speech {
+            text: Text::new("keyboard".into()).unwrap(),
+        },
+    );
+    world.trace.clear();
+    let state = world.event(
+        state,
+        Event::Speech {
+            text: Text::new("Open notes".into()).unwrap(),
+        },
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::OpenLauncher(_)))
+    );
+    assert_eq!(state.keyboard().draft(), "Open notes");
+    let state = world.run(
+        state,
+        Input::TextField {
+            active: true,
+            changed: true,
+            kind: crate::keyboard::FieldKind::Password,
+        },
+    );
+    world.trace.clear();
+    let _state = world.event(
+        state,
+        Event::Speech {
+            text: Text::new("Work on notes".into()).unwrap(),
+        },
+    );
+    assert!(world.trace.contains(&Effect::PasswordSpeechIgnored));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::OpenLauncher(_)))
+    );
+}
+
+proptest! {
+    #[test]
+    fn reserved_unit_verbs_cannot_be_shadowed_by_any_context_or_plugin(
+        mut contexts in arbitrary_contexts(),
+        mapping in arbitrary_mapping(),
+        global_mapping in arbitrary_mapping(),
+        plugin_active in any::<bool>(),
+        (phrase, kind) in prop::sample::select(vec![
+            ("Open blue bird", crate::unit_verbs::DestinationKind::Application),
+            ("Åpne blue bird", crate::unit_verbs::DestinationKind::Application),
+            ("Work on blue bird", crate::unit_verbs::DestinationKind::Project),
+        ]),
+    ) {
+        let focused = tehuti_protocol::parse_context(&format!(
+            "app_id = 'editor'\n[buttons]\n[speech]\n'{phrase}' = {mapping}"
+        )).unwrap();
+        let global = tehuti_protocol::parse_context(&format!(
+            "app_id = '*'\n[buttons]\n[speech]\n'{phrase}' = {global_mapping}"
+        )).unwrap();
+        contexts.insert(0, focused);
+        contexts.insert(0, global);
+        let mut world = World { plugin_active, ..World::default() };
+        let _state = world.event(configured(contexts, "editor"), Event::Speech {
+            text: Text::new(phrase.into()).unwrap(),
+        });
+        prop_assert!(world.trace.contains(&Effect::OpenLauncher(
+            crate::unit_verbs::LauncherRequest { kind, query: "blue bird".into() }
+        )), "reserved speech requests the launcher");
+        prop_assert!(!world.trace.iter().any(|effect| matches!(
+            effect,
+            Effect::Apply(_) | Effect::DispatchPlugin { event: Event::Speech { .. }, .. }
+        )), "reserved speech cannot reach mappings or plugins");
     }
 }

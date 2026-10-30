@@ -101,6 +101,7 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    OpenLauncher(crate::unit_verbs::LauncherRequest),
     PasswordSpeechIgnored,
     RunMenuCommand(crate::menu::Command),
     SettingsMode(usize),
@@ -982,6 +983,12 @@ fn speech_effect(state: &mut State, effect: SpeechEffect, effects: &mut Vec<Effe
 }
 
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if let Event::Speech { text } = &event
+        && let Some(request) = crate::unit_verbs::launcher_request(text.as_str())
+    {
+        effects.push(Effect::OpenLauncher(request));
+        return;
+    }
     if let Event::Tick { elapsed } = &event
         && let Takeback::Holding(held) = &mut state.takeback
     {

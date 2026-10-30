@@ -114,6 +114,23 @@ pub fn check(directory: &Path) -> Report {
 
 fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
     let contexts: Vec<_> = loaded.iter().map(|(_, context)| context.clone()).collect();
+    for (path, context) in loaded {
+        let mut reserved: Vec<_> = context
+            .speech_mappings()
+            .filter(|mapping| tehuti_core::unit_verbs::launcher_request(mapping.phrase).is_some())
+            .collect();
+        reserved.sort_by_key(|mapping| mapping.phrase);
+        for mapping in reserved {
+            report.push(
+                path,
+                Severity::Warning,
+                format!(
+                    "[speech] {:?} never fires: core owns this reserved unit verb",
+                    mapping.phrase
+                ),
+            );
+        }
+    }
     for shadowing in shadowed(&contexts) {
         match shadowing {
             Shadowing::Context { context, earlier } => {
