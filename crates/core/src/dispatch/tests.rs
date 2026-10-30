@@ -4366,7 +4366,8 @@ fn launcher_allows_push_to_talk_and_replaces_its_query() {
         }],
         None,
     );
-    let state = world.run(State::default(), Input::Launcher(launcher));
+    let state = world.run(State::default(), Input::Speech(SpeechInput::Available));
+    let state = world.run(state, Input::Launcher(launcher));
     world.trace.clear();
     let state = world.event(
         state,
