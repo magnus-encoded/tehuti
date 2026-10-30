@@ -27,6 +27,7 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    Launcher(crate::launcher::Launcher),
     ChoiceList(crate::choice_list::Slots),
     DisplayModes {
         modes: Vec<String>,
@@ -101,6 +102,7 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    ChooseLauncher(usize),
     OpenLauncher(crate::unit_verbs::LauncherRequest),
     PasswordSpeechIgnored,
     RunMenuCommand(crate::menu::Command),
@@ -244,6 +246,7 @@ pub struct State {
     takeback: Takeback,
     frames: Vec<Frame>,
     settings: Settings,
+    launcher: Option<crate::launcher::Launcher>,
     choice_list: Option<crate::choice_list::List>,
     choice_buttons: Vec<ButtonName>,
     desktop_buttons: Vec<ButtonName>,
@@ -268,6 +271,7 @@ impl State {
             takeback: Takeback::Idle,
             frames: Vec::new(),
             settings: Settings::default(),
+            launcher: None,
             choice_list: None,
             choice_buttons: Vec::new(),
             desktop_buttons: Vec::new(),
@@ -326,14 +330,16 @@ impl State {
     }
 
     #[must_use]
-    pub const fn choice_list(&self) -> Option<&crate::choice_list::List> {
-        self.choice_list.as_ref()
+    pub fn choice_list(&self) -> Option<&crate::choice_list::List> {
+        self.launcher
+            .as_ref()
+            .map(crate::launcher::Launcher::list)
+            .filter(|list| list.is_open())
+            .or(self.choice_list.as_ref())
     }
 
     fn choice_list_open(&self) -> bool {
-        self.choice_list
-            .as_ref()
-            .is_some_and(crate::choice_list::List::is_open)
+        self.choice_list().is_some_and(crate::choice_list::List::is_open)
     }
 
     /// Frames still waiting for replies or resumption.
@@ -419,7 +425,15 @@ fn sync_keyboard_config(state: &mut State) {
 
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
+        Input::Launcher(launcher) => {
+            state.choice_list = None;
+            state.launcher = Some(launcher);
+            let mut effects = Vec::new();
+            release_pad(&mut state, Handoff::Open(Overlay::ChoiceList), &mut effects);
+            (state, effects)
+        }
         Input::ChoiceList(slots) => {
+            state.launcher = None;
             state.choice_list = Some(crate::choice_list::List::new(slots));
             (state, Vec::new())
         }
@@ -467,7 +481,8 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         ],
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
-        Input::ChoiceList(_)
+        Input::Launcher(_)
+        | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
@@ -518,7 +533,8 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
             }
         }
         Input::ControllerDisconnected => disconnect_controller(&mut state, &mut effects),
-        Input::ChoiceList(_)
+        Input::Launcher(_)
+        | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
@@ -572,7 +588,8 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             controller,
             microphone,
         } => state.settings.restore_input(controller, microphone),
-        Input::ChoiceList(_)
+        Input::Launcher(_)
+        | Input::ChoiceList(_)
         | Input::Tick { .. }
         | Input::Event { .. }
         | Input::ClockRead(_)
@@ -974,6 +991,9 @@ fn speech_effect(state: &mut State, effect: SpeechEffect, effects: &mut Vec<Effe
         SpeechEffect::Speech { text, .. } => effects.push(Effect::Handle(Event::Speech { text })),
         SpeechEffect::Failed { session, reason } => effects.push(Effect::SpeechFailed { session, reason }),
         SpeechEffect::Start { .. } | SpeechEffect::Stop { .. } => {
+            if let Some(launcher) = &mut state.launcher {
+                launcher.stop_timer();
+            }
             effects.push(Effect::SpeechCommand(effect));
             if let Some(frame) = state.frames.last_mut() {
                 frame.awaiting = Some(Await::SpeechSent);
@@ -983,6 +1003,9 @@ fn speech_effect(state: &mut State, effect: SpeechEffect, effects: &mut Vec<Effe
 }
 
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if launcher_event(state, &event, effects) {
+        return;
+    }
     if let Event::Speech { text } = &event
         && let Some(request) = crate::unit_verbs::launcher_request(text.as_str())
     {
@@ -1167,7 +1190,17 @@ fn overlay_input(
     effects: &mut Vec<Effect>,
 ) -> bool {
     match layer {
-        Overlay::ChoiceList => choice_list_input(state, event),
+        Overlay::ChoiceList => {
+            if state
+                .launcher
+                .as_ref()
+                .is_some_and(|launcher| launcher.list().is_open())
+            {
+                !matches!(event, Event::Tick { .. }) && launcher_event(state, event, effects)
+            } else {
+                choice_list_input(state, event)
+            }
+        }
         Overlay::Settings => settings_input_layer(state, event, dictation, effects),
         Overlay::SystemMenu => !dictation && system_menu(state, event, effects),
         Overlay::Secret => secret_input(state, event),
@@ -1251,6 +1284,58 @@ fn desktop_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
         state.desktop_buttons.push(*name);
     }
     true
+}
+
+fn launcher_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    let family = state.core.pad_family();
+    let Some(launcher) = state
+        .launcher
+        .as_mut()
+        .filter(|launcher| launcher.list().is_open())
+    else {
+        return false;
+    };
+    match event {
+        Event::Tick { elapsed } => {
+            if let Some(index) = launcher.tick(*elapsed) {
+                effects.push(Effect::ChooseLauncher(index));
+            }
+            false
+        }
+        Event::Speech { text } => {
+            launcher.stop_timer();
+            let request = crate::unit_verbs::launcher_request(text.as_str()).unwrap_or_else(|| {
+                crate::unit_verbs::LauncherRequest {
+                    kind: crate::unit_verbs::DestinationKind::Application,
+                    query: text.as_str().into(),
+                }
+            });
+            effects.push(Effect::OpenLauncher(request));
+            true
+        }
+        Event::Button { name, state: button } => {
+            if state.core.push_to_talk(*name) {
+                launcher.stop_timer();
+                return false;
+            }
+            if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {
+                state.choice_buttons.push(*name);
+                if *name == family.button(crate::pad::Role::Confirm) {
+                    if let Some(index) = launcher.confirm() {
+                        effects.push(Effect::ChooseLauncher(index));
+                    }
+                } else if *name == family.button(crate::pad::Role::Back) {
+                    launcher.cancel();
+                } else if *name == ButtonName::DpadUp {
+                    launcher.move_selection(false);
+                } else if *name == ButtonName::DpadDown {
+                    launcher.move_selection(true);
+                }
+            }
+            true
+        }
+        Event::Focus { .. } => false,
+    }
 }
 
 fn choice_list_input(state: &mut State, event: &Event) -> bool {

@@ -401,6 +401,14 @@ fn parse_ticker_names(names: &std::collections::BTreeMap<String, String>) -> Res
     Ok(parsed)
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LauncherSettings {
+    pub auto_pick: Option<bool>,
+    pub delay_ms: Option<core::num::NonZeroU32>,
+    pub jev: Option<bool>,
+}
+
 /// A mapped phrase as the context file spells it, for display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeechMapping<'context> {
@@ -427,6 +435,7 @@ pub struct Context {
     ticker: TickerConfig,
     ticker_names: Vec<TickerName>,
     speech_matching: SpeechMatching,
+    launcher: LauncherSettings,
     projects: Vec<(String, String)>,
 }
 
@@ -565,6 +574,11 @@ impl Context {
             .iter()
             .find(|entry| entry.key == key && entry.mods == mods)
             .map(|entry| entry.name.as_str())
+    }
+
+    #[must_use]
+    pub const fn launcher(&self) -> &LauncherSettings {
+        &self.launcher
     }
 
     #[must_use]
@@ -745,6 +759,8 @@ struct ContextFile {
     ticker: TickerConfig,
     #[serde(default)]
     speech_matching: SpeechMatching,
+    #[serde(default)]
+    launcher: LauncherSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -862,12 +878,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
     validate_holds(&context)?;
-    if matches!(
-        context.keyboard.button,
-        Some(ButtonName::Guide | ButtonName::Record)
-    ) {
-        return Err("keyboard button cannot reserve Guide or Record".into());
-    }
+    validate_keyboard_button(context.keyboard.button)?;
     validate_app_id(&context.app_id)?;
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
     let mut launch_phrases = Vec::new();
@@ -917,8 +928,16 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         ticker_names: parse_ticker_names(&context.ticker.names)?,
         ticker: context.ticker,
         speech_matching: context.speech_matching,
+        launcher: context.launcher,
         projects: Vec::new(),
     })
+}
+
+fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
+    if matches!(button, Some(ButtonName::Guide | ButtonName::Record)) {
+        return Err("keyboard button cannot reserve Guide or Record".into());
+    }
+    Ok(())
 }
 
 fn normalized_speech_phrase(mapped: &str) -> Result<String, String> {

@@ -67,3 +67,5 @@ pub mod child_process;
 pub mod speech_vocabulary;
 
 pub mod destinations;
+
+pub mod launcher;

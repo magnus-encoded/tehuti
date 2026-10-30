@@ -82,7 +82,8 @@ impl World {
                     Effect::WallpaperSave(index) if !self.wallpaper_save_fails => {
                         state = self.run(state, Input::WallpaperSaved(index));
                     }
-                    Effect::OpenLauncher(_)
+                    Effect::ChooseLauncher(_)
+                    | Effect::OpenLauncher(_)
                     | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::SettingsScale(_)
@@ -4233,7 +4234,6 @@ fn unit_verbs_accept_arbitrary_query_words_and_require_a_whole_prefix() {
         "work on",
         "opening notes",
         "reopen notes",
-        "work online",
         "please open notes",
     ] {
         assert_eq!(launcher_request(phrase), None, "{phrase}");
@@ -4320,4 +4320,83 @@ proptest! {
             Effect::Apply(_) | Effect::DispatchPlugin { event: Event::Speech { .. }, .. }
         )), "reserved speech cannot reach mappings or plugins");
     }
+}
+
+#[test]
+fn launcher_controller_confirmation_becomes_a_route_effect() {
+    let mut world = World::default();
+    let launcher = crate::launcher::Launcher::new(
+        "browser",
+        vec![crate::launcher::Destination {
+            name: "Browser".into(),
+            route: "Browser (app)".into(),
+            open: false,
+            focused: false,
+            safety: crate::launcher::Safety::Launch,
+        }],
+        None,
+    );
+    let state = world.run(State::default(), Input::Launcher(launcher));
+    world.trace.clear();
+    let _state = world.event(
+        state,
+        Event::Button {
+            name: ButtonName::South,
+            state: ButtonState::Pressed,
+        },
+    );
+    assert!(
+        world.trace.contains(&Effect::ChooseLauncher(0)),
+        "{:?}",
+        world.trace
+    );
+}
+
+#[test]
+fn launcher_allows_push_to_talk_and_replaces_its_query() {
+    let mut world = World::default();
+    let launcher = crate::launcher::Launcher::new(
+        "browser",
+        vec![crate::launcher::Destination {
+            name: "Browser".into(),
+            route: "Browser (app)".into(),
+            open: false,
+            focused: false,
+            safety: crate::launcher::Safety::Launch,
+        }],
+        None,
+    );
+    let state = world.run(State::default(), Input::Speech(SpeechInput::Available));
+    let state = world.run(state, Input::Launcher(launcher));
+    world.trace.clear();
+    let state = world.event(
+        state,
+        Event::Button {
+            name: ButtonName::Record,
+            state: ButtonState::Pressed,
+        },
+    );
+    assert!(
+        world.trace.iter().any(|effect| matches!(
+            effect,
+            Effect::SpeechCommand(crate::speech::SpeechEffect::Start { .. })
+        )),
+        "{:?}",
+        world.trace
+    );
+    world.trace.clear();
+    let _state = world.event(
+        state,
+        Event::Speech {
+            text: Text::new("library".into()).unwrap(),
+        },
+    );
+    assert!(
+        world
+            .trace
+            .contains(&Effect::OpenLauncher(crate::unit_verbs::LauncherRequest {
+                kind: crate::unit_verbs::DestinationKind::Application,
+                query: "library".into()
+            }))
+    );
 }

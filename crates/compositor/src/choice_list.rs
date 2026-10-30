@@ -184,6 +184,15 @@ fn paint(canvas: &mut Canvas, list: &List, family: PadFamily) {
         paint_candidate(canvas, list, family, row, y);
         y = y.saturating_add(72);
     }
+    label(
+        canvas,
+        LEFT.saturating_add(INSET),
+        y.saturating_add(36),
+        592,
+        list.footer(),
+        16,
+        DIM,
+    );
     if list.candidates().is_empty() && list.slots().create.is_none() {
         label(
             canvas,
@@ -308,6 +317,24 @@ fn paint_candidate(
     if selected {
         canvas.rectangle(LEFT.saturating_add(12), y, WIDTH.saturating_sub(24), 72, LIVE);
         canvas.rectangle(LEFT.saturating_add(12), y, 8, 72, [230, 215, 178, 255]);
+    }
+    if list
+        .candidates()
+        .first()
+        .is_some_and(|first| first.choice == row.choice)
+        && list.fill() > 0
+    {
+        canvas.rectangle(
+            LEFT.saturating_add(12),
+            y,
+            WIDTH
+                .saturating_sub(24)
+                .saturating_mul(usize::from(list.fill()))
+                .checked_div(1000)
+                .unwrap_or_default(),
+            72,
+            RESULT,
+        );
     }
     let (bright, tail) = row.name_spans();
     canvas.line(

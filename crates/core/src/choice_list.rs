@@ -64,6 +64,8 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct List {
     slots: Slots,
+    footer: String,
+    fill: u16,
     candidates: Vec<Ranked>,
     selected: Option<usize>,
     first: usize,
@@ -124,11 +126,58 @@ impl List {
         };
         Self {
             slots,
+            footer: String::new(),
+            fill: 0,
             candidates,
             selected,
             first: 0,
             outcome: Outcome::Pending,
         }
+    }
+
+    #[must_use]
+    pub fn ordered(slots: Slots) -> Self {
+        let candidates = slots
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| Ranked {
+                candidate: candidate.clone(),
+                choice: Choice::Candidate(index),
+                close: false,
+                split: candidate.name.len(),
+            })
+            .collect();
+        let selected = (!slots.candidates.is_empty()).then_some(0);
+        Self {
+            slots,
+            candidates,
+            selected,
+            first: 0,
+            outcome: Outcome::Pending,
+            footer: String::new(),
+            fill: 0,
+        }
+    }
+
+    pub fn set_scope(&mut self, title: String, scopes: Vec<String>) {
+        self.slots.title = title;
+        self.slots.scopes = scopes;
+    }
+
+    pub fn decorate(&mut self, footer: String, fill: u16) {
+        self.footer = footer;
+        self.fill = fill.min(1000);
+    }
+
+    #[must_use]
+    pub fn footer(&self) -> &str {
+        &self.footer
+    }
+
+    #[must_use]
+    pub const fn fill(&self) -> u16 {
+        self.fill
     }
 
     #[must_use]
