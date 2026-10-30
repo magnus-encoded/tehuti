@@ -2033,6 +2033,7 @@ dependencies = [
  "libc",
  "proptest",
  "rustix 1.1.5",
+ "serde",
  "serde_json",
  "signal-hook",
  "smithay",

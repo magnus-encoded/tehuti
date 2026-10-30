@@ -404,3 +404,37 @@ The global example includes this option as commented lines. An application
 context overrides the global pad policy; its default is normal handling.
 In passthrough mode, app level shoulders stay with the application and the
 tab phrases send no keys.
+
+## Destinations
+
+`destinations.toml` lives beside the top-level `context.toml`. The destination
+table includes installed desktop entries, projects offered by `Work on <project>`
+mappings, and open windows under their titles and bar chip names. Startup and
+context reload rebuild the table; window changes refresh its live routes.
+Each entry records its source. Each route has one or more steps with icons.
+
+Custom names replace generated names, ignoring ASCII case. Extra names offer
+other spellings to speech recognition. For example, one destination can offer
+a native application and a browser route:
+
+```toml
+[[destinations]]
+name = "Library"
+extra_names = ["Books"]
+
+[[destinations.routes]]
+steps = [{ icon = "reader", target = { kind = "desktop", value = "reader.desktop" } }]
+
+[[destinations.routes]]
+steps = [{ icon = "web-browser", target = { kind = "url", value = "https://example.org" } }]
+```
+
+Saying “Save this as Library” saves an application route from the focused
+window's application id. The route survives window closure and session restart;
+it identifies the application rather than its current document. Missing focus,
+invalid configuration and write failures produce notices.
+
+A route can set `context = "terminal"` to limit its vocabulary to that application
+context. Generated project routes use their mapping's context. Destination names
+and extra names join the speech vocabulary; the sidecar keeps its 64-token prompt
+limit. The table does not open destinations or remember route choices.

@@ -270,6 +270,10 @@ fn start_session(
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     compositor.set_decorations(tehuti::decorations::from_env());
+    compositor.configure_destinations(tehuti::destinations::Paths {
+        config: std::path::PathBuf::from(context_directory),
+        ..tehuti::destinations::Paths::default()
+    });
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(context_directory)));
     tehuti::wallpaper::set_launch_phrases(tehuti::desktop_hints::launch_phrases(compositor.contexts()))?;
     match tehuti::input_choice_store::Store::from_env() {

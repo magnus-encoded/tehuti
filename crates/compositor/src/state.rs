@@ -115,6 +115,10 @@ pub struct Compositor {
     notice_text: Option<String>,
     launchers: Vec<std::process::Child>,
     desktop_entries: crate::desktop::EntryCache,
+    destination_paths: crate::destinations::Paths,
+    destinations: crate::destinations::Table,
+    destination_windows: Vec<crate::destinations::Window>,
+    speech_context: Option<String>,
     launch_socket: Option<std::ffi::OsString>,
     layout: tehuti_core::layout::Layout,
     layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
@@ -230,6 +234,10 @@ impl Compositor {
             desktop_entries: crate::desktop::EntryCache::new()?,
             launch_socket: None,
             layout: tehuti_core::layout::Layout::new(tehuti_core::layout::LayoutConfig::default()),
+            destination_paths: crate::destinations::Paths::default(),
+            destinations: crate::destinations::Table::default(),
+            destination_windows: Vec::new(),
+            speech_context: None,
             layout_windows: Vec::new(),
             next_window: 0,
             windows: tehuti_core::windows::Windows::new(),
@@ -269,16 +277,17 @@ impl Compositor {
             locked,
             current,
         });
+        compositor.rebuild_destinations();
         Ok(compositor)
     }
 
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {
-        crate::speech_vocabulary::configure_session_projects(&mut contexts);
+        crate::speech_vocabulary::configure_projects(&mut contexts, &self.destination_paths.projects);
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
         self.window_focus = None;
         self.sync_window_focus();
-        self.refresh_speech_vocabulary();
+        self.rebuild_destinations();
         crate::wallpaper::set_focus(self.dispatch.desktop_focus());
     }
 
@@ -300,13 +309,14 @@ impl Compositor {
     ) {
         match reload {
             Ok(mut contexts) => {
-                crate::speech_vocabulary::configure_session_projects(&mut contexts);
+                crate::speech_vocabulary::configure_projects(&mut contexts, &self.destination_paths.projects);
                 tracing::info!(count = contexts.len(), "contexts reloaded");
                 self.dispatch.core_mut().replace_contexts(contexts);
-                self.refresh_speech_vocabulary();
+                self.sync_destination_windows();
                 crate::wallpaper::set_focus(self.dispatch.desktop_focus());
                 self.update_window_dimming();
                 self.show_notice("CONTEXTS RELOADED");
+                self.rebuild_destinations();
             }
             Err(error) => {
                 tracing::warn!(%error, "context reload failed; keeping the current contexts");
@@ -351,15 +361,63 @@ impl Compositor {
     }
 
     pub fn set_speech(&mut self, mut process: crate::speech::SpeechProcess) {
-        if let Err(error) = process.set_vocabulary(&crate::speech_vocabulary::load(self.contexts())) {
+        if let Err(error) = process.set_vocabulary(&self.destination_vocabulary()) {
             tracing::warn!(%error, "speech vocabulary unavailable");
         }
         self.speech_process = Some(process);
     }
 
+    /// Configures the shell's discovery directories and rebuilds its table.
+    pub fn configure_destinations(&mut self, paths: crate::destinations::Paths) {
+        self.destination_paths = paths;
+        self.rebuild_destinations();
+    }
+
+    #[must_use]
+    pub const fn destinations(&self) -> &crate::destinations::Table {
+        &self.destinations
+    }
+
+    fn rebuild_destinations(&mut self) {
+        let paths = &self.destination_paths;
+        match crate::destinations::Table::read(
+            &paths.config,
+            &paths.projects,
+            &paths.data,
+            self.contexts(),
+            &self.destination_windows,
+        ) {
+            Ok(table) => self.destinations = table,
+            Err(error) => {
+                tracing::warn!(%error, "destination reload failed");
+                self.show_notice("DESTINATION CONFIG ERROR");
+            }
+        }
+        self.refresh_speech_vocabulary();
+    }
+
+    fn destination_vocabulary(&self) -> Vec<String> {
+        let mut words = self.destinations.vocabulary_for(self.speech_context.as_deref());
+        let contexts: Vec<_> = self
+            .contexts()
+            .iter()
+            .filter(|context| {
+                context.app_id() == "*" || Some(context.app_id()) == self.speech_context.as_deref()
+            })
+            .cloned()
+            .collect();
+        let project_names = crate::speech_vocabulary::directory_names(&self.destination_paths.projects);
+        words.extend(
+            crate::speech_vocabulary::load(&contexts)
+                .into_iter()
+                .filter(|word| !project_names.contains(word)),
+        );
+        crate::speech_vocabulary::bounded(words)
+    }
+
     fn refresh_speech_vocabulary(&mut self) {
         if self.speech_process.is_some() {
-            let words = crate::speech_vocabulary::load(self.contexts());
+            let words = self.destination_vocabulary();
             if let Some(process) = &mut self.speech_process
                 && let Err(error) = process.set_vocabulary(&words)
             {
@@ -636,6 +694,18 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if let Event::Speech { text } = event
+            && !self.dispatch.keyboard().is_open()
+            && !self.dispatch.keyboard().password_field_active()
+            && let Some(name) = text
+                .as_str()
+                .get(..13)
+                .filter(|prefix| prefix.eq_ignore_ascii_case("save this as "))
+                .and_then(|_| text.as_str().get(13..))
+        {
+            self.save_destination(name.trim().trim_end_matches(['.', '!', '?']));
+            return;
+        }
         let since_tick = if matches!(event, Event::Focus { .. }) {
             core::time::Duration::ZERO
         } else {
@@ -650,6 +720,10 @@ impl Compositor {
             }
         };
         let _rejection = self.dispatch(input);
+        if let Event::Focus { app_id, .. } = event {
+            self.speech_context.clone_from(app_id);
+            self.refresh_speech_vocabulary();
+        }
     }
 
     /// Feeds one input and every reply it asks for until its frame finishes.
@@ -2079,7 +2153,66 @@ impl Compositor {
         }
     }
 
+    fn save_destination(&mut self, name: &str) {
+        let (app_id, title) = self.focused_window_label();
+        let Some(app_id) = app_id else {
+            self.show_notice("NO FOCUSED WINDOW");
+            return;
+        };
+        let window = crate::destinations::Window {
+            identity: 0,
+            app_id,
+            title: title.unwrap_or_default(),
+            chip: String::new(),
+        };
+        match crate::destinations::save(&self.destination_paths.config, name, &window) {
+            Ok(()) => {
+                self.rebuild_destinations();
+                self.show_notice("DESTINATION SAVED");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "destination save failed");
+                self.show_notice("DESTINATION SAVE FAILED");
+            }
+        }
+    }
+
+    fn sync_destination_windows(&mut self) {
+        let windows: Vec<_> = self
+            .layout_windows
+            .iter()
+            .filter_map(|(identity, window)| {
+                let toplevel = window.toplevel()?;
+                smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                    let attributes = states
+                        .data_map
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()?;
+                    let attributes = attributes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let chip = self.dispatch.core().bar().window_label(
+                        self.dispatch.core().label(attributes.app_id.as_deref()),
+                        attributes.title.as_deref(),
+                        attributes.app_id.as_deref(),
+                    );
+                    Some(crate::destinations::Window {
+                        identity: identity.0,
+                        app_id: attributes.app_id.clone().unwrap_or_default(),
+                        title: attributes.title.clone().unwrap_or_default(),
+                        chip,
+                    })
+                })
+            })
+            .collect();
+        if windows != self.destination_windows {
+            self.destinations.update_windows(&windows);
+            self.destination_windows = windows;
+            self.refresh_speech_vocabulary();
+        }
+    }
+
     fn sync_window_focus(&mut self) {
+        self.sync_destination_windows();
         let identity = self.layout.snapshot().focused_window;
         let focus = self
             .layout_windows
@@ -2381,10 +2514,12 @@ impl XdgShellHandler for Compositor {
     fn new_toplevel(&mut self, _surface: ToplevelSurface) {}
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        self.sync_destination_windows();
         self.update_focus(&surface);
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
+        self.sync_destination_windows();
         if let Some(Event::Focus { app_id, title }) = self.focus_event(&surface) {
             let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
         }
