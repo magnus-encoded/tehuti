@@ -28,7 +28,6 @@ pub fn launcher_request(phrase: &str) -> Option<LauncherRequest> {
         ("åpne ", DestinationKind::Application),
         ("work on ", DestinationKind::Project),
         ("work ", DestinationKind::Project),
-        ("new ", DestinationKind::Creation),
     ]
     .into_iter()
     .find_map(|(verb, kind)| normalized.strip_prefix(verb).map(|query| (kind, query)))?;

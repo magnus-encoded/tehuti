@@ -134,8 +134,8 @@ mod tests {
             Some(DestinationKind::Project)
         );
         assert_eq!(
-            launcher_request("new terminal").map(|request| request.kind),
-            Some(DestinationKind::Creation)
+            launcher_request("new tab").map(|request| request.kind),
+            None
         );
         assert_eq!(
             launcher_request("new").map(|request| request.query),
