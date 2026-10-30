@@ -30,3 +30,5 @@ For a local smoke run, build both binaries with `cargo build --locked -p tehuti
 For a custom Cargo target directory, pass its binary directory instead.
 Promotion can also run as `scripts/promote-release v1.2.0` with an authenticated
 GitHub CLI and the release repository selected.
+
+Pixel comparisons and deliberate golden updates are documented in [Visual regression tests](visual-tests.md).
