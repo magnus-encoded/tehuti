@@ -40,6 +40,8 @@ pub enum Permission {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adjusters: Vec<crate::Adjuster>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "id")]
     pub plugin_id: Option<String>,
@@ -65,6 +67,15 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, String> {
     let manifest: Manifest = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     if manifest.executable.trim().is_empty() || manifest.app_ids.iter().any(|name| name.trim().is_empty()) {
         return Err("executable and application ids must not be empty".into());
+    }
+    let mut names = std::collections::BTreeSet::new();
+    if manifest.adjusters.len() > 32
+        || manifest
+            .adjusters
+            .iter()
+            .any(|adjuster| !names.insert(adjuster.name()))
+    {
+        return Err("adjuster names must be unique, with at most 32 registrations".into());
     }
     Ok(manifest)
 }
@@ -95,12 +106,30 @@ pub struct Initialized {
     deny_unknown_fields
 )]
 pub enum Method {
+    Adjuster {
+        name: String,
+        value: i32,
+        finished: bool,
+    },
     Initialize(Initialize),
-    Button { name: ButtonName, state: ButtonState },
-    Speech { text: crate::Text },
-    Focus { app_id: Option<String>, title: String },
-    Actions { actions: Vec<Action> },
-    SubmitActions { event_id: u64, actions: Vec<Action> },
+    Button {
+        name: ButtonName,
+        state: ButtonState,
+    },
+    Speech {
+        text: crate::Text,
+    },
+    Focus {
+        app_id: Option<String>,
+        title: String,
+    },
+    Actions {
+        actions: Vec<Action>,
+    },
+    SubmitActions {
+        event_id: u64,
+        actions: Vec<Action>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

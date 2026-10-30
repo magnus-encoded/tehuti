@@ -1024,3 +1024,6 @@ fn validate_app_id(app_id: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+mod adjuster;
+pub use adjuster::Adjuster;

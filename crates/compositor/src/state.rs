@@ -93,6 +93,7 @@ pub struct Compositor {
     controller_choice: tehuti_core::dispatch::ControllerChoice,
     controller_names: Vec<String>,
     input_choices: Option<crate::input_choice_store::Store>,
+    volume: Option<crate::volume::Backend>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
     dim_elapsed: core::time::Duration,
@@ -207,6 +208,7 @@ impl Compositor {
             controller_choice: tehuti_core::dispatch::ControllerChoice::Auto,
             controller_names: Vec::new(),
             input_choices: None,
+            volume: None,
             microphone_listing: None,
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
@@ -465,7 +467,8 @@ impl Compositor {
                     .unwrap_or_else(|| "NO SPEECH MAPPING".into())
             }),
             Overlay::MouseNotice => self.mouse_mode.then(|| "MOUSE MODE".into()),
-            Overlay::Cursor
+            Overlay::Adjuster
+            | Overlay::Cursor
             | Overlay::Settings
             | Overlay::ChoiceList
             | Overlay::Bar
@@ -606,7 +609,16 @@ impl Compositor {
     }
     #[must_use]
     pub fn pad_passthrough(&self) -> bool {
-        self.dispatch.core().passthrough()
+        self.dispatch.core().passthrough() && !self.dispatch.adjuster_owns_pad()
+    }
+
+    pub fn set_volume_backend(&mut self, backend: crate::volume::Backend) {
+        self.volume = Some(backend);
+    }
+
+    #[must_use]
+    pub const fn adjuster(&self) -> Option<&tehuti_core::adjuster::Gauge> {
+        self.dispatch.adjuster()
     }
 
     pub fn sample_sticks(&mut self, sticks: tehuti_core::dispatch::Sticks) {
@@ -694,6 +706,13 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if matches!(event, Event::Speech { .. }) {
+            let registrations = self
+                .plugins
+                .as_ref()
+                .map_or_else(Vec::new, crate::plugins::Plugins::adjusters);
+            let _rejection = self.dispatch(DispatchInput::Adjusters(registrations));
+        }
         if let Event::Speech { text } = event
             && !self.dispatch.keyboard().is_open()
             && !self.dispatch.keyboard().password_field_active()
@@ -728,35 +747,7 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
-        let elapsed = match &input {
-            DispatchInput::Tick { elapsed }
-            | DispatchInput::Event { elapsed, .. }
-            | DispatchInput::ClockRead(elapsed) => *elapsed,
-            DispatchInput::ChoiceList(_)
-            | DispatchInput::FocusTitle { .. }
-            | DispatchInput::DisplayModes { .. }
-            | DispatchInput::DisplayScale(_)
-            | DispatchInput::ModeApplied(_)
-            | DispatchInput::Controllers(_)
-            | DispatchInput::Microphones(_)
-            | DispatchInput::InputChoices { .. }
-            | DispatchInput::Speech(_)
-            | DispatchInput::PluginReply { .. }
-            | DispatchInput::PluginExited { .. }
-            | DispatchInput::TextField { .. }
-            | DispatchInput::ControllerDisconnected
-            | DispatchInput::SecretPrompt(_)
-            | DispatchInput::Sticks(_)
-            | DispatchInput::PluginActive(_)
-            | DispatchInput::PluginRequest(_)
-            | DispatchInput::Supervised(_)
-            | DispatchInput::SecretConfirmation(_)
-            | DispatchInput::SpeechSent(_)
-            | DispatchInput::SpeechPolled(_)
-            | DispatchInput::Wallpapers { .. }
-            | DispatchInput::WallpaperSaved(_)
-            | DispatchInput::Resume => core::time::Duration::ZERO,
-        };
+        let elapsed = dispatch_elapsed(&input);
         self.dim_elapsed = self.dim_elapsed.saturating_add(elapsed);
         let level = self.dispatch.core().level();
         let depth = self.dispatch.busy();
@@ -1131,7 +1122,10 @@ impl Compositor {
                 });
                 None
             }
-            effect @ (DispatchEffect::SettingsMode(_)
+            effect @ (DispatchEffect::ReadVolume
+            | DispatchEffect::SetVolume(_)
+            | DispatchEffect::AdjusterValue { .. }
+            | DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
             | DispatchEffect::SettingsScale(_)
             | DispatchEffect::WallpaperPreview(_)
@@ -1205,6 +1199,18 @@ impl Compositor {
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::ReadVolume => self.volume_request(crate::volume::Request::Read),
+            DispatchEffect::SetVolume(value) => self.volume_request(crate::volume::Request::Set(value)),
+            DispatchEffect::AdjusterValue {
+                plugin,
+                name,
+                value,
+                finished,
+            } => {
+                if let Some(plugins) = &mut self.plugins {
+                    plugins.adjuster_value(plugin, name, value, finished);
+                }
+            }
             DispatchEffect::SettingsScale(scale) => self.persist_display_scale(scale),
             DispatchEffect::WallpaperPreview(index) => {
                 if let Err(error) = crate::wallpaper::preview(index) {
@@ -1246,6 +1252,7 @@ impl Compositor {
                 self.poll_launchers();
                 self.desktop_entries.poll();
                 self.poll_microphones();
+                self.poll_volume();
             }
             DispatchEffect::ConfirmPressed(pressed) => self.secret_confirmation.confirm_pressed = pressed,
             DispatchEffect::ResetSecretFocus => {
@@ -2674,6 +2681,87 @@ fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
     tracing::info!(session, text = text.as_str(), "speech transcript received");
     if !admitted {
         tracing::info!("speech transcript dropped for a stale session");
+    }
+}
+
+impl Compositor {
+    fn volume_request(&mut self, request: crate::volume::Request) {
+        if self.volume.is_none() {
+            match crate::volume::Backend::start() {
+                Ok(backend) => self.volume = Some(backend),
+                Err(error) => {
+                    tracing::warn!(%error, "audio worker unavailable");
+                    let _rejection = self.dispatch(DispatchInput::Volume(None));
+                    self.show_notice("VOLUME UNAVAILABLE");
+                    return;
+                }
+            }
+        }
+        if let Some(backend) = &self.volume
+            && let Err(error) = backend.request(request)
+        {
+            tracing::warn!(%error, "audio worker unavailable");
+            self.volume = None;
+            let _rejection = self.dispatch(DispatchInput::Volume(None));
+            self.show_notice("VOLUME UNAVAILABLE");
+        }
+    }
+
+    fn poll_volume(&mut self) {
+        let replies: Vec<_> = self
+            .volume
+            .as_ref()
+            .map_or_else(Vec::new, |backend| backend.poll().collect());
+        for reply in replies {
+            match reply {
+                crate::volume::Reply::Read(result) => {
+                    if let Err(error) = &result {
+                        tracing::warn!(%error, "volume read failed");
+                        self.show_notice("VOLUME UNAVAILABLE");
+                    }
+                    let _rejection = self.dispatch(DispatchInput::Volume(result.ok()));
+                }
+                crate::volume::Reply::Set(Err(error)) => {
+                    tracing::warn!(%error, "volume write failed");
+                    self.show_notice("VOLUME UNAVAILABLE");
+                }
+                crate::volume::Reply::Set(Ok(())) => {}
+            }
+        }
+    }
+}
+
+const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
+    match input {
+        DispatchInput::Tick { elapsed }
+        | DispatchInput::Event { elapsed, .. }
+        | DispatchInput::ClockRead(elapsed) => *elapsed,
+        DispatchInput::Volume(_)
+        | DispatchInput::Adjusters(_)
+        | DispatchInput::ChoiceList(_)
+        | DispatchInput::FocusTitle { .. }
+        | DispatchInput::DisplayModes { .. }
+        | DispatchInput::DisplayScale(_)
+        | DispatchInput::ModeApplied(_)
+        | DispatchInput::Controllers(_)
+        | DispatchInput::Microphones(_)
+        | DispatchInput::InputChoices { .. }
+        | DispatchInput::Speech(_)
+        | DispatchInput::PluginReply { .. }
+        | DispatchInput::PluginExited { .. }
+        | DispatchInput::TextField { .. }
+        | DispatchInput::ControllerDisconnected
+        | DispatchInput::SecretPrompt(_)
+        | DispatchInput::Sticks(_)
+        | DispatchInput::PluginActive(_)
+        | DispatchInput::PluginRequest(_)
+        | DispatchInput::Supervised(_)
+        | DispatchInput::SecretConfirmation(_)
+        | DispatchInput::SpeechSent(_)
+        | DispatchInput::SpeechPolled(_)
+        | DispatchInput::Wallpapers { .. }
+        | DispatchInput::WallpaperSaved(_)
+        | DispatchInput::Resume => core::time::Duration::ZERO,
     }
 }
 

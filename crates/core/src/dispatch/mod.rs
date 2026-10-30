@@ -19,6 +19,9 @@ pub use input_settings::{
 mod settings;
 pub use settings::{Category, Page, Settings};
 
+mod adjustment;
+use adjustment::{adjuster_effect, adjuster_input, adjuster_phrase, adjuster_sticks};
+
 mod mouse;
 pub use mouse::{PointerButton, Sticks};
 
@@ -27,6 +30,8 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    Volume(Option<u8>),
+    Adjusters(Vec<(usize, tehuti_protocol::Adjuster)>),
     ChoiceList(crate::choice_list::Slots),
     DisplayModes {
         modes: Vec<String>,
@@ -101,6 +106,14 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    AdjusterValue {
+        plugin: usize,
+        name: String,
+        value: i32,
+        finished: bool,
+    },
+    ReadVolume,
+    SetVolume(u8),
     PasswordSpeechIgnored,
     RunMenuCommand(crate::menu::Command),
     SettingsMode(usize),
@@ -249,6 +262,10 @@ pub struct State {
     desktop_selection: usize,
     overlay_stack: Vec<Overlay>,
     secret_prompt: SecretPrompt,
+    adjuster: Option<crate::adjuster::Gauge>,
+    volume_pending: crate::adjuster::VolumeRead,
+    adjusters: Vec<(usize, tehuti_protocol::Adjuster)>,
+    adjuster_buttons: Vec<ButtonName>,
 }
 
 impl State {
@@ -273,7 +290,21 @@ impl State {
             desktop_selection: 0,
             overlay_stack: Vec::new(),
             secret_prompt: SecretPrompt::Hidden,
+            adjuster: None,
+            volume_pending: crate::adjuster::VolumeRead::Idle,
+            adjusters: Vec::new(),
+            adjuster_buttons: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn adjuster_owns_pad(&self) -> bool {
+        self.adjuster.is_some() || self.volume_pending == crate::adjuster::VolumeRead::Pending
+    }
+
+    #[must_use]
+    pub const fn adjuster(&self) -> Option<&crate::adjuster::Gauge> {
+        self.adjuster.as_ref()
     }
 
     #[must_use]
@@ -395,6 +426,21 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
         state.passthrough_ptt = false;
         release_held_keys(&mut state, &mut released);
     }
+    if matches!(
+        &input,
+        Input::Event {
+            event: Event::Focus { .. },
+            ..
+        } | Input::ControllerDisconnected
+    ) {
+        if state.volume_pending == crate::adjuster::VolumeRead::Pending {
+            state.volume_pending = crate::adjuster::VolumeRead::Cancelled;
+        }
+        if let Some(mut gauge) = state.adjuster.take() {
+            gauge.revert();
+            released.push(adjuster_effect(&gauge, true));
+        }
+    }
     let (mut state, mut routed) = step_input(state, input);
     let mut effects = released;
     effects.append(&mut routed);
@@ -418,6 +464,16 @@ fn sync_keyboard_config(state: &mut State) {
 
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
+        Input::Adjusters(registrations) => {
+            state.adjusters = registrations;
+            (state, Vec::new())
+        }
+        Input::Volume(value) => {
+            if core::mem::take(&mut state.volume_pending) == crate::adjuster::VolumeRead::Pending {
+                state.adjuster = value.map(crate::adjuster::Gauge::volume);
+            }
+            (state, Vec::new())
+        }
         Input::ChoiceList(slots) => {
             state.choice_list = Some(crate::choice_list::List::new(slots));
             (state, Vec::new())
@@ -466,7 +522,9 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         ],
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
-        Input::ChoiceList(_)
+        Input::Adjusters(_)
+        | Input::Volume(_)
+        | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
@@ -502,7 +560,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
                 SecretPrompt::Hidden
             }
         }
-        Input::Sticks(sticks) => update_sticks(&mut state, *sticks),
+        Input::Sticks(sticks) => adjuster_sticks(&mut state, *sticks, &mut effects),
         Input::TextField {
             active,
             changed,
@@ -517,7 +575,9 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
             }
         }
         Input::ControllerDisconnected => disconnect_controller(&mut state, &mut effects),
-        Input::ChoiceList(_)
+        Input::Adjusters(_)
+        | Input::Volume(_)
+        | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
@@ -571,7 +631,9 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             controller,
             microphone,
         } => state.settings.restore_input(controller, microphone),
-        Input::ChoiceList(_)
+        Input::Adjusters(_)
+        | Input::Volume(_)
+        | Input::ChoiceList(_)
         | Input::Tick { .. }
         | Input::Event { .. }
         | Input::ClockRead(_)
@@ -661,6 +723,15 @@ fn release_pad(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>) {
 
 fn release_layer(state: &mut State, layer: Overlay, handoff: Handoff, effects: &mut Vec<Effect>) {
     match layer {
+        Overlay::Adjuster => {
+            if state.volume_pending == crate::adjuster::VolumeRead::Pending {
+                state.volume_pending = crate::adjuster::VolumeRead::Cancelled;
+            }
+            if let Some(mut gauge) = state.adjuster.take() {
+                gauge.revert();
+                effects.push(adjuster_effect(&gauge, true));
+            }
+        }
         Overlay::Keyboard => {
             if state.keyboard.talking()
                 && let Some(frame) = state.frames.last_mut()
@@ -715,7 +786,7 @@ fn finish_handoff(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>
 }
 
 fn release_passthrough_overlays(state: &mut State, effects: &mut Vec<Effect>) {
-    if state.core.passthrough() {
+    if state.core.passthrough() && !state.adjuster_owns_pad() {
         release_pad(state, Handoff::Passthrough, effects);
     }
 }
@@ -724,6 +795,9 @@ fn open_overlays(state: &State) -> Vec<Overlay> {
     STACK
         .into_iter()
         .filter(|layer| match layer {
+            Overlay::Adjuster => {
+                state.adjuster.is_some() || state.volume_pending == crate::adjuster::VolumeRead::Pending
+            }
             Overlay::Settings => state.settings.open,
             Overlay::ChoiceList => state.choice_list_open(),
             Overlay::SystemMenu => state.core.menu().is_some(),
@@ -992,10 +1066,27 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
             release_pad(state, Handoff::Takeback, effects);
         }
     }
-    if state.core.passthrough() && matches!(event, Event::Button { .. } | Event::Tick { .. }) {
+    if state.core.passthrough()
+        && !state.adjuster_owns_pad()
+        && matches!(event, Event::Button { .. } | Event::Tick { .. })
+    {
         let (next, actions) = crate::step(core::mem::take(&mut state.core), &event);
         state.core = next;
         effects.extend(actions.into_iter().map(Effect::Apply));
+        return;
+    }
+    if let Event::Tick { elapsed } = &event
+        && (state.adjuster.is_some() || state.volume_pending == crate::adjuster::VolumeRead::Pending)
+    {
+        if let Some(actions) = crate::escape_chord(&mut state.core, &event) {
+            effects.extend(actions.into_iter().map(Effect::Apply));
+        }
+        if state.core.menu().is_none()
+            && let Some(gauge) = &mut state.adjuster
+            && gauge.tick(*elapsed)
+        {
+            effects.push(adjuster_effect(gauge, false));
+        }
         return;
     }
     route_tick(state, &event, effects);
@@ -1098,15 +1189,19 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
         name,
         state: ButtonState::Released,
     } = event
-        && (state.choice_buttons.contains(name) || state.desktop_buttons.contains(name))
+        && (state.choice_buttons.contains(name)
+            || state.desktop_buttons.contains(name)
+            || state.adjuster_buttons.contains(name))
     {
+        state.adjuster_buttons.retain(|held| held != name);
         state.choice_buttons.retain(|held| held != name);
         state.desktop_buttons.retain(|held| held != name);
         return true;
     }
     sync_keyboard_config(state);
     let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
-    if settings_phrase(state, event, dictation, effects)
+    if adjuster_phrase(state, event, dictation, effects)
+        || settings_phrase(state, event, dictation, effects)
         || crate::menu_button_release(&mut state.core, event)
         || reserved_safety(state, event, dictation, effects)
     {
@@ -1160,6 +1255,7 @@ fn overlay_input(
     effects: &mut Vec<Effect>,
 ) -> bool {
     match layer {
+        Overlay::Adjuster => adjuster_input(state, event, effects),
         Overlay::ChoiceList => choice_list_input(state, event),
         Overlay::Settings => settings_input_layer(state, event, dictation, effects),
         Overlay::SystemMenu => !dictation && system_menu(state, event, effects),
@@ -1379,7 +1475,10 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         if *button == ButtonState::Pressed {
             state.passthrough_buttons.push(*name);
         }
-        if state.core.passthrough_context() && takeback_button(state, *name, *button, was_held, effects) {
+        if state.core.passthrough_context()
+            && !state.adjuster_owns_pad()
+            && takeback_button(state, *name, *button, was_held, effects)
+        {
             return;
         }
     }
@@ -1451,8 +1550,13 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
         effects.push(Effect::Apply(release));
     }
     if state.core.passthrough() {
-        passthrough_controller(state, event, effects);
-        return;
+        if adjuster_phrase(state, &event, false, effects) {
+            return;
+        }
+        if !state.adjuster_owns_pad() {
+            passthrough_controller(state, event, effects);
+            return;
+        }
     }
     if reserved_input(state, &event, effects) {
         return;
