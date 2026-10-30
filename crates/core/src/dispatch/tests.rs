@@ -4339,6 +4339,31 @@ proptest! {
 }
 
 #[test]
+fn the_invitation_leaves_other_buttons_to_the_desktop() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Launcher(crate::launcher::Launcher::invitation(Some("Share"))),
+    );
+    let state = world.event(
+        state,
+        Event::Button {
+            name: ButtonName::Select,
+            state: ButtonState::Pressed,
+        },
+    );
+    assert!(state.launcher().is_some(), "Select does not close the invitation");
+    let state = world.event(
+        state,
+        Event::Button {
+            name: ButtonName::East,
+            state: ButtonState::Pressed,
+        },
+    );
+    assert!(state.launcher().is_none(), "Back still cancels it");
+}
+
+#[test]
 fn launcher_controller_confirmation_becomes_a_route_effect() {
     let mut world = World::default();
     let launcher = crate::launcher::Launcher::new(

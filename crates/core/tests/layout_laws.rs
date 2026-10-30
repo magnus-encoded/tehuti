@@ -30,6 +30,45 @@ mod layout_laws {
         TileMode, TileView, WindowHeight, WindowId, WindowRules, WorkspaceId, WorkspaceView,
     };
 
+    #[test]
+    fn opening_preview_uses_the_next_window_slot_without_changing_the_layout() {
+        let mut layout = Layout::new(LayoutConfig::default());
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 800.0,
+        };
+        layout
+            .add_output(OutputId(0), OutputGeometry { area, usable: area }, None)
+            .unwrap();
+        for count in 0..5 {
+            let before = layout.snapshot();
+            let preview = layout.preview_window(WindowRules::default()).unwrap();
+            assert_eq!(layout.snapshot(), before);
+            layout
+                .add_window(WindowId(count), WindowRules::default())
+                .unwrap();
+            let snapshot = layout.snapshot();
+            let actual = snapshot
+                .outputs
+                .iter()
+                .flat_map(|output| &output.workspaces)
+                .flat_map(|workspace| &workspace.columns)
+                .flat_map(|column| &column.tiles)
+                .find(|tile| tile.window == WindowId(count))
+                .unwrap()
+                .tile;
+            assert_eq!(preview, actual);
+            if count == 0 {
+                assert!(near(preview.x, 16.0));
+            }
+            if count == 1 {
+                assert!(near(preview.x, 410.666_666_666_666_7));
+            }
+        }
+    }
+
     const EPSILON: f64 = 1e-6;
 
     fn near(left: f64, right: f64) -> bool {

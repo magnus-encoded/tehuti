@@ -144,6 +144,48 @@ impl Canvas {
         }));
     }
 
+    /// Draws `text` with its inked bounds centred on `doubled`, in half reference units.
+    pub(crate) fn centred(&mut self, doubled: (usize, usize), text: &str, size: usize, colour: [u8; 4]) {
+        let centre = (doubled.0 as f32 / 2.0, doubled.1 as f32 / 2.0);
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        layout.append(
+            &[self.font],
+            &TextStyle::with_user_data(text, size as f32 * self.scale.1, 0, colour),
+        );
+        let glyphs = layout.glyphs();
+        let left = glyphs.iter().map(|glyph| glyph.x).fold(f32::MAX, f32::min);
+        let top = glyphs.iter().map(|glyph| glyph.y).fold(f32::MAX, f32::min);
+        let right = glyphs
+            .iter()
+            .map(|glyph| glyph.x + glyph.width as f32)
+            .fold(f32::MIN, f32::max);
+        let bottom = glyphs
+            .iter()
+            .map(|glyph| glyph.y + glyph.height as f32)
+            .fold(f32::MIN, f32::max);
+        let offset_x = centre
+            .0
+            .mul_add(self.scale.0, -f32::midpoint(left, right))
+            .round();
+        let offset_y = centre
+            .1
+            .mul_add(self.scale.1, -f32::midpoint(top, bottom))
+            .round();
+        for glyph in glyphs {
+            let (_, coverage) = self.font.rasterize_config(glyph.key);
+            let origin_x = (glyph.x + offset_x).max(0.0) as usize;
+            let origin_y = (glyph.y + offset_y).max(0.0) as usize;
+            for (index, alpha) in coverage.into_iter().enumerate() {
+                self.blend(
+                    origin_x.saturating_add(index.checked_rem(glyph.width).unwrap_or_default()),
+                    origin_y.saturating_add(index.checked_div(glyph.width).unwrap_or_default()),
+                    glyph.user_data,
+                    f32::from(alpha) / 255.0,
+                );
+            }
+        }
+    }
+
     pub(crate) fn image(&mut self, x: usize, y: usize, image: &image::RgbaImage) {
         for (column, row, pixel) in image.enumerate_pixels() {
             self.blend(

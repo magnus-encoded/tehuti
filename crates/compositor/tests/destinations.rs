@@ -80,7 +80,7 @@ mod destinations {
             .find(|entry| entry.name == "Books")
             .unwrap();
         assert_eq!(window.source, Source::Window);
-        assert_eq!(window.extra_names, ["Chapter one"]);
+        assert_eq!(window.extra_names, ["Chapter one", "Books", "reader"]);
     }
 
     #[test]

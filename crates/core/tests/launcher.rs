@@ -236,4 +236,51 @@ mod tests {
         );
         assert!(!launcher.checks().matched);
     }
+
+    #[test]
+    fn an_existing_instance_ranks_first_by_its_application_name() {
+        let mut launcher = Launcher::new(
+            "kitty",
+            vec![
+                Destination {
+                    name: "kitty".into(),
+                    extra_names: Vec::new(),
+                    route: "kitty (app)".into(),
+                    open: false,
+                    focused: false,
+                    safety: Safety::Launch,
+                },
+                Destination {
+                    name: "~/notes: shell".into(),
+                    extra_names: vec!["kitty".into()],
+                    route: "open window".into(),
+                    open: true,
+                    focused: false,
+                    safety: Safety::Focus,
+                },
+            ],
+            None,
+        );
+        assert_eq!(
+            launcher
+                .list()
+                .candidates()
+                .first()
+                .map(|row| row.candidate.name.as_str()),
+            Some("~/notes: shell")
+        );
+        assert_eq!(launcher.confirm(), Some(1));
+    }
+
+    #[test]
+    fn the_invitation_names_the_push_to_talk_button_or_the_missing_controller() {
+        let invitation = Launcher::invitation(Some("Share"));
+        assert!(invitation.is_invitation());
+        assert!(invitation.list().is_open());
+        assert_eq!(invitation.list().slots().title, "Hold Share and speak");
+        assert_ne!(invitation.footer(), "Nothing found");
+        let typed = Launcher::invitation(None);
+        assert_eq!(typed.list().slots().title, "No controller connected");
+        assert!(!Launcher::new("browser", vec![browser(Safety::Launch)], None).is_invitation());
+    }
 }

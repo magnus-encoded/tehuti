@@ -603,6 +603,31 @@ impl Layout {
         }
         Ok(())
     }
+    /// The slot after opening a window, without changing this layout.
+    #[must_use]
+    pub fn preview_window(&self, rules: WindowRules) -> Option<Rect> {
+        let identity = (0..=u64::MAX).map(WindowId).find(|identity| {
+            self.find_window(*identity).is_none()
+                && !self
+                    .detached
+                    .iter()
+                    .flat_map(|workspace| &workspace.columns)
+                    .flat_map(|column| &column.tiles)
+                    .any(|tile| tile.window == *identity)
+        })?;
+        let mut preview = self.clone();
+        preview.add_window(identity, rules).ok()?;
+        preview
+            .snapshot()
+            .outputs
+            .into_iter()
+            .flat_map(|output| output.workspaces)
+            .flat_map(|workspace| workspace.columns)
+            .flat_map(|column| column.tiles)
+            .find(|tile| tile.window == identity)
+            .map(|tile| tile.tile)
+    }
+
     fn opening_target(&self, rules: &WindowRules) -> Result<(usize, usize, bool), LayoutError> {
         let fallback = self.focused_index().ok_or(LayoutError::NoOutput)?;
         let named = rules.open_on_workspace.as_ref().and_then(|name| {

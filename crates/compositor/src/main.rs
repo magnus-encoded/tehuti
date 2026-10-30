@@ -319,6 +319,7 @@ fn start_session(
         )),
         Err(error) => warn!(%error, "bar font will not be saved"),
     }
+    compositor.enable_invitation();
     compositor.set_decorations(tehuti::decorations::from_env());
     compositor.configure_destinations(tehuti::destinations::Paths {
         config: std::path::PathBuf::from(context_directory),
@@ -418,6 +419,8 @@ fn start_session(
         },
         context_watch: insert_context_watch(&event_loop, std::path::Path::new(context_directory)),
     };
+    sync_controller_names(&mut data);
+    data.compositor.advance_time();
     let result = run(&mut event_loop, &mut data, child);
     let code = data.exit_code();
     shut_down(event_loop, data);

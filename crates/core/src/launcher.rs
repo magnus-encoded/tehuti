@@ -56,6 +56,7 @@ pub struct Launcher {
     interrupted: bool,
     enabled: bool,
     delay: Duration,
+    invitation: bool,
 }
 
 impl Launcher {
@@ -105,9 +106,52 @@ impl Launcher {
             interrupted: false,
             enabled: true,
             delay: Duration::from_secs(5),
+            invitation: false,
         };
         launcher.decorate();
         launcher
+    }
+
+    /// The session-start prompt: nothing is open yet, so speech without a verb opens.
+    /// `button` names this controller's push-to-talk button; `None` means no controller.
+    #[must_use]
+    pub fn invitation(button: Option<&str>) -> Self {
+        let (title, scopes) = button.map_or_else(
+            || {
+                (
+                    "No controller connected".to_owned(),
+                    vec![
+                        "Connect a controller to speak,".to_owned(),
+                        "or type what to open and press Enter.".to_owned(),
+                    ],
+                )
+            },
+            |button| {
+                (
+                    format!("Hold {button} and speak"),
+                    vec![
+                        "Say what to open, for example:".to_owned(),
+                        "“firefox”  ·  “open terminal”  ·  “work on notes”".to_owned(),
+                    ],
+                )
+            },
+        );
+        let mut slots = Slots {
+            title,
+            action: "Open".into(),
+            ..Slots::default()
+        };
+        slots.scopes = scopes;
+        let mut launcher = Self::new("", Vec::new(), None);
+        launcher.list = List::ordered(slots);
+        launcher.invitation = true;
+        launcher.decorate();
+        launcher
+    }
+
+    #[must_use]
+    pub const fn is_invitation(&self) -> bool {
+        self.invitation
     }
 
     pub fn set_scope(&mut self, verb: &str, level: &str, focused_app: Option<&str>) {
@@ -237,7 +281,9 @@ impl Launcher {
 
     #[must_use]
     pub const fn footer(&self) -> &str {
-        if self.indices.is_empty() {
+        if self.invitation {
+            "Nothing is open yet"
+        } else if self.indices.is_empty() {
             "Nothing found"
         } else if !self.enabled {
             "Auto-pick is off"

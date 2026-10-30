@@ -103,4 +103,70 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
         assert_eq!(compositor.visible_notice_text().as_deref(), Some("Route reached"));
         Ok(())
     }
+
+    #[test]
+    fn an_empty_session_starts_on_the_invitation_and_cancel_brings_it_back()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.enable_invitation();
+        compositor.advance_time();
+        let title = |shown: &Compositor| {
+            shown
+                .choice_list()
+                .filter(|list| list.is_open())
+                .map(|list| list.slots().title.clone())
+        };
+        assert_eq!(title(&compositor).as_deref(), Some("No controller connected"));
+        compositor.handle(&Event::Button {
+            name: ButtonName::East,
+            state: ButtonState::Pressed,
+        });
+        compositor.handle(&Event::Button {
+            name: ButtonName::East,
+            state: ButtonState::Released,
+        });
+        compositor.handle(&Event::Tick {
+            elapsed: core::time::Duration::from_millis(16),
+        });
+        assert_eq!(title(&compositor).as_deref(), Some("No controller connected"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_instance_outranks_launching_another() {
+        use tehuti::destinations::{Destination, Route, Source, Step, Target};
+        let route = |target| Route {
+            context: None,
+            steps: vec![Step {
+                icon: "terminal".into(),
+                target,
+            }],
+        };
+        let entries = [
+            Destination {
+                name: "kitty".into(),
+                extra_names: Vec::new(),
+                routes: vec![route(Target::Desktop("kitty.desktop".into()))],
+                source: Source::Desktop,
+            },
+            Destination {
+                name: "~: fish".into(),
+                extra_names: vec!["Terminal".into(), "kitty".into()],
+                routes: vec![route(Target::Window(3))],
+                source: Source::Window,
+            },
+        ];
+        let (rows, routes) = tehuti::launcher::destinations(
+            &entries,
+            tehuti_core::unit_verbs::DestinationKind::Application,
+            None,
+        );
+        let mut launcher = tehuti_core::launcher::Launcher::new("kitty", rows, None);
+        let picked = launcher.confirm().and_then(|index| routes.get(index));
+        assert_eq!(
+            picked.map(|chosen| &chosen.steps[0].target),
+            Some(&Target::Window(3))
+        );
+    }
 }

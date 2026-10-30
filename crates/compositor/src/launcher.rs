@@ -54,6 +54,8 @@ pub fn destinations(
                     .any(|step| matches!(step.target, Target::Action(_) | Target::Menu(_)))
                 {
                     tehuti_core::launcher::Safety::Changes
+                } else if open {
+                    tehuti_core::launcher::Safety::Focus
                 } else {
                     tehuti_core::launcher::Safety::Launch
                 },

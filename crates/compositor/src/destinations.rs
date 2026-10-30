@@ -231,7 +231,11 @@ impl Table {
             }
             self.insert(Destination {
                 name,
-                extra_names: vec![window.title.clone()],
+                extra_names: [&window.title, &window.chip, &window.app_id]
+                    .into_iter()
+                    .filter(|alias| !alias.is_empty())
+                    .cloned()
+                    .collect(),
                 routes: vec![route("application-x-executable", Target::Window(window.identity))],
                 source: Source::Window,
             });

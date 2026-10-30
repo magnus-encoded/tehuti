@@ -33,12 +33,25 @@ const INSET: usize = 24;
 
 #[derive(Debug, Default)]
 pub struct Buffer {
-    cached: Option<(List, PadFamily, (i32, i32), MemoryRenderBuffer)>,
+    cached: Option<Artwork>,
+}
+
+#[derive(Debug)]
+struct Artwork {
+    list: List,
+    family: PadFamily,
+    size: (i32, i32),
+    scale: i32,
+    buffer: MemoryRenderBuffer,
 }
 
 impl Buffer {
     /// # Errors
     /// Returns the renderer's memory import error.
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "overlay placement uses fractional output coordinates"
+    )]
     pub fn element<R>(
         &mut self,
         renderer: &mut R,
@@ -58,31 +71,38 @@ impl Buffer {
         };
         let size = (mode.size.w, mode.size.h);
         let family = compositor.pad_family();
-        if self.cached.as_ref().is_none_or(|(previous, pad, dimensions, _)| {
-            previous != list || *pad != family || *dimensions != size
+        let scale = output.current_scale().integer_scale();
+        if self.cached.as_ref().is_none_or(|previous| {
+            previous.list != *list
+                || previous.family != family
+                || previous.size != size
+                || previous.scale != scale
         }) {
-            self.cached = raster(list, family, size).map(|pixels| {
-                (
-                    list.clone(),
-                    family,
+            self.cached = raster_scaled(list, family, size, scale).map(|pixels| Artwork {
+                list: list.clone(),
+                family,
+                size,
+                scale,
+                buffer: MemoryRenderBuffer::from_slice(
+                    &pixels,
+                    Fourcc::Argb8888,
                     size,
-                    MemoryRenderBuffer::from_slice(
-                        &pixels,
-                        Fourcc::Argb8888,
-                        size,
-                        1,
-                        Transform::Normal,
-                        None,
-                    ),
-                )
+                    1,
+                    Transform::Normal,
+                    None,
+                ),
             });
         }
-        let Some((_, _, _, buffer)) = &self.cached else {
+        let Some(Artwork { buffer, .. }) = &self.cached else {
             return Ok(None);
         };
+        let logical = crate::scale::logical_size(mode.size, output.current_scale().integer_scale());
+        let offset = compositor
+            .launcher_slot()
+            .map_or(0.0, |slot| slot.x - f64::from(logical.w) * 2.0 / 3.0);
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            (0.0, 0.0),
+            (offset * f64::from(output.current_scale().integer_scale()), 0.0),
             buffer,
             None,
             Some(smithay::utils::Rectangle::from_size(
@@ -98,16 +118,36 @@ impl Buffer {
     }
 }
 
-/// Premultiplied BGRA pixels, transparent outside the right-hand column.
+/// Premultiplied BGRA artwork, positioned by the overlay element.
 #[must_use]
 pub fn raster(list: &List, family: PadFamily, size: (i32, i32)) -> Option<Vec<u8>> {
+    raster_scaled(list, family, size, 1)
+}
+
+/// Like [`raster`], for an output whose integer `scale` also scales the bar.
+#[must_use]
+pub fn raster_scaled(list: &List, family: PadFamily, size: (i32, i32), scale: i32) -> Option<Vec<u8>> {
     if !list.is_open() {
         return None;
     }
     let mut canvas = Canvas::new(size)?;
     canvas.reference(1920, 1080);
-    let _layout = paint(&mut canvas, list, family);
+    let bottom = panel_bottom(size, scale)?;
+    let _layout = paint(&mut canvas, list, family, bottom);
     Some(canvas.pixels)
+}
+
+fn panel_bottom(size: (i32, i32), scale: i32) -> Option<usize> {
+    // The bar's physical height in 1080-high reference units, rounded up.
+    let bar = usize::try_from(
+        tehuti_core::bar::HEIGHT
+            .saturating_mul(scale.max(1))
+            .saturating_mul(1080)
+            .saturating_add(size.1.saturating_sub(1))
+            .checked_div(size.1)?,
+    )
+    .ok()?;
+    Some(1080usize.saturating_sub(bar))
 }
 
 fn label(canvas: &mut Canvas, x: usize, y: usize, width: usize, text: &str, size: usize, colour: [u8; 4]) {
@@ -152,26 +192,31 @@ fn border(canvas: &mut Canvas, y: usize, height: usize, colour: [u8; 4], dashed:
     }
 }
 
-fn paint(canvas: &mut Canvas, list: &List, family: PadFamily) -> serde_json::Value {
+const PANEL_TOP: usize = 0;
+const FOOTER: usize = 56;
+
+fn paint(canvas: &mut Canvas, list: &List, family: PadFamily, bottom: usize) -> serde_json::Value {
     let mut row_bounds = Vec::new();
     let scopes = list.slots().scopes.len();
     let header = 84usize.saturating_add(scopes.saturating_mul(24));
     let create_height: usize = if list.slots().create.is_some() { 128 } else { 0 };
-    let rows = list
-        .visible()
-        .len()
-        .max(usize::from(list.slots().create.is_none()));
-    let height = header
-        .saturating_add(create_height)
-        .saturating_add(rows.saturating_mul(72))
-        .saturating_add(68);
+    let height = bottom.saturating_sub(PANEL_TOP);
     panel(canvas, height);
     paint_header(canvas, list, family, header);
     let mut y = 48usize.saturating_add(header);
     paint_create(canvas, list, family, y);
     y = y.saturating_add(create_height);
+    let rows = list.candidates().get(list.visible()).unwrap_or_default();
+    let headings = if list.show_headings() { 56 } else { 0 };
+    let footer_top = bottom.saturating_sub(FOOTER);
+    let row_height = footer_top
+        .saturating_sub(y)
+        .saturating_sub(headings)
+        .checked_div(rows.len())
+        .unwrap_or_default()
+        .max(72);
     let mut section = None;
-    for row in list.candidates().get(list.visible()).unwrap_or_default() {
+    for row in rows {
         if list.show_headings() && section != Some(row.close) {
             let heading = if row.close {
                 &list.slots().closest_heading
@@ -182,31 +227,41 @@ fn paint(canvas: &mut Canvas, list: &List, family: PadFamily) -> serde_json::Val
             y = y.saturating_add(28);
             section = Some(row.close);
         }
-        row_bounds.push(serde_json::json!({"y": y, "height": 72}));
-        paint_candidate(canvas, list, family, row, y);
-        y = y.saturating_add(72);
+        row_bounds.push(serde_json::json!({"y": y, "height": row_height}));
+        paint_candidate(canvas, list, family, row, y, row_height);
+        y = y.saturating_add(row_height);
     }
-    label(
-        canvas,
-        LEFT.saturating_add(INSET),
-        y.saturating_add(36),
-        592,
-        list.footer(),
-        16,
-        DIM,
-    );
+    paint_footer(canvas, list, y, footer_top);
+    serde_json::json!({"reference": [1920, 1080], "panel": {"y": PANEL_TOP, "height": height}, "rows": row_bounds, "rows_bottom": y, "glyphs": canvas.glyphs})
+}
+
+fn paint_footer(canvas: &mut Canvas, list: &List, y: usize, footer_top: usize) {
     if list.candidates().is_empty() && list.slots().create.is_none() {
+        let message = if list.footer().is_empty() {
+            "Nothing found"
+        } else {
+            list.footer()
+        };
         label(
             canvas,
             LEFT.saturating_add(INSET),
             y.saturating_add(18),
             592,
-            "Nothing found",
+            message,
             25,
             DIM,
         );
+    } else {
+        label(
+            canvas,
+            LEFT.saturating_add(INSET),
+            footer_top.saturating_add(18),
+            592,
+            list.footer(),
+            16,
+            DIM,
+        );
     }
-    serde_json::json!({"reference": [1920, 1080], "panel": {"y": 36, "height": height}, "rows": row_bounds, "rows_bottom": y, "glyphs": canvas.glyphs})
 }
 
 /// Layout reported by the same paint pass used for screenshots.
@@ -215,30 +270,42 @@ pub fn scene(list: &List, family: PadFamily, size: (i32, i32)) -> Option<serde_j
     let mut canvas = Canvas::new(size)?;
     canvas.reference(1920, 1080);
     canvas.trace = true;
-    Some(paint(&mut canvas, list, family))
+    Some(paint(&mut canvas, list, family, panel_bottom(size, 1)?))
 }
 
 fn panel(canvas: &mut Canvas, height: usize) {
     for spread in (1usize..=12).rev() {
         canvas.rectangle(
             LEFT.saturating_sub(spread),
-            36usize.saturating_sub(spread),
+            PANEL_TOP.saturating_sub(spread),
             WIDTH.saturating_add(spread),
             height.saturating_add(spread.saturating_mul(2)),
             [0, 0, 0, 4],
         );
     }
-    canvas.rectangle(LEFT, 36, WIDTH, height, [30, 24, 20, 240]);
-    canvas.rectangle(LEFT, 36, 1, height, EDGE);
-    canvas.rectangle(LEFT.saturating_add(WIDTH).saturating_sub(1), 36, 1, height, EDGE);
-    canvas.rectangle(LEFT, 36, WIDTH, 1, EDGE);
-    canvas.rectangle(LEFT, 36usize.saturating_add(height), WIDTH, 1, EDGE);
+    canvas.rectangle(LEFT, PANEL_TOP, WIDTH, height, [30, 24, 20, 240]);
+    canvas.rectangle(LEFT, PANEL_TOP, 1, height, EDGE);
+    canvas.rectangle(
+        LEFT.saturating_add(WIDTH).saturating_sub(1),
+        PANEL_TOP,
+        1,
+        height,
+        EDGE,
+    );
+    canvas.rectangle(LEFT, PANEL_TOP, WIDTH, 1, EDGE);
+    canvas.rectangle(
+        LEFT,
+        PANEL_TOP.saturating_add(height).saturating_sub(1),
+        WIDTH,
+        1,
+        EDGE,
+    );
 }
 
 fn paint_header(canvas: &mut Canvas, list: &List, family: PadFamily, height: usize) {
     canvas.rectangle(
         LEFT.saturating_add(1),
-        37,
+        PANEL_TOP.saturating_add(1),
         WIDTH.saturating_sub(2),
         height,
         [88, 65, 47, 255],
@@ -323,12 +390,21 @@ fn paint_candidate(
     list: &List,
     family: PadFamily,
     row: &tehuti_core::choice_list::Ranked,
-    y: usize,
+    top: usize,
+    height: usize,
 ) {
+    // The 72-unit row content sits in the middle of its equal share of the panel.
+    let y = top.saturating_add(height.saturating_sub(72) / 2);
     let selected = list.selected() == Some(row.choice);
     if selected {
-        canvas.rectangle(LEFT.saturating_add(12), y, WIDTH.saturating_sub(24), 72, LIVE);
-        canvas.rectangle(LEFT.saturating_add(12), y, 8, 72, [230, 215, 178, 255]);
+        canvas.rectangle(
+            LEFT.saturating_add(12),
+            top,
+            WIDTH.saturating_sub(24),
+            height,
+            LIVE,
+        );
+        canvas.rectangle(LEFT.saturating_add(12), top, 8, height, [230, 215, 178, 255]);
     }
     if list
         .candidates()
@@ -338,13 +414,13 @@ fn paint_candidate(
     {
         canvas.rectangle(
             LEFT.saturating_add(12),
-            y,
+            top,
             WIDTH
                 .saturating_sub(24)
                 .saturating_mul(usize::from(list.fill()))
                 .checked_div(1000)
                 .unwrap_or_default(),
-            72,
+            height,
             RESULT,
         );
     }
@@ -388,20 +464,12 @@ fn hint(canvas: &mut Canvas, x: usize, y: usize, hint: &(Piece, &str), family: P
         let colour = [blue, green, red, 255];
         match shape {
             Shape::Disc(letter) if family == PadFamily::Nintendo => {
-                label(canvas, x.saturating_add(5), y, 24, &letter.to_string(), 23, WHITE);
+                canvas.centred(disc_centre(x, y), &letter.to_string(), 23, WHITE);
             }
             Shape::Disc(letter) => {
                 disc(canvas, x, y, colour, false);
                 let before = canvas.trace.then(|| canvas.pixels.clone());
-                label(
-                    canvas,
-                    x.saturating_add(6),
-                    y.saturating_add(1),
-                    22,
-                    &letter.to_string(),
-                    20,
-                    [20, 20, 20, 255],
-                );
+                canvas.centred(disc_centre(x, y), &letter.to_string(), 20, [20, 20, 20, 255]);
                 if let Some(before) = before {
                     canvas.record_glyph(&before, (x, y, 28));
                 }
@@ -437,6 +505,14 @@ fn hint(canvas: &mut Canvas, x: usize, y: usize, hint: &(Piece, &str), family: P
         17,
         WHITE,
     );
+}
+
+/// The middle of the 28-unit disc drawn at (`x`, `y`), doubled: its pixels span 1..=27.
+const fn disc_centre(x: usize, y: usize) -> (usize, usize) {
+    (
+        x.saturating_mul(2).saturating_add(29),
+        y.saturating_mul(2).saturating_add(29),
+    )
 }
 
 fn disc(canvas: &mut Canvas, x: usize, y: usize, colour: [u8; 4], ring: bool) {
