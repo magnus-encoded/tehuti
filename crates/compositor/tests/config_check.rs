@@ -109,6 +109,34 @@ mod config_check {
     }
 
     #[test]
+    fn reserved_unit_verbs_warn_but_unrelated_phrases_remain_reachable() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'OPEN notes' = { key = 'enter' }\n'Åpne notes' = { key = 'enter' }\n'Work on <project>' = { text = 'cd -- {project}' }\n'Open' = { key = 'enter' }\n'Opening notes' = { key = 'enter' }",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+        assert_eq!(report.findings.len(), 3, "{report}");
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.severity == Severity::Warning
+                    && finding.message.contains("reserved unit verb")),
+            "{report}"
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
+            .args(["--check-config".as_ref(), directory.path().as_os_str()])
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8(output.stdout).unwrap().contains("3 warnings"));
+    }
+
+    #[test]
     fn a_clean_directory_has_no_findings() {
         let directory = tempfile::tempdir().unwrap();
         write(

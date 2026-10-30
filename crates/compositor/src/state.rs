@@ -1131,7 +1131,8 @@ impl Compositor {
                 });
                 None
             }
-            effect @ (DispatchEffect::SettingsMode(_)
+            effect @ (DispatchEffect::OpenLauncher(_)
+            | DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
             | DispatchEffect::SettingsScale(_)
             | DispatchEffect::WallpaperPreview(_)
@@ -1205,6 +1206,10 @@ impl Compositor {
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
+            DispatchEffect::OpenLauncher(request) => {
+                tracing::info!(?request.kind, query = request.query, "launcher requested");
+                self.show_notice("LAUNCHER UNAVAILABLE");
+            }
             DispatchEffect::SettingsScale(scale) => self.persist_display_scale(scale),
             DispatchEffect::WallpaperPreview(index) => {
                 if let Err(error) = crate::wallpaper::preview(index) {
