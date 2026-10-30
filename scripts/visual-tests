@@ -115,7 +115,8 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             drive("stop")
             socket = work / "window/tehuti-drive.sock"
             drive("start", str(contexts), "--headless", "--size", "1280x720", "--",
-                  "foot", "--config=/dev/null", "--override=csd.size=0", "--override=csd.border-width=0",
+                  "foot", "--config=/dev/null", "--override=resize-by-cells=no",
+                  "--override=csd.size=0", "--override=csd.border-width=0",
                   "--window-size-pixels=1280x720", "--title=Visual fixture", "sh", "-c", "printf '\\033[?25l'; exec sleep 300")
             drive("wait-for", "/windows/0/mapped", "true")
             capture("bar", lambda s: bool(s["bar"]) and s["windows"][0]["focused"])

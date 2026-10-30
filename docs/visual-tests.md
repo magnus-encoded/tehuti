@@ -5,7 +5,8 @@ Build the binaries with `cargo build --locked -p tehuti --bins`, then run
 The runner needs Python 3, Pillow and foot. It starts private headless test
 sessions at 1280 × 720, scale 1, and stops them when finished. Captures use the
 software renderer, bundled shell font and fixed screenshot clock. The blank
-client uses an empty foot configuration and has no cursor or terminal text.
+client uses an empty foot configuration, disables cell-based window sizing,
+and has no cursor or terminal text. Its geometry is independent of host fonts.
 
 The bar, notice, settings and keyboard have committed PNGs in
 `tests/visual/goldens`. Every colour channel must differ by at most 3 out of 255;
