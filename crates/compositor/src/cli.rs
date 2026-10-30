@@ -4,6 +4,7 @@ use std::ffi::OsString;
 
 pub const USAGE: &str = "\
 usage: tehuti <context-directory> [application] [arguments...]
+       tehuti --test-driver <context-directory> [application] [arguments...]
        tehuti --help | -h
        tehuti --version | -V
        tehuti --check-config [config-directory]

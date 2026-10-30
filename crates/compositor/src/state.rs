@@ -95,6 +95,8 @@ pub struct Compositor {
     input_choices: Option<crate::input_choice_store::Store>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
+    driver_clock: crate::driver::Clock,
+    driver_elapsed: core::time::Duration,
     dim_elapsed: core::time::Duration,
     focus_outline_ids: [smithay::backend::renderer::element::Id; 4],
     popups: smithay::desktop::PopupManager,
@@ -209,6 +211,8 @@ impl Compositor {
             controller_names: Vec::new(),
             input_choices: None,
             microphone_listing: None,
+            driver_clock: crate::driver::Clock::Live,
+            driver_elapsed: core::time::Duration::ZERO,
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
             focus_outline_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
@@ -281,6 +285,80 @@ impl Compositor {
         });
         compositor.rebuild_destinations();
         Ok(compositor)
+    }
+
+    const fn advance_clocks(&mut self, elapsed: core::time::Duration) {
+        self.dim_elapsed = self.dim_elapsed.saturating_add(elapsed);
+        if !matches!(self.driver_clock, crate::driver::Clock::Live) {
+            self.driver_elapsed = self.driver_elapsed.saturating_add(elapsed);
+        }
+    }
+
+    fn clock_now(&self) -> Instant {
+        if matches!(self.driver_clock, crate::driver::Clock::Live) {
+            Instant::now()
+        } else {
+            self.start_time
+                .checked_add(self.driver_elapsed)
+                .unwrap_or(self.start_time)
+        }
+    }
+
+    fn clock_elapsed(&self) -> core::time::Duration {
+        self.clock_now().saturating_duration_since(self.start_time)
+    }
+
+    pub(crate) const fn set_driver_input(&mut self, active: bool) {
+        self.driver_clock = if active {
+            crate::driver::Clock::Synthetic
+        } else {
+            crate::driver::Clock::Manual
+        };
+    }
+
+    pub(crate) const fn use_driver_clock(&mut self) {
+        self.driver_clock = crate::driver::Clock::Manual;
+    }
+
+    pub(crate) fn driver_action(&mut self, action: &Action) {
+        self.apply(action);
+    }
+
+    pub(crate) fn driver_scene(&self) -> serde_json::Value {
+        use serde_json::json;
+        let focused = self.layout.snapshot().focused_window;
+        let windows: Vec<_> = self.layout_windows.iter().map(|(identity, window)| {
+            let (app_id, title) = window.toplevel().and_then(|surface| self.focus_event(surface)).and_then(|event| {
+                if let Event::Focus { app_id, title } = event { Some((app_id, title)) } else { None }
+            }).unwrap_or_default();
+            let location = self.space.element_location(window).unwrap_or_default();
+            let size = window.layout_size();
+            json!({"id": identity.0, "app_id": app_id, "title": title, "mapped": window.mapped(),
+                "focused": focused == Some(*identity), "geometry": {"x": location.x, "y": location.y, "width": size.w, "height": size.h}})
+        }).collect();
+        let launcher = self.choice_list().filter(|list| list.is_open()).map(|list| {
+            let rows: Vec<_> = list
+                .candidates()
+                .iter()
+                .map(|row| json!({"name": row.candidate.name, "meta": row.candidate.meta}))
+                .collect();
+            let selected = match list.selected() {
+                Some(tehuti_core::choice_list::Choice::Candidate(index)) => json!(index),
+                Some(tehuti_core::choice_list::Choice::Create) => json!("create"),
+                None => serde_json::Value::Null,
+            };
+            json!({"rows": rows, "selection": selected})
+        });
+        let bar: Vec<_> = self
+            .voice_bar()
+            .segments()
+            .iter()
+            .map(|segment| segment.text.clone())
+            .collect();
+        json!({"version": 1, "clock_ms": self.driver_elapsed.as_millis(), "windows": windows, "focus": focused.map(|identity| identity.0),
+            "level": format!("{:?}", self.dispatch.core().level()), "launcher": launcher,
+            "overlays": {"keyboard": self.on_screen_keyboard().is_open(), "settings": self.settings().open, "menu": self.dispatch.core().menu().is_some()},
+            "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar})
     }
 
     /// Installs contexts before accepting clients.
@@ -437,7 +515,7 @@ impl Compositor {
 
     #[must_use]
     pub fn speech_notice_visible(&self) -> bool {
-        self.notice_until.is_some_and(|until| Instant::now() < until)
+        self.notice_until.is_some_and(|until| self.clock_now() < until)
     }
 
     #[must_use]
@@ -459,7 +537,7 @@ impl Compositor {
             Overlay::Secret => self.secret_confirmation_text(),
             Overlay::SecretUnavailable => self
                 .secret_notice_until
-                .is_some_and(|until| Instant::now() < until)
+                .is_some_and(|until| self.clock_now() < until)
                 .then(|| "SECRET DELIVERY UNAVAILABLE".into()),
             Overlay::Notice => self.speech_notice_visible().then(|| {
                 self.notice_text
@@ -632,7 +710,7 @@ impl Compositor {
     }
 
     fn pointer_time(&self) -> u32 {
-        u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
+        u32::try_from(self.clock_elapsed().as_millis()).unwrap_or(u32::MAX)
     }
 
     #[expect(
@@ -688,6 +766,9 @@ impl Compositor {
 
     /// Reads the clock once and returns the time since the previous read.
     fn read_clock(&mut self) -> core::time::Duration {
+        if !matches!(self.driver_clock, crate::driver::Clock::Live) {
+            return core::time::Duration::ZERO;
+        }
         let now = Instant::now();
         let elapsed = now.duration_since(self.previous_tick);
         self.previous_tick = now;
@@ -760,7 +841,7 @@ impl Compositor {
             | DispatchInput::WallpaperSaved(_)
             | DispatchInput::Resume => core::time::Duration::ZERO,
         };
-        self.dim_elapsed = self.dim_elapsed.saturating_add(elapsed);
+        self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
         let depth = self.dispatch.busy();
         let mut input = input;
@@ -1110,7 +1191,11 @@ impl Compositor {
                     .map_or_else(Vec::new, crate::plugins::Plugins::supervise),
             )),
             DispatchEffect::ConfirmSecret(state) => Some(DispatchInput::SecretConfirmation(
-                self.handle_secret_confirmation_button(state),
+                if matches!(self.driver_clock, crate::driver::Clock::Synthetic) {
+                    false
+                } else {
+                    self.handle_secret_confirmation_button(state)
+                },
             )),
             DispatchEffect::SpeechCommand(command) => {
                 Some(DispatchInput::SpeechSent(self.send_speech_command(&command)))
@@ -1485,7 +1570,7 @@ impl Compositor {
             .request(
                 reference,
                 destination,
-                self.start_time.elapsed(),
+                self.clock_elapsed(),
                 core::time::Duration::from_secs(20),
             )
             .is_some();
@@ -1514,7 +1599,7 @@ impl Compositor {
             .as_ref()
             .and_then(|(entry, target)| {
                 let destination = self.current_secret_destination()?;
-                let _pending = self.secret_gate.pending(self.start_time.elapsed(), destination)?;
+                let _pending = self.secret_gate.pending(self.clock_elapsed(), destination)?;
                 Some(format!("CONFIRM SECRET: {entry}\nTARGET: {target}"))
             })
     }
@@ -1547,7 +1632,7 @@ impl Compositor {
         };
         if self
             .secret_gate
-            .pending(self.start_time.elapsed(), destination)
+            .pending(self.clock_elapsed(), destination)
             .is_none()
         {
             return false;
@@ -1573,7 +1658,7 @@ impl Compositor {
         let Some(destination) = self.current_secret_destination() else {
             return false;
         };
-        let now = self.start_time.elapsed();
+        let now = self.clock_elapsed();
         let Some(confirmation_id) = self
             .secret_gate
             .pending(now, destination)
@@ -1587,7 +1672,7 @@ impl Compositor {
         self.secret_confirmation_label = None;
         self.sync_secret_prompt();
         let Some(mut provider) = self.secret_provider.take() else {
-            self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+            self.secret_notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
             return true;
         };
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -1602,7 +1687,7 @@ impl Compositor {
                 });
             });
         if spawned.is_err() {
-            self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+            self.secret_notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
             return true;
         }
         self.secret_lookup = Some(receiver);
@@ -1618,7 +1703,7 @@ impl Compositor {
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.secret_lookup = None;
-                self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+                self.secret_notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
                 return;
             }
         };
@@ -1628,7 +1713,7 @@ impl Compositor {
         self.secret_lookup = None;
         self.secret_provider = Some(lookup.provider);
         let Some(secret) = lookup.value.ok() else {
-            self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+            self.secret_notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
             return;
         };
         if self.current_secret_destination() != Some(lookup.authorization.destination) {
@@ -1660,7 +1745,7 @@ impl Compositor {
             },
         );
         if !delivered {
-            self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+            self.secret_notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
         }
     }
 
@@ -1692,7 +1777,8 @@ impl Compositor {
             }
             Action::SecretRequest { reference } => {
                 if !self.request_secret_delivery(reference.clone()) {
-                    self.secret_notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+                    self.secret_notice_until =
+                        self.clock_now().checked_add(core::time::Duration::from_secs(3));
                 }
             }
             Action::Quit => {
@@ -1737,7 +1823,7 @@ impl Compositor {
     fn show_notice(&mut self, text: &str) {
         let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
         self.notice_text = Some(text.into());
-        self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+        self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
     }
 
     fn tap(&mut self, key: KeyName) {
@@ -1940,7 +2026,7 @@ impl Compositor {
     }
 
     fn millis_since_start(&self) -> u32 {
-        u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
+        u32::try_from(self.clock_elapsed().as_millis()).unwrap_or(u32::MAX)
     }
 
     fn apply_layout(&mut self, action: tehuti_protocol::LayoutAction) {
@@ -2248,7 +2334,7 @@ impl Compositor {
 
     fn show_launch_failure(&mut self) {
         self.notice_text = Some("APPLICATION UNAVAILABLE".into());
-        self.notice_until = Instant::now().checked_add(core::time::Duration::from_secs(3));
+        self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
     }
 
     fn poll_launchers(&mut self) {
