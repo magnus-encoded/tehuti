@@ -209,7 +209,8 @@ for line in sys.stdin:
             Effect::SpeechCommand(_) => return Some(Input::SpeechSent(true)),
             Effect::PollSpeech(_) => return Some(Input::SpeechPolled(vec![])),
             Effect::InvalidReply => panic!("valid dispatch replies"),
-            Effect::OpenLauncher(_)
+            Effect::ChooseLauncher(_)
+            | Effect::OpenLauncher(_)
             | Effect::RunMenuCommand(_)
             | Effect::SettingsMode(_)
             | Effect::PersistMode(_)

@@ -117,6 +117,7 @@ pub struct Compositor {
     desktop_entries: crate::desktop::EntryCache,
     destination_paths: crate::destinations::Paths,
     destinations: crate::destinations::Table,
+    launcher_routes: Vec<crate::destinations::Route>,
     destination_windows: Vec<crate::destinations::Window>,
     speech_context: Option<String>,
     launch_socket: Option<std::ffi::OsString>,
@@ -236,6 +237,7 @@ impl Compositor {
             layout: tehuti_core::layout::Layout::new(tehuti_core::layout::LayoutConfig::default()),
             destination_paths: crate::destinations::Paths::default(),
             destinations: crate::destinations::Table::default(),
+            launcher_routes: Vec::new(),
             destination_windows: Vec::new(),
             speech_context: None,
             layout_windows: Vec::new(),
@@ -732,7 +734,8 @@ impl Compositor {
             DispatchInput::Tick { elapsed }
             | DispatchInput::Event { elapsed, .. }
             | DispatchInput::ClockRead(elapsed) => *elapsed,
-            DispatchInput::ChoiceList(_)
+            DispatchInput::Launcher(_)
+            | DispatchInput::ChoiceList(_)
             | DispatchInput::FocusTitle { .. }
             | DispatchInput::DisplayModes { .. }
             | DispatchInput::DisplayScale(_)
@@ -953,7 +956,7 @@ impl Compositor {
     }
 
     #[must_use]
-    pub const fn choice_list(&self) -> Option<&tehuti_core::choice_list::List> {
+    pub fn choice_list(&self) -> Option<&tehuti_core::choice_list::List> {
         self.dispatch.choice_list()
     }
 
@@ -1131,7 +1134,8 @@ impl Compositor {
                 });
                 None
             }
-            effect @ (DispatchEffect::OpenLauncher(_)
+            effect @ (DispatchEffect::ChooseLauncher(_)
+            | DispatchEffect::OpenLauncher(_)
             | DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
             | DispatchEffect::SettingsScale(_)
@@ -1201,14 +1205,124 @@ impl Compositor {
         }
     }
 
+    fn open_launcher(&mut self, request: &tehuti_core::unit_verbs::LauncherRequest) {
+        let focused = self.speech_context.as_deref();
+        let (destinations, routes) =
+            crate::launcher::destinations(self.destinations.entries(), request.kind, focused);
+        self.launcher_routes = routes;
+        let mut launcher = tehuti_core::launcher::Launcher::new(&request.query, destinations, None);
+        let contexts = self.dispatch.core().contexts();
+        let active = contexts
+            .iter()
+            .find(|context| Some(context.app_id()) == focused)
+            .map(tehuti_protocol::Context::launcher);
+        let global = contexts
+            .iter()
+            .find(|context| context.app_id() == "*")
+            .map(tehuti_protocol::Context::launcher);
+        let enabled = active
+            .and_then(|settings| settings.auto_pick)
+            .or_else(|| global.and_then(|settings| settings.auto_pick))
+            .unwrap_or(true);
+        let delay = active
+            .and_then(|settings| settings.delay_ms)
+            .or_else(|| global.and_then(|settings| settings.delay_ms))
+            .map_or(5000, core::num::NonZeroU32::get);
+        launcher.configure(enabled, core::time::Duration::from_millis(u64::from(delay)));
+        let verb = match request.kind {
+            tehuti_core::unit_verbs::DestinationKind::Application => "Open",
+            tehuti_core::unit_verbs::DestinationKind::Project => "Work on",
+            tehuti_core::unit_verbs::DestinationKind::Creation => "New",
+        };
+        let level = match self.dispatch.core().level() {
+            tehuti_core::Level::App => "App",
+            tehuti_core::Level::Columns => "Columns",
+        };
+        launcher.set_scope(verb, level, focused);
+        tracing::info!(query = request.query, rows = ?launcher.list().candidates(), "launcher local ranking");
+        let jev = active
+            .and_then(|settings| settings.jev)
+            .or_else(|| global.and_then(|settings| settings.jev))
+            .unwrap_or(false);
+        let key_present = std::env::var_os("TYPESAFE_API_KEY").is_some_and(|key| !key.is_empty());
+        if let Some(jev_request) = launcher.jev_request(jev, key_present, level, focused) {
+            // The network client is not wired yet; the local ranking stands.
+            tracing::info!(?jev_request, "launcher Jev request skipped: no client");
+        }
+        let _rejection = self.dispatch(DispatchInput::Launcher(launcher));
+    }
+
+    fn follow_launcher_route(&mut self, route: crate::destinations::Route) {
+        use crate::destinations::Target;
+        for step in route.steps {
+            match step.target {
+                Target::Desktop(entry) => {
+                    if let Ok(entry) = tehuti_protocol::Text::new(entry) {
+                        self.launch_application(&entry);
+                    }
+                }
+                Target::Action(action) => {
+                    self.apply(&action);
+                }
+                Target::Window(identity) => {
+                    if let Err(error) = self.layout.focus_window(tehuti_core::layout::WindowId(identity)) {
+                        tracing::warn!(%error, "launcher focus failed");
+                    }
+                    self.place_layout();
+                }
+                Target::Application(app_id) => {
+                    if let Some(window) = self
+                        .destination_windows
+                        .iter()
+                        .find(|window| window.app_id == app_id)
+                    {
+                        let identity = window.identity;
+                        if let Err(error) = self.layout.focus_window(tehuti_core::layout::WindowId(identity))
+                        {
+                            tracing::warn!(%error, "launcher focus failed");
+                        }
+                        self.place_layout();
+                    }
+                }
+                Target::Url(url) => {
+                    let Some(socket) = self.launch_socket.as_deref() else {
+                        self.show_launch_failure();
+                        continue;
+                    };
+                    if self.launchers.len() >= 16 {
+                        self.show_launch_failure();
+                        continue;
+                    }
+                    match crate::client_env::command(std::ffi::OsStr::new("xdg-open"), socket)
+                        .arg(url)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        Ok(child) => self.launchers.push(child),
+                        Err(error) => {
+                            tracing::warn!(%error, "launcher URL failed");
+                            self.show_launch_failure();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Runs an effect that needs no reply; `run_effect` answers the queries.
     #[expect(clippy::too_many_lines, reason = "one flat table of every effect")]
     fn carry_out(&mut self, effect: DispatchEffect) {
         use tehuti_core::speech::SpeechFailure;
         match effect {
             DispatchEffect::OpenLauncher(request) => {
-                tracing::info!(?request.kind, query = request.query, "launcher requested");
-                self.show_notice("LAUNCHER UNAVAILABLE");
+                self.open_launcher(&request);
+            }
+            DispatchEffect::ChooseLauncher(index) => {
+                if let Some(route) = self.launcher_routes.get(index).cloned() {
+                    self.follow_launcher_route(route);
+                }
             }
             DispatchEffect::SettingsScale(scale) => self.persist_display_scale(scale),
             DispatchEffect::WallpaperPreview(index) => {
