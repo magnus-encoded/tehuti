@@ -231,6 +231,10 @@ enum Takeback {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent input-routing facts; launcher_available is temporary until the launcher lands"
+)]
 pub struct State {
     core: crate::State,
     speech: SpeechState,
@@ -250,6 +254,7 @@ pub struct State {
     desktop_selection: usize,
     overlay_stack: Vec<Overlay>,
     secret_prompt: SecretPrompt,
+    launcher_available: bool,
 }
 
 impl State {
@@ -274,7 +279,13 @@ impl State {
             desktop_selection: 0,
             overlay_stack: Vec::new(),
             secret_prompt: SecretPrompt::Hidden,
+            launcher_available: false,
         }
+    }
+
+    /// Lets reserved unit verbs open the launcher instead of reaching context mappings.
+    pub const fn set_launcher_available(&mut self, available: bool) {
+        self.launcher_available = available;
     }
 
     #[must_use]
@@ -983,7 +994,8 @@ fn speech_effect(state: &mut State, effect: SpeechEffect, effects: &mut Vec<Effe
 }
 
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
-    if let Event::Speech { text } = &event
+    if state.launcher_available
+        && let Event::Speech { text } = &event
         && let Some(request) = crate::unit_verbs::launcher_request(text.as_str())
     {
         effects.push(Effect::OpenLauncher(request));

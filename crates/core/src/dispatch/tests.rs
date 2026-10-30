@@ -4175,7 +4175,8 @@ fn reserved_unit_verbs_request_a_scoped_launcher_before_contexts_or_plugins() {
         "app_id = 'editor'\n[buttons]\n[speech]\n'Open blue bird' = { notify = 'shadow' }",
     )
     .unwrap();
-    let state = State::new(crate::State::with_contexts(vec![context]));
+    let mut state = State::new(crate::State::with_contexts(vec![context]));
+    state.set_launcher_available(true);
     let mut world = World {
         plugin_active: true,
         ..World::default()
@@ -4205,6 +4206,37 @@ fn reserved_unit_verbs_request_a_scoped_launcher_before_contexts_or_plugins() {
             ..
         } | Effect::Apply(_)
     )));
+}
+
+#[test]
+fn reserved_unit_verbs_reach_context_mappings_without_a_launcher() {
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'editor'\n[buttons]\n[speech]\n'åpne pokémon rød' = { notify = 'launch' }",
+    )
+    .unwrap();
+    let mut world = World::default();
+    let _state = world.event(
+        configured(vec![context], "editor"),
+        Event::Speech {
+            text: Text::new("åpne pokémon rød".into()).unwrap(),
+        },
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::OpenLauncher(_))),
+        "{:?}",
+        world.trace
+    );
+    assert!(
+        world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(_))),
+        "{:?}",
+        world.trace
+    );
 }
 
 #[test]
@@ -4309,7 +4341,9 @@ proptest! {
         contexts.insert(0, focused);
         contexts.insert(0, global);
         let mut world = World { plugin_active, ..World::default() };
-        let _state = world.event(configured(contexts, "editor"), Event::Speech {
+        let mut state = configured(contexts, "editor");
+        state.set_launcher_available(true);
+        let _state = world.event(state, Event::Speech {
             text: Text::new(phrase.into()).unwrap(),
         });
         prop_assert!(world.trace.contains(&Effect::OpenLauncher(
