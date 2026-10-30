@@ -133,10 +133,7 @@ mod tests {
             launcher_request("work orchid").map(|request| request.kind),
             Some(DestinationKind::Project)
         );
-        assert_eq!(
-            launcher_request("new tab").map(|request| request.kind),
-            None
-        );
+        assert_eq!(launcher_request("new tab").map(|request| request.kind), None);
         assert_eq!(
             launcher_request("new").map(|request| request.query),
             Some(String::new())
