@@ -89,6 +89,10 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: source
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -97,3 +101,11 @@ jobs:
           sha256sum tehuti-*.tar.gz > SHA256SUMS
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
           gh release upload "$TAG" tehuti-*.tar.gz SHA256SUMS --clobber
+          previous=$(git -C source describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          if [ -z "$previous" ] || ! git -C source diff --quiet "$previous" "$TAG" -- sidecars/; then
+            notes=$(gh release view "$TAG" --json body -q .body)
+            case "$notes" in
+              *"sidecar changed"*) ;;
+              *) gh release edit "$TAG" --notes "$(printf '%s\n\nsidecar changed\n' "$notes")" ;;
+            esac
+          fi
