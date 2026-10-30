@@ -12,6 +12,8 @@ use fontdue::{
 )]
 pub(crate) struct Canvas {
     pub(crate) pixels: Vec<u8>,
+    pub(crate) trace: bool,
+    pub(crate) glyphs: Vec<serde_json::Value>,
     width: usize,
     height: usize,
     scale: (f32, f32),
@@ -42,6 +44,8 @@ impl Canvas {
         let font = FONT.as_ref()?;
         Some(Self {
             pixels: vec![0; length],
+            glyphs: Vec::new(),
+            trace: false,
             width,
             height,
             scale: (width as f32 / 1280.0, height as f32 / 720.0),
@@ -57,6 +61,8 @@ impl Canvas {
         }
         Some(Self {
             pixels,
+            glyphs: Vec::new(),
+            trace: false,
             width,
             height,
             scale: (1.0, 1.0),
@@ -106,6 +112,36 @@ impl Canvas {
                 }
             }
         }
+    }
+
+    pub(crate) fn record_glyph(&mut self, before: &[u8], circle: (usize, usize, usize)) {
+        let mut left = self.width;
+        let mut top = self.height;
+        let mut right = 0;
+        let mut bottom = 0;
+        for (index, (old, new)) in before
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(self.pixels.as_chunks::<4>().0.iter())
+            .enumerate()
+        {
+            if old != new {
+                let x = index.checked_rem(self.width).unwrap_or_default();
+                let y = index.checked_div(self.width).unwrap_or_default();
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x.saturating_add(1));
+                bottom = bottom.max(y.saturating_add(1));
+            }
+        }
+        let (x, y, diameter) = circle;
+        self.glyphs.push(serde_json::json!({
+            "ink": [left, top, right, bottom],
+            "circle": [x as f32 * self.scale.0, y as f32 * self.scale.1,
+                x.saturating_add(diameter) as f32 * self.scale.0,
+                y.saturating_add(diameter) as f32 * self.scale.1]
+        }));
     }
 
     pub(crate) fn image(&mut self, x: usize, y: usize, image: &image::RgbaImage) {

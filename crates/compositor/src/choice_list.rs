@@ -106,7 +106,7 @@ pub fn raster(list: &List, family: PadFamily, size: (i32, i32)) -> Option<Vec<u8
     }
     let mut canvas = Canvas::new(size)?;
     canvas.reference(1920, 1080);
-    paint(&mut canvas, list, family);
+    let _layout = paint(&mut canvas, list, family);
     Some(canvas.pixels)
 }
 
@@ -152,7 +152,8 @@ fn border(canvas: &mut Canvas, y: usize, height: usize, colour: [u8; 4], dashed:
     }
 }
 
-fn paint(canvas: &mut Canvas, list: &List, family: PadFamily) {
+fn paint(canvas: &mut Canvas, list: &List, family: PadFamily) -> serde_json::Value {
+    let mut row_bounds = Vec::new();
     let scopes = list.slots().scopes.len();
     let header = 84usize.saturating_add(scopes.saturating_mul(24));
     let create_height: usize = if list.slots().create.is_some() { 128 } else { 0 };
@@ -181,6 +182,7 @@ fn paint(canvas: &mut Canvas, list: &List, family: PadFamily) {
             y = y.saturating_add(28);
             section = Some(row.close);
         }
+        row_bounds.push(serde_json::json!({"y": y, "height": 72}));
         paint_candidate(canvas, list, family, row, y);
         y = y.saturating_add(72);
     }
@@ -204,6 +206,16 @@ fn paint(canvas: &mut Canvas, list: &List, family: PadFamily) {
             DIM,
         );
     }
+    serde_json::json!({"reference": [1920, 1080], "panel": {"y": 36, "height": height}, "rows": row_bounds, "rows_bottom": y, "glyphs": canvas.glyphs})
+}
+
+/// Layout reported by the same paint pass used for screenshots.
+#[must_use]
+pub fn scene(list: &List, family: PadFamily, size: (i32, i32)) -> Option<serde_json::Value> {
+    let mut canvas = Canvas::new(size)?;
+    canvas.reference(1920, 1080);
+    canvas.trace = true;
+    Some(paint(&mut canvas, list, family))
 }
 
 fn panel(canvas: &mut Canvas, height: usize) {
@@ -380,6 +392,7 @@ fn hint(canvas: &mut Canvas, x: usize, y: usize, hint: &(Piece, &str), family: P
             }
             Shape::Disc(letter) => {
                 disc(canvas, x, y, colour, false);
+                let before = canvas.trace.then(|| canvas.pixels.clone());
                 label(
                     canvas,
                     x.saturating_add(6),
@@ -389,6 +402,9 @@ fn hint(canvas: &mut Canvas, x: usize, y: usize, hint: &(Piece, &str), family: P
                     20,
                     [20, 20, 20, 255],
                 );
+                if let Some(before) = before {
+                    canvas.record_glyph(&before, (x, y, 28));
+                }
             }
             Shape::Ring => disc(canvas, x, y, colour, true),
             Shape::Cross => {

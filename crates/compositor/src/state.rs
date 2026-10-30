@@ -347,7 +347,7 @@ impl Compositor {
                 Some(tehuti_core::choice_list::Choice::Create) => json!("create"),
                 None => serde_json::Value::Null,
             };
-            json!({"rows": rows, "selection": selected})
+            json!({"rows": rows, "selection": selected, "layout": self.output.as_ref().and_then(smithay::output::Output::current_mode).and_then(|mode| crate::choice_list::scene(list, self.pad_family(), (mode.size.w, mode.size.h)))})
         });
         let bar: Vec<_> = self
             .voice_bar()

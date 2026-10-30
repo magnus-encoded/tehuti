@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Capture isolated shell scenes and compare their pixels and layout."""
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import time
+
+from PIL import Image, ImageChops, ImageEnhance
+
+ROOT = Path(__file__).resolve().parent.parent
+GOLDENS = ROOT / "tests/visual/goldens"
+PENDING = {"launcher-empty", "launcher-window"}  # #379 owns launcher layout.
+
+
+def compare(actual, expected, diff):
+    with Image.open(actual) as captured, Image.open(expected) as golden:
+        same_size = captured.size == golden.size
+        size = tuple(max(a, b) for a, b in zip(captured.size, golden.size))
+        current = Image.new("RGB", size)
+        baseline = Image.new("RGB", size)
+        current.paste(captured.convert("RGB"))
+        baseline.paste(golden.convert("RGB"))
+        delta = ImageChops.difference(current, baseline)
+        ImageEnhance.Brightness(delta).enhance(8).save(diff)
+        # Every channel of every pixel must remain within three levels.
+        return same_size and max(channel[1] for channel in delta.getextrema()) <= 3
+
+
+def launcher_layout(scene):
+    layout = scene["launcher"]["layout"]
+    assert layout["glyphs"], "launcher must report pad glyphs"
+    for glyph in layout["glyphs"]:
+        ink, circle = glyph["ink"], glyph["circle"]
+        for axis in (0, 1):
+            assert abs((ink[axis] + ink[axis + 2] - circle[axis] - circle[axis + 2]) / 2) <= 1, "glyph off centre"
+    rows = layout["rows"]
+    assert rows, "launcher must have rows"
+    assert len({row["height"] for row in rows}) == 1, "unequal row heights"
+    assert all(a["y"] + a["height"] == b["y"] for a, b in zip(rows, rows[1:])), "gap between rows"
+    panel_bottom = layout["panel"]["y"] + layout["panel"]["height"]
+    assert 1000 <= panel_bottom <= 1040, "panel must end above the bar"
+    assert 0 <= panel_bottom - layout["rows_bottom"] <= 96, "unused space below rows"
+    assert layout["rows_bottom"] >= 950, "rows do not fill panel"
+
+
+def run(args):
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    failures = []
+    with tempfile.TemporaryDirectory(prefix="tehuti-visual-") as temporary:
+        work = Path(temporary)
+        contexts = work / "contexts"
+        contexts.mkdir()
+        (contexts / "context.toml").write_text('app_id = "*"\nbuttons = {}\n')
+        (contexts / "destinations.toml").write_text('''[[destinations]]
+name = "Library"
+[[destinations.routes]]
+steps = [{ icon = "book", target = { kind = "action", value = { type = "notice", text = "Library" } } }]
+[[destinations]]
+name = "Library notes"
+[[destinations.routes]]
+steps = [{ icon = "book", target = { kind = "action", value = { type = "notice", text = "Notes" } } }]
+''')
+        socket = None
+
+        def drive(*command):
+            result = subprocess.run([str(args.binaries.resolve() / "tehuti-drive"), "--socket", str(socket), *command],
+                                    check=True, capture_output=True, text=True, timeout=30,
+                                    env={**os.environ, "XKB_DEFAULT_LAYOUT": "us", "XKB_DEFAULT_VARIANT": "", "XKB_DEFAULT_OPTIONS": ""})
+            return json.loads(result.stdout)
+
+        def capture(name, condition):
+            scene = drive("scene", "--json")
+            (output / f"{name}.json").write_text(json.dumps(scene, indent=2) + "\n")
+            actual = output / f"{name}.png"
+            previous = None
+            stable = 0
+            for _ in range(50):
+                drive("shot", str(actual))
+                pixels = actual.read_bytes()
+                stable = stable + 1 if pixels == previous else 0
+                if stable >= 3:
+                    break
+                previous = pixels
+                time.sleep(0.1)
+            else:
+                raise AssertionError(f"{name}: capture did not settle")
+            assert condition(scene), f"{name}: unexpected scene"
+            if name in PENDING:
+                try:
+                    assert scene["launcher"] is not None, "launcher absent at empty start"
+                    launcher_layout(scene)
+                except AssertionError as error:
+                    print(f"PENDING #379 {name}: {error}")
+                else:
+                    print(f"PENDING #379 {name}: review layout and enable golden")
+                return
+            if name.startswith("launcher-"):
+                launcher_layout(scene)
+            golden = GOLDENS / actual.name
+            if args.update:
+                GOLDENS.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(actual, golden)
+            elif not golden.exists() or not compare(actual, golden, output / f"{name}-diff.png"):
+                failures.append(name)
+
+        try:
+            socket = work / "empty/tehuti-drive.sock"
+            drive("start", str(contexts), "--headless", "--size", "1280x720")
+            capture("launcher-empty", lambda s: not s["windows"])
+            drive("stop")
+            socket = work / "window/tehuti-drive.sock"
+            drive("start", str(contexts), "--headless", "--size", "1280x720", "--",
+                  "foot", "--config=/dev/null", "--override=csd.size=0", "--override=csd.border-width=0",
+                  "--window-size-pixels=1280x720", "--title=Visual fixture", "sh", "-c", "printf '\\033[?25l'; exec sleep 300")
+            drive("wait-for", "/windows/0/mapped", "true")
+            capture("bar", lambda s: bool(s["bar"]) and s["windows"][0]["focused"])
+            focused = drive("scene", "--json")["focus"]
+            drive("say", "open library")
+            drive("wait-for", "/launcher/rows/0/name", '"Library"')
+            capture("launcher-window", lambda s: len(s["launcher"]["rows"]) >= 2 and s["focus"] == focused and any(
+                w["id"] == focused and w["mapped"] for w in s["windows"]))
+            drive("press", "A")
+            drive("wait-for", "/notice", '"Library"')
+            capture("notice", lambda s: s["notice"] == "Library")
+            drive("clock", "advance", "10000")
+            drive("hold", "guide")
+            drive("clock", "advance", "500")
+            drive("release", "guide")
+            drive("wait-for", "/overlays/menu", "true")
+            drive("press", "dpad_up")
+            drive("press", "A")
+            drive("wait-for", "/overlays/settings", "true")
+            capture("settings", lambda s: s["overlays"]["settings"])
+            drive("press", "B")
+            drive("say", "keyboard")
+            drive("wait-for", "/overlays/keyboard", "true")
+            capture("keyboard", lambda s: s["keyboard"])
+        finally:
+            try:
+                if socket:
+                    drive("stop")
+            finally:
+                for log in work.glob("*/session.log"):
+                    shutil.copyfile(log, output / f"{log.parent.name}.log")
+    if failures:
+        raise SystemExit("Visual differences: " + ", ".join(failures))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binaries", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("--update", action="store_true")
+    run(parser.parse_args())
