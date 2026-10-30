@@ -411,7 +411,7 @@ mod level_dim {
     }
 
     #[test]
-    fn choice_list_shows_wallpaper_and_closing_restores_the_application() {
+    fn choice_list_keeps_the_application_visible_until_and_after_closing() {
         scene(1, |compositor, output| {
             let mut capture = Capture::new();
             let point = window_points(compositor)[0];
@@ -421,7 +421,7 @@ mod level_dim {
                 title: "Choose".into(),
                 ..tehuti_core::choice_list::Slots::default()
             });
-            capture.expect(compositor, output, point, [0, 0, 0, 255]);
+            capture.expect(compositor, output, point, before);
             let mut pad = tehuti::input::SyntheticPad::default();
             for state in [ButtonState::Pressed, ButtonState::Released] {
                 pad.push(Event::Button {

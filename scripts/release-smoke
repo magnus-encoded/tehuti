@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 2 ] || { echo 'Usage: release-smoke BIN_DIRECTORY OUTPUT_DIRECTORY' >&2; exit 1; }
+binary=$(realpath "$1")
+mkdir -p "$2"
+output=$(realpath "$2")
+work=$(mktemp -d)
+socket=''
+drive() { "$binary/tehuti-drive" --socket "$socket" "$@"; }
+cleanup() {
+    if [ -n "$socket" ]; then drive stop || true; fi
+    cp "$work"/*/session.log "$output/" 2>/dev/null || true
+    rm -rf "$work"
+}
+trap cleanup EXIT
+mkdir "$work/contexts"
+printf 'app_id = "*"\n' > "$work/contexts/context.toml"
+cat > "$work/contexts/destinations.toml" <<'TOML'
+[[destinations]]
+name = "Library"
+[[destinations.routes]]
+steps = [{ icon = "book", target = { kind = "action", value = { type = "notice", text = "Library" } } }]
+TOML
+socket="$work/start/tehuti-drive.sock"
+drive start "$work/contexts" --headless --size 1280x720
+drive wait-for /windows '[]'
+drive shot "$output/start-screen.png"
+drive stop
+socket="$work/window/tehuti-drive.sock"
+drive start "$work/contexts" --headless --size 1280x720 -- foot --title 'Release smoke' sh -c 'printf "Release smoke\\n"; exec sleep 300'
+drive wait-for /windows/0/mapped true
+sleep 1
+drive shot "$output/bar.png"
+drive say 'open library'
+drive wait-for /launcher/rows/0/name '"Library"'
+drive shot "$output/launcher.png"
+python3 - "$output" <<'PYTHON'
+from pathlib import Path
+from PIL import Image
+import sys
+
+directory = Path(sys.argv[1])
+with Image.open(directory / "bar.png") as bar, Image.open(directory / "launcher.png") as launcher:
+    pixel = bar.getpixel((100, 100))
+    if pixel[:3] == (0, 0, 0) or launcher.getpixel((100, 100)) != pixel:
+        raise SystemExit("Launcher must leave the terminal visible")
+PYTHON
+drive press B
+drive hold guide
+drive clock advance 500
+drive release guide
+drive wait-for /overlays/menu true
+drive press dpad_up
+drive press A
+drive wait-for /overlays/settings true
+drive shot "$output/settings.png"
+drive press B
+drive say keyboard
+drive wait-for /overlays/keyboard true
+drive shot "$output/keyboard.png"

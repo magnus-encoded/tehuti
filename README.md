@@ -10,6 +10,9 @@ uses CPU pixman rendering with shared-memory clients. GPU rendering supports
 client dma-bufs in both the login session and nested mode, including render-node
 feedback when EGL exposes it. Legacy `wl_drm` is enabled when EGL supports it.
 
+See [the release channel](docs/releases.md) for candidate screenshots, promotion
+and installing promoted builds.
+
 ## Try it
 
 Run `scripts/try` from a terminal in your desktop. It builds Tehuti, sets up the

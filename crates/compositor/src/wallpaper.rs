@@ -853,16 +853,14 @@ where
         .iter()
         .map(OutputRenderElements::Custom)
         .collect::<Vec<_>>();
-    if compositor.choice_list().is_none_or(|list| !list.is_open()) {
-        let space = space_render_elements(renderer, [&compositor.space], output, 1.0)?;
-        elements.extend(
-            compositor
-                .focus_outline(output)
-                .into_iter()
-                .map(OutputRenderElements::Focus),
-        );
-        elements.extend(space.into_iter().map(OutputRenderElements::Space));
-    }
+    let space = space_render_elements(renderer, [&compositor.space], output, 1.0)?;
+    elements.extend(
+        compositor
+            .focus_outline(output)
+            .into_iter()
+            .map(OutputRenderElements::Focus),
+    );
+    elements.extend(space.into_iter().map(OutputRenderElements::Space));
     if let Some(background) = background {
         elements.push(OutputRenderElements::Wallpaper(WallpaperElement(background)));
     }

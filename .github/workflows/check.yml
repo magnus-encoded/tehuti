@@ -14,9 +14,18 @@ jobs:
         with:
           components: clippy, rustfmt
           targets: i686-unknown-linux-gnu
-      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev python3
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev python3 python3-pil foot
       - uses: Swatinem/rust-cache@v2
       - run: XDG_RUNTIME_DIR=/tmp scripts/check
+      - name: Release smoke
+        run: |
+          cargo build --locked -p tehuti --bins
+          scripts/release-smoke target/debug smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-smoke
+          path: smoke/
       - name: Install i686 dependencies
         run: |
           sudo dpkg --add-architecture i386
