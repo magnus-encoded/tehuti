@@ -30,6 +30,7 @@ mod json {
             round_trip(&SecretReference { entry });
             let events: Vec<_> = subscriptions.into_iter().map(|focus| if focus { Subscription::Focus } else { Subscription::Button }).collect();
             let manifest = Manifest {
+                adjusters: Vec::new(),
                 plugin_id, author, security_contact, executable, app_ids, events: events.clone(),
                 start: if always { StartPolicy::Always } else { StartPolicy::OnFocus },
                 permissions: permissions.into_iter().map(|permission| match permission { 0 => Permission::Key, 1 => Permission::Text, _ => Permission::Quit }).collect(),
@@ -125,5 +126,21 @@ mod notice_wire {
         let notice: tehuti_protocol::Action =
             serde_json::from_str(r#"{"type":"notice","text":"Ready"}"#).unwrap();
         assert!(matches!(notice, tehuti_protocol::Action::Notice { .. }));
+    }
+}
+
+#[cfg(test)]
+mod adjuster_tests {
+
+    #[test]
+    fn adjuster_registration_rejects_invalid_ranges_and_reserved_names() {
+        for registration in [
+            r#"{"name":"contrast","minimum":10,"maximum":0,"value":5}"#,
+            r#"{"name":"contrast","minimum":0,"maximum":100,"value":101}"#,
+            r#"{"name":"volume","minimum":0,"maximum":100,"value":50}"#,
+            r#"{"name":"","minimum":0,"maximum":100,"value":50}"#,
+        ] {
+            assert!(serde_json::from_str::<tehuti_protocol::Adjuster>(registration).is_err());
+        }
     }
 }

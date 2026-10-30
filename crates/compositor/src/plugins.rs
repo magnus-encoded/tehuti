@@ -504,6 +504,63 @@ impl core::fmt::Debug for Plugins {
 }
 
 impl Plugins {
+    pub(crate) fn adjusters(&self) -> Vec<(usize, tehuti_protocol::Adjuster)> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                self.focus
+                    .as_ref()
+                    .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id))
+                    && entry
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.borrow().status == Status::Ready)
+            })
+            .flat_map(|entry| {
+                entry
+                    .manifest
+                    .adjusters
+                    .iter()
+                    .cloned()
+                    .map(|spec| (entry.plugin, spec))
+            })
+            .collect()
+    }
+
+    pub(crate) fn adjuster_value(&mut self, plugin: usize, name: String, value: i32, finished: bool) {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.plugin == plugin) else {
+            return;
+        };
+        let Some(spec) = entry
+            .manifest
+            .adjusters
+            .iter_mut()
+            .find(|spec| spec.name() == name)
+        else {
+            return;
+        };
+        spec.set_value(value);
+        if let Some(session) = &entry.session {
+            let mut session = session.borrow_mut();
+            if session.status == Status::Ready {
+                if let Err(error) = session.queue(&Call {
+                    jsonrpc: RpcVersion::Two,
+                    request_id: None,
+                    method: Method::Adjuster {
+                        name,
+                        value,
+                        finished,
+                    },
+                }) {
+                    tracing::warn!(%error, "plugin adjuster update dropped");
+                }
+                if let Some(wake) = &entry.wake {
+                    wake();
+                }
+            }
+        }
+    }
+
     #[must_use]
     pub fn initialized_count(&self) -> usize {
         self.entries
@@ -949,6 +1006,7 @@ thread_local! {
 
 fn fuzz_session() -> io::Result<Session> {
     let manifest = Manifest {
+        adjusters: Vec::new(),
         plugin_id: None,
         author: None,
         security_contact: None,
@@ -1050,6 +1108,7 @@ mod tests {
     #[test]
     fn plugins_cannot_request_secret_delivery() {
         let manifest = Manifest {
+            adjusters: Vec::new(),
             plugin_id: None,
             author: None,
             security_contact: None,
@@ -1075,6 +1134,7 @@ mod tests {
 
         fn manifest(index: usize) -> Manifest {
             Manifest {
+                adjusters: Vec::new(),
                 plugin_id: None,
                 author: None,
                 security_contact: None,

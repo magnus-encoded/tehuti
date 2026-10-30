@@ -145,8 +145,52 @@ for line in sys.stdin:
         )
     }
 
+    #[test]
+    fn registered_adjusters_deliver_previews_and_reverts_without_button_requests() {
+        let mut manifest = manifest();
+        manifest.adjusters = vec![
+            serde_json::from_value(serde_json::json!({
+                "name": "contrast", "minimum": 0, "maximum": 200, "value": 80
+            }))
+            .unwrap(),
+        ];
+        let mut harness = Harness::new(&manifest, "empty", 0, "json");
+        harness.ready();
+        harness.compositor.handle(&Event::Speech {
+            text: tehuti_protocol::Text::new("contrast".into()).unwrap(),
+        });
+        assert_eq!(harness.compositor.adjuster().unwrap().value(), 80);
+        harness.compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+            left: (0, -1000),
+            right: (0, 0),
+        });
+        harness.compositor.handle(&Event::Tick {
+            elapsed: Duration::from_millis(100),
+        });
+        assert_eq!(harness.compositor.adjuster().unwrap().value(), 90);
+        harness.compositor.handle(&Event::Button {
+            name: ButtonName::East,
+            state: ButtonState::Pressed,
+        });
+        harness.pump_until(|harness| {
+            harness
+                .received()
+                .iter()
+                .any(|message| message["method"] == "adjuster" && message["params"]["finished"] == true)
+        });
+        let received = harness.received();
+        assert!(received.iter().any(|message| message["method"] == "adjuster"
+            && message["params"]["value"] == 90
+            && message["params"]["finished"] == false));
+        assert!(received.iter().any(|message| message["method"] == "adjuster"
+            && message["params"]["value"] == 80
+            && message["params"]["finished"] == true));
+        assert!(!received.iter().any(|message| message["method"] == "button"));
+    }
+
     fn manifest() -> Manifest {
         Manifest {
+            adjusters: Vec::new(),
             plugin_id: None,
             author: None,
             security_contact: None,
@@ -211,6 +255,9 @@ for line in sys.stdin:
             Effect::InvalidReply => panic!("valid dispatch replies"),
             Effect::ChooseLauncher(_)
             | Effect::OpenLauncher(_)
+            | Effect::ReadVolume
+            | Effect::SetVolume(_)
+            | Effect::AdjusterValue { .. }
             | Effect::RunMenuCommand(_)
             | Effect::SettingsMode(_)
             | Effect::PersistMode(_)

@@ -442,3 +442,37 @@ the core requests Quit and terminates the plugin during teardown.
 For a runnable button remapping plugin, see
 [east-to-tab.py](../../examples/plugins/east-to-tab.py). No Tehuti library is
 required: use your language's JSON library and line input/output.
+
+## Controller adjusters
+
+A manifest can register up to 32 named adjusters ahead of time:
+
+```json
+"adjusters": [{"name":"contrast","minimum":0,"maximum":200,"value":80}]
+```
+
+Names normalize like speech phrases, must be unique within the manifest and
+contain at most 24 characters after normalization. `volume` is reserved.
+Ranges use signed 32-bit integers, with `minimum < maximum` and `value` inside
+the range. Unknown fields and invalid ranges reject the manifest.
+
+Saying a registered name opens its gauge when exactly one initialized plugin
+for the focused application supplies that name. The left stick's vertical axis
+adjusts the value, at up to half the range per second. Returning the stick to
+rest or pressing South commits; East reverts to the opening value. Focus loss,
+a controller disconnect or a higher overlay reverts. Buttons stay consumed
+through release. The core runs the loop without requesting plugin decisions.
+The registering plugin receives notices for previews and completion:
+
+```json
+{"jsonrpc":"2.0","method":"adjuster","params":{"name":"contrast","value":90,"finished":false}}
+{"jsonrpc":"2.0","method":"adjuster","params":{"name":"contrast","value":80,"finished":true}}
+```
+
+A completion carries the committed or reverted value. The next opening starts
+at that value. Plugins that register no adjusters receive no adjuster notices.
+
+Saying `volume` opens the built-in 0–100 percent adjuster. The compositor uses
+`wpctl` to read and preview the default audio sink volume on a worker thread.
+Failed commands show `VOLUME UNAVAILABLE`; input routing keeps running. The
+gauge appears above the bar. Speech inside the keyboard remains dictation.
