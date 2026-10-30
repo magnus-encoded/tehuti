@@ -131,6 +131,7 @@ pub struct Compositor {
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
     keyboard: KeyboardHandle<Self>,
+    window_focus: Option<(WlSurface, Option<String>)>,
     controller_session: tehuti_core::controller::State,
     seat: Seat<Self>,
     shortcut_keycodes: Vec<(Keycode, u32)>,
@@ -216,6 +217,7 @@ impl Compositor {
                 tehuti_core::secret::DenySecretProvider,
             ))),
             secret_lookup: None,
+            window_focus: None,
             secret_focus_generation: 0,
             secret_surface_id: 0,
             secret_focus_surface: None,
@@ -274,6 +276,8 @@ impl Compositor {
     pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {
         crate::speech_vocabulary::configure_session_projects(&mut contexts);
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
+        self.window_focus = None;
+        self.sync_window_focus();
         self.refresh_speech_vocabulary();
         crate::wallpaper::set_focus(self.dispatch.desktop_focus());
     }
@@ -2093,7 +2097,7 @@ impl Compositor {
             if let Some(toplevel) = window.toplevel() {
                 self.update_focus(toplevel);
             }
-        } else {
+        } else if self.window_focus.take().is_some() {
             self.dispatch.core_mut().set_context_ancestors(None, Vec::new());
             self.handle(&Event::Focus {
                 app_id: None,
@@ -2105,6 +2109,11 @@ impl Compositor {
     fn update_focus(&mut self, surface: &ToplevelSurface) {
         if let Some(event) = self.focus_event(surface) {
             if let Event::Focus { app_id, .. } = &event {
+                let focus = (surface.wl_surface().clone(), app_id.clone());
+                if self.window_focus.as_ref() == Some(&focus) {
+                    return;
+                }
+                self.window_focus = Some(focus);
                 let windows = self
                     .layout_windows
                     .iter()
@@ -2234,6 +2243,13 @@ impl CompositorHandler for Compositor {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+        let previous = self
+            .window_for_root(&root)
+            .map(|window| (window.client_geometry(), window.mapped()));
         on_commit_buffer_handler::<Self>(surface);
         self.popups.commit(surface);
         if let Some(smithay::desktop::PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
@@ -2245,10 +2261,6 @@ impl CompositorHandler for Compositor {
         self.popups.cleanup();
         if is_sync_subsurface(surface) {
             return;
-        }
-        let mut root = surface.clone();
-        while let Some(parent) = get_parent(&root) {
-            root = parent;
         }
         if self.window_for_root(&root).is_none()
             && let Some(toplevel) = self
@@ -2262,7 +2274,9 @@ impl CompositorHandler for Compositor {
         }
         if let Some(window) = self.window_for_root(&root).cloned() {
             window.on_commit();
-            self.place_layout();
+            if previous != Some((window.client_geometry(), window.mapped())) {
+                self.place_layout();
+            }
             if let Some(toplevel) = window.toplevel()
                 && !toplevel.is_initial_configure_sent()
             {

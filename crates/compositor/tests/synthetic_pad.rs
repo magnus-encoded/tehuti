@@ -1795,6 +1795,105 @@ mod synthetic_pad {
         worker
     }
 
+    fn run_committing_windows(
+        client: UnixStream,
+        receive: &mpsc::Receiver<(usize, bool)>,
+        done: &mpsc::Sender<()>,
+    ) {
+        use std::os::fd::AsFd;
+        use wayland_client::protocol::wl_shm::{Format, WlShm};
+
+        let connection = Connection::from_socket(client).unwrap();
+        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+        let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+        let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(640 * 480 * 4).unwrap();
+        let pool = shm.create_pool(file.as_fd(), 640 * 480 * 4, &handle, ());
+        let buffer = pool.create_buffer(0, 640, 480, 640 * 4, Format::Argb8888, &handle, ());
+        let mut app = App::default();
+        let windows: Vec<_> = (0..2)
+            .map(|_| {
+                let surface = compositor.create_surface(&handle, ());
+                let xdg = wm_base.get_xdg_surface(&surface, &handle, ());
+                let toplevel = xdg.get_toplevel(&handle, ());
+                toplevel.set_app_id("test".into());
+                surface.commit();
+                let _configured = queue.roundtrip(&mut app).unwrap();
+                surface.attach(Some(&buffer), 0, 0);
+                surface.commit();
+                let _mapped = queue.roundtrip(&mut app).unwrap();
+                (surface, xdg, toplevel)
+            })
+            .collect();
+        done.send(()).unwrap();
+        while let Ok((index, geometry)) = receive.recv() {
+            let (surface, xdg, _) = &windows[index];
+            if geometry {
+                xdg.set_window_geometry(0, 0, 320, 240);
+            }
+            surface.commit();
+            let _committed = queue.roundtrip(&mut app).unwrap();
+            done.send(()).unwrap();
+        }
+    }
+
+    #[test]
+    fn window_commits_preserve_held_push_to_talk() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        let _inserted = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (commands, receive) = mpsc::channel::<(usize, bool)>();
+        let (done, completed) = mpsc::channel();
+        let worker = thread::spawn(move || run_committing_windows(client, &receive, &done));
+        let pump = |server_display: &mut Display<Compositor>, state: &mut Compositor| {
+            let began = Instant::now();
+            while completed.try_recv().is_err() {
+                assert!(began.elapsed() < Duration::from_secs(5), "commit stalled");
+                let _dispatched = server_display.dispatch_clients(state).unwrap();
+                server_display.flush_clients().unwrap();
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
+        pump(&mut display, &mut compositor);
+        compositor.speech_input(tehuti_core::speech::SpeechInput::Available);
+        let mut pad = SyntheticPad::default();
+        pad.push(Event::Button {
+            name: ButtonName::Record,
+            state: ButtonState::Pressed,
+        });
+        route(&mut compositor, &mut pad).unwrap();
+        assert!(
+            compositor
+                .voice_bar()
+                .segments()
+                .iter()
+                .any(|segment| segment.text == "Listening…")
+        );
+        for index in [1, 0] {
+            for geometry in [false, true] {
+                commands.send((index, geometry)).unwrap();
+                pump(&mut display, &mut compositor);
+                assert!(
+                    compositor
+                        .voice_bar()
+                        .segments()
+                        .iter()
+                        .any(|segment| segment.text == "Listening…"),
+                    "window {index} commit cancelled held push-to-talk (geometry={geometry})"
+                );
+            }
+        }
+        drop(commands);
+        worker.join().unwrap();
+    }
+
     #[test]
     fn sidecar_transcript_reaches_client() {
         for passthrough in [false, true] {
