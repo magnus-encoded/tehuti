@@ -41,6 +41,14 @@ pub(crate) struct LoopData {
     redraw: Option<Redraw>,
     pacing: LoopPacing,
     context_watch: Option<tehuti::contexts::ContextWatch>,
+    driver: Option<tehuti::driver::Driver>,
+    frames: Frames,
+}
+
+#[derive(Debug)]
+enum Frames {
+    Backend,
+    Headless,
 }
 
 /// Draws a frame when something on the output changed; the DRM backend installs it.
@@ -201,7 +209,14 @@ fn refuse(message: &dyn core::fmt::Display, code: u8) -> Result<ExitCode, Box<dy
 }
 
 fn main() -> Result<ExitCode, Box<dyn Error>> {
-    let (context_directory, program, application) = match tehuti::cli::parse(std::env::args_os().skip(1)) {
+    let mut arguments = std::env::args_os().skip(1).peekable();
+    let headless = arguments
+        .peek()
+        .is_some_and(|argument| argument == "--test-driver");
+    if headless {
+        let _flag = arguments.next();
+    }
+    let (context_directory, program, application) = match tehuti::cli::parse(arguments) {
         Ok(tehuti::cli::Invocation::Help) => return print_usage(),
         Ok(tehuti::cli::Invocation::Version) => return print_version(),
         Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
@@ -217,10 +232,15 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             );
         }
     };
-    let _instance = match tehuti::instance::acquire_from_env(tehuti::backend::select(
-        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
-        std::env::var_os("DISPLAY").as_deref(),
-    )) {
+    let backend = if headless {
+        tehuti::backend::Backend::Nested
+    } else {
+        tehuti::backend::select(
+            std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+            std::env::var_os("DISPLAY").as_deref(),
+        )
+    };
+    let _instance = match tehuti::instance::acquire_from_env(backend) {
         Ok(lock) => lock,
         Err(error) => {
             let code = if matches!(error, tehuti::instance::InstanceError::AlreadyRunning { .. }) {
@@ -231,7 +251,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             return refuse(&error, code);
         }
     };
-    start_session(&context_directory, program, application)
+    start_session(&context_directory, program, application, headless, backend)
 }
 
 #[expect(clippy::too_many_lines, reason = "speech spawn stays in startup")]
@@ -239,11 +259,22 @@ fn start_session(
     context_directory: &std::ffi::OsStr,
     program: Option<std::ffi::OsString>,
     application: Vec<std::ffi::OsString>,
+    headless: bool,
+    backend: tehuti::backend::Backend,
 ) -> Result<ExitCode, Box<dyn Error>> {
     initialize_tracing();
     segv_backtrace::install_if_requested()?;
 
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
+    let mut driver = if backend == tehuti::backend::Backend::Nested {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or("test driver requires XDG_RUNTIME_DIR")?;
+        Some(tehuti::driver::Driver::bind(
+            std::path::Path::new(&runtime),
+            backend,
+        )?)
+    } else {
+        None
+    };
     if std::env::var_os("TEHUTI_SAY").is_some_and(|value| value == "1") {
         let runtime_directory =
             std::env::var_os("XDG_RUNTIME_DIR").ok_or("TEHUTI_SAY=1 requires XDG_RUNTIME_DIR")?;
@@ -280,31 +311,55 @@ fn start_session(
         Ok(store) => compositor.load_input_choices(store),
         Err(error) => warn!(%error, "input choices will not be saved"),
     }
-    if let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR") {
+    if driver.is_none()
+        && let Some(speech_program) = std::env::var_os("TEHUTI_SPEECH_SIDECAR")
+    {
         compositor.set_speech(tehuti::speech::SpeechProcess::new(vec![speech_program]));
     }
     let virtual_pad = std::env::var("TEHUTI_VIRTUAL_PAD").ok();
     let socket_name = insert_wayland_sources(&event_loop, &mut display)?;
-    install_xwayland(&event_loop, &socket_name)?;
+    if driver.is_none() {
+        install_xwayland(&event_loop, &socket_name)?;
+    } else {
+        tehuti::child_process::configure_display(None)?;
+    }
     install_plugins(
         &event_loop,
         std::path::Path::new(context_directory),
         &mut compositor,
     )?;
     compositor.set_launch_socket(socket_name.clone());
-    if let Err(error) = insert_controller_watch(&event_loop) {
+    if driver.is_none()
+        && let Err(error) = insert_controller_watch(&event_loop)
+    {
         warn!(%error, "controller watch unavailable; periodic discovery continues");
     }
-    let redraw = insert_backend(&event_loop, &display.handle(), &mut compositor)?;
+    let redraw = if headless {
+        tehuti::driver::headless_output(&display.handle(), &mut compositor)?;
+        None
+    } else {
+        insert_backend(&event_loop, &display.handle(), &mut compositor)?
+    };
+    if let Some(driver) = driver.as_mut() {
+        let _scene = driver.execute(&mut compositor, tehuti::driver::Request::Scene)?;
+    }
     let mut controllers = BTreeMap::new();
     let mut controller_tokens = BTreeMap::new();
-    insert_controllers(
-        &event_loop.handle(),
-        virtual_pad.as_deref(),
-        &mut controllers,
-        &mut controller_tokens,
-    );
-    let discovery = initial_discovery(!controllers.is_empty(), &mut compositor);
+    if driver.is_none() {
+        insert_controllers(
+            &event_loop.handle(),
+            virtual_pad.as_deref(),
+            &mut controllers,
+            &mut controller_tokens,
+        );
+    }
+    let discovery = if driver.is_some() {
+        controller::Discovery::Attached {
+            retry_at: Duration::ZERO,
+        }
+    } else {
+        initial_discovery(!controllers.is_empty(), &mut compositor)
+    };
 
     let child = program
         .map(|program| {
@@ -333,6 +388,12 @@ fn start_session(
             turns: 0,
             pad_reads_without_input: 0,
             report: tehuti::pacing::Interval::new(tehuti::pacing::STATISTICS_PERIOD),
+        },
+        driver,
+        frames: if headless {
+            Frames::Headless
+        } else {
+            Frames::Backend
         },
         context_watch: insert_context_watch(&event_loop, std::path::Path::new(context_directory)),
     };
@@ -400,6 +461,28 @@ fn run(
     let handle = event_loop.handle();
     let result = event_loop.run(Some(tehuti::pacing::LOOP_TIMEOUT), data, |data| {
         termination.stop_if_requested(&signal);
+        if let Some(driver) = data.driver.as_mut() {
+            driver.poll(&mut data.compositor);
+            if driver.stopped() {
+                signal.stop();
+            }
+        }
+        if matches!(data.frames, Frames::Headless) {
+            if let Some(output) = data.compositor.output.as_ref() {
+                for window in data.compositor.space.elements() {
+                    window.send_frame(
+                        output,
+                        data.compositor.start_time.elapsed(),
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                }
+            }
+            data.compositor.space.refresh();
+            if let Err(error) = data.display.flush_clients() {
+                warn!(%error, "test client flush failed");
+            }
+        }
         let now = std::time::Instant::now();
         count_wakeup(data, now);
         let input_arrived = core::mem::take(&mut data.pacing.input_arrived);
@@ -407,7 +490,9 @@ fn run(
         if work_due {
             advance_time(data);
             reload_contexts(data);
-            reconnect_controller(data, &handle);
+            if data.driver.is_none() {
+                reconnect_controller(data, &handle);
+            }
         }
         sync_pad_grab(data);
         if work_due || input_arrived {
@@ -728,6 +813,9 @@ fn controllers_disconnected(data: &mut LoopData) {
 }
 
 fn advance_time(data: &mut LoopData) {
+    if data.driver.is_some() {
+        return;
+    }
     let mut sampled = tehuti_core::dispatch::Sticks::default();
     for controller in data.controllers.values_mut() {
         let chosen = data.compositor.controller_chosen(controller.pad.name());

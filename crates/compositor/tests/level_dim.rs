@@ -118,7 +118,13 @@ mod level_dim {
     use smithay::utils::{Rectangle, Transform};
     use tehuti_protocol::{ButtonName, ButtonState, Event};
 
-    fn client(stream: UnixStream, count: usize, ready: &mpsc::Sender<()>, stop: &mpsc::Receiver<()>) {
+    fn client(
+        stream: UnixStream,
+        count: usize,
+        ready: &mpsc::Sender<()>,
+        stop: &mpsc::Receiver<()>,
+        terminal: bool,
+    ) {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -131,8 +137,16 @@ mod level_dim {
             let surface = compositor.create_surface(&handle, ());
             let xdg = wm_base.get_xdg_surface(&surface, &handle, ());
             let toplevel = xdg.get_toplevel(&handle, ());
-            toplevel.set_app_id(format!("org.example.Window{index}"));
-            toplevel.set_title(format!("Document {index}"));
+            toplevel.set_app_id(if terminal {
+                "kitty".into()
+            } else {
+                format!("org.example.Window{index}")
+            });
+            toplevel.set_title(if terminal {
+                "kitty".into()
+            } else {
+                format!("Document {index}")
+            });
             surface.commit();
             let _configured = queue.roundtrip(&mut app).unwrap();
             attach(&shm, &surface, &handle, [50, 100, 200, 255], 128);
@@ -218,7 +232,7 @@ mod level_dim {
             .unwrap();
         let (ready, received) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
-        let thread = thread::spawn(move || client(stream, count, &ready, &stopped));
+        let thread = thread::spawn(move || client(stream, count, &ready, &stopped, false));
         let started = Instant::now();
         while received.try_recv().is_err() {
             assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
@@ -229,6 +243,69 @@ mod level_dim {
         }
         tick(&mut compositor, 0);
         check(&mut compositor, &output);
+        stop.send(()).unwrap();
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn driver_launcher_keeps_the_terminal_mapped_and_a_focuses_it() {
+        use tehuti::driver::{Driver, Request};
+        let root = tempfile::tempdir().unwrap();
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        compositor.configure_destinations(tehuti::destinations::Paths {
+            config: root.path().into(),
+            projects: root.path().join("projects"),
+            data: vec![],
+        });
+        let mut driver = Driver::bind(root.path(), tehuti::backend::Backend::Nested).unwrap();
+        let empty = driver.execute(&mut compositor, Request::Scene).unwrap();
+        assert_eq!(empty["windows"], serde_json::json!([]));
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready, received) = mpsc::channel();
+        let (stop, stopped) = mpsc::channel();
+        let thread = thread::spawn(move || client(stream, 1, &ready, &stopped, true));
+        let started = Instant::now();
+        while received.try_recv().is_err() {
+            assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            compositor.space.refresh();
+            display.flush_clients().unwrap();
+            thread::yield_now();
+        }
+        let _said = driver
+            .execute(
+                &mut compositor,
+                Request::Say {
+                    text: "open kitty".into(),
+                },
+            )
+            .unwrap();
+        let scene = driver.execute(&mut compositor, Request::Scene).unwrap();
+        assert_eq!(scene["windows"][0]["app_id"], "kitty");
+        assert_eq!(scene["windows"][0]["mapped"], true);
+        assert!(
+            scene["launcher"]["rows"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+        );
+        let _pressed = driver
+            .execute(
+                &mut compositor,
+                Request::Press {
+                    button: ButtonName::South,
+                },
+            )
+            .unwrap();
+        let confirmed = driver.execute(&mut compositor, Request::Scene).unwrap();
+        assert_eq!(confirmed["windows"][0]["mapped"], true);
+        assert_eq!(confirmed["windows"][0]["focused"], true);
+        assert!(confirmed["launcher"].is_null());
         stop.send(()).unwrap();
         thread.join().unwrap();
     }

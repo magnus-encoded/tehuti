@@ -42,6 +42,7 @@ pub(crate) fn insert(
     compositor: &mut Compositor,
 ) -> Result<(), Box<dyn Error>> {
     let (mut backend, winit_source) = winit::init::<GlesRenderer>()?;
+    resize_test_window(&backend)?;
     let mode = Mode {
         size: backend.window_size(),
         refresh: REFRESH_MILLIHERTZ,
@@ -95,6 +96,19 @@ pub(crate) fn insert(
     let _winit_token = event_loop
         .handle()
         .insert_source(winit_source, move |event, (), data| nested.handle(&event, data))?;
+    Ok(())
+}
+
+fn resize_test_window(backend: &WinitGraphicsBackend<GlesRenderer>) -> Result<(), Box<dyn Error>> {
+    if std::env::var_os("TEHUTI_TEST_SIZE").is_some() {
+        let (width, height) = tehuti::driver::test_size()?;
+        let _size = backend
+            .window()
+            .request_inner_size(smithay::reexports::winit::dpi::PhysicalSize::new(
+                u32::try_from(width)?,
+                u32::try_from(height)?,
+            ));
+    }
     Ok(())
 }
 

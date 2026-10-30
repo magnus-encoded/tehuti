@@ -3415,6 +3415,31 @@ else:
         }
     }
 
+    fn assert_driver_cannot_confirm(compositor: &mut Compositor) {
+        let runtime = tempfile::tempdir().unwrap();
+        let mut driver =
+            tehuti::driver::Driver::bind(runtime.path(), tehuti::backend::Backend::Nested).unwrap();
+        for request in [
+            tehuti::driver::Request::Press {
+                button: ButtonName::South,
+            },
+            tehuti::driver::Request::Hold {
+                button: ButtonName::South,
+            },
+            tehuti::driver::Request::Release {
+                button: ButtonName::South,
+            },
+            tehuti::driver::Request::Say { text: "yes".into() },
+            tehuti::driver::Request::Advance { milliseconds: 1000 },
+        ] {
+            assert!(
+                driver.execute(compositor, request).is_err(),
+                "driver cannot answer an approval prompt"
+            );
+        }
+        assert_secret_confirmation_label(compositor);
+    }
+
     #[test]
     fn controller_confirmation_delivers_fake_secret_to_the_focused_wayland_client() {
         let mut display: Display<Compositor> = Display::new().unwrap();
@@ -3454,6 +3479,7 @@ else:
         route(&mut compositor, &mut pad).unwrap();
         assert_secret_confirmation_label(&compositor);
         compositor.note_secret_confirmation_frame_submitted();
+        assert_driver_cannot_confirm(&mut compositor);
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {
                 name: ButtonName::South,
