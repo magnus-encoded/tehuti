@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 1 ] && [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Usage: promote-release vX.Y.Z' >&2; exit 1; }
+assets=$(gh release view "$1" --json assets --jq '.assets[].name')
+for image in start-screen bar launcher settings keyboard; do
+    grep -Fxq "$image.png" <<< "$assets" || { echo "Missing smoke asset: $image.png" >&2; exit 1; }
+done
+gh release edit "$1" --prerelease=false --latest

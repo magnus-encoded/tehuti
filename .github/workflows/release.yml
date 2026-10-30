@@ -4,6 +4,11 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
+      action:
+        description: Publish a candidate or promote after reviewing its screenshots
+        type: choice
+        options: [publish, promote]
+        default: publish
       tag:
         description: Existing v-prefixed tag to release
         required: true
@@ -11,6 +16,7 @@ permissions:
   contents: read
 jobs:
   build:
+    if: github.event_name == 'push' || inputs.action == 'publish'
     runs-on: ubuntu-22.04
     # Debian bookworm has i386 libseat and an older glibc than most installs.
     container: debian:bookworm
@@ -68,7 +74,7 @@ jobs:
           fi
           export TEHUTI_VERSION="${TAG#v}"
           export SOURCE_DATE_EPOCH="$(date -u +%s)"
-          cargo build --locked --profile "$profile" -p tehuti --target "$ARCH-unknown-linux-gnu"
+          cargo build --locked --bins --profile "$profile" -p tehuti --target "$ARCH-unknown-linux-gnu"
           mkdir package
           cp "target/$ARCH-unknown-linux-gnu/$profile/tehuti" package/
           cp -r sidecars dist package/
@@ -79,8 +85,40 @@ jobs:
         with:
           name: release-${{ matrix.arch }}
           path: tehuti-*.tar.gz
-  publish:
+      - uses: actions/upload-artifact@v4
+        if: matrix.arch == 'x86_64'
+        with:
+          name: smoke-driver
+          path: target/x86_64-unknown-linux-gnu/release/tehuti-drive
+  smoke:
     needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-x86_64
+          path: candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: smoke-driver
+          path: candidate/bin
+      - name: Smoke dependencies
+        run: sudo apt-get update && sudo apt-get install -y python3-pil foot libxkbcommon0 libwayland-client0 libegl1 libudev1 libseat1 libinput10 libgbm1 libdrm2 libpixman-1-0
+      - name: Capture release screens
+        run: |
+          tar -xzf candidate/tehuti-*.tar.gz -C candidate/bin
+          chmod +x candidate/bin/tehuti-drive
+          scripts/release-smoke candidate/bin smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke
+          path: smoke/
+  publish:
+    needs: [build, smoke]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -97,10 +135,15 @@ jobs:
         with:
           pattern: release-*
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: smoke
+          path: smoke
       - run: |
           sha256sum tehuti-*.tar.gz > SHA256SUMS
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
-          gh release upload "$TAG" tehuti-*.tar.gz SHA256SUMS --clobber
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes --prerelease --latest=false
+          gh release edit "$TAG" --prerelease --latest=false
+          gh release upload "$TAG" tehuti-*.tar.gz SHA256SUMS smoke/*.png --clobber
           previous=$(git -C source describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
           if [ -z "$previous" ] || ! git -C source diff --quiet "$previous" "$TAG" -- sidecars/; then
             notes=$(gh release view "$TAG" --json body -q .body)
@@ -109,3 +152,15 @@ jobs:
               *) gh release edit "$TAG" --notes "$(printf '%s\n\nsidecar changed\n' "$notes")" ;;
             esac
           fi
+  promote:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'promote'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/promote-release "$TAG"
