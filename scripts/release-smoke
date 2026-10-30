@@ -9,7 +9,12 @@ socket=''
 drive() { "$binary/tehuti-drive" --socket "$socket" "$@"; }
 cleanup() {
     if [ -n "$socket" ]; then drive stop || true; fi
-    cp "$work"/*/session.log "$output/" 2>/dev/null || true
+    for session in start window; do
+        if [ -f "$work/$session/session.log" ]; then
+            mkdir -p "$output/$session"
+            cp "$work/$session/session.log" "$output/$session/"
+        fi
+    done
     rm -rf "$work"
 }
 trap cleanup EXIT
