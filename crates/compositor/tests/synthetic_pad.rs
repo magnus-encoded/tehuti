@@ -1841,6 +1841,62 @@ mod synthetic_pad {
     }
 
     #[test]
+    fn save_this_as_records_the_focused_window_and_keeps_live_routes() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.configure_destinations(tehuti::destinations::Paths {
+            config: directory.path().into(),
+            projects: directory.path().join("projects"),
+            data: Vec::new(),
+        });
+        let (server, client) = UnixStream::pair().unwrap();
+        let _inserted = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (commands, receive) = mpsc::channel::<(usize, bool)>();
+        let (done, completed) = mpsc::channel();
+        let worker = thread::spawn(move || run_committing_windows(client, &receive, &done));
+        let began = Instant::now();
+        while completed.try_recv().is_err() {
+            assert!(began.elapsed() < Duration::from_secs(5), "client setup stalled");
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            compositor
+                .destinations()
+                .entries()
+                .iter()
+                .any(|entry| entry.source == tehuti::destinations::Source::Window)
+        );
+        let mut pad = SyntheticPad::default();
+        pad.push(Event::Speech {
+            text: tehuti_protocol::Text::new("Save this as Library.".into()).unwrap(),
+        });
+        route(&mut compositor, &mut pad).unwrap();
+        assert_eq!(
+            compositor.visible_notice_text().as_deref(),
+            Some("DESTINATION SAVED")
+        );
+        compositor.reload_contexts(Ok(Vec::new()));
+        let saved = compositor
+            .destinations()
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "Library")
+            .unwrap();
+        assert_eq!(
+            saved.routes[0].steps[0].target,
+            tehuti::destinations::Target::Application("test".into())
+        );
+        drop(commands);
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn window_commits_preserve_held_push_to_talk() {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();

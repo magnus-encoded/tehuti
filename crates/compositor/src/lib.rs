@@ -65,3 +65,5 @@ pub mod xwayland;
 pub mod child_process;
 
 pub mod speech_vocabulary;
+
+pub mod destinations;

@@ -55,6 +55,12 @@ pub fn read(
     for directory in data {
         application_names(&directory.join("applications"), 0, &mut words);
     }
+    bounded(words)
+}
+
+/// Normalizes and caps a vocabulary below the speech transport limit.
+#[must_use]
+pub fn bounded(words: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut bytes = 0usize;
     words
@@ -90,7 +96,7 @@ pub fn directory_names(directory: &Path) -> Vec<String> {
     names
 }
 
-fn read_text(path: &Path) -> String {
+pub(crate) fn read_text(path: &Path) -> String {
     let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)

@@ -189,6 +189,52 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn destination_names_reach_the_sidecar_on_reload_and_follow_focus() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{destinations::Paths, state::Compositor};
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("words");
+        let source = format!(
+            r"import sys,json,pathlib
+print(json.dumps({{'ready':True}}),flush=True)
+for line in sys.stdin:
+ c=json.loads(line)
+ if 'vocabulary' in c:
+  words=[w for w in c['vocabulary'] if w in ['Library','Books']]
+  pathlib.Path({:?}).write_text(','.join(words))
+",
+            marker.to_str().unwrap()
+        );
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.configure_destinations(Paths {
+            config: directory.path().into(),
+            projects: directory.path().join("projects"),
+            data: Vec::new(),
+        });
+        compositor.set_speech(child(&source));
+        std::fs::write(directory.path().join("destinations.toml"), "[[destinations]]\nname = 'Library'\nextra_names = ['Books']\nroutes = [{context = 'reader', steps = [{icon = 'reader', target = {kind = 'application', value = 'reader'}}]}]").unwrap();
+        compositor.reload_contexts(Ok(Vec::new()));
+        for (app_id, expected) in [("reader", "Library,Books"), ("terminal", "")] {
+            compositor.handle(&Event::Focus {
+                app_id: Some(app_id.into()),
+                title: String::new(),
+            });
+            let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+            while std::fs::read_to_string(&marker).unwrap_or_else(|_| "pending".into()) != expected {
+                compositor.handle(&Event::Tick {
+                    elapsed: Duration::from_millis(10),
+                });
+                assert!(
+                    Instant::now() < deadline,
+                    "destination vocabulary did not refresh"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[test]
     fn release_reaches_source_tail_scheduler_without_transport_delay() {
         let mut process = child(
             r"import sys,json
