@@ -52,6 +52,40 @@ use smithay::{
 use tehuti_core::dispatch::{Effect as DispatchEffect, Input as DispatchInput};
 use tehuti_protocol::{Action, Event, KeyName};
 
+const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
+    match input {
+        DispatchInput::Tick { elapsed }
+        | DispatchInput::Event { elapsed, .. }
+        | DispatchInput::ClockRead(elapsed) => *elapsed,
+        DispatchInput::Launcher(_)
+        | DispatchInput::ChoiceList(_)
+        | DispatchInput::FocusTitle { .. }
+        | DispatchInput::DisplayModes { .. }
+        | DispatchInput::BarFont(_)
+        | DispatchInput::DisplayScale(_)
+        | DispatchInput::ModeApplied(_)
+        | DispatchInput::Controllers(_)
+        | DispatchInput::Microphones(_)
+        | DispatchInput::InputChoices { .. }
+        | DispatchInput::Speech(_)
+        | DispatchInput::PluginReply { .. }
+        | DispatchInput::PluginExited { .. }
+        | DispatchInput::TextField { .. }
+        | DispatchInput::ControllerDisconnected
+        | DispatchInput::SecretPrompt(_)
+        | DispatchInput::Sticks(_)
+        | DispatchInput::PluginActive(_)
+        | DispatchInput::PluginRequest(_)
+        | DispatchInput::Supervised(_)
+        | DispatchInput::SecretConfirmation(_)
+        | DispatchInput::SpeechSent(_)
+        | DispatchInput::SpeechPolled(_)
+        | DispatchInput::Wallpapers { .. }
+        | DispatchInput::WallpaperSaved(_)
+        | DispatchInput::Resume => core::time::Duration::ZERO,
+    }
+}
+
 struct RedactedSecretProvider(Box<dyn tehuti_core::secret::SecretProvider>);
 
 impl core::fmt::Debug for RedactedSecretProvider {
@@ -89,6 +123,7 @@ pub struct Compositor {
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
     settings_display: crate::settings::Display,
+    bar_font_store: Option<crate::display_mode_store::Store>,
     /// The pad that drives Tehuti; previews before confirmation too.
     controller_choice: tehuti_core::dispatch::ControllerChoice,
     controller_names: Vec<String>,
@@ -207,6 +242,7 @@ impl Compositor {
                 tehuti_core::State::new().with_bar_agents(vec!["Claude".into(), "Codex".into()]),
             ),
             settings_display: crate::settings::Display::default(),
+            bar_font_store: None,
             controller_choice: tehuti_core::dispatch::ControllerChoice::Auto,
             controller_names: Vec::new(),
             input_choices: None,
@@ -811,36 +847,7 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
-        let elapsed = match &input {
-            DispatchInput::Tick { elapsed }
-            | DispatchInput::Event { elapsed, .. }
-            | DispatchInput::ClockRead(elapsed) => *elapsed,
-            DispatchInput::Launcher(_)
-            | DispatchInput::ChoiceList(_)
-            | DispatchInput::FocusTitle { .. }
-            | DispatchInput::DisplayModes { .. }
-            | DispatchInput::DisplayScale(_)
-            | DispatchInput::ModeApplied(_)
-            | DispatchInput::Controllers(_)
-            | DispatchInput::Microphones(_)
-            | DispatchInput::InputChoices { .. }
-            | DispatchInput::Speech(_)
-            | DispatchInput::PluginReply { .. }
-            | DispatchInput::PluginExited { .. }
-            | DispatchInput::TextField { .. }
-            | DispatchInput::ControllerDisconnected
-            | DispatchInput::SecretPrompt(_)
-            | DispatchInput::Sticks(_)
-            | DispatchInput::PluginActive(_)
-            | DispatchInput::PluginRequest(_)
-            | DispatchInput::Supervised(_)
-            | DispatchInput::SecretConfirmation(_)
-            | DispatchInput::SpeechSent(_)
-            | DispatchInput::SpeechPolled(_)
-            | DispatchInput::Wallpapers { .. }
-            | DispatchInput::WallpaperSaved(_)
-            | DispatchInput::Resume => core::time::Duration::ZERO,
-        };
+        let elapsed = dispatch_elapsed(&input);
         self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
         let depth = self.dispatch.busy();
@@ -1068,6 +1075,24 @@ impl Compositor {
         }
     }
 
+    pub fn load_bar_font(&mut self, store: crate::display_mode_store::Store) {
+        match store.read() {
+            Ok(value) => {
+                let font = match value.as_deref() {
+                    None | Some("Liberation Mono") => tehuti_core::bar::Font::LiberationMono,
+                    Some("Bitmap") => tehuti_core::bar::Font::Bitmap,
+                    Some(_) => {
+                        tracing::warn!("invalid saved bar font; using Liberation Mono");
+                        tehuti_core::bar::Font::LiberationMono
+                    }
+                };
+                let _rejection = self.dispatch(DispatchInput::BarFont(font));
+            }
+            Err(error) => tracing::warn!(%error, "bar font could not be read"),
+        }
+        self.bar_font_store = Some(store);
+    }
+
     /// Restores the saved controller and microphone and saves later choices to `store`.
     pub fn load_input_choices(&mut self, store: crate::input_choice_store::Store) {
         let controller = store.controller().unwrap_or_else(|error| {
@@ -1223,6 +1248,7 @@ impl Compositor {
             | DispatchEffect::OpenLauncher(_)
             | DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
+            | DispatchEffect::SettingsBarFont(_)
             | DispatchEffect::SettingsScale(_)
             | DispatchEffect::WallpaperPreview(_)
             | DispatchEffect::WallpaperSave(_)
@@ -1424,6 +1450,22 @@ impl Compositor {
                     self.show_notice("WALLPAPER NOT SAVED");
                 }
             },
+            DispatchEffect::SettingsBarFont(font) => {
+                let result = self
+                    .bar_font_store
+                    .as_ref()
+                    .ok_or_else(|| std::io::Error::other("bar font store unavailable"))
+                    .and_then(|store| store.write(font.label()));
+                match result {
+                    Ok(()) => {
+                        let _rejection = self.dispatch(DispatchInput::BarFont(font));
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "bar font was not saved");
+                        self.show_notice("BAR FONT WAS NOT SAVED");
+                    }
+                }
+            }
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
             DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
@@ -2126,7 +2168,9 @@ impl Compositor {
                 Some((title, snapshot.focused_window == Some(tile.window)))
             })
             .collect();
-        self.dispatch.core().bar().clone().with_windows(windows)
+        let mut bar = self.dispatch.core().bar().clone().with_windows(windows);
+        bar.font = self.settings().bar_font;
+        bar
     }
 
     /// Updates the layout to the output's logical size and configures its windows.

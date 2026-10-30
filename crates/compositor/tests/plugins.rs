@@ -214,6 +214,7 @@ for line in sys.stdin:
             | Effect::RunMenuCommand(_)
             | Effect::SettingsMode(_)
             | Effect::PersistMode(_)
+            | Effect::SettingsBarFont(_)
             | Effect::SettingsScale(_)
             | Effect::SettingsController(_)
             | Effect::PersistController(_)

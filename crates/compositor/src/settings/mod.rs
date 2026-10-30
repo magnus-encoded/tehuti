@@ -35,6 +35,7 @@ struct View {
     wallpaper_locked: Vec<bool>,
     wallpaper_selected: usize,
     wallpaper_current: usize,
+    bar_font: tehuti_core::bar::Font,
     scale: core::num::NonZeroU32,
     remaining: Option<Duration>,
     failed: bool,
@@ -56,6 +57,7 @@ impl View {
             wallpaper_locked: settings.wallpaper_locked.clone(),
             wallpaper_selected: settings.wallpaper_selected,
             wallpaper_current: settings.wallpaper_current,
+            bar_font: settings.bar_font,
             scale: settings.scale,
             remaining: settings.remaining.map(|remaining| {
                 Duration::from_millis(
@@ -154,7 +156,7 @@ impl Canvas {
                 self.highlight(y, 76);
             }
             let (name, detail) = match category {
-                Category::Display => ("DISPLAY", "RESOLUTION / REFRESH / SCALE"),
+                Category::Display => ("DISPLAY", "RESOLUTION / REFRESH / SCALE / BAR FONT"),
                 Category::Input => ("INPUT", "CONTROLLER / MICROPHONE"),
                 Category::Wallpaper => ("WALLPAPER", "RELEASE COLLECTION"),
             };
@@ -172,6 +174,10 @@ impl Canvas {
             .chain(core::iter::once(format!(
                 "SCALE {}  (LEFT / RIGHT)",
                 settings.scale
+            )))
+            .chain(core::iter::once(format!(
+                "BAR FONT: {}  (LEFT / RIGHT)",
+                settings.bar_font.label()
             )))
             .collect();
         for (row, (index, mode)) in rows.iter().enumerate().skip(first).take(5).enumerate() {

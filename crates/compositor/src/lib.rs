@@ -40,6 +40,7 @@ pub mod rendering;
 pub mod scale;
 
 pub mod bar;
+mod bar_font;
 pub mod pictograms;
 pub mod ticker_strip;
 

@@ -300,6 +300,12 @@ fn start_session(
     }
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
+    match tehuti::display_mode_store::config_root() {
+        Ok(root) => compositor.load_bar_font(tehuti::display_mode_store::Store::new(
+            root.join("tehuti/bar-font"),
+        )),
+        Err(error) => warn!(%error, "bar font will not be saved"),
+    }
     compositor.set_decorations(tehuti::decorations::from_env());
     compositor.configure_destinations(tehuti::destinations::Paths {
         config: std::path::PathBuf::from(context_directory),

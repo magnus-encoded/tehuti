@@ -58,6 +58,100 @@ mod tests {
         }
     }
 
+    #[test]
+    fn switching_fonts_preserves_chip_edges_height_and_alignment() {
+        use tehuti_core::bar::Font;
+        for scale in [1, 2] {
+            let output = output(1280 * scale, 720 * scale, scale);
+            let mut buffer = Buffer::default();
+            let mut previous = None;
+            for font in [Font::LiberationMono, Font::Bitmap, Font::LiberationMono] {
+                let mut bar = State::new().bar().clone();
+                bar.font = font;
+                let (memory, position) = buffer.update(&output, &bar, "12:34").unwrap();
+                assert_eq!(position, (0.0, f64::from(688 * scale)));
+                let mut memory = memory.clone();
+                let mut pixels = Vec::new();
+                memory
+                    .render()
+                    .draw(|bytes| {
+                        pixels.extend_from_slice(bytes);
+                        Ok::<_, core::convert::Infallible>(Vec::new())
+                    })
+                    .unwrap();
+                let width = usize::try_from(1280 * scale).unwrap();
+                let unit = usize::try_from(scale).unwrap();
+                assert_eq!(pixels.len(), width * 32 * unit * 4);
+                for row in [0, 31 * unit] {
+                    let line = &pixels[row * width * 4..(row + 1) * width * 4];
+                    assert_eq!(&line[0..4], &[88, 65, 47, 255]);
+                    assert_eq!(&line[200 * unit * 4..200 * unit * 4 + 4], &[30, 24, 20, 255]);
+                }
+                if let Some(previous) = previous {
+                    assert_ne!(pixels, previous, "font changes invalidate the cached bar");
+                }
+                previous = Some(pixels);
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_font_files_log_and_render_the_bitmap_fallback() -> Result<(), Box<dyn core::error::Error>>
+    {
+        if std::env::var_os("TEHUTI_TEST_FONT_FALLBACK").is_none() {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("font.ttf");
+            for invalid in [false, true] {
+                if invalid {
+                    std::fs::write(&path, b"invalid font")?;
+                }
+                let result = std::process::Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        "tests::unavailable_font_files_log_and_render_the_bitmap_fallback",
+                        "--nocapture",
+                    ])
+                    .env("TEHUTI_TEST_FONT_FALLBACK", "1")
+                    .env("TEHUTI_BAR_FONT_FILE", &path)
+                    .output()?;
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stdout)
+                );
+                assert!(
+                    String::from_utf8_lossy(&result.stderr)
+                        .contains("Liberation Mono unavailable; using bitmap bar font")
+                );
+            }
+            return Ok(());
+        }
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .try_init()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let output = output(1280, 720, 1);
+        let mut buffer = Buffer::default();
+        let mut bar = State::new().bar().clone();
+        let mut images = Vec::new();
+        for font in [
+            tehuti_core::bar::Font::LiberationMono,
+            tehuti_core::bar::Font::Bitmap,
+        ] {
+            bar.font = font;
+            let (memory, _) = buffer.update(&output, &bar, "12:34").unwrap();
+            let mut memory = memory.clone();
+            let mut pixels = Vec::new();
+            memory.render().draw(|bytes| {
+                pixels.extend_from_slice(bytes);
+                Ok::<_, core::convert::Infallible>(Vec::new())
+            })?;
+            images.push(pixels);
+        }
+        assert_eq!(images[0], images[1]);
+        Ok(())
+    }
+
     fn pixels(buffer: &mut Buffer, output: &Output, state: &State) -> Vec<u8> {
         let (memory, _) = buffer.update(output, state.bar(), "12:34").unwrap();
         let mut copy = memory.clone();

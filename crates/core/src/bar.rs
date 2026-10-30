@@ -8,6 +8,24 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput};
 pub const HEIGHT: i32 = 32;
 pub const RESULT_LIFETIME: Duration = Duration::from_secs(3);
 
+/// The fixed-cell font used by the powerline and mapping ticker.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Font {
+    #[default]
+    LiberationMono,
+    Bitmap,
+}
+
+impl Font {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LiberationMono => "Liberation Mono",
+            Self::Bitmap => "Bitmap",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
     Context,
@@ -25,6 +43,7 @@ pub struct Segment {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bar {
+    pub font: Font,
     context: Option<String>,
     focus: Option<(Option<String>, String)>,
     labels: Vec<(String, String)>,
@@ -105,6 +124,7 @@ impl Bar {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            font: Font::LiberationMono,
             context: None,
             focus: None,
             labels: Vec::new(),

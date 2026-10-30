@@ -55,6 +55,7 @@ pub struct Settings {
     pub wallpaper_locked: Vec<bool>,
     pub wallpaper_selected: usize,
     pub wallpaper_current: usize,
+    pub bar_font: crate::bar::Font,
     pub scale: core::num::NonZeroU32,
     pub remaining: Option<Duration>,
     previous: Option<usize>,
@@ -493,6 +494,18 @@ impl Settings {
     }
 
     fn display_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        if self.selected == self.modes.len().saturating_add(1)
+            && self.remaining.is_none()
+            && (matches!(name, ButtonName::DpadLeft | ButtonName::DpadRight)
+                || name == self.pad_family.button(Role::Confirm))
+        {
+            let next = match self.bar_font {
+                crate::bar::Font::LiberationMono => crate::bar::Font::Bitmap,
+                crate::bar::Font::Bitmap => crate::bar::Font::LiberationMono,
+            };
+            effects.push(Effect::SettingsBarFont(next));
+            return;
+        }
         if self.scale_button(name, effects) {
             return;
         }
@@ -503,7 +516,10 @@ impl Settings {
                 self.selected = self.selected.saturating_sub(1);
             }
             ButtonName::DpadDown | ButtonName::DpadRight if self.remaining.is_none() => {
-                self.selected = self.selected.saturating_add(1).min(self.modes.len());
+                self.selected = self
+                    .selected
+                    .saturating_add(1)
+                    .min(self.modes.len().saturating_add(1));
             }
             ButtonName::South
             | ButtonName::East
@@ -558,6 +574,7 @@ impl Default for Settings {
             wallpaper_locked: Vec::new(),
             wallpaper_selected: 0,
             wallpaper_current: 0,
+            bar_font: crate::bar::Font::default(),
             scale: core::num::NonZeroU32::MIN,
             remaining: None,
             previous: None,

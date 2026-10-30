@@ -28,11 +28,13 @@ type Key = (
     i32,
     i32,
     Option<(std::sync::Arc<[ticker::Entry]>, usize)>,
+    tehuti_core::bar::Font,
 );
 
 #[derive(Debug, Default)]
 pub struct Buffer {
     key: Option<Key>,
+    font: tehuti_core::bar::Font,
     image: Option<MemoryRenderBuffer>,
     ticker_strip: Option<(
         std::sync::Arc<[ticker::Entry]>,
@@ -77,6 +79,10 @@ impl Buffer {
         bar: &Bar,
         clock: &str,
     ) -> Option<(&MemoryRenderBuffer, (f64, f64))> {
+        if self.font != bar.font {
+            self.font = bar.font;
+            self.ticker_strip = None;
+        }
         let mode = output.current_mode()?;
         let scale = output.current_scale().integer_scale().max(1);
         let height = tehuti_core::bar::HEIGHT.saturating_mul(scale).min(mode.size.h);
@@ -103,6 +109,7 @@ impl Buffer {
             scale,
             height,
             ticker,
+            self.font,
         );
         if self.key.as_ref() != Some(&key) {
             self.image = raster(
@@ -126,7 +133,8 @@ impl Buffer {
         match &self.ticker_strip {
             Some((built, strip)) if built == entries => strip.clone(),
             _ => {
-                let strip = std::sync::Arc::new(crate::ticker_strip::Strip::paint(entries));
+                let strip =
+                    std::sync::Arc::new(crate::ticker_strip::Strip::paint_with_font(entries, self.font));
                 self.ticker_strip = Some((entries.clone(), strip.clone()));
                 strip
             }
@@ -262,9 +270,10 @@ fn raster(
     height: i32,
     strip: Option<&crate::ticker_strip::Strip>,
 ) -> Option<MemoryRenderBuffer> {
-    let (segments, _, clock, width, scale, _, ticker) = key;
+    let (segments, _, clock, width, scale, _, ticker, font) = key;
     let height_usize = usize::try_from(height).ok()?;
     let mut canvas = Canvas {
+        font: *font,
         width: layout.width,
         height: height_usize,
         pixels: vec![0; layout.width.checked_mul(height_usize)?.checked_mul(4)?],
@@ -319,6 +328,7 @@ fn raster(
 }
 
 struct Canvas {
+    font: tehuti_core::bar::Font,
     width: usize,
     height: usize,
     pixels: Vec<u8>,
@@ -373,9 +383,8 @@ impl Canvas {
 
     fn scrolled_text(&mut self, text: &str, clip: (usize, usize), unit: usize, offset: usize) {
         let (start, end) = clip;
-        let size = 2usize.saturating_mul(unit);
-        let advance = 8usize.saturating_mul(size);
-        let top = self.height.saturating_sub(8usize.saturating_mul(size)) / 2;
+        let advance = 16usize.saturating_mul(unit);
+        let top = self.height.saturating_sub(24usize.saturating_mul(unit)) / 2;
         let capacity = end.saturating_sub(start).checked_div(advance).unwrap_or_default();
         let truncated = text.chars().count() > capacity;
         for (index, mut character) in text.chars().enumerate() {
@@ -386,28 +395,48 @@ impl Canvas {
             if left.saturating_add(advance) > end {
                 break;
             }
-            let glyph = if character == '…' {
-                [0, 0, 0, 0, 0, 0, 42, 0]
-            } else {
-                crate::pictograms::glyph(character).unwrap_or([255, 129, 129, 129, 129, 129, 129, 255])
-            };
-            for (column, row) in crate::pictograms::lit(glyph) {
-                for vertical in 0..size {
-                    for horizontal in 0..size {
+            for (sample, alpha) in crate::bar_font::coverage(character, self.font, true)
+                .into_iter()
+                .enumerate()
+            {
+                if alpha == 0 {
+                    continue;
+                }
+                for vertical in 0..unit {
+                    for horizontal in 0..unit {
                         if let Some(column) = left
-                            .saturating_add(column.saturating_mul(size))
+                            .saturating_add((sample % 16).saturating_mul(unit))
                             .saturating_add(horizontal)
                             .checked_sub(offset)
                         {
-                            self.pixel(
-                                column,
-                                top.saturating_add(row.saturating_mul(size))
-                                    .saturating_add(vertical),
-                                [239, 235, 229, 255],
-                            );
+                            let row = top
+                                .saturating_add((sample / 16).saturating_mul(unit))
+                                .saturating_add(vertical);
+                            self.blend(column, row, alpha);
                         }
                     }
                 }
+            }
+        }
+    }
+
+    fn blend(&mut self, column: usize, row: usize, alpha: u8) {
+        if column >= self.width || row >= self.height {
+            return;
+        }
+        let offset = row
+            .saturating_mul(self.width)
+            .saturating_add(column)
+            .saturating_mul(4);
+        if let Some(pixel) = self.pixels.get_mut(offset..offset.saturating_add(4)) {
+            for (channel, foreground) in pixel.iter_mut().take(3).zip([239u16, 235, 229]) {
+                *channel = u8::try_from(
+                    u16::from(*channel)
+                        .saturating_mul(255u16.saturating_sub(u16::from(alpha)))
+                        .saturating_add(foreground.saturating_mul(u16::from(alpha)))
+                        / 255,
+                )
+                .unwrap_or_default();
             }
         }
     }
