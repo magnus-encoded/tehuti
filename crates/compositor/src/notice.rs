@@ -74,10 +74,26 @@ pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
 fn wrapped_notice_lines(text: &str) -> Vec<String> {
     let mut visible_lines = Vec::new();
     for line in text.lines() {
-        let mut characters = line.chars().peekable();
+        let mut remaining = line;
         loop {
-            visible_lines.push(characters.by_ref().take(40).collect::<String>());
-            if visible_lines.len() == 10 || characters.peek().is_none() {
+            let Some((limit, _)) = remaining.char_indices().nth(40) else {
+                visible_lines.push(remaining.to_owned());
+                break;
+            };
+            let Some((prefix, suffix)) = remaining.split_at_checked(limit) else {
+                break;
+            };
+            let split = if suffix.starts_with(' ') {
+                limit
+            } else {
+                prefix.rfind(' ').filter(|&space| space > 0).unwrap_or(limit)
+            };
+            let Some((visible, rest)) = remaining.split_at_checked(split) else {
+                break;
+            };
+            visible_lines.push(visible.to_owned());
+            remaining = rest.trim_start_matches(' ');
+            if visible_lines.len() == 10 || remaining.is_empty() {
                 break;
             }
         }
@@ -108,6 +124,7 @@ const fn glyph(character: char) -> [u8; 7] {
         'L' => [16, 16, 16, 16, 16, 16, 31],
         'U' => [17, 17, 17, 17, 17, 17, 14],
         'W' => [17, 17, 17, 21, 21, 21, 10],
+        'X' => [17, 17, 10, 4, 10, 17, 17],
         'Y' => [17, 17, 10, 4, 4, 4, 4],
         'V' => [17, 17, 17, 17, 17, 10, 4],
         'B' => [30, 17, 17, 30, 17, 17, 30],
