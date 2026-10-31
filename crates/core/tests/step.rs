@@ -338,6 +338,49 @@ mod step {
         assert_eq!(quit_actions, vec![Action::Quit]);
     }
 
+    proptest! {
+        #[test]
+        fn start_release_reaches_the_plugin_when_its_press_did(
+            millis in 0u64..3000,
+            configurations in prop::collection::vec(prop::collection::hash_map(any::<ButtonName>(), any::<KeyName>(), 0..=15), 0..6),
+        ) {
+            let contexts = configurations.iter().map(|mappings| generated_context("org.example.Game", mappings)).collect();
+            let (state, _) = step(State::with_contexts(contexts), &Event::Focus {
+                app_id: Some("org.example.Game".into()), title: String::new(),
+            });
+            let (state, _, press_sent) = tehuti_core::step_with_plugin(state, &start(), true);
+            prop_assert!(press_sent);
+            let (state, _, _) = tehuti_core::step_with_plugin(state, &guide(ButtonState::Pressed), true);
+            let (state, _, _) = tehuti_core::step_with_plugin(state, &tick(millis), true);
+            let (_, _, sent) = tehuti_core::step_with_plugin(state, &Event::Button {
+                name: ButtonName::Start,
+                state: ButtonState::Released,
+            }, true);
+            prop_assert!(sent);
+        }
+    }
+
+    #[test]
+    fn chord_start_release_stays_consumed_after_guide_is_released() {
+        let mut state = State::new();
+        for event in [
+            guide(ButtonState::Pressed),
+            start(),
+            guide(ButtonState::Released),
+            Event::Button {
+                name: ButtonName::Start,
+                state: ButtonState::Released,
+            },
+        ] {
+            let (next, actions, routed) = tehuti_core::step_with_plugin(state, &event, true);
+            state = next;
+            assert_eq!(actions, Vec::<Action>::new());
+            assert!(!routed);
+        }
+        let (_, _, routed) = tehuti_core::step_with_plugin(state, &start(), true);
+        assert!(routed);
+    }
+
     #[test]
     fn controller_disconnect_clears_both_holds_and_elapsed_time() {
         for first in [ButtonName::Guide, ButtonName::Start] {
