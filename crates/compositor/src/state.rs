@@ -57,7 +57,8 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         DispatchInput::Tick { elapsed }
         | DispatchInput::Event { elapsed, .. }
         | DispatchInput::ClockRead(elapsed) => *elapsed,
-        DispatchInput::Launcher(_)
+        DispatchInput::Menu(_)
+        | DispatchInput::Launcher(_)
         | DispatchInput::ChoiceList(_)
         | DispatchInput::FocusTitle { .. }
         | DispatchInput::DisplayModes { .. }
@@ -503,7 +504,11 @@ impl Compositor {
             self.contexts(),
             &self.destination_windows,
         ) {
-            Ok(table) => self.destinations = table,
+            Ok(mut table) => {
+                table.add_menu();
+                table.update_workspaces(&self.layout.snapshot());
+                self.destinations = table;
+            }
             Err(error) => {
                 tracing::warn!(%error, "destination reload failed");
                 self.show_notice("DESTINATION CONFIG ERROR");
@@ -1367,6 +1372,23 @@ impl Compositor {
         use crate::destinations::Target;
         for step in route.steps {
             match step.target {
+                Target::Workspace(identity) => {
+                    if let Err(error) = self
+                        .layout
+                        .focus_workspace_id(tehuti_core::layout::WorkspaceId(identity))
+                    {
+                        tracing::warn!(%error, "launcher workspace focus failed");
+                    }
+                    self.place_layout();
+                }
+                Target::Menu(key) => {
+                    if let Some(command) = tehuti_core::menu::ITEMS
+                        .into_iter()
+                        .find(|command| command.key() == key)
+                    {
+                        let _rejection = self.dispatch(DispatchInput::Menu(command));
+                    }
+                }
                 Target::Desktop(entry) => {
                     if let Ok(entry) = tehuti_protocol::Text::new(entry) {
                         self.launch_application(&entry);
@@ -1395,29 +1417,31 @@ impl Compositor {
                         self.place_layout();
                     }
                 }
-                Target::Url(url) => {
-                    let Some(socket) = self.launch_socket.as_deref() else {
-                        self.show_launch_failure();
-                        continue;
-                    };
-                    if self.launchers.len() >= 16 {
-                        self.show_launch_failure();
-                        continue;
-                    }
-                    match crate::client_env::command(std::ffi::OsStr::new("xdg-open"), socket)
-                        .arg(url)
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn()
-                    {
-                        Ok(child) => self.launchers.push(child),
-                        Err(error) => {
-                            tracing::warn!(%error, "launcher URL failed");
-                            self.show_launch_failure();
-                        }
-                    }
-                }
+                Target::Url(url) => self.launch_url(&url),
+            }
+        }
+    }
+
+    fn launch_url(&mut self, url: &str) {
+        let Some(socket) = self.launch_socket.as_deref() else {
+            self.show_launch_failure();
+            return;
+        };
+        if self.launchers.len() >= 16 {
+            self.show_launch_failure();
+            return;
+        }
+        match crate::client_env::command(std::ffi::OsStr::new("xdg-open"), socket)
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(child) => self.launchers.push(child),
+            Err(error) => {
+                tracing::warn!(%error, "launcher URL failed");
+                self.show_launch_failure();
             }
         }
     }
@@ -2149,26 +2173,49 @@ impl Compositor {
                     .layout_windows
                     .iter()
                     .find(|(identity, _)| *identity == tile.window)?;
-                let toplevel = window.toplevel()?;
-                let title = smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
-                    states
-                        .data_map
-                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
-                        .map(|attributes| {
+                let title = self
+                    .destinations
+                    .name_for(&crate::destinations::Target::Window(tile.window.0))
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        let toplevel = window.toplevel()?;
+                        smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                            let attributes = states
+                                .data_map
+                                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()?;
                             let attributes = attributes
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            self.dispatch.core().bar().window_label(
+                            Some(self.dispatch.core().bar().window_label(
                                 self.dispatch.core().label(attributes.app_id.as_deref()),
                                 attributes.title.as_deref(),
                                 attributes.app_id.as_deref(),
-                            )
+                            ))
                         })
-                })?;
+                    })?;
                 Some((title, snapshot.focused_window == Some(tile.window)))
             })
             .collect();
         let mut bar = self.dispatch.core().bar().clone().with_windows(windows);
+        if let Some(identity) = snapshot.focused_window
+            && let Some(name) = self
+                .destinations
+                .name_for(&crate::destinations::Target::Window(identity.0))
+        {
+            bar = bar.with_destination(name.into());
+        }
+        if snapshot.focused_window.is_none()
+            && let Some(output) = snapshot
+                .outputs
+                .iter()
+                .find(|output| Some(output.output) == snapshot.focused_output)
+            && let Some(workspace) = output.workspaces.get(output.active_workspace)
+            && let Some(name) = self
+                .destinations
+                .name_for(&crate::destinations::Target::Workspace(workspace.workspace.0))
+        {
+            bar = bar.with_destination(name.into());
+        }
         bar.font = self.settings().bar_font;
         bar
     }
@@ -2427,6 +2474,7 @@ impl Compositor {
     }
 
     fn sync_destination_windows(&mut self) {
+        self.destinations.update_workspaces(&self.layout.snapshot());
         let windows: Vec<_> = self
             .layout_windows
             .iter()

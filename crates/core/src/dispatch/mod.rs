@@ -27,6 +27,7 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    Menu(crate::menu::Command),
     Launcher(crate::launcher::Launcher),
     ChoiceList(crate::choice_list::Slots),
     DisplayModes {
@@ -427,6 +428,12 @@ fn sync_keyboard_config(state: &mut State) {
 
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
+        Input::Menu(command) => {
+            let mut effects = Vec::new();
+            release_pad(&mut state, Handoff::Open(Overlay::SystemMenu), &mut effects);
+            state.core.menu = Some(crate::menu::Menu::for_command(state.core.pad_family(), command));
+            (state, effects)
+        }
         Input::Launcher(launcher) => {
             state.choice_list = None;
             state.launcher = Some(launcher);
@@ -484,7 +491,8 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         ],
         Input::Speech(input) => vec![Task::Speech(input)],
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
-        Input::Launcher(_)
+        Input::Menu(_)
+        | Input::Launcher(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -537,7 +545,8 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
             }
         }
         Input::ControllerDisconnected => disconnect_controller(&mut state, &mut effects),
-        Input::Launcher(_)
+        Input::Menu(_)
+        | Input::Launcher(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -594,7 +603,8 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             controller,
             microphone,
         } => state.settings.restore_input(controller, microphone),
-        Input::Launcher(_)
+        Input::Menu(_)
+        | Input::Launcher(_)
         | Input::ChoiceList(_)
         | Input::Tick { .. }
         | Input::Event { .. }

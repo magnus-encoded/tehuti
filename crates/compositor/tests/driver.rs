@@ -7,6 +7,30 @@ mod tests {
     };
 
     #[test]
+    fn nested_framebuffer_captures_have_the_same_orientation_as_headless_captures() {
+        use smithay::utils::Transform;
+        let directory = tempfile::tempdir().unwrap();
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let output = compositor.output.clone().unwrap();
+        let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let normal = directory.path().join("normal.png");
+        let nested = directory.path().join("nested.png");
+        let _normal_capture = driver
+            .execute(&mut compositor, Request::Shot { path: normal.clone() })
+            .unwrap();
+        output.change_current_state(None, Some(Transform::Flipped180), None, None);
+        let _nested_capture = driver
+            .execute(&mut compositor, Request::Shot { path: nested.clone() })
+            .unwrap();
+        assert!(
+            image::open(normal).unwrap().to_rgba8() == image::open(nested).unwrap().to_rgba8(),
+            "nested captures retain the upright scene"
+        );
+    }
+
+    #[test]
     fn live_sessions_cannot_create_a_driver() {
         let directory = tempfile::tempdir().unwrap();
         assert!(Driver::bind(directory.path(), tehuti::backend::Backend::Tty).is_err());

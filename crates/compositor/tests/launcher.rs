@@ -5,6 +5,65 @@ mod tests {
     use tehuti_protocol::{ButtonName, ButtonState, Event, Text};
 
     #[test]
+    fn guide_item_names_rank_their_destination_first() {
+        let root = tempfile::tempdir().unwrap();
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.configure_destinations(Paths {
+            config: root.path().into(),
+            projects: root.path().join("projects"),
+            data: Vec::new(),
+        });
+        let menu = tehuti_core::menu::Menu::default().text();
+        assert!(menu.lines().all(|line| line.chars().count() <= 40));
+        for name in [
+            "LOG OUT",
+            "RESTART TEHUTI",
+            "SWITCH TO PLASMA",
+            "REBOOT",
+            "SHUT DOWN",
+            "TASK MONITOR",
+            "SETTINGS",
+        ] {
+            assert_eq!(
+                menu.lines()
+                    .filter(|line| line.trim_start_matches(['>', ' ']) == name)
+                    .count(),
+                1
+            );
+            compositor.handle(&Event::Speech {
+                text: Text::new(format!("open {name}")).unwrap(),
+            });
+            assert_eq!(
+                compositor.choice_list().unwrap().candidates()[0].candidate.name,
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn a_menu_destination_keeps_power_commands_behind_confirmation() {
+        let root = tempfile::tempdir().unwrap();
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.configure_destinations(Paths {
+            config: root.path().into(),
+            projects: root.path().join("projects"),
+            data: Vec::new(),
+        });
+        compositor.say(Text::new("open RESTART TEHUTI".into()).unwrap());
+        for expected in [false, false, true] {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                compositor.handle(&Event::Button {
+                    name: ButtonName::South,
+                    state,
+                });
+            }
+            assert_eq!(compositor.restart_requested(), expected);
+        }
+    }
+
+    #[test]
     fn spoken_unit_shows_a_route_and_confirm_carries_it_out() -> Result<(), Box<dyn core::error::Error>> {
         let root = tempfile::tempdir()?;
         std::fs::write(

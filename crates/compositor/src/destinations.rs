@@ -13,6 +13,8 @@ pub enum Source {
     Project,
     Window,
     Custom,
+    Menu,
+    Workspace,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +25,8 @@ pub enum Target {
     Action(Action),
     Window(u64),
     Application(String),
+    Menu(String),
+    Workspace(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +125,67 @@ impl Table {
         &self.entries
     }
 
+    /// Captions for configured desktop hints, preserving favourite order.
+    #[must_use]
+    pub fn desktop_signposts(&self, contexts: &[Context]) -> Vec<(String, String)> {
+        crate::desktop_hints::launch_phrases(contexts)
+            .into_iter()
+            .filter_map(|(entry, _)| {
+                let desktop = if entry.ends_with(".desktop") {
+                    entry.clone()
+                } else {
+                    format!("{entry}.desktop")
+                };
+                self.name_for(&Target::Desktop(desktop))
+                    .map(|name| (entry, name.into()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn update_workspaces(&mut self, snapshot: &tehuti_core::layout::Snapshot) {
+        self.entries.retain(|entry| entry.source != Source::Workspace);
+        for (index, workspace) in snapshot
+            .outputs
+            .iter()
+            .flat_map(|output| &output.workspaces)
+            .enumerate()
+        {
+            self.insert(Destination {
+                name: workspace
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("Workspace {}", index.saturating_add(1))),
+                extra_names: Vec::new(),
+                routes: vec![route("desktop", Target::Workspace(workspace.workspace.0))],
+                source: Source::Workspace,
+            });
+        }
+    }
+
+    #[must_use]
+    pub fn name_for(&self, target: &Target) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .routes
+                    .iter()
+                    .any(|route| route.steps.iter().any(|step| &step.target == target))
+            })
+            .map(|entry| entry.name.as_str())
+    }
+
+    pub(crate) fn add_menu(&mut self) {
+        for command in tehuti_core::menu::ITEMS {
+            self.insert(Destination {
+                name: command.label().into(),
+                extra_names: Vec::new(),
+                routes: vec![route("system", Target::Menu(command.key().into()))],
+                source: Source::Menu,
+            });
+        }
+    }
+
     fn insert(&mut self, destination: Destination) {
         if let Some(entry) = self.entries.iter_mut().find(|entry| {
             entry.source == destination.source && entry.name.eq_ignore_ascii_case(&destination.name)
@@ -136,21 +201,37 @@ impl Table {
     pub fn update_windows(&mut self, windows: &[Window]) {
         self.entries.retain(|entry| entry.source != Source::Window);
         for window in windows {
-            let name = if window.title.is_empty() {
-                &window.chip
-            } else {
+            let base = if window.chip.is_empty() {
                 &window.title
+            } else {
+                &window.chip
+            };
+            let duplicate = windows.iter().filter(|other| other.chip == window.chip).count() > 1;
+            let name = if duplicate {
+                if window.title.is_empty()
+                    || windows
+                        .iter()
+                        .filter(|other| other.chip == window.chip && other.title == window.title)
+                        .count()
+                        > 1
+                {
+                    format!("{base}: {}", window.identity)
+                } else {
+                    format!("{base}: {}", window.title)
+                }
+            } else {
+                base.clone()
             };
             if self
                 .entries
                 .iter()
-                .any(|entry| entry.source == Source::Custom && entry.name.eq_ignore_ascii_case(name))
+                .any(|entry| entry.source == Source::Custom && entry.name.eq_ignore_ascii_case(&name))
             {
                 continue;
             }
             self.insert(Destination {
-                name: name.clone(),
-                extra_names: vec![window.chip.clone()],
+                name,
+                extra_names: vec![window.title.clone()],
                 routes: vec![route("application-x-executable", Target::Window(window.identity))],
                 source: Source::Window,
             });
@@ -287,7 +368,7 @@ impl Custom {
                 }
                 Target::Application(app_id) => !app_id.trim().is_empty() && !app_id.contains('\0'),
                 Target::Action(_) => true,
-                Target::Window(_) => false,
+                Target::Window(_) | Target::Menu(_) | Target::Workspace(_) => false,
             };
             if !valid || step.icon.trim().is_empty() || step.icon.contains('\0') {
                 return Err("invalid destination route step".into());
@@ -392,6 +473,8 @@ impl Table {
             Source::Project => 1,
             Source::Window => 2,
             Source::Desktop => 3,
+            Source::Menu => 4,
+            Source::Workspace => 5,
         });
         crate::speech_vocabulary::bounded(
             entries

@@ -520,6 +520,74 @@ mod level_dim {
     }
 
     #[test]
+    fn empty_workspace_signpost_names_a_destination_that_voice_ranks_first() {
+        scene(1, |compositor, _| {
+            compositor.apply_layout_command(tehuti_core::layout::Command::FocusWorkspaceDown);
+            assert_eq!(compositor.voice_bar().segments()[0].text, "Workspace 2");
+            compositor.say(tehuti_protocol::Text::new("open Workspace 2".into()).unwrap());
+            assert_eq!(
+                compositor.choice_list().unwrap().candidates()[0].candidate.name,
+                "Workspace 2"
+            );
+            compositor.apply_layout_command(tehuti_core::layout::Command::FocusWorkspaceUp);
+            compositor.handle(&Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed,
+            });
+            assert_eq!(compositor.layout_snapshot().outputs[0].active_workspace, 1);
+        });
+    }
+
+    #[test]
+    fn windows_with_the_same_chip_have_distinct_spoken_signposts() {
+        scene(2, |compositor, _| {
+            compositor.set_contexts(
+                (0..2)
+                    .map(|index| {
+                        tehuti_protocol::parse_context(&format!(
+                            "app_id = 'org.example.Window{index}'\nlabel = 'Editor'\nbuttons = {{}}"
+                        ))
+                        .unwrap()
+                    })
+                    .collect(),
+            );
+            tap(compositor);
+            let names: Vec<_> = compositor
+                .voice_bar()
+                .segments()
+                .into_iter()
+                .map(|segment| segment.text)
+                .collect();
+            assert_eq!(names, ["Editor: Document 0", "Editor: Document 1"]);
+            for name in names {
+                compositor.say(tehuti_protocol::Text::new(format!("open {name}")).unwrap());
+                assert_eq!(
+                    compositor.choice_list().unwrap().candidates()[0].candidate.name,
+                    name
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn the_visible_window_title_matches_its_destination() {
+        scene(1, |compositor, _| {
+            compositor.set_contexts(vec![
+                tehuti_protocol::parse_context(
+                    "app_id = 'org.example.Window0'\nlabel = 'Editor'\nbuttons = {}",
+                )
+                .unwrap(),
+            ]);
+            assert_eq!(compositor.voice_bar().segments()[1].text, "Document 0");
+            compositor.say(tehuti_protocol::Text::new("open Document 0".into()).unwrap());
+            assert_eq!(
+                compositor.choice_list().unwrap().candidates()[0].candidate.name,
+                "Editor"
+            );
+        });
+    }
+
+    #[test]
     fn context_labels_follow_windows_and_reload_at_both_levels() {
         use tehuti_core::bar::Tone;
         scene(2, |compositor, _| {

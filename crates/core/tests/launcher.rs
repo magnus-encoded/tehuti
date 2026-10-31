@@ -9,6 +9,7 @@ mod tests {
             vec![
                 Destination {
                     name: "Other".into(),
+                    extra_names: Vec::new(),
                     route: "Other (app)".into(),
                     open: false,
                     focused: false,
@@ -16,6 +17,7 @@ mod tests {
                 },
                 Destination {
                     name: "Pokémon".into(),
+                    extra_names: Vec::new(),
                     route: "Browser → game.example".into(),
                     open: false,
                     focused: false,
@@ -35,9 +37,44 @@ mod tests {
         assert_eq!(launcher.confirm(), Some(1));
     }
 
+    #[test]
+    fn a_spoken_signpost_beats_a_similar_open_focused_destination() {
+        let mut launcher = Launcher::new(
+            "International library",
+            vec![
+                Destination {
+                    name: "International libraries".into(),
+                    open: true,
+                    focused: true,
+                    ..browser(Safety::Focus)
+                },
+                Destination {
+                    name: "International library".into(),
+                    ..browser(Safety::Launch)
+                },
+            ],
+            None,
+        );
+        assert_eq!(launcher.confirm(), Some(1));
+    }
+
+    #[test]
+    fn short_unicode_signposts_match_the_normalized_spoken_text() {
+        let mut launcher = Launcher::new(
+            "ø",
+            vec![Destination {
+                name: "Ø".into(),
+                ..browser(Safety::Launch)
+            }],
+            None,
+        );
+        assert_eq!(launcher.confirm(), Some(0));
+    }
+
     fn browser(safety: Safety) -> Destination {
         Destination {
             name: "Browser".into(),
+            extra_names: Vec::new(),
             route: "Browser (app)".into(),
             open: false,
             focused: false,
