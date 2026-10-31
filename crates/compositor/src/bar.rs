@@ -90,17 +90,21 @@ impl Buffer {
         let unit = usize::try_from(scale).ok()?;
         let width = usize::try_from(mode.size.w).ok()?;
         let layout = Layout::new(&segments, width, unit, bar.level(), bar.focused_window_segment());
-        let ticker = bar.ticker().map(|view| {
-            let content = self.ticker_strip(&view.entries).width().saturating_mul(unit);
-            let offset = ticker::scroll_offset(
-                view.step,
-                content,
-                layout.ticker.1.saturating_sub(layout.ticker.0),
-                ticker::STEP_PIXELS.saturating_mul(unit),
-                ticker::REPEAT_GAP.saturating_mul(unit),
-            );
-            (view.entries, offset)
-        });
+        let viewport = layout.ticker.1.saturating_sub(layout.ticker.0);
+        let ticker = bar
+            .ticker()
+            .filter(|_| viewport >= TICKER_MIN_WIDTH.saturating_mul(unit))
+            .map(|view| {
+                let content = self.ticker_strip(&view.entries).width().saturating_mul(unit);
+                let offset = ticker::scroll_offset(
+                    view.step,
+                    content,
+                    viewport,
+                    ticker::STEP_PIXELS.saturating_mul(unit),
+                    ticker::REPEAT_GAP.saturating_mul(unit),
+                );
+                (view.entries, offset)
+            });
         let key = (
             segments,
             bar.level(),
@@ -253,6 +257,8 @@ impl Layout {
         }
     }
 }
+
+const TICKER_MIN_WIDTH: usize = 32;
 
 const fn colour(tone: Tone) -> [u8; 4] {
     match tone {
@@ -451,7 +457,7 @@ impl Canvas {
         unit: usize,
     ) {
         let (start, end) = clip;
-        if end.saturating_sub(start) < 32usize.saturating_mul(unit) || unit == 0 {
+        if end.saturating_sub(start) < TICKER_MIN_WIDTH.saturating_mul(unit) || unit == 0 {
             return;
         }
         let height = crate::ticker_strip::HEIGHT.saturating_mul(unit);
