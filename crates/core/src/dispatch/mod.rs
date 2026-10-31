@@ -29,6 +29,8 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 pub enum Input {
     Menu(crate::menu::Command),
     Launcher(crate::launcher::Launcher),
+    /// Closes the session-start invitation once a window exists.
+    CloseInvitation,
     ChoiceList(crate::choice_list::Slots),
     DisplayModes {
         modes: Vec<String>,
@@ -332,6 +334,14 @@ impl State {
         matches!(self.secret_prompt, SecretPrompt::Visible)
     }
 
+    /// The open launcher, if the open list is one.
+    #[must_use]
+    pub fn launcher(&self) -> Option<&crate::launcher::Launcher> {
+        self.launcher
+            .as_ref()
+            .filter(|launcher| launcher.list().is_open())
+    }
+
     #[must_use]
     pub fn choice_list(&self) -> Option<&crate::choice_list::List> {
         self.launcher
@@ -441,6 +451,10 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             release_pad(&mut state, Handoff::Open(Overlay::ChoiceList), &mut effects);
             (state, effects)
         }
+        Input::CloseInvitation => {
+            state.launcher = state.launcher.filter(|launcher| !launcher.is_invitation());
+            (state, Vec::new())
+        }
         Input::ChoiceList(slots) => {
             state.launcher = None;
             state.choice_list = Some(crate::choice_list::List::new(slots));
@@ -493,6 +507,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         Input::PluginExited { plugin } => vec![Task::PluginExited(plugin)],
         Input::Menu(_)
         | Input::Launcher(_)
+        | Input::CloseInvitation
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -547,6 +562,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         Input::ControllerDisconnected => disconnect_controller(&mut state, &mut effects),
         Input::Menu(_)
         | Input::Launcher(_)
+        | Input::CloseInvitation
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -605,6 +621,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         } => state.settings.restore_input(controller, microphone),
         Input::Menu(_)
         | Input::Launcher(_)
+        | Input::CloseInvitation
         | Input::ChoiceList(_)
         | Input::Tick { .. }
         | Input::Event { .. }
@@ -1334,6 +1351,16 @@ fn launcher_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
         Event::Button { name, state: button } => {
             if state.core.push_to_talk(*name) {
                 launcher.stop_timer();
+                return false;
+            }
+            let own = [
+                family.button(crate::pad::Role::Confirm),
+                family.button(crate::pad::Role::Back),
+                ButtonName::DpadUp,
+                ButtonName::DpadDown,
+            ];
+            if launcher.is_invitation() && !own.contains(name) {
+                // The invitation leaves menus, mouse mode and shortcuts working.
                 return false;
             }
             if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {

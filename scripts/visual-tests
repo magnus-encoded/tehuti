@@ -39,12 +39,11 @@ def launcher_layout(scene):
             assert abs((ink[axis] + ink[axis + 2] - circle[axis] - circle[axis + 2]) / 2) <= 1, "glyph off centre"
     rows = layout["rows"]
     assert rows, "launcher must have rows"
-    assert len({row["height"] for row in rows}) == 1, "unequal row heights"
+    assert all(row["height"] == 72 for row in rows), "rows must keep their natural height"
     assert all(a["y"] + a["height"] == b["y"] for a, b in zip(rows, rows[1:])), "gap between rows"
     panel_bottom = layout["panel"]["y"] + layout["panel"]["height"]
     assert 1000 <= panel_bottom <= 1040, "panel must end above the bar"
-    assert 0 <= panel_bottom - layout["rows_bottom"] <= 96, "unused space below rows"
-    assert layout["rows_bottom"] >= 950, "rows do not fill panel"
+    assert layout["rows_bottom"] <= panel_bottom, "rows extend below panel"
 
 
 def run(args):

@@ -59,6 +59,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::ClockRead(elapsed) => *elapsed,
         DispatchInput::Menu(_)
         | DispatchInput::Launcher(_)
+        | DispatchInput::CloseInvitation
         | DispatchInput::ChoiceList(_)
         | DispatchInput::FocusTitle { .. }
         | DispatchInput::DisplayModes { .. }
@@ -158,6 +159,7 @@ pub struct Compositor {
     destination_paths: crate::destinations::Paths,
     destinations: crate::destinations::Table,
     launcher_routes: Vec<crate::destinations::Route>,
+    invitation: Invitation,
     destination_windows: Vec<crate::destinations::Window>,
     speech_context: Option<String>,
     launch_socket: Option<std::ffi::OsString>,
@@ -283,6 +285,7 @@ impl Compositor {
             destination_paths: crate::destinations::Paths::default(),
             destinations: crate::destinations::Table::default(),
             launcher_routes: Vec::new(),
+            invitation: Invitation::Off,
             destination_windows: Vec::new(),
             speech_context: None,
             layout_windows: Vec::new(),
@@ -646,6 +649,7 @@ impl Compositor {
         let elapsed = self.read_clock();
         tracing::trace!(?elapsed, "dispatch tick");
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
+        self.keep_invitation();
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
@@ -864,10 +868,47 @@ impl Compositor {
             }
         };
         let _rejection = self.dispatch(input);
+        self.after_event(event);
+    }
+
+    fn after_event(&mut self, event: &Event) {
         if let Event::Focus { app_id, .. } = event {
             self.speech_context.clone_from(app_id);
             self.refresh_speech_vocabulary();
         }
+        self.keep_invitation();
+    }
+
+    /// Shows the session-start invitation whenever nothing is open; the session enables it.
+    pub const fn enable_invitation(&mut self) {
+        self.invitation = Invitation::Ready;
+    }
+
+    /// With nothing open, the invitation is the first thing on screen; a window closes it.
+    fn keep_invitation(&mut self) {
+        if self.invitation == Invitation::Off {
+            return;
+        }
+        if !self.layout_windows.is_empty() || self.speech_context.is_some() {
+            self.invitation = Invitation::Ready;
+            let _rejection = self.dispatch(DispatchInput::CloseInvitation);
+            return;
+        }
+        let waiting = matches!(
+            self.invitation,
+            Invitation::Launching(since) if since.elapsed() < core::time::Duration::from_secs(10)
+        );
+        if waiting || self.choice_list().is_some() || self.dispatch.keyboard().is_open() {
+            return;
+        }
+        let button = (!self.controller_names.is_empty()).then(|| match self.pad_family() {
+            tehuti_core::pad::PadFamily::Letters => "Share",
+            tehuti_core::pad::PadFamily::Symbols => "Create",
+            tehuti_core::pad::PadFamily::Nintendo => "Capture",
+        });
+        let invitation = tehuti_core::launcher::Launcher::invitation(button);
+        self.launcher_routes.clear();
+        let _rejection = self.dispatch(DispatchInput::Launcher(invitation));
     }
 
     /// Feeds one input and every reply it asks for until its frame finishes.
@@ -1489,6 +1530,9 @@ impl Compositor {
             }
             DispatchEffect::ChooseLauncher(index) => {
                 if let Some(route) = self.launcher_routes.get(index).cloned() {
+                    if self.invitation != Invitation::Off && self.layout_windows.is_empty() {
+                        self.invitation = Invitation::Launching(Instant::now());
+                    }
                     self.follow_launcher_route(route);
                 }
             }
@@ -2143,6 +2187,14 @@ impl Compositor {
         self.place_layout();
     }
 
+    /// The next opening slot while the launcher is visible.
+    #[must_use]
+    pub fn launcher_slot(&self) -> Option<tehuti_core::layout::Rect> {
+        let _launcher = self.dispatch.launcher()?;
+        self.layout
+            .preview_window(tehuti_core::layout::WindowRules::default())
+    }
+
     /// The tiling layout every mapped window is placed by.
     #[must_use]
     pub fn layout_snapshot(&self) -> tehuti_core::layout::Snapshot {
@@ -2462,6 +2514,9 @@ impl Compositor {
     }
 
     fn show_launch_failure(&mut self) {
+        if self.invitation != Invitation::Off {
+            self.invitation = Invitation::Ready;
+        }
         self.notice_text = Some("APPLICATION UNAVAILABLE".into());
         self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
     }
@@ -3010,6 +3065,16 @@ fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
     if !admitted {
         tracing::info!("speech transcript dropped for a stale session");
     }
+}
+
+/// The session-start invitation's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Invitation {
+    /// Embedders and tests that never asked for it.
+    Off,
+    Ready,
+    /// A pick from the invitation is starting; its window has a grace period to appear.
+    Launching(Instant),
 }
 
 #[cfg(test)]

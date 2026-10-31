@@ -24,11 +24,11 @@ Review the resulting PNG changes before committing. Updating never changes
 pending launcher cases or bypasses scene assertions.
 
 Both launcher goldens are pending #379: appearing at empty start, centring
-glyphs and filling the panel must be fixed before accepting those pixels. Both cases still render and save
+glyphs and placing the panel must be fixed before accepting those pixels. Both cases still render and save
 captures. The window case requires the same focused window to remain mapped.
 Launcher layout assertions consume `tehuti-drive scene --json`: ink centres
-must be within one physical pixel of their circles, rows must have equal heights
-and no gaps, and rows must fill the panel above the bar. These assertions report
+must be within one physical pixel of their circles, rows must keep their natural height
+and stack without gaps above the bar. These assertions report
 pending failures until the cases are enabled. To enable them, remove the two launcher
 names from `PENDING`, run the update command, and review their PNGs. Layout
 assertions must then run before accepting or comparing launcher goldens.
