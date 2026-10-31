@@ -202,6 +202,15 @@ mod level_dim {
     }
 
     fn scene_scaled(count: usize, scale: i32, check: impl FnOnce(&mut Compositor, &Output)) {
+        scene_with_app(count, scale, false, check);
+    }
+
+    fn scene_with_app(
+        count: usize,
+        scale: i32,
+        terminal: bool,
+        check: impl FnOnce(&mut Compositor, &Output),
+    ) {
         let mut display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         let output = Output::new(
@@ -232,7 +241,7 @@ mod level_dim {
             .unwrap();
         let (ready, received) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
-        let thread = thread::spawn(move || client(stream, count, &ready, &stopped, false));
+        let thread = thread::spawn(move || client(stream, count, &ready, &stopped, terminal));
         let started = Instant::now();
         while received.try_recv().is_err() {
             assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
@@ -539,7 +548,21 @@ mod level_dim {
     }
 
     #[test]
-    fn windows_with_the_same_chip_have_distinct_spoken_signposts() {
+    fn identical_kitty_windows_have_plain_column_labels() {
+        scene_with_app(2, 1, true, |compositor, _| {
+            tap(compositor);
+            let labels: Vec<_> = compositor
+                .voice_bar()
+                .segments()
+                .into_iter()
+                .map(|segment| segment.text)
+                .collect();
+            assert_eq!(labels, ["kitty", "kitty"]);
+        });
+    }
+
+    #[test]
+    fn windows_with_the_same_chip_keep_plain_labels_and_distinct_spoken_signposts() {
         scene(2, |compositor, _| {
             compositor.set_contexts(
                 (0..2)
@@ -558,8 +581,8 @@ mod level_dim {
                 .into_iter()
                 .map(|segment| segment.text)
                 .collect();
-            assert_eq!(names, ["Editor: Document 0", "Editor: Document 1"]);
-            for name in names {
+            assert_eq!(names, ["Editor", "Editor"]);
+            for name in ["Editor: Document 0", "Editor: Document 1"] {
                 compositor.say(tehuti_protocol::Text::new(format!("open {name}")).unwrap());
                 assert_eq!(
                     compositor.choice_list().unwrap().candidates()[0].candidate.name,
