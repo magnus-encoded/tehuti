@@ -127,6 +127,80 @@ mod redraw {
         Ok(())
     }
 
+    fn idle_frame_count(contexts: Vec<tehuti_protocol::Context>, width: i32) -> Result<u64, Box<dyn Error>> {
+        let mut screen = Screen::new()?;
+        let mut compositor = Compositor::new(&screen.display.handle())?;
+        compositor.space.map_output(&screen.output, (0, 0));
+        compositor.output = Some(screen.output.clone());
+        screen.output.change_current_state(
+            Some(Mode {
+                size: (width, HEIGHT).into(),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            None,
+        );
+        compositor.set_contexts(contexts);
+        let started = std::time::Instant::now();
+        while screen
+            .cache
+            .lock()
+            .map_err(|_| "wallpaper cache poisoned")?
+            .buffer((width, HEIGHT).into())
+            .is_none()
+        {
+            if started.elapsed() >= core::time::Duration::from_secs(2) {
+                return Err("wallpaper preparation timed out".into());
+            }
+            std::thread::yield_now();
+        }
+        let mut drawn = 0_u64;
+        let mut drawn_at = [None, None];
+        let mut next = 0;
+        for _ in 0..4 {
+            let age = tehuti::pacing::buffer_age(drawn, drawn_at[next], false);
+            if screen.draw(&compositor, next, age, "12:00")?.is_some() {
+                drawn_at[next] = Some(drawn);
+                drawn = drawn.saturating_add(1);
+                next ^= 1;
+            }
+        }
+        let baseline = drawn;
+        for _ in 0..120 {
+            tick(&mut compositor, 16);
+            let age = tehuti::pacing::buffer_age(drawn, drawn_at[next], false);
+            if screen.draw(&compositor, next, age, "12:00")?.is_some() {
+                drawn_at[next] = Some(drawn);
+                drawn = drawn.saturating_add(1);
+                next ^= 1;
+            }
+        }
+        Ok(drawn.saturating_sub(baseline))
+    }
+
+    #[test]
+    fn idle_vblanks_draw_no_frames_with_the_ticker_disabled() -> Result<(), Box<dyn Error>> {
+        assert_eq!(idle_frame_count(ticker_contexts(false), WIDTH)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn idle_vblanks_draw_no_frames_when_the_ticker_has_no_room() -> Result<(), Box<dyn Error>> {
+        for width in [200, 311] {
+            assert_eq!(idle_frame_count(ticker_contexts(true), width)?, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn idle_vblanks_draw_no_frames_when_the_ticker_fits() -> Result<(), Box<dyn Error>> {
+        let context =
+            tehuti_protocol::parse_context("app_id = '*'\n[ticker]\nspeech = 'none'\n[buttons]\n[speech]\n")?;
+        assert_eq!(idle_frame_count(vec![context], WIDTH)?, 0);
+        Ok(())
+    }
+
     #[test]
     fn a_new_minute_redraws_only_the_bar() -> Result<(), Box<dyn Error>> {
         let mut screen = Screen::new()?;
