@@ -52,10 +52,10 @@ mod menu {
         let mut menu = Some(Menu::default());
         assert_eq!(
             menu.as_ref().unwrap().text(),
-            "SYSTEM MENU\n> LOG OUT\n  RESTART TEHUTI\n  SWITCH TO PLASMA\n  REBOOT\n  SHUT DOWN\n  TASK MONITOR\n  SETTINGS\nB OR GUIDE CLOSE"
+            "SYSTEM MENU\n> LOG OUT\n  RESTART TEHUTI\n  SWITCH TO PLASMA\n  REBOOT\n  SHUT DOWN\n  TASK MONITOR\n  SETTINGS\n  SCREENSHOT\nB OR GUIDE CLOSE"
         );
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
-        assert!(menu.as_ref().unwrap().text().contains("\n> SETTINGS"));
+        assert!(menu.as_ref().unwrap().text().contains("\n> SCREENSHOT"));
         assert_eq!(
             button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed),
             None
@@ -73,6 +73,7 @@ mod menu {
             (Command::ShutDown, "shut_down"),
             (Command::TaskMonitor, "task_monitor"),
             (Command::Settings, "settings"),
+            (Command::Screenshot, "screenshot"),
         ] {
             assert_eq!(command.key(), key);
         }
@@ -136,12 +137,12 @@ mod menu {
     }
 
     #[test]
-    fn up_wraps_to_settings() {
+    fn up_wraps_to_screenshot() {
         let mut menu = Some(Menu::default());
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
         assert_eq!(
             button(&mut menu, ButtonName::South, ButtonState::Pressed),
-            Some(Command::Settings)
+            Some(Command::Screenshot)
         );
         assert!(menu.is_none());
     }

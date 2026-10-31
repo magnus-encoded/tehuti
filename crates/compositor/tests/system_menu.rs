@@ -170,9 +170,9 @@ order = 10
             menu.as_ref()
                 .unwrap()
                 .text()
-                .contains("SETTINGS\n  Terminal\n  Peer\n  Later")
+                .contains("SCREENSHOT\n  Terminal\n  Peer\n  Later")
         );
-        for _ in 0..7 {
+        for _ in 0..tehuti_core::menu::ITEMS.len() {
             assert_eq!(
                 menu::handle(
                     &mut menu,
@@ -290,7 +290,7 @@ exec = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY\" > \"$
             state: ButtonState::Released,
         });
         let count = if std::env::var("TEHUTI_TEST_CUSTOM_MENU").as_deref() == Ok("yes") {
-            7
+            tehuti_core::menu::ITEMS.len()
         } else {
             5
         };

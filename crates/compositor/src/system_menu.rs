@@ -84,6 +84,7 @@ impl Config {
             | Command::Reboot
             | Command::ShutDown
             | Command::TaskMonitor
+            | Command::Screenshot
             | Command::Settings
             | Command::Custom(_) => None,
         }
@@ -106,6 +107,7 @@ impl Config {
             | Command::Reboot
             | Command::ShutDown
             | Command::TaskMonitor
+            | Command::Screenshot
             | Command::Settings => self.commands.get(command.key()),
         };
         let task_monitor = vec!["plasma-systemmonitor".to_owned()];

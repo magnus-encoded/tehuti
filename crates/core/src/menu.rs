@@ -12,6 +12,7 @@ pub enum Command {
     ShutDown,
     TaskMonitor,
     Settings,
+    Screenshot,
     Custom(usize),
 }
 
@@ -35,12 +36,13 @@ impl Command {
             Self::ShutDown => ("shut_down", "SHUT DOWN"),
             Self::TaskMonitor => ("task_monitor", "TASK MONITOR"),
             Self::Settings => ("settings", "SETTINGS"),
+            Self::Screenshot => ("screenshot", "SCREENSHOT"),
             Self::Custom(_) => ("entry", ""),
         }
     }
 }
 
-pub const ITEMS: [Command; 7] = [
+pub const ITEMS: [Command; 8] = [
     Command::LogOut,
     Command::Restart,
     Command::Plasma,
@@ -48,6 +50,7 @@ pub const ITEMS: [Command; 7] = [
     Command::ShutDown,
     Command::TaskMonitor,
     Command::Settings,
+    Command::Screenshot,
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -110,7 +113,7 @@ impl Menu {
         if self.confirming
             || matches!(
                 command,
-                Command::TaskMonitor | Command::Settings | Command::Custom(_)
+                Command::TaskMonitor | Command::Settings | Command::Screenshot | Command::Custom(_)
             )
         {
             return Some(command);

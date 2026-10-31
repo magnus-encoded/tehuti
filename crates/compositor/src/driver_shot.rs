@@ -13,13 +13,25 @@ use std::path::Path;
     reason = "crate visibility keeps the capture adapter private"
 )]
 pub(crate) fn save(compositor: &Compositor, path: &Path) -> Result<(), Box<dyn Error>> {
-    let output = compositor.output.as_ref().ok_or("test output unavailable")?;
+    save_with_clock(compositor, path, "00:00")
+}
+
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "capture adapters remain private to the compositor"
+)]
+pub(crate) fn save_with_clock(
+    compositor: &Compositor,
+    path: &Path,
+    clock: &str,
+) -> Result<(), Box<dyn Error>> {
+    let output = compositor.output.as_ref().ok_or("output unavailable")?;
     let mode = output.current_mode().ok_or("output mode unavailable")?;
     let mut renderer = PixmanRenderer::new()?;
     let mut buffer = renderer.create_buffer(Fourcc::Abgr8888, (mode.size.w, mode.size.h).into())?;
     let mut target = renderer.bind(&mut buffer)?;
     let mut overlays = crate::overlays::Overlays::default();
-    let elements = overlays.elements(&mut renderer, output, compositor, "00:00")?;
+    let elements = overlays.elements(&mut renderer, output, compositor, clock)?;
     let mut damage = OutputDamageTracker::from_output(output);
     crate::wallpaper::render_output(
         output,

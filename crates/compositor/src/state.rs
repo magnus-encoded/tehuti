@@ -1324,6 +1324,13 @@ impl Compositor {
     }
 
     fn run_menu_command(&mut self, command: tehuti_core::menu::Command) {
+        if command == tehuti_core::menu::Command::Screenshot {
+            match crate::screenshot::save(self) {
+                Ok(path) => self.show_notice(&format!("SCREENSHOT SAVED: {}", path.display())),
+                Err(error) => self.show_notice(&format!("SCREENSHOT FAILED: {error}")),
+            }
+            return;
+        }
         if command == tehuti_core::menu::Command::Restart {
             self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
             self.restart_requested = true;

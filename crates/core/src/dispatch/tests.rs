@@ -2173,7 +2173,13 @@ fn system_menu_settings_entry_opens_the_view_without_a_shell_command() {
         },
     );
     state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
-    state = tap_button(&mut world, state, ButtonName::DpadUp);
+    let index = crate::menu::ITEMS
+        .iter()
+        .position(|command| *command == crate::menu::Command::Settings)
+        .unwrap();
+    for _ in 0..index {
+        state = tap_button(&mut world, state, ButtonName::DpadDown);
+    }
     world.trace.clear();
     state = tap_button(&mut world, state, ButtonName::South);
     assert!(state.settings().open);
