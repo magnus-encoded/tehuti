@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class SessionTests(unittest.TestCase):
     def run_session(self, statuses, times=None, plasma=True, missing_binary=False,
-                    plasma_statuses=None, date_failure=False):
+                    plasma_statuses=None, date_failure=False, plasma_active=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bin_dir = root / 'bin'
@@ -38,6 +38,9 @@ sed '1d' "$PLASMA_STATUSES" >"$PLASMA_STATUSES.next"
 mv "$PLASMA_STATUSES.next" "$PLASMA_STATUSES"
 exit "$status"
 ''')
+            stub('systemctl', '''[ "$*" = '--user is-active --quiet plasma-workspace.target' ] || exit 2
+exit "$PLASMA_ACTIVE_STATUS"
+''')
             stub('sleep', 'echo "sleep $*" >>"$TRACE"\n')
             if date_failure:
                 (bin_dir / 'date').unlink()
@@ -52,6 +55,7 @@ echo "$now"
             (root / 'statuses').write_text('\n'.join(map(str, statuses)) + '\n')
             (root / 'times').write_text('\n'.join(map(str, times or [])) + '\n')
             env = dict(os.environ, PATH=str(bin_dir),
+                       PLASMA_ACTIVE_STATUS='0' if plasma_active else '3',
                        XDG_STATE_HOME=str(root), TRACE=str(root / 'trace'),
                        STATUSES=str(root / 'statuses'), TIMES=str(root / 'times'),
                        PLASMA_STATUSES=str(root / 'plasma-statuses'),
@@ -84,6 +88,12 @@ echo "$now"
         code, trace, _ = self.run_session([20, 21])
         self.assertEqual(code, 0)
         self.assertEqual(trace, ['tehuti', 'plasma', 'tehuti'])
+
+    def test_active_plasma_returns_to_tehuti(self):
+        code, trace, log = self.run_session([20, 21], plasma_active=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(trace, ['tehuti', 'tehuti'])
+        self.assertIn('Plasma workspace already active; restarting Tehuti', log)
 
     def test_restart_relaunches_without_plasma_or_failure_lock(self):
         code, trace, log = self.run_session([75, 75, 75, 21])
