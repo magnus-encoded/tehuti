@@ -21,6 +21,40 @@ mod speech_process {
     }
 
     #[test]
+    fn stale_typed_speech_fifo_is_replaced_and_accepts_lines() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(FIFO_NAME);
+        rustix::fs::mkfifoat(rustix::fs::CWD, &path, rustix::fs::Mode::RUSR).unwrap();
+        let fifo = SayFifo::create(directory.path()).unwrap();
+        let mut writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        writer.write_all(b"ready\n").unwrap();
+        assert_eq!(fifo.drain().unwrap(), vec![Text::new("ready".into()).unwrap()]);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn typed_speech_preserves_other_path_types() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(FIFO_NAME);
+        std::fs::write(&path, b"keep").unwrap();
+        assert!(SayFifo::create(directory.path()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(SayFifo::create(directory.path()).is_err());
+        assert!(path.is_dir());
+        std::fs::remove_dir(&path).unwrap();
+        let target = directory.path().join("target");
+        rustix::fs::mkfifoat(rustix::fs::CWD, &target, rustix::fs::Mode::RUSR).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(SayFifo::create(directory.path()).is_err());
+        assert_eq!(std::fs::read_link(&path).unwrap(), target);
+    }
+
+    #[test]
     fn typed_lines_arrive_without_a_speech_session_and_fifo_is_private() {
         use smithay::reexports::wayland_server::Display;
         use tehuti::state::Compositor;
@@ -32,7 +66,6 @@ mod speech_process {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        assert!(SayFifo::create(directory.path()).is_err());
         assert_eq!(fifo.drain().unwrap(), Vec::<Text>::new());
 
         let mut writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();

@@ -39,6 +39,78 @@ mod tests {
         assert!(!drive(socket, &["key", "unknown"]).status.success());
     }
 
+    fn wait_for_scene(child: &mut std::process::Child, socket: &Path, log_path: &Path) {
+        let deadline = std::time::Instant::now()
+            .checked_add(core::time::Duration::from_secs(10))
+            .unwrap();
+        loop {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "{}",
+                std::fs::read_to_string(log_path).unwrap()
+            );
+            if drive(socket, &["scene", "--json"]).status.success() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "session did not start");
+            std::thread::sleep(core::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn typed_speech_startup_recovers_stale_fifos_and_preserves_other_files() {
+        use std::os::unix::fs::FileTypeExt as _;
+        for stale_fifo in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let config = root.path().join("config");
+            std::fs::create_dir(&config).unwrap();
+            let path = root.path().join(tehuti::say::FIFO_NAME);
+            if stale_fifo {
+                rustix::fs::mkfifoat(rustix::fs::CWD, &path, rustix::fs::Mode::RUSR).unwrap();
+            } else {
+                std::fs::write(&path, b"keep").unwrap();
+            }
+            let log_path = root.path().join("session.log");
+            let log = std::fs::File::create(&log_path).unwrap();
+            let mut child = Command::new(env!("CARGO_BIN_EXE_tehuti"))
+                .arg("--test-driver")
+                .arg(&config)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", root.path())
+                .env("XDG_RUNTIME_DIR", root.path())
+                .env("XDG_CONFIG_HOME", &config)
+                .env("XDG_DATA_HOME", root.path().join("data"))
+                .env("XDG_STATE_HOME", root.path().join("state"))
+                .env("TEHUTI_SAY", "1")
+                .env("TEHUTI_TEST_SIZE", "320x240")
+                .stdout(log.try_clone().unwrap())
+                .stderr(log)
+                .spawn()
+                .unwrap();
+            let socket = root.path().join("tehuti-drive.sock");
+            let checked = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+                wait_for_scene(&mut child, &socket, &log_path);
+                if stale_fifo {
+                    assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_fifo());
+                } else {
+                    assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+                    assert!(
+                        std::fs::read_to_string(&log_path)
+                            .unwrap()
+                            .contains("typed speech FIFO unavailable")
+                    );
+                }
+            }));
+            let _stopped = drive(&socket, &["stop"]);
+            let _killed = child.kill();
+            let _waited = child.wait();
+            if let Err(panic) = checked {
+                std::panic::resume_unwind(panic);
+            }
+        }
+    }
+
     #[test]
     fn headless_session_can_be_inspected_advanced_captured_and_stopped() {
         let root = tempfile::tempdir().unwrap();
