@@ -679,6 +679,18 @@ fn guide_button(state: &mut State, button_state: ButtonState) {
     }
 }
 
+fn guide_workspace(name: ButtonName, button: ButtonState) -> Vec<Action> {
+    match (name, button) {
+        (ButtonName::DpadUp, ButtonState::Pressed) => vec![Action::Layout {
+            action: LayoutAction::FocusWorkspaceUp,
+        }],
+        (ButtonName::DpadDown, ButtonState::Pressed) => vec![Action::Layout {
+            action: LayoutAction::FocusWorkspaceDown,
+        }],
+        _ => Vec::new(),
+    }
+}
+
 fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     match event {
         Event::Button {
@@ -687,6 +699,13 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
         } => {
             guide_button(state, *button_state);
             Some(Vec::new())
+        }
+        Event::Button {
+            name: name @ (ButtonName::DpadUp | ButtonName::DpadDown),
+            state: button_state,
+        } if state.guide_held.is_some() => {
+            state.guide_tap = None;
+            Some(guide_workspace(*name, *button_state))
         }
         Event::Button {
             name: ButtonName::Start,
