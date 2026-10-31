@@ -34,6 +34,15 @@ while :; do
             fi
         fi
     fi
+    if systemctl --user is-active --quiet plasma-workspace.target; then
+        if [ "$stay_in_plasma" = true ]; then
+            echo 'Plasma workspace already active; waiting for it to stop'
+            sleep 3
+        else
+            echo 'Plasma workspace already active; restarting Tehuti'
+        fi
+        continue
+    fi
     if plasma=$(command -v startplasma-wayland); then
         status=0
         XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE "$plasma" || status=$?
