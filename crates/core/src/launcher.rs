@@ -13,10 +13,29 @@ pub enum Safety {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Destination {
     pub name: String,
+    pub extra_names: Vec<String>,
     pub route: String,
     pub open: bool,
     pub focused: bool,
     pub safety: Safety,
+}
+
+impl Destination {
+    fn names(&self) -> impl Iterator<Item = &str> {
+        core::iter::once(self.name.as_str()).chain(self.extra_names.iter().map(String::as_str))
+    }
+
+    fn similarity(&self, folded: &str) -> u16 {
+        self.names()
+            .map(|name| tehuti_protocol::similarity(folded, &tehuti_protocol::fold_phrase(name)))
+            .max()
+            .unwrap_or_default()
+    }
+
+    fn exactly_matches(&self, normalized: &str) -> bool {
+        self.names()
+            .any(|name| normalized == tehuti_protocol::normalize_phrase(name))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,10 +65,7 @@ impl Launcher {
         rows.truncate(5);
         let matched = rows.first().is_some_and(|first| {
             destinations.get(first.0).is_some_and(|destination| {
-                tehuti_protocol::similarity(
-                    &tehuti_protocol::fold_phrase(query),
-                    &tehuti_protocol::fold_phrase(&destination.name),
-                ) >= 850
+                destination.similarity(&tehuti_protocol::fold_phrase(query)) >= 850
             }) && rows
                 .get(1)
                 .is_none_or(|second| first.1.saturating_sub(second.1) >= 100)
@@ -288,14 +304,14 @@ pub struct JevRequest {
 }
 
 fn local_ranking(query: &str, destinations: &[Destination]) -> Vec<(usize, u16)> {
+    let normalized = tehuti_protocol::normalize_phrase(query);
     let folded = tehuti_protocol::fold_phrase(query);
     let mut rows: Vec<_> = destinations
         .iter()
         .enumerate()
         .filter_map(|(index, destination)| {
-            let name = tehuti_protocol::fold_phrase(&destination.name);
-            let score = tehuti_protocol::similarity(&folded, &name);
-            let exact = query.eq_ignore_ascii_case(&destination.name);
+            let score = destination.similarity(&folded);
+            let exact = destination.exactly_matches(&normalized);
             (exact || (folded.chars().count() >= tehuti_protocol::MIN_FUZZY_LETTERS && score >= 500))
                 .then_some((
                     index,
@@ -305,6 +321,13 @@ fn local_ranking(query: &str, destinations: &[Destination]) -> Vec<(usize, u16)>
                 ))
         })
         .collect();
-    rows.sort_by_key(|row| core::cmp::Reverse(row.1));
+    rows.sort_by_key(|row| {
+        core::cmp::Reverse((
+            destinations
+                .get(row.0)
+                .is_some_and(|destination| destination.exactly_matches(&normalized)),
+            row.1,
+        ))
+    });
     rows
 }

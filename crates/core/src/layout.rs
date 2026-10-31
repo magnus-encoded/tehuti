@@ -234,6 +234,7 @@ pub const fn command_for(action: tehuti_protocol::LayoutAction) -> Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutError {
     UnknownWindow(WindowId),
+    UnknownWorkspace(WorkspaceId),
     DuplicateWindow(WindowId),
     UnknownOutput(OutputId),
     DuplicateOutput(OutputId),
@@ -247,6 +248,7 @@ pub enum LayoutError {
 impl fmt::Display for LayoutError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnknownWorkspace(workspace) => write!(formatter, "unknown workspace {}", workspace.0),
             Self::UnknownWindow(window) => {
                 write!(formatter, "unknown window {}", window.0)
             }
@@ -825,6 +827,29 @@ impl Layout {
         }
         self.normalize();
         self.scroll(output, None, false);
+        Ok(())
+    }
+
+    /// Focuses a workspace by its stable identity, including an empty workspace.
+    ///
+    /// # Errors
+    /// The workspace is absent from the connected outputs.
+    pub fn focus_workspace_id(&mut self, identity: WorkspaceId) -> Result<(), LayoutError> {
+        let (output, workspace) = self
+            .outputs
+            .iter()
+            .enumerate()
+            .find_map(|(output, view)| {
+                view.workspaces
+                    .iter()
+                    .position(|workspace| workspace.identity == identity)
+                    .map(|workspace| (output, workspace))
+            })
+            .ok_or(LayoutError::UnknownWorkspace(identity))?;
+        if let Some(target) = self.outputs.get(output) {
+            self.focused = Some(target.identity);
+        }
+        self.focus_workspace(output, workspace, false);
         Ok(())
     }
 

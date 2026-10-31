@@ -5,6 +5,32 @@ mod destinations {
     use tehuti_protocol::parse_context;
 
     #[test]
+    fn desktop_captions_use_the_table_name_instead_of_a_legacy_launch_phrase() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("applications")).unwrap();
+        std::fs::write(
+            root.path().join("applications/reader.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Library\nExec=reader\n",
+        )
+        .unwrap();
+        let contexts = vec![
+            parse_context("app_id = '*'\n[buttons]\n[speech]\nRead = { launch = 'reader.desktop' }").unwrap(),
+        ];
+        let table = Table::read(
+            root.path(),
+            &root.path().join("projects"),
+            &[root.path().into()],
+            &contexts,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            table.desktop_signposts(&contexts),
+            [("reader.desktop".into(), "Library".into())]
+        );
+    }
+
+    #[test]
     fn generated_destinations_keep_routes_sources_and_window_names() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("data/applications")).unwrap();
@@ -51,10 +77,10 @@ mod destinations {
         let window = table
             .entries()
             .iter()
-            .find(|entry| entry.name == "Chapter one")
+            .find(|entry| entry.name == "Books")
             .unwrap();
         assert_eq!(window.source, Source::Window);
-        assert_eq!(window.extra_names, ["Books"]);
+        assert_eq!(window.extra_names, ["Chapter one"]);
     }
 
     #[test]
@@ -82,7 +108,7 @@ mod destinations {
             root.path().join("destinations.toml"),
             r"
 [[destinations]]
-name = 'Reading'
+name = 'Books'
 extra_names = ['Library']
 [[destinations.routes]]
 steps = [{ icon = 'reader', target = { kind = 'desktop', value = 'reader.desktop' } }]

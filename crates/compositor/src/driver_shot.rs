@@ -5,7 +5,7 @@ use smithay::backend::{
     allocator::Fourcc,
     renderer::{Bind, ExportMem, Offscreen, damage::OutputDamageTracker, pixman::PixmanRenderer},
 };
-use smithay::utils::Rectangle;
+use smithay::utils::{Rectangle, Transform};
 use std::path::Path;
 
 #[expect(
@@ -37,8 +37,12 @@ pub(crate) fn save(compositor: &Compositor, path: &Path) -> Result<(), Box<dyn E
         Fourcc::Abgr8888,
     )?;
     let pixels = renderer.map_texture(&mapping)?.to_vec();
-    let image = image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
-        .ok_or("invalid capture dimensions")?;
+    let mut image =
+        image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
+            .ok_or("invalid capture dimensions")?;
+    if output.current_transform() == Transform::Flipped180 {
+        image::imageops::flip_vertical_in_place(&mut image);
+    }
     image.save_with_format(path, image::ImageFormat::Png)?;
     Ok(())
 }

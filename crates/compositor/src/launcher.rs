@@ -27,9 +27,13 @@ pub fn destinations(
                 .steps
                 .iter()
                 .map(|step| match &step.target {
-                    Target::Desktop(value) | Target::Url(value) | Target::Application(value) => {
+                    Target::Desktop(value)
+                    | Target::Url(value)
+                    | Target::Application(value)
+                    | Target::Menu(value) => {
                         format!("{}: {value}", step.icon)
                     }
+                    Target::Workspace(_) => format!("{}: workspace", step.icon),
                     Target::Window(_) => format!("{}: open window", step.icon),
                     Target::Action(_) => format!("{}: {}", step.icon, entry.name),
                 })
@@ -37,6 +41,7 @@ pub fn destinations(
                 .join(" → ");
             destinations.push(tehuti_core::launcher::Destination {
                 name: entry.name.clone(),
+                extra_names: entry.extra_names.clone(),
                 route: description,
                 open,
                 focused: route
@@ -46,7 +51,7 @@ pub fn destinations(
                 safety: if route
                     .steps
                     .iter()
-                    .any(|step| matches!(step.target, Target::Action(_)))
+                    .any(|step| matches!(step.target, Target::Action(_) | Target::Menu(_)))
                 {
                     tehuti_core::launcher::Safety::Changes
                 } else {

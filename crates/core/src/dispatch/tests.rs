@@ -4339,6 +4339,7 @@ fn launcher_controller_confirmation_becomes_a_route_effect() {
         "browser",
         vec![crate::launcher::Destination {
             name: "Browser".into(),
+            extra_names: Vec::new(),
             route: "Browser (app)".into(),
             open: false,
             focused: false,
@@ -4369,6 +4370,7 @@ fn launcher_allows_push_to_talk_and_replaces_its_query() {
         "browser",
         vec![crate::launcher::Destination {
             name: "Browser".into(),
+            extra_names: Vec::new(),
             route: "Browser (app)".into(),
             open: false,
             focused: false,

@@ -250,6 +250,13 @@ impl Bar {
         self
     }
 
+    /// Uses the shell's destination name for the current chip.
+    #[must_use]
+    pub fn with_destination(mut self, name: String) -> Self {
+        self.context = Some(name);
+        self
+    }
+
     /// Adds feedback to a bar view without changing its window focus.
     #[must_use]
     pub fn with_feedback(mut self, feedback: Segment) -> Self {

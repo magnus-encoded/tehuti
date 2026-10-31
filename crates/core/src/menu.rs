@@ -20,7 +20,8 @@ impl Command {
         self.presentation().0
     }
 
-    const fn label(self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         self.presentation().1
     }
 
@@ -37,7 +38,7 @@ impl Command {
     }
 }
 
-const ITEMS: [Command; 7] = [
+pub const ITEMS: [Command; 7] = [
     Command::LogOut,
     Command::Restart,
     Command::Plasma,
@@ -61,6 +62,14 @@ impl Menu {
         Self {
             pad_family,
             ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn for_command(pad_family: PadFamily, command: Command) -> Self {
+        Self {
+            selected: ITEMS.iter().position(|item| *item == command).unwrap_or_default(),
+            ..Self::new(pad_family)
         }
     }
 
@@ -109,6 +118,8 @@ impl Menu {
         let mut text = String::from("SYSTEM MENU");
         for (index, item) in ITEMS.iter().enumerate() {
             text.push_str(if index == self.selected { "\n> " } else { "\n  " });
+            text.push_str(item.label());
+            text.push_str(" open ");
             text.push_str(item.label());
         }
         text.push('\n');
