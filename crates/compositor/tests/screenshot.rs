@@ -20,6 +20,15 @@ mod tests {
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
         let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(
+                "app_id = '*'\nbuttons = {}\n[speech.frame]\nnotify = 'KNOWN FRAME'",
+            )
+            .unwrap(),
+        ]);
+        let _notice = driver
+            .execute(&mut compositor, Request::Say { text: "frame".into() })
+            .unwrap();
         let before = directory.path().join("before.png");
         let _capture = driver
             .execute(&mut compositor, Request::Shot { path: before.clone() })
@@ -67,6 +76,7 @@ mod tests {
         let expected = image::open(before).unwrap().to_rgba8();
         assert_eq!(actual.dimensions(), (1280, 720));
         assert_eq!(*actual.get_pixel(640, 360), image::Rgba([0, 0, 0, 255]));
+        assert_eq!(*actual.get_pixel(16, 16), image::Rgba([32, 32, 32, 255]));
         assert_eq!(
             image::imageops::crop_imm(&actual, 0, 0, 1280, 650).to_image(),
             image::imageops::crop_imm(&expected, 0, 0, 1280, 650).to_image()

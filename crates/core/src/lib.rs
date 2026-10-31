@@ -713,7 +713,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
         } => {
             state.start_held = *button_state == ButtonState::Pressed;
             let consumed = if state.start_held {
-                state.start_in_chord = state.guide_held.is_some();
+                state.start_in_chord |= state.guide_held.is_some();
                 state.start_in_chord
             } else {
                 core::mem::take(&mut state.start_in_chord)
