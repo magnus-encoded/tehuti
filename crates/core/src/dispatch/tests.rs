@@ -4412,3 +4412,26 @@ fn launcher_allows_push_to_talk_and_replaces_its_query() {
             }))
     );
 }
+
+#[test]
+fn start_release_reaches_the_plugin_after_guide_is_pressed() {
+    let mut world = World {
+        plugin_active: true,
+        ..World::default()
+    };
+    let mut state = world.event(State::default(), focus("org.example.Game"));
+    state = world.run(state, pad_button(ButtonName::Start, ButtonState::Pressed));
+    state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+    world.trace.clear();
+    let _state = world.run(state, pad_button(ButtonName::Start, ButtonState::Released));
+    assert!(world.trace.iter().any(|effect| matches!(
+        effect,
+        Effect::DispatchPlugin {
+            event: Event::Button {
+                name: ButtonName::Start,
+                state: ButtonState::Released
+            },
+            route: true
+        }
+    )));
+}

@@ -1104,7 +1104,8 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
         }
         return true;
     }
-    if state.core.guide_held()
+    if (state.core.guide_held() && matches!(start_state(event), ButtonState::Pressed)
+        || state.core.start_in_chord)
         && matches!(
             event,
             Event::Button {
@@ -1188,7 +1189,8 @@ const fn emergency_button(state: &State, event: &Event) -> bool {
             name: ButtonName::Guide,
             ..
         }
-    ) || (state.core.guide_held()
+    ) || ((state.core.guide_held() && matches!(start_state(event), ButtonState::Pressed)
+        || state.core.start_in_chord)
         && matches!(
             event,
             Event::Button {

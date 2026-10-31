@@ -42,6 +42,7 @@ pub struct State {
     guide_held: Option<core::time::Duration>,
     guide_tap: Option<core::time::Duration>,
     start_held: bool,
+    start_in_chord: bool,
     level: Level,
     menu: Option<menu::Menu>,
     menu_entries: Vec<String>,
@@ -103,6 +104,7 @@ impl State {
             guide_held: None,
             guide_tap: None,
             start_held: false,
+            start_in_chord: false,
             level: Level::App,
             menu: None,
             menu_entries: Vec::new(),
@@ -274,6 +276,7 @@ impl State {
         self.guide_held = None;
         self.guide_tap = None;
         self.start_held = false;
+        self.start_in_chord = false;
         self.menu = None;
         self.menu_buttons.clear();
     }
@@ -690,13 +693,19 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             state: button_state,
         } => {
             state.start_held = *button_state == ButtonState::Pressed;
+            let consumed = if state.start_held {
+                state.start_in_chord = state.guide_held.is_some();
+                state.start_in_chord
+            } else {
+                core::mem::take(&mut state.start_in_chord)
+            };
             if state.guide_held.is_some() {
                 state.guide_tap = None;
             }
-            state.guide_held.as_mut().map(|held| {
+            if let Some(held) = &mut state.guide_held {
                 *held = core::time::Duration::ZERO;
-                Vec::new()
-            })
+            }
+            consumed.then(Vec::new)
         }
         Event::Tick { elapsed } => {
             if let Some(tap) = &mut state.guide_tap {
