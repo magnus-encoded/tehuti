@@ -31,6 +31,20 @@ mod tests {
     }
 
     #[test]
+    fn long_notice_keeps_the_last_letter_on_a_second_line() {
+        let text = format!("{}Z", "N".repeat(40));
+        let mut buffer = notice_buffer(&text);
+        buffer
+            .render()
+            .draw::<_, core::convert::Infallible>(|pixels| {
+                assert_eq!(pixels.len(), 496 * 64 * 4);
+                assert!(pixels[32 * 496 * 4..].as_chunks::<4>().0.contains(&[255; 4]));
+                Ok(Vec::new())
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn notice_size_is_bounded_by_visible_text() {
         let text = format!("{}\n{}", "N".repeat(50), "ON\n".repeat(12));
         assert_eq!(notice_bytes(&text), 496 * 320 * 4);
