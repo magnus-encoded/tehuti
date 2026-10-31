@@ -5,6 +5,7 @@ binary=$(realpath "$1")
 mkdir -p "$2"
 output=$(realpath "$2")
 work=$(mktemp -d)
+export XDG_PICTURES_DIR="$work/pictures"
 socket=''
 drive() { "$binary/tehuti-drive" --socket "$socket" "$@"; }
 cleanup() {
@@ -55,6 +56,7 @@ drive hold guide
 drive clock advance 500
 drive release guide
 drive wait-for /overlays/menu true
+drive press dpad_up
 drive press dpad_up
 drive press A
 drive wait-for /overlays/settings true

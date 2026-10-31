@@ -70,7 +70,7 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
         def drive(*command):
             result = subprocess.run([str(args.binaries.resolve() / "tehuti-drive"), "--socket", str(socket), *command],
                                     check=True, capture_output=True, text=True, timeout=30,
-                                    env={**os.environ, "XKB_DEFAULT_LAYOUT": "us", "XKB_DEFAULT_VARIANT": "", "XKB_DEFAULT_OPTIONS": ""})
+                                    env={**os.environ, "XDG_PICTURES_DIR": str(work / "pictures"), "XKB_DEFAULT_LAYOUT": "us", "XKB_DEFAULT_VARIANT": "", "XKB_DEFAULT_OPTIONS": ""})
             return json.loads(result.stdout)
 
         def capture(name, condition):
@@ -133,6 +133,7 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             drive("clock", "advance", "500")
             drive("release", "guide")
             drive("wait-for", "/overlays/menu", "true")
+            drive("press", "dpad_up")
             drive("press", "dpad_up")
             drive("press", "A")
             drive("wait-for", "/overlays/settings", "true")
