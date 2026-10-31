@@ -86,6 +86,7 @@ impl World {
                     | Effect::OpenLauncher(_)
                     | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
+                    | Effect::SettingsBarFont(_)
                     | Effect::SettingsScale(_)
                     | Effect::WallpaperPreview(_)
                     | Effect::WallpaperSave(_)
@@ -1874,6 +1875,15 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
     for _ in 0..5 {
         state = settings_button(&mut world, state, ButtonName::DpadDown);
     }
+    assert_eq!(state.settings().selected, 4);
+    state = settings_button(&mut world, state, ButtonName::DpadLeft);
+    assert_eq!(state.settings().selected, 4);
+    assert!(
+        world
+            .trace
+            .contains(&Effect::SettingsBarFont(crate::bar::Font::Bitmap))
+    );
+    state = settings_button(&mut world, state, ButtonName::DpadUp);
     assert_eq!(state.settings().selected, 3);
     state = settings_button(&mut world, state, ButtonName::DpadLeft);
     assert_eq!(state.settings().selected, 3);

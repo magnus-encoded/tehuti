@@ -36,6 +36,7 @@ pub enum Input {
     ModeApplied(Option<usize>),
     WallpaperSaved(usize),
     DisplayScale(core::num::NonZeroU32),
+    BarFont(crate::bar::Font),
     Wallpapers {
         names: Vec<String>,
         locked: Vec<bool>,
@@ -109,6 +110,7 @@ pub enum Effect {
     SettingsMode(usize),
     PersistMode(usize),
     SettingsScale(core::num::NonZeroU32),
+    SettingsBarFont(crate::bar::Font),
     WallpaperPreview(usize),
     WallpaperSave(usize),
     UnlockWallpapers,
@@ -438,6 +440,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             (state, Vec::new())
         }
         input @ (Input::DisplayModes { .. }
+        | Input::BarFont(_)
         | Input::DisplayScale(_)
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
@@ -486,6 +489,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
+        | Input::BarFont(_)
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
         | Input::Controllers(_)
@@ -538,6 +542,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
+        | Input::BarFont(_)
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
         | Input::Controllers(_)
@@ -574,6 +579,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
         Input::DisplayModes { modes, current } => state.settings.configure(modes, current),
+        Input::BarFont(font) => state.settings.bar_font = font,
         Input::DisplayScale(scale) => state.settings.scale = scale,
         Input::Wallpapers {
             names,

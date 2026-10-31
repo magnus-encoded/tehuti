@@ -36,6 +36,7 @@ const ICON_COLOURS: [(char, Rgb); 6] = [
 /// A drawn ticker line in logical pixels, transparent where the bar shows through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Strip {
+    font: tehuti_core::bar::Font,
     width: usize,
     pixels: Vec<Option<Rgb>>,
 }
@@ -44,12 +45,18 @@ impl Strip {
     /// Draws `entries` in a row with a dot between them.
     #[must_use]
     pub fn paint(entries: &[Entry]) -> Self {
+        Self::paint_with_font(entries, tehuti_core::bar::Font::default())
+    }
+
+    #[must_use]
+    pub fn paint_with_font(entries: &[Entry], font: tehuti_core::bar::Font) -> Self {
         let width = entries
             .iter()
             .map(entry_width)
             .fold(0usize, usize::saturating_add)
             .saturating_add(ENTRY_GAP.saturating_mul(entries.len().saturating_sub(1)));
         let mut strip = Self {
+            font,
             width,
             pixels: vec![None; width.saturating_mul(HEIGHT)],
         };
@@ -168,8 +175,44 @@ impl Strip {
     }
 
     fn text(&mut self, text: &str, mut left: usize, top: usize, colour: Rgb) -> usize {
-        for glyph in crate::pictograms::glyphs(text) {
-            self.bitmap(glyph, left, top, colour);
+        for character in text.chars().filter(|character| *character != '\u{fe0f}') {
+            if character.is_ascii() || character.is_alphabetic() {
+                for (index, alpha) in crate::bar_font::coverage(character, self.font, false)
+                    .into_iter()
+                    .enumerate()
+                {
+                    if alpha > 0 {
+                        let column = left.saturating_add(index % 8);
+                        let row = index / 8;
+                        let Rgb(red, green, blue) = colour;
+                        let Rgb(back_red, back_green, back_blue) =
+                            self.pixel(column, row).unwrap_or(Rgb(0, 0, 0));
+                        let blend = |foreground: u8, background: u8| {
+                            u8::try_from(
+                                u16::from(foreground)
+                                    .saturating_mul(u16::from(alpha))
+                                    .saturating_add(
+                                        u16::from(background)
+                                            .saturating_mul(255u16.saturating_sub(u16::from(alpha))),
+                                    )
+                                    / 255,
+                            )
+                            .unwrap_or_default()
+                        };
+                        self.set(
+                            column,
+                            row,
+                            Rgb(
+                                blend(red, back_red),
+                                blend(green, back_green),
+                                blend(blue, back_blue),
+                            ),
+                        );
+                    }
+                }
+            } else if let Some(glyph) = crate::pictograms::glyph(character) {
+                self.bitmap(glyph, left, top, colour);
+            }
             left = left.saturating_add(8);
         }
         left
@@ -362,6 +405,29 @@ mod tests {
             trigger: vec![trigger],
             result: vec![result],
         }
+    }
+
+    #[test]
+    fn both_fonts_keep_ticker_labels_and_symbols_aligned() {
+        use tehuti_core::bar::Font;
+        let entries = [entry(Piece::Key("Agjp".into()), Piece::Text("queue".into()))];
+        let mono = Strip::paint_with_font(&entries, Font::LiberationMono);
+        let bitmap = Strip::paint_with_font(&entries, Font::Bitmap);
+        assert_eq!(mono.width(), bitmap.width());
+        for strip in [&mono, &bitmap] {
+            assert_eq!(strip.pixel(1, 0), Some(KEY_EDGE));
+            assert_eq!(strip.pixel(1, 11), Some(KEY_EDGE));
+            assert_eq!(strip.pixel(1, 12), None);
+            assert!((2..10).any(|row| {
+                (2..10).any(|column| strip.pixel(column, row).is_some_and(|colour| colour != KEY_FILL))
+            }));
+        }
+        assert!(
+            (0..mono.width()).any(|column| {
+                (0..HEIGHT).any(|row| mono.pixel(column, row) != bitmap.pixel(column, row))
+            }),
+            "the selected font changes ticker text"
+        );
     }
 
     #[test]

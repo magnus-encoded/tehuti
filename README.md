@@ -43,6 +43,12 @@ Speech: hold Share to record, release to transcribe. Set `TEHUTI_NO_SPEECH=1` to
 
 Controllers: physical pads are accepted by default. Set `TEHUTI_VIRTUAL_PAD=Sunshine` to also accept virtual pads whose device name contains that case-sensitive substring. Unset or empty values keep virtual pads disabled. The value is read once at startup and applies to reconnects. Pads must have a south face button.
 
+Bar font: Settings → Display → Bar font switches between bundled Liberation Mono
+(the default) and Bitmap. Left, Right or Confirm applies and saves the choice in
+`$XDG_CONFIG_HOME/tehuti/bar-font` (otherwise `~/.config/tehuti/bar-font`).
+`TEHUTI_BAR_FONT_FILE` overrides the bundled font file at startup; a missing or
+invalid file logs a warning and uses Bitmap.
+
 Scale: `TEHUTI_SCALE` sets the integer output scale, for example `TEHUTI_SCALE=2`.
 Without it, modes wider than 2560 pixels use 2 and others use 1. Invalid values
 (0, negative or not a whole number) log a warning and use that default. The
