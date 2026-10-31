@@ -105,6 +105,9 @@ System menu commands use TOML argument lists in
 Commands run without a shell, with the compositor's `WAYLAND_DISPLAY`;
 session and power actions require confirmation.
 
+Without overrides, Log Out and Switch to Plasma stop Tehuti with session exit
+statuses 21 and 20. Task Monitor launches `plasma-systemmonitor` when installed;
+a failed launch shows a notice naming the program.
 Built-in keys accept argv arrays; an empty array disables a command.
 Add custom commands after those keys using tables:
 

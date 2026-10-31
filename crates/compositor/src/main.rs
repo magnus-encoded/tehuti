@@ -103,7 +103,7 @@ impl input::InputSource for AttachedController {
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
         exit_code(
-            self.log_out,
+            self.log_out || self.compositor.log_out_requested(),
             self.compositor.quit_requested(),
             self.compositor.restart_requested(),
         )
@@ -898,6 +898,12 @@ mod exit_code_tests {
                 std::process::ExitCode::from(75)
             );
         }
+    }
+
+    #[test]
+    fn session_actions_use_the_launcher_exit_statuses() {
+        assert_eq!(exit_code(true, true, false), std::process::ExitCode::from(21));
+        assert_eq!(exit_code(false, true, false), std::process::ExitCode::from(20));
     }
 
     #[test]
