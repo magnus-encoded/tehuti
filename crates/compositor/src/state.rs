@@ -2263,26 +2263,20 @@ impl Compositor {
                     .layout_windows
                     .iter()
                     .find(|(identity, _)| *identity == tile.window)?;
-                let title = self
-                    .destinations
-                    .name_for(&crate::destinations::Target::Window(tile.window.0))
-                    .map(str::to_owned)
-                    .or_else(|| {
-                        let toplevel = window.toplevel()?;
-                        smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
-                            let attributes = states
-                                .data_map
-                                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()?;
-                            let attributes = attributes
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            Some(self.dispatch.core().bar().window_label(
-                                self.dispatch.core().label(attributes.app_id.as_deref()),
-                                attributes.title.as_deref(),
-                                attributes.app_id.as_deref(),
-                            ))
-                        })
-                    })?;
+                let toplevel = window.toplevel()?;
+                let title = smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                    let attributes = states
+                        .data_map
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()?;
+                    let attributes = attributes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    Some(self.dispatch.core().bar().window_label(
+                        self.dispatch.core().label(attributes.app_id.as_deref()),
+                        attributes.title.as_deref(),
+                        attributes.app_id.as_deref(),
+                    ))
+                })?;
                 Some((title, snapshot.focused_window == Some(tile.window)))
             })
             .collect();
