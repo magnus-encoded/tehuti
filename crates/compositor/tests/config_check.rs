@@ -6,6 +6,32 @@ mod config_check {
 
     use tehuti::config_check::{Severity, check};
 
+    #[test]
+    fn reports_each_broken_menu_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "menu.toml",
+            r#"
+reboot = ["session-reboot"]
+unknown = ["ignored"]
+[[entry]]
+label = "Broken"
+exec = []
+order = 0
+[[entry]]
+label = "Terminal"
+exec = ["terminal"]
+order = 1
+"#,
+        );
+        let report = check(directory.path());
+        assert_eq!(report.findings.len(), 2, "{report}");
+        assert!(report.to_string().contains("entry[0]"));
+        assert!(report.to_string().contains("unknown"));
+        assert!(report.has_errors());
+    }
+
     fn write(directory: &Path, relative: &str, text: &str) {
         let path = directory.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

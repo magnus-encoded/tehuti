@@ -102,7 +102,27 @@ the wire.
 System menu commands use TOML argument lists in
 `$XDG_CONFIG_HOME/tehuti/menu.toml` (or `$HOME/.config/tehuti/menu.toml`).
 `TEHUTI_MENU_CONFIG` overrides the path; `examples/menu.toml` shows the format.
-Commands run without a shell; session and power actions require confirmation.
+Commands run without a shell, with the compositor's `WAYLAND_DISPLAY`;
+session and power actions require confirmation.
+
+Built-in keys accept argv arrays; an empty array disables a command.
+Add custom commands after those keys using tables:
+
+```toml
+[[entry]]
+label = "Terminal"
+exec = ["terminal", "--title", "Workspace"]
+order = 10
+```
+
+Each table requires a nonempty label without control characters, a nonempty
+string argv with a nonblank program and no NUL characters, and an integer order.
+Custom entries follow all built-ins, sorted by ascending order; equal orders keep
+file order. Custom commands run on one Confirm press.
+The menu config loads at startup. Invalid entries produce a notice naming the
+entry and are skipped; valid entries remain available. Invalid TOML disables the
+file and produces a notice. `--check-config` reports the same errors.
+Restart Tehuti to apply menu edits.
 
 Reply once with the same id and a list of actions:
 

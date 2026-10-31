@@ -12,6 +12,7 @@ pub enum Command {
     ShutDown,
     TaskMonitor,
     Settings,
+    Custom(usize),
 }
 
 impl Command {
@@ -34,6 +35,7 @@ impl Command {
             Self::ShutDown => ("shut_down", "SHUT DOWN"),
             Self::TaskMonitor => ("task_monitor", "TASK MONITOR"),
             Self::Settings => ("settings", "SETTINGS"),
+            Self::Custom(_) => ("entry", ""),
         }
     }
 }
@@ -51,6 +53,7 @@ pub const ITEMS: [Command; 7] = [
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Menu {
     pad_family: PadFamily,
+    entries: Vec<String>,
     selected: usize,
     confirming: bool,
     confirm_held: bool,
@@ -73,13 +76,43 @@ impl Menu {
         }
     }
 
+    #[must_use]
+    pub fn with_entries(mut self, entries: Vec<String>) -> Self {
+        self.entries = entries;
+        self
+    }
+
+    fn command(&self) -> Option<Command> {
+        ITEMS.get(self.selected).copied().or_else(|| {
+            self.entries
+                .get(self.selected.saturating_sub(ITEMS.len()))
+                .map(|_| Command::Custom(self.selected.saturating_sub(ITEMS.len())))
+        })
+    }
+
+    fn label(&self) -> &str {
+        ITEMS.get(self.selected).map_or_else(
+            || {
+                self.entries
+                    .get(self.selected.saturating_sub(ITEMS.len()))
+                    .map_or("CANCEL", String::as_str)
+            },
+            |item| item.label(),
+        )
+    }
+
     pub const fn set_pad_family(&mut self, family: PadFamily) {
         self.pad_family = family;
     }
 
     fn confirm(&mut self) -> Option<Command> {
-        let command = *ITEMS.get(self.selected)?;
-        if self.confirming || matches!(command, Command::TaskMonitor | Command::Settings) {
+        let command = self.command()?;
+        if self.confirming
+            || matches!(
+                command,
+                Command::TaskMonitor | Command::Settings | Command::Custom(_)
+            )
+        {
             return Some(command);
         }
         self.confirming = true;
@@ -96,11 +129,10 @@ impl Menu {
 
     fn move_selection(&mut self, upward: bool) {
         self.confirming = false;
+        let last = ITEMS.len().saturating_add(self.entries.len()).saturating_sub(1);
         self.selected = if upward {
-            self.selected
-                .checked_sub(1)
-                .unwrap_or(ITEMS.len().saturating_sub(1))
-        } else if self.selected == ITEMS.len().saturating_sub(1) {
+            self.selected.checked_sub(1).unwrap_or(last)
+        } else if self.selected == last {
             0
         } else {
             self.selected.saturating_add(1)
@@ -112,13 +144,18 @@ impl Menu {
         let confirm = self.pad_family.label(self.pad_family.button(Role::Confirm));
         let back = self.pad_family.label(self.pad_family.button(Role::Back));
         if self.confirming {
-            let label = ITEMS.get(self.selected).map_or("CANCEL", |item| item.label());
+            let label = self.label();
             return format!("CONFIRM {label}?\n{confirm} CONFIRM / {back} CANCEL");
         }
         let mut text = String::from("SYSTEM MENU");
-        for (index, item) in ITEMS.iter().enumerate() {
+        for (index, label) in ITEMS
+            .iter()
+            .map(|item| item.label())
+            .chain(self.entries.iter().map(String::as_str))
+            .enumerate()
+        {
             text.push_str(if index == self.selected { "\n> " } else { "\n  " });
-            text.push_str(item.label());
+            text.push_str(label);
         }
         text.push('\n');
         text.push_str(back);

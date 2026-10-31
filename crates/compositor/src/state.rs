@@ -123,6 +123,7 @@ pub struct Compositor {
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
+    menu_config: crate::system_menu::Config,
     settings_display: crate::settings::Display,
     bar_font_store: Option<crate::display_mode_store::Store>,
     /// The pad that drives Tehuti; previews before confirmation too.
@@ -232,6 +233,7 @@ impl Compositor {
         let text_keys = text_keys(&keymap);
         let pointer = seat.add_pointer();
         let mut compositor = Self {
+            menu_config: crate::system_menu::Config::default(),
             start_time: Instant::now(),
             pointer,
             pointer_location: (100.0, 100.0).into(),
@@ -320,6 +322,19 @@ impl Compositor {
             locked,
             current,
         });
+        match crate::system_menu::load() {
+            Ok(config) => compositor.menu_config = config,
+            Err(error) => compositor.show_notice(&format!("MENU CONFIG: {error}")),
+        }
+        let notices = compositor.menu_config.notices().join("\n");
+        if !notices.is_empty() {
+            tracing::warn!(%notices, "invalid menu entries skipped");
+            compositor.show_notice(&notices);
+        }
+        compositor
+            .dispatch
+            .core_mut()
+            .set_menu_entries(compositor.menu_config.labels());
         compositor.rebuild_destinations();
         Ok(compositor)
     }
@@ -402,6 +417,9 @@ impl Compositor {
     pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {
         crate::speech_vocabulary::configure_projects(&mut contexts, &self.destination_paths.projects);
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
+        self.dispatch
+            .core_mut()
+            .set_menu_entries(self.menu_config.labels());
         self.window_focus = None;
         self.sync_window_focus();
         self.rebuild_destinations();
@@ -1314,7 +1332,7 @@ impl Compositor {
             .launch_socket
             .as_deref()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotConnected, "no compositor socket"))
-            .and_then(|socket| crate::system_menu::execute(command, socket));
+            .and_then(|socket| crate::system_menu::execute(&self.menu_config, command, socket));
         if let Err(error) = result {
             tracing::warn!(?command, %error, "system menu command failed");
             self.show_notice("MENU COMMAND UNAVAILABLE");
