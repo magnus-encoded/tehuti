@@ -6,7 +6,7 @@ use std::{
     io::{self, Read as _},
     os::{
         fd::{AsFd, BorrowedFd},
-        unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
+        unix::fs::{FileTypeExt as _, OpenOptionsExt as _, PermissionsExt as _},
     },
     path::{Path, PathBuf},
 };
@@ -34,9 +34,21 @@ impl SayFifo {
     /// Creates a private FIFO at `runtime_directory/tehuti-say`.
     ///
     /// # Errors
-    /// Returns an error if the directory or FIFO cannot be used. An existing path is never replaced.
+    /// Returns an error if the directory or FIFO cannot be used. Existing FIFOs are replaced;
+    /// other path types are preserved. The caller must hold the single-instance lock.
     pub fn create(runtime_directory: &Path) -> io::Result<Self> {
         let path = runtime_directory.join(FIFO_NAME);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_fifo() => std::fs::remove_file(&path)?,
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "typed speech path is not a FIFO",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         rustix::fs::mkfifoat(rustix::fs::CWD, &path, rustix::fs::Mode::from_bits_retain(0o600))?;
         if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
             let _removed = std::fs::remove_file(&path);
