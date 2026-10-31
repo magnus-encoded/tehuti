@@ -45,6 +45,11 @@ PipeWire name and overrides both.
 
 ## Transport and limits
 
+Speech clients must ignore message types they do not recognize and should log
+that they ignored them. Unknown messages must not interrupt capture or prevent
+processing later commands. The bundled sidecar logs ignored messages without
+their contents. Malformed known commands still fail validation.
+
 Commands and replies are one JSON object per line, capped at 64 KiB:
 
 ```json

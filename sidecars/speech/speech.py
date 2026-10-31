@@ -364,6 +364,10 @@ def run(stream, speech):
             if len(line) > MAX_LINE or not line.endswith("\n"):
                 raise ValueError("speech command exceeds line limit")
             command = json.loads(line)
+            if (isinstance(command, dict) and command
+                    and not {"start", "stop", "transcribe", "vocabulary"}.intersection(command)):
+                log("unknown speech command ignored")
+                continue
             if set(command) == {"start"} and type(command["start"]) is int and command["start"] >= 0:
                 speech.start(command["start"])
             elif (set(command) == {"stop", "transcribe"}

@@ -18,6 +18,38 @@ spec.loader.exec_module(module)
 
 
 class SpeechTests(unittest.TestCase):
+    def test_transport_logs_unknown_messages_and_continues_capture(self):
+        class Speech:
+            def __init__(self):
+                self.sessions = []
+                self.closed = False
+
+            def start(self, session):
+                self.sessions.append((session, None))
+
+            def stop(self, session, transcribe):
+                self.sessions[-1] = (session, transcribe)
+
+            def close(self):
+                self.closed = True
+
+        speech = Speech()
+        commands = ('{"future_command":true}\n{"start":7}\n'
+                    '{"another_command":{"option":1}}\n'
+                    '{"stop":7,"transcribe":true}\n')
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "speech.log"
+            with patch.dict(os.environ, {"TEHUTI_LOG_FILE": str(log_path)}), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                module.run(io.StringIO(commands), speech)
+            self.assertEqual(log_path.read_text().splitlines(), [
+                "INFO speech: unknown speech command ignored",
+                "INFO speech: unknown speech command ignored",
+            ])
+        self.assertEqual(speech.sessions, [(7, True)])
+        self.assertTrue(speech.closed)
+        self.assertEqual(json.loads(output.getvalue()), {"ready": True})
+
     def test_vocabulary_primes_both_vad_attempts_with_a_short_hotword_list(self):
         class Model:
             hf_tokenizer = types.SimpleNamespace(encode=lambda text, **_: types.SimpleNamespace(ids=list(text.encode("utf-8"))))
