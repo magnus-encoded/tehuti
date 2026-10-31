@@ -42,11 +42,11 @@ class LauncherLayout(unittest.TestCase):
         self.check = runpy.run_path(str(Path(__file__).with_name("visual-tests")))["launcher_layout"]
         self.scene = {"launcher": {"layout": {
             "glyphs": [{"ink": [9, 9, 19, 19], "circle": [0, 0, 28, 28]}],
-            "rows": [{"y": 150, "height": 400}, {"y": 550, "height": 400}],
-            "panel": {"y": 36, "height": 1000}, "rows_bottom": 950,
+            "rows": [{"y": 150, "height": 72}, {"y": 222, "height": 72}],
+            "panel": {"y": 36, "height": 1000}, "rows_bottom": 294,
         }}}
 
-    def test_filled_rows_and_centred_ink_pass(self):
+    def test_natural_rows_centred_ink_and_empty_space_below_pass(self):
         self.check(self.scene)
 
     def test_displaced_ink_fails(self):
@@ -54,7 +54,7 @@ class LauncherLayout(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "off centre"):
             self.check(self.scene)
 
-    def test_unused_height_fails(self):
-        self.scene["launcher"]["layout"]["rows_bottom"] = 400
-        with self.assertRaisesRegex(AssertionError, "unused space"):
+    def test_stretched_rows_fail(self):
+        self.scene["launcher"]["layout"]["rows"] = [{"y": 150, "height": 400}]
+        with self.assertRaisesRegex(AssertionError, "natural height"):
             self.check(self.scene)

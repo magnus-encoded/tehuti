@@ -204,7 +204,8 @@ mod tests {
     }
 
     #[test]
-    fn launcher_rows_share_the_full_panel_height_above_the_bar() -> Result<(), Box<dyn core::error::Error>> {
+    fn launcher_rows_keep_their_natural_height_above_empty_panel_space()
+    -> Result<(), Box<dyn core::error::Error>> {
         for rows in 1..=5 {
             let launcher = launcher(rows);
             let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
@@ -221,8 +222,8 @@ mod tests {
             let live = [119, 88, 36, 255];
             let selected = (0..1080).filter(|y| pixel(&pixels, 1900, *y) == live).count();
             assert!(
-                selected.saturating_mul(rows) >= bottom.saturating_sub(300),
-                "{rows} rows: selected row is {selected}px, rows do not fill the panel"
+                selected == 72,
+                "{rows} rows: selected row is {selected}px, row must keep its natural height"
             );
         }
         Ok(())

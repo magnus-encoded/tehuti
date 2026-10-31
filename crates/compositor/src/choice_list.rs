@@ -207,14 +207,8 @@ fn paint(canvas: &mut Canvas, list: &List, family: PadFamily, bottom: usize) -> 
     paint_create(canvas, list, family, y);
     y = y.saturating_add(create_height);
     let rows = list.candidates().get(list.visible()).unwrap_or_default();
-    let headings = if list.show_headings() { 56 } else { 0 };
     let footer_top = bottom.saturating_sub(FOOTER);
-    let row_height = footer_top
-        .saturating_sub(y)
-        .saturating_sub(headings)
-        .checked_div(rows.len())
-        .unwrap_or_default()
-        .max(72);
+    let row_height = 72;
     let mut section = None;
     for row in rows {
         if list.show_headings() && section != Some(row.close) {
@@ -393,7 +387,6 @@ fn paint_candidate(
     top: usize,
     height: usize,
 ) {
-    // The 72-unit row content sits in the middle of its equal share of the panel.
     let y = top.saturating_add(height.saturating_sub(72) / 2);
     let selected = list.selected() == Some(row.choice);
     if selected {
