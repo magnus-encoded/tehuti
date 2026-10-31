@@ -72,6 +72,23 @@ impl Config {
         self.entries.iter().map(|entry| entry.label.clone()).collect()
     }
 
+    #[must_use]
+    pub fn session_exit_status(&self, command: Command) -> Option<u8> {
+        if self.commands.contains_key(command.key()) {
+            return None;
+        }
+        match command {
+            Command::LogOut => Some(21),
+            Command::Plasma => Some(20),
+            Command::Restart
+            | Command::Reboot
+            | Command::ShutDown
+            | Command::TaskMonitor
+            | Command::Settings
+            | Command::Custom(_) => None,
+        }
+    }
+
     /// Passes one configured command to the executor.
     ///
     /// # Errors
@@ -91,10 +108,12 @@ impl Config {
             | Command::TaskMonitor
             | Command::Settings => self.commands.get(command.key()),
         };
+        let task_monitor = vec!["plasma-systemmonitor".to_owned()];
+        let configured = configured.or_else(|| (command == Command::TaskMonitor).then_some(&task_monitor));
         let (program, args) = configured
             .and_then(|argv| argv.split_first())
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "menu command is not configured"))?;
-        spawn(program, args)
+        spawn(program, args).map_err(|error| io::Error::new(error.kind(), format!("{program}: {error}")))
     }
 }
 

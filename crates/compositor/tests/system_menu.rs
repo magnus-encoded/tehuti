@@ -3,6 +3,115 @@ mod system_menu {
     use tehuti::system_menu::Config;
     use tehuti_core::menu::Command;
 
+    #[test]
+    fn defaults_work_without_programs_or_a_menu_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "system_menu::isolated_default_menu_probe"])
+            .env("TEHUTI_TEST_DEFAULT_MENU", "yes")
+            .env("TEHUTI_MENU_CONFIG", directory.path().join("missing.toml"))
+            .env("PATH", "")
+            .env("XDG_DATA_HOME", directory.path())
+            .env("XDG_DATA_DIRS", directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[test]
+    fn isolated_default_menu_probe() {
+        use core::time::Duration;
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::state::Compositor;
+        use tehuti_protocol::{ButtonName, ButtonState, Event};
+        if std::env::var_os("TEHUTI_TEST_DEFAULT_MENU").is_none() {
+            return;
+        }
+        for index in [0, 2, 5] {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            compositor.set_launch_socket("example-menu-socket".into());
+            let press = |target: &mut Compositor, name| {
+                for state in [ButtonState::Pressed, ButtonState::Released] {
+                    target.handle(&Event::Button { name, state });
+                }
+            };
+            compositor.handle(&Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Pressed,
+            });
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_millis(500),
+            });
+            compositor.handle(&Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Released,
+            });
+            for _ in 0..index {
+                press(&mut compositor, ButtonName::DpadDown);
+            }
+            press(&mut compositor, ButtonName::South);
+            assert!(!compositor.quit_requested());
+            if index == 5 {
+                assert!(
+                    compositor
+                        .visible_notice_text()
+                        .unwrap()
+                        .contains("plasma-systemmonitor")
+                );
+                continue;
+            }
+            press(&mut compositor, ButtonName::South);
+            assert!(compositor.quit_requested());
+            assert_eq!(compositor.log_out_requested(), index == 0);
+            assert!(!compositor.restart_requested());
+        }
+    }
+
+    #[test]
+    fn session_defaults_match_the_launcher_and_respect_overrides() {
+        let defaults = Config::default();
+        assert_eq!(defaults.session_exit_status(Command::LogOut), Some(21));
+        assert_eq!(defaults.session_exit_status(Command::Plasma), Some(20));
+        let config = Config::parse("log_out = []\nplasma = [\"example-session\"]").unwrap();
+        assert_eq!(config.session_exit_status(Command::LogOut), None);
+        assert_eq!(config.session_exit_status(Command::Plasma), None);
+        assert!(
+            config
+                .run(Command::LogOut, |_, _| panic!("disabled logout ran"))
+                .is_err()
+        );
+        config
+            .run(Command::Plasma, |program, _| {
+                assert_eq!(program, "example-session");
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn task_monitor_uses_the_default_program_and_preserves_spawn_errors() {
+        Config::default()
+            .run(Command::TaskMonitor, |program, args| {
+                assert_eq!(program, "plasma-systemmonitor");
+                assert_eq!(args, Vec::<String>::new());
+                Ok(())
+            })
+            .unwrap();
+        let config = Config::parse("task_monitor = [\"example-monitor\"]").unwrap();
+        let error = config
+            .run(Command::TaskMonitor, |_, _| {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("example-monitor"));
+    }
+
     proptest::proptest! {
         #[test]
         fn broken_custom_entries_preserve_valid_neighbors(

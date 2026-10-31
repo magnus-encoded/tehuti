@@ -139,6 +139,7 @@ pub struct Compositor {
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    session_exit_status: Option<u8>,
     restart_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
     secret_gate: tehuti_core::secret::SecretConfirmationGate,
@@ -258,6 +259,7 @@ impl Compositor {
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
+            session_exit_status: None,
             restart_requested: false,
             speech_process: None,
             secret_gate: tehuti_core::secret::SecretConfirmationGate::new(),
@@ -1328,6 +1330,12 @@ impl Compositor {
             self.quit_requested = true;
             return;
         }
+        if let Some(status) = self.menu_config.session_exit_status(command) {
+            self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
+            self.session_exit_status = Some(status);
+            self.quit_requested = true;
+            return;
+        }
         let result = self
             .launch_socket
             .as_deref()
@@ -1335,7 +1343,7 @@ impl Compositor {
             .and_then(|socket| crate::system_menu::execute(&self.menu_config, command, socket));
         if let Err(error) = result {
             tracing::warn!(?command, %error, "system menu command failed");
-            self.show_notice("MENU COMMAND UNAVAILABLE");
+            self.show_notice(&format!("MENU COMMAND UNAVAILABLE: {error}"));
         }
     }
 
@@ -1608,6 +1616,11 @@ impl Compositor {
     #[must_use]
     pub const fn quit_requested(&self) -> bool {
         self.quit_requested
+    }
+
+    #[must_use]
+    pub const fn log_out_requested(&self) -> bool {
+        matches!(self.session_exit_status, Some(21))
     }
 
     #[must_use]
