@@ -12,22 +12,21 @@ pub fn speech_notice_buffer() -> MemoryRenderBuffer {
 
 #[must_use]
 pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
-    // Fit the box to its text so a short notice does not cover the top of the focused window.
-    let columns = text
-        .lines()
-        .take(10)
-        .map(|line| line.chars().count().min(40))
+    let visible_lines = wrapped_notice_lines(text);
+    let columns = visible_lines
+        .iter()
+        .map(|line| line.chars().count())
         .max()
         .unwrap_or(0);
     let width = columns.saturating_mul(12).saturating_add(16).max(64);
-    let lines = text.lines().count().clamp(1, 10);
+    let lines = visible_lines.len().max(1);
     let height = lines.saturating_mul(32);
     let mut pixels = vec![0u8; width.saturating_mul(height).saturating_mul(4)];
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[32, 32, 32, 255]);
     }
-    for (line, line_text) in text.lines().take(10).enumerate() {
-        for (letter, character) in line_text.chars().take(40).enumerate() {
+    for (line, line_text) in visible_lines.iter().enumerate() {
+        for (letter, character) in line_text.chars().enumerate() {
             let glyph = glyph(character.to_ascii_uppercase());
             for (row, bits) in glyph.iter().enumerate() {
                 for column in 0..5usize {
@@ -70,6 +69,23 @@ pub fn notice_buffer(text: &str) -> MemoryRenderBuffer {
         Transform::Normal,
         None,
     )
+}
+
+fn wrapped_notice_lines(text: &str) -> Vec<String> {
+    let mut visible_lines = Vec::new();
+    for line in text.lines() {
+        let mut characters = line.chars().peekable();
+        loop {
+            visible_lines.push(characters.by_ref().take(40).collect::<String>());
+            if visible_lines.len() == 10 || characters.peek().is_none() {
+                break;
+            }
+        }
+        if visible_lines.len() == 10 {
+            break;
+        }
+    }
+    visible_lines
 }
 
 const fn glyph(character: char) -> [u8; 7] {
