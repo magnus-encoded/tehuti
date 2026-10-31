@@ -119,8 +119,6 @@ impl Menu {
         for (index, item) in ITEMS.iter().enumerate() {
             text.push_str(if index == self.selected { "\n> " } else { "\n  " });
             text.push_str(item.label());
-            text.push_str(" open ");
-            text.push_str(item.label());
         }
         text.push('\n');
         text.push_str(back);

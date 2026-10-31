@@ -5,7 +5,7 @@ mod tests {
     use tehuti_protocol::{ButtonName, ButtonState, Event, Text};
 
     #[test]
-    fn guide_items_show_phrases_that_rank_their_destination_first() {
+    fn guide_item_names_rank_their_destination_first() {
         let root = tempfile::tempdir().unwrap();
         let display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
@@ -25,7 +25,12 @@ mod tests {
             "TASK MONITOR",
             "SETTINGS",
         ] {
-            assert!(menu.contains(&format!("open {name}")));
+            assert_eq!(
+                menu.lines()
+                    .filter(|line| line.trim_start_matches(['>', ' ']) == name)
+                    .count(),
+                1
+            );
             compositor.handle(&Event::Speech {
                 text: Text::new(format!("open {name}")).unwrap(),
             });
