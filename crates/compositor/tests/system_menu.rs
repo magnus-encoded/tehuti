@@ -3,20 +3,137 @@ mod system_menu {
     use tehuti::system_menu::Config;
     use tehuti_core::menu::Command;
 
+    proptest::proptest! {
+        #[test]
+        fn broken_custom_entries_preserve_valid_neighbors(
+            broken in proptest::sample::select(vec![
+                "label = 1\nexec = [\"tool\"]\norder = 0",
+                "label = \"\"\nexec = [\"tool\"]\norder = 0",
+                "label = \"Bad\"\nexec = []\norder = 0",
+                "label = \"Bad\"\nexec = [1]\norder = 0",
+                "label = \"Bad\"\nexec = [\"tool\"]\norder = \"first\"",
+                "label = \"Bad\"\nexec = [\"tool\"]",
+                "label = \"Bad\"\nexec = [\"tool\"]\norder = 0\nextra = true",
+                "label = \"Bad\\nLabel\"\nexec = [\"tool\"]\norder = 0",
+                "label = \"Bad\"\nexec = [\"bad\\u0000name\"]\norder = 0",
+            ])
+        ) {
+            let text = format!("[[entry]]\n{broken}\n[[entry]]\nlabel = \"Valid\"\nexec = [\"tool\"]\norder = 1");
+            let config = Config::parse(&text).unwrap();
+            proptest::prop_assert_eq!(config.notices().len(), 1);
+            proptest::prop_assert!(config.notices()[0].contains("entry[0]"));
+            proptest::prop_assert_eq!(config.labels(), vec!["Valid"]);
+            let result = config.run(Command::Custom(0), |program, _| {
+                assert_eq!(program, "tool");
+                Ok(())
+            });
+            proptest::prop_assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn user_entries_follow_builtins_in_order_and_run_their_argv() {
+        use tehuti_core::{
+            menu::{self, Menu},
+            pad::PadFamily,
+        };
+        use tehuti_protocol::{ButtonName, ButtonState, Event};
+        let config = Config::parse(
+            r#"
+[[entry]]
+label = "Later"
+exec = ["later"]
+order = 20
+[[entry]]
+label = "Terminal"
+exec = ["terminal", "--title", "two words"]
+order = 10
+[[entry]]
+label = "Peer"
+exec = ["peer"]
+order = 10
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.labels(), ["Terminal", "Peer", "Later"]);
+        let mut menu = Some(Menu::new(PadFamily::default()).with_entries(config.labels()));
+        assert!(
+            menu.as_ref()
+                .unwrap()
+                .text()
+                .contains("SETTINGS\n  Terminal\n  Peer\n  Later")
+        );
+        for _ in 0..7 {
+            assert_eq!(
+                menu::handle(
+                    &mut menu,
+                    &Event::Button {
+                        name: ButtonName::DpadDown,
+                        state: ButtonState::Pressed
+                    }
+                ),
+                None
+            );
+        }
+        let command = menu::handle(
+            &mut menu,
+            &Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed,
+            },
+        )
+        .unwrap();
+        assert_eq!(command, Command::Custom(0));
+        assert!(menu.is_none());
+        config
+            .run(command, |program, args| {
+                assert_eq!(program, "terminal");
+                assert_eq!(args, ["--title", "two words"]);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn invalid_entries_preserve_valid_commands() {
+        let config = Config::parse("unknown = [1]\nreboot = [\"session-reboot\"]").unwrap();
+        config
+            .run(Command::Reboot, |program, args| {
+                assert_eq!(program, "session-reboot");
+                assert_eq!(args, Vec::<String>::new());
+                Ok(())
+            })
+            .unwrap();
+    }
+
     #[test]
     fn menu_command_receives_the_compositor_socket_and_session_display() {
+        check_socket(false);
+        check_socket(true);
+    }
+
+    fn check_socket(custom: bool) {
         let directory = tempfile::tempdir().unwrap();
         let capture = directory.path().join("capture");
         let config = directory.path().join("menu.toml");
         std::fs::write(
             &config,
-            r#"task_monitor = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY\" > \"$TEHUTI_MENU_CAPTURE\""]"#,
+            if custom {
+                r#"unknown = ["ignored"]
+[[entry]]
+label = "Capture"
+order = 0
+exec = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY\" > \"$TEHUTI_MENU_CAPTURE\""]"#
+            } else {
+                r#"task_monitor = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY\" > \"$TEHUTI_MENU_CAPTURE\""]"#
+            },
         )
         .unwrap();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "system_menu::isolated_menu_probe"])
             .env("TEHUTI_MENU_CONFIG", config)
             .env("TEHUTI_MENU_CAPTURE", &capture)
+            .env("TEHUTI_TEST_CUSTOM_MENU", if custom { "yes" } else { "no" })
             .env_remove("WAYLAND_DISPLAY")
             .env("DISPLAY", ":99")
             .output()
@@ -46,6 +163,11 @@ mod system_menu {
         tehuti::child_process::configure_display(Some(":42".into())).unwrap();
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
+        if std::env::var("TEHUTI_TEST_CUSTOM_MENU").as_deref() == Ok("yes") {
+            assert!(compositor.visible_notice_text().unwrap().contains("unknown"));
+            compositor.set_contexts(Vec::new());
+            std::fs::write(std::env::var_os("TEHUTI_MENU_CONFIG").unwrap(), "invalid TOML").unwrap();
+        }
         compositor.set_launch_socket("example-compositor-socket".into());
         compositor.handle(&Event::Button {
             name: ButtonName::Guide,
@@ -58,7 +180,12 @@ mod system_menu {
             name: ButtonName::Guide,
             state: ButtonState::Released,
         });
-        for name in [ButtonName::DpadDown; 5].into_iter().chain([ButtonName::South]) {
+        let count = if std::env::var("TEHUTI_TEST_CUSTOM_MENU").as_deref() == Ok("yes") {
+            7
+        } else {
+            5
+        };
+        for name in core::iter::repeat_n(ButtonName::DpadDown, count).chain([ButtonName::South]) {
             compositor.handle(&Event::Button {
                 name,
                 state: ButtonState::Pressed,
@@ -97,14 +224,14 @@ mod system_menu {
     #[test]
     fn invalid_config_and_empty_commands_cannot_run() {
         for text in [
-            r#"{"reboot":["command"]}"#,
             r#"unknown = ["command"]"#,
             r#"reboot = [""]"#,
             "reboot = [1]",
             r#"reboot = ["bad\u0000name"]"#,
         ] {
-            assert!(Config::parse(text).is_err());
+            assert_ne!(Config::parse(text).unwrap().notices(), Vec::<String>::new());
         }
+        assert!(Config::parse("not TOML [").is_err());
         let config = Config::parse("shut_down = []").unwrap();
         assert!(
             config

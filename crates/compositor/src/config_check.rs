@@ -8,7 +8,7 @@ use tehuti_protocol::ButtonName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
-    /// The file is rejected; Tehuti skips it at startup and refuses it on reload.
+    /// Invalid configuration is skipped and must be corrected.
     Error,
     /// The file loads, but part of it never takes effect.
     Warning,
@@ -102,8 +102,13 @@ pub fn check(directory: &Path) -> Report {
     match std::fs::read_to_string(&menu) {
         Ok(text) => {
             report.checked = report.checked.saturating_add(1);
-            if let Err(error) = crate::system_menu::Config::parse(&text) {
-                report.push(&menu, Severity::Error, error.to_string());
+            match crate::system_menu::Config::parse(&text) {
+                Ok(config) => {
+                    for notice in config.notices() {
+                        report.push(&menu, Severity::Error, notice.clone());
+                    }
+                }
+                Err(error) => report.push(&menu, Severity::Error, error.to_string()),
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
