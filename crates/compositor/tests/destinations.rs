@@ -189,4 +189,38 @@ steps = [{ icon = 'web-browser', target = { kind = 'url', value = 'https://examp
         assert_eq!(table.vocabulary_for(Some("reader")), Vec::<String>::new());
         assert_eq!(table.vocabulary_for(None), Vec::<String>::new());
     }
+
+    #[test]
+    fn open_terminal_ranks_apps_by_generic_name_prefix_and_keywords() {
+        let root = tempfile::tempdir().unwrap();
+        let applications = root.path().join("applications");
+        std::fs::create_dir_all(&applications).unwrap();
+        for (file, extra) in [
+            ("console.desktop", "Name=Console\nGenericName=Terminal emulator\n"),
+            ("shellbox.desktop", "Name=Shellbox\nKeywords=terminal;shell;\n"),
+            ("reader.desktop", "Name=Reader\nGenericName=Document viewer\n"),
+        ] {
+            std::fs::write(
+                applications.join(file),
+                format!("[Desktop Entry]\nType=Application\n{extra}Exec=app\n"),
+            )
+            .unwrap();
+        }
+        let table = Table::read(root.path(), root.path(), &[root.path().into()], &[], &[]).unwrap();
+        let (rows, _routes) = tehuti::launcher::destinations(
+            table.entries(),
+            tehuti_core::unit_verbs::DestinationKind::Application,
+            None,
+        );
+        let launcher = tehuti_core::launcher::Launcher::new("terminal", rows, None);
+        let names: Vec<_> = launcher
+            .list()
+            .candidates()
+            .iter()
+            .map(|ranked| ranked.candidate.name.as_str())
+            .collect();
+        assert!(names.contains(&"Console"), "{names:?}");
+        assert!(names.contains(&"Shellbox"), "{names:?}");
+        assert!(!names.contains(&"Reader"), "{names:?}");
+    }
 }
