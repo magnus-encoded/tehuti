@@ -16,6 +16,8 @@ struct World {
     clock: VecDeque<Duration>,
     request: Option<(RequestKey, Vec<Permission>)>,
     close_focus: Option<Event>,
+    /// When set, the world answers each launcher request with a launcher over these rows.
+    destinations: Option<Vec<crate::launcher::Destination>>,
 }
 
 impl World {
@@ -82,7 +84,13 @@ impl World {
                     Effect::WallpaperSave(index) if !self.wallpaper_save_fails => {
                         state = self.run(state, Input::WallpaperSaved(index));
                     }
+                    Effect::OpenLauncher(request) if self.destinations.is_some() => {
+                        let rows = self.destinations.clone().unwrap_or_default();
+                        let launcher = crate::launcher::Launcher::new(&request.query, rows, Some(1000));
+                        state = self.run(state, Input::Launcher(Box::new(launcher)));
+                    }
                     Effect::ChooseLauncher(_)
+                    | Effect::LauncherUsed(_)
                     | Effect::OpenLauncher(_)
                     | Effect::AdjusterValue { .. }
                     | Effect::ReadVolume
@@ -4346,7 +4354,7 @@ fn the_invitation_leaves_other_buttons_to_the_desktop() {
     let mut world = World::default();
     let state = world.run(
         State::default(),
-        Input::Launcher(crate::launcher::Launcher::invitation(Some("Share"))),
+        Input::Launcher(Box::new(crate::launcher::Launcher::invitation(Some("Share")))),
     );
     let state = world.event(
         state,
@@ -4381,7 +4389,7 @@ fn launcher_controller_confirmation_becomes_a_route_effect() {
         }],
         None,
     );
-    let state = world.run(State::default(), Input::Launcher(launcher));
+    let state = world.run(State::default(), Input::Launcher(Box::new(launcher)));
     world.trace.clear();
     let _state = world.event(
         state,
@@ -4413,7 +4421,7 @@ fn launcher_allows_push_to_talk_and_replaces_its_query() {
         None,
     );
     let state = world.run(State::default(), Input::Speech(SpeechInput::Available));
-    let state = world.run(state, Input::Launcher(launcher));
+    let state = world.run(state, Input::Launcher(Box::new(launcher)));
     world.trace.clear();
     let state = world.event(
         state,
@@ -4729,7 +4737,7 @@ fn volume_speech_opens_the_gauge_over_the_empty_desktop_invitation() {
     let mut world = World::default();
     let state = world.run(
         State::default(),
-        Input::Launcher(crate::launcher::Launcher::invitation(None)),
+        Input::Launcher(Box::new(crate::launcher::Launcher::invitation(None))),
     );
     let state = world.run(state, speech_event("volume"));
     assert!(
@@ -4742,4 +4750,116 @@ fn volume_speech_opens_the_gauge_over_the_empty_desktop_invitation() {
     assert!(world.trace.contains(&Effect::ReadVolume));
     let state = world.run(state, Input::Volume(Some(50)));
     assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(50));
+}
+
+fn launcher_row(name: &str) -> crate::launcher::Destination {
+    crate::launcher::Destination {
+        name: name.into(),
+        extra_names: Vec::new(),
+        route: format!("{name} (app)"),
+        open: false,
+        focused: false,
+        safety: crate::launcher::Safety::Launch,
+    }
+}
+
+fn launcher_event_series() -> impl Strategy<Value = Event> {
+    prop_oneof![
+        arbitrary_button(),
+        prop::sample::select(vec!["open browser", "open browsr", "open editor", "open"]).prop_map(|text| {
+            Event::Speech {
+                text: Text::new(text.to_owned()).unwrap(),
+            }
+        }),
+        prop::bool::ANY.prop_map(|down| Event::Button {
+            name: if down {
+                ButtonName::DpadDown
+            } else {
+                ButtonName::DpadUp
+            },
+            state: ButtonState::Pressed,
+        }),
+        (0_u64..4000).prop_map(|millis| Event::Tick {
+            elapsed: Duration::from_millis(millis)
+        }),
+    ]
+}
+
+fn launcher_uses(trace: &[Effect]) -> Vec<&crate::launcher::Usage> {
+    trace
+        .iter()
+        .filter_map(|effect| {
+            if let Effect::LauncherUsed(usage) = effect {
+                Some(usage)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+proptest! {
+    #[test]
+    fn every_opened_launcher_logs_one_use_of_its_own_query(
+        events in prop::collection::vec(launcher_event_series(), 0..40),
+        contexts in arbitrary_contexts(),
+        names in prop::sample::subsequence(vec!["Browser", "Browsers", "Editor", "Mail"], 0..=4),
+    ) {
+        let mut world = World {
+            destinations: Some(names.into_iter().map(launcher_row).collect()),
+            ..World::default()
+        };
+        let app = contexts[0].app_id().to_owned();
+        let mut state = configured(contexts, &app);
+        for event in events {
+            state = world.run(state, Input::Event { event, elapsed: Duration::from_millis(16) });
+        }
+        let opened: Vec<_> = world
+            .trace
+            .iter()
+            .filter_map(|effect| {
+                if let Effect::OpenLauncher(request) = effect {
+                    Some(request.query.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let uses = launcher_uses(&world.trace);
+        let still_open = usize::from(state.launcher().is_some());
+        prop_assert_eq!(uses.len().checked_add(still_open), Some(opened.len()));
+        for (usage, query) in uses.iter().zip(&opened) {
+            prop_assert_eq!(&usage.query, query);
+            if let crate::launcher::Ending::Chosen { rank } = usage.ending {
+                prop_assert!(rank >= 1 && rank <= usage.candidates.len());
+            }
+        }
+        let chosen = world.trace.iter().filter(|effect| matches!(effect, Effect::ChooseLauncher(_))).count();
+        let logged_chosen = uses
+            .iter()
+            .filter(|usage| matches!(usage.ending, crate::launcher::Ending::Chosen { .. }))
+            .count();
+        prop_assert_eq!(chosen, logged_chosen);
+    }
+}
+
+#[test]
+fn the_invitation_logs_no_use() {
+    let mut world = World::default();
+    let state = State::new(crate::State::with_contexts(Vec::new()));
+    let mut state = world.run(
+        state,
+        Input::Launcher(Box::new(crate::launcher::Launcher::invitation(Some("Record")))),
+    );
+    for name in [ButtonName::South, ButtonName::East] {
+        state = world.event(
+            state,
+            Event::Button {
+                name,
+                state: ButtonState::Pressed,
+            },
+        );
+    }
+    drop(state);
+    assert_eq!(launcher_uses(&world.trace), Vec::<&crate::launcher::Usage>::new());
 }

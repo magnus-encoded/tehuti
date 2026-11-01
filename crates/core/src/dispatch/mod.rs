@@ -31,7 +31,7 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput, SpeechState};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     Menu(crate::menu::Command),
-    Launcher(crate::launcher::Launcher),
+    Launcher(Box<crate::launcher::Launcher>),
     /// Closes the session-start invitation once a window exists.
     CloseInvitation,
     Volume(Option<u8>),
@@ -112,6 +112,8 @@ pub enum Input {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     ChooseLauncher(usize),
+    /// A launcher use ended; the compositor logs it.
+    LauncherUsed(crate::launcher::Usage),
     OpenLauncher(crate::unit_verbs::LauncherRequest),
     AdjusterValue {
         plugin: usize,
@@ -504,7 +506,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         }
         Input::Launcher(launcher) => {
             state.choice_list = None;
-            state.launcher = Some(launcher);
+            state.launcher = Some(*launcher);
             let mut effects = Vec::new();
             release_pad(&mut state, Handoff::Open(Overlay::ChoiceList), &mut effects);
             (state, effects)
@@ -1436,6 +1438,18 @@ fn desktop_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
 }
 
 fn launcher_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    let consumed = launcher_step(state, event, effects);
+    if let Some(usage) = state
+        .launcher
+        .as_mut()
+        .and_then(crate::launcher::Launcher::take_usage)
+    {
+        effects.push(Effect::LauncherUsed(usage));
+    }
+    consumed
+}
+
+fn launcher_step(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
     let family = state.core.pad_family();
     let Some(launcher) = state
         .launcher
@@ -1453,6 +1467,7 @@ fn launcher_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
         }
         Event::Speech { text } => {
             launcher.stop_timer();
+            launcher.replace();
             let request = crate::unit_verbs::launcher_request(text.as_str()).unwrap_or_else(|| {
                 crate::unit_verbs::LauncherRequest {
                     kind: crate::unit_verbs::DestinationKind::Application,

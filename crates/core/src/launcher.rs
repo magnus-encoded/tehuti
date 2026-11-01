@@ -57,6 +57,70 @@ pub struct Launcher {
     enabled: bool,
     delay: Duration,
     invitation: bool,
+    open_for: Duration,
+    usage: Option<Box<Usage>>,
+}
+
+/// How one launcher use ended. Ranks count from 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    Chosen {
+        rank: usize,
+    },
+    Cancelled,
+    /// Speech arrived while open and a new launcher took its place.
+    Replaced,
+}
+
+/// One finished launcher use: the heard query, the ranked candidate names and how it ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Usage {
+    pub query: String,
+    pub candidates: Vec<String>,
+    pub ending: Ending,
+    /// Time from the transcript opening the launcher to its ending.
+    pub since_transcript: Duration,
+}
+
+/// Counts over logged launcher uses.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Report {
+    pub uses: usize,
+    pub chosen: usize,
+    pub first_rank: usize,
+    pub cancelled: usize,
+    pub replaced: usize,
+    /// Heard query and the chosen name, where the two differ after normalizing.
+    pub mishears: Vec<(String, String)>,
+}
+
+impl Report {
+    #[must_use]
+    pub fn from_uses(uses: &[Usage]) -> Self {
+        let mut report = Self {
+            uses: uses.len(),
+            ..Self::default()
+        };
+        for usage in uses {
+            match usage.ending {
+                Ending::Chosen { rank } => {
+                    report.chosen = report.chosen.saturating_add(1);
+                    if rank == 1 {
+                        report.first_rank = report.first_rank.saturating_add(1);
+                    }
+                    if let Some(name) = rank.checked_sub(1).and_then(|index| usage.candidates.get(index))
+                        && tehuti_protocol::normalize_phrase(name)
+                            != tehuti_protocol::normalize_phrase(&usage.query)
+                    {
+                        report.mishears.push((usage.query.clone(), name.clone()));
+                    }
+                }
+                Ending::Cancelled => report.cancelled = report.cancelled.saturating_add(1),
+                Ending::Replaced => report.replaced = report.replaced.saturating_add(1),
+            }
+        }
+        report
+    }
 }
 
 impl Launcher {
@@ -107,6 +171,8 @@ impl Launcher {
             enabled: true,
             delay: Duration::from_secs(5),
             invitation: false,
+            open_for: Duration::ZERO,
+            usage: None,
         };
         launcher.decorate();
         launcher
@@ -269,8 +335,45 @@ impl Launcher {
         }
         self.list.confirm();
         match self.list.selected()? {
-            Choice::Candidate(index) => self.indices.get(index).copied(),
+            Choice::Candidate(index) => {
+                if !self.list.is_open() {
+                    self.finish(Ending::Chosen {
+                        rank: index.saturating_add(1),
+                    });
+                }
+                self.indices.get(index).copied()
+            }
             Choice::Create => None,
+        }
+    }
+
+    fn finish(&mut self, ending: Ending) {
+        if self.invitation || self.usage.is_some() {
+            return;
+        }
+        self.usage = Some(Box::new(Usage {
+            query: self.list.slots().heard.clone(),
+            candidates: self
+                .list
+                .candidates()
+                .iter()
+                .map(|row| row.candidate.name.clone())
+                .collect(),
+            ending,
+            since_transcript: self.open_for,
+        }));
+    }
+
+    /// The finished use, once, after a confirm, cancel or replacement. The invitation has none.
+    pub fn take_usage(&mut self) -> Option<Usage> {
+        self.usage.take().map(|usage| *usage)
+    }
+
+    /// Ends this use because new speech opens another launcher.
+    pub fn replace(&mut self) {
+        if self.list.is_open() {
+            self.list.cancel();
+            self.finish(Ending::Replaced);
         }
     }
 
@@ -319,6 +422,7 @@ impl Launcher {
         if !self.list.is_open() {
             return None;
         }
+        self.open_for = self.open_for.saturating_add(elapsed);
         if let Some(age) = &mut self.jev_elapsed {
             *age = age.saturating_add(elapsed);
         }
@@ -337,7 +441,10 @@ impl Launcher {
         self.list.move_selection(down);
     }
     pub fn cancel(&mut self) {
-        self.list.cancel();
+        if self.list.is_open() {
+            self.list.cancel();
+            self.finish(Ending::Cancelled);
+        }
     }
 }
 
