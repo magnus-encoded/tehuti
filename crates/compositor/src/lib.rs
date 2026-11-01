@@ -33,6 +33,7 @@ pub mod drm_hotplug;
 
 pub mod dim;
 mod focus_outline;
+pub mod import_placeholder;
 mod layout_window;
 
 pub mod shutdown;
