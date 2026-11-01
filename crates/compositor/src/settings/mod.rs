@@ -27,6 +27,7 @@ struct View {
     row: InputRow,
     controller: String,
     microphone: String,
+    speech: String,
     hint: String,
     selected: usize,
     current: usize,
@@ -42,13 +43,14 @@ struct View {
 }
 
 impl View {
-    fn from_settings(settings: &Settings) -> Self {
+    fn from_settings(settings: &Settings, speech: &str) -> Self {
         Self {
             page: settings.page,
             category: settings.category,
             row: settings.input.row,
             controller: settings.input.controller_label(),
             microphone: settings.input.microphone_label(),
+            speech: speech.to_owned(),
             hint: settings.button_hint(),
             selected: settings.selected,
             current: settings.current,
@@ -72,12 +74,17 @@ impl View {
 }
 
 impl Artwork {
-    pub fn buffer(&mut self, settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffer> {
+    pub fn buffer(
+        &mut self,
+        settings: &Settings,
+        speech: &str,
+        size: (i32, i32),
+    ) -> Option<MemoryRenderBuffer> {
         if !settings.open {
             self.cached = None;
             return None;
         }
-        let view = View::from_settings(settings);
+        let view = View::from_settings(settings, speech);
         if self
             .cached
             .as_ref()
@@ -85,7 +92,7 @@ impl Artwork {
         {
             let mut drawn = settings.clone();
             drawn.remaining = view.remaining;
-            self.cached = buffer(&drawn, size).map(|buffer| (view, size, buffer));
+            self.cached = buffer(&drawn, speech, size).map(|buffer| (view, size, buffer));
         }
         self.cached.as_ref().map(|(_, _, buffer)| buffer.clone())
     }
@@ -135,11 +142,11 @@ pub(crate) mod canvas;
 use canvas::Canvas;
 
 impl Canvas {
-    fn contents(&mut self, settings: &Settings) {
+    fn contents(&mut self, settings: &Settings, speech: &str) {
         match settings.page {
             Page::Categories => self.categories(settings.category),
             Page::Display => self.display(settings),
-            Page::Input => self.input(settings),
+            Page::Input => self.input(settings, speech),
             Page::Wallpaper => self.wallpaper(settings),
         }
     }
@@ -237,7 +244,7 @@ impl Canvas {
         self.wave(960, 445, refresh);
     }
 
-    fn input(&mut self, settings: &Settings) {
+    fn input(&mut self, settings: &Settings, speech: &str) {
         let rows = [
             (
                 InputRow::Controller,
@@ -259,6 +266,15 @@ impl Canvas {
             let value: String = value.chars().take(36).collect();
             self.text(96, y.saturating_add(66), &format!("<  {value}  >"), 3, CYAN);
         }
+        self.text(96, 494, "SPEECH RUNS ON", 2, WHITE);
+        let speech: String = speech.chars().take(36).collect();
+        self.text(
+            360,
+            490,
+            &speech,
+            3,
+            if speech.starts_with("CPU") { AMBER } else { CYAN },
+        );
     }
 
     fn wallpaper(&mut self, settings: &Settings) {
@@ -324,7 +340,7 @@ impl Canvas {
 }
 
 #[must_use]
-pub fn buffer(settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffer> {
+pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<MemoryRenderBuffer> {
     if !settings.open {
         return None;
     }
@@ -346,7 +362,7 @@ pub fn buffer(settings: &Settings, size: (i32, i32)) -> Option<MemoryRenderBuffe
     );
     canvas.rectangle(80, 166, 1120, 2, CYAN);
     canvas.text(80, 190, "POP THE HOOD", 2, AMBER);
-    canvas.contents(settings);
+    canvas.contents(settings, speech);
     if let Some(remaining) = settings.remaining {
         canvas.ring(remaining);
         canvas.text(80, 604, &settings.button_hint(), 3, AMBER);

@@ -18,6 +18,7 @@ struct Running {
     output: VecDeque<u8>,
     input: Vec<u8>,
     ready: bool,
+    device: Option<SpeechDevice>,
     vocabulary: Option<Vec<u8>>,
     age: core::time::Duration,
 }
@@ -60,6 +61,12 @@ impl SpeechProcess {
         self.running.as_ref().is_some_and(|running| running.ready)
     }
 
+    /// The device and compute type the running sidecar chose.
+    #[must_use]
+    pub fn device(&self) -> Option<&SpeechDevice> {
+        self.running.as_ref().and_then(|running| running.device.as_ref())
+    }
+
     fn start(&self) -> io::Result<Running> {
         let (program, arguments) = self
             .command
@@ -93,6 +100,7 @@ impl SpeechProcess {
                 output: VecDeque::new(),
                 input: Vec::new(),
                 ready: false,
+                device: None,
                 vocabulary: (!self.vocabulary.is_empty()).then(|| self.vocabulary.clone()),
                 age: core::time::Duration::ZERO,
             }),
@@ -246,7 +254,8 @@ impl Running {
                         if *byte == b'\n' {
                             if let Some(input) = parse_reply(&self.input) {
                                 if input == SpeechInput::Available {
-                                    tracing::info!("speech sidecar ready");
+                                    self.device = parse_ready_device(&self.input);
+                                    tracing::info!(device = ?self.device, "speech sidecar ready");
                                     self.ready = true;
                                 }
                                 inputs.push(input);
@@ -273,10 +282,59 @@ impl Running {
     }
 }
 
+/// Where the sidecar runs inference, as reported in its ready reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpeechDevice {
+    device: String,
+    compute_type: String,
+}
+
+impl SpeechDevice {
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{} / {}", self.device, self.compute_type).to_uppercase()
+    }
+}
+
+/// The Input page's speech line: off, starting, or the chosen device.
+#[must_use]
+pub fn speech_label(process: Option<&SpeechProcess>) -> String {
+    let Some(process) = process else {
+        return "OFF".to_owned();
+    };
+    process.device().map_or_else(
+        || if process.is_ready() { "UNKNOWN" } else { "STARTING" }.to_owned(),
+        SpeechDevice::label,
+    )
+}
+
+fn device_token(value: &serde_json::Value) -> Option<String> {
+    let token = value.as_str()?;
+    (!token.is_empty()
+        && token.len() <= 24
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+    .then(|| token.to_owned())
+}
+
+fn parse_ready_device(bytes: &[u8]) -> Option<SpeechDevice> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    Some(SpeechDevice {
+        device: device_token(value.get("device")?)?,
+        compute_type: device_token(value.get("compute_type")?)?,
+    })
+}
+
 fn parse_reply(bytes: &[u8]) -> Option<SpeechInput> {
     let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     let fields = value.as_object()?;
-    if fields.len() == 1 && value.get("ready").and_then(serde_json::Value::as_bool) == Some(true) {
+    let ready_fields = if fields.contains_key("device") && fields.contains_key("compute_type") {
+        3
+    } else {
+        1
+    };
+    if fields.len() == ready_fields && value.get("ready").and_then(serde_json::Value::as_bool) == Some(true) {
         return Some(SpeechInput::Available);
     }
     if fields.len() != 2 {
@@ -304,6 +362,32 @@ fn parse_reply(bytes: &[u8]) -> Option<SpeechInput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ready_reply_names_the_device_shown_in_settings() {
+        let reply = br#"{"ready":true,"device":"cuda","compute_type":"int8_float16"}"#;
+        assert_eq!(parse_reply(reply), Some(SpeechInput::Available));
+        assert_eq!(
+            parse_ready_device(reply).map(|device| device.label()),
+            Some("CUDA / INT8_FLOAT16".to_owned())
+        );
+        assert_eq!(parse_ready_device(br#"{"ready":true}"#), None);
+    }
+
+    #[test]
+    fn ready_reply_with_an_invalid_device_is_ready_without_one() {
+        let reply = br#"{"ready":true,"device":"cuda; rm","compute_type":"int8"}"#;
+        assert_eq!(parse_reply(reply), Some(SpeechInput::Available));
+        assert_eq!(parse_ready_device(reply), None);
+        assert_eq!(parse_reply(br#"{"ready":true,"device":"cpu"}"#), None);
+    }
+
+    #[test]
+    fn speech_label_reports_off_starting_and_the_chosen_device() {
+        assert_eq!(speech_label(None), "OFF");
+        let process = SpeechProcess::new(vec!["true".into()]);
+        assert_eq!(speech_label(Some(&process)), "STARTING");
+    }
 
     #[test]
     fn interim_reply_preserves_text_and_rejects_invalid_boundaries() {

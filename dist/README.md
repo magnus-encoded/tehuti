@@ -19,7 +19,7 @@ sessions alone; the next session uses the selected build.
 
 Speech uses the requirements stamp and venv from `scripts/try`, including
 `TEHUTI_SPEECH_VENV`. Set `TEHUTI_NO_SPEECH=1` to install without speech dependencies.
-The speech launcher probes CUDA and falls back to CPU. The faster-whisper stack
+The speech sidecar picks CUDA when it can run there and falls back to the CPU. The faster-whisper stack
 requires a supported CTranslate2 Python distribution; its [published Linux wheels](https://opennmt.net/CTranslate2/installation)
 cover x86_64 and AArch64, so use `TEHUTI_NO_SPEECH=1` on i686 unless you provide that dependency.
 Session registration remains a separate owner action described below.

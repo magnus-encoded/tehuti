@@ -98,14 +98,6 @@ cat > "$build/speech-launcher" <<'SH'
 #!/bin/sh
 binary=$(readlink -f "$HOME/.local/lib/tehuti/tehuti")
 venv=${TEHUTI_SPEECH_VENV:-$HOME/.cache/tehuti-speech-venv}
-if [ "${TEHUTI_SPEECH_DEVICE:-}" = '' ] && ! "$venv/bin/python" -c '
-import numpy
-from faster_whisper import WhisperModel
-model = WhisperModel("tiny", device="cuda", compute_type="float16")
-list(model.transcribe(numpy.zeros(16000, dtype=numpy.float32))[0])
-' >/dev/null 2>&1; then
-    export TEHUTI_SPEECH_DEVICE=cpu
-fi
 exec "$venv/bin/python" "${TEHUTI_RELEASE_DIRECTORY:-$(dirname "$binary")}/sidecars/speech/speech.py"
 SH
 chmod +x "$build/launcher" "$build/speech-launcher"

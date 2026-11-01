@@ -30,8 +30,13 @@ exec /tmp/tehuti-speech-venv/bin/python /absolute/path/sidecars/speech/speech.py
 
 Set `TEHUTI_SPEECH_SIDECAR` to the wrapper's absolute path when launching
 Tehuti. Without it speech is disabled. `TEHUTI_SPEECH_MODEL` selects the model;
-`TEHUTI_SPEECH_DEVICE=cpu` selects CPU inference. CUDA requires the NVIDIA
-cuBLAS and cuDNN libraries expected by faster-whisper. Model initialization
+`TEHUTI_SPEECH_DEVICE=cpu` selects CPU inference. Otherwise, on an NVIDIA GPU,
+the sidecar adds any `site-packages/nvidia/{cublas,cudnn,cuda_nvrtc}/lib` in the venv
+to the library path, loads the model with the best compute type the card supports,
+and falls back to CPU `int8`. Tehuti installs nothing: a missing `libcublas.so.12`,
+`libcudnn.so.9` or `libnvrtc.so.12` is logged as a warning with its pip package
+(`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, `nvidia-cuda-nvrtc-cu12`). The ready
+reply names the device and compute type, and the Input page shows them. Model initialization
 may download model weights. The sidecar emits readiness after initialization.
 
 Each press records from every PipeWire capture source at once (monitors are

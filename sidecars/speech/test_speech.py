@@ -18,6 +18,16 @@ spec.loader.exec_module(module)
 
 
 class SpeechTests(unittest.TestCase):
+    def test_ready_reply_names_the_chosen_device_and_compute_type(self):
+        class Speech:
+            def close(self):
+                pass
+
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            module.run(io.StringIO(""), Speech(), ("cuda", "int8"))
+        self.assertEqual(json.loads(output.getvalue()),
+                         {"ready": True, "device": "cuda", "compute_type": "int8"})
+
     def test_transport_logs_unknown_messages_and_continues_capture(self):
         class Speech:
             def __init__(self):

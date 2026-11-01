@@ -1099,10 +1099,11 @@ impl Compositor {
         &self,
         size: (i32, i32),
     ) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
-        self.settings_display
-            .artwork
-            .borrow_mut()
-            .buffer(self.settings(), size)
+        self.settings_display.artwork.borrow_mut().buffer(
+            self.settings(),
+            &crate::speech::speech_label(self.speech_process.as_ref()),
+            size,
+        )
     }
 
     pub fn open_choice_list(&mut self, slots: tehuti_core::choice_list::Slots) {
