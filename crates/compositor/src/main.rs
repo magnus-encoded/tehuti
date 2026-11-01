@@ -41,6 +41,7 @@ pub(crate) struct LoopData {
     redraw: Option<Redraw>,
     pacing: LoopPacing,
     context_watch: Option<tehuti::contexts::ContextWatch>,
+    applications_watch: Option<tehuti::applications_watch::ApplicationsWatch>,
     driver: Option<tehuti::driver::Driver>,
     frames: Frames,
 }
@@ -391,7 +392,9 @@ fn start_session(
         })
         .transpose()?;
 
+    let applications_watch = insert_applications_watch(&event_loop, &compositor.destination_paths().data);
     let mut data = LoopData {
+        applications_watch,
         display,
         compositor,
         controllers,
@@ -514,6 +517,7 @@ fn run(
         if work_due {
             advance_time(data);
             reload_contexts(data);
+            reload_desktop_entries(data);
             if data.driver.is_none() {
                 reconnect_controller(data, &handle);
             }
@@ -735,6 +739,33 @@ fn insert_context_watch(
     })
     .inspect_err(|error| warn!(%error, "context watch unavailable; contexts reload only on restart"))
     .ok()
+}
+
+/// Watches desktop entries; a failure leaves them loaded until restart.
+fn insert_applications_watch(
+    event_loop: &EventLoop<'static, LoopData>,
+    data: &[std::path::PathBuf],
+) -> Option<tehuti::applications_watch::ApplicationsWatch> {
+    tehuti::applications_watch::ApplicationsWatch::insert(
+        &event_loop.handle(),
+        data,
+        |data: &mut LoopData| data.applications_watch.as_mut(),
+    )
+    .inspect_err(
+        |error| warn!(%error, "applications watch unavailable; desktop entries reload only on restart"),
+    )
+    .ok()
+}
+
+/// Rebuilds destinations once a burst of desktop entry edits has gone quiet.
+fn reload_desktop_entries(data: &mut LoopData) {
+    if data
+        .applications_watch
+        .as_mut()
+        .is_some_and(|watch| watch.poll(std::time::Instant::now()))
+    {
+        data.compositor.refresh_destinations();
+    }
 }
 
 /// Reloads contexts once a burst of edits has gone quiet.

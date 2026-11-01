@@ -76,6 +76,7 @@ pub mod destinations;
 pub mod launcher;
 
 pub mod adjuster;
+pub mod applications_watch;
 pub mod driver;
 mod driver_shot;
 pub mod volume;
