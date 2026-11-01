@@ -51,6 +51,7 @@ pub struct State {
     bar: bar::Bar,
     held_keys: Vec<(ButtonName, KeyName)>,
     pad_family: pad::PadFamily,
+    app_names: Vec<(String, String)>,
 }
 
 impl State {
@@ -113,6 +114,7 @@ impl State {
             bar: bar::Bar::new(),
             held_keys: Vec::new(),
             pad_family: pad::PadFamily::Letters,
+            app_names: Vec::new(),
         };
         state.refresh_ticker();
         state.refresh_labels();
@@ -214,7 +216,13 @@ impl State {
         self.refresh_labels();
     }
 
-    /// The label a context gives windows of `app_id`, for their bar chip.
+    /// Supplies each application's desktop entry `Name`, keyed by app id.
+    pub fn set_app_names(&mut self, names: Vec<(String, String)>) {
+        self.app_names = names;
+        self.refresh_labels();
+    }
+
+    /// The bar chip label for windows of `app_id`: the context's label, else the desktop entry name.
     #[must_use]
     pub fn label(&self, app_id: Option<&str>) -> Option<&str> {
         let app_id = app_id.filter(|app_id| *app_id != GLOBAL_APP_ID)?;
@@ -222,14 +230,21 @@ impl State {
             .iter()
             .find(|context| context.app_id() == app_id)
             .and_then(Context::label)
+            .or_else(|| {
+                self.app_names
+                    .iter()
+                    .find(|(named, _)| named == app_id)
+                    .map(|(_, name)| name.as_str())
+            })
     }
 
-    /// Hands the bar every context's label, so the focus chip can use it.
+    /// Hands the bar every known label, so the focus chip can use it.
     fn refresh_labels(&mut self) {
         let labels = self
             .contexts
             .iter()
             .map(Context::app_id)
+            .chain(self.app_names.iter().map(|(app_id, _)| app_id.as_str()))
             .filter_map(|app_id| Some((app_id.to_owned(), self.label(Some(app_id))?.to_owned())))
             .collect();
         self.bar.set_labels(labels);
