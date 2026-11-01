@@ -254,6 +254,7 @@ for line in sys.stdin:
             Effect::PollSpeech(_) => return Some(Input::SpeechPolled(vec![])),
             Effect::InvalidReply => panic!("valid dispatch replies"),
             Effect::ChooseLauncher(_)
+            | Effect::LauncherUsed(_)
             | Effect::OpenLauncher(_)
             | Effect::ReadVolume
             | Effect::SetVolume(_)
