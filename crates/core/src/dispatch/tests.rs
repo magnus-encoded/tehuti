@@ -669,7 +669,7 @@ proptest! {
             prop_assert_eq!(&world.trace, &normal.trace, "other buttons keep normal plugin and mapping routing");
         }
         let clicks: Vec<_> = world.trace.into_iter().filter(|effect| matches!(effect, Effect::Click { .. })).collect();
-        let button = match name { ButtonName::South => Some(PointerButton::Left), ButtonName::East => Some(PointerButton::Right), ButtonName::North | ButtonName::West | ButtonName::LeftBumper | ButtonName::RightBumper | ButtonName::Select | ButtonName::Record | ButtonName::Start | ButtonName::Guide | ButtonName::LeftStick | ButtonName::RightStick | ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight => None };
+        let button = match name { ButtonName::South => Some(PointerButton::Left), ButtonName::East => Some(PointerButton::Right), ButtonName::North | ButtonName::West | ButtonName::LeftBumper | ButtonName::RightBumper | ButtonName::LeftTrigger | ButtonName::RightTrigger | ButtonName::Select | ButtonName::Record | ButtonName::Start | ButtonName::Guide | ButtonName::LeftStick | ButtonName::RightStick | ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight => None };
         let expected = button.map_or_else(Vec::new, |button| vec![Effect::Click { button, pressed: true }, Effect::Click { button, pressed: false }]);
         prop_assert_eq!(clicks, expected);
     }

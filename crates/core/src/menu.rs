@@ -195,6 +195,8 @@ pub fn handle(menu: &mut Option<Menu>, event: &Event) -> Option<Command> {
         | ButtonName::West
         | ButtonName::LeftBumper
         | ButtonName::RightBumper
+        | ButtonName::LeftTrigger
+        | ButtonName::RightTrigger
         | ButtonName::Select
         | ButtonName::Record
         | ButtonName::Start

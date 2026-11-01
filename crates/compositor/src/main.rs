@@ -779,8 +779,8 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
 
 /// Routes pending events from every pad; failed registrations are removed on the next loop turn.
 ///
-/// Stick and trigger motion arrives as events the core never sees, because sticks are sampled
-/// on the loop's periodic work; such a read changes nothing and returns at once.
+/// Stick motion, and trigger motion that crosses no threshold, arrive as events the core never sees,
+/// because sticks are sampled on the loop's periodic work; such a read changes nothing and returns at once.
 fn route_controller_input(data: &mut LoopData) -> PostAction {
     let was_attached = !data.controllers.is_empty();
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
