@@ -31,6 +31,39 @@ mod destinations {
     }
 
     #[test]
+    fn desktop_entries_name_the_app_ids_they_are_filed_under() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("applications/org")).unwrap();
+        std::fs::write(
+            root.path().join("applications/org.example.Editor.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Editor\nExec=editor\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("applications/org/example-Viewer.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Viewer\nExec=viewer\n",
+        )
+        .unwrap();
+        let table = Table::read(
+            root.path(),
+            &root.path().join("projects"),
+            &[root.path().into()],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let mut names = table.app_names();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                ("org-example-Viewer".into(), "Viewer".into()),
+                ("org.example.Editor".into(), "Editor".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn generated_destinations_keep_routes_sources_and_window_names() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("data/applications")).unwrap();

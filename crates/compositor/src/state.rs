@@ -538,6 +538,8 @@ impl Compositor {
                 table.add_menu();
                 table.update_workspaces(&self.layout.snapshot());
                 self.destinations = table;
+                let app_names = self.destinations.app_names();
+                self.dispatch.core_mut().set_app_names(app_names);
             }
             Err(error) => {
                 tracing::warn!(%error, "destination reload failed");

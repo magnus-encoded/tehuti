@@ -125,6 +125,29 @@ impl Table {
         &self.entries
     }
 
+    /// Each desktop entry's `Name`, keyed by the app id its entry id names.
+    #[must_use]
+    pub fn app_names(&self) -> Vec<(String, String)> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.source == Source::Desktop)
+            .flat_map(|entry| {
+                entry
+                    .routes
+                    .iter()
+                    .flat_map(|route| &route.steps)
+                    .filter_map(|step| {
+                        let Target::Desktop(entry_id) = &step.target else {
+                            return None;
+                        };
+                        entry_id
+                            .strip_suffix(".desktop")
+                            .map(|app_id| (app_id.to_owned(), entry.name.clone()))
+                    })
+            })
+            .collect()
+    }
+
     /// Captions for configured desktop hints, preserving favourite order.
     #[must_use]
     pub fn desktop_signposts(&self, contexts: &[Context]) -> Vec<(String, String)> {

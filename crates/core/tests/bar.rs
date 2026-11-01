@@ -170,6 +170,33 @@ mod tests {
     }
 
     #[test]
+    fn a_desktop_entry_name_labels_an_app_without_a_context_label() {
+        let mut state = labelled(&["app_id = 'org.example.Viewer'\nlabel = 'Pictures'\nbuttons = {}"]);
+        state.set_app_names(vec![
+            ("org.example.Editor".into(), "Editor".into()),
+            ("org.example.Viewer".into(), "Image Viewer".into()),
+        ]);
+        assert_eq!(state.label(Some("org.example.Editor")), Some("Editor"));
+        assert_eq!(state.label(Some("org.example.Viewer")), Some("Pictures"));
+        assert_eq!(state.label(Some("org.example.Other")), None);
+        let editor = focus_titled(state.clone(), "org.example.Editor", "notes.txt");
+        assert_eq!(editor.bar().segments()[0].text, "Editor");
+        let viewer = focus_titled(state.clone(), "org.example.Viewer", "photo.png");
+        assert_eq!(viewer.bar().segments()[0].text, "Pictures");
+        let other = focus_titled(state, "org.example.Other", "");
+        assert_eq!(other.bar().segments()[0].text, "org.example.Other");
+    }
+
+    #[test]
+    fn new_desktop_names_relabel_the_focused_window() {
+        let mut state = focus_titled(labelled(&[]), "org.example.Editor", "notes.txt");
+        state.set_app_names(vec![("org.example.Editor".into(), "Editor".into())]);
+        assert_eq!(state.bar().segments()[0].text, "Editor");
+        state.set_app_names(Vec::new());
+        assert_eq!(state.bar().segments()[0].text, "org.example.Editor");
+    }
+
+    #[test]
     fn the_first_context_for_an_app_decides_its_label() {
         let state = labelled(&[
             "app_id = 'mgba-qt'\nbuttons = {}",
