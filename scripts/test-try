@@ -7,17 +7,14 @@ trap 'rm -rf "$work"' EXIT
 
 mkdir -p "$work/bin"
 printf '#!/bin/sh\nexit 0\n' >"$work/bin/cargo"
-# python3 -m venv DIR creates a venv whose python reports CUDA through $FAKE_CUDA and whose pip logs.
+# python3 -m venv DIR creates a venv whose python succeeds and whose pip logs.
 cat >"$work/bin/python3" <<'STUB'
 #!/bin/sh
 dir=$3
 mkdir -p "$dir/bin"
 cat >"$dir/bin/python" <<'PY'
 #!/bin/sh
-case "$2" in
-*faster_whisper*) exit "$FAKE_CUDA" ;;
-*) exit 0 ;;
-esac
+exit 0
 PY
 printf '#!/bin/sh\necho installed >>"%s/pip.log"\n' "$dir" >"$dir/bin/pip"
 chmod +x "$dir/bin/python" "$dir/bin/pip"
@@ -37,10 +34,9 @@ fail() {
 # A recreated venv must reinstall even when a stale stamp survives.
 mkdir -p "$work/venv"
 cp "$root/sidecars/speech/requirements.txt" "$work/venv/.tehuti-requirements"
-FAKE_CUDA=0 run >/dev/null
+run >/dev/null
 [ -s "$work/venv/pip.log" ] || fail "recreated venv did not reinstall requirements"
 
-# CUDA that cannot load a model falls back to the CPU; a working CUDA keeps the default.
-[ "$(FAKE_CUDA=1 run)" = "device=cpu" ] || fail "failed CUDA probe did not select the CPU"
-[ "$(FAKE_CUDA=0 run)" = "device=" ] || fail "working CUDA probe selected the CPU"
+# The sidecar chooses its own device, so the script leaves the choice open.
+[ "$(run)" = "device=" ] || fail "try chose a speech device"
 echo "test-try: ok"

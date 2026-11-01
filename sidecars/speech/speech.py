@@ -47,8 +47,8 @@ def reply(value):
     print(json.dumps(value), flush=True)
 
 
-def log(message, private=False):
-    line = f"INFO speech: {message}\n"
+def log(message, private=False, level="INFO"):
+    line = f"{level} speech: {message}\n"
     try:
         with open(os.environ.get("TEHUTI_LOG_FILE", "/tmp/tehuti.log"), "a") as output:
             output.write(line)
@@ -354,8 +354,11 @@ class Speech:
             self.stop(self.session, False)
 
 
-def run(stream, speech):
-    reply({"ready": True})
+def run(stream, speech, device=None):
+    ready = {"ready": True}
+    if device is not None:
+        ready["device"], ready["compute_type"] = device
+    reply(ready)
     try:
         while True:
             line = stream.readline(MAX_LINE + 1)
@@ -385,14 +388,12 @@ def run(stream, speech):
 
 
 if __name__ == "__main__":
-    from faster_whisper import WhisperModel
-    model = WhisperModel(
-        os.environ.get("TEHUTI_SPEECH_MODEL", "small"),
-        device=os.environ.get("TEHUTI_SPEECH_DEVICE", "cuda"),
-        compute_type="int8",
-    )
-    speech = Speech(model)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import device
+    device.reexec_with_cuda_libraries()
+    choice = device.select(os.environ.get("TEHUTI_SPEECH_MODEL", "small"), log)
+    speech = Speech(choice.model)
     def terminate(_signal, _frame):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)
-    run(sys.stdin, speech)
+    run(sys.stdin, speech, (choice.device, choice.compute_type))
