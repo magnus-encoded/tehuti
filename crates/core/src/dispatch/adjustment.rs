@@ -10,6 +10,17 @@ pub(super) fn adjuster_phrase(
     effects: &mut Vec<Effect>,
 ) -> bool {
     if !dictation
+        && let Event::Speech { text } = event
+        && is_adjuster_phrase(state, text.as_str())
+        && state
+            .launcher
+            .as_ref()
+            .is_some_and(|launcher| launcher.list().is_open())
+    {
+        // An adjuster phrase opens its gauge rather than searching the launcher.
+        state.launcher = None;
+    }
+    if !dictation
         && !state.keyboard.password_field_active()
         && !state.settings.open
         && !state.choice_list_open()
@@ -37,6 +48,7 @@ pub(super) fn adjuster_phrase(
                 spec.value(),
                 Some(*plugin),
             ));
+            seed_stick(state);
             return true;
         }
     }
@@ -101,7 +113,24 @@ fn remember_adjuster(state: &mut State) {
     }
 }
 
+/// True when `text` names the built-in volume adjuster or a registered one.
+pub(super) fn is_adjuster_phrase(state: &State, text: &str) -> bool {
+    let phrase = tehuti_protocol::normalize_phrase(text);
+    phrase == "volume" || state.adjusters.iter().any(|(_, spec)| spec.name() == phrase)
+}
+
+/// Starts a freshly opened gauge from the stick already held.
+pub(super) fn seed_stick(state: &mut State) {
+    if let Some(gauge) = &mut state.adjuster {
+        let _released = gauge.sticks(state.adjuster_stick);
+    }
+}
+
 pub(super) fn adjuster_sticks(state: &mut State, sticks: Sticks, effects: &mut Vec<Effect>) {
+    state.adjuster_stick = sticks.left.1;
+    if state.volume_pending == crate::adjuster::VolumeRead::Pending {
+        return;
+    }
     if let Some(gauge) = &mut state.adjuster {
         if gauge.sticks(sticks.left.1) {
             effects.push(adjuster_effect(gauge, true));

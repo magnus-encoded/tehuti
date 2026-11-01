@@ -4695,3 +4695,51 @@ fn volume_takes_the_pad_from_a_passthrough_application_until_commit() {
     let state = world.run(state, Input::Sticks(Sticks::default()));
     assert!(!state.adjuster_owns_pad());
 }
+
+#[test]
+fn a_stick_held_while_the_volume_read_is_pending_moves_the_gauge_once_it_opens() {
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("volume"));
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (0, -1000),
+            right: (0, 0),
+        }),
+    );
+    let state = world.run(state, Input::Volume(Some(50)));
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(55));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Scroll { .. } | Effect::MovePointer { .. })),
+        "the held stick belongs to the gauge, not the pointer"
+    );
+}
+
+#[test]
+fn volume_speech_opens_the_gauge_over_the_empty_desktop_invitation() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Launcher(crate::launcher::Launcher::invitation(None)),
+    );
+    let state = world.run(state, speech_event("volume"));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::OpenLauncher(_))),
+        "volume is not a launcher search"
+    );
+    assert!(world.trace.contains(&Effect::ReadVolume));
+    let state = world.run(state, Input::Volume(Some(50)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(50));
+}

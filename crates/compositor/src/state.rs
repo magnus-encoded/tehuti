@@ -919,7 +919,11 @@ impl Compositor {
             self.invitation,
             Invitation::Launching(since) if since.elapsed() < core::time::Duration::from_secs(10)
         );
-        if waiting || self.choice_list().is_some() || self.dispatch.keyboard().is_open() {
+        if waiting
+            || self.choice_list().is_some()
+            || self.dispatch.keyboard().is_open()
+            || self.dispatch.adjuster_owns_pad()
+        {
             return;
         }
         let button = (!self.controller_names.is_empty()).then(|| match self.pad_family() {

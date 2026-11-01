@@ -275,6 +275,8 @@ pub struct State {
     volume_pending: crate::adjuster::VolumeRead,
     adjusters: Vec<(usize, tehuti_protocol::Adjuster)>,
     adjuster_buttons: Vec<ButtonName>,
+    /// The left stick's last vertical sample, so a gauge opens already moving.
+    adjuster_stick: i16,
 }
 
 impl State {
@@ -304,6 +306,7 @@ impl State {
             volume_pending: crate::adjuster::VolumeRead::Idle,
             adjusters: Vec::new(),
             adjuster_buttons: Vec::new(),
+            adjuster_stick: 0,
         }
     }
 
@@ -486,6 +489,7 @@ fn sync_keyboard_config(state: &mut State) {
 fn volume_read(mut state: State, value: Option<u8>) -> State {
     if core::mem::take(&mut state.volume_pending) == crate::adjuster::VolumeRead::Pending {
         state.adjuster = value.map(crate::adjuster::Gauge::volume);
+        adjustment::seed_stick(&mut state);
     }
     state
 }
