@@ -314,10 +314,10 @@ fn desktop_destination(path: &Path, entry_id: String) -> Option<Destination> {
     let name = fields.get("Name").filter(|name| !name.trim().is_empty())?;
     Some(Destination {
         name: (*name).into(),
-        extra_names: fields
-            .get("GenericName")
-            .map(|generic| vec![(*generic).into()])
-            .unwrap_or_default(),
+        extra_names: desktop_extra_names(
+            fields.get("GenericName").copied(),
+            fields.get("Keywords").copied(),
+        ),
         routes: vec![route(
             fields
                 .get("Icon")
@@ -328,6 +328,23 @@ fn desktop_destination(path: &Path, entry_id: String) -> Option<Destination> {
         )],
         source: Source::Desktop,
     })
+}
+
+/// The generic name, each of its words, and each keyword, so one spoken word finds the app.
+fn desktop_extra_names(generic_name: Option<&str>, keywords: Option<&str>) -> Vec<String> {
+    let generic_name = generic_name.map(str::trim).filter(|name| !name.is_empty());
+    let generic_words = generic_name.into_iter().flat_map(str::split_whitespace);
+    let keywords = keywords
+        .into_iter()
+        .flat_map(|list| list.split(';'))
+        .map(str::trim);
+    let mut names: Vec<String> = Vec::new();
+    for name in generic_name.into_iter().chain(generic_words).chain(keywords) {
+        if !name.is_empty() && !names.iter().any(|known| known.eq_ignore_ascii_case(name)) {
+            names.push(name.into());
+        }
+    }
+    names
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
