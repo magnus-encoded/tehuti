@@ -12,6 +12,10 @@ use smithay::{
 };
 
 use crate::state::Compositor;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Marks a surface whose last import failed, so each failure run warns once.
+struct ImportFailed(AtomicBool);
 
 /// The colour drawn where a window's buffer failed to import.
 pub const RGBA: [u8; 4] = [51, 51, 51, 255];
@@ -32,9 +36,21 @@ where
         .filter(|window| window.mapped())
         .filter_map(|window| {
             let surface = window.wl_surface()?;
-            let error = import_surface_tree(renderer, &surface).err()?;
-            let name = window_name(window);
-            tracing::warn!(window = %name, %error, "window buffer import failed; drawing a placeholder");
+            let imported = import_surface_tree(renderer, &surface);
+            let first_failure = with_states(&surface, |states| {
+                let _inserted = states
+                    .data_map
+                    .insert_if_missing_threadsafe(|| ImportFailed(AtomicBool::new(false)));
+                states
+                    .data_map
+                    .get::<ImportFailed>()
+                    .is_some_and(|failed| !failed.0.swap(imported.is_err(), Ordering::Relaxed))
+            });
+            let error = imported.err()?;
+            if first_failure {
+                let name = window_name(window);
+                tracing::warn!(window = %name, %error, "window buffer import failed; drawing a placeholder");
+            }
             let location = compositor.space.element_location(window)?;
             let location = (
                 location.x.saturating_sub(area.loc.x),

@@ -219,7 +219,7 @@ mod screenshot_dmabuf {
     }
 
     #[test]
-    fn a_window_whose_buffer_cannot_be_imported_is_captured_as_a_placeholder() {
+    fn a_window_whose_buffer_cannot_be_imported_is_captured_as_a_placeholder_and_warned_once() {
         let directory = tempfile::tempdir().unwrap();
         let mut display = Display::<Compositor>::new().unwrap();
         let mut compositor = compositor_importing_ccs(&display);
@@ -248,7 +248,8 @@ mod screenshot_dmabuf {
             u32::try_from(location.y + size.h / 2).unwrap(),
         );
         let path = directory.path().join("shot.png");
-        let log = shot_with_log(&mut driver, &mut compositor, &path);
+        let mut log = shot_with_log(&mut driver, &mut compositor, &path);
+        log.push_str(&shot_with_log(&mut driver, &mut compositor, &path));
         stop.send(()).unwrap();
         while !thread.is_finished() {
             pump(&mut display, &mut compositor);
@@ -267,10 +268,12 @@ mod screenshot_dmabuf {
             image::Rgba([0, 0, 0, 255]),
             "the voice bar still renders below the window"
         );
-        assert!(
+        assert_eq!(
             log.lines()
-                .any(|line| line.contains("WARN") && line.contains(APP_ID)),
-            "a warning names the window: {log}"
+                .filter(|line| line.contains("WARN") && line.contains(APP_ID))
+                .count(),
+            1,
+            "two captures warn once, naming the window: {log}"
         );
     }
 }
