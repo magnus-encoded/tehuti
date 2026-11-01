@@ -255,6 +255,8 @@ const NINTENDO_FACES: [FaceGlyph; 4] = [
 const NINTENDO_LABELS: &[(ButtonName, &str)] = &[
     (ButtonName::LeftBumper, "L"),
     (ButtonName::RightBumper, "R"),
+    (ButtonName::LeftTrigger, "ZL"),
+    (ButtonName::RightTrigger, "ZR"),
     (ButtonName::Select, "−"),
     (ButtonName::Start, "+"),
     (ButtonName::Record, "Capture"),
@@ -292,6 +294,8 @@ const SYMBOL_FACES: [FaceGlyph; 4] = [
 const LETTER_LABELS: &[(ButtonName, &str)] = &[
     (ButtonName::LeftBumper, "LB"),
     (ButtonName::RightBumper, "RB"),
+    (ButtonName::LeftTrigger, "LT"),
+    (ButtonName::RightTrigger, "RT"),
     (ButtonName::Record, "Share"),
     (ButtonName::LeftStick, "LS"),
     (ButtonName::RightStick, "RS"),
@@ -300,6 +304,8 @@ const LETTER_LABELS: &[(ButtonName, &str)] = &[
 const SYMBOL_LABELS: &[(ButtonName, &str)] = &[
     (ButtonName::LeftBumper, "L1"),
     (ButtonName::RightBumper, "R1"),
+    (ButtonName::LeftTrigger, "L2"),
+    (ButtonName::RightTrigger, "R2"),
     (ButtonName::Select, "Share"),
     (ButtonName::Start, "Options"),
     (ButtonName::Record, "Record"),

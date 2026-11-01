@@ -85,7 +85,7 @@ Button decisions are requests:
 ```
 
 States are `pressed` and `released`. Names are `south`, `east`, `north`,
-`west`, `left_bumper`, `right_bumper`, `select`, `record`, `start`, `guide`, `left_stick`,
+`west`, `left_bumper`, `right_bumper`, `left_trigger`, `right_trigger`, `select`, `record`, `start`, `guide`, `left_stick`,
 `right_stick`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`.
 All names and enum values are case sensitive.
 

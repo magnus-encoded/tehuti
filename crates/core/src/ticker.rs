@@ -116,7 +116,7 @@ impl Piece {
 }
 
 /// The order buttons appear in; Guide is reserved for Tehuti and never listed.
-const BUTTONS: [ButtonName; 15] = [
+const BUTTONS: [ButtonName; 17] = [
     ButtonName::South,
     ButtonName::East,
     ButtonName::West,
@@ -127,6 +127,8 @@ const BUTTONS: [ButtonName; 15] = [
     ButtonName::DpadRight,
     ButtonName::LeftBumper,
     ButtonName::RightBumper,
+    ButtonName::LeftTrigger,
+    ButtonName::RightTrigger,
     ButtonName::LeftStick,
     ButtonName::RightStick,
     ButtonName::Select,

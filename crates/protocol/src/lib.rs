@@ -68,6 +68,10 @@ pub enum ButtonName {
     West,
     LeftBumper,
     RightBumper,
+    /// The left analogue trigger, pressed once its axis passes a threshold.
+    LeftTrigger,
+    /// The right analogue trigger, pressed once its axis passes a threshold.
+    RightTrigger,
     Select,
     Record,
     Start,

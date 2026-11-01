@@ -305,6 +305,8 @@ impl Settings {
             | ButtonName::West
             | ButtonName::LeftBumper
             | ButtonName::RightBumper
+            | ButtonName::LeftTrigger
+            | ButtonName::RightTrigger
             | ButtonName::Select
             | ButtonName::Record
             | ButtonName::Start
@@ -363,6 +365,8 @@ impl Settings {
             | ButtonName::West
             | ButtonName::LeftBumper
             | ButtonName::RightBumper
+            | ButtonName::LeftTrigger
+            | ButtonName::RightTrigger
             | ButtonName::Select
             | ButtonName::Record
             | ButtonName::Start
@@ -398,6 +402,8 @@ impl Settings {
             | ButtonName::West
             | ButtonName::LeftBumper
             | ButtonName::RightBumper
+            | ButtonName::LeftTrigger
+            | ButtonName::RightTrigger
             | ButtonName::Select
             | ButtonName::Record
             | ButtonName::Start
@@ -422,6 +428,8 @@ impl Settings {
             | ButtonName::West
             | ButtonName::LeftBumper
             | ButtonName::RightBumper
+            | ButtonName::LeftTrigger
+            | ButtonName::RightTrigger
             | ButtonName::Select
             | ButtonName::Record
             | ButtonName::Start
@@ -527,6 +535,8 @@ impl Settings {
             | ButtonName::West
             | ButtonName::LeftBumper
             | ButtonName::RightBumper
+            | ButtonName::LeftTrigger
+            | ButtonName::RightTrigger
             | ButtonName::Select
             | ButtonName::Record
             | ButtonName::Start

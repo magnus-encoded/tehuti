@@ -347,6 +347,8 @@ impl Direction {
             | ButtonName::West
             | ButtonName::LeftBumper
             | ButtonName::RightBumper
+            | ButtonName::LeftTrigger
+            | ButtonName::RightTrigger
             | ButtonName::Select
             | ButtonName::Record
             | ButtonName::Start
@@ -793,6 +795,8 @@ impl Keyboard {
             ButtonName::South
             | ButtonName::East
             | ButtonName::RightStick
+            | ButtonName::LeftTrigger
+            | ButtonName::RightTrigger
             | ButtonName::Select
             | ButtonName::Record
             | ButtonName::Guide
@@ -1180,6 +1184,8 @@ const fn captures(name: ButtonName, shoulders_move_caret: bool) -> bool {
         | ButtonName::Start
         | ButtonName::LeftStick
         | ButtonName::RightStick
+        | ButtonName::LeftTrigger
+        | ButtonName::RightTrigger
         | ButtonName::DpadUp
         | ButtonName::DpadDown
         | ButtonName::DpadLeft

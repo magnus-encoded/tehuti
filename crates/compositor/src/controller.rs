@@ -54,7 +54,12 @@ pub fn open_grabbed(
         })
         .filter_map(|(path, mut device)| match grab_nonblocking(&mut device) {
             Ok(()) => {
-                let translator = DpadHat::for_device(device.input_id().vendor(), device.input_id().product());
+                let mut translator = DpadHat::for_device(device.input_id().vendor(), device.input_id().product());
+                if let Ok(axes) = device.get_absinfo() {
+                    for (axis, info) in axes {
+                        translator.set_trigger_range(axis, info.minimum(), info.maximum());
+                    }
+                }
                 tracing::debug!(
                     name = device.name().unwrap_or("unnamed"),
                     vendor = device.input_id().vendor(),
@@ -412,13 +417,67 @@ fn drain_device(device: &mut Device, hat: &mut DpadHat) -> io::Result<Vec<Event>
     }
 }
 
-/// Translates controller keys into physical button positions and d-pad hat axes
-/// (`ABS_HAT0X`, `ABS_HAT0Y`) into d-pad button events.
+/// Translates controller keys into physical button positions, d-pad hat axes
+/// (`ABS_HAT0X`, `ABS_HAT0Y`) into d-pad button events, and trigger axes
+/// (`ABS_Z`, `ABS_RZ`) into trigger button events.
 #[derive(Debug, Default)]
 pub struct DpadHat {
     identity: tehuti_core::pad::Identity,
     horizontal: i32,
     vertical: i32,
+    left_trigger: Trigger,
+    right_trigger: Trigger,
+}
+
+/// One analogue trigger read as a button, with hysteresis so a resting finger does not chatter.
+#[derive(Debug, Clone, Copy)]
+struct Trigger {
+    minimum: i32,
+    maximum: i32,
+    held: bool,
+}
+
+impl Default for Trigger {
+    /// The 8-bit range most pads report until the device's own range is known.
+    fn default() -> Self {
+        Self {
+            minimum: 0,
+            maximum: 255,
+            held: false,
+        }
+    }
+}
+
+impl Trigger {
+    /// Percent of travel that presses the trigger.
+    const PRESS_PERCENT: i64 = 40;
+    /// Percent of travel below which a held trigger releases.
+    const RELEASE_PERCENT: i64 = 20;
+
+    /// Steps the held state for a new axis value and names the edge, if any.
+    fn step(&mut self, value: i32) -> Option<ButtonState> {
+        let span = i64::from(self.maximum)
+            .saturating_sub(i64::from(self.minimum))
+            .max(1);
+        let percent_of_span = i64::from(value)
+            .saturating_sub(i64::from(self.minimum))
+            .saturating_mul(100);
+        let past = |percent: i64| percent_of_span >= span.saturating_mul(percent);
+        let next = if self.held {
+            past(Self::RELEASE_PERCENT)
+        } else {
+            past(Self::PRESS_PERCENT)
+        };
+        if next == self.held {
+            return None;
+        }
+        self.held = next;
+        Some(if next {
+            ButtonState::Pressed
+        } else {
+            ButtonState::Released
+        })
+    }
 }
 
 impl DpadHat {
@@ -435,6 +494,19 @@ impl DpadHat {
         }
     }
 
+    /// Records the device's reported range for a trigger axis; other axes are ignored.
+    pub const fn set_trigger_range(&mut self, axis: AbsoluteAxisCode, minimum: i32, maximum: i32) {
+        let trigger = match axis {
+            AbsoluteAxisCode::ABS_Z => &mut self.left_trigger,
+            AbsoluteAxisCode::ABS_RZ => &mut self.right_trigger,
+            _ => return,
+        };
+        if maximum > minimum {
+            trigger.minimum = minimum;
+            trigger.maximum = maximum;
+        }
+    }
+
     const fn face_code(&self, code: KeyCode) -> KeyCode {
         match (self.identity.swap_north_west, code) {
             (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
@@ -446,7 +518,7 @@ impl DpadHat {
     /// Translates one evdev event: keys parse as buttons, hat axes as d-pad presses and releases.
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "only keys and the d-pad hat axes matter; every other event kind is ignored"
+        reason = "only keys, the d-pad hat and the trigger axes matter; every other event kind is ignored"
     )]
     pub fn translate(&mut self, event: &EventSummary) -> Vec<Event> {
         match *event {
@@ -465,6 +537,12 @@ impl DpadHat {
                 ButtonName::DpadUp,
                 ButtonName::DpadDown,
             ),
+            EventSummary::AbsoluteAxis(_, AbsoluteAxisCode::ABS_Z, value) => {
+                trigger_event(&mut self.left_trigger, value, ButtonName::LeftTrigger)
+            }
+            EventSummary::AbsoluteAxis(_, AbsoluteAxisCode::ABS_RZ, value) => {
+                trigger_event(&mut self.right_trigger, value, ButtonName::RightTrigger)
+            }
             _ => Vec::new(),
         }
     }
@@ -490,6 +568,14 @@ impl DpadHat {
         });
         released.into_iter().chain(pressed).collect()
     }
+}
+
+fn trigger_event(trigger: &mut Trigger, value: i32, name: ButtonName) -> Vec<Event> {
+    trigger
+        .step(value)
+        .map(|state| Event::Button { name, state })
+        .into_iter()
+        .collect()
 }
 
 /// Parses an evdev key event. Autorepeat (value 2) and unknown codes give `None`.
@@ -706,6 +792,73 @@ mod tests {
             [button(ButtonName::DpadRight, ButtonState::Pressed)],
             "any positive value presses"
         );
+    }
+
+    fn trigger_pad(maximum: i32) -> DpadHat {
+        let mut pad = DpadHat::default();
+        pad.set_trigger_range(AbsoluteAxisCode::ABS_Z, 0, maximum);
+        pad.set_trigger_range(AbsoluteAxisCode::ABS_RZ, 0, maximum);
+        pad
+    }
+
+    #[test]
+    fn trigger_presses_past_the_threshold_and_releases_below_the_lower_one() {
+        let mut pad = trigger_pad(1000);
+        let z = AbsoluteAxisCode::ABS_Z;
+        assert_eq!(pad.translate(&hat(z, 399)), [], "below the press threshold");
+        assert_eq!(
+            pad.translate(&hat(z, 400)),
+            [button(ButtonName::LeftTrigger, ButtonState::Pressed)]
+        );
+        assert_eq!(pad.translate(&hat(z, 1000)), [], "deeper is still one press");
+        assert_eq!(pad.translate(&hat(z, 250)), [], "hysteresis keeps it held");
+        assert_eq!(
+            pad.translate(&hat(z, 199)),
+            [button(ButtonName::LeftTrigger, ButtonState::Released)]
+        );
+        assert_eq!(
+            pad.translate(&hat(AbsoluteAxisCode::ABS_RZ, 999)),
+            [button(ButtonName::RightTrigger, ButtonState::Pressed)]
+        );
+    }
+
+    #[test]
+    fn triggers_use_the_device_range() {
+        let mut small = trigger_pad(255);
+        assert_eq!(
+            small.translate(&hat(AbsoluteAxisCode::ABS_Z, 110)),
+            [button(ButtonName::LeftTrigger, ButtonState::Pressed)]
+        );
+        let mut large = trigger_pad(1023);
+        assert_eq!(large.translate(&hat(AbsoluteAxisCode::ABS_Z, 110)), []);
+    }
+
+    proptest! {
+        /// Presses and releases alternate, a press only follows a value past the upper threshold,
+        /// a release only follows one below the lower threshold, and noise between them is silent.
+        #[test]
+        fn trigger_events_alternate_and_respect_the_thresholds(
+            maximum in 1_i32..4096,
+            values in prop::collection::vec(0_u16..=4096, 0..64),
+        ) {
+            let mut pad = trigger_pad(maximum);
+            let mut held = false;
+            for raw in values {
+                let value = i32::from(raw).min(maximum);
+                let events = pad.translate(&hat(AbsoluteAxisCode::ABS_RZ, value));
+                let past = |percent: i32| value.saturating_mul(100) >= maximum.saturating_mul(percent);
+                let silent = if held { past(20) } else { !past(40) };
+                match events.as_slice() {
+                    [] => prop_assert!(silent),
+                    [Event::Button { name: ButtonName::RightTrigger, state }] => {
+                        prop_assert_eq!(*state == ButtonState::Pressed, !held);
+                        prop_assert!(!silent);
+                        held = !held;
+                    }
+                    other => prop_assert!(false, "unexpected events {:?}", other),
+                }
+            }
+        }
     }
 
     #[test]
