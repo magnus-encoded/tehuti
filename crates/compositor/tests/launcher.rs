@@ -134,6 +134,39 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
     }
 
     #[test]
+    fn volume_on_the_empty_session_opens_the_gauge_instead_of_the_invitation()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.set_volume_backend(tehuti::volume::Backend::with_command(|_| {
+            Ok("Volume: 0.50\n".into())
+        })?);
+        compositor.enable_invitation();
+        compositor.advance_time();
+        assert!(
+            compositor.choice_list().is_some(),
+            "the invitation starts the session"
+        );
+        compositor.say(Text::new("volume".into())?);
+        let deadline = std::time::Instant::now() + core::time::Duration::from_secs(2);
+        while compositor.adjuster().is_none() && std::time::Instant::now() < deadline {
+            compositor.handle(&Event::Tick {
+                elapsed: core::time::Duration::from_millis(16),
+            });
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            compositor.adjuster().map(tehuti_core::adjuster::Gauge::value),
+            Some(50)
+        );
+        assert!(
+            compositor.choice_list().is_none_or(|list| !list.is_open()),
+            "the invitation stays away while the gauge is open"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn an_open_instance_outranks_launching_another() {
         use tehuti::destinations::{Destination, Route, Source, Step, Target};
         let route = |target| Route {

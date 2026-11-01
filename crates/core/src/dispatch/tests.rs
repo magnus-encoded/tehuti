@@ -84,6 +84,9 @@ impl World {
                     }
                     Effect::ChooseLauncher(_)
                     | Effect::OpenLauncher(_)
+                    | Effect::AdjusterValue { .. }
+                    | Effect::ReadVolume
+                    | Effect::SetVolume(_)
                     | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::SettingsBarFont(_)
@@ -4465,4 +4468,278 @@ fn start_release_reaches_the_plugin_after_guide_is_pressed() {
             route: true
         }
     )));
+}
+
+#[test]
+fn volume_speech_opens_a_gauge_and_stick_release_commits() {
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("volume"));
+    assert!(world.trace.contains(&Effect::ReadVolume));
+    let state = world.run(state, Input::Volume(Some(50)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(50));
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (0, -1000),
+            right: (0, 0),
+        }),
+    );
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(55));
+    assert!(world.trace.contains(&Effect::SetVolume(55)));
+    let state = world.run(state, Input::Sticks(Sticks::default()));
+    assert!(state.adjuster().is_none());
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Scroll { .. } | Effect::MovePointer { .. }))
+    );
+}
+
+#[test]
+fn east_reverts_volume_and_south_commits_without_enter() {
+    for (button, expected) in [(ButtonName::East, 50), (ButtonName::South, 55)] {
+        let mut world = World::default();
+        let state = world.run(State::default(), speech_event("volume"));
+        let state = world.run(state, Input::Volume(Some(50)));
+        let state = world.run(
+            state,
+            Input::Sticks(Sticks {
+                left: (0, -1000),
+                right: (0, 0),
+            }),
+        );
+        let state = world.event(
+            state,
+            Event::Tick {
+                elapsed: Duration::from_millis(100),
+            },
+        );
+        let state = tap_button(&mut world, state, button);
+        assert!(state.adjuster().is_none());
+        assert_eq!(
+            world
+                .trace
+                .iter()
+                .filter_map(|effect| if let Effect::SetVolume(value) = effect {
+                    Some(*value)
+                } else {
+                    None
+                })
+                .next_back(),
+            Some(expected)
+        );
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::Apply(Action::Key { .. })))
+        );
+    }
+}
+
+#[test]
+fn plugin_named_adjusters_run_in_core_and_report_preview_and_commit() {
+    let mut world = World::default();
+    let spec: tehuti_protocol::Adjuster =
+        toml::from_str("name = 'contrast'\nminimum = 0\nmaximum = 200\nvalue = 80\n").unwrap();
+    let state = world.run(State::default(), Input::Adjusters(vec![(3, spec)]));
+    let state = world.run(state, speech_event("Contrast."));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(80));
+    world.trace.clear();
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (0, -1000),
+            right: (0, 0),
+        }),
+    );
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
+    assert!(world.trace.contains(&Effect::AdjusterValue {
+        plugin: 3,
+        name: "contrast".into(),
+        value: 90,
+        finished: false
+    }));
+    let state = world.run(state, Input::Sticks(Sticks::default()));
+    assert!(state.adjuster().is_none());
+    assert!(world.trace.contains(&Effect::AdjusterValue {
+        plugin: 3,
+        name: "contrast".into(),
+        value: 90,
+        finished: true
+    }));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::DispatchPlugin { .. } | Effect::Scroll { .. }))
+    );
+}
+
+#[test]
+fn cancelling_before_volume_arrives_never_opens_a_gauge_or_sends_enter() {
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("volume"));
+    let state = tap_button(&mut world, state, ButtonName::East);
+    let state = world.run(state, Input::Volume(Some(50)));
+    assert!(state.adjuster().is_none());
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(Action::Key { .. })))
+    );
+}
+
+#[test]
+fn changing_focus_reverts_preview_and_ignores_a_late_volume_read() {
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("volume"));
+    let state = world.run(state, Input::Volume(Some(50)));
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (0, -1000),
+            right: (0, 0),
+        }),
+    );
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
+    world.trace.clear();
+    let state = world.event(state, focus("org.example.Editor"));
+    assert!(state.adjuster().is_none());
+    assert!(world.trace.contains(&Effect::SetVolume(50)));
+    let state = world.run(state, speech_event("volume"));
+    let state = world.event(state, focus("org.example.Terminal"));
+    let state = world.run(state, Input::Volume(Some(80)));
+    assert!(state.adjuster().is_none());
+}
+
+proptest! {
+    #[test]
+    fn volume_stays_in_range_and_east_restores_the_start(contexts in arbitrary_contexts(), value in 0_u8..=100, vertical in -1000_i16..=1000, ticks in 1..40_usize) {
+        let mut world = World::default();
+        let state = world.run(configured(contexts, "org.example.Editor"), speech_event("volume"));
+        let mut state = world.run(state, Input::Volume(Some(value)));
+        state = world.run(state, Input::Sticks(Sticks { left: (0, vertical), right: (0, 0) }));
+        for _ in 0..ticks { state = world.event(state, Event::Tick { elapsed: Duration::from_millis(100) }); }
+        prop_assert!(state.adjuster().is_some_and(|gauge| (0..=100).contains(&gauge.value())));
+        world.trace.clear();
+        let state = tap_button(&mut world, state, ButtonName::East);
+        prop_assert!(state.adjuster().is_none());
+        prop_assert!(world.trace.contains(&Effect::SetVolume(value)));
+    }
+}
+
+#[test]
+fn holding_guide_over_an_adjuster_opens_the_system_menu_and_reverts() {
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("volume"));
+    let state = world.run(state, Input::Volume(Some(50)));
+    let state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: Duration::from_millis(500),
+        },
+    );
+    assert!(state.core().menu().is_some());
+    assert!(state.adjuster().is_none());
+    assert!(world.trace.contains(&Effect::SetVolume(50)));
+}
+
+#[test]
+fn volume_takes_the_pad_from_a_passthrough_application_until_commit() {
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'org.example.Game'\nbuttons = {}\n[pad]\npassthrough = true",
+    )
+    .unwrap();
+    let mut world = World::default();
+    let state = world.run(
+        configured(vec![context], "org.example.Game"),
+        speech_event("volume"),
+    );
+    assert!(world.trace.contains(&Effect::ReadVolume));
+    let state = world.run(state, Input::Volume(Some(50)));
+    assert!(state.adjuster_owns_pad());
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (0, -1000),
+            right: (0, 0),
+        }),
+    );
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(55));
+    let state = world.run(state, Input::Sticks(Sticks::default()));
+    assert!(!state.adjuster_owns_pad());
+}
+
+#[test]
+fn a_stick_held_while_the_volume_read_is_pending_moves_the_gauge_once_it_opens() {
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("volume"));
+    let state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (0, -1000),
+            right: (0, 0),
+        }),
+    );
+    let state = world.run(state, Input::Volume(Some(50)));
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(55));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Scroll { .. } | Effect::MovePointer { .. })),
+        "the held stick belongs to the gauge, not the pointer"
+    );
+}
+
+#[test]
+fn volume_speech_opens_the_gauge_over_the_empty_desktop_invitation() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Launcher(crate::launcher::Launcher::invitation(None)),
+    );
+    let state = world.run(state, speech_event("volume"));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::OpenLauncher(_))),
+        "volume is not a launcher search"
+    );
+    assert!(world.trace.contains(&Effect::ReadVolume));
+    let state = world.run(state, Input::Volume(Some(50)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(50));
 }
