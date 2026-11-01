@@ -763,6 +763,7 @@ pub mod controller;
 pub mod windows;
 
 pub mod layout;
+pub mod layout_trace;
 
 pub mod bar;
 pub mod overlay;
