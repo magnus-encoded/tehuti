@@ -168,6 +168,8 @@ pub struct Compositor {
     launch_socket: Option<std::ffi::OsString>,
     layout: tehuti_core::layout::Layout,
     layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
+    /// The last layout written to the session log.
+    layout_trace: tehuti_core::layout_trace::LayoutTrace,
     next_window: u64,
     windows: tehuti_core::windows::Windows<WlSurface>,
     surfaces: CompositorState,
@@ -293,6 +295,7 @@ impl Compositor {
             destination_windows: Vec::new(),
             speech_context: None,
             layout_windows: Vec::new(),
+            layout_trace: tehuti_core::layout_trace::LayoutTrace::default(),
             next_window: 0,
             windows: tehuti_core::windows::Windows::new(),
             surfaces: CompositorState::new_v6::<Self>(display),
@@ -2401,8 +2404,28 @@ impl Compositor {
         self.place_layout();
     }
 
+    /// Writes the layout before and after a change to the session log.
+    fn log_layout(&mut self, snapshot: &tehuti_core::layout::Snapshot) {
+        let windows = &self.layout_windows;
+        let change = self.layout_trace.observe(snapshot, |identity| {
+            windows
+                .iter()
+                .find(|(candidate, _)| *candidate == identity)
+                .and_then(|(_, window)| window.toplevel())
+                .and_then(toplevel_app_id)
+        });
+        if let Some(change) = change {
+            tracing::debug!(
+                before = change.before.as_deref().unwrap_or("none"),
+                after = %change.after,
+                "layout changed"
+            );
+        }
+    }
+
     fn place_layout(&mut self) {
         let snapshot = self.layout.snapshot();
+        self.log_layout(&snapshot);
         for (identity, window) in &self.layout_windows {
             let tile = snapshot.outputs.iter().find_map(|output| {
                 output
@@ -3158,6 +3181,22 @@ impl Compositor {
             }
         }
     }
+}
+
+/// The `app_id` a toplevel declared, if any.
+fn toplevel_app_id(surface: &ToplevelSurface) -> Option<String> {
+    smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .and_then(|attributes| {
+                attributes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .app_id
+                    .clone()
+            })
+    })
 }
 
 #[cfg(test)]
