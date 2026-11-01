@@ -520,6 +520,17 @@ impl Compositor {
         self.rebuild_destinations();
     }
 
+    /// Rebuilds the destination table from its discovery directories.
+    pub fn refresh_destinations(&mut self) {
+        self.rebuild_destinations();
+    }
+
+    /// The discovery directories the destination table reads.
+    #[must_use]
+    pub const fn destination_paths(&self) -> &crate::destinations::Paths {
+        &self.destination_paths
+    }
+
     #[must_use]
     pub const fn destinations(&self) -> &crate::destinations::Table {
         &self.destinations
