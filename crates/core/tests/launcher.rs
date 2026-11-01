@@ -283,4 +283,85 @@ mod tests {
         assert_eq!(typed.list().slots().title, "No controller connected");
         assert!(!Launcher::new("browser", vec![browser(Safety::Launch)], None).is_invitation());
     }
+
+    #[test]
+    fn a_confirmed_use_records_its_rank_and_the_time_since_the_transcript() {
+        use tehuti_core::launcher::Ending;
+        let mut launcher = Launcher::new(
+            "browser",
+            vec![
+                browser(Safety::Launch),
+                Destination {
+                    name: "Browsers".into(),
+                    ..browser(Safety::Launch)
+                },
+            ],
+            None,
+        );
+        assert_eq!(launcher.take_usage(), None);
+        assert_eq!(launcher.tick(core::time::Duration::from_millis(700)), None);
+        launcher.move_selection(true);
+        assert_eq!(launcher.tick(core::time::Duration::from_millis(300)), None);
+        assert!(launcher.confirm().is_some());
+        let usage = launcher.take_usage().expect("a confirmed use");
+        assert_eq!(usage.query, "browser");
+        assert_eq!(usage.candidates, ["Browser", "Browsers"]);
+        assert_eq!(usage.ending, Ending::Chosen { rank: 2 });
+        assert_eq!(usage.since_transcript, core::time::Duration::from_secs(1));
+        assert_eq!(launcher.take_usage(), None);
+    }
+
+    #[test]
+    fn cancel_and_replacement_record_no_rank_and_the_invitation_records_nothing() {
+        use tehuti_core::launcher::Ending;
+        let mut cancelled = Launcher::new("browser", vec![browser(Safety::Launch)], None);
+        cancelled.cancel();
+        cancelled.cancel();
+        assert_eq!(
+            cancelled.take_usage().map(|usage| usage.ending),
+            Some(Ending::Cancelled)
+        );
+        assert_eq!(cancelled.take_usage(), None);
+        let mut replaced = Launcher::new("browser", vec![browser(Safety::Launch)], None);
+        replaced.replace();
+        assert_eq!(
+            replaced.take_usage().map(|usage| usage.ending),
+            Some(Ending::Replaced)
+        );
+        let mut invitation = Launcher::invitation(Some("Record"));
+        invitation.cancel();
+        assert_eq!(invitation.take_usage(), None);
+    }
+
+    #[test]
+    fn the_report_counts_rank_one_choices_and_lists_what_was_misheard() {
+        use tehuti_core::launcher::{Ending, Report, Usage};
+        let usage = |query: &str, ending| Usage {
+            query: query.into(),
+            candidates: vec!["Browser".into(), "Editor".into()],
+            ending,
+            since_transcript: core::time::Duration::ZERO,
+        };
+        let report = Report::from_uses(&[
+            usage("browser", Ending::Chosen { rank: 1 }),
+            usage("browsr", Ending::Chosen { rank: 1 }),
+            usage("editer", Ending::Chosen { rank: 2 }),
+            usage("mail", Ending::Cancelled),
+            usage("brow", Ending::Replaced),
+        ]);
+        assert_eq!(
+            report,
+            Report {
+                uses: 5,
+                chosen: 3,
+                first_rank: 2,
+                cancelled: 1,
+                replaced: 1,
+                mishears: vec![
+                    ("browsr".into(), "Browser".into()),
+                    ("editer".into(), "Editor".into()),
+                ],
+            }
+        );
+    }
 }

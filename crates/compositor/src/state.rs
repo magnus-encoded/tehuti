@@ -933,7 +933,7 @@ impl Compositor {
         });
         let invitation = tehuti_core::launcher::Launcher::invitation(button);
         self.launcher_routes.clear();
-        let _rejection = self.dispatch(DispatchInput::Launcher(invitation));
+        let _rejection = self.dispatch(DispatchInput::Launcher(Box::new(invitation)));
     }
 
     /// Feeds one input and every reply it asks for until its frame finishes.
@@ -1337,6 +1337,7 @@ impl Compositor {
                 None
             }
             effect @ (DispatchEffect::ChooseLauncher(_)
+            | DispatchEffect::LauncherUsed(_)
             | DispatchEffect::OpenLauncher(_)
             | DispatchEffect::ReadVolume
             | DispatchEffect::SetVolume(_)
@@ -1468,7 +1469,7 @@ impl Compositor {
             // The network client is not wired yet; the local ranking stands.
             tracing::info!(?jev_request, "launcher Jev request skipped: no client");
         }
-        let _rejection = self.dispatch(DispatchInput::Launcher(launcher));
+        let _rejection = self.dispatch(DispatchInput::Launcher(Box::new(launcher)));
     }
 
     fn follow_launcher_route(&mut self, route: crate::destinations::Route) {
@@ -1556,6 +1557,9 @@ impl Compositor {
         match effect {
             DispatchEffect::OpenLauncher(request) => {
                 self.open_launcher(&request);
+            }
+            DispatchEffect::LauncherUsed(usage) => {
+                tracing::info!("{}", crate::launcher_log::line(&usage));
             }
             DispatchEffect::ChooseLauncher(index) => {
                 if let Some(route) = self.launcher_routes.get(index).cloned() {
