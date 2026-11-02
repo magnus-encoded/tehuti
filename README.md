@@ -4,14 +4,39 @@
 
 A desktop environment you drive with a game controller and your voice.
 
-The login session renders on the DRM GPU through GBM/EGL and GLES. If GPU
-initialization or scanout setup fails, Tehuti logs the reason and automatically
-uses CPU pixman rendering with shared-memory clients. GPU rendering supports
-client dma-bufs in both the login session and nested mode, including render-node
-feedback when EGL exposes it. Legacy `wl_drm` is enabled when EGL supports it.
+Tehuti is a Wayland compositor and shell. Windows sit in a scrolling row of
+columns. A controller moves between them, opens apps and types on an on-screen
+keyboard. Hold a button and speak to launch an app, run a command or dictate
+text. Speech is transcribed on your machine.
 
-See [the release channel](docs/releases.md) for candidate screenshots, promotion
-and installing promoted builds.
+![The launcher open beside a terminal window](https://github.com/magnus-encoded/tehuti/releases/download/v0.114.0/launcher.png)
+
+## Status
+
+Tehuti is v0 ("Apteribis"), published as GitHub pre-releases. The author uses it
+as a daily desktop, but it is early. Expect rough edges, changing settings and
+breaking changes to contexts and plugins. Bug reports are welcome as
+[issues](https://github.com/magnus-encoded/tehuti/issues).
+
+## What it does
+
+- **Scrolling columns.** Windows open as columns that scroll sideways. Shoulder
+  buttons and the d-pad move focus; the right stick scrolls the focused window.
+- **Voice bar.** A bar along the bottom edge shows the focused app, live
+  dictation, command results and a clock.
+- **Launcher.** Say or type what to open. Results are ranked from your desktop
+  entries and your own names for them.
+- **On-screen keyboard.** Opens from a text field or by voice, edits with the
+  pad, and dictates into its draft.
+- **System menu and settings.** Guide opens the menu. Settings cover controller,
+  microphone, bar font and wallpapers, all reachable from the pad.
+- **Contexts.** A `context.toml` per application maps buttons and spoken
+  phrases to keys, text and commands. Contexts reload when you save them.
+- **Plugins.** Programs in any language speak JSON-RPC over stdio. See
+  [the protocol](docs/protocol/README.md).
+- **X11 apps** run through `xwayland-satellite` when it is installed.
+- **Rendering.** GPU (GLES) on the login session, with an automatic CPU
+  fallback, or nested in a window on your current desktop.
 
 ## Try it
 
@@ -19,10 +44,11 @@ Run `scripts/try` from a terminal in your desktop. It builds Tehuti, sets up the
 speech venv on first run (in `~/.cache/tehuti-speech-venv`), then opens a window
 with a foot terminal inside. Tehuti takes the controller exclusively while it runs.
 
-One Tehuti session runs per user: a second start on the console exits with
-status 3 while `$XDG_RUNTIME_DIR/tehuti.lock` is held. A nested start inside
-another compositor or X takes no lock. `tehuti --help` and `tehuti --version`
-print and exit without starting a session.
+You need a Rust toolchain, Python 3, `foot`, and the development libraries for
+xkbcommon, Wayland, EGL, udev, libseat, libinput, GBM, DRM and Pixman.
+
+Prebuilt x86_64 and i686 Linux builds are on the
+[releases page](https://github.com/magnus-encoded/tehuti/releases).
 
 **Emergency escape:** hold Guide (the home button) and Start together for three seconds.
 Start alone follows the app mapping. The hold counts only while both buttons
@@ -39,29 +65,18 @@ clears the failure count and retries Tehuti.
 If `startplasma-wayland` is missing from PATH, the launcher logs the problem
 and retries Tehuti with a delay.
 
-Speech: hold Share to record, release to transcribe. Set `TEHUTI_NO_SPEECH=1` to skip it.
+To log in to Tehuti from your display manager, see [dist/README.md](dist/README.md).
 
-Controllers: physical pads are accepted by default. Set `TEHUTI_VIRTUAL_PAD=Sunshine` to also accept virtual pads whose device name contains that case-sensitive substring. Unset or empty values keep virtual pads disabled. The value is read once at startup and applies to reconnects. Pads must have a south face button.
+## Speech and scale
 
-Bar font: Settings → Display → Bar font switches between bundled Liberation Mono
-(the default) and Bitmap. Left, Right or Confirm applies and saves the choice in
-`$XDG_CONFIG_HOME/tehuti/bar-font` (otherwise `~/.config/tehuti/bar-font`).
-`TEHUTI_BAR_FONT_FILE` overrides the bundled font file at startup; a missing or
-invalid file logs a warning and uses Bitmap.
+Hold Share to record, release to transcribe. Set `TEHUTI_NO_SPEECH=1` to skip it.
 
-Scale: `TEHUTI_SCALE` sets the integer output scale, for example `TEHUTI_SCALE=2`.
+`TEHUTI_SCALE` sets the integer output scale, for example `TEHUTI_SCALE=2`.
 Without it, modes wider than 2560 pixels use 2 and others use 1. Invalid values
 (0, negative or not a whole number) log a warning and use that default. The
 nested window honours it too.
 
-Decorations: write `none` to `~/.config/tehuti/decorations` to hide window title
-bars and their buttons, or set `TEHUTI_DECORATIONS=none`; the variable wins over
-the file. Tehuti then tells clients it decorates them and draws nothing. `client`,
-an empty value or no file keeps the title bars apps draw themselves. Other values
-log a warning and keep them. The setting is read once at startup. Clients that
-ignore `xdg-decoration`, such as GTK apps, keep their title bars.
-
-`examples/emulator/context.toml` releases the pad grab for an emulator; Guide+Start still exits and Select+LB controls push-to-talk (`pad.push_to_talk`, default Share/Record).
+## Contexts
 
 `examples/foot/context.toml` (foot terminal):
 
@@ -73,3 +88,13 @@ ignore `xdg-decoration`, such as GTK apps, keep their title bars.
 
 `examples/plugins/east-to-tab` remaps East to Tab, only for apps with app id `test`.
 Try it with `target/release/tehuti examples foot -- bash --norc --noprofile` (a plain shell keeps the demo predictable).
+
+The full context format is in [docs/contexts.md](docs/contexts.md).
+
+## Contributing and licence
+
+Run `scripts/check` before every commit; CI runs the same gate. Review rules are
+in [CODING_STANDARDS.md](CODING_STANDARDS.md), and each crate has a
+`GLOSSARY.md` listed in [GLOSSARY-MAP.md](GLOSSARY-MAP.md). Design decisions are
+recorded in [docs/adr](docs/adr). Licensing, including how contributions are
+handled, is decided in [ADR 0004](docs/adr/0004-licensing.md).
