@@ -48,7 +48,7 @@ mod tests {
         ];
         let verdicts: Vec<_> = series
             .iter()
-            .map(|&(button, state)| filter.step(button, state, &[3]))
+            .map(|&(button, state)| filter.step(button, state, &[3], &[]))
             .collect();
         assert_eq!(
             verdicts,
@@ -74,11 +74,11 @@ mod tests {
             }],
         );
         assert_eq!(
-            filter.step(ButtonName::South, ButtonState::Pressed, &[0]),
+            filter.step(ButtonName::South, ButtonState::Pressed, &[0], &[]),
             Verdict::Plugin(0)
         );
         assert_eq!(
-            filter.step(ButtonName::South, ButtonState::Released, &[0]),
+            filter.step(ButtonName::South, ButtonState::Released, &[0], &[]),
             Verdict::Plugin(0)
         );
     }
@@ -94,16 +94,16 @@ mod tests {
             }],
         );
         assert_eq!(
-            filter.step(ButtonName::East, ButtonState::Pressed, &[]),
+            filter.step(ButtonName::East, ButtonState::Pressed, &[], &[]),
             Verdict::Pass
         );
         assert_eq!(
-            filter.step(ButtonName::East, ButtonState::Released, &[1]),
+            filter.step(ButtonName::East, ButtonState::Released, &[1], &[]),
             Verdict::Pass
         );
         filter.clear(1);
         assert_eq!(
-            filter.step(ButtonName::East, ButtonState::Pressed, &[1]),
+            filter.step(ButtonName::East, ButtonState::Pressed, &[1], &[]),
             Verdict::Pass
         );
     }
@@ -118,12 +118,30 @@ mod tests {
         filter.set(0, east.clone());
         filter.set(2, east);
         assert_eq!(
-            filter.step(ButtonName::East, ButtonState::Pressed, &[2, 0]),
+            filter.step(ButtonName::East, ButtonState::Pressed, &[2, 0], &[]),
             Verdict::Plugin(2)
         );
     }
 
     proptest! {
+        #[test]
+        fn push_to_talk_buttons_reach_push_to_talk_whatever_the_overrides(
+            overrides in prop::collection::vec(any::<PadOverride>(), 0..6),
+            talk in prop::collection::vec(any::<ButtonName>(), 1..3),
+            series in prop::collection::vec(input(), 0..80),
+        ) {
+            let mut filter = Filter::default();
+            let mut covering = overrides;
+            covering.extend(talk.iter().map(|&button| PadOverride { button, held: Vec::new() }));
+            filter.set(0, covering);
+            for (button, state) in series {
+                let verdict = filter.step(button, state, &[0], &talk);
+                if talk.contains(&button) {
+                    prop_assert_eq!(verdict, Verdict::Pass);
+                }
+            }
+        }
+
         #[test]
         fn inputs_that_match_no_override_pass_through_unchanged_and_in_order(
             overridden in prop::collection::vec(any::<ButtonName>(), 0..4),
@@ -136,7 +154,7 @@ mod tests {
             let passed: Vec<_> = free
                 .iter()
                 .copied()
-                .filter(|&(button, state)| filter.step(button, state, &[0]) == Verdict::Pass)
+                .filter(|&(button, state)| filter.step(button, state, &[0], &[]) == Verdict::Pass)
                 .collect();
             prop_assert_eq!(passed, free);
         }
@@ -156,7 +174,7 @@ mod tests {
                 } else if index == 0 {
                     filter.set(0, overrides.clone());
                 }
-                let verdict = filter.step(button, state, &[0]);
+                let verdict = filter.step(button, state, &[0], &[]);
                 match state {
                     ButtonState::Pressed => {
                         if let Some(previous) = down.insert(button, verdict) {

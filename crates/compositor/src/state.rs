@@ -678,9 +678,10 @@ impl Compositor {
         button: tehuti_protocol::ButtonName,
         state: tehuti_protocol::ButtonState,
     ) -> bool {
+        let push_to_talk = self.dispatch.core().passthrough_push_to_talk();
         self.plugins
             .as_mut()
-            .is_some_and(|plugins| plugins.pad_button(button, state))
+            .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk))
     }
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
