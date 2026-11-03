@@ -239,6 +239,11 @@ struct MirrorCopy {
 }
 
 impl MirrorCopy {
+    /// Hands over every translated event taken so far, for [`InputSource::drain`].
+    fn drain(&mut self) -> Vec<Event> {
+        core::mem::take(&mut self.buffered)
+    }
+
     /// Takes one raw event; returns a finished frame to emit at each nonempty `SYN_REPORT`.
     fn take(
         &mut self,
@@ -518,7 +523,7 @@ impl<D: PadDevice> InputSource for EvdevPad<D> {
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
         if let Some(mirror) = &mut self.mirror {
-            return Ok(core::mem::take(&mut mirror.copy.buffered));
+            return Ok(mirror.copy.drain());
         }
         self.handles.events().drain(&mut self.translator)
     }
@@ -759,12 +764,18 @@ mod mirror_tests {
             [vec![KeyCode::BTN_TL.code(), KeyCode::BTN_EAST.code()]],
             "South is kept; the bumper and East are copied in order"
         );
-        assert!(
-            copy.buffered.contains(&Event::Button {
-                name: ButtonName::South,
-                state: ButtonState::Pressed,
-            }),
-            "the core still sees the kept press"
+        let pressed = |name| Event::Button {
+            name,
+            state: ButtonState::Pressed,
+        };
+        assert_eq!(
+            copy.drain(),
+            [
+                pressed(ButtonName::LeftBumper),
+                pressed(ButtonName::South),
+                pressed(ButtonName::East)
+            ],
+            "the core still sees every press, the kept one included"
         );
     }
 }

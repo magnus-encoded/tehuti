@@ -1404,16 +1404,32 @@ mod tests {
                     held: Vec::new(),
                 }],
             );
-            let before = plugins.pad.clone();
-            break_session(&plugins, 0, false, now);
-            let exited = plugins.supervise_at(now);
-            assert_eq!(exited, [0], "the crashed plugin is reported");
-            assert_ne!(plugins.pad, before, "overrides were set before the exit");
-            assert_eq!(
-                plugins.pad,
-                tehuti_core::vpad::Filter::default(),
-                "its overrides are cleared"
+            let _matched = plugins.active(&Event::Focus {
+                app_id: Some("test".into()),
+                title: String::new(),
+            });
+            let (south, pressed, released) = (
+                tehuti_protocol::ButtonName::South,
+                tehuti_protocol::ButtonState::Pressed,
+                tehuti_protocol::ButtonState::Released,
             );
+            assert!(
+                plugins.pad_button(south, pressed),
+                "the override applies before the exit"
+            );
+            assert!(
+                plugins.pad_button(south, released),
+                "its release follows the press"
+            );
+            break_session(&plugins, 0, false, now);
+            assert_eq!(plugins.supervise_at(now), [0], "the crashed plugin is reported");
+            let _restarted = plugins.supervise_at(later(now, 1000));
+            assert_eq!(
+                plugins.initialized_count(),
+                PLUGINS,
+                "the plugin is running again"
+            );
+            assert!(!plugins.pad_button(south, pressed), "its overrides are cleared");
         }
 
         fn check(plugins: &Plugins, model: &[ModelEntry], starts: &[usize]) -> Result<(), TestCaseError> {
