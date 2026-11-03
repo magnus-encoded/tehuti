@@ -220,6 +220,61 @@ pub struct EvdevPad<D = Device> {
     handles: PadHandles<D>,
     translator: DpadHat,
     grabbed: bool,
+    mirror: Option<Mirror>,
+}
+
+/// The virtual controller presented to the application, with inputs kept from it.
+#[derive(Debug)]
+struct Mirror {
+    device: evdev::uinput::VirtualDevice,
+    copy: MirrorCopy,
+}
+
+/// Which raw events reach the virtual controller, frame by frame.
+#[derive(Debug, Default)]
+struct MirrorCopy {
+    blocked: Vec<(u16, u16)>,
+    frame: Vec<evdev::InputEvent>,
+    buffered: Vec<Event>,
+}
+
+impl MirrorCopy {
+    /// Hands over every translated event taken so far, for [`InputSource::drain`].
+    fn drain(&mut self) -> Vec<Event> {
+        core::mem::take(&mut self.buffered)
+    }
+
+    /// Takes one raw event; returns a finished frame to emit at each nonempty `SYN_REPORT`.
+    fn take(
+        &mut self,
+        event: evdev::InputEvent,
+        translator: &mut DpadHat,
+        consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
+    ) -> Option<Vec<evdev::InputEvent>> {
+        if event.event_type() == evdev::EventType::SYNCHRONIZATION {
+            return (event.code() == evdev::SynchronizationCode::SYN_REPORT.0 && !self.frame.is_empty())
+                .then(|| core::mem::take(&mut self.frame));
+        }
+        let translated = translator.translate(&event.destructure());
+        let key = (event.event_type().0, event.code());
+        let mut kept = self.blocked.contains(&key);
+        for input in &translated {
+            if let Event::Button { name, state } = input
+                && consume(*name, *state)
+            {
+                kept = true;
+                self.blocked.retain(|blocked| *blocked != key);
+                if *state == ButtonState::Pressed {
+                    self.blocked.push(key);
+                }
+            }
+        }
+        if !kept {
+            self.frame.push(event);
+        }
+        self.buffered.extend(translated);
+        None
+    }
 }
 
 /// Kernel operations used by a controller client.
@@ -294,6 +349,70 @@ impl<D> PadHandles<D> {
 }
 
 impl EvdevPad {
+    /// Presents or removes the virtual controller; true when it was just created.
+    /// # Errors
+    /// The kernel refused to create the uinput device.
+    pub fn set_mirror(&mut self, present: bool) -> io::Result<bool> {
+        if !present {
+            self.mirror = None;
+            return Ok(false);
+        }
+        if self.mirror.is_some() {
+            return Ok(false);
+        }
+        let events = &self.handles.events;
+        let mut builder = evdev::uinput::VirtualDevice::builder()?
+            .name("Tehuti virtual pad")
+            .input_id(events.input_id());
+        if let Some(keys) = events.supported_keys() {
+            builder = builder.with_keys(keys)?;
+        }
+        for (axis, info) in events.get_absinfo()? {
+            builder = builder.with_absolute_axis(&evdev::UinputAbsSetup::new(axis, info))?;
+        }
+        self.mirror = Some(Mirror {
+            device: builder.build()?,
+            copy: MirrorCopy::default(),
+        });
+        Ok(true)
+    }
+
+    /// Whether the virtual controller is presented.
+    #[must_use]
+    pub const fn mirrored(&self) -> bool {
+        self.mirror.is_some()
+    }
+
+    /// Copies pending physical input to the virtual controller, except buttons `consume` keeps.
+    /// Every translated event stays buffered for [`InputSource::drain`].
+    /// # Errors
+    /// The physical pad could not be read or the virtual one written.
+    pub fn pump_mirror(
+        &mut self,
+        consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
+    ) -> io::Result<()> {
+        let Self {
+            handles,
+            translator,
+            mirror: Some(mirror),
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        let raw: Vec<evdev::InputEvent> = match handles.events().fetch_events() {
+            Ok(events) => events.collect(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        for event in raw {
+            if let Some(frame) = mirror.copy.take(event, translator, consume) {
+                mirror.device.emit(&frame)?;
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         self.handles.events.name().unwrap_or("unnamed")
@@ -336,6 +455,7 @@ impl<D: PadDevice> EvdevPad<D> {
             handles: PadHandles::new(events, probe),
             translator,
             grabbed: true,
+            mirror: None,
         }
     }
 
@@ -402,6 +522,9 @@ impl<D: PadDevice> InputSource for EvdevPad<D> {
     }
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
+        if let Some(mirror) = &mut self.mirror {
+            return Ok(mirror.copy.drain());
+        }
         self.handles.events().drain(&mut self.translator)
     }
 }
@@ -605,6 +728,56 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
         _ => return None,
     };
     Some(Event::Button { name, state })
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::{DpadHat, MirrorCopy};
+    use evdev::{EventType, InputEvent, KeyCode, SynchronizationCode};
+    use tehuti_protocol::{ButtonName, ButtonState, Event};
+
+    fn key(code: KeyCode, value: i32) -> InputEvent {
+        InputEvent::new(EventType::KEY.0, code.code(), value)
+    }
+
+    #[test]
+    fn one_frame_keeps_matched_inputs_and_copies_the_rest() {
+        let mut copy = MirrorCopy::default();
+        let mut translator = DpadHat::default();
+        let mut consume = |name: ButtonName, _: ButtonState| name == ButtonName::South;
+        let frame = [
+            key(KeyCode::BTN_TL, 1),
+            key(KeyCode::BTN_SOUTH, 1),
+            key(KeyCode::BTN_EAST, 1),
+            InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
+        ];
+        let emitted: Vec<_> = frame
+            .into_iter()
+            .filter_map(|event| copy.take(event, &mut translator, &mut consume))
+            .collect();
+        let codes: Vec<Vec<u16>> = emitted
+            .iter()
+            .map(|sent| sent.iter().map(InputEvent::code).collect())
+            .collect();
+        assert_eq!(
+            codes,
+            [vec![KeyCode::BTN_TL.code(), KeyCode::BTN_EAST.code()]],
+            "South is kept; the bumper and East are copied in order"
+        );
+        let pressed = |name| Event::Button {
+            name,
+            state: ButtonState::Pressed,
+        };
+        assert_eq!(
+            copy.drain(),
+            [
+                pressed(ButtonName::LeftBumper),
+                pressed(ButtonName::South),
+                pressed(ButtonName::East)
+            ],
+            "the core still sees every press, the kept one included"
+        );
+    }
 }
 
 #[cfg(test)]

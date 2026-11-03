@@ -69,6 +69,12 @@ impl State {
         self.passthrough_context() && !self.pad_taken_back && self.level == Level::App
     }
 
+    /// Whether passthrough is active through a virtual controller with plugin overrides.
+    #[must_use]
+    pub fn virtual_pad(&self) -> bool {
+        self.passthrough() && focused_context(self).is_some_and(Context::virtual_pad)
+    }
+
     pub(crate) fn passthrough_context(&self) -> bool {
         focused_context(self).is_some_and(Context::passthrough)
     }
@@ -784,6 +790,7 @@ pub mod bar;
 pub mod overlay;
 pub mod pad;
 pub mod ticker;
+pub mod vpad;
 
 pub mod keyboard;
 pub mod menu;

@@ -50,6 +50,7 @@ pub struct Bar {
     agents: Vec<String>,
     windows: Vec<(String, bool)>,
     feedback: Option<Segment>,
+    status: Option<String>,
     remaining: Option<Duration>,
     level: crate::Level,
     pub(crate) generation: u64,
@@ -131,6 +132,7 @@ impl Bar {
             agents: Vec::new(),
             windows: Vec::new(),
             feedback: None,
+            status: None,
             remaining: None,
             level: crate::Level::App,
             generation: 0,
@@ -234,8 +236,23 @@ impl Bar {
                 tone: Tone::Unfocused,
             });
         }
+        if self.level == crate::Level::App
+            && let Some(status) = &self.status
+        {
+            segments.push(Segment {
+                text: status.clone(),
+                tone: Tone::Result,
+            });
+        }
         segments.extend(self.feedback.clone());
         segments
+    }
+
+    /// Shows a plugin's status text at app level.
+    #[must_use]
+    pub fn with_status(mut self, status: String) -> Self {
+        self.status = Some(status);
+        self
     }
 
     /// The segment belonging to the focused window, independent of feedback tones.

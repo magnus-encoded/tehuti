@@ -34,6 +34,7 @@ enum Delivery {
         submission_id: Option<u64>,
     },
     Notice(Vec<Action>),
+    PadOverrides(Vec<tehuti_protocol::PadOverride>),
 }
 
 #[derive(Debug)]
@@ -69,6 +70,7 @@ struct Session {
     pending: BTreeMap<u64, Instant>,
     read_window: Instant,
     read_bytes: usize,
+    status_text: Option<String>,
 }
 
 impl Drop for Process {
@@ -396,6 +398,17 @@ impl Session {
                 method: Method::Actions { actions },
                 ..
             }) => self.notice_actions(actions),
+            Message::Call(Call {
+                method: Method::PadOverrides { overrides },
+                ..
+            }) => vec![Delivery::PadOverrides(overrides)],
+            Message::Call(Call {
+                method: Method::Status { text },
+                ..
+            }) => {
+                self.status_text = text;
+                Vec::new()
+            }
             Message::Call(_) => Vec::new(),
         }
     }
@@ -486,6 +499,7 @@ pub struct Plugins {
     entries: Vec<Entry>,
     start: Start,
     focus: Option<String>,
+    pad: tehuti_core::vpad::Filter,
     cleanup_timer: Box<dyn Fn()>,
 }
 impl Drop for Plugins {
@@ -504,6 +518,60 @@ impl core::fmt::Debug for Plugins {
 }
 
 impl Plugins {
+    /// Initialized plugins that match the focused application, in manifest order.
+    fn focused_ready(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter().filter(|entry| {
+            self.focus
+                .as_ref()
+                .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id))
+                && entry
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.borrow().status == Status::Ready)
+        })
+    }
+
+    /// The powerline status of the first focused plugin that set one.
+    pub(crate) fn status(&self) -> Option<String> {
+        self.focused_ready()
+            .find_map(|entry| entry.session.as_ref()?.borrow().status_text.clone())
+    }
+
+    pub(crate) fn set_pad_overrides(&mut self, plugin: usize, overrides: Vec<tehuti_protocol::PadOverride>) {
+        self.pad.set(plugin, overrides);
+    }
+
+    pub(crate) fn reset_pad(&mut self) {
+        self.pad.reset_held();
+    }
+
+    /// Applies virtual pad overrides to one physical button; true keeps it from the application.
+    pub(crate) fn pad_button(
+        &mut self,
+        button: tehuti_protocol::ButtonName,
+        state: tehuti_protocol::ButtonState,
+    ) -> bool {
+        let eligible: Vec<usize> = self.focused_ready().map(|entry| entry.plugin).collect();
+        let tehuti_core::vpad::Verdict::Plugin(plugin) = self.pad.step(button, state, &eligible) else {
+            return false;
+        };
+        if let Some(entry) = self.entries.iter().find(|entry| entry.plugin == plugin)
+            && let Some(session) = &entry.session
+        {
+            if let Err(error) = session.borrow_mut().queue(&Call {
+                jsonrpc: RpcVersion::Two,
+                request_id: None,
+                method: Method::PadInput { button, state },
+            }) {
+                tracing::warn!(%error, "plugin pad input dropped");
+            }
+            if let Some(wake) = &entry.wake {
+                wake();
+            }
+        }
+        true
+    }
+
     pub(crate) fn adjusters(&self) -> Vec<(usize, tehuti_protocol::Adjuster)> {
         self.entries
             .iter()
@@ -627,6 +695,7 @@ impl Plugins {
             });
             if failed {
                 exited.push(entry.plugin);
+                self.pad.clear(entry.plugin);
                 if let Some(cleanup) = entry.cleanup.take() {
                     cleanup();
                 }
@@ -777,6 +846,7 @@ pub fn install<Data: 'static>(
         entries,
         start,
         focus: None,
+        pad: tehuti_core::vpad::Filter::default(),
         cleanup_timer: Box::new(move || handle.remove(timer_token)),
     })
 }
@@ -836,6 +906,7 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
         pending: BTreeMap::new(),
         read_window: Instant::now(),
         read_bytes: 0,
+        status_text: None,
     }));
     session.borrow_mut().queue_initialize()?;
     Ok((session, stdout))
@@ -991,6 +1062,10 @@ fn deliver(reader: &Rc<RefCell<Session>>, compositor: &mut Compositor, deliverie
                     tracing::warn!(%error, "plugin rejection dropped");
                 }
             }
+            Delivery::PadOverrides(overrides) => {
+                let plugin = reader.borrow().plugin;
+                compositor.set_pad_overrides(plugin, overrides);
+            }
             Delivery::Notice(actions) => {
                 for action in actions {
                     compositor.apply_plugin_action(&action);
@@ -1045,6 +1120,7 @@ fn fuzz_session() -> io::Result<Session> {
         pending: BTreeMap::new(),
         read_window: now,
         read_bytes: 0,
+        status_text: None,
     })
 }
 
@@ -1181,6 +1257,7 @@ mod tests {
                 pending: BTreeMap::new(),
                 read_window: now,
                 read_bytes: 0,
+                status_text: None,
             })))
         }
 
@@ -1213,6 +1290,7 @@ mod tests {
                 entries,
                 start,
                 focus: None,
+                pad: tehuti_core::vpad::Filter::default(),
                 cleanup_timer: Box::new(|| {}),
             }
         }
@@ -1310,6 +1388,48 @@ mod tests {
                     session.fail("simulated crash");
                 }
             }
+        }
+
+        #[test]
+        fn an_exited_plugin_loses_its_pad_overrides() {
+            let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
+            let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+            let mut plugins = plugins(&succeed, &starts);
+            let now = Instant::now();
+            let _exited = plugins.supervise_at(now);
+            plugins.set_pad_overrides(
+                0,
+                vec![tehuti_protocol::PadOverride {
+                    button: tehuti_protocol::ButtonName::South,
+                    held: Vec::new(),
+                }],
+            );
+            let _matched = plugins.active(&Event::Focus {
+                app_id: Some("test".into()),
+                title: String::new(),
+            });
+            let (south, pressed, released) = (
+                tehuti_protocol::ButtonName::South,
+                tehuti_protocol::ButtonState::Pressed,
+                tehuti_protocol::ButtonState::Released,
+            );
+            assert!(
+                plugins.pad_button(south, pressed),
+                "the override applies before the exit"
+            );
+            assert!(
+                plugins.pad_button(south, released),
+                "its release follows the press"
+            );
+            break_session(&plugins, 0, false, now);
+            assert_eq!(plugins.supervise_at(now), [0], "the crashed plugin is reported");
+            let _restarted = plugins.supervise_at(later(now, 1000));
+            assert_eq!(
+                plugins.initialized_count(),
+                PLUGINS,
+                "the plugin is running again"
+            );
+            assert!(!plugins.pad_button(south, pressed), "its overrides are cleared");
         }
 
         fn check(plugins: &Plugins, model: &[ModelEntry], starts: &[usize]) -> Result<(), TestCaseError> {

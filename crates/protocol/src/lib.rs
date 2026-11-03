@@ -472,6 +472,8 @@ struct SpeechEntryFile {
 struct PadConfig {
     #[serde(default)]
     passthrough: bool,
+    #[serde(default, rename = "virtual")]
+    virtual_pad: bool,
     #[serde(default)]
     push_to_talk: Option<Vec<ButtonName>>,
 }
@@ -630,6 +632,12 @@ impl Context {
     #[must_use]
     pub const fn passthrough(&self) -> bool {
         self.pad.passthrough
+    }
+
+    /// Whether passthrough presents a virtual controller that applies plugin overrides.
+    #[must_use]
+    pub const fn virtual_pad(&self) -> bool {
+        self.pad.passthrough && self.pad.virtual_pad
     }
 
     #[must_use]
