@@ -475,6 +475,23 @@ impl Compositor {
         }
     }
 
+    /// Applies a reload; each skipped file is logged and the last one is named in a notice.
+    pub fn apply_reload(&mut self, reload: Result<crate::contexts::Reloaded, crate::contexts::LoadError>) {
+        match reload {
+            Ok(reloaded) => {
+                let crate::contexts::Reloaded { contexts, skipped } = reloaded;
+                self.reload_contexts(Ok(contexts));
+                for error in &skipped {
+                    tracing::warn!(%error, "context skipped on reload");
+                }
+                if let Some(error) = skipped.last() {
+                    self.show_notice(&error.notice());
+                }
+            }
+            Err(error) => self.reload_contexts(Err(error)),
+        }
+    }
+
     #[must_use]
     pub fn initialized_plugins(&self) -> usize {
         self.plugins
