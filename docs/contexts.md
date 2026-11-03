@@ -9,6 +9,10 @@ processes, using their window application ids or executable names. Missing or
 inaccessible ancestry leaves the global context's mappings available. Invalid
 files are logged and skipped.
 
+Live layout: one folder per context, each holding a `context.toml`. Plugin
+manifests load from `<config>/plugins` only, never from a context folder. The
+session log is `~/.local/state/tehuti/session.log`.
+
 ```toml
 app_id = "org.example.App"
 
