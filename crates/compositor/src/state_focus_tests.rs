@@ -50,14 +50,28 @@ impl Dispatch<WlRegistry, GlobalListContents> for App {
     }
 }
 impl Dispatch<XdgWmBase, ()> for App {
-    fn event(_: &mut Self, wm_base: &XdgWmBase, event: xdg_wm_base::Event, (): &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        wm_base: &XdgWmBase,
+        event: xdg_wm_base::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let xdg_wm_base::Event::Ping { serial } = event {
             wm_base.pong(serial);
         }
     }
 }
 impl Dispatch<XdgSurface, ()> for App {
-    fn event(app: &mut Self, surface: &XdgSurface, event: xdg_surface::Event, (): &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        app: &mut Self,
+        surface: &XdgSurface,
+        event: xdg_surface::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let xdg_surface::Event::Configure { serial } = event {
             surface.ack_configure(serial);
             app.acked = true;
@@ -88,12 +102,12 @@ fn client(stream: UnixStream, stop: &mpsc::Receiver<()>) {
     let mut drawn = false;
     while stop.try_recv().is_err() {
         if app.acked && !drawn {
-            let (width, height) = (64, 64);
-            let bytes = width * height * 4;
+            let (width, height, stride, bytes) = (64, 64, 256, 16_384);
             let mut file = tempfile::tempfile().unwrap();
-            file.write_all(&vec![255; usize::try_from(bytes).unwrap()]).unwrap();
+            file.write_all(&vec![255; usize::try_from(bytes).unwrap()])
+                .unwrap();
             let pool = shm.create_pool(file.as_fd(), bytes, &handle, ());
-            let buffer = pool.create_buffer(0, width, height, width * 4, wl_shm::Format::Argb8888, &handle, ());
+            let buffer = pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &handle, ());
             surface.attach(Some(&buffer), 0, 0);
             surface.damage_buffer(0, 0, width, height);
             surface.commit();
@@ -130,10 +144,23 @@ fn attach_output(display: &Display<Compositor>, compositor: &mut Compositor) {
 }
 
 /// Runs the compositor until a window maps and takes focus; reports whether it got there.
-fn map_window_while_focus_change_relayouts() -> bool {
+fn map_window_while_focus_change_relayouts(built: &mpsc::Sender<()>) -> bool {
     let mut display = Display::<Compositor>::new().unwrap();
     let mut compositor = Compositor::new(&display.handle()).unwrap();
+    built.send(()).unwrap();
     attach_output(&display, &mut compositor);
+    // The OSK is open over a terminal field, so losing that field on a focus
+    // change shrinks the keyboard and relayouts, as in the #445 freeze.
+    compositor.handle(&tehuti_protocol::Event::Speech {
+        text: tehuti_protocol::Text::new("keyboard".into()).unwrap(),
+    });
+    let _rejection = compositor.dispatch(super::DispatchInput::TextField {
+        active: true,
+        changed: true,
+        kind: tehuti_core::keyboard::FieldKind::Terminal,
+    });
+    assert!(compositor.dispatch.keyboard().is_open());
+    let reserved = compositor.keyboard_reserved;
     let (server, stream) = UnixStream::pair().unwrap();
     let _client = display
         .handle()
@@ -144,17 +171,22 @@ fn map_window_while_focus_change_relayouts() -> bool {
     let started = Instant::now();
     let mut focused = false;
     while !focused && started.elapsed() < Duration::from_secs(5) {
-        // A stale reservation makes the next dispatch relayout, as an OSK
-        // height change does when focus moves between windows.
-        compositor.keyboard_reserved = -1;
         let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
         compositor.space.refresh();
         display.flush_clients().unwrap();
         focused = compositor.keyboard.current_focus().is_some();
         thread::sleep(Duration::from_millis(1));
     }
+    assert_ne!(
+        compositor.keyboard_reserved, reserved,
+        "the focus change never resized the keyboard"
+    );
     stop.send(()).unwrap();
-    drop(display);
+    while !thread.is_finished() {
+        let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+        display.flush_clients().unwrap();
+        thread::sleep(Duration::from_millis(1));
+    }
     thread.join().unwrap();
     focused
 }
@@ -162,7 +194,10 @@ fn map_window_while_focus_change_relayouts() -> bool {
 #[test]
 fn mapping_a_window_while_focus_change_relayouts_returns() {
     let (done, finished) = mpsc::channel();
-    let _worker = thread::spawn(move || done.send(map_window_while_focus_change_relayouts()));
+    let (built, constructed) = mpsc::channel();
+    let _worker = thread::spawn(move || done.send(map_window_while_focus_change_relayouts(&built)));
+    // Construction loads wallpapers and can be slow; only the mapping is timed.
+    constructed.recv().expect("compositor construction failed");
     let focused = finished
         .recv_timeout(Duration::from_secs(20))
         .expect("compositor deadlocked in focus_changed");

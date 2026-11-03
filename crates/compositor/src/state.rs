@@ -191,7 +191,7 @@ pub struct Compositor {
     pub(crate) text_input: crate::text_input::TextInput,
     keyboard_reserved: i32,
     /// Keyboard focus moved while smithay held the keyboard lock; its dispatch runs once the lock is released (#445).
-    focus_change_pending: bool,
+    focus_change_dispatch: Option<DispatchInput>,
     /// Keys a held pad button keeps down, with the keycode they went down on.
     held_pad_keys: Vec<(KeyName, Keycode)>,
     display: DisplayHandle,
@@ -317,7 +317,7 @@ impl Compositor {
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: 0,
-            focus_change_pending: false,
+            focus_change_dispatch: None,
             held_pad_keys: Vec::new(),
             display: display.clone(),
         };
@@ -2189,12 +2189,8 @@ impl Compositor {
 
     /// Runs the dispatch a keyboard focus change deferred, now that smithay's keyboard lock is free.
     fn flush_focus_change(&mut self) {
-        if core::mem::take(&mut self.focus_change_pending) {
-            let _rejection = self.dispatch(DispatchInput::TextField {
-                active: false,
-                changed: false,
-                kind: tehuti_core::keyboard::FieldKind::Normal,
-            });
+        if let Some(input) = self.focus_change_dispatch.take() {
+            let _rejection = self.dispatch(input);
         }
     }
 
@@ -3096,7 +3092,11 @@ impl SeatHandler for Compositor {
         self.text_input.focus(focused.cloned());
         // smithay holds the keyboard lock here; a dispatch can relayout and call
         // `set_focus` again, which deadlocks. Defer it until the lock is released.
-        self.focus_change_pending = true;
+        self.focus_change_dispatch = Some(DispatchInput::TextField {
+            active: false,
+            changed: false,
+            kind: tehuti_core::keyboard::FieldKind::Normal,
+        });
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
