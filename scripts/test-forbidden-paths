@@ -10,10 +10,10 @@ git -C "$work" add ok.txt
 "$root/scripts/forbidden-paths" "$work" || { echo "test-forbidden-paths: clean tree failed" >&2; exit 1; }
 mkdir -p "$work/graft" "$work/crates/a/tests"
 echo x >"$work/graft/index"
-echo x >"$work/.ignore"
+echo x >"$work/.ignore"; mkdir -p "$work/a"; echo x >"$work/a/.ignore"
 echo x >"$work/crates/a/tests/t.proptest-regressions"
-git -C "$work" add -f graft/index .ignore crates/a/tests/t.proptest-regressions
+git -C "$work" add -f graft/index .ignore a/.ignore crates/a/tests/t.proptest-regressions
 out=$("$root/scripts/forbidden-paths" "$work") && { echo "test-forbidden-paths: staged paths passed" >&2; exit 1; }
-for path in graft/index .ignore crates/a/tests/t.proptest-regressions; do
+for path in graft/index .ignore a/.ignore crates/a/tests/t.proptest-regressions; do
     grep -qx "$path" <<<"$out" || { echo "test-forbidden-paths: $path not listed" >&2; exit 1; }
 done
