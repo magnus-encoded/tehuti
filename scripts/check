@@ -2,6 +2,8 @@
 # The full gate CI runs: format, lints, tests, prose rules.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+scripts/forbidden-paths
+scripts/test-forbidden-paths
 if [ -n "$(find crates -name Cargo.toml 2>/dev/null)" ]; then
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
