@@ -47,7 +47,14 @@ impl Filter {
 
     /// Decides one input. `eligible` lists plugins that may consume it, in priority order.
     /// A release always follows its press, whatever the overrides are by then.
-    pub fn step(&mut self, button: ButtonName, state: ButtonState, eligible: &[usize]) -> Verdict {
+    /// Buttons in the focused context's `push_to_talk` chord are never consumed.
+    pub fn step(
+        &mut self,
+        button: ButtonName,
+        state: ButtonState,
+        eligible: &[usize],
+        push_to_talk: &[ButtonName],
+    ) -> Verdict {
         let owner = self
             .consumed
             .iter()
@@ -64,6 +71,10 @@ impl Filter {
                     return Verdict::Plugin(plugin);
                 }
                 if self.held.contains(&button) {
+                    return Verdict::Pass;
+                }
+                if push_to_talk.contains(&button) {
+                    self.held.push(button);
                     return Verdict::Pass;
                 }
                 let matched = eligible.iter().copied().find(|plugin| {

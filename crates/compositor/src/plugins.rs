@@ -550,9 +550,12 @@ impl Plugins {
         &mut self,
         button: tehuti_protocol::ButtonName,
         state: tehuti_protocol::ButtonState,
+        push_to_talk: &[tehuti_protocol::ButtonName],
     ) -> bool {
         let eligible: Vec<usize> = self.focused_ready().map(|entry| entry.plugin).collect();
-        let tehuti_core::vpad::Verdict::Plugin(plugin) = self.pad.step(button, state, &eligible) else {
+        let tehuti_core::vpad::Verdict::Plugin(plugin) =
+            self.pad.step(button, state, &eligible, push_to_talk)
+        else {
             return false;
         };
         if let Some(entry) = self.entries.iter().find(|entry| entry.plugin == plugin)
@@ -1414,11 +1417,11 @@ mod tests {
                 tehuti_protocol::ButtonState::Released,
             );
             assert!(
-                plugins.pad_button(south, pressed),
+                plugins.pad_button(south, pressed, &[]),
                 "the override applies before the exit"
             );
             assert!(
-                plugins.pad_button(south, released),
+                plugins.pad_button(south, released, &[]),
                 "its release follows the press"
             );
             break_session(&plugins, 0, false, now);
@@ -1429,7 +1432,10 @@ mod tests {
                 PLUGINS,
                 "the plugin is running again"
             );
-            assert!(!plugins.pad_button(south, pressed), "its overrides are cleared");
+            assert!(
+                !plugins.pad_button(south, pressed, &[]),
+                "its overrides are cleared"
+            );
         }
 
         fn check(plugins: &Plugins, model: &[ModelEntry], starts: &[usize]) -> Result<(), TestCaseError> {
