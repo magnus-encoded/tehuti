@@ -146,8 +146,11 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
                         path,
                         Severity::Warning,
                         format!(
-                            "app_id {:?} is already claimed by {}; this context never becomes active",
+                            "app_id {:?}{} is already claimed by {}; this context never becomes active",
                             shadowed_context.app_id(),
+                            shadowed_context
+                                .title()
+                                .map_or_else(String::new, |title| format!(" with title {title:?}")),
                             earlier_path.display()
                         ),
                     );

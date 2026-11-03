@@ -37,6 +37,7 @@ impl Level {
 pub struct State {
     contexts: Vec<Context>,
     focused_app_id: Option<String>,
+    focused_title: String,
     context_ancestors: Option<(Option<String>, Vec<String>)>,
     pad_taken_back: bool,
     guide_held: Option<core::time::Duration>,
@@ -106,6 +107,7 @@ impl State {
         let mut state = Self {
             contexts,
             focused_app_id: None,
+            focused_title: String::new(),
             context_ancestors: None,
             pad_taken_back: false,
             guide_held: None,
@@ -234,7 +236,7 @@ impl State {
         let app_id = app_id.filter(|app_id| *app_id != GLOBAL_APP_ID)?;
         self.contexts
             .iter()
-            .find(|context| context.app_id() == app_id)
+            .find(|context| context.app_id() == app_id && context.title().is_none())
             .and_then(Context::label)
             .or_else(|| {
                 self.app_names
@@ -280,9 +282,10 @@ impl State {
 
     /// Rebuilds the ticker from the focused context, or disables it there.
     fn refresh_ticker(&mut self) {
-        let focused = focused_context(self).map(Context::app_id);
-        let entries = ticker::enabled(&self.contexts, focused)
-            .then(|| ticker::entries(&self.contexts, focused, self.pad_family, self.level));
+        let focused = focused_context(self);
+        let global = global_context(self);
+        let entries = ticker::enabled_for(focused, global)
+            .then(|| ticker::entries_for(focused, global, self.pad_family, self.level));
         self.bar.set_ticker(entries);
     }
 
@@ -402,9 +405,10 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         }
         return (state, actions, false);
     }
-    if let Event::Focus { app_id, .. } = event {
+    if let Event::Focus { app_id, title } = event {
         let actions = plugin::expire(&mut state, core::time::Duration::MAX);
         state.focused_app_id.clone_from(app_id);
+        state.focused_title.clone_from(title);
         return (state, actions, false);
     }
     if menu_button_release(&mut state, event) {
@@ -604,9 +608,13 @@ fn fuzzy_speech_match(
 pub const GLOBAL_APP_ID: &str = "*";
 
 fn focused_context(state: &State) -> Option<&Context> {
-    let own = state.contexts.iter().find(|context| {
-        context.app_id() != GLOBAL_APP_ID && Some(context.app_id()) == state.focused_app_id.as_deref()
-    });
+    let candidates = || {
+        state.contexts.iter().filter(|context| {
+            context.app_id() != GLOBAL_APP_ID && Some(context.app_id()) == state.focused_app_id.as_deref()
+        })
+    };
+    let titled = candidates().find(|context| context.title() == Some(state.focused_title.as_str()));
+    let own = titled.or_else(|| candidates().find(|context| context.title().is_none()));
     own.or_else(|| {
         let (app_id, ancestors) = state.context_ancestors.as_ref()?;
         if app_id != &state.focused_app_id {
@@ -616,7 +624,9 @@ fn focused_context(state: &State) -> Option<&Context> {
             state
                 .contexts
                 .iter()
-                .find(|context| context.app_id() != GLOBAL_APP_ID && context.app_id() == ancestor)
+                .find(|context| {
+                    context.app_id() != GLOBAL_APP_ID && context.app_id() == ancestor && context.title().is_none()
+                })
         })
     })
 }

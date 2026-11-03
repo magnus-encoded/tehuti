@@ -425,6 +425,7 @@ pub struct SpeechMapping<'context> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
     app_id: String,
+    title: Option<String>,
     label: Option<String>,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, SpeechEntry>,
@@ -650,6 +651,12 @@ impl Context {
         &self.app_id
     }
 
+    /// The exact window title this context also requires, if any.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
     /// The short name the voice bar shows for this application's windows.
     #[must_use]
     pub fn label(&self) -> Option<&str> {
@@ -748,6 +755,8 @@ fn default_push_to_talk() -> Vec<ButtonName> {
 #[serde(deny_unknown_fields)]
 struct ContextFile {
     app_id: String,
+    #[serde(default)]
+    title: Option<String>,
     #[serde(default)]
     label: Option<Text>,
     #[serde(default)]
@@ -892,6 +901,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_holds(&context)?;
     validate_keyboard_button(context.keyboard.button)?;
     validate_app_id(&context.app_id)?;
+    validate_title(&context.app_id, context.title.as_deref())?;
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
@@ -926,6 +936,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     }
     Ok(Context {
         app_id: context.app_id,
+        title: context.title,
         label: parse_label(context.label)?,
         buttons: context.buttons,
         speech,
@@ -1048,6 +1059,14 @@ pub fn normalize_phrase(phrase: &str) -> String {
 }
 
 mod speech_templates;
+
+fn validate_title(app_id: &str, title: Option<&str>) -> Result<(), String> {
+    match title {
+        Some(title) if title.trim().is_empty() => Err("title must not be empty".into()),
+        Some(_) if app_id == "*" => Err("the global context cannot match a title".into()),
+        _ => Ok(()),
+    }
+}
 
 fn validate_app_id(app_id: &str) -> Result<(), String> {
     if app_id.trim().is_empty() {
