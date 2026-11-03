@@ -190,6 +190,8 @@ pub struct Compositor {
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     pub(crate) text_input: crate::text_input::TextInput,
     keyboard_reserved: i32,
+    /// Keyboard focus moved while smithay held the keyboard lock; its dispatch runs once the lock is released (#445).
+    focus_change_dispatch: Option<DispatchInput>,
     /// Keys a held pad button keeps down, with the keycode they went down on.
     held_pad_keys: Vec<(KeyName, Keycode)>,
     display: DisplayHandle,
@@ -315,6 +317,7 @@ impl Compositor {
             text_keys,
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: 0,
+            focus_change_dispatch: None,
             held_pad_keys: Vec::new(),
             display: display.clone(),
         };
@@ -2181,6 +2184,14 @@ impl Compositor {
             time,
             |_, _, _| FilterResult::Forward,
         );
+        self.flush_focus_change();
+    }
+
+    /// Runs the dispatch a keyboard focus change deferred, now that smithay's keyboard lock is free.
+    fn flush_focus_change(&mut self) {
+        if let Some(input) = self.focus_change_dispatch.take() {
+            let _rejection = self.dispatch(input);
+        }
     }
 
     fn type_text(&mut self, text: &str) {
@@ -2684,6 +2695,7 @@ impl Compositor {
         self.keyboard
             .clone()
             .set_focus(self, focus.clone(), SERIAL_COUNTER.next_serial());
+        self.flush_focus_change();
         if let Some(window) = focus
             .as_ref()
             .and_then(|surface| self.window_for_root(surface))
@@ -3078,7 +3090,9 @@ impl SeatHandler for Compositor {
             focused.and_then(smithay::reexports::wayland_server::Resource::client),
         );
         self.text_input.focus(focused.cloned());
-        let _rejection = self.dispatch(DispatchInput::TextField {
+        // smithay holds the keyboard lock here; a dispatch can relayout and call
+        // `set_focus` again, which deadlocks. Defer it until the lock is released.
+        self.focus_change_dispatch = Some(DispatchInput::TextField {
             active: false,
             changed: false,
             kind: tehuti_core::keyboard::FieldKind::Normal,
@@ -3211,6 +3225,10 @@ fn toplevel_app_id(surface: &ToplevelSurface) -> Option<String> {
             })
     })
 }
+
+#[cfg(test)]
+#[path = "state_focus_tests.rs"]
+mod focus_tests;
 
 #[cfg(test)]
 mod tests {
