@@ -2978,6 +2978,112 @@ else:
     }
 
     #[test]
+    fn meta_arrows_move_focus_without_reaching_the_client() {
+        use smithay::input::keyboard::Keycode;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let active = |state: &Compositor| state.layout_snapshot().outputs[0].active_workspace;
+        let meta = Keycode::new(125 + 8);
+        let up_arrow = Keycode::new(103 + 8);
+        let down_arrow = Keycode::new(108 + 8);
+        assert_eq!(active(&compositor), 0);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, false);
+        assert_eq!(active(&compositor), 0, "arrow without Meta is not a chord");
+        compositor.host_key(meta, true);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, false);
+        assert_eq!(active(&compositor), 1);
+        compositor.host_key(up_arrow, true);
+        compositor.host_key(up_arrow, false);
+        assert_eq!(active(&compositor), 0);
+        for column_arrow in [Keycode::new(105 + 8), Keycode::new(106 + 8)] {
+            compositor.host_key(column_arrow, true);
+            compositor.host_key(column_arrow, false);
+        }
+        compositor.host_key(meta, false);
+        compositor.release_host_keys();
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        let trace: Vec<_> = client
+            .join()
+            .unwrap()
+            .keyboard_trace
+            .into_iter()
+            .skip_while(|event| !matches!(event, Trace::Key(..)))
+            .filter(|event| matches!(event, Trace::Key(..)))
+            .collect();
+        assert_eq!(
+            trace,
+            vec![
+                Trace::Key(108, KeyState::Pressed),
+                Trace::Key(108, KeyState::Released),
+                Trace::Key(125, KeyState::Pressed),
+                Trace::Key(125, KeyState::Released),
+            ]
+        );
+    }
+
+    #[test]
+    fn tapping_meta_switches_arrows_from_focus_to_moving_the_column() {
+        use smithay::input::keyboard::Keycode;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let window_workspace = |state: &Compositor| {
+            let snapshot = state.layout_snapshot();
+            snapshot.outputs[0]
+                .workspaces
+                .iter()
+                .position(|workspace| !workspace.columns.is_empty())
+                .unwrap()
+        };
+        let meta = Keycode::new(125 + 8);
+        let down_arrow = Keycode::new(108 + 8);
+        compositor.host_key(meta, true);
+        compositor.host_key(meta, false);
+        compositor.host_key(meta, true);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, false);
+        compositor.host_key(meta, false);
+        assert_eq!(
+            window_workspace(&compositor),
+            1,
+            "column level moves the window down"
+        );
+        assert_eq!(
+            compositor.layout_snapshot().outputs[0].active_workspace,
+            1,
+            "focus follows the window"
+        );
+        compositor.release_host_keys();
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        drop(client.join().unwrap());
+    }
+
+    #[test]
     fn shortcut_with_absent_keysym_sends_nothing_and_holds_no_modifier() {
         // A Cyrillic-only keymap has no Latin `c`, so the shortcut cannot resolve.
         if std::env::var_os("TEHUTI_ABSENT_KEYSYM_TEST").is_none() {
