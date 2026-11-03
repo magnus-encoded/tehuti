@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(compositor.adjuster().unwrap().value(), 45);
         let after = raster(compositor.adjuster().unwrap()).unwrap();
         assert_ne!(before, after);
-        assert_eq!(after.len(), 400 * 104 * 4);
+        assert_eq!(after.len(), 280 * 224 * 4);
         assert_eq!(received.recv_timeout(Duration::from_secs(2)).unwrap()[2], "45%");
         compositor.handle(&Event::Button {
             name: ButtonName::East,

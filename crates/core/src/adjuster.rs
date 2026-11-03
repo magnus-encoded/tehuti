@@ -41,7 +41,8 @@ impl Gauge {
         self.maximum
     }
 
-    /// A gauge not tied to a plugin, for drawing and tests.
+    // For tests and drawing only.
+    #[doc(hidden)]
     #[must_use]
     pub const fn standalone(name: String, minimum: i32, maximum: i32, value: i32) -> Self {
         Self::new(name, minimum, maximum, value, None)
