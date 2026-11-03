@@ -81,6 +81,46 @@ order = 1
         directory
     }
 
+    const GOOD_MANIFEST: &str =
+        r#"{"executable":"run.sh","app_ids":["foot"],"events":[],"start":"always","permissions":[]}"#;
+
+    #[test]
+    fn reports_a_bad_plugin_manifest_and_accepts_a_good_one() {
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "plugins/good.json", GOOD_MANIFEST);
+        write(
+            directory.path(),
+            "plugins/bad.json",
+            r#"{"executable":"run.sh","colour":"red"}"#,
+        );
+        write(directory.path(), "plugins/notes.txt", "not a manifest");
+        let report = check(directory.path());
+        let found = findings(directory.path());
+        assert_eq!(found.len(), 1, "{report}");
+        assert_eq!(found[0].0, "plugins/bad.json");
+        assert_eq!(found[0].1, Severity::Error);
+        assert!(found[0].2.contains("colour"), "{}", found[0].2);
+        assert_eq!(report.checked, 2, "two manifests, no contexts");
+    }
+
+    #[test]
+    fn warns_when_a_context_folder_holds_a_plugins_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "plugins/good.json", GOOD_MANIFEST);
+        write(
+            directory.path(),
+            "foot/context.toml",
+            "app_id = 'foot'\n[buttons]\n",
+        );
+        write(directory.path(), "foot/plugins/stray.json", GOOD_MANIFEST);
+        let found = findings(directory.path());
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert_eq!(found[0].0, "foot/plugins");
+        assert_eq!(found[0].1, Severity::Warning);
+        assert!(found[0].2.contains("never loaded"), "{}", found[0].2);
+        assert!(found[0].2.contains("plugins"), "{}", found[0].2);
+    }
+
     #[test]
     fn reports_parse_errors_unknown_fields_and_shadowed_mappings() {
         let directory = broken_config();

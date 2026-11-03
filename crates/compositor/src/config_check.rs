@@ -114,7 +114,47 @@ pub fn check(directory: &Path) -> Report {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => report.push(&menu, Severity::Error, error.to_string()),
     }
+    check_plugins(directory, &mut report);
     report
+}
+
+/// Validates `<directory>/plugins/*.json`, the only place manifests load from, and flags
+/// `plugins/` folders inside context folders, which nothing loads.
+fn check_plugins(directory: &Path, report: &mut Report) {
+    let plugins = directory.join("plugins");
+    if let Ok(entries) = std::fs::read_dir(&plugins) {
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect();
+        paths.sort();
+        for path in paths
+            .into_iter()
+            .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+        {
+            report.checked = report.checked.saturating_add(1);
+            let parsed = std::fs::read(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| tehuti_protocol::parse_manifest(&bytes).map(drop));
+            if let Err(message) = parsed {
+                report.push(&path, Severity::Error, message);
+            }
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut folders: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.join("context.toml").is_file() && path.join("plugins").is_dir())
+        .collect();
+    folders.sort();
+    for folder in folders {
+        report.push(
+            &folder.join("plugins"),
+            Severity::Warning,
+            format!("never loaded: plugins load only from {}", plugins.display()),
+        );
+    }
 }
 
 fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
