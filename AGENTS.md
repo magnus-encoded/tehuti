@@ -16,6 +16,8 @@ Multi-context: `GLOSSARY-MAP.md` at the root points to one `GLOSSARY.md` per cra
 
 ## Standards
 
+Before any task that runs a process, runs cargo, touches `~/.config/tehuti` or commits files, read `docs/agents/agent-rules.md`.
+
 Run `scripts/check` before every commit; CI runs the same gate. Review rules are in `CODING_STANDARDS.md`.
 
 ## Decisions
