@@ -252,8 +252,8 @@ order = 1
         );
         let titled = "app_id = 'steam_proton'\ntitle = 'World of Warcraft'\n[buttons]\n";
         write(directory.path(), "wow/context.toml", titled);
-        let report = check(directory.path());
-        assert!(report.findings.is_empty(), "{report}");
+        let distinct = check(directory.path());
+        assert!(distinct.findings.is_empty(), "{distinct}");
         write(directory.path(), "wow2/context.toml", titled);
         let report = check(directory.path());
         assert_eq!(report.findings.len(), 1, "{report}");

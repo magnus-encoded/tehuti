@@ -117,6 +117,12 @@ pub fn check(directory: &Path) -> Report {
     report
 }
 
+fn title_suffix(context: &tehuti_protocol::Context) -> String {
+    context
+        .title()
+        .map_or_else(String::new, |title| format!(" with title {title:?}"))
+}
+
 fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
     let contexts: Vec<_> = loaded.iter().map(|(_, context)| context.clone()).collect();
     for (path, context) in loaded {
@@ -148,9 +154,7 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
                         format!(
                             "app_id {:?}{} is already claimed by {}; this context never becomes active",
                             shadowed_context.app_id(),
-                            shadowed_context
-                                .title()
-                                .map_or_else(String::new, |title| format!(" with title {title:?}")),
+                            title_suffix(shadowed_context),
                             earlier_path.display()
                         ),
                     );
