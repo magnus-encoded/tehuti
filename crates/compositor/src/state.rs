@@ -650,6 +650,36 @@ impl Compositor {
         self.handle(&Event::Speech { text });
     }
 
+    pub(crate) fn set_pad_overrides(&mut self, plugin: usize, overrides: Vec<tehuti_protocol::PadOverride>) {
+        if let Some(plugins) = &mut self.plugins {
+            plugins.set_pad_overrides(plugin, overrides);
+        }
+    }
+
+    /// Whether the focused context presents the virtual pad now.
+    #[must_use]
+    pub fn virtual_pad(&self) -> bool {
+        self.pad_passthrough() && self.dispatch.core().virtual_pad()
+    }
+
+    /// Forgets held physical buttons when the virtual pad starts.
+    pub fn reset_virtual_pad(&mut self) {
+        if let Some(plugins) = &mut self.plugins {
+            plugins.reset_pad();
+        }
+    }
+
+    /// Applies plugin overrides to one physical button; true keeps it from the virtual pad.
+    pub fn virtual_pad_button(
+        &mut self,
+        button: tehuti_protocol::ButtonName,
+        state: tehuti_protocol::ButtonState,
+    ) -> bool {
+        self.plugins
+            .as_mut()
+            .is_some_and(|plugins| plugins.pad_button(button, state))
+    }
+
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
         let _rejection = self.dispatch(DispatchInput::PluginExited { plugin });
     }
@@ -910,6 +940,9 @@ impl Compositor {
 
     fn after_event(&mut self, event: &Event) {
         if let Event::Focus { app_id, .. } = event {
+            if self.speech_context != *app_id {
+                tracing::info!(?app_id, "focused application changed");
+            }
             self.speech_context.clone_from(app_id);
             self.refresh_speech_vocabulary();
         }
@@ -2357,6 +2390,9 @@ impl Compositor {
                 .name_for(&crate::destinations::Target::Workspace(workspace.workspace.0))
         {
             bar = bar.with_destination(name.into());
+        }
+        if let Some(status) = self.plugins.as_ref().and_then(crate::plugins::Plugins::status) {
+            bar = bar.with_status(status);
         }
         bar.font = self.settings().bar_font;
         bar

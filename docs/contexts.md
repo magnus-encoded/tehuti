@@ -387,6 +387,12 @@ containing View cancels the solo hold and records while the complete chord is
 held. If View is the only push-to-talk button, capture starts and stops only
 on a release before 500 ms. A solo hold never starts capture.
 
+With `virtual = true` beside `passthrough = true`, Tehuti keeps the physical
+pad and presents a virtual one, named `Tehuti virtual pad`, to the application.
+Plugins for the context can keep chosen button presses from the application
+ahead of time; see `pad_overrides` in the [plugin protocol](protocol/README.md).
+If the virtual pad cannot be created, the physical pad passes through as before.
+
 ## App level tabs
 
 At app level, the global example maps LB to Shift+Tab and RB to Tab.

@@ -72,4 +72,34 @@ mod contract {
             Message::Response(_)
         ));
     }
+
+    #[test]
+    fn pad_overrides_and_status_are_notices_with_checked_values() {
+        for line in [
+            r#"{"jsonrpc":"2.0","method":"pad_overrides","params":{"overrides":[{"button":"south","held":["left_bumper"]}]}}"#,
+            r#"{"jsonrpc":"2.0","method":"pad_overrides","params":{"overrides":[]}}"#,
+            r#"{"jsonrpc":"2.0","method":"status","params":{"text":"Guild"}}"#,
+            r#"{"jsonrpc":"2.0","method":"status","params":{"text":null}}"#,
+        ] {
+            assert!(parse_message(line.as_bytes()).is_ok(), "{line}");
+        }
+        let many = format!(
+            r#"{{"jsonrpc":"2.0","method":"pad_overrides","params":{{"overrides":[{}]}}}}"#,
+            vec![r#"{"button":"east"}"#; 65].join(",")
+        );
+        let long = format!(
+            r#"{{"jsonrpc":"2.0","method":"status","params":{{"text":"{}"}}}}"#,
+            "x".repeat(33)
+        );
+        for line in [
+            r#"{"jsonrpc":"2.0","method":"pad_overrides","params":{"overrides":[{"button":"guide"}]}}"#,
+            r#"{"jsonrpc":"2.0","method":"pad_overrides","params":{"overrides":[{"button":"east","held":["record"]}]}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"pad_overrides","params":{"overrides":[]}}"#,
+            r#"{"jsonrpc":"2.0","method":"status","params":{"text":"a\nb"}}"#,
+            many.as_str(),
+            long.as_str(),
+        ] {
+            assert!(parse_message(line.as_bytes()).is_err(), "{line}");
+        }
+    }
 }

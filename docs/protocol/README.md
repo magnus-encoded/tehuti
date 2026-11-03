@@ -498,7 +498,8 @@ that plugin's whole set; an empty list clears it:
 An override matches a press of `button` while every button in `held` is
 already held on the physical pad. `held` is optional and defaults to empty.
 Button names are those of button events, except `guide` and `record`, which
-are rejected. At most 64 overrides per call are accepted; an invalid call is
+are rejected. South may be overridden like any other button: its usual
+Enter mapping does not apply to a consumed press. At most 64 overrides per call are accepted; an invalid call is
 dropped whole like any invalid line and leaves the previous set in place.
 Overrides need completed initialization, but no event subscription or
 permission. They are held per plugin and are cleared when the plugin exits.

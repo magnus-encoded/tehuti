@@ -511,4 +511,16 @@ mod tests {
         let (newer, _, _) = plugin::step(newer, reply);
         assert_eq!(feedback(&newer), Some(segment("new", Tone::Live)));
     }
+
+    #[test]
+    fn a_plugin_status_shows_at_app_level() {
+        let bar = tehuti_core::bar::Bar::new().with_status("Guild".into());
+        assert_eq!(
+            bar.segments().last(),
+            Some(&Segment {
+                text: "Guild".into(),
+                tone: Tone::Result,
+            })
+        );
+    }
 }

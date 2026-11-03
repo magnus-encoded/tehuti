@@ -220,6 +220,16 @@ pub struct EvdevPad<D = Device> {
     handles: PadHandles<D>,
     translator: DpadHat,
     grabbed: bool,
+    mirror: Option<Mirror>,
+}
+
+/// The virtual controller presented to the application, with inputs kept from it.
+#[derive(Debug)]
+struct Mirror {
+    device: evdev::uinput::VirtualDevice,
+    blocked: Vec<(u16, u16)>,
+    frame: Vec<evdev::InputEvent>,
+    buffered: Vec<Event>,
 }
 
 /// Kernel operations used by a controller client.
@@ -294,6 +304,93 @@ impl<D> PadHandles<D> {
 }
 
 impl EvdevPad {
+    /// Presents or removes the virtual controller; true when it was just created.
+    /// # Errors
+    /// The kernel refused to create the uinput device.
+    pub fn set_mirror(&mut self, present: bool) -> io::Result<bool> {
+        if !present {
+            self.mirror = None;
+            return Ok(false);
+        }
+        if self.mirror.is_some() {
+            return Ok(false);
+        }
+        let events = &self.handles.events;
+        let mut builder = evdev::uinput::VirtualDevice::builder()?
+            .name("Tehuti virtual pad")
+            .input_id(events.input_id());
+        if let Some(keys) = events.supported_keys() {
+            builder = builder.with_keys(keys)?;
+        }
+        for (axis, info) in events.get_absinfo()? {
+            builder = builder.with_absolute_axis(&evdev::UinputAbsSetup::new(axis, info))?;
+        }
+        self.mirror = Some(Mirror {
+            device: builder.build()?,
+            blocked: Vec::new(),
+            frame: Vec::new(),
+            buffered: Vec::new(),
+        });
+        Ok(true)
+    }
+
+    /// Whether the virtual controller is presented.
+    #[must_use]
+    pub const fn mirrored(&self) -> bool {
+        self.mirror.is_some()
+    }
+
+    /// Copies pending physical input to the virtual controller, except buttons `consume` keeps.
+    /// Every translated event stays buffered for [`InputSource::drain`].
+    /// # Errors
+    /// The physical pad could not be read or the virtual one written.
+    pub fn pump_mirror(
+        &mut self,
+        consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
+    ) -> io::Result<()> {
+        let Self {
+            handles,
+            translator,
+            mirror: Some(mirror),
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        let raw: Vec<evdev::InputEvent> = match handles.events().fetch_events() {
+            Ok(events) => events.collect(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        for event in raw {
+            if event.event_type() == evdev::EventType::SYNCHRONIZATION {
+                if event.code() == evdev::SynchronizationCode::SYN_REPORT.0 && !mirror.frame.is_empty() {
+                    mirror.device.emit(&core::mem::take(&mut mirror.frame))?;
+                }
+                continue;
+            }
+            let translated = translator.translate(&event.destructure());
+            let key = (event.event_type().0, event.code());
+            let mut kept = mirror.blocked.contains(&key);
+            for input in &translated {
+                if let Event::Button { name, state } = input
+                    && consume(*name, *state)
+                {
+                    kept = true;
+                    mirror.blocked.retain(|blocked| *blocked != key);
+                    if *state == ButtonState::Pressed {
+                        mirror.blocked.push(key);
+                    }
+                }
+            }
+            if !kept {
+                mirror.frame.push(event);
+            }
+            mirror.buffered.extend(translated);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         self.handles.events.name().unwrap_or("unnamed")
@@ -336,6 +433,7 @@ impl<D: PadDevice> EvdevPad<D> {
             handles: PadHandles::new(events, probe),
             translator,
             grabbed: true,
+            mirror: None,
         }
     }
 
@@ -402,6 +500,9 @@ impl<D: PadDevice> InputSource for EvdevPad<D> {
     }
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
+        if let Some(mirror) = &mut self.mirror {
+            return Ok(core::mem::take(&mut mirror.buffered));
+        }
         self.handles.events().drain(&mut self.translator)
     }
 }

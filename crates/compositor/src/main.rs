@@ -814,6 +814,7 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
 /// because sticks are sampled on the loop's periodic work; such a read changes nothing and returns at once.
 fn route_controller_input(data: &mut LoopData) -> PostAction {
     let was_attached = !data.controllers.is_empty();
+    pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
     let (events, removed) = input::drain_pads_admitted(&mut data.controllers, |path, controller, event| {
@@ -912,10 +913,43 @@ fn advance_time(data: &mut LoopData) {
 }
 
 fn sync_pad_grab(data: &mut LoopData) {
+    let mirrored = data.compositor.virtual_pad();
+    let mut started = false;
     for pad in data.controllers.values_mut() {
-        if let Err(error) = pad.pad.set_passthrough(data.compositor.pad_passthrough()) {
+        if let Err(error) = pad
+            .pad
+            .set_passthrough(data.compositor.pad_passthrough() && !mirrored)
+        {
             warn!(%error, "controller ownership change failed; reopening");
             pad.watchdog.request_reopen();
+        }
+        match pad.pad.set_mirror(mirrored) {
+            Ok(created) => started |= created,
+            Err(error) => {
+                warn!(%error, "virtual pad unavailable; passing the physical pad through");
+                if let Err(grab_error) = pad.pad.set_passthrough(true) {
+                    warn!(%grab_error, "controller ownership change failed; reopening");
+                    pad.watchdog.request_reopen();
+                }
+            }
+        }
+    }
+    if started {
+        data.compositor.reset_virtual_pad();
+    }
+}
+
+/// Copies physical input to each virtual pad, applying plugin overrides before the core reads it.
+fn pump_virtual_pads(data: &mut LoopData) {
+    let compositor = &mut data.compositor;
+    for controller in data.controllers.values_mut() {
+        if controller.pad.mirrored()
+            && let Err(error) = controller
+                .pad
+                .pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+        {
+            warn!(%error, "virtual pad copy failed; reopening");
+            controller.watchdog.request_reopen();
         }
     }
 }

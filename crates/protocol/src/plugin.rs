@@ -130,6 +130,71 @@ pub enum Method {
         event_id: u64,
         actions: Vec<Action>,
     },
+    /// Replaces the sending plugin's virtual pad overrides.
+    PadOverrides {
+        overrides: Vec<PadOverride>,
+    },
+    /// Sets or clears the plugin's powerline status text.
+    Status {
+        text: Option<String>,
+    },
+    /// A physical pad input that matched one of the plugin's overrides.
+    PadInput {
+        button: ButtonName,
+        state: ButtonState,
+    },
+}
+
+/// The longest powerline status a plugin may set, in characters.
+pub const MAX_STATUS_CHARS: usize = 32;
+
+/// The most overrides one `pad_overrides` notice may set.
+pub const MAX_PAD_OVERRIDES: usize = 64;
+
+/// A virtual pad condition: a press of `button` while every `held` button is down.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
+#[serde(deny_unknown_fields)]
+pub struct PadOverride {
+    pub button: ButtonName,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<ButtonName>,
+}
+
+fn validate_notice(method: &Method) -> Result<(), String> {
+    match method {
+        Method::PadOverrides { overrides } => validate_pad_overrides(overrides),
+        Method::Status { text: Some(text) }
+            if text.chars().count() > MAX_STATUS_CHARS || text.chars().any(char::is_control) =>
+        {
+            Err(format!(
+                "status text holds at most {MAX_STATUS_CHARS} characters, without controls"
+            ))
+        }
+        Method::Adjuster { .. }
+        | Method::Initialize(_)
+        | Method::Button { .. }
+        | Method::Speech { .. }
+        | Method::Focus { .. }
+        | Method::Actions { .. }
+        | Method::SubmitActions { .. }
+        | Method::Status { .. }
+        | Method::PadInput { .. } => Ok(()),
+    }
+}
+
+fn validate_pad_overrides(overrides: &[PadOverride]) -> Result<(), String> {
+    if overrides.len() > MAX_PAD_OVERRIDES {
+        return Err(format!("at most {MAX_PAD_OVERRIDES} pad overrides are accepted"));
+    }
+    let reserved = |name: &ButtonName| matches!(name, ButtonName::Guide | ButtonName::Record);
+    if overrides
+        .iter()
+        .any(|entry| reserved(&entry.button) || entry.held.iter().any(reserved))
+    {
+        return Err("pad overrides cannot use guide or record".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +285,7 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
                 "initialize/button/speech/submit_actions require an id; focus/actions must be notices".into(),
             );
         }
+        validate_notice(&call.method)?;
         Ok(Message::Call(call))
     } else if value.get("error").is_some() {
         serde_json::from_value(value)
