@@ -10,7 +10,7 @@ This note adds to the decisions already recorded on #55 and in the 2026-10-21 in
 2. **Left-stick word picking depends on how far the stick is pushed.** A small push steps one word at a time; a full push skips quickly. Reason: the owner chose this.
 3. **Repeat delay, rates and stick curve are set in TOML only, hot-reloaded, with no settings slider.** This matches the dim settings. Reason: the owner chose this.
 4. **Word suggestions (#114) are not part of this work and may never be built.** Do not build them now. Reason: the owner said "certainly not now, maybe never".
-5. **Security service (#57), first version: passwords only.** A password field hides its text, takes no speech, and keeps no draft. Rules for which add-ons may see input, and a lock screen, are out of scope. Reason: the owner chose this.
+5. **Security service (#57), first version: passwords only.** A password field hides its text, takes no speech, and keeps no draft. Rules for which add-ons may see input, and a lock screen, are out of scope. Reason: the owner chose this; plugin work has barely started since the early design work, so there is little to guard yet. Trigger to revisit: when plugin work resumes, decide which add-ons may see input before any third-party plugin can receive keystrokes.
 
 ## Hard to reverse
 
