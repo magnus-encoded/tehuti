@@ -621,12 +621,9 @@ fn focused_context(state: &State) -> Option<&Context> {
             return None;
         }
         ancestors.iter().find_map(|ancestor| {
-            state
-                .contexts
-                .iter()
-                .find(|context| {
-                    context.app_id() != GLOBAL_APP_ID && context.app_id() == ancestor && context.title().is_none()
-                })
+            state.contexts.iter().find(|context| {
+                context.app_id() != GLOBAL_APP_ID && context.app_id() == ancestor && context.title().is_none()
+            })
         })
     })
 }

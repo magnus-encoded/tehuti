@@ -412,11 +412,11 @@ fn active_and_global<'contexts>(
     let global = contexts
         .iter()
         .find(|context| context.app_id() == crate::GLOBAL_APP_ID);
-    let active = contexts
-        .iter()
-        .find(|context| {
-            Some(context.app_id()) == focused && context.app_id() != crate::GLOBAL_APP_ID && context.title().is_none()
-        });
+    let active = contexts.iter().find(|context| {
+        Some(context.app_id()) == focused
+            && context.app_id() != crate::GLOBAL_APP_ID
+            && context.title().is_none()
+    });
     (active, global)
 }
 

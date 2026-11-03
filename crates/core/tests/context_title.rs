@@ -13,11 +13,21 @@ mod context_title {
     }
 
     fn titled(title: &str) -> tehuti_protocol::Context {
-        parse_context(&format!("app_id = '{APP}'\ntitle = {title:?}\n[buttons]\n[dim]\nfade_ms = 2\n")).unwrap()
+        parse_context(&format!(
+            "app_id = '{APP}'\ntitle = {title:?}\n[buttons]\n[dim]\nfade_ms = 2\n"
+        ))
+        .unwrap()
     }
 
     fn focus(state: State, title: &str) -> State {
-        step(state, &Event::Focus { app_id: Some(APP.into()), title: title.into() }).0
+        step(
+            state,
+            &Event::Focus {
+                app_id: Some(APP.into()),
+                title: title.into(),
+            },
+        )
+        .0
     }
 
     fn fade(state: &State) -> Duration {
@@ -49,7 +59,10 @@ mod context_title {
 
     #[test]
     fn titles_match_exactly_and_must_not_be_blank() {
-        let state = focus(State::with_contexts(vec![plain(), titled("World of Warcraft")]), "BattleNet - Wine Desktop");
+        let state = focus(
+            State::with_contexts(vec![plain(), titled("World of Warcraft")]),
+            "BattleNet - Wine Desktop",
+        );
         assert_eq!(fade(&state), Duration::from_millis(1));
         let state = focus(state, "World of Warcraft Classic");
         assert_eq!(fade(&state), Duration::from_millis(1));

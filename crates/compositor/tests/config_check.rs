@@ -245,7 +245,11 @@ order = 1
     #[test]
     fn titled_contexts_coexist_with_the_plain_one_but_duplicates_warn() {
         let directory = tempfile::tempdir().unwrap();
-        write(directory.path(), "proton/context.toml", "app_id = 'steam_proton'\n[buttons]\n");
+        write(
+            directory.path(),
+            "proton/context.toml",
+            "app_id = 'steam_proton'\n[buttons]\n",
+        );
         let titled = "app_id = 'steam_proton'\ntitle = 'World of Warcraft'\n[buttons]\n";
         write(directory.path(), "wow/context.toml", titled);
         let report = check(directory.path());
@@ -254,7 +258,9 @@ order = 1
         let report = check(directory.path());
         assert_eq!(report.findings.len(), 1, "{report}");
         assert!(
-            report.to_string().contains("with title \"World of Warcraft\" is already claimed by"),
+            report
+                .to_string()
+                .contains("with title \"World of Warcraft\" is already claimed by"),
             "{report}"
         );
     }
