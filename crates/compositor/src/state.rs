@@ -192,19 +192,11 @@ pub struct Compositor {
     keyboard_reserved: i32,
     /// Keys a held pad button keeps down, with the keycode they went down on.
     held_pad_keys: Vec<(KeyName, Keycode)>,
-    meta: MetaKeys,
+    /// Host Meta keys currently down, as evdev codes; Meta is the Guide button.
+    meta_held: Vec<u32>,
     /// Host keys a Meta chord consumed, so their release is consumed too.
     consumed_host_keys: Vec<Keycode>,
     display: DisplayHandle,
-}
-
-/// The host Meta keys and what a chord with them does.
-#[derive(Debug, Default)]
-struct MetaKeys {
-    /// Meta keys currently down, as evdev codes.
-    held: Vec<u32>,
-    /// Whether Meta went down and nothing else has been pressed since, so releasing it is a tap.
-    tap: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -328,7 +320,7 @@ impl Compositor {
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: 0,
             held_pad_keys: Vec::new(),
-            meta: MetaKeys::default(),
+            meta_held: Vec::new(),
             consumed_host_keys: Vec::new(),
             display: display.clone(),
         };
@@ -2168,10 +2160,10 @@ impl Compositor {
 
     /// Forwards one key from the host keyboard to the focused client.
     ///
-    /// Meta+arrows act like Guide with the d-pad and the client never sees them. At the app level they focus the neighbouring
-    /// column or workspace; at the columns level they move the focused column. Tapping Meta alone is a Guide tap and switches the level.
+    /// Meta is the Guide button and, while Meta is held, the arrows are the d-pad: both go to the core as pad buttons and
+    /// the client never sees them.
     pub fn host_key(&mut self, keycode: Keycode, pressed: bool) {
-        if self.meta_chord(keycode, pressed) {
+        if self.host_key_as_pad(keycode, pressed) {
             return;
         }
         let state = if pressed {
@@ -2182,73 +2174,58 @@ impl Compositor {
         self.send_keycode(keycode, state);
     }
 
-    fn meta_chord(&mut self, keycode: Keycode, pressed: bool) -> bool {
-        use tehuti_core::layout::Command;
+    fn host_key_as_pad(&mut self, keycode: Keycode, pressed: bool) -> bool {
+        use tehuti_protocol::{ButtonName, ButtonState};
         const KEY_UP: u32 = 103;
         const KEY_LEFT: u32 = 105;
         const KEY_RIGHT: u32 = 106;
         const KEY_DOWN: u32 = 108;
         const KEY_LEFTMETA: u32 = 125;
         const KEY_RIGHTMETA: u32 = 126;
+        let button_state = if pressed {
+            ButtonState::Pressed
+        } else {
+            ButtonState::Released
+        };
         let code = keycode.raw().saturating_sub(XKB_KEYCODE_OFFSET);
         if matches!(code, KEY_LEFTMETA | KEY_RIGHTMETA) {
-            self.meta.held.retain(|held| *held != code);
+            let was_held = !self.meta_held.is_empty();
+            self.meta_held.retain(|held| *held != code);
             if pressed {
-                self.meta.tap = self.meta.held.is_empty();
-                self.meta.held.push(code);
-            } else if self.meta.tap && self.meta.held.is_empty() {
-                self.meta.tap = false;
-                self.meta_tapped();
+                self.meta_held.push(code);
             }
-            return false;
+            if was_held == self.meta_held.is_empty() {
+                self.handle(&Event::Button {
+                    name: ButtonName::Guide,
+                    state: button_state,
+                });
+            }
+            return true;
         }
-        if pressed {
-            self.meta.tap = false;
-        } else {
-            let consumed = self.consumed_host_keys.contains(&keycode);
-            self.consumed_host_keys.retain(|held| *held != keycode);
-            return consumed;
-        }
-        let column = self.dispatch.core().level() == tehuti_core::Level::Columns;
-        let command = match (code, column) {
-            (KEY_UP, false) => Command::FocusWorkspaceUp,
-            (KEY_DOWN, false) => Command::FocusWorkspaceDown,
-            (KEY_LEFT, false) => Command::FocusColumnLeft,
-            (KEY_RIGHT, false) => Command::FocusColumnRight,
-            (KEY_UP, true) => Command::MoveColumnToWorkspaceUp,
-            (KEY_DOWN, true) => Command::MoveColumnToWorkspaceDown,
-            (KEY_LEFT, true) => Command::MoveColumnLeft,
-            (KEY_RIGHT, true) => Command::MoveColumnRight,
+        let name = match code {
+            KEY_UP => ButtonName::DpadUp,
+            KEY_DOWN => ButtonName::DpadDown,
+            KEY_LEFT => ButtonName::DpadLeft,
+            KEY_RIGHT => ButtonName::DpadRight,
             _ => return false,
         };
-        if self.meta.held.is_empty() {
+        if pressed {
+            if self.meta_held.is_empty() {
+                return false;
+            }
+            if !self.consumed_host_keys.contains(&keycode) {
+                self.consumed_host_keys.push(keycode);
+            }
+        } else if self.consumed_host_keys.contains(&keycode) {
+            self.consumed_host_keys.retain(|held| *held != keycode);
+        } else {
             return false;
         }
-        if !self.consumed_host_keys.contains(&keycode) {
-            self.consumed_host_keys.push(keycode);
-            let moved = self.layout.snapshot().focused_window;
-            self.apply_layout_command(command);
-            if matches!(
-                command,
-                Command::MoveColumnToWorkspaceUp | Command::MoveColumnToWorkspaceDown
-            ) {
-                self.follow_window(moved);
-            }
-        }
+        self.handle(&Event::Button {
+            name,
+            state: button_state,
+        });
         true
-    }
-
-    /// A Meta tap is a Guide tap: it switches the level, the bar and the focus rules together.
-    fn meta_tapped(&mut self) {
-        for button_state in [
-            tehuti_protocol::ButtonState::Pressed,
-            tehuti_protocol::ButtonState::Released,
-        ] {
-            self.handle(&Event::Button {
-                name: tehuti_protocol::ButtonName::Guide,
-                state: button_state,
-            });
-        }
     }
 
     /// Switches to the workspace holding `window`, so a moved column keeps the focus.
@@ -2278,8 +2255,7 @@ impl Compositor {
     /// Releases every held host and pad key, so a key held when the host window loses focus or the seat pauses does not stick.
     pub fn release_host_keys(&mut self) {
         self.held_pad_keys.clear();
-        self.meta.held.clear();
-        self.meta.tap = false;
+        self.meta_held.clear();
         self.consumed_host_keys.clear();
         for keycode in self.keyboard.pressed_keys() {
             self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
@@ -2356,9 +2332,19 @@ impl Compositor {
     }
 
     /// Applies a tiling command and places the mapped windows.
+    ///
+    /// Moving a column to another workspace takes the focus along with it.
     pub fn apply_layout_command(&mut self, command: tehuti_core::layout::Command) {
+        use tehuti_core::layout::Command;
+        let moved = self.layout.snapshot().focused_window;
         self.layout.apply(command);
         self.place_layout();
+        if matches!(
+            command,
+            Command::MoveColumnToWorkspaceUp | Command::MoveColumnToWorkspaceDown
+        ) {
+            self.follow_window(moved);
+        }
     }
 
     /// The next opening slot while the launcher is visible.

@@ -160,30 +160,43 @@ mod levels {
         }
     }
 
-    #[test]
-    fn guide_vertical_dpad_focuses_workspaces_and_consumes_mapped_buttons() {
-        for (name, action) in [
-            (ButtonName::DpadUp, LayoutAction::FocusWorkspaceUp),
-            (ButtonName::DpadDown, LayoutAction::FocusWorkspaceDown),
-        ] {
+    proptest! {
+        #[test]
+        fn guide_dpad_focuses_at_the_app_level_and_moves_at_the_columns_level(
+            taps in 0usize..4,
+            direction in 0usize..4,
+        ) {
+            let (name, focus, moving) = [
+                (ButtonName::DpadUp, LayoutAction::FocusWorkspaceUp, LayoutAction::MoveColumnToWorkspaceUp),
+                (ButtonName::DpadDown, LayoutAction::FocusWorkspaceDown, LayoutAction::MoveColumnToWorkspaceDown),
+                (ButtonName::DpadLeft, LayoutAction::FocusColumnLeft, LayoutAction::MoveColumnLeft),
+                (ButtonName::DpadRight, LayoutAction::FocusColumnRight, LayoutAction::MoveColumnRight),
+            ][direction];
             let context = tehuti_protocol::parse_context(
-                "app_id = '*'\n[buttons]\ndpad_up = { key = 'a' }\ndpad_down = { key = 'b' }",
+                "app_id = '*'\n[buttons]\ndpad_up = { key = 'a' }\ndpad_down = { key = 'b' }\n\
+                 dpad_left = { key = 'c' }\ndpad_right = { key = 'd' }",
             )
             .unwrap();
-            let (state, _) = step(
-                State::with_contexts(vec![context]),
-                &button(ButtonName::Guide, ButtonState::Pressed),
-            );
+            let events: Vec<Event> = (0..taps).flat_map(|_| tap()).collect();
+            let (state, _) = run(State::with_contexts(vec![context]), &events);
+            let level = state.level();
+            let (state, _) = step(state, &button(ButtonName::Guide, ButtonState::Pressed));
             let (state, actions) = step(state, &button(name, ButtonState::Pressed));
-            assert_eq!(actions, vec![Action::Layout { action }]);
+            let action = if level == Level::App { focus } else { moving };
+            prop_assert_eq!(actions, vec![Action::Layout { action }]);
             let (_, released) = step(state, &button(name, ButtonState::Released));
-            assert_eq!(released, Vec::<Action>::new());
+            prop_assert_eq!(released, Vec::<Action>::new());
         }
     }
 
     #[test]
     fn workspace_chord_cancels_the_guide_menu_and_level_tap() {
-        for name in [ButtonName::DpadUp, ButtonName::DpadDown] {
+        for name in [
+            ButtonName::DpadUp,
+            ButtonName::DpadDown,
+            ButtonName::DpadLeft,
+            ButtonName::DpadRight,
+        ] {
             for delay in [0, 500, 3000] {
                 let (state, _) = run(
                     State::new(),
@@ -225,21 +238,6 @@ mod levels {
         let (state, quit) = step(state, &tick(1));
         assert_eq!(quit, vec![Action::Quit]);
         assert!(state.menu().is_none());
-    }
-
-    #[test]
-    fn guide_horizontal_dpad_has_no_workspace_binding() {
-        let (_, actions) = run(
-            State::new(),
-            &[
-                button(ButtonName::Guide, ButtonState::Pressed),
-                button(ButtonName::DpadLeft, ButtonState::Pressed),
-                button(ButtonName::DpadLeft, ButtonState::Released),
-                button(ButtonName::DpadRight, ButtonState::Pressed),
-                button(ButtonName::DpadRight, ButtonState::Released),
-            ],
-        );
-        assert_eq!(actions, Vec::<Action>::new());
     }
 
     proptest! {

@@ -694,15 +694,23 @@ fn guide_button(state: &mut State, button_state: ButtonState) {
     }
 }
 
-fn guide_workspace(name: ButtonName, button: ButtonState) -> Vec<Action> {
-    match (name, button) {
-        (ButtonName::DpadUp, ButtonState::Pressed) => vec![Action::Layout {
-            action: LayoutAction::FocusWorkspaceUp,
-        }],
-        (ButtonName::DpadDown, ButtonState::Pressed) => vec![Action::Layout {
-            action: LayoutAction::FocusWorkspaceDown,
-        }],
-        _ => Vec::new(),
+/// Guide with the d-pad: at the app level it focuses the neighbouring column or workspace, at the columns level it moves
+/// the focused column.
+fn guide_workspace(level: Level, name: ButtonName, button: ButtonState) -> Vec<Action> {
+    let action = match (level, name) {
+        (Level::App, ButtonName::DpadUp) => LayoutAction::FocusWorkspaceUp,
+        (Level::App, ButtonName::DpadDown) => LayoutAction::FocusWorkspaceDown,
+        (Level::App, ButtonName::DpadLeft) => LayoutAction::FocusColumnLeft,
+        (Level::App, ButtonName::DpadRight) => LayoutAction::FocusColumnRight,
+        (Level::Columns, ButtonName::DpadUp) => LayoutAction::MoveColumnToWorkspaceUp,
+        (Level::Columns, ButtonName::DpadDown) => LayoutAction::MoveColumnToWorkspaceDown,
+        (Level::Columns, ButtonName::DpadLeft) => LayoutAction::MoveColumnLeft,
+        (Level::Columns, ButtonName::DpadRight) => LayoutAction::MoveColumnRight,
+        _ => return Vec::new(),
+    };
+    match button {
+        ButtonState::Pressed => vec![Action::Layout { action }],
+        ButtonState::Released => Vec::new(),
     }
 }
 
@@ -716,11 +724,12 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             Some(Vec::new())
         }
         Event::Button {
-            name: name @ (ButtonName::DpadUp | ButtonName::DpadDown),
+            name:
+                name @ (ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight),
             state: button_state,
         } if state.guide_held.is_some() => {
             state.guide_tap = None;
-            Some(guide_workspace(*name, *button_state))
+            Some(guide_workspace(state.level, *name, *button_state))
         }
         Event::Button {
             name: ButtonName::Start,
