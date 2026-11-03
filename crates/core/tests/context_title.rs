@@ -58,6 +58,29 @@ mod context_title {
     }
 
     #[test]
+    fn the_ticker_follows_a_title_change() {
+        let titled = parse_context(&format!(
+            "app_id = '{APP}'\ntitle = 'World of Warcraft'\n[buttons]\n[ticker]\nenabled = true\n"
+        ))
+        .unwrap();
+        let state = focus(
+            State::with_contexts(vec![plain(), titled]),
+            "BattleNet - Wine Desktop",
+        );
+        assert!(
+            state.bar().ticker().is_none(),
+            "the untitled context keeps the ticker off"
+        );
+        let state = focus(state, "World of Warcraft");
+        assert!(state.bar().ticker().is_some(), "the titled context turns it on");
+        let state = focus(state, "BattleNet - Wine Desktop");
+        assert!(
+            state.bar().ticker().is_none(),
+            "leaving the title turns it off again"
+        );
+    }
+
+    #[test]
     fn titles_match_exactly_and_must_not_be_blank() {
         let state = focus(
             State::with_contexts(vec![plain(), titled("World of Warcraft")]),

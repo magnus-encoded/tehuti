@@ -607,14 +607,29 @@ fn fuzzy_speech_match(
 /// App id of the global context, whose mappings apply wherever the focused context has none.
 pub const GLOBAL_APP_ID: &str = "*";
 
-fn focused_context(state: &State) -> Option<&Context> {
+/// The context a window of `app_id` titled `title` selects by itself, without launcher
+/// ancestry: an exact title match first, else the first untitled context for the app id.
+#[must_use]
+pub fn own_context<'contexts>(
+    contexts: &'contexts [Context],
+    app_id: &str,
+    title: &str,
+) -> Option<&'contexts Context> {
     let candidates = || {
-        state.contexts.iter().filter(|context| {
-            context.app_id() != GLOBAL_APP_ID && Some(context.app_id()) == state.focused_app_id.as_deref()
-        })
+        contexts
+            .iter()
+            .filter(move |context| context.app_id() != GLOBAL_APP_ID && context.app_id() == app_id)
     };
-    let titled = candidates().find(|context| context.title() == Some(state.focused_title.as_str()));
-    let own = titled.or_else(|| candidates().find(|context| context.title().is_none()));
+    candidates()
+        .find(|context| context.title() == Some(title))
+        .or_else(|| candidates().find(|context| context.title().is_none()))
+}
+
+fn focused_context(state: &State) -> Option<&Context> {
+    let own = state
+        .focused_app_id
+        .as_deref()
+        .and_then(|app_id| own_context(&state.contexts, app_id, &state.focused_title));
     own.or_else(|| {
         let (app_id, ancestors) = state.context_ancestors.as_ref()?;
         if app_id != &state.focused_app_id {
