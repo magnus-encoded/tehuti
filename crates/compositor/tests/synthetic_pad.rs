@@ -3153,6 +3153,71 @@ else:
     }
 
     #[test]
+    fn meta_takes_only_arrows_the_client_never_saw_and_moves_once_per_hold() {
+        use smithay::input::keyboard::Keycode;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let active = |state: &Compositor| state.layout_snapshot().outputs[0].active_workspace;
+        let meta = Keycode::new(125 + 8);
+        let down_arrow = Keycode::new(108 + 8);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(meta, true);
+        host_tap(&mut compositor, down_arrow);
+        compositor.host_key(meta, false);
+        assert_eq!(active(&compositor), 0, "a held arrow stays the client's");
+        compositor.host_key(meta, true);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, true);
+        assert_eq!(
+            active(&compositor),
+            1,
+            "a repeat is not a move, like a held d-pad"
+        );
+        compositor.host_key(meta, false);
+        compositor.host_key(down_arrow, false);
+        compositor.host_key(meta, true);
+        host_tap(&mut compositor, Keycode::new(103 + 8));
+        host_tap(&mut compositor, down_arrow);
+        compositor.host_key(meta, false);
+        assert_eq!(active(&compositor), 1, "a late release leaves the chord");
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        let trace: Vec<_> = client
+            .join()
+            .unwrap()
+            .keyboard_trace
+            .into_iter()
+            .filter(|event| matches!(event, Trace::Key(..)))
+            .collect();
+        assert_eq!(
+            trace,
+            vec![
+                Trace::Key(108, KeyState::Pressed),
+                Trace::Key(108, KeyState::Pressed),
+                Trace::Key(108, KeyState::Released),
+            ],
+            "the held arrow's repeat and release reach the client"
+        );
+    }
+
+    fn host_tap(compositor: &mut Compositor, keycode: smithay::input::keyboard::Keycode) {
+        compositor.host_key(keycode, true);
+        compositor.host_key(keycode, false);
+    }
+
+    #[test]
     fn tapping_meta_switches_arrows_from_focus_to_moving_the_column() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();

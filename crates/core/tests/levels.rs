@@ -190,6 +190,38 @@ mod levels {
     }
 
     #[test]
+    fn a_held_chord_dpad_does_not_repeat_and_its_late_release_stays_in_the_chord() {
+        let context =
+            tehuti_protocol::parse_context("app_id = '*'\n[buttons]\ndpad_down = { key = 'b' }").unwrap();
+        let (state, _) = step(
+            State::with_contexts(vec![context]),
+            &button(ButtonName::Guide, ButtonState::Pressed),
+        );
+        let (state, actions) = run(
+            state,
+            &[
+                button(ButtonName::DpadDown, ButtonState::Pressed),
+                button(ButtonName::DpadDown, ButtonState::Pressed),
+                button(ButtonName::Guide, ButtonState::Released),
+                button(ButtonName::DpadDown, ButtonState::Released),
+            ],
+        );
+        assert_eq!(
+            actions,
+            vec![Action::Layout {
+                action: LayoutAction::FocusWorkspaceDown
+            }],
+            "one move per hold, and the release after Guide never reaches the app"
+        );
+        let (_, mapped) = step(state, &button(ButtonName::DpadDown, ButtonState::Pressed));
+        assert_ne!(
+            mapped,
+            Vec::<Action>::new(),
+            "the next press reaches the app again"
+        );
+    }
+
+    #[test]
     fn workspace_chord_cancels_the_guide_menu_and_level_tap() {
         for name in [
             ButtonName::DpadUp,

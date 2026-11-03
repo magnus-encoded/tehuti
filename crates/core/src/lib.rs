@@ -47,6 +47,8 @@ pub struct State {
     menu: Option<menu::Menu>,
     menu_entries: Vec<String>,
     menu_buttons: Vec<ButtonName>,
+    /// D-pad buttons pressed with Guide held, so a repeat does nothing and their release is consumed even after Guide.
+    chord_buttons: Vec<ButtonName>,
     pending: Vec<plugin::Pending>,
     bar: bar::Bar,
     held_keys: Vec<(ButtonName, KeyName)>,
@@ -110,6 +112,7 @@ impl State {
             menu: None,
             menu_entries: Vec::new(),
             menu_buttons: Vec::new(),
+            chord_buttons: Vec::new(),
             pending: Vec::new(),
             bar: bar::Bar::new(),
             held_keys: Vec::new(),
@@ -294,6 +297,7 @@ impl State {
         self.start_in_chord = false;
         self.menu = None;
         self.menu_buttons.clear();
+        self.chord_buttons.clear();
     }
 
     /// Releases every key a held button keeps down, each key once.
@@ -696,7 +700,7 @@ fn guide_button(state: &mut State, button_state: ButtonState) {
 
 /// Guide with the d-pad: at the app level it focuses the neighbouring column or workspace, at the columns level it moves
 /// the focused column.
-fn guide_workspace(level: Level, name: ButtonName, button: ButtonState) -> Vec<Action> {
+fn guide_workspace(level: Level, name: ButtonName) -> Vec<Action> {
     let action = match (level, name) {
         (Level::App, ButtonName::DpadUp) => LayoutAction::FocusWorkspaceUp,
         (Level::App, ButtonName::DpadDown) => LayoutAction::FocusWorkspaceDown,
@@ -708,9 +712,22 @@ fn guide_workspace(level: Level, name: ButtonName, button: ButtonState) -> Vec<A
         (Level::Columns, ButtonName::DpadRight) => LayoutAction::MoveColumnRight,
         _ => return Vec::new(),
     };
+    vec![Action::Layout { action }]
+}
+
+/// A d-pad button in a Guide chord: one move per press, and its release stays in the chord even after Guide is up.
+fn guide_dpad(state: &mut State, name: ButtonName, button: ButtonState) -> Vec<Action> {
+    state.guide_tap = None;
     match button {
-        ButtonState::Pressed => vec![Action::Layout { action }],
-        ButtonState::Released => Vec::new(),
+        ButtonState::Pressed if !state.chord_buttons.contains(&name) => {
+            state.chord_buttons.push(name);
+            guide_workspace(state.level, name)
+        }
+        ButtonState::Pressed => Vec::new(),
+        ButtonState::Released => {
+            state.chord_buttons.retain(|held| *held != name);
+            Vec::new()
+        }
     }
 }
 
@@ -727,9 +744,8 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             name:
                 name @ (ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight),
             state: button_state,
-        } if state.guide_held.is_some() => {
-            state.guide_tap = None;
-            Some(guide_workspace(state.level, *name, *button_state))
+        } if state.guide_held.is_some() || state.chord_buttons.contains(name) => {
+            Some(guide_dpad(state, *name, *button_state))
         }
         Event::Button {
             name: ButtonName::Start,

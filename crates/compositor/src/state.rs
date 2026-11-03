@@ -2210,7 +2210,9 @@ impl Compositor {
             _ => return false,
         };
         if pressed {
-            if self.meta_held.is_empty() {
+            let reached_client = !self.consumed_host_keys.contains(&keycode)
+                && self.keyboard.pressed_keys().contains(&keycode);
+            if self.meta_held.is_empty() || reached_client {
                 return false;
             }
             if !self.consumed_host_keys.contains(&keycode) {
