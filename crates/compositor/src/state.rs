@@ -198,20 +198,11 @@ pub struct Compositor {
     display: DisplayHandle,
 }
 
-/// What Meta+arrows do: focus the neighbouring column or workspace, or move the focused column.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum MetaLevel {
-    #[default]
-    App,
-    Column,
-}
-
 /// The host Meta keys and what a chord with them does.
 #[derive(Debug, Default)]
 struct MetaKeys {
     /// Meta keys currently down, as evdev codes.
     held: Vec<u32>,
-    level: MetaLevel,
     /// Whether Meta went down and nothing else has been pressed since, so releasing it is a tap.
     tap: bool,
 }
@@ -2177,8 +2168,8 @@ impl Compositor {
 
     /// Forwards one key from the host keyboard to the focused client.
     ///
-    /// Meta+arrows act like Guide with the d-pad and the client never sees them. At app level they focus the neighbouring
-    /// column or workspace; at column level they move the focused column. Tapping Meta alone switches level.
+    /// Meta+arrows act like Guide with the d-pad and the client never sees them. At the app level they focus the neighbouring
+    /// column or workspace; at the columns level they move the focused column. Tapping Meta alone is a Guide tap and switches the level.
     pub fn host_key(&mut self, keycode: Keycode, pressed: bool) {
         if self.meta_chord(keycode, pressed) {
             return;
@@ -2207,14 +2198,7 @@ impl Compositor {
                 self.meta.held.push(code);
             } else if self.meta.tap && self.meta.held.is_empty() {
                 self.meta.tap = false;
-                self.meta.level = match self.meta.level {
-                    MetaLevel::App => MetaLevel::Column,
-                    MetaLevel::Column => MetaLevel::App,
-                };
-                self.show_notice(match self.meta.level {
-                    MetaLevel::App => "App level",
-                    MetaLevel::Column => "Column level",
-                });
+                self.meta_tapped();
             }
             return false;
         }
@@ -2225,7 +2209,7 @@ impl Compositor {
             self.consumed_host_keys.retain(|held| *held != keycode);
             return consumed;
         }
-        let column = self.meta.level == MetaLevel::Column;
+        let column = self.dispatch.core().level() == tehuti_core::Level::Columns;
         let command = match (code, column) {
             (KEY_UP, false) => Command::FocusWorkspaceUp,
             (KEY_DOWN, false) => Command::FocusWorkspaceDown,
@@ -2252,6 +2236,19 @@ impl Compositor {
             }
         }
         true
+    }
+
+    /// A Meta tap is a Guide tap: it switches the level, the bar and the focus rules together.
+    fn meta_tapped(&mut self) {
+        for button_state in [
+            tehuti_protocol::ButtonState::Pressed,
+            tehuti_protocol::ButtonState::Released,
+        ] {
+            self.handle(&Event::Button {
+                name: tehuti_protocol::ButtonName::Guide,
+                state: button_state,
+            });
+        }
     }
 
     /// Switches to the workspace holding `window`, so a moved column keeps the focus.
