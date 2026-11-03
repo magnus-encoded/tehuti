@@ -227,9 +227,49 @@ pub struct EvdevPad<D = Device> {
 #[derive(Debug)]
 struct Mirror {
     device: evdev::uinput::VirtualDevice,
+    copy: MirrorCopy,
+}
+
+/// Which raw events reach the virtual controller, frame by frame.
+#[derive(Debug, Default)]
+struct MirrorCopy {
     blocked: Vec<(u16, u16)>,
     frame: Vec<evdev::InputEvent>,
     buffered: Vec<Event>,
+}
+
+impl MirrorCopy {
+    /// Takes one raw event; returns a finished frame to emit at each nonempty `SYN_REPORT`.
+    fn take(
+        &mut self,
+        event: evdev::InputEvent,
+        translator: &mut DpadHat,
+        consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
+    ) -> Option<Vec<evdev::InputEvent>> {
+        if event.event_type() == evdev::EventType::SYNCHRONIZATION {
+            return (event.code() == evdev::SynchronizationCode::SYN_REPORT.0 && !self.frame.is_empty())
+                .then(|| core::mem::take(&mut self.frame));
+        }
+        let translated = translator.translate(&event.destructure());
+        let key = (event.event_type().0, event.code());
+        let mut kept = self.blocked.contains(&key);
+        for input in &translated {
+            if let Event::Button { name, state } = input
+                && consume(*name, *state)
+            {
+                kept = true;
+                self.blocked.retain(|blocked| *blocked != key);
+                if *state == ButtonState::Pressed {
+                    self.blocked.push(key);
+                }
+            }
+        }
+        if !kept {
+            self.frame.push(event);
+        }
+        self.buffered.extend(translated);
+        None
+    }
 }
 
 /// Kernel operations used by a controller client.
@@ -327,9 +367,7 @@ impl EvdevPad {
         }
         self.mirror = Some(Mirror {
             device: builder.build()?,
-            blocked: Vec::new(),
-            frame: Vec::new(),
-            buffered: Vec::new(),
+            copy: MirrorCopy::default(),
         });
         Ok(true)
     }
@@ -363,30 +401,9 @@ impl EvdevPad {
             Err(error) => return Err(error),
         };
         for event in raw {
-            if event.event_type() == evdev::EventType::SYNCHRONIZATION {
-                if event.code() == evdev::SynchronizationCode::SYN_REPORT.0 && !mirror.frame.is_empty() {
-                    mirror.device.emit(&core::mem::take(&mut mirror.frame))?;
-                }
-                continue;
+            if let Some(frame) = mirror.copy.take(event, translator, consume) {
+                mirror.device.emit(&frame)?;
             }
-            let translated = translator.translate(&event.destructure());
-            let key = (event.event_type().0, event.code());
-            let mut kept = mirror.blocked.contains(&key);
-            for input in &translated {
-                if let Event::Button { name, state } = input
-                    && consume(*name, *state)
-                {
-                    kept = true;
-                    mirror.blocked.retain(|blocked| *blocked != key);
-                    if *state == ButtonState::Pressed {
-                        mirror.blocked.push(key);
-                    }
-                }
-            }
-            if !kept {
-                mirror.frame.push(event);
-            }
-            mirror.buffered.extend(translated);
         }
         Ok(())
     }
@@ -501,7 +518,7 @@ impl<D: PadDevice> InputSource for EvdevPad<D> {
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
         if let Some(mirror) = &mut self.mirror {
-            return Ok(core::mem::take(&mut mirror.buffered));
+            return Ok(core::mem::take(&mut mirror.copy.buffered));
         }
         self.handles.events().drain(&mut self.translator)
     }
@@ -706,6 +723,50 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
         _ => return None,
     };
     Some(Event::Button { name, state })
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::{DpadHat, MirrorCopy};
+    use evdev::{EventType, InputEvent, KeyCode, SynchronizationCode};
+    use tehuti_protocol::{ButtonName, ButtonState, Event};
+
+    fn key(code: KeyCode, value: i32) -> InputEvent {
+        InputEvent::new(EventType::KEY.0, code.code(), value)
+    }
+
+    #[test]
+    fn one_frame_keeps_matched_inputs_and_copies_the_rest() {
+        let mut copy = MirrorCopy::default();
+        let mut translator = DpadHat::default();
+        let mut consume = |name: ButtonName, _: ButtonState| name == ButtonName::South;
+        let frame = [
+            key(KeyCode::BTN_TL, 1),
+            key(KeyCode::BTN_SOUTH, 1),
+            key(KeyCode::BTN_EAST, 1),
+            InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
+        ];
+        let emitted: Vec<_> = frame
+            .into_iter()
+            .filter_map(|event| copy.take(event, &mut translator, &mut consume))
+            .collect();
+        let codes: Vec<Vec<u16>> = emitted
+            .iter()
+            .map(|sent| sent.iter().map(InputEvent::code).collect())
+            .collect();
+        assert_eq!(
+            codes,
+            [vec![KeyCode::BTN_TL.code(), KeyCode::BTN_EAST.code()]],
+            "South is kept; the bumper and East are copied in order"
+        );
+        assert!(
+            copy.buffered.contains(&Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed,
+            }),
+            "the core still sees the kept press"
+        );
+    }
 }
 
 #[cfg(test)]

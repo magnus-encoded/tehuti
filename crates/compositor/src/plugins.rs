@@ -1390,6 +1390,32 @@ mod tests {
             }
         }
 
+        #[test]
+        fn an_exited_plugin_loses_its_pad_overrides() {
+            let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
+            let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+            let mut plugins = plugins(&succeed, &starts);
+            let now = Instant::now();
+            let _exited = plugins.supervise_at(now);
+            plugins.set_pad_overrides(
+                0,
+                vec![tehuti_protocol::PadOverride {
+                    button: tehuti_protocol::ButtonName::South,
+                    held: Vec::new(),
+                }],
+            );
+            let before = plugins.pad.clone();
+            break_session(&plugins, 0, false, now);
+            let exited = plugins.supervise_at(now);
+            assert_eq!(exited, [0], "the crashed plugin is reported");
+            assert_ne!(plugins.pad, before, "overrides were set before the exit");
+            assert_eq!(
+                plugins.pad,
+                tehuti_core::vpad::Filter::default(),
+                "its overrides are cleared"
+            );
+        }
+
         fn check(plugins: &Plugins, model: &[ModelEntry], starts: &[usize]) -> Result<(), TestCaseError> {
             for (index, (entry, expected)) in plugins.entries.iter().zip(model).enumerate() {
                 prop_assert_eq!(
