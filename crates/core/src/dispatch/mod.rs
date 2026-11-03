@@ -20,7 +20,7 @@ mod settings;
 pub use settings::{Category, Page, Settings};
 
 mod adjustment;
-use adjustment::{adjuster_effect, adjuster_input, adjuster_phrase, adjuster_sticks};
+use adjustment::{adjuster_effect, adjuster_input, adjuster_phrase, adjuster_sticks, remember_adjuster};
 
 mod mouse;
 pub use mouse::{PointerButton, Sticks};
@@ -610,7 +610,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
                 SecretPrompt::Hidden
             }
         }
-        Input::Sticks(sticks) => adjuster_sticks(&mut state, *sticks, &mut effects),
+        Input::Sticks(sticks) => adjuster_sticks(&mut state, *sticks),
         Input::TextField {
             active,
             changed,
@@ -1132,6 +1132,17 @@ fn adjuster_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
         && gauge.tick(*elapsed)
     {
         effects.push(adjuster_effect(gauge, false));
+    }
+    if state
+        .adjuster
+        .as_ref()
+        .is_some_and(crate::adjuster::Gauge::expired)
+    {
+        if let Some(gauge) = &state.adjuster {
+            effects.push(adjuster_effect(gauge, true));
+        }
+        remember_adjuster(state);
+        state.adjuster = None;
     }
     true
 }
