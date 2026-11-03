@@ -50,10 +50,10 @@ The first core message is a request. `core_version` is the running package's
 version, shown here as `0.0.0`:
 
 ```json
-{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocol_version":0,"encoding":"json","core_version":"0.0.0"}}
+{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocol_version":0,"encoding":"json","core_version":"0.0.0","options":{"action_submission":"submit_actions"}}}
 ```
 
-An optional `options` object is reserved for future needs. Reply exactly once:
+`options` lists optional core features; ignore keys you do not know. Reply exactly once:
 
 ```json
 {"jsonrpc":"2.0","id":0,"result":{"protocol_version":0,"encoding":"json","events":["button","focus"]}}
@@ -84,7 +84,10 @@ Button decisions are requests:
 {"jsonrpc":"2.0","id":1,"method":"button","params":{"name":"east","state":"pressed"}}
 ```
 
-States are `pressed` and `released`. Names are `south`, `east`, `north`,
+Button params carry no application id. A button request concerns the application
+named by the latest focus notice; subscribe to `focus` to know which one it is.
+Without a focus subscription, the plugin only knows that the focused application
+matches one of its manifest `app_ids`. States are `pressed` and `released`. Names are `south`, `east`, `north`,
 `west`, `left_bumper`, `right_bumper`, `left_trigger`, `right_trigger`, `select`, `record`, `start`, `guide`, `left_stick`,
 `right_stick`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`.
 All names and enum values are case sensitive.
@@ -341,7 +344,8 @@ completed initialization. They have no id, response or button deadline.
 They are independent actions and never complete a pending request.
 Notice actions are reserved for the core and are dropped from plugins.
 Every action requires its matching manifest permission: `key`, `text`, or
-`quit`. The core rejects the entire batch if any action lacks permission or
+`quit`. This applies to actions in replies, `submit_actions` and notices alike:
+replying with a `text` action needs the `text` permission. The core rejects the entire batch if any action lacks permission or
 uses a core-only action. No action in a rejected batch is delivered. Permissions restrict
 protocol actions; they do not sandbox the process or restrict its OS access.
 Unsolicited actions target focus when applied. A focus change settles pending
@@ -366,7 +370,7 @@ See the [manifest schema](manifest.schema.json). Required fields:
 `id`, `author` and `security_contact` are optional strings or null.
 Unknown fields are rejected. Manifests have the same 65,536-byte limit.
 Executable and application ids must not be blank; whitespace is not trimmed.
-Empty lists and duplicate entries are allowed. Events are `button` and `focus`;
+Empty lists and duplicate entries are allowed. Events are `button`, `focus` and `speech`;
 permissions are `key`, `text` and `quit`.
 
 Only direct entries with the case-sensitive extension `.json` are read;
@@ -427,7 +431,7 @@ Focus changes to `test` while initialization is pending.
 
 | Direction | Line |
 | --- | --- |
-| Core → stdin | `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocol_version":0,"encoding":"json","core_version":"0.0.0"}}` |
+| Core → stdin | `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocol_version":0,"encoding":"json","core_version":"0.0.0","options":{"action_submission":"submit_actions"}}}` |
 | Plugin → stdout | `{"jsonrpc":"2.0","id":0,"result":{"protocol_version":0,"encoding":"json","events":["button","focus"]}}` |
 | Core → stdin | `{"jsonrpc":"2.0","method":"focus","params":{"app_id":"test","title":"Example window"}}` |
 | Core → stdin | `{"jsonrpc":"2.0","id":1,"method":"button","params":{"name":"east","state":"pressed"}}` |
@@ -476,3 +480,61 @@ Saying `volume` opens the built-in 0–100 percent adjuster. The compositor uses
 `wpctl` to read and preview the default audio sink volume on a worker thread.
 Failed commands show `VOLUME UNAVAILABLE`; input routing keeps running. The
 gauge appears above the bar. Speech inside the keyboard remains dictation.
+
+## Virtual pad overrides
+
+A context opts in with `[pad] passthrough = true` and `virtual = true`. While
+its passthrough is active, Tehuti keeps the physical controller and presents a
+virtual controller to the application. Physical inputs are copied to the
+virtual controller as they arrive, unless they match an override.
+
+A plugin sets its overrides ahead of time with a notice. Each call replaces
+that plugin's whole set; an empty list clears it:
+
+```json
+{"jsonrpc":"2.0","method":"pad_overrides","params":{"overrides":[{"button":"south","held":["left_bumper"]}]}}
+```
+
+An override matches a press of `button` while every button in `held` is
+already held on the physical pad. `held` is optional and defaults to empty.
+Button names are those of button events, except `guide` and `record`, which
+are rejected. At most 64 overrides per call are accepted; an invalid call is
+dropped whole like any invalid line and leaves the previous set in place.
+Overrides need completed initialization, but no event subscription or
+permission. They are held per plugin and are cleared when the plugin exits.
+
+The core applies overrides itself, without asking the plugin per press.
+Only plugins that match the focused application and are initialized take part;
+the first one in manifest order whose override matches receives the input.
+A matched press and its release are not copied to the virtual controller.
+They go to that plugin as notices, with no reply:
+
+```json
+{"jsonrpc":"2.0","method":"pad_input","params":{"button":"south","state":"pressed"}}
+{"jsonrpc":"2.0","method":"pad_input","params":{"button":"south","state":"released"}}
+```
+
+A release follows its press: a consumed press always has a consumed release,
+and a copied press a copied release, even if the overrides change in between.
+Held buttons in a condition are copied normally. Inputs that match no override,
+including sticks, triggers and the D-pad, keep their order and timing.
+A plugin answers a pad input with an `actions` notice if it wants to act.
+Contexts without `virtual = true` read the physical pad as before, and
+`pad_overrides` has no effect on them.
+
+## Powerline status
+
+A plugin may show one short status text on the powerline bar, for example the
+current chat channel. It is a notice with no reply, and needs no permission:
+
+```json
+{"jsonrpc":"2.0","method":"status","params":{"text":"Guild"}}
+{"jsonrpc":"2.0","method":"status","params":{"text":null}}
+```
+
+Each notice replaces the plugin's previous status; `null` clears it. Text holds
+at most 32 characters and no control characters; longer or invalid text drops
+the line like any invalid line. The status shows only while the focused
+application matches the plugin's manifest `app_ids` and the plugin is
+initialized. When several plugins qualify, the first in manifest order shows.
+A plugin exit clears its status.
