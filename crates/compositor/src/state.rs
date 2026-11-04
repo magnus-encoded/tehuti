@@ -2178,7 +2178,7 @@ impl Compositor {
     /// The one way to send a modifier: press the real modifier keys so xkb serializes the mask.
     fn tap_keycode_with_modifiers(&mut self, keycode: Keycode, mods: &[tehuti_protocol::Modifier]) {
         use tehuti_protocol::Modifier;
-        let held = [
+        let names: Vec<&str> = [
             (Modifier::Ctrl, "Control_L"),
             (Modifier::Alt, "Alt_L"),
             (Modifier::Shift, "Shift_L"),
@@ -2186,10 +2186,19 @@ impl Compositor {
         ]
         .into_iter()
         .filter(|(modifier, _)| mods.contains(modifier))
-        .map(|(_, name)| self.resolve_keysym(name))
-        .collect::<Option<Vec<_>>>();
+        .map(|(_, name)| name)
+        .collect();
+        self.tap_keycode_with_keysyms(keycode, &names);
+    }
+
+    /// Presses the named modifier keys around one key tap.
+    fn tap_keycode_with_keysyms(&mut self, keycode: Keycode, names: &[&str]) {
+        let held = names
+            .iter()
+            .map(|name| self.resolve_keysym(name))
+            .collect::<Option<Vec<_>>>();
         let Some(held) = held else {
-            tracing::warn!(?mods, "modifier unavailable in active keymap");
+            tracing::warn!(?names, "modifier unavailable in active keymap");
             return;
         };
         for code in &held {
@@ -2271,7 +2280,6 @@ impl Compositor {
                 })
         });
         let surface = smithay::reexports::wayland_server::Resource::id(&focus);
-        let seat = self.seat.clone();
         for character in text.chars() {
             if character == '\n' {
                 self.tap(KeyName::Enter);
@@ -2286,14 +2294,7 @@ impl Compositor {
                 );
                 continue;
             };
-            focus.modifiers(&seat, self, modifiers, SERIAL_COUNTER.next_serial());
-            self.tap_keycode(keycode);
-            focus.modifiers(
-                &seat,
-                self,
-                ModifiersState::default(),
-                SERIAL_COUNTER.next_serial(),
-            );
+            self.tap_keycode_with_keysyms(keycode, &modifier_keys(modifiers));
         }
     }
 
@@ -2834,6 +2835,20 @@ impl Drop for Compositor {
     }
 }
 
+/// The real modifier keys a typed character needs; a mask alone does not reach every client.
+fn modifier_keys(modifiers: ModifiersState) -> Vec<&'static str> {
+    [
+        (modifiers.ctrl, "Control_L"),
+        (modifiers.alt, "Alt_L"),
+        (modifiers.shift, "Shift_L"),
+        (modifiers.logo, "Super_L"),
+        (modifiers.iso_level3_shift, "ISO_Level3_Shift"),
+    ]
+    .into_iter()
+    .filter_map(|(held, name)| held.then_some(name))
+    .collect()
+}
+
 fn text_keys(keymap: &xkb::Keymap) -> std::collections::HashMap<char, (Keycode, ModifiersState)> {
     let mut keys = std::collections::HashMap::new();
     let mut state = xkb::State::new(keymap);
@@ -3304,6 +3319,32 @@ mod tests {
     use core::time::Duration;
     use smithay::reexports::wayland_server::Display;
     use tehuti_protocol::Event;
+
+    #[test]
+    fn typed_text_presses_the_modifier_keys_its_characters_need() {
+        let context =
+            smithay::input::keyboard::xkb::Context::new(smithay::input::keyboard::xkb::CONTEXT_NO_FLAGS);
+        let keymap = smithay::input::keyboard::xkb::Keymap::new_from_names(
+            &context,
+            "",
+            "",
+            "us",
+            "",
+            None,
+            smithay::input::keyboard::xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .unwrap();
+        let keys = super::text_keys(&keymap);
+        for character in "/g Hello! @Bob?".chars().filter(|character| *character != ' ') {
+            let needs = super::modifier_keys(keys[&character].1);
+            let shifted = character.is_uppercase() || "!@?".contains(character);
+            assert_eq!(
+                needs,
+                if shifted { vec!["Shift_L"] } else { vec![] },
+                "{character:?}"
+            );
+        }
+    }
 
     #[test]
     fn polling_speech_shows_the_process_outage_notice() {
