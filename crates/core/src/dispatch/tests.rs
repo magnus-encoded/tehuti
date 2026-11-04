@@ -4583,6 +4583,13 @@ fn plugin_named_adjusters_run_in_core_and_report_preview_and_commit() {
         finished: false
     }));
     let state = world.run(state, Input::Sticks(Sticks::default()));
+    assert!(state.adjuster().is_some());
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: Duration::from_millis(1500),
+        },
+    );
     assert!(state.adjuster().is_none());
     assert!(world.trace.contains(&Effect::AdjusterValue {
         plugin: 3,
@@ -4703,6 +4710,13 @@ fn volume_takes_the_pad_from_a_passthrough_application_until_commit() {
     );
     assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(55));
     let state = world.run(state, Input::Sticks(Sticks::default()));
+    assert!(state.adjuster_owns_pad());
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: Duration::from_millis(1500),
+        },
+    );
     assert!(!state.adjuster_owns_pad());
 }
 
