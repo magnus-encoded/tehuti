@@ -368,10 +368,9 @@ impl MirrorCopy {
         let mut frame = Vec::new();
         for event in state.into_iter().filter(|event| event.value() != 0) {
             let key = (event.event_type().0, event.code());
-            let kept = translator
-                .translate(&event.destructure())
-                .into_iter()
-                .any(|input| matches!(input, Event::Button { name, state } if consume(name, state)));
+            let kept = translator.translate(&event.destructure()).into_iter().any(
+                |input| matches!(input, Event::Button { name, state: pressed } if consume(name, pressed)),
+            );
             if kept {
                 self.blocked.push(key);
             } else {
