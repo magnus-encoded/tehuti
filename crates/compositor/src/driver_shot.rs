@@ -26,12 +26,23 @@ pub(crate) fn save_with_clock(
     clock: &str,
 ) -> Result<(), Box<dyn Error>> {
     let output = compositor.output.as_ref().ok_or("output unavailable")?;
+    let image = image(compositor, output, clock, true)?;
+    image.save_with_format(path, image::ImageFormat::Png)?;
+    Ok(())
+}
+
+pub(crate) fn image(
+    compositor: &Compositor,
+    output: &smithay::output::Output,
+    clock: &str,
+    paint_cursor: bool,
+) -> Result<image::RgbaImage, Box<dyn Error>> {
     let mode = output.current_mode().ok_or("output mode unavailable")?;
     let mut renderer = PixmanRenderer::new()?;
     let mut buffer = renderer.create_buffer(Fourcc::Abgr8888, (mode.size.w, mode.size.h).into())?;
     let mut target = renderer.bind(&mut buffer)?;
     let mut overlays = crate::overlays::Overlays::default();
-    let elements = overlays.elements(&mut renderer, output, compositor, clock)?;
+    let elements = overlays.elements_with_cursor(&mut renderer, output, compositor, clock, paint_cursor)?;
     let mut damage = OutputDamageTracker::from_output(output);
     crate::wallpaper::render_output(
         output,
@@ -55,6 +66,5 @@ pub(crate) fn save_with_clock(
     if output.current_transform() == Transform::Flipped180 {
         image::imageops::flip_vertical_in_place(&mut image);
     }
-    image.save_with_format(path, image::ImageFormat::Png)?;
-    Ok(())
+    Ok(image)
 }

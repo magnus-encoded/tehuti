@@ -229,6 +229,7 @@ impl Compositor {
         reason = "one flat list of Wayland globals; splitting hides the setup order"
     )]
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
+        crate::screen_capture::register(display);
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
         let keymap = default_keymap()?;

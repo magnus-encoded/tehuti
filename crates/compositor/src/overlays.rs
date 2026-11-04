@@ -50,10 +50,28 @@ impl Overlays {
         R: Renderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
+        self.elements_with_cursor(renderer, output, compositor, clock, true)
+    }
+
+    pub(crate) fn elements_with_cursor<R>(
+        &mut self,
+        renderer: &mut R,
+        output: &Output,
+        compositor: &Compositor,
+        clock: &str,
+        paint_cursor: bool,
+    ) -> Result<OverlayElements<R>, R::Error>
+    where
+        R: Renderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
         let notice = compositor.visible_notice();
         self.update_notice(notice);
         let mut elements = Vec::new();
         for layer in STACK {
+            if layer == Overlay::Cursor && !paint_cursor {
+                continue;
+            }
             if let Some(element) = self.element(layer, renderer, output, compositor, clock)? {
                 elements.push(element);
             }
