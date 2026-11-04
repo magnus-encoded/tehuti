@@ -1063,7 +1063,7 @@ fn every_button() -> impl Strategy<Value = Event> {
 
 proptest! {
     #[test]
-    fn keyboard_opens_only_for_speech_or_its_button(
+    fn at_app_level_only_saying_keyboard_opens_the_keyboard(
         events in prop::collection::vec(prop_oneof![every_button(), arbitrary_event()], 0..60),
         sticks in prop::collection::vec(any::<(i16, i16, i16, i16)>(), 0..10),
         contexts in arbitrary_contexts(),
@@ -1075,8 +1075,10 @@ proptest! {
             state = world.run(state, Input::Sticks(Sticks { left: (left_x, left_y), right: (right_x, right_y) }));
         }
         for event in events {
-            let opens = matches!(&event, Event::Speech { text } if crate::keyboard::is_open_phrase(text.as_str()))
-                || matches!(&event, Event::Button { name: ButtonName::North, state: ButtonState::Pressed });
+            if matches!(event, Event::Button { name: ButtonName::Guide, .. }) {
+                break;
+            }
+            let opens = matches!(&event, Event::Speech { text } if crate::keyboard::is_open_phrase(text.as_str()));
             state = world.run(state, Input::Event { event, elapsed: Duration::from_millis(16) });
             prop_assert!(opens || !state.keyboard().is_open());
             if state.keyboard().is_open() {
@@ -1317,9 +1319,10 @@ proptest! {
         prop_assert!(!state.keyboard().is_open());
         state = tap_button(&mut world, state, ButtonName::East);
         for event in events {
-            let opens = (mode != "off" && matches!(event, Event::Button { name, state: ButtonState::Pressed } if name == opening.1))
-                || (state.core().level() == crate::Level::Columns
-                    && matches!(event, Event::Button { name: ButtonName::North, state: ButtonState::Pressed }));
+            if matches!(event, Event::Button { name: ButtonName::Guide, .. }) {
+                break;
+            }
+            let opens = mode != "off" && matches!(event, Event::Button { name, state: ButtonState::Pressed } if name == opening.1);
             state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
             if state.keyboard().is_open() {
                 prop_assert!(opens);
@@ -1533,8 +1536,10 @@ proptest! {
         });
         prop_assert!(!state.keyboard().is_open());
         for event in events {
-            let opens = (mode != "off" || state.core().level() == crate::Level::Columns)
-                && matches!(event, Event::Button { name: ButtonName::North, state: ButtonState::Pressed });
+            if matches!(event, Event::Button { name: ButtonName::Guide, .. }) {
+                break;
+            }
+            let opens = mode != "off" && matches!(event, Event::Button { name: ButtonName::North, state: ButtonState::Pressed });
             state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
             if opens {
                 break;
@@ -4697,7 +4702,7 @@ fn volume_takes_the_pad_from_a_passthrough_application_until_commit() {
     );
     assert!(world.trace.contains(&Effect::ReadVolume));
     let state = world.run(state, Input::Volume(Some(50)));
-    assert!(state.adjuster_owns_pad());
+    assert!(state.overlay_owns_pad());
     let state = world.run(
         state,
         Input::Sticks(Sticks {
@@ -4719,7 +4724,7 @@ fn volume_takes_the_pad_from_a_passthrough_application_until_commit() {
             elapsed: crate::adjuster::HIDE_DELAY,
         },
     );
-    assert!(!state.adjuster_owns_pad());
+    assert!(!state.overlay_owns_pad());
 }
 
 #[test]
@@ -4771,6 +4776,48 @@ fn volume_speech_opens_the_gauge_over_the_empty_desktop_invitation() {
 }
 
 #[test]
+fn tool_words_run_before_plugin_routing_in_every_context() {
+    for passthrough in [false, true] {
+        for (word, active) in [("keyboard", false), ("mouse mode", true)] {
+            let context = tehuti_protocol::parse_context(&format!(
+                "app_id = 'org.example.Game'\nbuttons = {{}}\n[pad]\npassthrough = {passthrough}"
+            ))
+            .unwrap();
+            let mut world = World {
+                plugin_active: true,
+                ..World::default()
+            };
+            let mut state = configured(vec![context], "org.example.Game");
+            state = world.run(state, speech_event(word));
+            assert_eq!(
+                state.keyboard().is_open(),
+                !active,
+                "{word}, passthrough = {passthrough}"
+            );
+            assert_eq!(state.overlay_owns_pad(), passthrough);
+            assert!(
+                !world.trace.iter().any(|effect| matches!(
+                    effect,
+                    Effect::SpeechRouted { .. }
+                        | Effect::QueryPlugin(Event::Speech { .. })
+                        | Effect::DispatchPlugin {
+                            event: Event::Speech { .. },
+                            ..
+                        }
+                )),
+                "plugins never see {word}"
+            );
+            if active {
+                assert!(world.trace.contains(&Effect::MouseMode(true)));
+                state = world.run(state, speech_event("Mouse mode."));
+                assert!(!state.overlay_owns_pad(), "saying it again releases the pad");
+                assert!(world.trace.contains(&Effect::MouseMode(false)));
+            }
+        }
+    }
+}
+
+#[test]
 fn gauge_hide_delay_restarts_on_every_change() {
     let mut world = World::default();
     let state = world.run(State::default(), speech_event("volume"));
@@ -4810,6 +4857,8 @@ fn column_level_pad_y_opens_keyboard_in_every_context_but_app_level_passthrough_
             (false, ""),
             (true, ""),
             (true, "[keyboard]\non_text_field = 'off'\nbutton = 'west'\n"),
+            (true, "[keyboard]\non_text_field = 'button'\nbutton = 'west'\n"),
+            (true, "[keyboard]\non_text_field = 'open'\nbutton = 'west'\n"),
         ] {
             let context = tehuti_protocol::parse_context(&format!(
                 "app_id = 'org.example.Game'\nbuttons = {{}}\n{keyboard}[pad]\npassthrough = {passthrough}"
