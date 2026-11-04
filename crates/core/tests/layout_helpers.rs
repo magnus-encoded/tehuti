@@ -63,7 +63,7 @@ mod layout_helpers {
         let snapshot = layout.snapshot();
         assert_eq!(snapshot.outputs[0].active_workspace, 1);
         let workspace = &snapshot.outputs[0].workspaces[0];
-        assert!(workspace.helpers.is_empty());
+        assert_eq!(workspace.helpers, Vec::<WindowId>::new());
         let order: Vec<_> = workspace
             .columns
             .iter()
