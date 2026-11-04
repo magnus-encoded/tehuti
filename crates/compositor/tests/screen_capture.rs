@@ -39,6 +39,11 @@ mod capture {
             ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
         },
     };
+    use wayland_protocols::xdg::shell::client::{
+        xdg_surface::{self, XdgSurface},
+        xdg_toplevel::{self, XdgToplevel},
+        xdg_wm_base::{self, XdgWmBase},
+    };
     use wayland_protocols_wlr::screencopy::v1::client::{
         zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
         zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
@@ -52,6 +57,8 @@ mod capture {
         damage: bool,
         format: Option<wl_shm::Format>,
         transform: Option<wayland_client::protocol::wl_output::Transform>,
+        configured: bool,
+        window_size: (i32, i32),
     }
     impl Dispatch<WlRegistry, GlobalListContents> for App {
         fn event(
@@ -72,6 +79,52 @@ mod capture {
     delegate_noop!(App: ignore ExtImageCaptureSourceV1);
     delegate_noop!(App: ignore ExtImageCopyCaptureManagerV1);
     delegate_noop!(App: ignore ZwlrScreencopyManagerV1);
+
+    delegate_noop!(App: ignore wayland_client::protocol::wl_compositor::WlCompositor);
+    delegate_noop!(App: ignore wayland_client::protocol::wl_surface::WlSurface);
+    impl Dispatch<XdgWmBase, ()> for App {
+        fn event(
+            _: &mut Self,
+            base: &XdgWmBase,
+            event: xdg_wm_base::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let xdg_wm_base::Event::Ping { serial } = event {
+                base.pong(serial);
+            }
+        }
+    }
+    impl Dispatch<XdgSurface, ()> for App {
+        fn event(
+            app: &mut Self,
+            surface: &XdgSurface,
+            event: xdg_surface::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let xdg_surface::Event::Configure { serial } = event {
+                surface.ack_configure(serial);
+                app.configured = true;
+            }
+        }
+    }
+    impl Dispatch<XdgToplevel, ()> for App {
+        fn event(
+            app: &mut Self,
+            _: &XdgToplevel,
+            event: xdg_toplevel::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+                app.window_size = (width.max(64), height.max(64));
+            }
+        }
+    }
 
     impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for App {
         fn event(
@@ -178,6 +231,7 @@ mod capture {
     enum Mode {
         Ext,
         Nested,
+        Window,
         Wlr(u32),
         Region,
         WrongSize,
@@ -322,12 +376,89 @@ mod capture {
         }
     }
 
+    fn paint_window(
+        globals: &wayland_client::globals::GlobalList,
+        queue: &mut wayland_client::EventQueue<App>,
+        app: &mut App,
+    ) -> (
+        wayland_client::protocol::wl_surface::WlSurface,
+        XdgSurface,
+        XdgToplevel,
+        File,
+    ) {
+        let handle = queue.handle();
+        let compositor: wayland_client::protocol::wl_compositor::WlCompositor =
+            globals.bind(&handle, 1..=4, ()).unwrap();
+        let manager: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+        let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+        let surface = compositor.create_surface(&handle, ());
+        let xdg = manager.get_xdg_surface(&surface, &handle, ());
+        let toplevel = xdg.get_toplevel(&handle, ());
+        toplevel.set_app_id("capture-test".into());
+        surface.commit();
+        while !app.configured {
+            let _configured = queue.roundtrip(app).unwrap();
+        }
+        let (width, height) = app.window_size;
+        let (file, painted) = buffer(
+            &shm,
+            &handle,
+            u32::try_from(width).unwrap(),
+            u32::try_from(height).unwrap(),
+            0,
+        );
+        let count = usize::try_from(width)
+            .unwrap()
+            .checked_mul(usize::try_from(height).unwrap())
+            .unwrap();
+        file.write_all_at(&[17, 43, 197, 255].repeat(count), 16).unwrap();
+        surface.attach(Some(&painted), 0, 0);
+        surface.damage_buffer(0, 0, width, height);
+        surface.commit();
+        let _mapped = queue.roundtrip(app).unwrap();
+        (surface, xdg, toplevel, file)
+    }
+
+    fn assert_captured_pixels(file: &File, width: u32, height: u32, padding: u32, app: &App, mode: Mode) {
+        if matches!(mode, Mode::Window) {
+            let stride = width.checked_mul(4).unwrap().checked_add(padding).unwrap();
+            let offset = (height / 2)
+                .checked_mul(stride)
+                .unwrap()
+                .checked_add((width / 2).checked_mul(4).unwrap())
+                .unwrap()
+                .checked_add(16)
+                .unwrap();
+            let mut pixel = [0; 4];
+            file.read_exact_at(&mut pixel, u64::from(offset)).unwrap();
+            assert_eq!(pixel, [17, 43, 197, 255], "capture includes client window pixels");
+            return;
+        }
+        let y = if matches!(mode, Mode::Nested) {
+            assert_eq!(
+                app.transform,
+                Some(wayland_client::protocol::wl_output::Transform::Flipped180)
+            );
+            height.checked_sub(17).unwrap()
+        } else {
+            16
+        };
+        assert_pixels(
+            file,
+            width,
+            padding,
+            !matches!(mode, Mode::Wlr(_) | Mode::Region),
+            y,
+        );
+    }
+
     fn client(stream: UnixStream, mode: Mode) {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
         let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
         let mut app = App::default();
+        let _window = matches!(mode, Mode::Window).then(|| paint_window(&globals, &mut queue, &mut app));
         let capture = start_capture(&globals, &mut queue, &mut app, mode);
         let ext = capture.frame.is_some();
         let (width, height) = app.size.unwrap();
@@ -359,16 +490,7 @@ mod capture {
         if ext || capture.wlr.as_ref().is_some_and(|legacy| legacy.version() >= 2) {
             assert!(app.damage, "capture reports damage");
         }
-        let y = if matches!(mode, Mode::Nested) {
-            assert_eq!(
-                app.transform,
-                Some(wayland_client::protocol::wl_output::Transform::Flipped180)
-            );
-            height.checked_sub(17).unwrap()
-        } else {
-            16
-        };
-        assert_pixels(&file, width, padding, ext, y);
+        assert_captured_pixels(&file, width, height, padding, &app, mode);
         finish_capture(capture, &target, &mut queue, &mut app);
     }
 
@@ -402,6 +524,10 @@ mod capture {
     #[test]
     fn ext_captures_pixels_with_offsets_and_padding_and_reuses_sessions() {
         run(Mode::Ext);
+    }
+    #[test]
+    fn capture_includes_mapped_client_pixels() {
+        run(Mode::Window);
     }
     #[test]
     fn wlr_captures_outputs_for_every_protocol_version() {
@@ -571,14 +697,14 @@ mod capture {
             .spawn()
             .ok()?;
         let mut process = ChildGuard(process);
-        let output = process.0.stdout.take().unwrap();
+        let output = process.0.stdout.take()?;
         let (sender, receiver) = std::sync::mpsc::channel();
         let _reader = thread::spawn(move || {
             let mut number = String::new();
             let _line = std::io::BufReader::new(output).read_line(&mut number).unwrap();
             sender.send(number).unwrap();
         });
-        let number = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        let number = receiver.recv_timeout(Duration::from_secs(10)).ok()?;
         Some((process, format!(":{}", number.trim())))
     }
 
