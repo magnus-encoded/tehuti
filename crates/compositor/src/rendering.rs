@@ -11,6 +11,8 @@ use smithay::{
 };
 
 use crate::state::Compositor;
+use core::cell::RefCell;
+use std::rc::{Rc, Weak};
 
 #[derive(Debug)]
 pub enum Rendering<Gpu, Software> {
@@ -114,6 +116,39 @@ impl Compositor {
     }
 }
 
+impl Compositor {
+    /// Advertises dmabuf formats and imports each client buffer on `device`, held weakly.
+    ///
+    /// The weak hold lets a renderer replaced after hotplug or a mode change drop with its
+    /// texture cache; the backend re-advertises the new renderer as soon as it is built.
+    ///
+    /// # Errors
+    /// Returns an error if the feedback format table cannot be created.
+    pub fn enable_dmabuf_on<D: 'static>(
+        &mut self,
+        display: &DisplayHandle,
+        formats: impl IntoIterator<Item = Format>,
+        render_device: Option<libc::dev_t>,
+        device: &Rc<RefCell<D>>,
+        import: impl Fn(&mut D, &Dmabuf) -> bool + 'static,
+    ) -> Result<(), std::io::Error> {
+        let device: Weak<RefCell<D>> = Rc::downgrade(device);
+        self.enable_dmabuf(display, formats, render_device, move |dmabuf| {
+            let Some(device) = device.upgrade() else {
+                tracing::warn!("client dmabuf import reached a replaced renderer; rejecting it");
+                return false;
+            };
+            let mut device = device.borrow_mut();
+            import(&mut device, dmabuf)
+        })
+    }
+
+    /// Imports a client dmabuf on the current renderer; `false` when none accepts it.
+    pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool {
+        self.dmabuf.import.as_mut().is_some_and(|import| import(dmabuf))
+    }
+}
+
 /// Binds legacy EGL clients and discovers the renderer's dma-buf capabilities.
 #[must_use]
 pub fn client_formats(
@@ -141,7 +176,7 @@ impl DmabufHandler for Compositor {
     }
 
     fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
-        if self.dmabuf.import.as_mut().is_some_and(|import| import(&dmabuf)) {
+        if self.import_dmabuf(&dmabuf) {
             if let Err(error) = notifier.successful::<Self>() {
                 tracing::debug!(%error, "dmabuf client disconnected during import");
             }
@@ -152,3 +187,73 @@ impl DmabufHandler for Compositor {
 }
 
 smithay::delegate_dmabuf!(Compositor);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::{
+        backend::allocator::{Modifier, dmabuf::DmabufFlags},
+        reexports::wayland_server::Display,
+    };
+
+    #[derive(Default)]
+    struct Device {
+        imports: usize,
+    }
+
+    fn dmabuf() -> Dmabuf {
+        let file = tempfile::tempfile().unwrap();
+        let mut builder = Dmabuf::builder((4, 4), Fourcc::Argb8888, Modifier::Linear, DmabufFlags::empty());
+        assert!(builder.add_plane(file.into(), 0, 0, 16));
+        builder.build().unwrap()
+    }
+
+    fn formats() -> [Format; 1] {
+        [Format {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Linear,
+        }]
+    }
+
+    fn accept(device: &mut Device, _: &Dmabuf) -> bool {
+        device.imports = device.imports.saturating_add(1);
+        true
+    }
+
+    #[test]
+    fn a_replaced_renderer_stops_receiving_imports_and_is_released() {
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let first = Rc::new(RefCell::new(Device::default()));
+        compositor
+            .enable_dmabuf_on(&display.handle(), formats(), None, &first, accept)
+            .unwrap();
+        assert!(compositor.import_dmabuf(&dmabuf()));
+        let second = Rc::new(RefCell::new(Device::default()));
+        compositor
+            .enable_dmabuf_on(&display.handle(), formats(), None, &second, accept)
+            .unwrap();
+        assert!(compositor.import_dmabuf(&dmabuf()));
+        assert!(compositor.import_dmabuf(&dmabuf()));
+        assert_eq!(first.borrow().imports, 1, "the replaced renderer imports nothing more");
+        assert_eq!(second.borrow().imports, 2, "imports reach the newest renderer");
+        let first = Rc::downgrade(&first);
+        assert!(first.upgrade().is_none(), "the compositor holds no replaced renderer");
+    }
+
+    #[test]
+    fn a_failed_import_is_rejected_and_retains_nothing() {
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let device = Rc::new(RefCell::new(Device::default()));
+        compositor
+            .enable_dmabuf_on(&display.handle(), formats(), None, &device, |_, _| false)
+            .unwrap();
+        let buffer = dmabuf();
+        let weak = buffer.weak();
+        assert!(!compositor.import_dmabuf(&buffer));
+        drop(buffer);
+        assert!(weak.is_gone(), "nothing keeps a buffer whose import failed");
+        assert_eq!(Rc::strong_count(&device), 1, "the compositor holds the renderer weakly");
+    }
+}

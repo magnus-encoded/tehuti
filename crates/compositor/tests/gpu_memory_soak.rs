@@ -291,12 +291,9 @@ mod gpu_memory_soak {
         api.enumerate(&mut devices).unwrap();
         let device = Rc::new(RefCell::new(devices.pop().unwrap()));
         let (formats, _) = tehuti::rendering::client_formats(device.borrow_mut().renderer_mut(), &display.handle());
-        let importer = Rc::downgrade(&device);
         compositor
-            .enable_dmabuf(&display.handle(), formats.iter().copied(), None, move |dmabuf| {
-                importer.upgrade().is_some_and(|device| {
-                    device.borrow_mut().renderer_mut().import_dmabuf(dmabuf, None).is_ok()
-                })
+            .enable_dmabuf_on(&display.handle(), formats.iter().copied(), None, &device, |device, dmabuf| {
+                device.renderer_mut().import_dmabuf(dmabuf, None).is_ok()
             })
             .unwrap();
         let output = compositor.output.clone().unwrap();
