@@ -1078,10 +1078,12 @@ mod synthetic_pad {
             let application = ApplicationPad::default();
             let mut pad = EvdevPad::new(application.clone(), application.clone(), DpadHat::default());
             assert!(compositor.virtual_pad());
-            pad.set_mirror(compositor.virtual_pad(), &|button| {
-                compositor.virtual_pad_consumed(button)
-            })
-            .unwrap();
+            assert!(
+                pad.set_mirror(compositor.virtual_pad(), &|button| {
+                    compositor.virtual_pad_consumed(button)
+                })
+                .unwrap()
+            );
             for columns in [false, true] {
                 if columns {
                     for state in [ButtonState::Pressed, ButtonState::Released] {
@@ -1092,10 +1094,12 @@ mod synthetic_pad {
                     }
                     route(&mut compositor, &mut synthetic).unwrap();
                     assert!(!compositor.pad_passthrough());
-                    pad.set_mirror(compositor.virtual_pad(), &|button| {
-                        compositor.virtual_pad_consumed(button)
-                    })
-                    .unwrap();
+                    assert!(
+                        !pad.set_mirror(compositor.virtual_pad(), &|button| {
+                            compositor.virtual_pad_consumed(button)
+                        })
+                        .unwrap()
+                    );
                 }
                 application.delivered.borrow_mut().clear();
                 for value in [1, 0] {
