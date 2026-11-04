@@ -1,4 +1,4 @@
-//! The decorations setting: clients keep their title bars unless it says `none`.
+//! The decorations setting: title bars are dropped unless it says `client`.
 
 #[cfg(test)]
 mod decorations {
@@ -28,9 +28,9 @@ mod decorations {
     };
 
     #[test]
-    fn missing_or_empty_settings_keep_client_decorations() {
-        assert_eq!(choose(None, None), Ok(Decorations::Client));
-        assert_eq!(choose(Some(OsStr::new("")), Some("\n")), Ok(Decorations::Client));
+    fn missing_or_empty_settings_drop_title_bars() {
+        assert_eq!(choose(None, None), Ok(Decorations::None));
+        assert_eq!(choose(Some(OsStr::new("")), Some("\n")), Ok(Decorations::None));
     }
 
     #[test]
@@ -53,11 +53,11 @@ mod decorations {
     }
 
     #[test]
-    fn unknown_values_warn_and_keep_client_decorations() {
-        assert!(matches!(choose(None, Some("off")), Err((Decorations::Client, _))));
+    fn unknown_values_warn_and_drop_title_bars() {
+        assert!(matches!(choose(None, Some("off")), Err((Decorations::None, _))));
         assert!(matches!(
             choose(Some(OsStr::new("hidden")), Some("none")),
-            Err((Decorations::Client, _))
+            Err((Decorations::None, _))
         ));
     }
 

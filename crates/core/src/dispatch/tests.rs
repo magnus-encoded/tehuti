@@ -4493,6 +4493,16 @@ fn volume_speech_opens_a_gauge_and_stick_release_commits() {
     assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(55));
     assert!(world.trace.contains(&Effect::SetVolume(55)));
     let state = world.run(state, Input::Sticks(Sticks::default()));
+    assert!(
+        state.adjuster().is_some(),
+        "gauge must stay up after the stick centres"
+    );
+    let state = world.event(
+        state,
+        Event::Tick {
+            elapsed: crate::adjuster::HIDE_DELAY,
+        },
+    );
     assert!(state.adjuster().is_none());
     assert!(
         !world
@@ -4784,4 +4794,37 @@ fn tool_words_run_before_plugin_routing_in_every_context() {
             }
         }
     }
+}
+
+#[test]
+fn gauge_hide_delay_restarts_on_every_change() {
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("volume"));
+    let mut state = world.run(state, Input::Volume(Some(50)));
+    let half = crate::adjuster::HIDE_DELAY / 2;
+    let tick = |elapsed| Event::Tick { elapsed };
+    for _ in 0..3 {
+        state = world.run(
+            state,
+            Input::Sticks(Sticks {
+                left: (0, -1000),
+                right: (0, 0),
+            }),
+        );
+        state = world.event(state, tick(Duration::from_millis(100)));
+        state = world.run(state, Input::Sticks(Sticks::default()));
+        state = world.event(state, tick(half));
+        assert!(
+            state.adjuster().is_some(),
+            "still within the delay since the last change"
+        );
+    }
+    state = world.event(state, tick(half));
+    assert!(state.adjuster().is_none());
+    assert!(
+        world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SetVolume(_)))
+    );
 }
