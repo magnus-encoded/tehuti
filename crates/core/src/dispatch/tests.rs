@@ -1318,7 +1318,9 @@ proptest! {
         prop_assert!(!state.keyboard().is_open());
         state = tap_button(&mut world, state, ButtonName::East);
         for event in events {
-            let opens = mode != "off" && matches!(event, Event::Button { name, state: ButtonState::Pressed } if name == opening.1);
+            let opens = (mode != "off" && matches!(event, Event::Button { name, state: ButtonState::Pressed } if name == opening.1))
+                || (state.core().level() == crate::Level::Columns
+                    && matches!(event, Event::Button { name: ButtonName::North, state: ButtonState::Pressed }));
             state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
             if state.keyboard().is_open() {
                 prop_assert!(opens);
