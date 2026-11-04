@@ -1002,6 +1002,20 @@ mod synthetic_pad {
         delivered: std::rc::Rc<core::cell::RefCell<Vec<evdev::InputEvent>>>,
     }
 
+    impl ApplicationPad {
+        fn north(&self) -> Vec<i32> {
+            self.delivered
+                .borrow()
+                .iter()
+                .filter(|event| {
+                    event.event_type() == evdev::EventType::KEY
+                        && event.code() == evdev::KeyCode::BTN_NORTH.code()
+                })
+                .map(evdev::InputEvent::value)
+                .collect()
+        }
+    }
+
     impl tehuti::controller::MirrorSink for ApplicationPad {
         fn emit(&mut self, frame: &[evdev::InputEvent]) -> std::io::Result<()> {
             self.delivered.borrow_mut().extend_from_slice(frame);
@@ -1098,16 +1112,7 @@ mod synthetic_pad {
                     route(&mut compositor, &mut pad).unwrap();
                     assert_eq!(compositor.on_screen_keyboard().is_open(), columns);
                 }
-                let north: Vec<_> = application
-                    .delivered
-                    .borrow()
-                    .iter()
-                    .filter(|event| {
-                        event.event_type() == EventType::KEY && event.code() == KeyCode::BTN_NORTH.code()
-                    })
-                    .map(evdev::InputEvent::value)
-                    .collect();
-                assert_eq!(north, if columns { vec![] } else { vec![1, 0] });
+                assert_eq!(application.north(), if columns { vec![] } else { vec![1, 0] });
             }
         }
     }
