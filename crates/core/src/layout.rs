@@ -374,6 +374,8 @@ struct Tile {
     max_height: Option<f64>,
     opened_view: Option<(f64, Option<WindowId>, f64)>,
     fullscreen_view: Option<(f64, WindowId)>,
+    /// The client entered this fullscreen itself, so it may also end it.
+    client_fullscreen: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -695,6 +697,7 @@ impl Layout {
             max_height: rules.max_height,
             opened_view: Some((view, previous, anchor)),
             fullscreen_view: None,
+            client_fullscreen: false,
         };
         let width = if rules.open_maximized {
             Some(PresetSize::Proportion(1.0_f64))
@@ -829,6 +832,10 @@ impl Layout {
 
     /// Enters or leaves fullscreen for a window on a client's own request.
     ///
+    /// A client may only leave a fullscreen it entered itself: X11 clients
+    /// behind xwayland-satellite answer a compositor fullscreen whose size
+    /// is short of their monitor by asking to leave it again.
+    ///
     /// The focused window takes the same path as [`Command::ToggleFullscreen`];
     /// any other window changes mode without moving the view.
     /// # Errors
@@ -848,9 +855,24 @@ impl Layout {
         if (entry.mode == TileMode::Fullscreen) == fullscreen {
             return Ok(());
         }
+        if !fullscreen && !entry.client_fullscreen {
+            return Ok(());
+        }
         if focused {
             self.apply(Command::ToggleFullscreen);
+            if fullscreen
+                && let Some((at_output, at_workspace, at_column, at_tile)) = self.find_window(identity)
+                && let Some(entered) = self
+                    .outputs
+                    .get_mut(at_output)
+                    .and_then(|found| found.workspaces.get_mut(at_workspace))
+                    .and_then(|found| found.columns.get_mut(at_column))
+                    .and_then(|found| found.tiles.get_mut(at_tile))
+            {
+                entered.client_fullscreen = true;
+            }
         } else {
+            entry.client_fullscreen = fullscreen;
             entry.mode = if fullscreen {
                 TileMode::Fullscreen
             } else {
@@ -1764,6 +1786,7 @@ impl Workspace {
                     Command::ToggleWindowedFullscreen => TileMode::WindowedFullscreen,
                     _ => TileMode::MaximizedToEdges,
                 };
+                tile.client_fullscreen = false;
                 if tile.mode == mode {
                     tile.mode = TileMode::Normal;
                     if let Some((view, _)) = tile.fullscreen_view.take() {
