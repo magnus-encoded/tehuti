@@ -256,6 +256,8 @@ pub struct State {
     speech: SpeechState,
     mouse: mouse::State,
     keyboard: crate::keyboard::Keyboard,
+    /// A tool word opened a tool over a passthrough context, so the tool keeps the pad until it closes or focus moves.
+    tool_pad: ToolPad,
     text_field: bool,
     terminal_field: bool,
     opening_button: Option<ButtonName>,
@@ -287,6 +289,7 @@ impl State {
             speech: SpeechState::default(),
             mouse: mouse::State::default(),
             keyboard: crate::keyboard::Keyboard::default(),
+            tool_pad: ToolPad::default(),
             text_field: false,
             terminal_field: false,
             opening_button: None,
@@ -311,8 +314,10 @@ impl State {
     }
 
     #[must_use]
-    pub fn adjuster_owns_pad(&self) -> bool {
-        self.adjuster.is_some() || self.volume_pending == crate::adjuster::VolumeRead::Pending
+    pub fn overlay_owns_pad(&self) -> bool {
+        self.adjuster.is_some()
+            || self.volume_pending == crate::adjuster::VolumeRead::Pending
+            || (self.tool_pad == ToolPad::Held && (self.keyboard.is_open() || self.mouse.active()))
     }
 
     #[must_use]
@@ -423,6 +428,14 @@ fn event_tasks(event: Event, elapsed: Duration) -> Vec<Task> {
     tasks.push(Task::Supervise);
     tasks.push(Task::Controller(event));
     tasks
+}
+
+/// Whether a tool word's tool holds the pad over a passthrough context.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ToolPad {
+    #[default]
+    Idle,
+    Held,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -844,7 +857,7 @@ fn finish_handoff(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>
 }
 
 fn release_passthrough_overlays(state: &mut State, effects: &mut Vec<Effect>) {
-    if state.core.passthrough() && !state.adjuster_owns_pad() {
+    if state.core.passthrough() && !state.overlay_owns_pad() {
         release_pad(state, Handoff::Passthrough, effects);
     }
 }
@@ -1148,6 +1161,9 @@ fn adjuster_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
 }
 
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if matches!(event, Event::Focus { .. }) {
+        state.tool_pad = ToolPad::Idle;
+    }
     if launcher_event(state, &event, effects) {
         return;
     }
@@ -1168,7 +1184,7 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         }
     }
     if state.core.passthrough()
-        && !state.adjuster_owns_pad()
+        && !state.overlay_owns_pad()
         && matches!(event, Event::Button { .. } | Event::Tick { .. })
     {
         let (next, actions) = crate::step(core::mem::take(&mut state.core), &event);
@@ -1622,6 +1638,9 @@ fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Eff
             );
         }
     }
+    if tool_word_input(state, &event, effects) {
+        return;
+    }
     route_event(state, event, effects);
 }
 
@@ -1642,7 +1661,7 @@ fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
             state.passthrough_buttons.push(*name);
         }
         if state.core.passthrough_context()
-            && !state.adjuster_owns_pad()
+            && !state.overlay_owns_pad()
             && takeback_button(state, *name, *button, was_held, effects)
         {
             return;
@@ -1719,7 +1738,7 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
         if adjuster_phrase(state, &event, false, effects) {
             return;
         }
-        if !state.adjuster_owns_pad() {
+        if !state.overlay_owns_pad() {
             passthrough_controller(state, event, effects);
             return;
         }
@@ -1762,11 +1781,7 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
             state.core.keyboard_feedback("Dictated");
             true
         }
-        Event::Speech { text } if crate::keyboard::is_open_phrase(text.as_str()) => {
-            state.keyboard.open();
-            state.core.keyboard_feedback("Keyboard");
-            true
-        }
+        Event::Speech { .. } if tool_word_input(state, event, effects) => true,
         Event::Button {
             name: ButtonName::Start,
             ..
@@ -1785,6 +1800,30 @@ fn keyboard(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool
             send_response(response, effects)
         }
         Event::Speech { .. } | Event::Focus { .. } | Event::Tick { .. } => false,
+    }
+}
+
+/// Runs a built-in tool word before any plugin sees the speech.
+fn tool_word_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    use crate::tool_words::{ToolWord, tool_word};
+    let Event::Speech { text } = event else {
+        return false;
+    };
+    let tool = tool_word(text.as_str());
+    if tool.is_some() && state.core.passthrough() {
+        state.tool_pad = ToolPad::Held;
+    }
+    match tool {
+        Some(ToolWord::Keyboard) => {
+            state.keyboard.open();
+            state.core.keyboard_feedback("Keyboard");
+            true
+        }
+        Some(ToolWord::MouseMode) => {
+            state.mouse.toggle(effects);
+            true
+        }
+        None => false,
     }
 }
 
