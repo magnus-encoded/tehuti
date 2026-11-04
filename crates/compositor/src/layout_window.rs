@@ -16,6 +16,8 @@ pub struct LayoutWindow {
     window: Window,
     size: Rc<Cell<Size<i32, Logical>>>,
     brightness: Rc<Cell<f32>>,
+    requested_geometry: Rc<Cell<Size<i32, Logical>>>,
+    committed_size: Rc<Cell<Size<i32, Logical>>>,
     dim_revision: Rc<Cell<usize>>,
     /// Output overlaps reported while the surface had no buffer yet.
     deferred: Rc<RefCell<Vec<Deferred>>>,
@@ -27,6 +29,8 @@ impl LayoutWindow {
             window,
             size: Rc::new(Cell::new(Size::default())),
             brightness: Rc::new(Cell::new(1.0)),
+            requested_geometry: Rc::new(Cell::new(Size::default())),
+            committed_size: Rc::new(Cell::new(Size::default())),
             dim_revision: Rc::new(Cell::new(0)),
             deferred: Rc::new(RefCell::new(Vec::new())),
         }
@@ -56,6 +60,14 @@ impl LayoutWindow {
             })
             .unwrap_or(false)
         })
+    }
+
+    pub fn replace_committed_size(&self, size: Size<i32, Logical>) -> Size<i32, Logical> {
+        self.committed_size.replace(size)
+    }
+
+    pub fn replace_requested_geometry(&self, size: Size<i32, Logical>) -> Size<i32, Logical> {
+        self.requested_geometry.replace(size)
     }
 
     pub fn set_size(&self, size: Size<i32, Logical>) {

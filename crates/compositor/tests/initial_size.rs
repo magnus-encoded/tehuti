@@ -129,6 +129,7 @@ mod initial_size {
             parent_toplevel.set_app_id("org.example.Launcher".into());
             toplevel.set_parent(Some(&parent_toplevel));
         }
+        toplevel.set_title("private window title".into());
         surface.commit();
         let mut app = App::default();
         let _first = queue.roundtrip(&mut app).unwrap();
@@ -227,10 +228,76 @@ mod initial_size {
     }
 
     fn check_size(app_id: Option<&'static str>, scale: i32, context_id: Option<&str>, inherited: bool) {
+        check_size_logging(app_id, scale, context_id, inherited, false);
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn size_log_records_configure_request_and_different_commit_only_when_enabled() {
+        for enabled in [false, true] {
+            let log = LogBuffer::default();
+            let writer = log.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish();
+            let _guard = tracing::subscriber::set_default(subscriber);
+            check_size_logging(
+                Some("org.example.Video"),
+                1,
+                Some("org.example.Video"),
+                false,
+                enabled,
+            );
+            let output = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+            let changes: Vec<_> = output
+                .lines()
+                .filter(|line| line.contains("window size changed"))
+                .collect();
+            if enabled {
+                assert_eq!(changes.len(), 3, "{output}");
+                assert!(changes[0].contains("compositor configure"), "{output}");
+                assert!(changes[1].contains("client request"), "{output}");
+                assert!(changes[2].contains("client commit"), "{output}");
+                assert!(changes[2].contains("new_width=40 new_height=32"), "{output}");
+                assert!(
+                    changes
+                        .iter()
+                        .all(|line| line.contains("app_id=org.example.Video")),
+                    "{output}"
+                );
+                assert!(!output.contains("private window title"), "{output}");
+            } else {
+                assert!(changes.is_empty(), "{output}");
+            }
+        }
+    }
+
+    fn check_size_logging(
+        app_id: Option<&'static str>,
+        scale: i32,
+        context_id: Option<&str>,
+        inherited: bool,
+        logging: bool,
+    ) {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         if let Some(context_id) = context_id {
-            compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!("app_id = '{context_id}'\nbuttons = {{}}\n[window]\ncolumn_width = 'one-half'\nheight = 0.75")).unwrap()]);
+            compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!("app_id = '{context_id}'\nbuttons = {{}}\n[window]\ncolumn_width = 'one-half'\nheight = 0.75\n[log]\nwindow_size = {logging}")).unwrap()]);
         }
         add_output(&mut compositor, &display, scale);
         let (server, stream) = UnixStream::pair().unwrap();

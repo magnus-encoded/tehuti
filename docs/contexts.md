@@ -459,3 +459,19 @@ A route can set `context = "terminal"` to limit its vocabulary to that applicati
 context. Generated project routes use their mapping's context. Destination names
 and extra names join the speech vocabulary; the sidecar keeps its 64-token prompt
 limit. The table does not open destinations or remember route choices.
+
+## Window size log
+
+Enable size diagnostics for a context with:
+
+```toml
+[log]
+window_size = true
+```
+
+The default is off. Each changed size writes the application id, old and new
+logical pixel sizes, and source to `~/.local/state/tehuti/session.log`.
+Sources are `compositor configure`, `client commit`, and `client request`
+(xdg window geometry, including X11 windows through xwayland-satellite).
+Layout configures cover column widths, window heights and fullscreen.
+The log contains no window titles or content.
