@@ -18,9 +18,7 @@ restart = { restart = true }",
             context.speech_action("restart"),
             Some(tehuti_protocol::Action::Restart)
         );
-        assert!(tehuti_protocol::fuzzy::destructive(
-            &tehuti_protocol::Action::Restart
-        ));
+        assert!(tehuti_protocol::destructive(&tehuti_protocol::Action::Restart));
         assert!(
             parse_context(
                 "app_id = '*'
