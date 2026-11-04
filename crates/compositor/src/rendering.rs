@@ -78,6 +78,7 @@ impl core::fmt::Debug for DmabufSupport {
 
 impl Compositor {
     /// Advertises the renderer's import formats, with feedback when its device is known.
+    /// Later calls keep the global and route imports to the newest renderer.
     /// An empty format set leaves dmabuf unavailable.
     ///
     /// # Errors
@@ -90,7 +91,12 @@ impl Compositor {
         import: impl FnMut(&Dmabuf) -> bool + 'static,
     ) -> Result<(), std::io::Error> {
         let formats: Vec<_> = formats.into_iter().collect();
-        if formats.is_empty() || self.dmabuf.global.is_some() {
+        if formats.is_empty() {
+            return Ok(());
+        }
+        if self.dmabuf.global.is_some() {
+            // A replaced renderer must take over imports; the old one never cleans its cache again.
+            self.dmabuf.import = Some(Box::new(import));
             return Ok(());
         }
         let global = if let Some(device) = render_device {
