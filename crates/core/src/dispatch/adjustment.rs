@@ -102,7 +102,7 @@ pub(super) fn adjuster_effect(gauge: &crate::adjuster::Gauge, finished: bool) ->
     )
 }
 
-fn remember_adjuster(state: &mut State) {
+pub(super) fn remember_adjuster(state: &mut State) {
     if let Some(gauge) = &state.adjuster
         && let Some((_, spec)) = state
             .adjusters
@@ -122,21 +122,17 @@ pub(super) fn is_adjuster_phrase(state: &State, text: &str) -> bool {
 /// Starts a freshly opened gauge from the stick already held.
 pub(super) fn seed_stick(state: &mut State) {
     if let Some(gauge) = &mut state.adjuster {
-        let _released = gauge.sticks(state.adjuster_stick);
+        gauge.sticks(state.adjuster_stick);
     }
 }
 
-pub(super) fn adjuster_sticks(state: &mut State, sticks: Sticks, effects: &mut Vec<Effect>) {
+pub(super) fn adjuster_sticks(state: &mut State, sticks: Sticks) {
     state.adjuster_stick = sticks.left.1;
     if state.volume_pending == crate::adjuster::VolumeRead::Pending {
         return;
     }
     if let Some(gauge) = &mut state.adjuster {
-        if gauge.sticks(sticks.left.1) {
-            effects.push(adjuster_effect(gauge, true));
-            remember_adjuster(state);
-            state.adjuster = None;
-        }
+        gauge.sticks(sticks.left.1);
     } else {
         update_sticks(state, sticks);
     }

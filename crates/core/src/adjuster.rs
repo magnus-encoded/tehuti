@@ -13,7 +13,11 @@ pub struct Gauge {
     direction: i16,
     moved: bool,
     remainder: i64,
+    idle: Duration,
 }
+
+/// How long a gauge stays up after the last change before it commits and hides.
+pub const HIDE_DELAY: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum VolumeRead {
@@ -37,6 +41,13 @@ impl Gauge {
         self.maximum
     }
 
+    // For tests and drawing only.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn standalone(name: String, minimum: i32, maximum: i32, value: i32) -> Self {
+        Self::new(name, minimum, maximum, value, None)
+    }
+
     pub(crate) fn volume(value: u8) -> Self {
         Self::new("volume".into(), 0, 100, i32::from(value.min(100)), None)
     }
@@ -58,6 +69,7 @@ impl Gauge {
             direction: 0,
             moved: false,
             remainder: 0,
+            idle: Duration::ZERO,
         }
     }
 
@@ -66,10 +78,17 @@ impl Gauge {
         self.value
     }
 
-    pub(crate) fn sticks(&mut self, vertical: i16) -> bool {
+    pub(crate) fn sticks(&mut self, vertical: i16) {
         self.direction = vertical.clamp(-1000, 1000).saturating_neg();
         self.moved |= self.direction != 0;
-        self.moved && self.direction == 0
+        if self.direction != 0 {
+            self.idle = Duration::ZERO;
+        }
+    }
+
+    /// True once the level has stayed unchanged for [`HIDE_DELAY`] after being adjusted.
+    pub(crate) fn expired(&self) -> bool {
+        self.moved && self.idle >= HIDE_DELAY
     }
 
     pub(crate) fn tick(&mut self, elapsed: Duration) -> bool {
@@ -88,6 +107,11 @@ impl Gauge {
         let next = i32::try_from(next).unwrap_or(self.value);
         let changed = self.value != next;
         self.value = next;
+        if changed || self.direction != 0 {
+            self.idle = Duration::ZERO;
+        } else {
+            self.idle = self.idle.saturating_add(elapsed);
+        }
         changed
     }
 
