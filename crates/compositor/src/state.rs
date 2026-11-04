@@ -156,6 +156,7 @@ pub struct Compositor {
     secret_confirmation: SecretConfirmationState,
     secret_notice_until: Option<Instant>,
     notice_until: Option<Instant>,
+    workspace_feedback: crate::workspace_feedback::Feedback,
     notice_text: Option<String>,
     launchers: Vec<std::process::Child>,
     desktop_entries: crate::desktop::EntryCache,
@@ -290,6 +291,7 @@ impl Compositor {
             secret_confirmation: SecretConfirmationState::default(),
             secret_notice_until: None,
             notice_until: None,
+            workspace_feedback: crate::workspace_feedback::Feedback::default(),
             notice_text: None,
             launchers: Vec::new(),
             desktop_entries: crate::desktop::EntryCache::new()?,
@@ -2539,6 +2541,12 @@ impl Compositor {
         if let Some(status) = self.plugins.as_ref().and_then(crate::plugins::Plugins::status) {
             bar = bar.with_status(status);
         }
+        if let Some(text) = self
+            .workspace_feedback
+            .text(self.clock_elapsed(), &self.destinations)
+        {
+            bar = bar.with_navigation(text);
+        }
         bar.font = self.settings().bar_font;
         bar
     }
@@ -2619,6 +2627,7 @@ impl Compositor {
 
     fn place_layout(&mut self) {
         let snapshot = self.layout.snapshot();
+        self.workspace_feedback.update(&snapshot, self.clock_elapsed());
         self.log_layout(&snapshot);
         for (identity, window) in &self.layout_windows {
             let tile = snapshot.outputs.iter().find_map(|output| {

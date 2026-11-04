@@ -47,6 +47,26 @@ mod synthetic_pad {
     };
 
     #[test]
+    fn workspace_switches_reach_the_destination_before_feedback_expires() {
+        use tehuti_core::layout::Command;
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        for _ in 0..20 {
+            compositor.apply_layout_command(Command::FocusWorkspaceAt(1));
+            assert_eq!(compositor.layout_snapshot().outputs[0].active_workspace, 1);
+            assert!(compositor.voice_bar().segments().iter().any(|segment| {
+                segment.text == "DOWN · Workspace 2"
+            }));
+            compositor.apply_layout_command(Command::FocusWorkspaceAt(0));
+            assert_eq!(compositor.layout_snapshot().outputs[0].active_workspace, 0);
+            assert!(compositor.voice_bar().segments().iter().any(|segment| {
+                segment.text == "UP · Workspace 1"
+            }));
+        }
+    }
+
+    #[test]
     fn default_compositor_labels_agent_windows_with_the_project() {
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();

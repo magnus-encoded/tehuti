@@ -51,6 +51,7 @@ pub struct Bar {
     windows: Vec<(String, bool)>,
     feedback: Option<Segment>,
     status: Option<String>,
+    navigation: Option<Segment>,
     remaining: Option<Duration>,
     level: crate::Level,
     pub(crate) generation: u64,
@@ -133,6 +134,7 @@ impl Bar {
             windows: Vec::new(),
             feedback: None,
             status: None,
+            navigation: None,
             remaining: None,
             level: crate::Level::App,
             generation: 0,
@@ -245,6 +247,7 @@ impl Bar {
             });
         }
         segments.extend(self.feedback.clone());
+        segments.extend(self.navigation.clone());
         segments
     }
 
@@ -271,6 +274,16 @@ impl Bar {
     #[must_use]
     pub fn with_destination(mut self, name: String) -> Self {
         self.context = Some(name);
+        self
+    }
+
+    /// Adds a workspace navigation chip independent of speech feedback.
+    #[must_use]
+    pub fn with_navigation(mut self, text: String) -> Self {
+        self.navigation = Some(Segment {
+            text,
+            tone: Tone::Result,
+        });
         self
     }
 
