@@ -212,12 +212,7 @@ mod helper_windows {
             }
             advance_helper(stage, &helper_top, &helper, &shm, &handle);
             let _settled = queue.roundtrip(&mut app).unwrap();
-            if matches!(stage, 3 | 6 | 7 | 9) {
-                compositor.apply_layout_command(Command::FocusColumnFirst);
-                assert_eq!(compositor.layout_snapshot().focused_window, game);
-                compositor.apply_layout_command(Command::FocusColumnRight);
-                assert_ne!(compositor.layout_snapshot().focused_window, game);
-            } else {
+            if !matches!(stage, 3 | 6 | 7 | 9) {
                 assert_eq!(
                     app.focused,
                     Some(game.clone()),
@@ -305,7 +300,12 @@ mod helper_windows {
                 if matches!(stage, 3 | 6 | 7 | 9) { 2 } else { 1 },
                 "stage {stage}"
             );
-            if !matches!(stage, 3 | 6 | 7 | 9) {
+            if matches!(stage, 3 | 6 | 7 | 9) {
+                compositor.apply_layout_command(Command::FocusColumnFirst);
+                assert_eq!(compositor.layout_snapshot().focused_window, game);
+                compositor.apply_layout_command(Command::FocusColumnRight);
+                assert_ne!(compositor.layout_snapshot().focused_window, game);
+            } else {
                 assert_eq!(snapshot.focused_window, game, "mapping a helper keeps game focus");
                 for command in [
                     Command::FocusColumnRight,
