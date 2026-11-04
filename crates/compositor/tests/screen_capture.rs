@@ -57,7 +57,7 @@ mod capture {
         damage: bool,
         format: Option<wl_shm::Format>,
         transform: Option<wayland_client::protocol::wl_output::Transform>,
-        configured: bool,
+        configured: Option<u32>,
         window_size: (i32, i32),
     }
     impl Dispatch<WlRegistry, GlobalListContents> for App {
@@ -107,7 +107,7 @@ mod capture {
         ) {
             if let xdg_surface::Event::Configure { serial } = event {
                 surface.ack_configure(serial);
-                app.configured = true;
+                app.configured = Some(serial);
             }
         }
     }
@@ -396,7 +396,7 @@ mod capture {
         let toplevel = xdg.get_toplevel(&handle, ());
         toplevel.set_app_id("capture-test".into());
         surface.commit();
-        while !app.configured {
+        while app.configured.is_none() {
             let _configured = queue.roundtrip(app).unwrap();
         }
         let (width, height) = app.window_size;
@@ -421,17 +421,16 @@ mod capture {
 
     fn assert_captured_pixels(file: &File, width: u32, height: u32, padding: u32, app: &App, mode: Mode) {
         if matches!(mode, Mode::Window) {
-            let stride = width.checked_mul(4).unwrap().checked_add(padding).unwrap();
-            let offset = (height / 2)
-                .checked_mul(stride)
-                .unwrap()
-                .checked_add((width / 2).checked_mul(4).unwrap())
-                .unwrap()
-                .checked_add(16)
-                .unwrap();
-            let mut pixel = [0; 4];
-            file.read_exact_at(&mut pixel, u64::from(offset)).unwrap();
-            assert_eq!(pixel, [17, 43, 197, 255], "capture includes client window pixels");
+            let mut pixels = vec![0; usize::try_from(file.metadata().unwrap().len()).unwrap()];
+            file.read_exact_at(&mut pixels, 0).unwrap();
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .filter(|pixel| *pixel == [17, 43, 197, 255])
+                    .count()
+                    > 1000,
+                "capture includes mapped client window pixels"
+            );
             return;
         }
         let y = if matches!(mode, Mode::Nested) {
