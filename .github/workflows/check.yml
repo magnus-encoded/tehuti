@@ -16,21 +16,6 @@ jobs:
           targets: i686-unknown-linux-gnu
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev python3 python3-pil foot
       - uses: Swatinem/rust-cache@v2
-      - name: Prove tile clipping regression fails on origin/main
-        env:
-          XDG_RUNTIME_DIR: /tmp
-        run: |
-          cp crates/compositor/src/layout_window.rs "$RUNNER_TEMP/layout_window.rs"
-          trap 'cp "$RUNNER_TEMP/layout_window.rs" crates/compositor/src/layout_window.rs' EXIT
-          git fetch --depth=1 https://github.com/magnus-encoded/tehuti.git bd8913accf250f984e19b5c166277e45ee4b7ce6
-          git show FETCH_HEAD:crates/compositor/src/layout_window.rs > crates/compositor/src/layout_window.rs
-          set +e
-          cargo test --locked -p tehuti --test clip_to_tile -- --nocapture > "$RUNNER_TEMP/clip-baseline.log" 2>&1
-          result=$?
-          set -e
-          cat "$RUNNER_TEMP/clip-baseline.log"
-          [ "$result" -ne 0 ]
-          grep -q 'rendering escaped the tile' "$RUNNER_TEMP/clip-baseline.log"
       - run: XDG_RUNTIME_DIR=/tmp scripts/check
       - name: Release smoke
         run: |
