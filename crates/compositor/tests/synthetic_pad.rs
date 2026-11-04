@@ -2579,12 +2579,28 @@ else:
         text_state: ClientTextState,
         plugin: bool,
     ) -> App {
+        exchange_with_plugin_directory(app_id, text, text_state, plugin, None)
+    }
+
+    fn exchange_with_plugin_directory(
+        app_id: &'static str,
+        text: Option<&str>,
+        text_state: ClientTextState,
+        plugin: bool,
+        directory: Option<&std::path::Path>,
+    ) -> App {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         if plugin {
-            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
-            compositor.set_plugins(tehuti::plugins::install(&event_loop, &directory, |state| state).unwrap());
+            let default_directory =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+            compositor.set_plugins(
+                tehuti::plugins::install(&event_loop, directory.unwrap_or(&default_directory), |state| {
+                    state
+                })
+                .unwrap(),
+            );
         }
         load_test_context(&mut compositor, text);
         if plugin {
@@ -3222,6 +3238,76 @@ else:
                     (KEY_ENTER, KeyState::Released),
                 ]
             );
+            assert_eq!(app.modifiers, (0, 0, 0));
+        }
+    }
+
+    #[test]
+    fn osk_and_plugin_text_preserve_shift_in_real_key_events() {
+        use smithay::input::keyboard::xkb;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("text.py");
+        std::fs::write(&executable, r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get('method') == 'initialize':
+        result = {'protocol_version': 0, 'encoding': 'json', 'events': ['button']}
+    elif message.get('method') == 'button':
+        result = [{'type': 'text', 'text': '/g Hello! @Bob?'}, {'type': 'key', 'key': 'enter'}] if message['params']['state'] == 'pressed' else []
+    else:
+        continue
+    print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}), flush=True)
+"#).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            directory.path().join("text.json"),
+            r#"{
+            "executable":"./text.py", "app_ids":["test"], "events":["button"],
+            "start":"always", "permissions":["text", "key"]
+        }"#,
+        )
+        .unwrap();
+
+        for plugin in [false, true] {
+            let app = exchange_with_plugin_directory(
+                "test",
+                Some("/g Hello! @Bob?"),
+                ClientTextState::Absent,
+                plugin,
+                Some(directory.path()),
+            );
+            assert_eq!(app.keyboard_text, "/g Hello! @Bob?\r");
+            let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+            let keymap = xkb::Keymap::new_from_string(
+                &context,
+                app.keymap_source.trim_end_matches('\0').into(),
+                xkb::KEYMAP_FORMAT_TEXT_V1,
+                xkb::KEYMAP_COMPILE_NO_FLAGS,
+            )
+            .unwrap();
+            let mut state = xkb::State::new(&keymap);
+            let mut text = String::new();
+            let mut held = std::collections::HashSet::new();
+            for (key, event) in app.keys {
+                let code = xkb::Keycode::new(key + 8);
+                match event {
+                    KeyState::Pressed => {
+                        assert!(held.insert(key), "duplicate press: {key}");
+                        text.push_str(&state.key_get_utf8(code));
+                        let _changed = state.update_key(code, xkb::KeyDirection::Down);
+                    }
+                    KeyState::Released => {
+                        assert!(held.remove(&key), "unmatched release: {key}");
+                        let _changed = state.update_key(code, xkb::KeyDirection::Up);
+                    }
+                    _ => panic!("unexpected key state"),
+                }
+            }
+            assert_eq!(text, "/g Hello! @Bob?\r", "plugin: {plugin}");
+            assert!(held.is_empty());
             assert_eq!(app.modifiers, (0, 0, 0));
         }
     }
