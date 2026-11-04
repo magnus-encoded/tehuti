@@ -46,6 +46,7 @@ pub mod bar;
 mod bar_font;
 pub mod pictograms;
 pub mod ticker_strip;
+mod workspace_feedback;
 
 pub mod osk;
 pub mod overlays;
@@ -80,5 +81,3 @@ pub mod applications_watch;
 pub mod driver;
 mod driver_shot;
 pub mod volume;
-
-mod workspace_feedback;

@@ -430,3 +430,20 @@ impl Bar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Bar, Segment, Tone};
+
+    #[test]
+    fn navigation_follows_speech_feedback() {
+        let bar = Bar::new()
+            .with_feedback(Segment {
+                text: "Listening…".into(),
+                tone: Tone::Live,
+            })
+            .with_navigation("UP · Writing".into());
+        let texts: Vec<_> = bar.segments().into_iter().map(|segment| segment.text).collect();
+        assert_eq!(texts, ["Desktop", "Listening…", "UP · Writing"]);
+    }
+}
