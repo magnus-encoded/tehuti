@@ -231,7 +231,10 @@ struct Mirror {
 
 impl core::fmt::Debug for Mirror {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("Mirror").field("copy", &self.copy).finish_non_exhaustive()
+        formatter
+            .debug_struct("Mirror")
+            .field("copy", &self.copy)
+            .finish_non_exhaustive()
     }
 }
 

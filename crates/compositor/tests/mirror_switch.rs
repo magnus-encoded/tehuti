@@ -102,28 +102,49 @@ mod tests {
         let (mut second, second_handles) = pad("second", &log);
         let (first_path, second_path) = (Path::new("/dev/input/event1"), Path::new("/dev/input/event2"));
 
-        let sync = sync_mirrors(&mut [(first_path, &mut first), (second_path, &mut second)], true, Some(first_path));
+        let sync = sync_mirrors(
+            &mut [(first_path, &mut first), (second_path, &mut second)],
+            true,
+            Some(first_path),
+        );
         assert!(sync.started && sync.failed.is_empty());
-        first_handles.raw.borrow_mut().extend(press(KeyCode::BTN_SOUTH, 1));
+        first_handles
+            .raw
+            .borrow_mut()
+            .extend(press(KeyCode::BTN_SOUTH, 1));
         first.pump_mirror(&mut |_, _| false).unwrap();
 
         // The second pad's press reached the core before its mirror existed; its kernel state still holds it.
         second_handles.held.borrow_mut().push(KeyCode::BTN_EAST.code());
-        let sync = sync_mirrors(&mut [(first_path, &mut first), (second_path, &mut second)], true, Some(second_path));
+        let sync = sync_mirrors(
+            &mut [(first_path, &mut first), (second_path, &mut second)],
+            true,
+            Some(second_path),
+        );
         assert!(sync.started && sync.failed.is_empty());
 
         let log = log.borrow();
         assert_eq!(log.most_live, 1, "the application never sees two virtual pads");
         assert!(!first.mirrored() && second.mirrored());
         let key = |code: KeyCode, value| (EventType::KEY.0, code.code(), value);
-        let sent = |name| -> Vec<_> { log.frames.iter().filter(|(from, _)| *from == name).map(|(_, frame)| frame.clone()).collect() };
+        let sent = |name| -> Vec<_> {
+            log.frames
+                .iter()
+                .filter(|(from, _)| *from == name)
+                .map(|(_, frame)| frame.clone())
+                .collect()
+        };
         assert!(
-            sent("first").last().is_some_and(|frame| frame.contains(&key(KeyCode::BTN_SOUTH, 0))),
+            sent("first")
+                .last()
+                .is_some_and(|frame| frame.contains(&key(KeyCode::BTN_SOUTH, 0))),
             "the old mirror lets go of the held button: {:?}",
             log.frames
         );
         assert!(
-            sent("second").first().is_some_and(|frame| frame.contains(&key(KeyCode::BTN_EAST, 1))),
+            sent("second")
+                .first()
+                .is_some_and(|frame| frame.contains(&key(KeyCode::BTN_EAST, 1))),
             "the new mirror starts out holding what its pad holds: {:?}",
             log.frames
         );
