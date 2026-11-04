@@ -693,6 +693,14 @@ impl Compositor {
         }
     }
 
+    /// Whether a plugin holds `button` from the virtual pad; reads only, so a new mirror can ask.
+    #[must_use]
+    pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
+        self.plugins
+            .as_ref()
+            .is_some_and(|plugins| plugins.pad_consumed(button))
+    }
+
     /// Applies plugin overrides to one physical button; true keeps it from the virtual pad.
     pub fn virtual_pad_button(
         &mut self,
