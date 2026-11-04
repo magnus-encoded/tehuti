@@ -3096,6 +3096,77 @@ else:
         );
     }
 
+    fn assert_upward_workspace_feedback(compositor: &Compositor) {
+        assert!(
+            compositor
+                .voice_bar()
+                .segments()
+                .iter()
+                .any(|segment| segment.text == "UP · 1")
+        );
+    }
+
+    #[test]
+    fn workspace_feedback_does_not_delay_destination_focus_or_keys() {
+        use smithay::input::keyboard::Keycode;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let destination = compositor.layout_snapshot().focused_window;
+        assert!(destination.is_some());
+        let meta = Keycode::new(125 + 8);
+        let down = Keycode::new(108 + 8);
+        let upward = Keycode::new(103 + 8);
+        compositor.host_key(meta, true);
+        compositor.host_key(down, true);
+        compositor.host_key(down, false);
+        assert_eq!(compositor.layout_snapshot().focused_window, None);
+        compositor.host_key(upward, true);
+        compositor.host_key(upward, false);
+        compositor.host_key(meta, false);
+        assert_eq!(compositor.layout_snapshot().focused_window, destination);
+        assert_upward_workspace_feedback(&compositor);
+        let letter_a = Keycode::new(30 + 8);
+        compositor.host_key(letter_a, true);
+        compositor.host_key(letter_a, false);
+        while !client.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "destination input stalled"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_upward_workspace_feedback(&compositor);
+        let trace: Vec<_> = client
+            .join()
+            .unwrap()
+            .keyboard_trace
+            .into_iter()
+            .skip_while(|event| !matches!(event, Trace::Key(..)))
+            .filter(|event| matches!(event, Trace::Key(..)))
+            .collect();
+        assert_eq!(
+            trace,
+            vec![
+                Trace::Key(30, KeyState::Pressed),
+                Trace::Key(30, KeyState::Released),
+            ]
+        );
+    }
+
     #[test]
     fn meta_and_arrows_move_focus_without_reaching_the_client() {
         use smithay::input::keyboard::Keycode;

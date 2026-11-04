@@ -157,6 +157,7 @@ pub struct Compositor {
     secret_notice_until: Option<Instant>,
     notice_until: Option<Instant>,
     notice_text: Option<String>,
+    workspace_feedback: crate::workspace_feedback::Feedback,
     launchers: Vec<std::process::Child>,
     desktop_entries: crate::desktop::EntryCache,
     destination_paths: crate::destinations::Paths,
@@ -291,6 +292,7 @@ impl Compositor {
             secret_notice_until: None,
             notice_until: None,
             notice_text: None,
+            workspace_feedback: crate::workspace_feedback::Feedback::default(),
             launchers: Vec::new(),
             desktop_entries: crate::desktop::EntryCache::new()?,
             launch_socket: None,
@@ -2539,6 +2541,12 @@ impl Compositor {
         if let Some(status) = self.plugins.as_ref().and_then(crate::plugins::Plugins::status) {
             bar = bar.with_status(status);
         }
+        if let Some(text) = self
+            .workspace_feedback
+            .text(self.clock_elapsed(), &self.destinations)
+        {
+            bar = bar.with_navigation(text);
+        }
         bar.font = self.settings().bar_font;
         bar
     }
@@ -2619,6 +2627,7 @@ impl Compositor {
 
     fn place_layout(&mut self) {
         let snapshot = self.layout.snapshot();
+        self.workspace_feedback.update(&snapshot, self.clock_elapsed());
         self.log_layout(&snapshot);
         for (identity, window) in &self.layout_windows {
             let tile = snapshot.outputs.iter().find_map(|output| {
