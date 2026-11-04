@@ -236,6 +236,8 @@ struct MirrorCopy {
     blocked: Vec<(u16, u16)>,
     frame: Vec<evdev::InputEvent>,
     buffered: Vec<Event>,
+    /// Keys and hat axes the virtual controller currently shows as held.
+    held: Vec<(u16, u16)>,
 }
 
 impl MirrorCopy {
@@ -270,10 +272,38 @@ impl MirrorCopy {
             }
         }
         if !kept {
+            let held_type = event.event_type() == evdev::EventType::KEY
+                || (event.event_type() == evdev::EventType::ABSOLUTE
+                    && (event.code() == AbsoluteAxisCode::ABS_HAT0X.0
+                        || event.code() == AbsoluteAxisCode::ABS_HAT0Y.0));
+            if held_type {
+                self.held.retain(|held| *held != key);
+                if event.value() != 0 {
+                    self.held.push(key);
+                }
+            }
             self.frame.push(event);
         }
         self.buffered.extend(translated);
         None
+    }
+
+    /// A frame that lets go of every key and hat the virtual controller shows as held.
+    fn release(&mut self) -> Option<Vec<evdev::InputEvent>> {
+        if self.held.is_empty() {
+            return None;
+        }
+        let mut frame: Vec<_> = self
+            .held
+            .drain(..)
+            .map(|(kind, code)| evdev::InputEvent::new(kind, code, 0))
+            .collect();
+        frame.push(evdev::InputEvent::new(
+            evdev::EventType::SYNCHRONIZATION.0,
+            evdev::SynchronizationCode::SYN_REPORT.0,
+            0,
+        ));
+        Some(frame)
     }
 }
 
@@ -350,11 +380,16 @@ impl<D> PadHandles<D> {
 
 impl EvdevPad {
     /// Presents or removes the virtual controller; true when it was just created.
+    /// Removal first releases whatever the virtual controller still holds.
     /// # Errors
     /// The kernel refused to create the uinput device.
     pub fn set_mirror(&mut self, present: bool) -> io::Result<bool> {
         if !present {
-            self.mirror = None;
+            if let Some(mut mirror) = self.mirror.take()
+                && let Some(frame) = mirror.copy.release()
+            {
+                mirror.device.emit(&frame)?;
+            }
             return Ok(false);
         }
         if self.mirror.is_some() {
@@ -777,6 +812,62 @@ mod mirror_tests {
             ],
             "the core still sees every press, the kept one included"
         );
+    }
+
+    fn sync() -> InputEvent {
+        InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0)
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn release_lets_go_of_exactly_what_the_mirror_still_holds(
+            series in proptest::collection::vec(
+                (proptest::sample::select(vec![
+                    (EventType::KEY.0, KeyCode::BTN_SOUTH.code()),
+                    (EventType::KEY.0, KeyCode::BTN_EAST.code()),
+                    (EventType::KEY.0, KeyCode::BTN_TL.code()),
+                    (EventType::ABSOLUTE.0, evdev::AbsoluteAxisCode::ABS_HAT0X.0),
+                    (EventType::ABSOLUTE.0, evdev::AbsoluteAxisCode::ABS_X.0),
+                ]), -1_i32..=1, proptest::bool::ANY),
+                0..40,
+            ),
+        ) {
+            let mut copy = MirrorCopy::default();
+            let mut translator = DpadHat::default();
+            let mut consume = |name: ButtonName, _: ButtonState| name == ButtonName::South;
+            let mut shown = std::collections::BTreeMap::new();
+            let apply = |frame: Vec<InputEvent>, shown: &mut std::collections::BTreeMap<(u16, u16), i32>| {
+                for event in frame {
+                    if event.event_type() != EventType::SYNCHRONIZATION {
+                        shown.insert((event.event_type().0, event.code()), event.value());
+                    }
+                }
+            };
+            for ((kind, code), value, report) in series {
+                let value = if kind == EventType::KEY.0 { value.abs() } else { value };
+                if let Some(frame) = copy.take(InputEvent::new(kind, code, value), &mut translator, &mut consume) {
+                    apply(frame, &mut shown);
+                }
+                if report && let Some(frame) = copy.take(sync(), &mut translator, &mut consume) {
+                    apply(frame, &mut shown);
+                }
+            }
+            // Whatever was taken but not yet reported is flushed first, as the next report would.
+            if let Some(frame) = copy.take(sync(), &mut translator, &mut consume) {
+                apply(frame, &mut shown);
+            }
+            if let Some(frame) = copy.release() {
+                apply(frame, &mut shown);
+            }
+            let stuck: Vec<_> = shown
+                .iter()
+                .filter(|((kind, code), value)| {
+                    **value != 0 && (*kind == EventType::KEY.0 || *code == evdev::AbsoluteAxisCode::ABS_HAT0X.0)
+                })
+                .collect();
+            proptest::prop_assert!(stuck.is_empty(), "still held after release: {stuck:?}");
+            proptest::prop_assert_eq!(copy.release(), None);
+        }
     }
 }
 

@@ -32,6 +32,8 @@ pub(crate) struct LoopData {
     controllers: BTreeMap<PathBuf, AttachedController>,
     pad_gate: input::PadGate,
     virtual_pad: Option<String>,
+    /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
+    active_pad: Option<PathBuf>,
     controller_tokens: BTreeMap<PathBuf, calloop::RegistrationToken>,
     rescan_controller: bool,
     discovery: controller::Discovery,
@@ -401,6 +403,7 @@ fn start_session(
         pad_gate: input::PadGate::default(),
         controller_tokens,
         virtual_pad,
+        active_pad: None,
         rescan_controller: true,
         discovery,
         discovery_epoch: std::time::Instant::now(),
@@ -817,10 +820,12 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
+    let active = &mut data.active_pad;
     let (events, removed) = input::drain_pads_admitted(&mut data.controllers, |path, controller, event| {
         let admitted = gate.admit(path, compositor.controller_chosen(controller.pad.name()), event);
         if admitted {
             identity = Some(controller.pad.identity());
+            *active = Some(path.to_path_buf());
         }
         admitted
     });
@@ -915,7 +920,8 @@ fn advance_time(data: &mut LoopData) {
 fn sync_pad_grab(data: &mut LoopData) {
     let mirrored = data.compositor.virtual_pad();
     let mut started = false;
-    for pad in data.controllers.values_mut() {
+    let active = data.active_pad.as_deref();
+    for (path, pad) in &mut data.controllers {
         if let Err(error) = pad
             .pad
             .set_passthrough(data.compositor.pad_passthrough() && !mirrored)
@@ -923,7 +929,18 @@ fn sync_pad_grab(data: &mut LoopData) {
             warn!(%error, "controller ownership change failed; reopening");
             pad.watchdog.request_reopen();
         }
-        match pad.pad.set_mirror(mirrored) {
+        // Old mirrors go first, releasing what they hold, so the application never sees two.
+        if !mirror_wanted(mirrored, active, path)
+            && let Err(error) = pad.pad.set_mirror(false)
+        {
+            warn!(%error, "virtual pad release failed");
+        }
+    }
+    for (path, pad) in &mut data.controllers {
+        if !mirror_wanted(mirrored, active, path) {
+            continue;
+        }
+        match pad.pad.set_mirror(true) {
             Ok(created) => started |= created,
             Err(error) => {
                 warn!(%error, "virtual pad unavailable; passing the physical pad through");
@@ -939,6 +956,11 @@ fn sync_pad_grab(data: &mut LoopData) {
     }
 }
 
+/// Whether the pad at `path` carries the one virtual pad: only the active pad does, and only while mirroring.
+fn mirror_wanted(mirrored: bool, active: Option<&std::path::Path>, path: &std::path::Path) -> bool {
+    mirrored && active == Some(path)
+}
+
 /// Copies physical input to each virtual pad, applying plugin overrides before the core reads it.
 fn pump_virtual_pads(data: &mut LoopData) {
     let compositor = &mut data.compositor;
@@ -950,6 +972,36 @@ fn pump_virtual_pads(data: &mut LoopData) {
         {
             warn!(%error, "virtual pad copy failed; reopening");
             controller.watchdog.request_reopen();
+        }
+    }
+}
+
+#[cfg(test)]
+mod mirror_choice_tests {
+    use super::mirror_wanted;
+    use proptest::prelude::*;
+    use std::path::PathBuf;
+
+    proptest! {
+        #[test]
+        fn at_most_the_active_pad_is_mirrored(
+            pads in prop::collection::btree_set(0_u8..8, 0..6),
+            active in prop::option::of(0_u8..10),
+            mirrored in any::<bool>(),
+        ) {
+            let path = |n: u8| PathBuf::from(format!("/dev/input/event{n}"));
+            let active = active.map(path);
+            let wanted: Vec<_> = pads
+                .iter()
+                .map(|n| path(*n))
+                .filter(|pad| mirror_wanted(mirrored, active.as_deref(), pad))
+                .collect();
+            prop_assert!(wanted.len() <= 1);
+            let expected = usize::from(mirrored && active.as_ref().is_some_and(|a| pads.iter().any(|n| path(*n) == *a)));
+            prop_assert_eq!(wanted.len(), expected);
+            if active.is_none() {
+                prop_assert!(wanted.is_empty(), "a pad that never sent input gets no mirror");
+            }
         }
     }
 }
