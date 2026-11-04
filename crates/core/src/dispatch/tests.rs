@@ -1534,7 +1534,8 @@ proptest! {
         });
         prop_assert!(!state.keyboard().is_open());
         for event in events {
-            let opens = mode != "off" && matches!(event, Event::Button { name: ButtonName::North, state: ButtonState::Pressed });
+            let opens = (mode != "off" || state.core().level() == crate::Level::Columns)
+                && matches!(event, Event::Button { name: ButtonName::North, state: ButtonState::Pressed });
             state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
             if opens {
                 break;
