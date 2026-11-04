@@ -274,12 +274,12 @@ pub fn sync_mirrors<D: PadDevice>(
     pads: &mut [(&std::path::Path, &mut EvdevPad<D>)],
     mirrored: bool,
     active: Option<&std::path::Path>,
-    consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
+    consumed: &dyn Fn(ButtonName) -> bool,
 ) -> MirrorSync {
     let mut sync = MirrorSync::default();
     for (path, pad) in pads.iter_mut() {
         if !mirror_wanted(mirrored, active, path)
-            && let Err(error) = pad.set_mirror(false, consume)
+            && let Err(error) = pad.set_mirror(false, consumed)
         {
             warn!(%error, "virtual pad release failed");
         }
@@ -288,7 +288,7 @@ pub fn sync_mirrors<D: PadDevice>(
         if !mirror_wanted(mirrored, active, path) {
             continue;
         }
-        match pad.set_mirror(true, consume) {
+        match pad.set_mirror(true, consumed) {
             Ok(created) => sync.started |= created,
             Err(error) => {
                 warn!(%error, "virtual pad unavailable");
@@ -358,19 +358,20 @@ impl MirrorCopy {
     }
 
     /// A frame that presses every held key and hat in `state`, marking them held.
-    /// Keys `consume` keeps are blocked instead, so their later release stays kept too.
+    /// Keys whose button is `consumed` by a plugin are blocked instead, so their later release stays kept too.
     fn seed(
         &mut self,
         state: impl IntoIterator<Item = evdev::InputEvent>,
         translator: &mut DpadHat,
-        consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
+        consumed: &dyn Fn(ButtonName) -> bool,
     ) -> Option<Vec<evdev::InputEvent>> {
         let mut frame = Vec::new();
         for event in state.into_iter().filter(|event| event.value() != 0) {
             let key = (event.event_type().0, event.code());
-            let kept = translator.translate(&event.destructure()).into_iter().any(
-                |input| matches!(input, Event::Button { name, state: pressed } if consume(name, pressed)),
-            );
+            let kept = translator
+                .translate(&event.destructure())
+                .into_iter()
+                .any(|input| matches!(input, Event::Button { name, .. } if consumed(name)));
             if kept {
                 self.blocked.push(key);
             } else {
@@ -535,14 +536,10 @@ impl<D: PadDevice> EvdevPad<D> {
     /// Presents or removes the virtual controller; true when it was just created.
     /// A new one starts out holding what the physical pad holds.
     /// Removal first releases whatever the virtual controller still holds.
-    /// `consume` is the [`Self::pump_mirror`] filter; held buttons it keeps are not shown.
+    /// `consumed` asks, without changing anything, whether a plugin holds a button; those are not shown.
     /// # Errors
     /// The kernel refused to create the uinput device.
-    pub fn set_mirror(
-        &mut self,
-        present: bool,
-        consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
-    ) -> io::Result<bool> {
+    pub fn set_mirror(&mut self, present: bool, consumed: &dyn Fn(ButtonName) -> bool) -> io::Result<bool> {
         if !present {
             if let Some(mut mirror) = self.mirror.take()
                 && let Some(frame) = mirror.copy.release()
@@ -574,7 +571,7 @@ impl<D: PadDevice> EvdevPad<D> {
             identity: self.translator.identity,
             ..DpadHat::default()
         };
-        if let Some(frame) = mirror.copy.seed(keys.chain(hats), &mut fresh, consume) {
+        if let Some(frame) = mirror.copy.seed(keys.chain(hats), &mut fresh, consumed) {
             mirror.device.emit(&frame)?;
         }
         self.mirror = Some(mirror);

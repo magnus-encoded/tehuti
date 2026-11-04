@@ -930,18 +930,25 @@ fn sync_pad_grab(data: &mut LoopData) {
             pad.watchdog.request_reopen();
         }
     }
+    // Held-button tracking starts over only when the virtual pad first appears; a switch between
+    // pads keeps it, so a plugin still gets the release of a button it took on the old pad.
+    if mirrored
+        && !data
+            .controllers
+            .values()
+            .any(|controller| controller.pad.mirrored())
+    {
+        data.compositor.reset_virtual_pad();
+    }
     let mut pads: Vec<_> = data
         .controllers
         .iter_mut()
         .map(|(path, controller)| (path.as_path(), &mut controller.pad))
         .collect();
-    let compositor = &mut data.compositor;
-    let sync = controller::sync_mirrors(
-        &mut pads,
-        mirrored,
-        data.active_pad.as_deref(),
-        &mut |button, state| compositor.virtual_pad_button(button, state),
-    );
+    let compositor = &data.compositor;
+    let sync = controller::sync_mirrors(&mut pads, mirrored, data.active_pad.as_deref(), &|button| {
+        compositor.virtual_pad_consumed(button)
+    });
     for path in &sync.failed {
         if let Some(pad) = data.controllers.get_mut(path) {
             warn!("passing the physical pad through");
@@ -950,9 +957,6 @@ fn sync_pad_grab(data: &mut LoopData) {
                 pad.watchdog.request_reopen();
             }
         }
-    }
-    if sync.started {
-        data.compositor.reset_virtual_pad();
     }
 }
 

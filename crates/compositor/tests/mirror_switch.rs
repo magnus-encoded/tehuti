@@ -117,14 +117,14 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(first_path),
-            &mut |_, _| false,
+            &|_| false,
         );
         assert!(first_sync.started && first_sync.failed.is_empty());
         first_handles
             .raw
             .borrow_mut()
             .extend(press(KeyCode::BTN_SOUTH, 1));
-        first.pump_mirror(&mut |_, _| false).unwrap();
+        first.pump_mirror(&|_| false).unwrap();
 
         // The second pad's press reached the core before its mirror existed; its kernel state still holds it.
         second_handles.held.borrow_mut().push(KeyCode::BTN_EAST.code());
@@ -132,7 +132,7 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(second_path),
-            &mut |_, _| false,
+            &|_| false,
         );
         assert!(second_sync.started && second_sync.failed.is_empty());
 
@@ -164,29 +164,82 @@ mod tests {
     }
 
     #[test]
-    fn a_held_button_a_plugin_keeps_never_reaches_the_game() {
+    fn a_switch_keeps_a_plugin_button_from_the_game_and_its_release_reaches_the_plugin() {
+        use tehuti_core::vpad::{Filter, Verdict};
+        use tehuti_protocol::{ButtonName, ButtonState, PadOverride};
+
         let log = Rc::new(RefCell::new(Log::default()));
-        let (mut kept, handles) = pad("kept", &log);
-        let path = Path::new("/dev/input/event1");
-        let mut consume = |name: tehuti_protocol::ButtonName, _: tehuti_protocol::ButtonState| {
-            name == tehuti_protocol::ButtonName::Start
+        let (mut first, first_handles) = pad("first", &log);
+        let (mut second, second_handles) = pad("second", &log);
+        let (first_path, second_path) = (Path::new("/dev/input/event1"), Path::new("/dev/input/event2"));
+        let filter = RefCell::new(Filter::default());
+        filter.borrow_mut().set(
+            0,
+            vec![PadOverride {
+                button: ButtonName::Start,
+                held: Vec::new(),
+            }],
+        );
+        // What the plugin receives: one entry per input the filter hands it.
+        let plugin = RefCell::new(Vec::new());
+        let mut step = |button: ButtonName, state: ButtonState| {
+            let verdict = filter.borrow_mut().step(button, state, &[0], &[]);
+            if verdict == Verdict::Plugin(0) {
+                plugin.borrow_mut().push((button, state));
+            }
+            verdict != Verdict::Pass
         };
-        handles.held.borrow_mut().push(KeyCode::BTN_START.code());
+        let consumed = |button: ButtonName| filter.borrow().consumed(button);
 
-        let sync = sync_mirrors(&mut [(path, &mut kept)], true, Some(path), &mut consume);
-        assert!(sync.started);
-        handles.raw.borrow_mut().extend(press(KeyCode::BTN_START, 0));
-        kept.pump_mirror(&mut consume).unwrap();
-        let _gone = sync_mirrors(&mut [(path, &mut kept)], true, None, &mut consume);
+        let _started = sync_mirrors(
+            &mut [(first_path, &mut first), (second_path, &mut second)],
+            true,
+            Some(first_path),
+            &consumed,
+        );
+        first_handles
+            .raw
+            .borrow_mut()
+            .extend(press(KeyCode::BTN_START, 1));
+        first.pump_mirror(&mut step).unwrap();
+        let before = filter.borrow().clone();
 
-        assert!(!kept.mirrored());
+        second_handles.held.borrow_mut().push(KeyCode::BTN_START.code());
+        let switched = sync_mirrors(
+            &mut [(first_path, &mut first), (second_path, &mut second)],
+            true,
+            Some(second_path),
+            &consumed,
+        );
+        assert!(switched.started && second.mirrored());
+        assert_eq!(
+            *filter.borrow(),
+            before,
+            "seeding the new mirror only reads the filter"
+        );
+        assert_eq!(
+            *plugin.borrow(),
+            [(ButtonName::Start, ButtonState::Pressed)],
+            "no extra press reaches the plugin"
+        );
+
+        second_handles
+            .raw
+            .borrow_mut()
+            .extend(press(KeyCode::BTN_START, 0));
+        second.pump_mirror(&mut step).unwrap();
+        assert_eq!(
+            plugin.borrow().last(),
+            Some(&(ButtonName::Start, ButtonState::Released)),
+            "the release still reaches the plugin"
+        );
         let start = KeyCode::BTN_START.code();
         assert!(
             log.borrow()
                 .frames
                 .iter()
                 .all(|(_, frame)| frame.iter().all(|(_, code, _)| *code != start)),
-            "the kept button is neither pressed nor released on the virtual pad: {:?}",
+            "the game never sees the plugin's button: {:?}",
             log.borrow().frames
         );
     }
@@ -198,9 +251,9 @@ mod tests {
         let path = Path::new("/dev/input/event1");
         handles.hat.set(-1);
 
-        let sync = sync_mirrors(&mut [(path, &mut held)], true, Some(path), &mut |_, _| false);
+        let sync = sync_mirrors(&mut [(path, &mut held)], true, Some(path), &|_| false);
         assert!(sync.started);
-        let _gone = sync_mirrors(&mut [(path, &mut held)], true, None, &mut |_, _| false);
+        let _gone = sync_mirrors(&mut [(path, &mut held)], true, None, &|_| false);
 
         let hat = (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_HAT0X.0);
         let values: Vec<i32> = log
