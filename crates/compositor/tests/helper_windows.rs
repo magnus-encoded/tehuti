@@ -169,13 +169,12 @@ mod helper_windows {
     ) {
         match stage {
             1 => helper.commit(),
-            2 => draw(shm, helper, handle, (26, 26)),
+            2 | 8 => draw(shm, helper, handle, (26, 26)),
             3 => helper_top.set_title("Tools".into()),
             4 => helper_top.set_title(String::new()),
             5 => draw(shm, helper, handle, (64, 64)),
             6 => draw(shm, helper, handle, (65, 26)),
             7 => draw(shm, helper, handle, (26, 65)),
-            8 => draw(shm, helper, handle, (26, 26)),
             9 => {
                 helper_top.set_title("Tools".into());
                 helper.attach(None, 0, 0);
@@ -185,7 +184,7 @@ mod helper_windows {
         }
     }
 
-    fn client(stream: UnixStream, ready: mpsc::Sender<usize>, commands: mpsc::Receiver<()>) {
+    fn client(stream: UnixStream, ready: &mpsc::Sender<usize>, commands: &mpsc::Receiver<()>) {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -213,7 +212,12 @@ mod helper_windows {
             }
             advance_helper(stage, &helper_top, &helper, &shm, &handle);
             let _settled = queue.roundtrip(&mut app).unwrap();
-            if !matches!(stage, 3 | 6 | 7 | 9) {
+            if matches!(stage, 3 | 6 | 7 | 9) {
+                compositor.apply_layout_command(Command::FocusColumnFirst);
+                assert_eq!(compositor.layout_snapshot().focused_window, game);
+                compositor.apply_layout_command(Command::FocusColumnRight);
+                assert_ne!(compositor.layout_snapshot().focused_window, game);
+            } else {
                 assert_eq!(
                     app.focused,
                     Some(game.clone()),
@@ -279,7 +283,7 @@ mod helper_windows {
             .unwrap();
         let (ready, stages) = mpsc::channel();
         let (commands, receiver) = mpsc::channel();
-        let thread = thread::spawn(move || client(stream, ready, receiver));
+        let thread = thread::spawn(move || client(stream, &ready, &receiver));
         let started = Instant::now();
         let mut game = None;
         for stage in 0..=9 {
@@ -311,11 +315,6 @@ mod helper_windows {
                     compositor.apply_layout_command(command);
                     assert_eq!(compositor.layout_snapshot().focused_window, game);
                 }
-            } else {
-                compositor.apply_layout_command(Command::FocusColumnFirst);
-                assert_eq!(compositor.layout_snapshot().focused_window, game);
-                compositor.apply_layout_command(Command::FocusColumnRight);
-                assert_ne!(compositor.layout_snapshot().focused_window, game);
             }
             commands.send(()).unwrap();
         }
