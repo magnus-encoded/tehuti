@@ -27,6 +27,7 @@ struct View {
     row: InputRow,
     controller: String,
     microphone: String,
+    push_to_talk: String,
     speech: String,
     hint: String,
     selected: usize,
@@ -50,6 +51,7 @@ impl View {
             row: settings.input.row,
             controller: settings.input.controller_label(),
             microphone: settings.input.microphone_label(),
+            push_to_talk: settings.input.push_to_talk_label(),
             speech: speech.to_owned(),
             hint: settings.button_hint(),
             selected: settings.selected,
@@ -252,6 +254,11 @@ impl Canvas {
                 settings.input.controller_label(),
             ),
             (
+                InputRow::PushToTalk,
+                "PUSH TO TALK",
+                settings.input.push_to_talk_label(),
+            ),
+            (
                 InputRow::Microphone,
                 "MICROPHONE",
                 settings.input.microphone_label(),
@@ -266,11 +273,11 @@ impl Canvas {
             let value: String = value.chars().take(36).collect();
             self.text(96, y.saturating_add(66), &format!("<  {value}  >"), 3, CYAN);
         }
-        self.text(96, 494, "SPEECH RUNS ON", 2, WHITE);
+        self.text(96, 630, "SPEECH RUNS ON", 2, WHITE);
         let speech: String = speech.chars().take(36).collect();
         self.text(
             360,
-            490,
+            626,
             &speech,
             3,
             if speech.starts_with("CPU") { AMBER } else { CYAN },
@@ -549,17 +556,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn the_input_page_previews_then_saves_one_pad_and_a_microphone() -> Result<(), Box<dyn core::error::Error>>
-    {
-        use tehuti_core::dispatch::{ControllerChoice, MicrophoneChoice};
-        use tehuti_protocol::{ButtonName, ButtonState};
-        let directory = tempfile::tempdir()?;
-        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
-        let display = Display::<Compositor>::new()?;
-        let mut compositor = Compositor::new(&display.handle())?;
-        compositor.load_input_choices(store.clone());
-        compositor.configure_controllers(crate::controller::numbered_controllers([
+    fn input_test_controllers() -> Vec<tehuti_core::dispatch::ControllerInfo> {
+        crate::controller::numbered_controllers([
             (
                 "/dev/input/event2".into(),
                 "Wireless Controller".into(),
@@ -572,7 +570,20 @@ mod tests {
                 0x045e,
                 0x0b13,
             ),
-        ]));
+        ])
+    }
+
+    #[test]
+    fn the_input_page_confirms_a_pad_and_saves_its_binding_and_microphone()
+    -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_core::dispatch::{ControllerChoice, MicrophoneChoice};
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let directory = tempfile::tempdir()?;
+        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.load_input_choices(store.clone());
+        compositor.configure_controllers(input_test_controllers());
         compositor.handle(&Event::Speech {
             text: Text::new("Pop the hood.".into())?,
         });
@@ -592,7 +603,7 @@ mod tests {
         press(&mut compositor, ButtonName::DpadRight);
         assert_eq!(compositor.settings().input.controller_label(), "DUALSHOCK 4 #1");
         assert!(compositor.controller_chosen("Wireless Controller"));
-        assert!(!compositor.controller_chosen("Xbox Controller"));
+        assert!(compositor.controller_chosen("Xbox Controller"));
         assert_eq!(
             store.controller()?,
             ControllerChoice::Auto,
@@ -602,6 +613,15 @@ mod tests {
         assert_eq!(
             store.controller()?,
             ControllerChoice::Named("Wireless Controller".into())
+        );
+        assert!(!compositor.controller_chosen("Xbox Controller"));
+        press(&mut compositor, ButtonName::DpadDown);
+        press(&mut compositor, ButtonName::DpadRight);
+        press(&mut compositor, ButtonName::DpadRight);
+        assert_eq!(compositor.settings().input.push_to_talk_label(), "MENU");
+        assert_eq!(
+            store.controller_bindings()?.get("Wireless Controller"),
+            Some(&ButtonName::Start)
         );
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::DpadRight);

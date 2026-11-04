@@ -264,6 +264,7 @@ for line in sys.stdin:
             | Effect::SettingsBarFont(_)
             | Effect::SettingsScale(_)
             | Effect::SettingsController(_)
+            | Effect::PersistControllerTalk(_, _)
             | Effect::PersistController(_)
             | Effect::SettingsMicrophone(_)
             | Effect::WallpaperPreview(_)

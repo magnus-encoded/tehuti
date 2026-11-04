@@ -72,16 +72,14 @@ impl Settings {
         let confirm = self.pad_family.label(self.pad_family.button(Role::Confirm));
         let back = self.pad_family.label(self.pad_family.button(Role::Back));
         if self.remaining.is_some() {
-            if self.previous_controller.is_some() {
-                format!("{confirm} ON THE NEW PAD: KEEP IT")
-            } else {
-                format!("{confirm}: KEEP THIS MODE")
-            }
+            format!("{confirm}: KEEP THIS MODE")
         } else {
             match self.page {
                 Page::Categories => format!("D-PAD: MOVE   {confirm}: OPEN   {back}: CLOSE"),
                 Page::Display => format!("D-PAD: MOVE   {confirm}: APPLY   {back}: BACK"),
-                Page::Input => format!("UP / DOWN: MOVE   LEFT / RIGHT: CHANGE   {back}: BACK"),
+                Page::Input => {
+                    format!("UP/DOWN: ROW  LEFT/RIGHT: CHANGE  {confirm}: APPLY  {back}: BACK")
+                }
                 Page::Wallpaper => format!("D-PAD: PREVIEW   {confirm}: SAVE   {back}: CANCEL"),
             }
         }
@@ -156,8 +154,7 @@ impl Settings {
             effects.push(Effect::SettingsMode(previous));
         }
         if let Some(previous) = self.previous_controller.take() {
-            self.input.controller = previous.clone();
-            effects.push(Effect::SettingsController(previous));
+            self.input.controller = previous;
         }
     }
 
@@ -379,21 +376,30 @@ impl Settings {
     }
 
     fn input_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
-        if self.remaining.is_some() {
-            self.confirm_controller(name, effects);
-            return;
-        }
         let forward = match name {
             name if name == self.pad_family.button(Role::Back) => return self.back(effects),
             ButtonName::DpadUp => {
-                self.input.row = InputRow::Controller;
+                self.input.row = match self.input.row {
+                    InputRow::Microphone => InputRow::PushToTalk,
+                    InputRow::PushToTalk | InputRow::Controller => InputRow::Controller,
+                };
                 return;
             }
             ButtonName::DpadDown => {
-                self.input.row = InputRow::Microphone;
+                self.input.row = match self.input.row {
+                    InputRow::Controller => InputRow::PushToTalk,
+                    InputRow::PushToTalk | InputRow::Microphone => InputRow::Microphone,
+                };
                 return;
             }
-            name if name == self.pad_family.button(Role::Confirm) => true,
+            name if name == self.pad_family.button(Role::Confirm) => {
+                if self.input.row == InputRow::Controller {
+                    self.previous_controller = None;
+                    effects.push(Effect::PersistController(self.input.controller.clone()));
+                    return;
+                }
+                true
+            }
             ButtonName::DpadRight => true,
             ButtonName::DpadLeft => false,
             ButtonName::South
@@ -414,38 +420,27 @@ impl Settings {
         self.change_input(forward, effects);
     }
 
-    fn confirm_controller(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
-        match name {
-            name if name == self.pad_family.button(Role::Confirm) => {
-                self.remaining = None;
-                self.previous_controller = None;
-                effects.push(Effect::PersistController(self.input.controller.clone()));
-            }
-            name if name == self.pad_family.button(Role::Back) => self.back(effects),
-            ButtonName::South
-            | ButtonName::East
-            | ButtonName::North
-            | ButtonName::West
-            | ButtonName::LeftBumper
-            | ButtonName::RightBumper
-            | ButtonName::LeftTrigger
-            | ButtonName::RightTrigger
-            | ButtonName::Select
-            | ButtonName::Record
-            | ButtonName::Start
-            | ButtonName::Guide
-            | ButtonName::LeftStick
-            | ButtonName::RightStick
-            | ButtonName::DpadUp
-            | ButtonName::DpadDown
-            | ButtonName::DpadLeft
-            | ButtonName::DpadRight => {}
-        }
-    }
-
     fn change_input(&mut self, forward: bool, effects: &mut Vec<Effect>) {
         match self.input.row {
-            InputRow::Controller => self.change_controller(forward, effects),
+            InputRow::Controller => self.change_controller(forward),
+            InputRow::PushToTalk => {
+                let Some(name) = self.input.binding_controller().map(str::to_owned) else {
+                    return;
+                };
+                let current = self.input.controller_bindings.get(&name).copied();
+                if let Some(next) = cycle(
+                    &[None, Some(ButtonName::Record), Some(ButtonName::Start)],
+                    &current,
+                    forward,
+                ) {
+                    if let Some(button) = next {
+                        let _previous = self.input.controller_bindings.insert(name.clone(), button);
+                    } else {
+                        let _previous = self.input.controller_bindings.remove(&name);
+                    }
+                    effects.push(Effect::PersistControllerTalk(name, next));
+                }
+            }
             InputRow::Microphone => {
                 let options = self.input.microphone_options();
                 if let Some(next) = cycle(&options, &self.input.microphone, forward)
@@ -458,22 +453,13 @@ impl Settings {
         }
     }
 
-    /// Auto keeps every pad, so it applies at once; one named pad must confirm within 15 s.
-    fn change_controller(&mut self, forward: bool, effects: &mut Vec<Effect>) {
+    fn change_controller(&mut self, forward: bool) {
         let options = self.input.controller_options();
-        let Some(next) = cycle(&options, &self.input.controller, forward) else {
-            return;
-        };
-        if next == self.input.controller {
-            return;
-        }
-        let previous = core::mem::replace(&mut self.input.controller, next.clone());
-        if next == ControllerChoice::Auto {
-            effects.push(Effect::PersistController(next));
-        } else {
-            self.previous_controller = Some(previous);
-            self.remaining = Some(Duration::from_secs(15));
-            effects.push(Effect::SettingsController(next));
+        if let Some(next) = cycle(&options, &self.input.controller, forward) {
+            let _previous = self
+                .previous_controller
+                .get_or_insert_with(|| self.input.controller.clone());
+            self.input.controller = next;
         }
     }
 
