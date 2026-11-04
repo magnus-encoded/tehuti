@@ -102,18 +102,25 @@ impl IsAlive for LayoutWindow {
 
 impl SpaceElement for LayoutWindow {
     fn geometry(&self) -> Rectangle<i32, Logical> {
-        Rectangle::new(self.window.geometry().loc, self.size.get())
+        if self.mapped() {
+            self.window.geometry()
+        } else {
+            Rectangle::new(self.window.geometry().loc, self.size.get())
+        }
     }
 
     fn bbox(&self) -> Rectangle<i32, Logical> {
         self.window
             .bbox()
-            .intersection(SpaceElement::geometry(self))
+            .intersection(Rectangle::new(self.window.geometry().loc, self.size.get()))
             .unwrap_or_default()
     }
 
     fn is_in_input_region(&self, point: &Point<f64, Logical>) -> bool {
-        SpaceElement::geometry(self).to_f64().contains(*point) && self.window.is_in_input_region(point)
+        Rectangle::new(self.window.geometry().loc, self.size.get())
+            .to_f64()
+            .contains(*point)
+            && self.window.is_in_input_region(point)
     }
 
     fn z_index(&self) -> u8 {
