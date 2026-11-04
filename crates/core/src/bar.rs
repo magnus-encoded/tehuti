@@ -425,6 +425,7 @@ impl Bar {
                 Action::Layout { .. } => ("Layout".into(), Tone::Result),
                 Action::ToggleTicker => ("Ticker".into(), Tone::Result),
                 Action::Quit => ("Quitting".into(), Tone::Result),
+                Action::Restart => ("Restarting".into(), Tone::Result),
             };
             self.result(&text, tone);
         }

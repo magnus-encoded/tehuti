@@ -1493,9 +1493,7 @@ impl Compositor {
             return;
         }
         if command == tehuti_core::menu::Command::Restart {
-            self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
-            self.restart_requested = true;
-            self.quit_requested = true;
+            self.apply(&Action::Restart);
             return;
         }
         if let Some(status) = self.menu_config.session_exit_status(command) {
@@ -2061,7 +2059,8 @@ impl Compositor {
                         self.clock_now().checked_add(core::time::Duration::from_secs(3));
                 }
             }
-            Action::Quit => {
+            Action::Quit | Action::Restart => {
+                self.restart_requested = *action == Action::Restart;
                 self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
                 self.quit_requested = true;
             }
