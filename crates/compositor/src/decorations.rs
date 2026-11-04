@@ -5,10 +5,10 @@ use std::{ffi::OsStr, io, path::Path};
 /// Who draws window title bars and their buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Decorations {
-    /// Clients draw their own title bars, as without the setting.
-    #[default]
+    /// Clients draw their own title bars; no decoration manager is advertised.
     Client,
     /// Clients are told the compositor decorates them, and Tehuti draws nothing.
+    #[default]
     None,
 }
 
@@ -39,7 +39,7 @@ pub fn choose(env: Option<&OsStr>, file: Option<&str>) -> Result<Decorations, (D
             .map_err(|rejected| {
                 (
                     Decorations::default(),
-                    format!("TEHUTI_DECORATIONS=\"{rejected}\" is not client or none; using client"),
+                    format!("TEHUTI_DECORATIONS=\"{rejected}\" is not client or none; using none"),
                 )
             });
     }
@@ -52,7 +52,7 @@ pub fn choose(env: Option<&OsStr>, file: Option<&str>) -> Result<Decorations, (D
     Decorations::parse(line).map_err(|rejected| {
         (
             Decorations::default(),
-            format!("decorations file holds \"{rejected}\", not client or none; using client"),
+            format!("decorations file holds \"{rejected}\", not client or none; using none"),
         )
     })
 }
