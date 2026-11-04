@@ -55,7 +55,9 @@ impl Feedback {
 mod tests {
     use super::Feedback;
     use core::time::Duration;
-    use tehuti_core::layout::{Command, Layout, LayoutConfig, OutputGeometry, OutputId, Rect};
+    use tehuti_core::layout::{
+        Command, Layout, LayoutConfig, OutputGeometry, OutputId, Rect, WindowId, WindowRules,
+    };
 
     #[test]
     fn rapid_switches_replace_feedback_and_expire_after_the_last_switch() {
@@ -70,9 +72,26 @@ mod tests {
             .add_output(OutputId(1), OutputGeometry { area, usable: area }, None)
             .unwrap();
         let mut feedback = Feedback::default();
+        layout.add_window(WindowId(1), WindowRules::default()).unwrap();
         let destinations = crate::destinations::Table::default();
         feedback.update(&layout.snapshot(), Duration::ZERO);
         assert_eq!(feedback.text(Duration::ZERO, &destinations), None);
+        for _ in 0..20 {
+            layout.apply(Command::FocusWorkspaceAt(1));
+            assert_eq!(layout.snapshot().outputs[0].active_workspace, 1);
+            feedback.update(&layout.snapshot(), Duration::ZERO);
+            assert_eq!(
+                feedback.text(Duration::ZERO, &destinations).as_deref(),
+                Some("DOWN · Workspace 2")
+            );
+            layout.apply(Command::FocusWorkspaceAt(0));
+            assert_eq!(layout.snapshot().focused_window, Some(WindowId(1)));
+            feedback.update(&layout.snapshot(), Duration::ZERO);
+            assert_eq!(
+                feedback.text(Duration::ZERO, &destinations).as_deref(),
+                Some("UP · Workspace 1")
+            );
+        }
         layout.apply(Command::FocusWorkspaceAt(1));
         feedback.update(&layout.snapshot(), Duration::ZERO);
         assert_eq!(
