@@ -342,6 +342,10 @@ impl MirrorCopy {
                 }
             }
         }
+        if kept && event.value() == 0 && self.held.contains(&key) {
+            self.held.retain(|held| *held != key);
+            self.frame.push(event);
+        }
         if !kept {
             let held_type = event.event_type() == evdev::EventType::KEY
                 || (event.event_type() == evdev::EventType::ABSOLUTE

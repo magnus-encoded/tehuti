@@ -291,6 +291,93 @@ mod tests {
         assert!(never_sent(&log.borrow(), KeyCode::BTN_START));
     }
 
+    proptest::proptest! {
+    #[test]
+    fn push_to_talk_keeps_completed_chords_from_the_game_without_stuck_buttons(
+        chord in proptest::sample::select(vec!["['record']", "['record', 'west']"]),
+        reverse in proptest::bool::ANY,
+        release_reverse in proptest::bool::ANY,
+    ) {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor(&display.handle(), chord);
+        assert!(compositor.virtual_pad());
+        compositor.speech_input(tehuti_core::speech::SpeechInput::Available);
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button)).unwrap());
+        let mut keys = vec![KeyCode::KEY_RECORD];
+        if chord.contains("west") {
+            keys.push(KeyCode::BTN_WEST);
+        }
+        if reverse {
+            keys.reverse();
+        }
+        for (index, key) in keys.iter().enumerate() {
+            queue(&handles, *key, 1);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(&mut compositor, &mut pad).unwrap();
+            if index.saturating_add(1) < keys.len() {
+                assert!(!never_sent(&log.borrow(), *key));
+            } else {
+                assert!(never_sent(&log.borrow(), *key), "completing press is kept");
+            }
+        }
+        assert!(compositor.voice_bar().segments().iter().any(|segment| segment.text == "Listening…"));
+        let mut releases = keys.clone();
+        if release_reverse {
+            releases.reverse();
+        }
+        for key in &releases {
+            queue(&handles, *key, 0);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(&mut compositor, &mut pad).unwrap();
+        }
+        assert!(!compositor.voice_bar().segments().iter().any(|segment| segment.text == "Listening…"));
+        let sent: Vec<_> = log
+            .borrow()
+            .frames
+            .iter()
+            .flat_map(|(_, frame)| frame.iter().copied())
+            .filter(|(kind, _, _)| *kind == EventType::KEY.0)
+            .collect();
+        let expected = if keys.len() == 1 {
+            Vec::new()
+        } else {
+            vec![
+                (EventType::KEY.0, keys[0].code(), 1),
+                (EventType::KEY.0, keys[0].code(), 0),
+            ]
+        };
+        assert_eq!(sent, expected, "only an incomplete chord reaches the game");
+    }
+    }
+
+    fn talk_compositor(
+        display: &smithay::reexports::wayland_server::DisplayHandle,
+        chord: &str,
+    ) -> tehuti::state::Compositor {
+        use tehuti::state::Compositor;
+        use tehuti_protocol::Event;
+
+        let mut compositor = Compositor::new(display).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(&format!(
+                "app_id = 'game'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\npush_to_talk = {chord}"
+            ))
+            .unwrap(),
+        ]);
+        compositor.handle(&Event::Focus {
+            app_id: Some("game".into()),
+            title: String::new(),
+        });
+        compositor
+    }
+
     /// A filter where plugin 0 takes Start.
     fn start_override() -> tehuti_core::vpad::Filter {
         let mut filter = tehuti_core::vpad::Filter::default();
