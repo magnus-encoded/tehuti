@@ -225,18 +225,18 @@ mod clip_to_tile {
         let size = window.layout_size();
         assert_eq!(window.client_geometry().size, (2200, 1400).into());
         assert!(size.w < 2200 && size.h < OUTPUT_HEIGHT);
-        let inside = (
+        let inside: smithay::utils::Point<f64, smithay::utils::Logical> = (
             f64::from(location.x.saturating_add(1)),
             f64::from(location.y.saturating_add(1)),
         )
             .into();
         assert!(compositor.space.element_under(inside).is_some());
-        let right = (
+        let right: smithay::utils::Point<f64, smithay::utils::Logical> = (
             f64::from(location.x.saturating_add(size.w)),
             f64::from(location.y.saturating_add(1)),
         )
             .into();
-        let bottom = (
+        let bottom: smithay::utils::Point<f64, smithay::utils::Logical> = (
             f64::from(location.x.saturating_add(1)),
             f64::from(location.y.saturating_add(size.h)),
         )
