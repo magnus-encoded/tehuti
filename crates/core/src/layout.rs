@@ -827,6 +827,41 @@ impl Layout {
         Ok(())
     }
 
+    /// Enters or leaves fullscreen for a window on a client's own request.
+    ///
+    /// The focused window takes the same path as [`Command::ToggleFullscreen`];
+    /// any other window changes mode without moving the view.
+    /// # Errors
+    /// Returns an error for an unknown window.
+    pub fn set_fullscreen(&mut self, identity: WindowId, fullscreen: bool) -> Result<(), LayoutError> {
+        let (output, workspace, column, tile) = self
+            .find_window(identity)
+            .ok_or(LayoutError::UnknownWindow(identity))?;
+        let focused = self.snapshot().focused_window == Some(identity);
+        let entry = self
+            .outputs
+            .get_mut(output)
+            .and_then(|output| output.workspaces.get_mut(workspace))
+            .and_then(|workspace| workspace.columns.get_mut(column))
+            .and_then(|column| column.tiles.get_mut(tile))
+            .ok_or(LayoutError::UnknownWindow(identity))?;
+        if (entry.mode == TileMode::Fullscreen) == fullscreen {
+            return Ok(());
+        }
+        if focused {
+            self.apply(Command::ToggleFullscreen);
+        } else {
+            entry.mode = if fullscreen {
+                TileMode::Fullscreen
+            } else {
+                TileMode::Normal
+            };
+            entry.fullscreen_view = None;
+            self.normalize();
+        }
+        Ok(())
+    }
+
     /// Focuses a connected window and its workspace and output.
     /// # Errors
     /// Returns an error if the window is not on a connected output.

@@ -179,6 +179,33 @@ mod layout_actions {
         }
     }
 
+    #[test]
+    fn client_fullscreen_requests_enter_and_leave_fullscreen() {
+        let mut layout = layout(2);
+        let tile = |current: &Layout, window| {
+            let snapshot = current.snapshot();
+            snapshot.outputs[0].workspaces[0]
+                .columns
+                .iter()
+                .flat_map(|column| column.tiles.iter())
+                .find(|tile| tile.window == window)
+                .unwrap()
+                .clone()
+        };
+        for window in [WindowId(0), WindowId(1)] {
+            layout.set_fullscreen(window, true).unwrap();
+            assert!(tile(&layout, window).fullscreen_requested);
+            layout.set_fullscreen(window, true).unwrap();
+            assert!(
+                tile(&layout, window).fullscreen_requested,
+                "a repeated request keeps fullscreen"
+            );
+            layout.set_fullscreen(window, false).unwrap();
+            assert!(!tile(&layout, window).fullscreen_requested);
+        }
+        assert!(layout.set_fullscreen(WindowId(9), true).is_err());
+    }
+
     proptest! {
         #[test]
         fn routed_actions_match_direct_layout_commands(
