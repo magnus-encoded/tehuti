@@ -221,6 +221,8 @@ pub struct EvdevPad<D = Device> {
     translator: DpadHat,
     grabbed: bool,
     mirror: Option<Mirror>,
+    /// The virtual controller kept while hidden, so the application never sees it unplugged.
+    parked: Option<Mirror>,
     plugin_held: Vec<ButtonName>,
     buffered: Vec<Event>,
 }
@@ -543,10 +545,11 @@ impl<D: PadDevice> EvdevPad<D> {
     /// The kernel refused to create the uinput device.
     pub fn set_mirror(&mut self, present: bool, consumed: &dyn Fn(ButtonName) -> bool) -> io::Result<bool> {
         if !present {
-            if let Some(mut mirror) = self.mirror.take()
-                && let Some(frame) = mirror.copy.release()
-            {
-                mirror.device.emit(&frame)?;
+            if let Some(mut mirror) = self.mirror.take() {
+                if let Some(frame) = mirror.copy.release() {
+                    mirror.device.emit(&frame)?;
+                }
+                self.parked = Some(mirror);
             }
             return Ok(false);
         }
@@ -554,7 +557,10 @@ impl<D: PadDevice> EvdevPad<D> {
             return Ok(false);
         }
         let mut mirror = Mirror {
-            device: self.handles.events.virtual_pad()?,
+            device: match self.parked.take() {
+                Some(parked) => parked.device,
+                None => self.handles.events.virtual_pad()?,
+            },
             copy: MirrorCopy::default(),
         };
         // The press that made this pad active was read before the mirror existed; show what is held now.
@@ -656,6 +662,7 @@ impl<D: PadDevice> EvdevPad<D> {
             translator,
             grabbed: true,
             mirror: None,
+            parked: None,
             plugin_held: Vec::new(),
             buffered: Vec::new(),
         }
