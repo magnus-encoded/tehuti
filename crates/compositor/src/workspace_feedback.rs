@@ -4,6 +4,10 @@ use core::time::Duration;
 use tehuti_core::layout::{OutputId, Snapshot, WorkspaceId};
 
 #[derive(Debug, Default)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "conflicts with the workspace unreachable_pub lint"
+)]
 pub(crate) struct Feedback {
     previous: Option<(OutputId, WorkspaceId, usize)>,
     current: Option<(WorkspaceId, String, &'static str, Duration)>,
