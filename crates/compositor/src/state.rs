@@ -1712,9 +1712,8 @@ impl Compositor {
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
             DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
             DispatchEffect::PersistControllerTalk(_name, _button) => {
-                self.save_input_choice(|store| {
-                    store.set_controller_bindings(&self.settings().input.controller_bindings)
-                });
+                let bindings = self.settings().input.controller_bindings.clone();
+                self.save_input_choice(|store| store.set_controller_bindings(&bindings));
                 if let Some(name) = self.settings().input.active_controller.clone() {
                     self.activate_controller(name);
                 }
