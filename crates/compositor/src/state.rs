@@ -2826,7 +2826,7 @@ impl Compositor {
             }
             toplevel.with_pending_state(|pending| {
                 pending.size = None;
-                pending.states = Default::default();
+                pending.states = smithay::wayland::shell::xdg::ToplevelStateSet::default();
                 if focused {
                     let _changed = pending.states.set(xdg_toplevel::State::Activated);
                 }
@@ -3294,15 +3294,7 @@ impl CompositorHandler for Compositor {
             self.map_toplevel(toplevel);
         }
         if let Some(window) = self.window_for_root(&root).cloned() {
-            let requested = smithay::wayland::compositor::with_states(&root, |states| {
-                states
-                    .cached_state
-                    .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
-                    .current()
-                    .geometry
-                    .map(|geometry| geometry.size)
-            });
-            if let Some(requested) = requested {
+            if let Some(requested) = requested_size(&root) {
                 let old = window.replace_requested_geometry(requested);
                 self.log_window_size(&window, old, requested, "client request");
             }
@@ -3328,6 +3320,17 @@ impl CompositorHandler for Compositor {
             }
         }
     }
+}
+
+fn requested_size(root: &WlSurface) -> Option<smithay::utils::Size<i32, smithay::utils::Logical>> {
+    smithay::wayland::compositor::with_states(root, |states| {
+        states
+            .cached_state
+            .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
+            .current()
+            .geometry
+            .map(|geometry| geometry.size)
+    })
 }
 
 impl FractionalScaleHandler for Compositor {
