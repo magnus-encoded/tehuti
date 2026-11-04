@@ -224,10 +224,75 @@ pub struct EvdevPad<D = Device> {
 }
 
 /// The virtual controller presented to the application, with inputs kept from it.
-#[derive(Debug)]
 struct Mirror {
-    device: evdev::uinput::VirtualDevice,
+    device: Box<dyn MirrorSink>,
     copy: MirrorCopy,
+}
+
+impl core::fmt::Debug for Mirror {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_struct("Mirror").field("copy", &self.copy).finish_non_exhaustive()
+    }
+}
+
+/// Where a virtual controller's frames go.
+pub trait MirrorSink {
+    /// Sends one frame, ending in `SYN_REPORT`, to the application.
+    /// # Errors
+    /// The virtual controller could not be written.
+    fn emit(&mut self, frame: &[evdev::InputEvent]) -> io::Result<()>;
+}
+
+impl MirrorSink for evdev::uinput::VirtualDevice {
+    fn emit(&mut self, frame: &[evdev::InputEvent]) -> io::Result<()> {
+        Self::emit(self, frame)
+    }
+}
+
+/// Whether the pad at `path` carries the one virtual pad: only the active pad does, and only while mirroring.
+#[must_use]
+pub fn mirror_wanted(mirrored: bool, active: Option<&std::path::Path>, path: &std::path::Path) -> bool {
+    mirrored && active == Some(path)
+}
+
+/// What [`sync_mirrors`] changed.
+#[derive(Debug, Default)]
+pub struct MirrorSync {
+    /// A virtual pad was just created.
+    pub started: bool,
+    /// Pads whose virtual pad could not be created.
+    pub failed: Vec<std::path::PathBuf>,
+}
+
+/// Keeps exactly one virtual pad, on the active pad, while mirroring.
+///
+/// Old mirrors go first, releasing what they hold, so the application never sees two.
+pub fn sync_mirrors<D: PadDevice>(
+    pads: &mut [(&std::path::Path, &mut EvdevPad<D>)],
+    mirrored: bool,
+    active: Option<&std::path::Path>,
+) -> MirrorSync {
+    let mut sync = MirrorSync::default();
+    for (path, pad) in pads.iter_mut() {
+        if !mirror_wanted(mirrored, active, path)
+            && let Err(error) = pad.set_mirror(false)
+        {
+            warn!(%error, "virtual pad release failed");
+        }
+    }
+    for (path, pad) in pads.iter_mut() {
+        if !mirror_wanted(mirrored, active, path) {
+            continue;
+        }
+        match pad.set_mirror(true) {
+            Ok(created) => sync.started |= created,
+            Err(error) => {
+                warn!(%error, "virtual pad unavailable");
+                sync.failed.push(path.to_path_buf());
+            }
+        }
+    }
+    sync
 }
 
 /// Which raw events reach the virtual controller, frame by frame.
@@ -288,6 +353,22 @@ impl MirrorCopy {
         None
     }
 
+    /// A frame that presses every held key and hat in `state`, marking them held.
+    fn seed(&mut self, state: impl IntoIterator<Item = evdev::InputEvent>) -> Option<Vec<evdev::InputEvent>> {
+        let mut frame: Vec<_> = state.into_iter().filter(|event| event.value() != 0).collect();
+        if frame.is_empty() {
+            return None;
+        }
+        self.held
+            .extend(frame.iter().map(|event| (event.event_type().0, event.code())));
+        frame.push(evdev::InputEvent::new(
+            evdev::EventType::SYNCHRONIZATION.0,
+            evdev::SynchronizationCode::SYN_REPORT.0,
+            0,
+        ));
+        Some(frame)
+    }
+
     /// A frame that lets go of every key and hat the virtual controller shows as held.
     fn release(&mut self) -> Option<Vec<evdev::InputEvent>> {
         if self.held.is_empty() {
@@ -329,6 +410,18 @@ pub trait PadDevice {
     /// # Errors
     /// The client could not release its grab.
     fn ungrab(&mut self) -> io::Result<()>;
+    /// Creates a virtual controller with this controller's capabilities.
+    /// # Errors
+    /// The kernel refused to create it; clients without uinput always refuse.
+    fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    /// Reads pending raw events without translating them.
+    /// # Errors
+    /// The client could not read events.
+    fn fetch_raw(&mut self) -> io::Result<Vec<evdev::InputEvent>> {
+        Ok(Vec::new())
+    }
 }
 
 impl PadDevice for Device {
@@ -349,6 +442,27 @@ impl PadDevice for Device {
 
     fn ungrab(&mut self) -> io::Result<()> {
         Self::ungrab(self)
+    }
+
+    fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
+        let mut builder = evdev::uinput::VirtualDevice::builder()?
+            .name("Tehuti virtual pad")
+            .input_id(self.input_id());
+        if let Some(keys) = self.supported_keys() {
+            builder = builder.with_keys(keys)?;
+        }
+        for (axis, info) in Self::get_absinfo(self)? {
+            builder = builder.with_absolute_axis(&evdev::UinputAbsSetup::new(axis, info))?;
+        }
+        Ok(Box::new(builder.build()?))
+    }
+
+    fn fetch_raw(&mut self) -> io::Result<Vec<evdev::InputEvent>> {
+        match self.fetch_events() {
+            Ok(events) => Ok(events.collect()),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -379,7 +493,27 @@ impl<D> PadHandles<D> {
 }
 
 impl EvdevPad {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.handles.events.name().unwrap_or("unnamed")
+    }
+
+    #[must_use]
+    pub fn usb_id(&self) -> (u16, u16) {
+        let input_id = self.handles.events.input_id();
+        (input_id.vendor(), input_id.product())
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> tehuti_core::pad::Identity {
+        let input_id = self.handles.events.input_id();
+        tehuti_core::pad::Identity::for_device(input_id.vendor(), input_id.product())
+    }
+}
+
+impl<D: PadDevice> EvdevPad<D> {
     /// Presents or removes the virtual controller; true when it was just created.
+    /// A new one starts out holding what the physical pad holds.
     /// Removal first releases whatever the virtual controller still holds.
     /// # Errors
     /// The kernel refused to create the uinput device.
@@ -395,20 +529,25 @@ impl EvdevPad {
         if self.mirror.is_some() {
             return Ok(false);
         }
-        let events = &self.handles.events;
-        let mut builder = evdev::uinput::VirtualDevice::builder()?
-            .name("Tehuti virtual pad")
-            .input_id(events.input_id());
-        if let Some(keys) = events.supported_keys() {
-            builder = builder.with_keys(keys)?;
-        }
-        for (axis, info) in events.get_absinfo()? {
-            builder = builder.with_absolute_axis(&evdev::UinputAbsSetup::new(axis, info))?;
-        }
-        self.mirror = Some(Mirror {
-            device: builder.build()?,
+        let mut mirror = Mirror {
+            device: self.handles.events.virtual_pad()?,
             copy: MirrorCopy::default(),
-        });
+        };
+        // The press that made this pad active was read before the mirror existed; show what is held now.
+        let probe = self.handles.probe();
+        let keys = probe
+            .get_key_state()?
+            .into_iter()
+            .map(|code| evdev::InputEvent::new(evdev::EventType::KEY.0, code, 1));
+        let hats = probe
+            .get_absinfo()?
+            .into_iter()
+            .filter(|(axis, _)| *axis == AbsoluteAxisCode::ABS_HAT0X || *axis == AbsoluteAxisCode::ABS_HAT0Y)
+            .map(|(axis, info)| evdev::InputEvent::new(evdev::EventType::ABSOLUTE.0, axis.0, info.value()));
+        if let Some(frame) = mirror.copy.seed(keys.chain(hats)) {
+            mirror.device.emit(&frame)?;
+        }
+        self.mirror = Some(mirror);
         Ok(true)
     }
 
@@ -435,11 +574,7 @@ impl EvdevPad {
         else {
             return Ok(());
         };
-        let raw: Vec<evdev::InputEvent> = match handles.events().fetch_events() {
-            Ok(events) => events.collect(),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Vec::new(),
-            Err(error) => return Err(error),
-        };
+        let raw = handles.events().fetch_raw()?;
         for event in raw {
             if let Some(frame) = mirror.copy.take(event, translator, consume) {
                 mirror.device.emit(&frame)?;
@@ -448,25 +583,6 @@ impl EvdevPad {
         Ok(())
     }
 
-    #[must_use]
-    pub fn name(&self) -> &str {
-        self.handles.events.name().unwrap_or("unnamed")
-    }
-
-    #[must_use]
-    pub fn usb_id(&self) -> (u16, u16) {
-        let input_id = self.handles.events.input_id();
-        (input_id.vendor(), input_id.product())
-    }
-
-    #[must_use]
-    pub fn identity(&self) -> tehuti_core::pad::Identity {
-        let input_id = self.handles.events.input_id();
-        tehuti_core::pad::Identity::for_device(input_id.vendor(), input_id.product())
-    }
-}
-
-impl<D: PadDevice> EvdevPad<D> {
     /// Matches exclusive ownership to the focused context, keeping the event client open.
     /// # Errors
     /// The kernel refused the ownership change.
@@ -819,6 +935,24 @@ mod mirror_tests {
     }
 
     proptest::proptest! {
+        #[test]
+        fn at_most_the_active_pad_is_mirrored(
+            pads in proptest::collection::btree_set(0_u8..8, 0..6),
+            active in proptest::option::of(0_u8..10),
+            mirrored in proptest::bool::ANY,
+        ) {
+            let path = |number: u8| std::path::PathBuf::from(format!("/dev/input/event{number}"));
+            let active = active.map(path);
+            let wanted = pads
+                .iter()
+                .filter(|number| super::mirror_wanted(mirrored, active.as_deref(), &path(**number)))
+                .count();
+            proptest::prop_assert!(wanted <= 1, "the application sees one virtual pad at most");
+            if active.is_none() {
+                proptest::prop_assert_eq!(wanted, 0, "a pad that never sent input gets no mirror");
+            }
+        }
+
         #[test]
         fn release_lets_go_of_exactly_what_the_mirror_still_holds(
             series in proptest::collection::vec(
