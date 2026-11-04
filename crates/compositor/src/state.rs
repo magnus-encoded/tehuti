@@ -3092,7 +3092,7 @@ impl XdgShellHandler for Compositor {
 }
 
 impl Compositor {
-    /// Applies the decorations setting. With [`Decorations::None`](crate::decorations::Decorations::None)
+    /// Applies the decorations setting (default `none`). With [`Decorations::None`](crate::decorations::Decorations::None)
     /// it advertises `zxdg_decoration_manager_v1` and answers every toplevel with server-side mode,
     /// so clients drop their title bars; Tehuti draws none. With `Client` no global is advertised.
     pub fn set_decorations(&mut self, decorations: crate::decorations::Decorations) {
