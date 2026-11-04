@@ -125,6 +125,8 @@ pub struct Compositor {
     mouse_mode: bool,
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
+    pub(crate) output_capture: crate::rendering::OutputCapture,
+    pub(crate) capture_sessions: crate::screen_capture::Sessions,
     dispatch: tehuti_core::dispatch::State,
     menu_config: crate::system_menu::Config,
     settings_display: crate::settings::Display,
@@ -229,6 +231,7 @@ impl Compositor {
         reason = "one flat list of Wayland globals; splitting hides the setup order"
     )]
     pub fn new(display: &DisplayHandle) -> Result<Self, SetupError> {
+        crate::screen_capture::register(display);
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(display, "tehuti");
         let keymap = default_keymap()?;
@@ -256,6 +259,8 @@ impl Compositor {
             mouse_mode: false,
             space: Space::default(),
             output: None,
+            output_capture: crate::rendering::OutputCapture::default(),
+            capture_sessions: crate::screen_capture::Sessions::default(),
             // Agent launchers title windows Claude/Codex[: project]; mirror them until compositor config exists.
             dispatch: tehuti_core::dispatch::State::new(
                 tehuti_core::State::new().with_bar_agents(vec!["Claude".into(), "Codex".into()]),
@@ -311,7 +316,10 @@ impl Compositor {
             surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             decoration_state: None,
-            shm_state: ShmState::new::<Self>(display, vec![]),
+            shm_state: ShmState::new::<Self>(
+                display,
+                vec![smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr8888],
+            ),
             _viewporter_state: ViewporterState::new::<Self>(display),
             _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
             dmabuf: crate::rendering::DmabufSupport::default(),
@@ -738,6 +746,7 @@ impl Compositor {
 
     /// Supplies elapsed wall time to the pure core before input or replies.
     pub fn advance_time(&mut self) {
+        crate::screen_capture::refresh(self);
         let elapsed = self.read_clock();
         tracing::trace!(?elapsed, "dispatch tick");
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
