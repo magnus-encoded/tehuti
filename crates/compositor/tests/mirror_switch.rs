@@ -99,6 +99,10 @@ mod tests {
         (pad, Handles { raw, held, hat })
     }
 
+    fn queue(handles: &Handles, code: KeyCode, value: i32) {
+        handles.raw.borrow_mut().extend(press(code, value));
+    }
+
     fn press(code: KeyCode, value: i32) -> [InputEvent; 2] {
         [
             InputEvent::new(EventType::KEY.0, code.code(), value),
@@ -120,10 +124,7 @@ mod tests {
             &|_| false,
         );
         assert!(first_sync.started && first_sync.failed.is_empty());
-        first_handles
-            .raw
-            .borrow_mut()
-            .extend(press(KeyCode::BTN_SOUTH, 1));
+        queue(&first_handles, KeyCode::BTN_SOUTH, 1);
         first.pump_mirror(&mut |_, _| false).unwrap();
 
         // The second pad's press reached the core before its mirror existed; its kernel state still holds it.
@@ -165,21 +166,14 @@ mod tests {
 
     #[test]
     fn a_switch_keeps_a_plugin_button_from_the_game_and_its_release_reaches_the_plugin() {
-        use tehuti_core::vpad::{Filter, Verdict};
-        use tehuti_protocol::{ButtonName, ButtonState, PadOverride};
+        use tehuti_core::vpad::Verdict;
+        use tehuti_protocol::{ButtonName, ButtonState};
 
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut first, first_handles) = pad("first", &log);
         let (mut second, second_handles) = pad("second", &log);
         let (first_path, second_path) = (Path::new("/dev/input/event1"), Path::new("/dev/input/event2"));
-        let filter = RefCell::new(Filter::default());
-        filter.borrow_mut().set(
-            0,
-            vec![PadOverride {
-                button: ButtonName::Start,
-                held: Vec::new(),
-            }],
-        );
+        let filter = RefCell::new(start_override());
         // What the plugin receives: one entry per input the filter hands it.
         let plugin = RefCell::new(Vec::new());
         let mut step = |button: ButtonName, state: ButtonState| {
@@ -197,10 +191,7 @@ mod tests {
             Some(first_path),
             &consumed,
         );
-        first_handles
-            .raw
-            .borrow_mut()
-            .extend(press(KeyCode::BTN_START, 1));
+        queue(&first_handles, KeyCode::BTN_START, 1);
         first.pump_mirror(&mut step).unwrap();
         let before = filter.borrow().clone();
 
@@ -223,25 +214,37 @@ mod tests {
             "no extra press reaches the plugin"
         );
 
-        second_handles
-            .raw
-            .borrow_mut()
-            .extend(press(KeyCode::BTN_START, 0));
+        queue(&second_handles, KeyCode::BTN_START, 0);
         second.pump_mirror(&mut step).unwrap();
         assert_eq!(
             plugin.borrow().last(),
             Some(&(ButtonName::Start, ButtonState::Released)),
             "the release still reaches the plugin"
         );
-        let start = KeyCode::BTN_START.code();
         assert!(
-            log.borrow()
-                .frames
-                .iter()
-                .all(|(_, frame)| frame.iter().all(|(_, code, _)| *code != start)),
+            never_sent(&log.borrow(), KeyCode::BTN_START),
             "the game never sees the plugin's button: {:?}",
             log.borrow().frames
         );
+    }
+
+    /// A filter where plugin 0 takes Start.
+    fn start_override() -> tehuti_core::vpad::Filter {
+        let mut filter = tehuti_core::vpad::Filter::default();
+        filter.set(
+            0,
+            vec![tehuti_protocol::PadOverride {
+                button: tehuti_protocol::ButtonName::Start,
+                held: Vec::new(),
+            }],
+        );
+        filter
+    }
+
+    fn never_sent(log: &Log, key: KeyCode) -> bool {
+        log.frames
+            .iter()
+            .all(|(_, frame)| frame.iter().all(|(_, code, _)| *code != key.code()))
     }
 
     #[test]
