@@ -235,10 +235,17 @@ mod tests {
             .unwrap();
         assert!(compositor.import_dmabuf(&dmabuf()));
         assert!(compositor.import_dmabuf(&dmabuf()));
-        assert_eq!(first.borrow().imports, 1, "the replaced renderer imports nothing more");
+        assert_eq!(
+            first.borrow().imports,
+            1,
+            "the replaced renderer imports nothing more"
+        );
         assert_eq!(second.borrow().imports, 2, "imports reach the newest renderer");
         let first = Rc::downgrade(&first);
-        assert!(first.upgrade().is_none(), "the compositor holds no replaced renderer");
+        assert!(
+            first.upgrade().is_none(),
+            "the compositor holds no replaced renderer"
+        );
     }
 
     #[test]
@@ -254,6 +261,10 @@ mod tests {
         assert!(!compositor.import_dmabuf(&buffer));
         drop(buffer);
         assert!(weak.is_gone(), "nothing keeps a buffer whose import failed");
-        assert_eq!(Rc::strong_count(&device), 1, "the compositor holds the renderer weakly");
+        assert_eq!(
+            Rc::strong_count(&device),
+            1,
+            "the compositor holds the renderer weakly"
+        );
     }
 }

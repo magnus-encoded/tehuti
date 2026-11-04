@@ -5,9 +5,9 @@ mod gpu_memory_soak {
     use core::time::Duration;
     use std::{
         cell::RefCell,
-        rc::Rc,
         io::Write,
         os::{fd::AsFd, unix::net::UnixStream},
+        rc::Rc,
         sync::{Arc, mpsc},
         thread,
         time::Instant,
@@ -187,9 +187,18 @@ mod gpu_memory_soak {
     fn draw(shm: &WlShm, surface: &WlSurface, handle: &QueueHandle<App>, size: (i32, i32)) {
         let bytes = size.0 * size.1 * 4;
         let mut file = tempfile::tempfile().unwrap();
-        file.write_all(&vec![200; usize::try_from(bytes).unwrap()]).unwrap();
+        file.write_all(&vec![200; usize::try_from(bytes).unwrap()])
+            .unwrap();
         let pool = shm.create_pool(file.as_fd(), bytes, handle, ());
-        let buffer = pool.create_buffer(0, size.0, size.1, size.0 * 4, wl_shm::Format::Argb8888, handle, ());
+        let buffer = pool.create_buffer(
+            0,
+            size.0,
+            size.1,
+            size.0 * 4,
+            wl_shm::Format::Argb8888,
+            handle,
+            (),
+        );
         pool.destroy();
         surface.attach(Some(&buffer), 0, 0);
         surface.damage_buffer(0, 0, size.0, size.1);
@@ -205,7 +214,8 @@ mod gpu_memory_soak {
         let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
         let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
         let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
-        let dmabuf: Option<ZwpLinuxDmabufV1> = gpu_clients().then(|| globals.bind(&handle, 3..=3, ()).unwrap());
+        let dmabuf: Option<ZwpLinuxDmabufV1> =
+            gpu_clients().then(|| globals.bind(&handle, 3..=3, ()).unwrap());
         let mut gbm = gpu_clients().then(|| GbmAllocator::new(render_node(), GbmBufferFlags::RENDERING));
         loop {
             let mut app = App::default();
@@ -268,7 +278,10 @@ mod gpu_memory_soak {
         String::from_utf8(output.stdout).ok()?.lines().find_map(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
             let _pid = fields.iter().position(|field| *field == pid)?;
-            fields.iter().rev().find_map(|field| field.strip_suffix("MiB")?.parse().ok())
+            fields
+                .iter()
+                .rev()
+                .find_map(|field| field.strip_suffix("MiB")?.parse().ok())
         })
     }
 
@@ -286,15 +299,21 @@ mod gpu_memory_soak {
     fn gpu(display: &Display<Compositor>, compositor: &mut Compositor) -> Gpu {
         let gbm = render_node();
         let mut api: GbmGlesBackend<GlesRenderer, DeviceFd> = GbmGlesBackend::default();
-        api.add_node(DrmNode::from_file(gbm.as_fd()).unwrap(), gbm).unwrap();
+        api.add_node(DrmNode::from_file(gbm.as_fd()).unwrap(), gbm)
+            .unwrap();
         let mut devices = Vec::new();
         api.enumerate(&mut devices).unwrap();
         let device = Rc::new(RefCell::new(devices.pop().unwrap()));
-        let (formats, _) = tehuti::rendering::client_formats(device.borrow_mut().renderer_mut(), &display.handle());
+        let (formats, _) =
+            tehuti::rendering::client_formats(device.borrow_mut().renderer_mut(), &display.handle());
         compositor
-            .enable_dmabuf_on(&display.handle(), formats.iter().copied(), None, &device, |device, dmabuf| {
-                device.renderer_mut().import_dmabuf(dmabuf, None).is_ok()
-            })
+            .enable_dmabuf_on(
+                &display.handle(),
+                formats.iter().copied(),
+                None,
+                &device,
+                |device, dmabuf| device.renderer_mut().import_dmabuf(dmabuf, None).is_ok(),
+            )
             .unwrap();
         let output = compositor.output.clone().unwrap();
         let mode = output.current_mode().unwrap();
@@ -318,7 +337,10 @@ mod gpu_memory_soak {
         let output = compositor.output.clone().unwrap();
         let mut device = gpu.device.borrow_mut();
         let renderer = device.renderer_mut();
-        let overlay = gpu.overlays.elements(renderer, &output, compositor, "00:00").unwrap();
+        let overlay = gpu
+            .overlays
+            .elements(renderer, &output, compositor, "00:00")
+            .unwrap();
         let mut target = renderer.bind(&mut gpu.target).unwrap();
         tehuti::wallpaper::render_output_at_age(
             &output,
@@ -336,12 +358,19 @@ mod gpu_memory_soak {
         drop(target);
         drop(device);
         compositor.space.elements().for_each(|window| {
-            window.send_frame(&output, Duration::ZERO, Some(Duration::ZERO), |_, _| Some(output.clone()));
+            window.send_frame(&output, Duration::ZERO, Some(Duration::ZERO), |_, _| {
+                Some(output.clone())
+            });
         });
         thread::sleep(Duration::from_millis(2));
     }
 
-    fn frames_for(gpu: &mut Gpu, compositor: &mut Compositor, display: &mut Display<Compositor>, duration: Duration) {
+    fn frames_for(
+        gpu: &mut Gpu,
+        compositor: &mut Compositor,
+        display: &mut Display<Compositor>,
+        duration: Duration,
+    ) {
         let started = Instant::now();
         while started.elapsed() < duration {
             frame(gpu, compositor, display);
@@ -376,7 +405,12 @@ mod gpu_memory_soak {
                 let replaced = core::mem::replace(&mut gpu, self::gpu(&display, &mut compositor));
                 drop(replaced);
             }
-            frames_for(&mut gpu, &mut compositor, &mut display, Duration::from_millis(150));
+            frames_for(
+                &mut gpu,
+                &mut compositor,
+                &mut display,
+                Duration::from_millis(150),
+            );
             for _ in 0..3 {
                 compositor.apply_layout_command(Command::SwitchPresetColumnWidth);
                 frames_for(&mut gpu, &mut compositor, &mut display, Duration::from_millis(60));
