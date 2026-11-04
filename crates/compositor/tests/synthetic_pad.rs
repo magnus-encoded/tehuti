@@ -90,6 +90,7 @@ mod synthetic_pad {
 
     /// `KEY_ENTER` from linux/input-event-codes.h, as `wl_keyboard.key` reports it.
     const KEY_ENTER: u32 = 28;
+    const KEY_LEFT_SHIFT: u32 = 42;
 
     #[derive(Debug, PartialEq, Eq)]
     enum Trace {
@@ -3209,10 +3210,14 @@ else:
                 vec![
                     (30, KeyState::Pressed),
                     (30, KeyState::Released),
+                    (KEY_LEFT_SHIFT, KeyState::Pressed),
                     (30, KeyState::Pressed),
                     (30, KeyState::Released),
+                    (KEY_LEFT_SHIFT, KeyState::Released),
+                    (KEY_LEFT_SHIFT, KeyState::Pressed),
                     (2, KeyState::Pressed),
                     (2, KeyState::Released),
+                    (KEY_LEFT_SHIFT, KeyState::Released),
                     (KEY_ENTER, KeyState::Pressed),
                     (KEY_ENTER, KeyState::Released),
                 ]
