@@ -556,17 +556,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn the_input_page_previews_then_saves_one_pad_and_a_microphone() -> Result<(), Box<dyn core::error::Error>>
-    {
-        use tehuti_core::dispatch::{ControllerChoice, MicrophoneChoice};
-        use tehuti_protocol::{ButtonName, ButtonState};
-        let directory = tempfile::tempdir()?;
-        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
-        let display = Display::<Compositor>::new()?;
-        let mut compositor = Compositor::new(&display.handle())?;
-        compositor.load_input_choices(store.clone());
-        compositor.configure_controllers(crate::controller::numbered_controllers([
+    fn input_test_controllers() -> Vec<tehuti_core::dispatch::ControllerInfo> {
+        crate::controller::numbered_controllers([
             (
                 "/dev/input/event2".into(),
                 "Wireless Controller".into(),
@@ -579,7 +570,20 @@ mod tests {
                 0x045e,
                 0x0b13,
             ),
-        ]));
+        ])
+    }
+
+    #[test]
+    fn the_input_page_confirms_a_pad_and_saves_its_binding_and_microphone()
+    -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_core::dispatch::{ControllerChoice, MicrophoneChoice};
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let directory = tempfile::tempdir()?;
+        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.load_input_choices(store.clone());
+        compositor.configure_controllers(input_test_controllers());
         compositor.handle(&Event::Speech {
             text: Text::new("Pop the hood.".into())?,
         });

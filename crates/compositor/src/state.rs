@@ -1290,7 +1290,7 @@ impl Compositor {
             tracing::warn!(%error, "controller bindings unreadable; using context defaults");
             std::collections::BTreeMap::new()
         });
-        let _rejection = self.dispatch(DispatchInput::ControllerBindings(bindings));
+        let _bindings_rejection = self.dispatch(DispatchInput::ControllerBindings(bindings));
         self.controller_choice = controller.clone();
         self.input_choices = Some(store);
         let _rejection = self.dispatch(DispatchInput::InputChoices {
