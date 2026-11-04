@@ -112,6 +112,7 @@ mod synthetic_pad {
         repeat_info: Option<(i32, i32)>,
         clicks: Vec<(u32, wayland_client::protocol::wl_pointer::ButtonState)>,
         pointer_focused: Option<wayland_client::backend::ObjectId>,
+        motions: Vec<(f64, f64)>,
         axes: Vec<(
             wayland_client::backend::ObjectId,
             wayland_client::protocol::wl_pointer::Axis,
@@ -748,6 +749,12 @@ mod synthetic_pad {
             if matches!(&event, PointerEvent::Leave { .. }) {
                 app.pointer_focused = None;
             }
+            if let PointerEvent::Motion {
+                surface_x, surface_y, ..
+            } = &event
+            {
+                app.motions.push((*surface_x, *surface_y));
+            }
             if let PointerEvent::Axis {
                 axis: WEnum::Value(axis),
                 value,
@@ -921,6 +928,52 @@ mod synthetic_pad {
             vec![(0x110, PointerState::Pressed), (0x110, PointerState::Released)]
         );
         assert!(app.keys.is_empty(), "A clicks instead of sending Enter");
+    }
+
+    #[test]
+    fn host_relative_motion_and_left_button_reach_the_focused_client() {
+        use tehuti_core::dispatch::PointerButton;
+        use wayland_client::protocol::wl_pointer::ButtonState as PointerState;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(
+            ["pointer-test", "other-window"]
+                .map(|app_id| {
+                    tehuti_protocol::parse_context(&format!(
+                        "app_id = '{app_id}'\n[buttons]\n[pointer]\nphysical = true"
+                    ))
+                    .unwrap()
+                })
+                .to_vec(),
+        );
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || run_pointer_client(stream, &sender, None));
+        let began = Instant::now();
+        let mut sent = false;
+        while !client.is_finished() {
+            assert!(began.elapsed() < Duration::from_secs(5), "host pointer timed out");
+            let _events = display.dispatch_clients(&mut compositor).unwrap();
+            if !sent && receiver.try_recv().is_ok() {
+                compositor.host_pointer_motion(12.5, 7.25);
+                compositor.host_pointer_button(PointerButton::Left, true);
+                compositor.host_pointer_button(PointerButton::Left, false);
+                sent = true;
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let app = client.join().unwrap();
+        assert!(app.motions.contains(&(112.5, 107.25)));
+        assert_eq!(
+            app.clicks,
+            vec![(0x110, PointerState::Pressed), (0x110, PointerState::Released)]
+        );
+        assert_eq!(app.pointer_focused, app.focused);
     }
 
     fn toggle_pointer_mode(compositor: &mut Compositor) {
