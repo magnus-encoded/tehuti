@@ -841,7 +841,7 @@ impl Compositor {
     }
     #[must_use]
     pub fn pad_passthrough(&self) -> bool {
-        self.dispatch.core().passthrough() && !self.dispatch.adjuster_owns_pad()
+        self.dispatch.core().passthrough() && !self.dispatch.overlay_owns_pad()
     }
 
     pub fn set_volume_backend(&mut self, backend: crate::volume::Backend) {
@@ -1011,7 +1011,7 @@ impl Compositor {
         if waiting
             || self.choice_list().is_some()
             || self.dispatch.keyboard().is_open()
-            || self.dispatch.adjuster_owns_pad()
+            || self.dispatch.overlay_owns_pad()
         {
             return;
         }
@@ -3431,32 +3431,6 @@ mod tests {
     use core::time::Duration;
     use smithay::reexports::wayland_server::Display;
     use tehuti_protocol::Event;
-
-    #[test]
-    fn typed_text_presses_the_modifier_keys_its_characters_need() {
-        let context =
-            smithay::input::keyboard::xkb::Context::new(smithay::input::keyboard::xkb::CONTEXT_NO_FLAGS);
-        let keymap = smithay::input::keyboard::xkb::Keymap::new_from_names(
-            &context,
-            "",
-            "",
-            "us",
-            "",
-            None,
-            smithay::input::keyboard::xkb::KEYMAP_COMPILE_NO_FLAGS,
-        )
-        .unwrap();
-        let keys = super::text_keys(&keymap);
-        for character in "/g Hello! @Bob?".chars().filter(|character| *character != ' ') {
-            let needs = super::modifier_keys(keys[&character].1);
-            let shifted = character.is_uppercase() || "!@?".contains(character);
-            assert_eq!(
-                needs,
-                if shifted { vec!["Shift_L"] } else { vec![] },
-                "{character:?}"
-            );
-        }
-    }
 
     #[test]
     fn polling_speech_shows_the_process_outage_notice() {

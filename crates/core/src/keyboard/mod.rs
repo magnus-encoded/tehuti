@@ -1215,9 +1215,7 @@ fn key_at(keys: &[Slot], doubled: u32) -> usize {
 /// Whether a transcript asks to open the keyboard.
 #[must_use]
 pub fn is_open_phrase(text: &str) -> bool {
-    text.trim()
-        .trim_end_matches(['.', '!', '?'])
-        .eq_ignore_ascii_case("keyboard")
+    crate::tool_words::tool_word(text) == Some(crate::tool_words::ToolWord::Keyboard)
 }
 
 #[cfg(test)]

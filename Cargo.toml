@@ -56,6 +56,13 @@ min_ident_chars = "deny"
 missing_docs_in_private_items = "allow"
 module_name_repetitions = "allow"
 
+# Debug info is most of a debug target; dependencies need none, our crates need line tables for backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 panic = "abort"
 

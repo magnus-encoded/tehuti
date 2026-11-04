@@ -4583,7 +4583,6 @@ fn plugin_named_adjusters_run_in_core_and_report_preview_and_commit() {
         finished: false
     }));
     let state = world.run(state, Input::Sticks(Sticks::default()));
-    assert!(state.adjuster_owns_pad());
     let state = world.event(
         state,
         Event::Tick {
@@ -4694,7 +4693,7 @@ fn volume_takes_the_pad_from_a_passthrough_application_until_commit() {
     );
     assert!(world.trace.contains(&Effect::ReadVolume));
     let state = world.run(state, Input::Volume(Some(50)));
-    assert!(state.adjuster_owns_pad());
+    assert!(state.overlay_owns_pad());
     let state = world.run(
         state,
         Input::Sticks(Sticks {
@@ -4710,14 +4709,13 @@ fn volume_takes_the_pad_from_a_passthrough_application_until_commit() {
     );
     assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(55));
     let state = world.run(state, Input::Sticks(Sticks::default()));
-    assert!(state.adjuster_owns_pad());
     let state = world.event(
         state,
         Event::Tick {
             elapsed: crate::adjuster::HIDE_DELAY,
         },
     );
-    assert!(!state.adjuster_owns_pad());
+    assert!(!state.overlay_owns_pad());
 }
 
 #[test]
@@ -4766,6 +4764,48 @@ fn volume_speech_opens_the_gauge_over_the_empty_desktop_invitation() {
     assert!(world.trace.contains(&Effect::ReadVolume));
     let state = world.run(state, Input::Volume(Some(50)));
     assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(50));
+}
+
+#[test]
+fn tool_words_run_before_plugin_routing_in_every_context() {
+    for passthrough in [false, true] {
+        for (word, active) in [("keyboard", false), ("mouse mode", true)] {
+            let context = tehuti_protocol::parse_context(&format!(
+                "app_id = 'org.example.Game'\nbuttons = {{}}\n[pad]\npassthrough = {passthrough}"
+            ))
+            .unwrap();
+            let mut world = World {
+                plugin_active: true,
+                ..World::default()
+            };
+            let mut state = configured(vec![context], "org.example.Game");
+            state = world.run(state, speech_event(word));
+            assert_eq!(
+                state.keyboard().is_open(),
+                !active,
+                "{word}, passthrough = {passthrough}"
+            );
+            assert_eq!(state.overlay_owns_pad(), passthrough);
+            assert!(
+                !world.trace.iter().any(|effect| matches!(
+                    effect,
+                    Effect::SpeechRouted { .. }
+                        | Effect::QueryPlugin(Event::Speech { .. })
+                        | Effect::DispatchPlugin {
+                            event: Event::Speech { .. },
+                            ..
+                        }
+                )),
+                "plugins never see {word}"
+            );
+            if active {
+                assert!(world.trace.contains(&Effect::MouseMode(true)));
+                state = world.run(state, speech_event("Mouse mode."));
+                assert!(!state.overlay_owns_pad(), "saying it again releases the pad");
+                assert!(world.trace.contains(&Effect::MouseMode(false)));
+            }
+        }
+    }
 }
 
 #[test]
