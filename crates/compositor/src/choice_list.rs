@@ -29,7 +29,16 @@ const LIVE: [u8; 4] = [119, 88, 36, 255];
 const RESULT: [u8; 4] = [77, 96, 42, 255];
 const LEFT: usize = 1280;
 const WIDTH: usize = 640;
-const INSET: usize = 24;
+const INSET: usize = 32;
+const CONTENT_WIDTH: usize = WIDTH.saturating_sub(INSET.saturating_mul(2));
+const ROW_TEXT_LEFT: usize = INSET.saturating_add(56);
+const ROW_TEXT_WIDTH: usize = WIDTH.saturating_sub(ROW_TEXT_LEFT).saturating_sub(INSET);
+const CORNER_RADIUS: usize = 12;
+const NAME_SIZE: usize = 26;
+const DETAIL_SIZE: usize = 16;
+const HINT_LEFT: usize = 508;
+const HINT_GAP: usize = 16;
+const SELECTED_TEXT_WIDTH: usize = HINT_LEFT.saturating_sub(ROW_TEXT_LEFT).saturating_sub(HINT_GAP);
 
 #[derive(Debug, Default)]
 pub struct Buffer {
@@ -151,7 +160,7 @@ fn panel_bottom(size: (i32, i32), scale: i32) -> Option<usize> {
 }
 
 fn label(canvas: &mut Canvas, x: usize, y: usize, width: usize, text: &str, size: usize, colour: [u8; 4]) {
-    canvas.line((x, y, width, size.saturating_add(6)), &[(text, colour)], size);
+    canvas.ellipsized_line((x, y, width, size.saturating_add(6)), &[(text, colour)], size);
 }
 
 fn border(canvas: &mut Canvas, y: usize, height: usize, colour: [u8; 4], dashed: bool) {
@@ -202,7 +211,7 @@ fn paint(canvas: &mut Canvas, list: &List, family: PadFamily, bottom: usize) -> 
     let create_height: usize = if list.slots().create.is_some() { 128 } else { 0 };
     let height = bottom.saturating_sub(PANEL_TOP);
     panel(canvas, height);
-    paint_header(canvas, list, family, header);
+    paint_header(canvas, list, family);
     let mut y = 48usize.saturating_add(header);
     paint_create(canvas, list, family, y);
     y = y.saturating_add(create_height);
@@ -217,7 +226,15 @@ fn paint(canvas: &mut Canvas, list: &List, family: PadFamily, bottom: usize) -> 
             } else {
                 &list.slots().remaining_heading
             };
-            label(canvas, LEFT.saturating_add(INSET), y, 592, heading, 14, DIM);
+            label(
+                canvas,
+                LEFT.saturating_add(INSET),
+                y,
+                CONTENT_WIDTH,
+                heading,
+                14,
+                DIM,
+            );
             y = y.saturating_add(28);
             section = Some(row.close);
         }
@@ -240,7 +257,7 @@ fn paint_footer(canvas: &mut Canvas, list: &List, y: usize, footer_top: usize) {
             canvas,
             LEFT.saturating_add(INSET),
             y.saturating_add(18),
-            592,
+            CONTENT_WIDTH,
             message,
             25,
             DIM,
@@ -250,9 +267,9 @@ fn paint_footer(canvas: &mut Canvas, list: &List, y: usize, footer_top: usize) {
             canvas,
             LEFT.saturating_add(INSET),
             footer_top.saturating_add(18),
-            592,
+            CONTENT_WIDTH,
             list.footer(),
-            16,
+            DETAIL_SIZE,
             DIM,
         );
     }
@@ -296,27 +313,25 @@ fn panel(canvas: &mut Canvas, height: usize) {
     );
 }
 
-fn paint_header(canvas: &mut Canvas, list: &List, family: PadFamily, height: usize) {
-    canvas.rectangle(
-        LEFT.saturating_add(1),
-        PANEL_TOP.saturating_add(1),
-        WIDTH.saturating_sub(2),
-        height,
-        [88, 65, 47, 255],
+fn paint_header(canvas: &mut Canvas, list: &List, family: PadFamily) {
+    canvas.rounded_rectangle(
+        (LEFT.saturating_add(24), 36, WIDTH.saturating_sub(48), 56),
+        CORNER_RADIUS,
+        [53, 44, 37, 255],
     );
     label(
         canvas,
         LEFT.saturating_add(INSET),
-        54,
-        430,
+        50,
+        440,
         &list.slots().title,
-        34,
+        NAME_SIZE,
         WHITE,
     );
     hint(
         canvas,
-        LEFT.saturating_add(508),
-        56,
+        LEFT.saturating_add(HINT_LEFT),
+        50,
         &list.back_hint(family),
         family,
     );
@@ -325,7 +340,7 @@ fn paint_header(canvas: &mut Canvas, list: &List, family: PadFamily, height: usi
             canvas,
             LEFT.saturating_add(INSET),
             100usize.saturating_add(index.saturating_mul(24)),
-            WIDTH.saturating_sub(48),
+            CONTENT_WIDTH,
             scope,
             17,
             DIM,
@@ -362,7 +377,11 @@ fn paint_create(canvas: &mut Canvas, list: &List, family: PadFamily, y: usize) {
         canvas,
         LEFT.saturating_add(INSET),
         y.saturating_add(38),
-        if selected { 448 } else { 592 },
+        if selected {
+            SELECTED_TEXT_WIDTH
+        } else {
+            CONTENT_WIDTH
+        },
         &list.slots().heard,
         26,
         WHITE,
@@ -371,7 +390,7 @@ fn paint_create(canvas: &mut Canvas, list: &List, family: PadFamily, y: usize) {
         canvas,
         LEFT.saturating_add(INSET),
         y.saturating_add(80),
-        592,
+        CONTENT_WIDTH,
         &create.detail,
         16,
         DIM,
@@ -389,16 +408,19 @@ fn paint_candidate(
 ) {
     let y = top.saturating_add(height.saturating_sub(72) / 2);
     let selected = list.selected() == Some(row.choice);
+    canvas.rounded_rectangle(
+        (LEFT.saturating_add(12), top, WIDTH.saturating_sub(24), height),
+        CORNER_RADIUS,
+        if selected { LIVE } else { [43, 36, 30, 255] },
+    );
     if selected {
-        canvas.rectangle(
-            LEFT.saturating_add(12),
-            top,
-            WIDTH.saturating_sub(24),
-            height,
-            LIVE,
+        canvas.rounded_rectangle(
+            (LEFT.saturating_add(16), y.saturating_add(18), 4, 36),
+            2,
+            [230, 215, 178, 255],
         );
-        canvas.rectangle(LEFT.saturating_add(12), top, 8, height, [230, 215, 178, 255]);
     }
+    paint_initial(canvas, &row.candidate.name, y, selected);
     if list
         .candidates()
         .first()
@@ -407,44 +429,74 @@ fn paint_candidate(
     {
         canvas.rectangle(
             LEFT.saturating_add(12),
-            top,
+            top.saturating_add(height).saturating_sub(3),
             WIDTH
                 .saturating_sub(24)
                 .saturating_mul(usize::from(list.fill()))
                 .checked_div(1000)
                 .unwrap_or_default(),
-            height,
+            3,
             RESULT,
         );
     }
     let (bright, tail) = row.name_spans();
-    canvas.line(
+    canvas.ellipsized_line(
         (
-            LEFT.saturating_add(INSET),
+            LEFT.saturating_add(ROW_TEXT_LEFT),
             y.saturating_add(9),
-            if selected { 448 } else { 592 },
+            if selected {
+                SELECTED_TEXT_WIDTH
+            } else {
+                ROW_TEXT_WIDTH
+            },
             36,
         ),
         &[(bright, WHITE), (tail, DIM)],
-        27,
+        NAME_SIZE,
     );
     if let Some(meta) = &row.candidate.meta {
         label(
             canvas,
-            LEFT.saturating_add(INSET),
+            LEFT.saturating_add(ROW_TEXT_LEFT),
             y.saturating_add(45),
-            592,
+            ROW_TEXT_WIDTH,
             meta,
-            16,
+            DETAIL_SIZE,
             DIM,
         );
     }
     selected_hint(canvas, list, family, y.saturating_add(12), selected);
 }
 
+fn paint_initial(canvas: &mut Canvas, name: &str, y: usize, selected: bool) {
+    canvas.rounded_rectangle(
+        (LEFT.saturating_add(INSET), y.saturating_add(16), 40, 40),
+        10,
+        if selected {
+            [151, 117, 57, 255]
+        } else {
+            [68, 57, 46, 255]
+        },
+    );
+    let initial = name
+        .chars()
+        .find(|character| !character.is_whitespace())
+        .unwrap_or('·')
+        .to_string();
+    canvas.centred(
+        (
+            LEFT.saturating_add(INSET).saturating_add(20).saturating_mul(2),
+            y.saturating_add(36).saturating_mul(2),
+        ),
+        &initial,
+        22,
+        WHITE,
+    );
+}
+
 fn selected_hint(canvas: &mut Canvas, list: &List, family: PadFamily, y: usize, selected: bool) {
     if selected && let Some(selected_hint) = list.selected_hint(family) {
-        hint(canvas, LEFT.saturating_add(508), y, &selected_hint, family);
+        hint(canvas, LEFT.saturating_add(HINT_LEFT), y, &selected_hint, family);
     }
 }
 
