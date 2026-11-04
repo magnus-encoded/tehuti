@@ -48,7 +48,7 @@ mod context_reload {
     }
 
     #[test]
-    fn a_broken_file_keeps_the_old_set_and_names_the_file() {
+    fn a_broken_file_is_skipped_and_named_while_the_rest_reload() {
         let directory = tempfile::tempdir().unwrap();
         write(directory.path(), "one", "app_id = 'one'\n[buttons]");
         let display: Display<Compositor> = Display::new().unwrap();
@@ -56,11 +56,14 @@ mod context_reload {
         compositor.set_contexts(contexts::load(directory.path()));
         write(directory.path(), "broken", "app_id = ");
         write(directory.path(), "two", "app_id = 'two'\n[buttons]");
-        let reload = contexts::try_load(directory.path());
-        let error = reload.clone().unwrap_err();
-        assert_eq!(error.path, directory.path().join("broken/context.toml"));
-        compositor.reload_contexts(reload);
-        assert_eq!(app_ids(&compositor), ["one"]);
+        let reloaded = contexts::reload(directory.path()).unwrap();
+        assert_eq!(reloaded.skipped.len(), 1);
+        assert_eq!(
+            reloaded.skipped[0].path,
+            directory.path().join("broken/context.toml")
+        );
+        compositor.apply_reload(Ok(reloaded));
+        assert_eq!(app_ids(&compositor), ["one", "two"]);
         let notice = compositor.visible_notice_text().unwrap();
         assert!(notice.starts_with("CONTEXT ERROR broken/"), "{notice}");
         assert!(notice.lines().all(|line| line.chars().count() <= 40), "{notice}");
@@ -177,7 +180,7 @@ mod context_reload {
         ));
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
-        compositor.reload_contexts(reloaded.unwrap());
+        compositor.apply_reload(reloaded.unwrap());
         assert_eq!(app_ids(&compositor), ["renamed"]);
     }
 

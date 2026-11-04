@@ -36,19 +36,38 @@ pub fn load(directory: &Path) -> Vec<Context> {
     contexts
 }
 
-/// Loads every context or none: the first broken file fails the whole reload.
+/// A reload's valid contexts and the files it skipped.
+#[derive(Debug, Clone, Default)]
+pub struct Reloaded {
+    pub contexts: Vec<Context>,
+    /// Files that could not be read or parsed, in load order.
+    pub skipped: Vec<LoadError>,
+}
+
+/// Loads every valid context, skipping broken files the way startup does.
 ///
 /// # Errors
 ///
-/// Names the first file that cannot be read or parsed.
-pub fn try_load(directory: &Path) -> Result<Vec<Context>, LoadError> {
-    let mut contexts = Vec::new();
+/// The directory itself cannot be listed.
+pub fn reload(directory: &Path) -> Result<Reloaded, LoadError> {
+    let mut reloaded = Reloaded::default();
     for path in context_paths(directory, true)? {
-        if let Some(context) = load_one(&path)? {
-            contexts.push(context);
+        match load_one(&path) {
+            Ok(Some(context)) => reloaded.contexts.push(context),
+            Ok(None) => {}
+            Err(error) => reloaded.skipped.push(error),
         }
     }
-    Ok(contexts)
+    Ok(reloaded)
+}
+
+/// The valid contexts of a reload, for callers that ignore skipped files.
+///
+/// # Errors
+///
+/// The directory itself cannot be listed.
+pub fn try_load(directory: &Path) -> Result<Vec<Context>, LoadError> {
+    reload(directory).map(|reloaded| reloaded.contexts)
 }
 
 /// One context file's outcome: its path and context, or why it failed.
@@ -285,10 +304,10 @@ impl ContextWatch {
     }
 
     /// The reload result once a burst of edits has gone quiet, else `None`.
-    pub fn poll(&mut self, now: Instant) -> Option<Result<Vec<Context>, LoadError>> {
+    pub fn poll(&mut self, now: Instant) -> Option<Result<Reloaded, LoadError>> {
         self.debounce.due(now).then(|| {
             self.watch_children();
-            try_load(&self.directory)
+            reload(&self.directory)
         })
     }
 }

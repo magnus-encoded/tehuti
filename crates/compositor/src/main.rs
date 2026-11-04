@@ -775,7 +775,7 @@ fn reload_contexts(data: &mut LoopData) {
         .as_mut()
         .and_then(|watch| watch.poll(std::time::Instant::now()))
     {
-        data.compositor.reload_contexts(reload);
+        data.compositor.apply_reload(reload);
         if let Err(error) = tehuti::wallpaper::set_launch_phrases(
             data.compositor
                 .destinations()

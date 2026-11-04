@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fails when a tracked or staged file is a proptest seed, `.ignore`, or under `graft/`.
+set -uo pipefail
+cd "${1:-$(dirname "$0")/..}"
+hits=$( { git ls-files; git diff --cached --name-only --diff-filter=ACMR; } |
+    grep -E '(^|/)[^/]*\.proptest-regressions$|(^|/)\.ignore$|^graft/' | sort -u)
+if [ -n "$hits" ]; then
+    echo "forbidden-paths: these files must not be committed:"
+    echo "$hits"
+    exit 1
+fi
