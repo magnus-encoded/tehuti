@@ -3244,12 +3244,11 @@ else:
 
     #[test]
     fn osk_and_plugin_text_preserve_shift_in_real_key_events() {
-        use smithay::input::keyboard::xkb;
         use std::os::unix::fs::PermissionsExt as _;
 
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("text.py");
-        std::fs::write(&executable, r#"#!/usr/bin/env python3
+        std::fs::write(&executable, r"#!/usr/bin/env python3
 import json, sys
 for line in sys.stdin:
     message = json.loads(line)
@@ -3260,7 +3259,7 @@ for line in sys.stdin:
     else:
         continue
     print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}), flush=True)
-"#).unwrap();
+").unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(
             directory.path().join("text.json"),
@@ -3279,37 +3278,43 @@ for line in sys.stdin:
                 plugin,
                 Some(directory.path()),
             );
-            assert_eq!(app.keyboard_text, "/g Hello! @Bob?\r");
-            let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-            let keymap = xkb::Keymap::new_from_string(
-                &context,
-                app.keymap_source.trim_end_matches('\0').into(),
-                xkb::KEYMAP_FORMAT_TEXT_V1,
-                xkb::KEYMAP_COMPILE_NO_FLAGS,
-            )
-            .unwrap();
-            let mut state = xkb::State::new(&keymap);
-            let mut text = String::new();
-            let mut held = std::collections::HashSet::new();
-            for (key, event) in app.keys {
-                let code = xkb::Keycode::new(key + 8);
-                match event {
-                    KeyState::Pressed => {
-                        assert!(held.insert(key), "duplicate press: {key}");
-                        text.push_str(&state.key_get_utf8(code));
-                        let _changed = state.update_key(code, xkb::KeyDirection::Down);
-                    }
-                    KeyState::Released => {
-                        assert!(held.remove(&key), "unmatched release: {key}");
-                        let _changed = state.update_key(code, xkb::KeyDirection::Up);
-                    }
-                    _ => panic!("unexpected key state"),
-                }
-            }
-            assert_eq!(text, "/g Hello! @Bob?\r", "plugin: {plugin}");
-            assert!(held.is_empty());
-            assert_eq!(app.modifiers, (0, 0, 0));
+            assert_real_key_text(app);
         }
+    }
+
+    fn assert_real_key_text(app: App) {
+        use smithay::input::keyboard::xkb;
+
+        assert_eq!(app.keyboard_text, "/g Hello! @Bob?\r");
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = xkb::Keymap::new_from_string(
+            &context,
+            app.keymap_source.trim_end_matches('\0').into(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .unwrap();
+        let mut state = xkb::State::new(&keymap);
+        let mut text = String::new();
+        let mut held = std::collections::HashSet::new();
+        for (key, event) in app.keys {
+            let code = xkb::Keycode::new(key + 8);
+            match event {
+                KeyState::Pressed => {
+                    assert!(held.insert(key), "duplicate press: {key}");
+                    text.push_str(&state.key_get_utf8(code));
+                    let _changed = state.update_key(code, xkb::KeyDirection::Down);
+                }
+                KeyState::Released => {
+                    assert!(held.remove(&key), "unmatched release: {key}");
+                    let _changed = state.update_key(code, xkb::KeyDirection::Up);
+                }
+                KeyState::Repeated | _ => panic!("unexpected key state"),
+            }
+        }
+        assert_eq!(text, "/g Hello! @Bob?\r", "real key events preserve Shift");
+        assert!(held.is_empty());
+        assert_eq!(app.modifiers, (0, 0, 0));
     }
 
     #[derive(Clone)]
