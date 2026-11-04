@@ -156,17 +156,17 @@ pub(super) fn advertise(
     if let Rendering::Gles(gpu) = rendering {
         let (formats, device) =
             tehuti::rendering::client_formats(gpu.device.borrow_mut().renderer_mut(), display);
-        let importer = gpu.device.clone();
-        compositor.enable_dmabuf(
+        compositor.enable_dmabuf_on(
             display,
             formats.iter().copied(),
             device,
-            move |dmabuf| match importer.borrow_mut().renderer_mut().import_dmabuf(dmabuf, None) {
-                Ok(_) => true,
-                Err(error) => {
-                    tracing::warn!(%error, "DRM client dmabuf import failed");
-                    false
-                }
+            &gpu.device,
+            |device, dmabuf| {
+                device
+                    .renderer_mut()
+                    .import_dmabuf(dmabuf, None)
+                    .inspect_err(|error| tracing::warn!(%error, "DRM client dmabuf import failed"))
+                    .is_ok()
             },
         )?;
     }

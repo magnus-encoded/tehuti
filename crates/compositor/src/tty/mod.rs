@@ -349,10 +349,11 @@ fn create_output(
     let (mut device, drm_notifier) = DrmDevice::new(device_fd, false)?;
     let ConnectedSurface {
         surface,
-        renderer,
+        mut renderer,
         remaining_modes,
         listed_modes,
     } = connected_surface(&mut device)?;
+    advertise(&mut renderer, display, compositor);
     let mode = surface.pending_mode();
 
     let (output, global) = drm_output(display, mode);
@@ -457,6 +458,13 @@ fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn
     Err("no connected DRM output with a usable mode".into())
 }
 
+/// Routes client dmabuf imports to `renderer` as soon as it exists, so none reach a replaced one.
+fn advertise(renderer: &mut render::DrmRendering, display: &DisplayHandle, compositor: &mut Compositor) {
+    if let Err(error) = render::advertise(renderer, display, compositor) {
+        warn!(%error, "DRM client format advertisement failed");
+    }
+}
+
 fn saved_mode() -> Option<String> {
     tehuti::display_mode_store::Store::from_env()
         .and_then(|store| store.read())
@@ -488,10 +496,11 @@ impl Tty {
         match connected_surface(&mut self.device) {
             Ok(ConnectedSurface {
                 surface,
-                renderer,
+                mut renderer,
                 remaining_modes,
                 listed_modes,
             }) => {
+                advertise(&mut renderer, &data.display.handle(), &mut data.compositor);
                 let mode = surface.pending_mode();
                 let (output, global) = drm_output(&data.display.handle(), mode);
                 data.compositor.space.map_output(&output, (0, 0));
@@ -609,6 +618,7 @@ impl Scanout {
             }
         };
         let previous_renderer = core::mem::replace(&mut self.renderer, renderer);
+        advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
         self.rollback = Some((previous, previous_renderer, previous_next));
         self.next = next;
         self.set_output_mode(mode, data);
@@ -657,6 +667,7 @@ impl Scanout {
             match attempt {
                 Ok(renderer) => {
                     let renderer = core::mem::replace(&mut self.renderer, renderer);
+                    advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
                     if self.rollback.is_none() {
                         self.rollback = Some((previous, renderer, self.next));
                     }
@@ -691,6 +702,7 @@ impl Scanout {
         match restored {
             Ok((renderer, next)) => {
                 self.renderer = renderer;
+                advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
                 self.next = next;
                 self.set_output_mode(mode, data);
             }
@@ -769,11 +781,6 @@ impl Scanout {
         submit(&self.surface, drawn.framebuffer, &mut self.modeset)?;
         if was_modeset {
             self.rollback = None;
-            if let Err(error) =
-                render::advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor)
-            {
-                warn!(%error, "DRM client format advertisement failed");
-            }
             let mode = self.surface.pending_mode();
             info!(
                 width = mode.size().0,
