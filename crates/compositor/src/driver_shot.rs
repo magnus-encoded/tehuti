@@ -31,6 +31,10 @@ pub(crate) fn save_with_clock(
     Ok(())
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "capture adapters remain private to the compositor"
+)]
 pub(crate) fn image(
     compositor: &Compositor,
     output: &smithay::output::Output,

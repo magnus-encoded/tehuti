@@ -5,7 +5,7 @@ use smithay::{
     output::Output,
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
-        protocol::{wl_buffer::WlBuffer, wl_output, wl_shm},
+        protocol::{wl_buffer::WlBuffer, wl_shm},
     },
     wayland::shm::with_buffer_contents_mut,
 };
@@ -27,6 +27,10 @@ use wayland_protocols_wlr::screencopy::v1::server::{
     zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
 };
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "capture dispatch remains private to the compositor"
+)]
 pub(crate) fn register(display: &DisplayHandle) {
     let _source =
         display.create_global::<Compositor, ExtOutputImageCaptureSourceManagerV1, _>(1, display.clone());
@@ -86,7 +90,7 @@ impl Dispatch<ExtOutputImageCaptureSourceManagerV1, ()> for Compositor {
         _: &Client,
         _: &ExtOutputImageCaptureSourceManagerV1,
         request: ext_output_image_capture_source_manager_v1::Request,
-        _: &(),
+        (): &(),
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
@@ -143,7 +147,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Compositor {
         _: &Client,
         manager: &ExtImageCopyCaptureManagerV1,
         request: ext_image_copy_capture_manager_v1::Request,
-        _: &(),
+        (): &(),
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
@@ -154,6 +158,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Compositor {
                 options,
             } => {
                 let WEnum::Value(options) = options else {
+                    let _session = init.init(session, Session::new(Source(None), false));
                     manager.post_error(
                         ext_image_copy_capture_manager_v1::Error::InvalidOption,
                         "unknown capture options",
@@ -171,7 +176,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Compositor {
             ext_image_copy_capture_manager_v1::Request::CreatePointerCursorSession { session, .. } => {
                 let _session = init.init(session, AtomicBool::new(false));
             }
-            _ => {}
+            ext_image_copy_capture_manager_v1::Request::Destroy | _ => {}
         }
     }
 }
@@ -187,6 +192,7 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, AtomicBool> for Compositor {
         init: &mut DataInit<'_, Self>,
     ) {
         if let ext_image_copy_capture_cursor_session_v1::Request::GetCaptureSession { session } = request {
+            let session = init.init(session, Session::new(Source(None), false));
             if used.swap(true, Ordering::Relaxed) {
                 cursor.post_error(
                     ext_image_copy_capture_cursor_session_v1::Error::DuplicateSession,
@@ -194,7 +200,6 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, AtomicBool> for Compositor {
                 );
                 return;
             }
-            let session = init.init(session, Session::new(Source(None), false));
             session.stopped();
         }
     }
@@ -218,13 +223,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, Session> for Compositor {
         init: &mut DataInit<'_, Self>,
     ) {
         if let ext_image_copy_capture_session_v1::Request::CreateFrame { frame } = request {
-            if data.busy.swap(true, Ordering::Relaxed) {
-                session.post_error(
-                    ext_image_copy_capture_session_v1::Error::DuplicateFrame,
-                    "destroy the previous frame first",
-                );
-                return;
-            }
+            let duplicate = data.busy.swap(true, Ordering::Relaxed);
             let _frame = init.init(
                 frame,
                 ExtFrame {
@@ -233,6 +232,13 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, Session> for Compositor {
                     captured: AtomicBool::new(false),
                 },
             );
+            if duplicate {
+                session.post_error(
+                    ext_image_copy_capture_session_v1::Error::DuplicateFrame,
+                    "destroy the previous frame first",
+                );
+                return;
+            }
         }
     }
 }
@@ -289,7 +295,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ExtFrame> for Compositor {
                     Err(CopyError::Render) => frame.failed(FailureReason::Unknown),
                 }
             }
-            _ => {}
+            Request::Destroy | _ => {}
         }
     }
 
@@ -318,7 +324,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Compositor {
         _: &Client,
         _: &ZwlrScreencopyManagerV1,
         request: zwlr_screencopy_manager_v1::Request,
-        _: &(),
+        (): &(),
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
@@ -338,17 +344,13 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Compositor {
                 width,
                 height,
             } => (frame, output, overlay_cursor != 0, Some((x, y, width, height))),
-            _ => return,
+            Request::Destroy | _ => return,
         };
         let source = Source(Output::from_resource(&output));
-        let mut size = source.size(state);
-        let region = if let Some(rect) = region {
-            let clipped = source.output(state).and_then(|output| clip_region(output, rect));
-            size = clipped.map(|(_, _, width, height)| (width, height));
-            clipped
-        } else {
-            None
-        };
+        let (region, size) = region.map_or((None, source.size(state)), |rect| {
+            let clipped = source.output(state).and_then(|target| clip_region(target, rect));
+            (clipped, clipped.map(|(_, _, width, height)| (width, height)))
+        });
         let frame = init.init(
             frame,
             WlrFrame {
@@ -403,9 +405,8 @@ impl Dispatch<ZwlrScreencopyFrameV1, WlrFrame> for Compositor {
     ) {
         use zwlr_screencopy_frame_v1::{Error, Flags, Request};
         let damage = matches!(request, Request::CopyWithDamage { .. });
-        let buffer = match request {
-            Request::Copy { buffer } | Request::CopyWithDamage { buffer } => buffer,
-            _ => return,
+        let (Request::Copy { buffer } | Request::CopyWithDamage { buffer }) = request else {
+            return;
         };
         if data.captured.swap(true, Ordering::Relaxed) {
             frame.post_error(Error::AlreadyUsed, "frame already copied");
@@ -430,7 +431,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, WlrFrame> for Compositor {
                 frame.ready(high, low, nanos);
             }
             Err(CopyError::Buffer) => {
-                frame.post_error(Error::InvalidBuffer, "buffer does not match capture constraints")
+                frame.post_error(Error::InvalidBuffer, "buffer does not match capture constraints");
             }
             Err(CopyError::Render) => frame.failed(),
         }
