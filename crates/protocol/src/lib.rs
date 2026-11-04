@@ -436,6 +436,7 @@ pub struct Context {
     dim: DimConfig,
     push_to_talk: Vec<ButtonName>,
     window: WindowConfig,
+    log: LogConfig,
     pad: PadConfig,
     ticker: TickerConfig,
     ticker_names: Vec<TickerName>,
@@ -523,7 +524,18 @@ impl<'de> serde::Deserialize<'de> for WindowFraction {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LogConfig {
+    window_size: bool,
+}
+
 impl Context {
+    #[must_use]
+    pub const fn log_window_size(&self) -> bool {
+        self.log.window_size
+    }
+
     #[must_use]
     pub const fn open_fullscreen(&self) -> bool {
         self.window.open_fullscreen
@@ -779,6 +791,8 @@ struct ContextFile {
     #[serde(default)]
     window: WindowConfig,
     #[serde(default)]
+    log: LogConfig,
+    #[serde(default)]
     ticker: TickerConfig,
     #[serde(default)]
     speech_matching: SpeechMatching,
@@ -973,6 +987,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         push_to_talk: context.push_to_talk,
         pad: context.pad,
         window: context.window,
+        log: context.log,
         ticker_names: parse_ticker_names(&context.ticker.names)?,
         ticker: context.ticker,
         speech_matching: context.speech_matching,

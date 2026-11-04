@@ -2625,6 +2625,47 @@ impl Compositor {
         }
     }
 
+    fn log_window_size(
+        &self,
+        window: &LayoutWindow,
+        old: smithay::utils::Size<i32, smithay::utils::Logical>,
+        new: smithay::utils::Size<i32, smithay::utils::Logical>,
+        source: &str,
+    ) {
+        if old == new {
+            return;
+        }
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        let (app_id, title) = smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+            let attributes = states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()?;
+            let attributes = attributes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Some((
+                attributes.app_id.clone()?,
+                attributes.title.clone().unwrap_or_default(),
+            ))
+        })
+        .unwrap_or_default();
+        if tehuti_core::own_context(self.contexts(), &app_id, &title)
+            .is_some_and(tehuti_protocol::Context::log_window_size)
+        {
+            tracing::info!(
+                app_id = %app_id,
+                old_width = old.w,
+                old_height = old.h,
+                new_width = new.w,
+                new_height = new.h,
+                source,
+                "window size changed"
+            );
+        }
+    }
+
     fn place_layout(&mut self) {
         let snapshot = self.layout.snapshot();
         self.workspace_feedback.update(&snapshot, self.clock_elapsed());
@@ -2649,6 +2690,7 @@ impl Compositor {
                 self.space.unmap_elem(window);
                 continue;
             };
+            let old_size = window.layout_size();
             window.set_size(
                 smithay::utils::Size::<f64, smithay::utils::Logical>::from((
                     tile.requested_client.width,
@@ -2656,6 +2698,7 @@ impl Compositor {
                 ))
                 .to_i32_round(),
             );
+            self.log_window_size(window, old_size, window.layout_size(), "compositor configure");
             let client_size = if window.mapped() {
                 window.client_geometry().size
             } else {
@@ -3073,7 +3116,25 @@ impl CompositorHandler for Compositor {
             self.map_toplevel(toplevel);
         }
         if let Some(window) = self.window_for_root(&root).cloned() {
+            let requested = smithay::wayland::compositor::with_states(&root, |states| {
+                states
+                    .cached_state
+                    .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
+                    .current()
+                    .geometry
+                    .map(|geometry| geometry.size)
+            });
+            if let Some(requested) = requested {
+                let old = window.replace_requested_geometry(requested);
+                self.log_window_size(&window, old, requested, "client request");
+            }
             window.on_commit();
+            self.log_window_size(
+                &window,
+                window.replace_committed_size(window.client_geometry().size),
+                window.client_geometry().size,
+                "client commit",
+            );
             if previous != Some((window.client_geometry(), window.mapped())) {
                 self.place_layout();
             }
