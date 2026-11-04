@@ -206,6 +206,35 @@ mod layout_actions {
         assert!(layout.set_fullscreen(WindowId(9), true).is_err());
     }
 
+    #[test]
+    fn client_unset_keeps_a_compositor_fullscreen() {
+        // An X11 client through xwayland-satellite hears the fullscreen state,
+        // finds the size short of its monitor and asks to leave fullscreen.
+        let mut layout = layout(2);
+        let focused = layout.snapshot().focused_window.unwrap();
+        let fullscreen = |current: &Layout| {
+            current.snapshot().outputs[0].workspaces[0]
+                .columns
+                .iter()
+                .flat_map(|column| column.tiles.iter())
+                .find(|tile| tile.window == focused)
+                .unwrap()
+                .fullscreen_requested
+        };
+        layout.apply(Command::ToggleFullscreen);
+        assert!(fullscreen(&layout));
+        layout.set_fullscreen(focused, false).unwrap();
+        assert!(
+            fullscreen(&layout),
+            "the client cannot end a compositor fullscreen"
+        );
+        layout.set_fullscreen(focused, true).unwrap();
+        layout.set_fullscreen(focused, false).unwrap();
+        assert!(fullscreen(&layout), "a repeated request does not take ownership");
+        layout.apply(Command::ToggleFullscreen);
+        assert!(!fullscreen(&layout), "the toggle still leaves fullscreen");
+    }
+
     proptest! {
         #[test]
         fn routed_actions_match_direct_layout_commands(
