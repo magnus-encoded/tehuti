@@ -179,18 +179,6 @@ mod layout_actions {
         }
     }
 
-    fn focused_tile(layout: &Layout) -> layout::TileView {
-        let snapshot = layout.snapshot();
-        let output = &snapshot.outputs[0];
-        output.workspaces[output.active_workspace]
-            .columns
-            .iter()
-            .flat_map(|column| column.tiles.iter())
-            .find(|tile| Some(tile.window) == snapshot.focused_window)
-            .unwrap()
-            .clone()
-    }
-
     #[test]
     fn client_fullscreen_requests_enter_and_leave_fullscreen() {
         let mut layout = layout(2);
@@ -216,27 +204,6 @@ mod layout_actions {
             assert!(!tile(&layout, window).fullscreen_requested);
         }
         assert!(layout.set_fullscreen(WindowId(9), true).is_err());
-    }
-
-    proptest! {
-        /// A width step on a fullscreen window leaves fullscreen, so the client sees the new width.
-        #[test]
-        fn width_steps_reach_a_fullscreen_client(
-            windows in 1_u64..4,
-            steps in 1_usize..4,
-            back in any::<bool>(),
-        ) {
-            let mut layout = layout(windows);
-            layout.apply(Command::ToggleFullscreen);
-            prop_assert!(focused_tile(&layout).fullscreen_requested);
-            let command = if back { Command::SwitchPresetColumnWidthBack } else { Command::SwitchPresetColumnWidth };
-            for _ in 0..steps {
-                layout.apply(command);
-                let tile = focused_tile(&layout);
-                prop_assert!(!tile.fullscreen_requested);
-                prop_assert!(tile.requested_client.width < 1920.0);
-            }
-        }
     }
 
     proptest! {

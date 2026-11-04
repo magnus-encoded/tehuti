@@ -1618,22 +1618,6 @@ impl Workspace {
         let Some(column) = self.columns.get_mut(index) else {
             return;
         };
-        if matches!(
-            command,
-            Command::SetColumnWidth(_)
-                | Command::MaximizeColumn
-                | Command::SwitchPresetColumnWidth
-                | Command::SwitchPresetColumnWidthBack
-        ) {
-            // A fullscreen tile hides its column width, so a width step would
-            // never reach the client. The step leaves fullscreen instead.
-            for tile in &mut column.tiles {
-                if tile.mode == TileMode::Fullscreen {
-                    tile.mode = TileMode::Normal;
-                    tile.fullscreen_view = None;
-                }
-            }
-        }
         match command {
             Command::SetColumnWidth(change) => {
                 column.width = Some(change_size(
