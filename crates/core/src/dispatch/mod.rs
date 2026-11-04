@@ -1827,11 +1827,14 @@ fn keyboard_opening(state: &mut State, event: &Event) -> bool {
 
 fn configured_keyboard_press(state: &State, name: ButtonName, button: ButtonState) -> bool {
     let (mode, opening) = state.core.keyboard_config();
-    !state.keyboard.is_open()
-        && (state.text_field || state.keyboard.terminal() || mode == tehuti_protocol::OnTextField::Open)
-        && mode != tehuti_protocol::OnTextField::Off
-        && name == opening
-        && button == ButtonState::Pressed
+    let opens = if state.core.level() == crate::Level::Columns {
+        name == state.core.pad_family().button(crate::pad::Role::Keyboard)
+    } else {
+        (state.text_field || state.keyboard.terminal() || mode == tehuti_protocol::OnTextField::Open)
+            && mode != tehuti_protocol::OnTextField::Off
+            && name == opening
+    };
+    !state.keyboard.is_open() && opens && button == ButtonState::Pressed
 }
 
 const fn start_state(event: &Event) -> ButtonState {
