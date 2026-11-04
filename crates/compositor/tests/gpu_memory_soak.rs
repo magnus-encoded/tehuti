@@ -2,9 +2,8 @@
 
 #[cfg(test)]
 mod gpu_memory_soak {
-    use core::time::Duration;
+    use core::{cell::RefCell, time::Duration};
     use std::{
-        cell::RefCell,
         io::Write,
         os::{fd::AsFd, unix::net::UnixStream},
         rc::Rc,
@@ -144,7 +143,7 @@ mod gpu_memory_soak {
         handle: &QueueHandle<App>,
         size: (i32, i32),
     ) {
-        let bo = gbm
+        let buffer_object = gbm
             .create_buffer(
                 u32::try_from(size.0).unwrap(),
                 u32::try_from(size.1).unwrap(),
@@ -152,17 +151,17 @@ mod gpu_memory_soak {
                 &[Modifier::Invalid],
             )
             .unwrap();
-        let exported = bo.export().unwrap();
+        let exported = buffer_object.export().unwrap();
         let params = dmabuf.create_params(handle, ());
         let modifier = u64::from(exported.format().modifier);
-        for (plane, ((fd, offset), stride)) in exported
+        for (plane, ((plane_fd, offset), stride)) in exported
             .handles()
             .zip(exported.offsets())
             .zip(exported.strides())
             .enumerate()
         {
             params.add(
-                fd,
+                plane_fd,
                 u32::try_from(plane).unwrap(),
                 offset,
                 stride,
@@ -184,6 +183,10 @@ mod gpu_memory_soak {
         buffer.destroy();
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "buffer sizes are small configured window sizes"
+    )]
     fn draw(shm: &WlShm, surface: &WlSurface, handle: &QueueHandle<App>, size: (i32, i32)) {
         let bytes = size.0 * size.1 * 4;
         let mut file = tempfile::tempfile().unwrap();
@@ -381,6 +384,7 @@ mod gpu_memory_soak {
     ///
     /// `TEHUTI_SOAK_DMABUF=1` makes the windows GPU clients; `TEHUTI_SOAK_ROUNDS` sets the length.
     #[test]
+    #[expect(clippy::print_stderr, reason = "the hand-run soak reports each sample")]
     #[ignore = "needs a GPU render node and nvidia-smi; run with --ignored"]
     fn window_cycles_keep_compositor_gpu_memory_bounded() {
         let mut display = Display::<Compositor>::new().unwrap();
