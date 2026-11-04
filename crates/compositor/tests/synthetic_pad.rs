@@ -3298,7 +3298,7 @@ for line in sys.stdin:
         let mut text = String::new();
         let mut held = std::collections::HashSet::new();
         for (key, event) in app.keys {
-            let code = xkb::Keycode::new(key + 8);
+            let code = xkb::Keycode::new(key.saturating_add(8));
             match event {
                 KeyState::Pressed => {
                     assert!(held.insert(key), "duplicate press: {key}");
