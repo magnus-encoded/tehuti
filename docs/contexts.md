@@ -3,7 +3,7 @@
 Start with `tehuti <context-directory> <application> [arguments...]`.
 The directory can contain a `context.toml` and child directories with their own
 `context.toml`. Files load in path order. The first exact application-id match
-selects the active context. When no context matches the window, it inherits the
+selects the active context; a matching `title` refines it. When no context matches the window, it inherits the
 nearest matching launcher context: XDG parent windows first, then parent
 processes, using their window application ids or executable names. Missing or
 inaccessible ancestry leaves the global context's mappings available. Invalid
@@ -29,6 +29,16 @@ Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
 `right`, `home`, `end`, `page_up` and `page_down`. A mapping sends a complete key tap on button press. Releases send
 nothing. Unknown fields, buttons and keys are rejected. Application ids must
 contain a non-whitespace character.
+
+An optional top-level `title = "World of Warcraft"` narrows a context to
+windows whose title equals it exactly. Among contexts for the focused
+application id, one whose title matches wins over one without a title, so an
+untitled context stays the fallback for the application's other windows. A
+titled context never matches other titles and is not inherited by child
+windows. Title changes re-select the context while the window has focus.
+Titles must contain a non-whitespace character; the `*` context cannot have
+one. Labels come from the untitled context. Two contexts with the same
+application id and title make `--check-config` warn.
 
 An optional top-level `label = "Emulator"` names the application's windows on
 the voice bar. At Columns level it replaces the window title; on the focus

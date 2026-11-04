@@ -363,6 +363,10 @@ impl Entry {
 #[must_use]
 pub fn enabled(contexts: &[Context], focused: Option<&str>) -> bool {
     let (active, global) = active_and_global(contexts, focused);
+    enabled_for(active, global)
+}
+
+pub(crate) fn enabled_for(active: Option<&Context>, global: Option<&Context>) -> bool {
     active
         .and_then(|context| context.ticker().enabled)
         .or_else(|| global.and_then(|context| context.ticker().enabled))
@@ -383,6 +387,15 @@ pub fn entries(
     level: crate::Level,
 ) -> Vec<Entry> {
     let (active, global) = active_and_global(contexts, focused);
+    entries_for(active, global, pad, level)
+}
+
+pub(crate) fn entries_for(
+    active: Option<&Context>,
+    global: Option<&Context>,
+    pad: PadFamily,
+    level: crate::Level,
+) -> Vec<Entry> {
     let mut entries = button_entries(active, global, pad, level);
     let speech = active
         .and_then(|context| context.ticker().speech)
@@ -399,9 +412,11 @@ fn active_and_global<'contexts>(
     let global = contexts
         .iter()
         .find(|context| context.app_id() == crate::GLOBAL_APP_ID);
-    let active = contexts
-        .iter()
-        .find(|context| Some(context.app_id()) == focused && context.app_id() != crate::GLOBAL_APP_ID);
+    let active = contexts.iter().find(|context| {
+        Some(context.app_id()) == focused
+            && context.app_id() != crate::GLOBAL_APP_ID
+            && context.title().is_none()
+    });
     (active, global)
 }
 

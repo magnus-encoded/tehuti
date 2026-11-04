@@ -59,7 +59,7 @@ pub fn shadowed_for_pad(contexts: &[Context], pad: crate::pad::PadFamily) -> Vec
         if let Some(earlier) = contexts
             .iter()
             .take(index)
-            .position(|other| other.app_id() == context.app_id())
+            .position(|other| other.app_id() == context.app_id() && other.title() == context.title())
         {
             found.push(Shadowing::Context {
                 context: index,

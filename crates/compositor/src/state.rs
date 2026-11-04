@@ -165,6 +165,7 @@ pub struct Compositor {
     invitation: Invitation,
     destination_windows: Vec<crate::destinations::Window>,
     speech_context: Option<String>,
+    speech_title: String,
     launch_socket: Option<std::ffi::OsString>,
     layout: tehuti_core::layout::Layout,
     layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
@@ -296,6 +297,7 @@ impl Compositor {
             invitation: Invitation::Off,
             destination_windows: Vec::new(),
             speech_context: None,
+            speech_title: String::new(),
             layout_windows: Vec::new(),
             layout_trace: tehuti_core::layout_trace::LayoutTrace::default(),
             next_window: 0,
@@ -582,12 +584,14 @@ impl Compositor {
 
     fn destination_vocabulary(&self) -> Vec<String> {
         let mut words = self.destinations.vocabulary_for(self.speech_context.as_deref());
+        let own = self
+            .speech_context
+            .as_deref()
+            .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &self.speech_title));
         let contexts: Vec<_> = self
             .contexts()
             .iter()
-            .filter(|context| {
-                context.app_id() == "*" || Some(context.app_id()) == self.speech_context.as_deref()
-            })
+            .filter(|context| context.app_id() == "*" || own.is_some_and(|own| core::ptr::eq(own, *context)))
             .cloned()
             .collect();
         let project_names = crate::speech_vocabulary::directory_names(&self.destination_paths.projects);
@@ -960,11 +964,12 @@ impl Compositor {
     }
 
     fn after_event(&mut self, event: &Event) {
-        if let Event::Focus { app_id, .. } = event {
+        if let Event::Focus { app_id, title } = event {
             if self.speech_context != *app_id {
                 tracing::info!(?app_id, "focused application changed");
             }
             self.speech_context.clone_from(app_id);
+            self.speech_title.clone_from(title);
             self.refresh_speech_vocabulary();
         }
         self.keep_invitation();
@@ -1501,9 +1506,8 @@ impl Compositor {
         self.launcher_routes = routes;
         let mut launcher = tehuti_core::launcher::Launcher::new(&request.query, destinations, None);
         let contexts = self.dispatch.core().contexts();
-        let active = contexts
-            .iter()
-            .find(|context| Some(context.app_id()) == focused)
+        let active = focused
+            .and_then(|app_id| tehuti_core::own_context(contexts, app_id, &self.speech_title))
             .map(tehuti_protocol::Context::launcher);
         let global = contexts
             .iter()
@@ -3004,14 +3008,22 @@ impl Compositor {
             .filter_map(|(_, window)| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()))
             .collect::<Vec<_>>();
         let ancestors = crate::window_context::ancestors(surface.wl_surface(), &windows, &self.display);
+        let title = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .and_then(|attributes| attributes.lock().ok()?.title.clone())
+        })
+        .unwrap_or_default();
         let context = app_id
             .as_deref()
-            .into_iter()
-            .chain(ancestors.iter().map(String::as_str))
-            .find_map(|app_id| {
-                self.contexts()
-                    .iter()
-                    .find(|context| app_id != "*" && context.app_id() == app_id)
+            .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &title))
+            .or_else(|| {
+                ancestors.iter().find_map(|ancestor| {
+                    self.contexts().iter().find(|context| {
+                        ancestor != "*" && context.app_id() == ancestor && context.title().is_none()
+                    })
+                })
             });
         let rules = tehuti_core::layout::WindowRules {
             open_fullscreen: context.is_some_and(tehuti_protocol::Context::open_fullscreen),
@@ -3049,7 +3061,9 @@ impl XdgShellHandler for Compositor {
     fn title_changed(&mut self, surface: ToplevelSurface) {
         self.sync_destination_windows();
         if let Some(Event::Focus { app_id, title }) = self.focus_event(&surface) {
+            self.speech_title.clone_from(&title);
             let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
+            self.refresh_speech_vocabulary();
         }
     }
 

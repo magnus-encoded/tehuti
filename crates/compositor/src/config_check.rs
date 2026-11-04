@@ -118,6 +118,12 @@ pub fn check(directory: &Path) -> Report {
     report
 }
 
+fn title_suffix(context: &tehuti_protocol::Context) -> String {
+    context
+        .title()
+        .map_or_else(String::new, |title| format!(" with title {title:?}"))
+}
+
 /// Validates `<directory>/plugins/*.json`, the only place manifests load from, and flags
 /// `plugins/` folders inside context folders, which nothing loads.
 fn check_plugins(directory: &Path, report: &mut Report) {
@@ -186,8 +192,9 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
                         path,
                         Severity::Warning,
                         format!(
-                            "app_id {:?} is already claimed by {}; this context never becomes active",
+                            "app_id {:?}{} is already claimed by {}; this context never becomes active",
                             shadowed_context.app_id(),
+                            title_suffix(shadowed_context),
                             earlier_path.display()
                         ),
                     );
