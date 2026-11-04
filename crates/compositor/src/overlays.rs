@@ -53,10 +53,6 @@ impl Overlays {
         self.elements_with_cursor(renderer, output, compositor, clock, true)
     }
 
-    #[expect(
-        clippy::redundant_pub_crate,
-        reason = "capture controls remain inside the compositor"
-    )]
     pub(crate) fn elements_with_cursor<R>(
         &mut self,
         renderer: &mut R,

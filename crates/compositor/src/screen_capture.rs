@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use smithay::{
     output::Output,
     reexports::wayland_server::{
-        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
+        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum, Weak,
         protocol::{wl_buffer::WlBuffer, wl_shm},
     },
     wayland::shm::with_buffer_contents_mut,
@@ -68,6 +68,31 @@ capture_global!(ExtOutputImageCaptureSourceManagerV1);
 capture_global!(ExtImageCopyCaptureManagerV1);
 capture_global!(ZwlrScreencopyManagerV1);
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "capture lifecycle remains private to the compositor"
+)]
+#[derive(Debug, Default)]
+pub(crate) struct Sessions(Vec<Weak<ExtImageCopyCaptureSessionV1>>);
+
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "capture lifecycle remains private to the compositor"
+)]
+pub(crate) fn refresh(compositor: &mut Compositor) {
+    let mut sessions = core::mem::take(&mut compositor.capture_sessions);
+    sessions.0.retain(|weak| {
+        let Ok(session) = weak.upgrade() else {
+            return false;
+        };
+        if let Some(data) = session.data::<Session>() {
+            data.constraints(compositor, &session);
+        }
+        true
+    });
+    compositor.capture_sessions = sessions;
+}
+
 #[derive(Debug, Clone)]
 struct Source(Option<Output>);
 
@@ -119,6 +144,8 @@ struct Session {
     source: Source,
     cursor: bool,
     busy: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    size: Arc<Mutex<Option<(u32, u32)>>>,
 }
 
 impl Session {
@@ -127,15 +154,27 @@ impl Session {
             source,
             cursor,
             busy: Arc::default(),
+            stopped: Arc::default(),
+            size: Arc::default(),
         }
     }
 
     fn constraints(&self, compositor: &Compositor, session: &ExtImageCopyCaptureSessionV1) {
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
+        }
         if let Some((width, height)) = self.source.size(compositor) {
+            if let Ok(mut size) = self.size.lock() {
+                if *size == Some((width, height)) {
+                    return;
+                }
+                *size = Some((width, height));
+            }
             session.buffer_size(width, height);
             session.shm_format(wl_shm::Format::Abgr8888);
             session.done();
         } else {
+            self.stopped.store(true, Ordering::Relaxed);
             session.stopped();
         }
     }
@@ -172,6 +211,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Compositor {
                 );
                 let session = init.init(session, data.clone());
                 data.constraints(state, &session);
+                state.capture_sessions.0.push(session.downgrade());
             }
             ext_image_copy_capture_manager_v1::Request::CreatePointerCursorSession { session, .. } => {
                 let _session = init.init(session, AtomicBool::new(false));
@@ -208,13 +248,14 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, AtomicBool> for Compositor {
 #[derive(Debug)]
 struct ExtFrame {
     session: Session,
+    resource: ExtImageCopyCaptureSessionV1,
     buffer: Mutex<Option<WlBuffer>>,
     captured: AtomicBool,
 }
 
 impl Dispatch<ExtImageCopyCaptureSessionV1, Session> for Compositor {
     fn request(
-        _: &mut Self,
+        state: &mut Self,
         _: &Client,
         session: &ExtImageCopyCaptureSessionV1,
         request: ext_image_copy_capture_session_v1::Request,
@@ -223,11 +264,13 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, Session> for Compositor {
         init: &mut DataInit<'_, Self>,
     ) {
         if let ext_image_copy_capture_session_v1::Request::CreateFrame { frame } = request {
+            data.constraints(state, session);
             let duplicate = data.busy.swap(true, Ordering::Relaxed);
             let _frame = init.init(
                 frame,
                 ExtFrame {
                     session: data.clone(),
+                    resource: session.clone(),
                     buffer: Mutex::default(),
                     captured: AtomicBool::new(false),
                 },
@@ -237,7 +280,6 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, Session> for Compositor {
                     ext_image_copy_capture_session_v1::Error::DuplicateFrame,
                     "destroy the previous frame first",
                 );
-                return;
             }
         }
     }
@@ -279,7 +321,13 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ExtFrame> for Compositor {
                     frame.post_error(Error::NoBuffer, "attach a buffer before capture");
                     return;
                 };
-                let Some(output) = data.session.source.output(state) else {
+                data.session.constraints(state, &data.resource);
+                let Some(output) = data
+                    .session
+                    .source
+                    .output(state)
+                    .filter(|_| !data.session.stopped.load(Ordering::Relaxed))
+                else {
                     frame.failed(FailureReason::Stopped);
                     return;
                 };
@@ -347,10 +395,13 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Compositor {
             Request::Destroy | _ => return,
         };
         let source = Source(Output::from_resource(&output));
-        let (region, size) = region.map_or((None, source.size(state)), |rect| {
-            let clipped = source.output(state).and_then(|target| clip_region(target, rect));
-            (clipped, clipped.map(|(_, _, width, height)| (width, height)))
-        });
+        let (region, size) = region.map_or_else(
+            || (None, source.size(state)),
+            |rect| {
+                let clipped = source.output(state).and_then(|target| clip_region(target, rect));
+                (clipped, clipped.map(|(_, _, width, height)| (width, height)))
+            },
+        );
         let frame = init.init(
             frame,
             WlrFrame {
@@ -378,18 +429,25 @@ fn clip_region(output: &Output, (x, y, width, height): (i32, i32, i32, i32)) -> 
     }
     let mode = output.current_mode()?;
     let scale = output.current_scale().integer_scale();
+    let transform = output.current_transform();
+    let extent = transform.transform_size(mode.size);
     let left = x.checked_mul(scale)?.max(0);
     let top = y.checked_mul(scale)?.max(0);
-    let right = x.checked_add(width)?.checked_mul(scale)?.min(mode.size.w);
-    let bottom = y.checked_add(height)?.checked_mul(scale)?.min(mode.size.h);
+    let right = x.checked_add(width)?.checked_mul(scale)?.min(extent.w);
+    let bottom = y.checked_add(height)?.checked_mul(scale)?.min(extent.h);
     if right <= left || bottom <= top {
         return None;
     }
+    let rect = smithay::utils::Rectangle::new(
+        (left, top).into(),
+        (right.checked_sub(left)?, bottom.checked_sub(top)?).into(),
+    );
+    let rect = transform.invert().transform_rect_in(rect, &extent);
     Some((
-        u32::try_from(left).ok()?,
-        u32::try_from(top).ok()?,
-        u32::try_from(right.checked_sub(left)?).ok()?,
-        u32::try_from(bottom.checked_sub(top)?).ok()?,
+        u32::try_from(rect.loc.x).ok()?,
+        u32::try_from(rect.loc.y).ok()?,
+        u32::try_from(rect.size.w).ok()?,
+        u32::try_from(rect.size.h).ok()?,
     ))
 }
 

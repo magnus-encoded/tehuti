@@ -357,6 +357,90 @@ mod capture {
         }
     }
 
+    fn session_client(stream: UnixStream, ready: std::sync::mpsc::Sender<()>, removed: bool) {
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+        let handle = queue.handle();
+        let output: WlOutput = globals.bind(&handle, 1..=4, ()).unwrap();
+        let source_manager: ExtOutputImageCaptureSourceManagerV1 = globals.bind(&handle, 1..=1, ()).unwrap();
+        let manager: ExtImageCopyCaptureManagerV1 = globals.bind(&handle, 1..=1, ()).unwrap();
+        let source = source_manager.create_source(&output, &handle, ());
+        let session = manager.create_session(
+            &source,
+            ext_image_copy_capture_manager_v1::Options::empty(),
+            &handle,
+            (),
+        );
+        let mut app = App::default();
+        let _constraints = queue.roundtrip(&mut app).unwrap();
+        ready.send(()).unwrap();
+        while if removed {
+            !app.failed
+        } else {
+            app.size != Some((640, 480))
+        } {
+            let _events = queue.blocking_dispatch(&mut app).unwrap();
+        }
+        if removed {
+            let frame = session.create_frame(&handle, ());
+            let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+            let (_file, target) = buffer(&shm, &handle, 640, 480, 0);
+            app.failed = false;
+            frame.attach_buffer(&target);
+            frame.capture();
+            let _capture = queue.roundtrip(&mut app).unwrap();
+            assert!(app.failed && !app.ready, "a removed output cannot be captured");
+        }
+    }
+
+    fn changed_output(removed: bool) {
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let output = compositor.output.clone().unwrap();
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready, received) = std::sync::mpsc::channel();
+        let task = thread::spawn(move || session_client(stream, ready, removed));
+        let start = Instant::now();
+        while !task.is_finished() {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "session change timed out"
+            );
+            pump(&mut display, &mut compositor);
+            if received.try_recv().is_ok() {
+                if removed {
+                    compositor.space.unmap_output(&output);
+                } else {
+                    output.change_current_state(
+                        Some(smithay::output::Mode {
+                            size: (640, 480).into(),
+                            refresh: 60_000,
+                        }),
+                        None,
+                        None,
+                        None,
+                    );
+                }
+                compositor.advance_time();
+            }
+        }
+        task.join().unwrap();
+    }
+
+    #[test]
+    fn capture_constraints_follow_output_resize() {
+        changed_output(false);
+    }
+    #[test]
+    fn removing_an_output_stops_its_capture_sessions() {
+        changed_output(true);
+    }
+
     #[derive(Debug)]
     struct Untrusted;
     impl ClientData for Untrusted {

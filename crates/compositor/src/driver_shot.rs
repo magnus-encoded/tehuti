@@ -26,7 +26,10 @@ pub(crate) fn save_with_clock(
     clock: &str,
 ) -> Result<(), Box<dyn Error>> {
     let output = compositor.output.as_ref().ok_or("output unavailable")?;
-    let image = image(compositor, output, clock, true)?;
+    let mut image = image(compositor, output, clock, true)?;
+    if output.current_transform() == Transform::Flipped180 {
+        image::imageops::flip_vertical_in_place(&mut image);
+    }
     image.save_with_format(path, image::ImageFormat::Png)?;
     Ok(())
 }
@@ -64,11 +67,7 @@ pub(crate) fn image(
         Fourcc::Abgr8888,
     )?;
     let pixels = renderer.map_texture(&mapping)?.to_vec();
-    let mut image =
-        image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
-            .ok_or("invalid capture dimensions")?;
-    if output.current_transform() == Transform::Flipped180 {
-        image::imageops::flip_vertical_in_place(&mut image);
-    }
+    let image = image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
+        .ok_or("invalid capture dimensions")?;
     Ok(image)
 }
