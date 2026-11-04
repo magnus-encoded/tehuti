@@ -111,6 +111,46 @@ mod tests {
     }
 
     #[test]
+    fn mirror_drops_non_gamepad_input_from_held_state_and_live_frames() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut controller, handles) = pad("pad", &log);
+        handles.held.borrow_mut().extend([
+            KeyCode::KEY_RECORD.code(),
+            KeyCode::BTN_LEFT.code(),
+            KeyCode::BTN_SOUTH.code(),
+        ]);
+        controller.set_mirror(true, &|_| false).unwrap();
+        for code in [KeyCode::KEY_RECORD, KeyCode::BTN_LEFT, KeyCode::BTN_EAST] {
+            queue(&handles, code, 1);
+            queue(&handles, code, 0);
+        }
+        handles.raw.borrow_mut().extend([
+            InputEvent::new(EventType::RELATIVE.0, 0, 3),
+            InputEvent::new(EventType::MISC.0, 4, 42),
+            InputEvent::new(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, 123),
+            InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+        ]);
+        controller.pump_mirror(&mut |_, _| false).unwrap();
+        controller.set_mirror(false, &|_| false).unwrap();
+        let log = log.borrow();
+        assert!(never_sent(&log, KeyCode::KEY_RECORD));
+        assert!(never_sent(&log, KeyCode::BTN_LEFT));
+        let events: Vec<_> = log.frames.iter().flat_map(|(_, frame)| frame).copied().collect();
+        assert!(events.contains(&(EventType::KEY.0, KeyCode::BTN_SOUTH.code(), 1)));
+        assert!(events.contains(&(EventType::KEY.0, KeyCode::BTN_SOUTH.code(), 0)));
+        assert!(events.contains(&(EventType::KEY.0, KeyCode::BTN_EAST.code(), 1)));
+        assert!(events.contains(&(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, 123)));
+        assert!(events.iter().all(|(kind, _, _)| {
+            [
+                EventType::KEY.0,
+                EventType::ABSOLUTE.0,
+                EventType::SYNCHRONIZATION.0,
+            ]
+            .contains(kind)
+        }));
+    }
+
+    #[test]
     fn switching_releases_the_old_mirror_and_seeds_the_new_one() {
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut first, first_handles) = pad("first", &log);
