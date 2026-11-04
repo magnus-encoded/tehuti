@@ -22,7 +22,8 @@ jobs:
         run: |
           cp crates/compositor/src/layout_window.rs "$RUNNER_TEMP/layout_window.rs"
           trap 'cp "$RUNNER_TEMP/layout_window.rs" crates/compositor/src/layout_window.rs' EXIT
-          git show bd8913acc:crates/compositor/src/layout_window.rs > crates/compositor/src/layout_window.rs
+          git fetch --depth=1 https://github.com/magnus-encoded/tehuti.git bd8913accf250f984e19b5c166277e45ee4b7ce6
+          git show FETCH_HEAD:crates/compositor/src/layout_window.rs > crates/compositor/src/layout_window.rs
           set +e
           cargo test --locked -p tehuti --test clip_to_tile -- --nocapture > "$RUNNER_TEMP/clip-baseline.log" 2>&1
           result=$?
