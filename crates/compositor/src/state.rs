@@ -2625,6 +2625,28 @@ impl Compositor {
         }
     }
 
+    /// The visible tile of a window and its output's border width.
+    fn visible_tile(
+        snapshot: &tehuti_core::layout::Snapshot,
+        identity: tehuti_core::layout::WindowId,
+    ) -> Option<(&tehuti_core::layout::TileView, f64)> {
+        snapshot.outputs.iter().find_map(|output| {
+            output
+                .workspaces
+                .get(output.active_workspace)
+                .and_then(|workspace| {
+                    workspace.columns.iter().find_map(|column| {
+                        column.tiles.iter().enumerate().find_map(|(index, tile)| {
+                            (tile.window == identity
+                                && (column.display == tehuti_core::layout::ColumnDisplay::Normal
+                                    || index == column.focused_tile))
+                                .then_some((tile, output.border))
+                        })
+                    })
+                })
+        })
+    }
+
     fn log_window_size(
         &self,
         window: &LayoutWindow,
@@ -2666,27 +2688,21 @@ impl Compositor {
         }
     }
 
+    /// Places every window and sends each the configure its tile asks for.
     fn place_layout(&mut self) {
+        self.place_windows(true);
+    }
+
+    /// Places every window; with `configure` unset, only positions change.
+    ///
+    /// A commit only repositions: a client that picks its own size must not be
+    /// answered with a fresh configure on every frame.
+    fn place_windows(&mut self, configure: bool) {
         let snapshot = self.layout.snapshot();
         self.workspace_feedback.update(&snapshot, self.clock_elapsed());
         self.log_layout(&snapshot);
         for (identity, window) in &self.layout_windows {
-            let tile = snapshot.outputs.iter().find_map(|output| {
-                output
-                    .workspaces
-                    .get(output.active_workspace)
-                    .and_then(|workspace| {
-                        workspace.columns.iter().find_map(|column| {
-                            column.tiles.iter().enumerate().find_map(|(index, tile)| {
-                                (tile.window == *identity
-                                    && (column.display == tehuti_core::layout::ColumnDisplay::Normal
-                                        || index == column.focused_tile))
-                                    .then_some((tile, output.border))
-                            })
-                        })
-                    })
-            });
-            let Some((tile, border)) = tile else {
+            let Some((tile, border)) = Self::visible_tile(&snapshot, *identity) else {
                 self.space.unmap_elem(window);
                 continue;
             };
@@ -2698,7 +2714,16 @@ impl Compositor {
                 ))
                 .to_i32_round(),
             );
-            self.log_window_size(window, old_size, window.layout_size(), "compositor configure");
+            self.log_window_size(
+                window,
+                old_size,
+                window.layout_size(),
+                if configure {
+                    "compositor configure"
+                } else {
+                    "commit placement"
+                },
+            );
             let client_size = if window.mapped() {
                 window.client_geometry().size
             } else {
@@ -2725,7 +2750,7 @@ impl Compositor {
                 output.enter(toplevel.wl_surface());
                 Self::announce_scale(output, toplevel.wl_surface());
             }
-            if let Some(toplevel) = window.toplevel() {
+            if configure && let Some(toplevel) = window.toplevel() {
                 Self::configure_layout_window(toplevel, tile, snapshot.focused_window == Some(*identity));
             }
         }
@@ -2738,6 +2763,18 @@ impl Compositor {
         tile: &tehuti_core::layout::TileView,
         focused: bool,
     ) {
+        Self::set_layout_state(toplevel, tile, focused);
+        if toplevel.is_initial_configure_sent() {
+            let _serial = toplevel.send_pending_configure();
+        }
+    }
+
+    /// Writes a tile's size and states into the pending configure.
+    ///
+    /// Every tile that is not fullscreen is tiled on all four edges, so clients
+    /// take the size they are given instead of choosing their own.
+    fn set_layout_state(toplevel: &ToplevelSurface, tile: &tehuti_core::layout::TileView, focused: bool) {
+        let tiled = !tile.fullscreen_requested;
         toplevel.with_pending_state(|pending| {
             pending.size = Some(
                 smithay::utils::Size::<f64, smithay::utils::Logical>::from((
@@ -2749,6 +2786,11 @@ impl Compositor {
             for (state, enabled) in [
                 (xdg_toplevel::State::Fullscreen, tile.fullscreen_requested),
                 (xdg_toplevel::State::Activated, focused),
+                (xdg_toplevel::State::TiledLeft, tiled),
+                (xdg_toplevel::State::TiledRight, tiled),
+                (xdg_toplevel::State::TiledTop, tiled),
+                (xdg_toplevel::State::TiledBottom, tiled),
+                (xdg_toplevel::State::Maximized, false),
             ] {
                 if enabled {
                     let _changed = pending.states.set(state);
@@ -2757,9 +2799,56 @@ impl Compositor {
                 }
             }
         });
-        if toplevel.is_initial_configure_sent() {
-            let _serial = toplevel.send_pending_configure();
+    }
+
+    /// Answers a client's maximize or fullscreen request with exactly one configure.
+    ///
+    /// Fullscreen requests go through the layout; maximize requests keep the
+    /// tile and only hear its current size and states.
+    fn answer_state_request(&mut self, surface: &ToplevelSurface, fullscreen: Option<bool>) {
+        let identity = self.layout_windows.iter().find_map(|(identity, window)| {
+            window
+                .toplevel()
+                .filter(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+                .map(|_| *identity)
+        });
+        let Some(identity) = identity else {
+            if Self::awaits_answer(surface) {
+                let _serial = surface.send_configure();
+            }
+            return;
+        };
+        if let Some(fullscreen) = fullscreen
+            && let Err(error) = self.layout.set_fullscreen(identity, fullscreen)
+        {
+            tracing::warn!(%error, "fullscreen request failed");
         }
+        let snapshot = self.layout.snapshot();
+        if let Some((tile, _)) = Self::visible_tile(&snapshot, identity) {
+            Self::set_layout_state(surface, tile, snapshot.focused_window == Some(identity));
+        }
+        if surface.has_pending_changes() || Self::awaits_answer(surface) {
+            let _serial = surface.send_configure();
+        }
+        self.place_layout();
+    }
+
+    /// A request that changes nothing still deserves one configure, unless the
+    /// client has yet to acknowledge one: a client that re-asks after every
+    /// configure would otherwise loop forever.
+    fn awaits_answer(surface: &ToplevelSurface) -> bool {
+        surface.is_initial_configure_sent()
+            && smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                    .is_some_and(|data| {
+                        data.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pending_configures()
+                            .is_empty()
+                    })
+            })
     }
 
     fn remove_layout_window(&mut self, identity: tehuti_core::layout::WindowId, close: bool) {
@@ -3136,7 +3225,7 @@ impl CompositorHandler for Compositor {
                 "client commit",
             );
             if previous != Some((window.client_geometry(), window.mapped())) {
-                self.place_layout();
+                self.place_windows(false);
             }
             if let Some(toplevel) = window.toplevel()
                 && !toplevel.is_initial_configure_sent()
@@ -3248,6 +3337,26 @@ impl XdgShellHandler for Compositor {
     }
 
     fn new_toplevel(&mut self, _surface: ToplevelSurface) {}
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        self.answer_state_request(&surface, None);
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        self.answer_state_request(&surface, None);
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        self.answer_state_request(&surface, Some(true));
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.answer_state_request(&surface, Some(false));
+    }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
         self.sync_destination_windows();
