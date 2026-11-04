@@ -72,11 +72,7 @@ impl Settings {
         let confirm = self.pad_family.label(self.pad_family.button(Role::Confirm));
         let back = self.pad_family.label(self.pad_family.button(Role::Back));
         if self.remaining.is_some() {
-            if self.previous_controller.is_some() {
-                format!("{confirm} ON THE NEW PAD: KEEP IT")
-            } else {
-                format!("{confirm}: KEEP THIS MODE")
-            }
+            format!("{confirm}: KEEP THIS MODE")
         } else {
             match self.page {
                 Page::Categories => format!("D-PAD: MOVE   {confirm}: OPEN   {back}: CLOSE"),
@@ -438,9 +434,9 @@ impl Settings {
                     forward,
                 ) {
                     if let Some(button) = next {
-                        self.input.controller_bindings.insert(name.clone(), button);
+                        let _previous = self.input.controller_bindings.insert(name.clone(), button);
                     } else {
-                        self.input.controller_bindings.remove(&name);
+                        let _previous = self.input.controller_bindings.remove(&name);
                     }
                     effects.push(Effect::PersistControllerTalk(name, next));
                 }
@@ -460,7 +456,8 @@ impl Settings {
     fn change_controller(&mut self, forward: bool) {
         let options = self.input.controller_options();
         if let Some(next) = cycle(&options, &self.input.controller, forward) {
-            self.previous_controller
+            let _previous = self
+                .previous_controller
                 .get_or_insert_with(|| self.input.controller.clone());
             self.input.controller = next;
         }

@@ -518,13 +518,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             state.core.menu = Some(crate::menu::Menu::for_command(state.core.pad_family(), command));
             (state, effects)
         }
-        Input::Launcher(launcher) => {
-            state.choice_list = None;
-            state.launcher = Some(launcher);
-            let mut effects = Vec::new();
-            release_pad(&mut state, Handoff::Open(Overlay::ChoiceList), &mut effects);
-            (state, effects)
-        }
+        Input::Launcher(launcher) => open_launcher(state, launcher),
         Input::CloseInvitation => {
             state.launcher = state.launcher.filter(|launcher| !launcher.is_invitation());
             (state, Vec::new())
@@ -573,6 +567,14 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             run(state, effects)
         }
     }
+}
+
+fn open_launcher(mut state: State, launcher: crate::launcher::Launcher) -> (State, Vec<Effect>) {
+    state.choice_list = None;
+    state.launcher = Some(launcher);
+    let mut effects = Vec::new();
+    release_pad(&mut state, Handoff::Open(Overlay::ChoiceList), &mut effects);
+    (state, effects)
 }
 
 fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {

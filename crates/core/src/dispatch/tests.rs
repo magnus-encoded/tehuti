@@ -2463,6 +2463,61 @@ fn holding_y_on_the_open_keyboard_dictates_and_a_tap_types_a_space() {
 }
 
 #[test]
+fn controller_menu_binding_records_in_normal_and_passthrough_contexts() {
+    for passthrough in [false, true] {
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = 'game'\n[buttons]\n[pad]\npassthrough = {passthrough}"
+        ))
+        .unwrap();
+        let mut world = World::default();
+        let state = State::new(crate::State::with_contexts(vec![context]));
+        let state = world.run(
+            state,
+            Input::ControllerBindings(std::collections::BTreeMap::from([(
+                "Elite".into(),
+                ButtonName::Start,
+            )])),
+        );
+        let state = world.run(state, Input::ActiveController("Elite".into()));
+        let state = world.run(state, Input::Speech(SpeechInput::Available));
+        let state = world.run(
+            state,
+            Input::Event {
+                event: Event::Focus {
+                    app_id: Some("game".into()),
+                    title: String::new(),
+                },
+                elapsed: Duration::ZERO,
+            },
+        );
+        let state = world.run(state, pad_button(ButtonName::Start, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(ButtonName::Start, ButtonState::Released));
+        let commands: Vec<_> = world
+            .trace
+            .iter()
+            .filter_map(|effect| {
+                if let Effect::SpeechCommand(command) = effect {
+                    Some(command.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            commands,
+            vec![
+                SpeechEffect::Start { session: 0 },
+                SpeechEffect::Stop {
+                    session: 0,
+                    transcribe: true
+                },
+            ],
+            "passthrough={passthrough}"
+        );
+    }
+}
+
+#[test]
 fn controller_ptt_uses_global_buttons_and_defaults_to_share() {
     for (setting, name, talks) in [
         ("", ButtonName::Record, true),
