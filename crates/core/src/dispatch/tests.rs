@@ -1063,7 +1063,7 @@ fn every_button() -> impl Strategy<Value = Event> {
 
 proptest! {
     #[test]
-    fn only_saying_keyboard_opens_the_keyboard(
+    fn at_app_level_only_saying_keyboard_opens_the_keyboard(
         events in prop::collection::vec(prop_oneof![every_button(), arbitrary_event()], 0..60),
         sticks in prop::collection::vec(any::<(i16, i16, i16, i16)>(), 0..10),
         contexts in arbitrary_contexts(),
@@ -1075,6 +1075,9 @@ proptest! {
             state = world.run(state, Input::Sticks(Sticks { left: (left_x, left_y), right: (right_x, right_y) }));
         }
         for event in events {
+            if matches!(event, Event::Button { name: ButtonName::Guide, .. }) {
+                break;
+            }
             let opens = matches!(&event, Event::Speech { text } if crate::keyboard::is_open_phrase(text.as_str()));
             state = world.run(state, Input::Event { event, elapsed: Duration::from_millis(16) });
             prop_assert!(opens || !state.keyboard().is_open());
@@ -1316,6 +1319,9 @@ proptest! {
         prop_assert!(!state.keyboard().is_open());
         state = tap_button(&mut world, state, ButtonName::East);
         for event in events {
+            if matches!(event, Event::Button { name: ButtonName::Guide, .. }) {
+                break;
+            }
             let opens = mode != "off" && matches!(event, Event::Button { name, state: ButtonState::Pressed } if name == opening.1);
             state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
             if state.keyboard().is_open() {
@@ -1530,6 +1536,9 @@ proptest! {
         });
         prop_assert!(!state.keyboard().is_open());
         for event in events {
+            if matches!(event, Event::Button { name: ButtonName::Guide, .. }) {
+                break;
+            }
             let opens = mode != "off" && matches!(event, Event::Button { name: ButtonName::North, state: ButtonState::Pressed });
             state = world.run(state, Input::Event { event, elapsed: Duration::ZERO });
             if opens {
@@ -4839,4 +4848,35 @@ fn gauge_hide_delay_restarts_on_every_change() {
             .iter()
             .any(|effect| matches!(effect, Effect::SetVolume(_)))
     );
+}
+
+#[test]
+fn column_level_pad_y_opens_keyboard_in_every_context_but_app_level_passthrough_keeps_it() {
+    for passthrough in [false, true] {
+        for (columns, keyboard) in [
+            (false, ""),
+            (true, ""),
+            (true, "[keyboard]\non_text_field = 'off'\nbutton = 'west'\n"),
+            (true, "[keyboard]\non_text_field = 'button'\nbutton = 'west'\n"),
+            (true, "[keyboard]\non_text_field = 'open'\nbutton = 'west'\n"),
+        ] {
+            let context = tehuti_protocol::parse_context(&format!(
+                "app_id = 'org.example.Game'\nbuttons = {{}}\n{keyboard}[pad]\npassthrough = {passthrough}"
+            ))
+            .unwrap();
+            let mut world = World::default();
+            let mut state = configured(vec![context], "org.example.Game");
+            if columns {
+                state = tap_button(&mut world, state, ButtonName::Guide);
+                assert_eq!(state.core().level(), crate::Level::Columns);
+            }
+            assert_eq!(state.core().passthrough(), passthrough && !columns);
+            state = tap_button(&mut world, state, ButtonName::North);
+            assert_eq!(
+                state.keyboard().is_open(),
+                columns,
+                "passthrough = {passthrough}, columns = {columns}"
+            );
+        }
+    }
 }
