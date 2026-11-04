@@ -236,7 +236,10 @@ mod initial_size {
 
     impl std::io::Write for LogBuffer {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(bytes);
             Ok(bytes.len())
         }
 
