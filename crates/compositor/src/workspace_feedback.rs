@@ -30,15 +30,15 @@ struct Current {
 
 #[derive(Debug)]
 enum Direction {
-    Up,
-    Down,
+    Upward,
+    Downward,
 }
 
 impl Direction {
     const fn label(&self) -> &'static str {
         match self {
-            Self::Up => "UP",
-            Self::Down => "DOWN",
+            Self::Upward => "UP",
+            Self::Downward => "DOWN",
         }
     }
 }
@@ -67,9 +67,9 @@ impl Feedback {
                     .position(|candidate| candidate.workspace == previous.workspace)
                     .unwrap_or(previous.index);
                 let direction = if index < previous_index {
-                    Direction::Up
+                    Direction::Upward
                 } else {
-                    Direction::Down
+                    Direction::Downward
                 };
                 let name = workspace
                     .name
