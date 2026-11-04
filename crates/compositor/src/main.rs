@@ -989,15 +989,15 @@ mod mirror_choice_tests {
             active in prop::option::of(0_u8..10),
             mirrored in any::<bool>(),
         ) {
-            let path = |n: u8| PathBuf::from(format!("/dev/input/event{n}"));
+            let path = |number: u8| PathBuf::from(format!("/dev/input/event{number}"));
             let active = active.map(path);
             let wanted: Vec<_> = pads
                 .iter()
-                .map(|n| path(*n))
+                .map(|number| path(*number))
                 .filter(|pad| mirror_wanted(mirrored, active.as_deref(), pad))
                 .collect();
             prop_assert!(wanted.len() <= 1);
-            let expected = usize::from(mirrored && active.as_ref().is_some_and(|a| pads.iter().any(|n| path(*n) == *a)));
+            let expected = usize::from(mirrored && active.as_ref().is_some_and(|chosen| pads.iter().any(|number| path(*number) == *chosen)));
             prop_assert_eq!(wanted.len(), expected);
             if active.is_none() {
                 prop_assert!(wanted.is_empty(), "a pad that never sent input gets no mirror");

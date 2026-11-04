@@ -836,10 +836,10 @@ mod mirror_tests {
             let mut translator = DpadHat::default();
             let mut consume = |name: ButtonName, _: ButtonState| name == ButtonName::South;
             let mut shown = std::collections::BTreeMap::new();
-            let apply = |frame: Vec<InputEvent>, shown: &mut std::collections::BTreeMap<(u16, u16), i32>| {
+            let apply = |frame: Vec<InputEvent>, state: &mut std::collections::BTreeMap<(u16, u16), i32>| {
                 for event in frame {
                     if event.event_type() != EventType::SYNCHRONIZATION {
-                        shown.insert((event.event_type().0, event.code()), event.value());
+                        let _previous = state.insert((event.event_type().0, event.code()), event.value());
                     }
                 }
             };
