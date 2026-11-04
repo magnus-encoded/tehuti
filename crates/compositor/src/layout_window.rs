@@ -3,7 +3,10 @@ use core::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use smithay::{
-    backend::renderer::{ImportAll, Renderer, element::AsRenderElements},
+    backend::renderer::{
+        ImportAll, Renderer,
+        element::{AsRenderElements, utils::CropRenderElement},
+    },
     desktop::{Window, space::SpaceElement},
     output::Output,
     utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
@@ -107,11 +110,17 @@ impl SpaceElement for LayoutWindow {
     }
 
     fn bbox(&self) -> Rectangle<i32, Logical> {
-        self.window.bbox()
+        self.window
+            .bbox()
+            .intersection(Rectangle::new(self.window.geometry().loc, self.size.get()))
+            .unwrap_or_default()
     }
 
     fn is_in_input_region(&self, point: &Point<f64, Logical>) -> bool {
-        self.window.is_in_input_region(point)
+        Rectangle::new(self.window.geometry().loc, self.size.get())
+            .to_f64()
+            .contains(*point)
+            && self.window.is_in_input_region(point)
     }
 
     fn z_index(&self) -> u8 {
@@ -153,7 +162,8 @@ impl<Render: Renderer + ImportAll> AsRenderElements<Render> for LayoutWindow
 where
     Window: AsRenderElements<Render>,
 {
-    type RenderElement = crate::dim::DimElement<<Window as AsRenderElements<Render>>::RenderElement>;
+    type RenderElement =
+        CropRenderElement<crate::dim::DimElement<<Window as AsRenderElements<Render>>::RenderElement>>;
 
     fn render_elements<Element: From<Self::RenderElement>>(
         &self,
@@ -162,15 +172,29 @@ where
         scale: Scale<f64>,
         alpha: f32,
     ) -> Vec<Element> {
+        let offset = self.window.geometry().loc.to_physical_precise_round(scale);
+        let tile = Rectangle::new(
+            (
+                location.x.saturating_add(offset.x),
+                location.y.saturating_add(offset.y),
+            )
+                .into(),
+            self.size.get().to_physical_precise_round(scale),
+        );
         self.window
             .render_elements(renderer, location, scale, alpha)
             .into_iter()
-            .map(|surface| {
-                Element::from(crate::dim::DimElement {
-                    surface,
-                    brightness: self.brightness.get(),
-                    revision: self.dim_revision.get(),
-                })
+            .filter_map(|surface| {
+                CropRenderElement::from_element(
+                    crate::dim::DimElement {
+                        surface,
+                        brightness: self.brightness.get(),
+                        revision: self.dim_revision.get(),
+                    },
+                    scale,
+                    tile,
+                )
+                .map(Element::from)
             })
             .collect()
     }
