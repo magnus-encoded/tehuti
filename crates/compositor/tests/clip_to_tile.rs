@@ -201,9 +201,37 @@ mod clip_to_tile {
         compositor.fill_output();
     }
 
+    fn assert_rendering_stays_inside_tile(
+        compositor: &Compositor,
+        location: smithay::utils::Point<i32, smithay::utils::Logical>,
+        size: smithay::utils::Size<i32, smithay::utils::Logical>,
+    ) {
+        use smithay::backend::renderer::{element::Element, pixman::PixmanRenderer};
+
+        let mut renderer = PixmanRenderer::new().unwrap();
+        for factor in [1.0, 1.5, 2.0] {
+            let scale = smithay::utils::Scale::from(factor);
+            let origin = location.to_physical_precise_round(scale);
+            let elements = compositor.space.render_elements_for_region(
+                &mut renderer,
+                &smithay::utils::Rectangle::from_size((OUTPUT_WIDTH, OUTPUT_HEIGHT).into()),
+                scale,
+                1.0,
+            );
+            assert!(!elements.is_empty());
+            let tile = smithay::utils::Rectangle::new(origin, size.to_physical_precise_round(scale));
+            for element in elements {
+                assert!(
+                    tile.contains_rect(element.geometry(scale)),
+                    "rendering escaped the tile"
+                );
+                assert_eq!(element.geometry(scale), tile, "buffer stays anchored top-left");
+            }
+        }
+    }
+
     #[test]
     fn oversized_buffer_is_drawn_and_hit_tested_only_inside_its_tile() {
-        use smithay::backend::renderer::{element::Element, pixman::PixmanRenderer};
         let mut display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         attach_output(&display, &mut compositor);
@@ -241,26 +269,7 @@ mod clip_to_tile {
             f64::from(location.y.saturating_add(size.h)),
         )
             .into();
-        let mut renderer = PixmanRenderer::new().unwrap();
-        for factor in [1.0, 1.5, 2.0] {
-            let scale = smithay::utils::Scale::from(factor);
-            let origin = location.to_physical_precise_round(scale);
-            let elements = compositor.space.render_elements_for_region(
-                &mut renderer,
-                &smithay::utils::Rectangle::from_size((OUTPUT_WIDTH, OUTPUT_HEIGHT).into()),
-                scale,
-                1.0,
-            );
-            assert!(!elements.is_empty());
-            let tile = smithay::utils::Rectangle::new(origin, size.to_physical_precise_round(scale));
-            for element in elements {
-                assert!(
-                    tile.contains_rect(element.geometry(scale)),
-                    "rendering escaped the tile"
-                );
-                assert_eq!(element.geometry(scale), tile, "buffer stays anchored top-left");
-            }
-        }
+        assert_rendering_stays_inside_tile(&compositor, location, size);
         assert!(
             compositor.space.element_under(right).is_none(),
             "input escaped the right tile edge"
