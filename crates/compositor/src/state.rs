@@ -2702,44 +2702,26 @@ impl Compositor {
         self.workspace_feedback.update(&snapshot, self.clock_elapsed());
         self.log_layout(&snapshot);
         for (identity, window) in &self.layout_windows {
+            let helper_position = self.helper_position(&snapshot, *identity);
+            if let Some(position) = helper_position {
+                Self::place_helper(
+                    &mut self.space,
+                    self.output.as_ref(),
+                    window,
+                    position,
+                    snapshot.focused_window == Some(*identity),
+                    configure,
+                );
+                continue;
+            }
             let Some((tile, border)) = Self::visible_tile(&snapshot, *identity) else {
                 self.space.unmap_elem(window);
                 continue;
             };
-            let old_size = window.layout_size();
-            window.set_size(
-                smithay::utils::Size::<f64, smithay::utils::Logical>::from((
-                    tile.requested_client.width,
-                    tile.requested_client.height,
-                ))
-                .to_i32_round(),
-            );
-            self.log_window_size(
-                window,
-                old_size,
-                window.layout_size(),
-                if configure {
-                    "compositor configure"
-                } else {
-                    "commit placement"
-                },
-            );
-            let client_size = if window.mapped() {
-                window.client_geometry().size
-            } else {
-                window.layout_size()
-            };
-            let placement = tile.place_client(
-                tehuti_core::layout::Size {
-                    width: f64::from(client_size.w),
-                    height: f64::from(client_size.h),
-                },
-                border,
-            );
+            let location = self.size_layout_window(window, tile, border, configure);
             self.space.map_element(
                 window.clone(),
-                smithay::utils::Point::<f64, smithay::utils::Logical>::from((placement.x, placement.y))
-                    .to_i32_round(),
+                location,
                 snapshot.focused_window == Some(*identity),
             );
             // Space only reports output entry once a buffer gives the window a
@@ -2756,6 +2738,103 @@ impl Compositor {
         }
         self.sync_window_focus();
         self.update_window_dimming();
+    }
+
+    fn size_layout_window(
+        &self,
+        window: &LayoutWindow,
+        tile: &tehuti_core::layout::TileView,
+        border: f64,
+        configure: bool,
+    ) -> smithay::utils::Point<i32, smithay::utils::Logical> {
+        let old_size = window.layout_size();
+        window.set_size(
+            smithay::utils::Size::<f64, smithay::utils::Logical>::from((
+                tile.requested_client.width,
+                tile.requested_client.height,
+            ))
+            .to_i32_round(),
+        );
+        self.log_window_size(
+            window,
+            old_size,
+            window.layout_size(),
+            if configure {
+                "compositor configure"
+            } else {
+                "commit placement"
+            },
+        );
+        let client_size = if window.mapped() {
+            window.client_geometry().size
+        } else {
+            window.layout_size()
+        };
+        let placement = tile.place_client(
+            tehuti_core::layout::Size {
+                width: f64::from(client_size.w),
+                height: f64::from(client_size.h),
+            },
+            border,
+        );
+        smithay::utils::Point::<f64, smithay::utils::Logical>::from((placement.x, placement.y)).to_i32_round()
+    }
+
+    fn helper_position(
+        &self,
+        snapshot: &tehuti_core::layout::Snapshot,
+        identity: tehuti_core::layout::WindowId,
+    ) -> Option<(f64, f64)> {
+        snapshot.outputs.iter().find_map(|output| {
+            let workspace = output.workspaces.get(output.active_workspace)?;
+            let index = workspace.helpers.iter().position(|helper| *helper == identity)?;
+            let width = workspace
+                .helpers
+                .iter()
+                .take(index)
+                .filter_map(|helper| {
+                    self.layout_windows
+                        .iter()
+                        .find(|(candidate, _)| candidate == helper)
+                        .map(|(_, window)| f64::from(window.client_geometry().size.w))
+                })
+                .sum::<f64>();
+            Some((
+                core::ops::Add::add(workspace.helper_position.0, width),
+                workspace.helper_position.1,
+            ))
+        })
+    }
+
+    fn place_helper(
+        space: &mut smithay::desktop::Space<LayoutWindow>,
+        output: Option<&Output>,
+        window: &LayoutWindow,
+        position: (f64, f64),
+        focused: bool,
+        configure: bool,
+    ) {
+        space.map_element(
+            window.clone(),
+            smithay::utils::Point::<f64, smithay::utils::Logical>::from(position).to_i32_round(),
+            focused,
+        );
+        if let Some(toplevel) = window.toplevel() {
+            if let Some(output) = output {
+                output.enter(toplevel.wl_surface());
+                Self::announce_scale(output, toplevel.wl_surface());
+            }
+            toplevel.with_pending_state(|pending| {
+                pending.size = None;
+                pending.states = Default::default();
+                if focused {
+                    let _changed = pending.states.set(xdg_toplevel::State::Activated);
+                }
+            });
+            if configure && toplevel.is_initial_configure_sent() {
+                let _serial = toplevel.send_pending_configure();
+            }
+        }
     }
 
     fn configure_layout_window(
@@ -2961,11 +3040,21 @@ impl Compositor {
     }
 
     fn sync_destination_windows(&mut self) {
-        self.destinations.update_workspaces(&self.layout.snapshot());
+        let snapshot = self.layout.snapshot();
+        self.destinations.update_workspaces(&snapshot);
+        let helpers: Vec<_> = snapshot
+            .outputs
+            .iter()
+            .flat_map(|output| &output.workspaces)
+            .flat_map(|workspace| &workspace.helpers)
+            .collect();
         let windows: Vec<_> = self
             .layout_windows
             .iter()
             .filter_map(|(identity, window)| {
+                if helpers.contains(&identity) {
+                    return None;
+                }
                 let toplevel = window.toplevel()?;
                 smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
                     let attributes = states
@@ -3224,7 +3313,12 @@ impl CompositorHandler for Compositor {
                 window.client_geometry().size,
                 "client commit",
             );
-            if previous != Some((window.client_geometry(), window.mapped())) {
+            let membership_changed = window
+                .toplevel()
+                .is_some_and(|toplevel| self.update_helper(toplevel));
+            if membership_changed {
+                self.place_layout();
+            } else if previous != Some((window.client_geometry(), window.mapped())) {
                 self.place_windows(false);
             }
             if let Some(toplevel) = window.toplevel()
@@ -3274,6 +3368,47 @@ impl ShmHandler for Compositor {
 }
 
 impl Compositor {
+    fn is_helper(surface: &ToplevelSurface) -> bool {
+        let untitled = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .is_none_or(|data| {
+                    data.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .title
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                })
+        });
+        untitled
+            && smithay::backend::renderer::utils::with_renderer_surface_state(surface.wl_surface(), |state| {
+                state.buffer().is_none_or(|buffer| {
+                    smithay::backend::renderer::buffer_dimensions(buffer)
+                        .is_some_and(|size| size.w <= 64 && size.h <= 64)
+                })
+            })
+            .unwrap_or(true)
+    }
+
+    fn update_helper(&mut self, surface: &ToplevelSurface) -> bool {
+        let identity = self.layout_windows.iter().find_map(|(identity, window)| {
+            window
+                .toplevel()
+                .filter(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+                .map(|_| *identity)
+        });
+        identity.is_some_and(
+            |identity| match self.layout.set_helper(identity, Self::is_helper(surface)) {
+                Ok(changed) => changed,
+                Err(error) => {
+                    tracing::warn!(%error, "helper membership failed");
+                    false
+                }
+            },
+        )
+    }
+
     fn map_toplevel(&mut self, surface: ToplevelSurface) {
         let _effect = self
             .windows
@@ -3311,6 +3446,11 @@ impl Compositor {
                 })
             });
         let rules = tehuti_core::layout::WindowRules {
+            kind: if Self::is_helper(&surface) {
+                tehuti_core::layout::WindowKind::Helper
+            } else {
+                tehuti_core::layout::WindowKind::Ordinary
+            },
             open_fullscreen: context.is_some_and(tehuti_protocol::Context::open_fullscreen),
             default_column_width: context
                 .and_then(tehuti_protocol::Context::window_column_width)
@@ -3364,6 +3504,9 @@ impl XdgShellHandler for Compositor {
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
+        if self.update_helper(&surface) {
+            self.place_layout();
+        }
         self.sync_destination_windows();
         if let Some(Event::Focus { app_id, title }) = self.focus_event(&surface) {
             self.speech_title.clone_from(&title);

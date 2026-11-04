@@ -25,8 +25,10 @@ mod helper_windows {
         protocol::{
             wl_buffer::WlBuffer,
             wl_compositor::WlCompositor,
+            wl_keyboard::{self, WlKeyboard},
             wl_output::WlOutput,
             wl_registry::WlRegistry,
+            wl_seat::WlSeat,
             wl_shm::{self, WlShm},
             wl_shm_pool::WlShmPool,
             wl_surface::WlSurface,
@@ -45,10 +47,7 @@ mod helper_windows {
     struct App {
         /// Every toplevel configure as (width, height, states).
         configures: Vec<(i32, i32, Vec<u32>)>,
-        acked: bool,
-        /// Re-asks for maximize on every configure before acknowledging it, as
-        /// a Wine game through xwayland-satellite does.
-        echo_maximize: Option<XdgToplevel>,
+        focused: Option<WlSurface>,
     }
 
     impl Dispatch<WlRegistry, GlobalListContents> for App {
@@ -78,7 +77,7 @@ mod helper_windows {
     }
     impl Dispatch<XdgSurface, ()> for App {
         fn event(
-            app: &mut Self,
+            _: &mut Self,
             surface: &XdgSurface,
             event: xdg_surface::Event,
             (): &(),
@@ -86,11 +85,7 @@ mod helper_windows {
             _: &QueueHandle<Self>,
         ) {
             if let xdg_surface::Event::Configure { serial } = event {
-                if let Some(toplevel) = &app.echo_maximize {
-                    toplevel.set_maximized();
-                }
                 surface.ack_configure(serial);
-                app.acked = true;
             }
         }
     }
@@ -119,6 +114,23 @@ mod helper_windows {
             }
         }
     }
+    impl Dispatch<WlKeyboard, ()> for App {
+        fn event(
+            app: &mut Self,
+            _: &WlKeyboard,
+            event: wl_keyboard::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let wl_keyboard::Event::Enter { surface, .. } = event {
+                app.focused = Some(surface);
+            } else if let wl_keyboard::Event::Leave { .. } = event {
+                app.focused = None;
+            }
+        }
+    }
+    delegate_noop!(App: ignore WlSeat);
     delegate_noop!(App: ignore WlSurface);
     delegate_noop!(App: ignore WlCompositor);
     delegate_noop!(App: ignore WlOutput);
@@ -148,6 +160,31 @@ mod helper_windows {
         surface.commit();
     }
 
+    fn advance_helper(
+        stage: usize,
+        helper_top: &XdgToplevel,
+        helper: &WlSurface,
+        shm: &WlShm,
+        handle: &QueueHandle<App>,
+    ) {
+        match stage {
+            1 => helper.commit(),
+            2 => draw(shm, helper, handle, (26, 26)),
+            3 => helper_top.set_title("Tools".into()),
+            4 => helper_top.set_title(String::new()),
+            5 => draw(shm, helper, handle, (64, 64)),
+            6 => draw(shm, helper, handle, (65, 26)),
+            7 => draw(shm, helper, handle, (26, 65)),
+            8 => draw(shm, helper, handle, (26, 26)),
+            9 => {
+                helper_top.set_title("Tools".into());
+                helper.attach(None, 0, 0);
+                helper.commit();
+            }
+            _ => {}
+        }
+    }
+
     fn client(stream: UnixStream, ready: mpsc::Sender<usize>, commands: mpsc::Receiver<()>) {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
@@ -155,6 +192,8 @@ mod helper_windows {
         let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
         let wm_base: XdgWmBase = globals.bind(&handle, 2..=6, ()).unwrap();
         let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+        let seat: WlSeat = globals.bind(&handle, 1..=5, ()).unwrap();
+        let _keyboard = seat.get_keyboard(&handle, ());
         let mut app = App::default();
         let game = compositor.create_surface(&handle, ());
         let game_xdg = wm_base.get_xdg_surface(&game, &handle, ());
@@ -168,21 +207,23 @@ mod helper_windows {
         let helper = compositor.create_surface(&handle, ());
         let helper_xdg = wm_base.get_xdg_surface(&helper, &handle, ());
         let helper_top = helper_xdg.get_toplevel(&handle, ());
-        for stage in 1..=4 {
+        for stage in 1..=9 {
             while commands.try_recv().is_err() {
                 let _dispatched = queue.roundtrip(&mut app).unwrap();
             }
-            match stage {
-                1 => helper.commit(),
-                2 => draw(&shm, &helper, &handle, (26, 26)),
-                3 => helper_top.set_title("Tools".into()),
-                4 => {
-                    helper_top.set_title(String::new());
-                    draw(&shm, &helper, &handle, (65, 26));
-                }
-                _ => unreachable!(),
-            }
+            advance_helper(stage, &helper_top, &helper, &shm, &handle);
             let _settled = queue.roundtrip(&mut app).unwrap();
+            if !matches!(stage, 3 | 6 | 7 | 9) {
+                assert_eq!(
+                    app.focused,
+                    Some(game.clone()),
+                    "helper keeps keyboard focus on game at stage {stage}"
+                );
+            }
+            if stage == 1 {
+                let (width, height, _) = app.configures.last().unwrap();
+                assert_eq!((*width, *height), (0, 0), "helper receives no width preset");
+            }
             ready.send(stage).unwrap();
         }
         while commands.try_recv().is_err() {
@@ -241,7 +282,7 @@ mod helper_windows {
         let thread = thread::spawn(move || client(stream, ready, receiver));
         let started = Instant::now();
         let mut game = None;
-        for stage in 0..=4 {
+        for stage in 0..=9 {
             loop {
                 assert!(started.elapsed() < Duration::from_secs(20), "client timed out");
                 pump(&mut display, &mut compositor, Duration::from_millis(1));
@@ -257,10 +298,10 @@ mod helper_windows {
             let workspace = &output.workspaces[output.active_workspace];
             assert_eq!(
                 workspace.columns.len(),
-                if stage < 3 { 1 } else { 2 },
+                if matches!(stage, 3 | 6 | 7 | 9) { 2 } else { 1 },
                 "stage {stage}"
             );
-            if stage < 3 {
+            if !matches!(stage, 3 | 6 | 7 | 9) {
                 assert_eq!(snapshot.focused_window, game, "mapping a helper keeps game focus");
                 for command in [
                     Command::FocusColumnRight,

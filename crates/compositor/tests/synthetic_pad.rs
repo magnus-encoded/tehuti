@@ -513,6 +513,7 @@ mod synthetic_pad {
             let surface = wayland.create_surface(&handle, ());
             let xdg = shell.get_xdg_surface(&surface, &handle, ());
             let toplevel = xdg.get_toplevel(&handle, ());
+            toplevel.set_title("Test window".into());
             toplevel.set_app_id("clipboard-test".into());
             surface.commit();
             let _created = queue.roundtrip(&mut app).unwrap();
@@ -800,6 +801,7 @@ mod synthetic_pad {
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
+        toplevel.set_title("Test window".into());
         toplevel.set_app_id("pointer-test".into());
         surface.commit();
         let mut app = App::default();
@@ -815,6 +817,7 @@ mod synthetic_pad {
         let other_surface = compositor.create_surface(&handle, ());
         let other_xdg = wm_base.get_xdg_surface(&other_surface, &handle, ());
         let other_toplevel = other_xdg.get_toplevel(&handle, ());
+        other_toplevel.set_title("Test window".into());
         other_toplevel.set_app_id("other-window".into());
         other_surface.commit();
         let _other_configured = queue.roundtrip(&mut app).unwrap();
@@ -1207,6 +1210,7 @@ mod synthetic_pad {
             let surface = compositor.create_surface(&handle, ());
             let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
             let toplevel = xdg_surface.get_toplevel(&handle, ());
+            toplevel.set_title("Test window".into());
             toplevel.set_app_id(parent_id.into());
             surface.commit();
             (surface, xdg_surface, toplevel)
@@ -1235,6 +1239,7 @@ mod synthetic_pad {
             let next_surface = compositor.create_surface(&handle, ());
             let next_xdg_surface = wm_base.get_xdg_surface(&next_surface, &handle, ());
             let next_toplevel = next_xdg_surface.get_toplevel(&handle, ());
+            next_toplevel.set_title("Test window".into());
             next_toplevel.set_app_id(app_id.into());
             next_surface.commit();
             let _changed_focus = queue.roundtrip(&mut app).unwrap();
@@ -1395,6 +1400,7 @@ mod synthetic_pad {
                             ids.push(wayland_client::Proxy::id(&surface));
                             let xdg = shell.get_xdg_surface(&surface, &handle, ());
                             let toplevel = xdg.get_toplevel(&handle, ());
+                            toplevel.set_title("Test window".into());
                             toplevel.set_app_id("test".into());
                             surface.commit();
                             windows.push((surface, xdg, toplevel));
@@ -1939,6 +1945,7 @@ mod synthetic_pad {
                 let surface = compositor.create_surface(&handle, ());
                 let xdg = wm_base.get_xdg_surface(&surface, &handle, ());
                 let toplevel = xdg.get_toplevel(&handle, ());
+                toplevel.set_title("Test window".into());
                 toplevel.set_app_id("test".into());
                 surface.commit();
                 let _configured = queue.roundtrip(&mut app).unwrap();
