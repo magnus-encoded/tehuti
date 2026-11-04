@@ -1775,6 +1775,125 @@ mod synthetic_pad {
         assert_geometry_matches_snapshot(&compositor);
     }
 
+    /// Plays Guide with `button`, or a lone Guide tap, on the pad or as Meta with the matching arrow on the keyboard.
+    fn play_chord(compositor: &mut Compositor, keyboard: bool, button: Option<ButtonName>) {
+        use smithay::input::keyboard::Keycode;
+        if keyboard {
+            let meta = Keycode::new(125 + 8);
+            compositor.host_key(meta, true);
+            if let Some(button) = button {
+                let arrows = [
+                    (ButtonName::DpadUp, 103 + 8),
+                    (ButtonName::DpadDown, 108 + 8),
+                    (ButtonName::DpadLeft, 105 + 8),
+                    (ButtonName::DpadRight, 106 + 8),
+                ];
+                let (_, code) = arrows.into_iter().find(|(name, _)| *name == button).unwrap();
+                let arrow = Keycode::new(code);
+                compositor.host_key(arrow, true);
+                compositor.host_key(arrow, false);
+            }
+            compositor.host_key(meta, false);
+            return;
+        }
+        let press = |name| Event::Button {
+            name,
+            state: ButtonState::Pressed,
+        };
+        let release = |name| Event::Button {
+            name,
+            state: ButtonState::Released,
+        };
+        compositor.handle(&press(ButtonName::Guide));
+        if let Some(button) = button {
+            compositor.handle(&press(button));
+            compositor.handle(&release(button));
+        }
+        compositor.handle(&release(ButtonName::Guide));
+    }
+
+    /// Plays chords (`None` is a Guide tap) and records the active workspace, its focused column and how many columns
+    /// the second workspace holds after each one.
+    fn play_window_chords(
+        keyboard: bool,
+        chords: &[Option<ButtonName>],
+    ) -> Vec<(usize, Option<usize>, usize)> {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context(
+                "app_id = 'test'\n[buttons]\n[speech]\nclose = { close = 'focused' }",
+            )
+            .unwrap(),
+        ]);
+        let clients: Vec<_> = (0..2)
+            .map(|_| start_action_client(&mut display, &mut compositor))
+            .collect();
+        let mut trace = Vec::new();
+        for chord in chords {
+            play_chord(&mut compositor, keyboard, *chord);
+            let snapshot = compositor.layout_snapshot();
+            let window_workspace = snapshot.outputs[0].workspaces[1].columns.len();
+            trace.push((
+                snapshot.outputs[0].active_workspace,
+                focused_column(&compositor).0,
+                window_workspace,
+            ));
+        }
+        for _ in 0..2 {
+            compositor.handle(&Event::Speech {
+                text: tehuti_protocol::Text::new("close".into()).unwrap(),
+            });
+        }
+        let began = Instant::now();
+        while !clients.iter().all(thread::JoinHandle::is_finished) {
+            assert!(began.elapsed() < Duration::from_secs(5), "close stalled");
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        trace
+    }
+
+    #[test]
+    fn guide_dpad_and_meta_arrows_manage_windows_alike_at_both_levels() {
+        let (upward, downward, leftward, rightward, tap) = (
+            Some(ButtonName::DpadUp),
+            Some(ButtonName::DpadDown),
+            Some(ButtonName::DpadLeft),
+            Some(ButtonName::DpadRight),
+            None,
+        );
+        let chords = [
+            leftward, rightward, leftward, downward, upward, tap, rightward, downward, upward, tap, downward,
+            upward,
+        ];
+        let pad = play_window_chords(false, &chords);
+        assert_eq!(
+            pad,
+            play_window_chords(true, &chords),
+            "Meta+arrows are Guide+d-pad"
+        );
+        assert_eq!(
+            pad,
+            vec![
+                (0, Some(0), 0),
+                (0, Some(1), 0),
+                (0, Some(0), 0),
+                (1, None, 0),
+                (0, Some(0), 0),
+                (0, Some(0), 0),
+                (0, Some(1), 0),
+                (1, Some(0), 1),
+                (0, Some(1), 0),
+                (0, Some(1), 0),
+                (1, None, 0),
+                (0, Some(1), 0),
+            ],
+            "app level focuses and returns to the last focused window; columns level moves it and focus follows"
+        );
+    }
+
     fn start_action_client(
         display: &mut Display<Compositor>,
         compositor: &mut Compositor,
@@ -2992,6 +3111,178 @@ else:
                 Trace::Mods(0),
             ]
         );
+    }
+
+    #[test]
+    fn meta_and_arrows_move_focus_without_reaching_the_client() {
+        use smithay::input::keyboard::Keycode;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let active = |state: &Compositor| state.layout_snapshot().outputs[0].active_workspace;
+        let meta = Keycode::new(125 + 8);
+        let up_arrow = Keycode::new(103 + 8);
+        let down_arrow = Keycode::new(108 + 8);
+        assert_eq!(active(&compositor), 0);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, false);
+        assert_eq!(active(&compositor), 0, "arrow without Meta is not a chord");
+        compositor.host_key(meta, true);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, false);
+        assert_eq!(active(&compositor), 1);
+        compositor.host_key(up_arrow, true);
+        compositor.host_key(up_arrow, false);
+        assert_eq!(active(&compositor), 0);
+        for column_arrow in [Keycode::new(105 + 8), Keycode::new(106 + 8)] {
+            compositor.host_key(column_arrow, true);
+            compositor.host_key(column_arrow, false);
+        }
+        compositor.host_key(meta, false);
+        compositor.release_host_keys();
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        let trace: Vec<_> = client
+            .join()
+            .unwrap()
+            .keyboard_trace
+            .into_iter()
+            .skip_while(|event| !matches!(event, Trace::Key(..)))
+            .filter(|event| matches!(event, Trace::Key(..)))
+            .collect();
+        assert_eq!(
+            trace,
+            vec![
+                Trace::Key(108, KeyState::Pressed),
+                Trace::Key(108, KeyState::Released),
+            ]
+        );
+    }
+
+    #[test]
+    fn meta_takes_only_arrows_the_client_never_saw_and_moves_once_per_hold() {
+        use smithay::input::keyboard::Keycode;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let active = |state: &Compositor| state.layout_snapshot().outputs[0].active_workspace;
+        let meta = Keycode::new(125 + 8);
+        let down_arrow = Keycode::new(108 + 8);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(meta, true);
+        host_tap(&mut compositor, down_arrow);
+        compositor.host_key(meta, false);
+        assert_eq!(active(&compositor), 0, "a held arrow stays the client's");
+        compositor.host_key(meta, true);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, true);
+        assert_eq!(
+            active(&compositor),
+            1,
+            "a repeat is not a move, like a held d-pad"
+        );
+        compositor.host_key(meta, false);
+        compositor.host_key(down_arrow, false);
+        compositor.host_key(meta, true);
+        host_tap(&mut compositor, Keycode::new(103 + 8));
+        host_tap(&mut compositor, down_arrow);
+        compositor.host_key(meta, false);
+        assert_eq!(active(&compositor), 1, "a late release leaves the chord");
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        let trace: Vec<_> = client
+            .join()
+            .unwrap()
+            .keyboard_trace
+            .into_iter()
+            .filter(|event| matches!(event, Trace::Key(..)))
+            .collect();
+        assert_eq!(
+            trace,
+            vec![
+                Trace::Key(108, KeyState::Pressed),
+                Trace::Key(108, KeyState::Pressed),
+                Trace::Key(108, KeyState::Released),
+            ],
+            "the held arrow's repeat and release reach the client"
+        );
+    }
+
+    fn host_tap(compositor: &mut Compositor, keycode: smithay::input::keyboard::Keycode) {
+        compositor.host_key(keycode, true);
+        compositor.host_key(keycode, false);
+    }
+
+    #[test]
+    fn tapping_meta_switches_arrows_from_focus_to_moving_the_column() {
+        use smithay::input::keyboard::Keycode;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let window_workspace = |state: &Compositor| {
+            let snapshot = state.layout_snapshot();
+            snapshot.outputs[0]
+                .workspaces
+                .iter()
+                .position(|workspace| !workspace.columns.is_empty())
+                .unwrap()
+        };
+        let meta = Keycode::new(125 + 8);
+        let down_arrow = Keycode::new(108 + 8);
+        compositor.host_key(meta, true);
+        compositor.host_key(meta, false);
+        compositor.host_key(meta, true);
+        compositor.host_key(down_arrow, true);
+        compositor.host_key(down_arrow, false);
+        compositor.host_key(meta, false);
+        assert_eq!(
+            window_workspace(&compositor),
+            1,
+            "column level moves the window down"
+        );
+        assert_eq!(
+            compositor.layout_snapshot().outputs[0].active_workspace,
+            1,
+            "focus follows the window"
+        );
+        let plain_key = Keycode::new(30 + 8);
+        compositor.host_key(plain_key, true);
+        compositor.host_key(plain_key, false);
+        compositor.release_host_keys();
+        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        drop(client.join().unwrap());
     }
 
     #[test]

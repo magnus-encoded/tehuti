@@ -545,6 +545,11 @@ impl Plugins {
         self.pad.reset_held();
     }
 
+    /// Whether a plugin consumed the held `button`; reads only.
+    pub(crate) fn pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
+        self.pad.consumed(button)
+    }
+
     /// Applies virtual pad overrides to one physical button; true keeps it from the application.
     pub(crate) fn pad_button(
         &mut self,

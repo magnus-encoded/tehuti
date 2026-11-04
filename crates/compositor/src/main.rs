@@ -32,6 +32,10 @@ pub(crate) struct LoopData {
     controllers: BTreeMap<PathBuf, AttachedController>,
     pad_gate: input::PadGate,
     virtual_pad: Option<String>,
+    /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
+    /// Unplugging it does not clear this: no pad matches the stale path, so no mirror exists
+    /// until another pad sends input and takes over.
+    active_pad: Option<PathBuf>,
     controller_tokens: BTreeMap<PathBuf, calloop::RegistrationToken>,
     rescan_controller: bool,
     discovery: controller::Discovery,
@@ -401,6 +405,7 @@ fn start_session(
         pad_gate: input::PadGate::default(),
         controller_tokens,
         virtual_pad,
+        active_pad: None,
         rescan_controller: true,
         discovery,
         discovery_epoch: std::time::Instant::now(),
@@ -817,10 +822,12 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
+    let active = &mut data.active_pad;
     let (events, removed) = input::drain_pads_admitted(&mut data.controllers, |path, controller, event| {
         let admitted = gate.admit(path, compositor.controller_chosen(controller.pad.name()), event);
         if admitted {
             identity = Some(controller.pad.identity());
+            *active = Some(path.to_path_buf());
         }
         admitted
     });
@@ -914,7 +921,6 @@ fn advance_time(data: &mut LoopData) {
 
 fn sync_pad_grab(data: &mut LoopData) {
     let mirrored = data.compositor.virtual_pad();
-    let mut started = false;
     for pad in data.controllers.values_mut() {
         if let Err(error) = pad
             .pad
@@ -923,19 +929,34 @@ fn sync_pad_grab(data: &mut LoopData) {
             warn!(%error, "controller ownership change failed; reopening");
             pad.watchdog.request_reopen();
         }
-        match pad.pad.set_mirror(mirrored) {
-            Ok(created) => started |= created,
-            Err(error) => {
-                warn!(%error, "virtual pad unavailable; passing the physical pad through");
-                if let Err(grab_error) = pad.pad.set_passthrough(true) {
-                    warn!(%grab_error, "controller ownership change failed; reopening");
-                    pad.watchdog.request_reopen();
-                }
+    }
+    // Held-button tracking starts over only when the virtual pad first appears; a switch between
+    // pads keeps it, so a plugin still gets the release of a button it took on the old pad.
+    if mirrored
+        && !data
+            .controllers
+            .values()
+            .any(|controller| controller.pad.mirrored())
+    {
+        data.compositor.reset_virtual_pad();
+    }
+    let mut pads: Vec<_> = data
+        .controllers
+        .iter_mut()
+        .map(|(path, controller)| (path.as_path(), &mut controller.pad))
+        .collect();
+    let compositor = &data.compositor;
+    let sync = controller::sync_mirrors(&mut pads, mirrored, data.active_pad.as_deref(), &|button| {
+        compositor.virtual_pad_consumed(button)
+    });
+    for path in &sync.failed {
+        if let Some(pad) = data.controllers.get_mut(path) {
+            warn!("passing the physical pad through");
+            if let Err(grab_error) = pad.pad.set_passthrough(true) {
+                warn!(%grab_error, "controller ownership change failed; reopening");
+                pad.watchdog.request_reopen();
             }
         }
-    }
-    if started {
-        data.compositor.reset_virtual_pad();
     }
 }
 
