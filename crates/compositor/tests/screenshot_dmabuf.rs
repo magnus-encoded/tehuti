@@ -127,6 +127,7 @@ mod screenshot_dmabuf {
         let surface = compositor.create_surface(&handle, ());
         let xdg = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg.get_toplevel(&handle, ());
+        toplevel.set_title("Test window".into());
         toplevel.set_app_id(APP_ID.into());
         surface.commit();
         let mut app = App::default();

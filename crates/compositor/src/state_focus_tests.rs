@@ -98,6 +98,7 @@ fn client(stream: UnixStream, stop: &mpsc::Receiver<()>) {
     let xdg = wm_base.get_xdg_surface(&surface, &handle, ());
     let toplevel = xdg.get_toplevel(&handle, ());
     toplevel.set_app_id("org.example.Window".into());
+    toplevel.set_title("Keyboard relayout".into());
     surface.commit();
     let mut drawn = false;
     while stop.try_recv().is_err() {
