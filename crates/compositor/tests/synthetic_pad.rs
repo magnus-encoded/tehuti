@@ -959,7 +959,9 @@ mod synthetic_pad {
             assert!(began.elapsed() < Duration::from_secs(5), "host pointer timed out");
             let _events = display.dispatch_clients(&mut compositor).unwrap();
             if !sent && receiver.try_recv().is_ok() {
-                compositor.host_pointer_motion(12.5, 7.25);
+                compositor.apply_layout_command(tehuti_core::layout::Command::FocusColumnFirst);
+                compositor.host_pointer_motion(10.0, 5.0);
+                compositor.host_pointer_motion(2.5, 2.25);
                 compositor.host_pointer_button(PointerButton::Left, true);
                 compositor.host_pointer_button(PointerButton::Left, false);
                 sent = true;
@@ -974,6 +976,30 @@ mod synthetic_pad {
             vec![(0x110, PointerState::Pressed), (0x110, PointerState::Released)]
         );
         assert_eq!(app.pointer_focused, app.focused);
+    }
+
+    #[test]
+    fn physical_pointer_requires_an_own_context_and_excludes_games() {
+        for (source, enabled) in [
+            ("app_id = 'test'\n[buttons]", false),
+            ("app_id = '*'\n[buttons]\n[pointer]\nphysical = true", false),
+            ("app_id = 'test'\n[buttons]\n[pointer]\nphysical = true", true),
+            (
+                "app_id = 'test'\n[buttons]\n[pointer]\nphysical = true\n[pad]\npassthrough = true",
+                false,
+            ),
+        ] {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            compositor.set_contexts(vec![tehuti_protocol::parse_context(source).unwrap()]);
+            compositor.handle(&Event::Focus {
+                app_id: Some("test".into()),
+                title: String::new(),
+            });
+            compositor.host_pointer_motion(12.5, 7.25);
+            compositor.host_pointer_motion(f64::NAN, 0.0);
+            assert_eq!(compositor.cursor_location(), enabled.then_some((112.5, 107.25)));
+        }
     }
 
     fn toggle_pointer_mode(compositor: &mut Compositor) {
