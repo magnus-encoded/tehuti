@@ -27,6 +27,7 @@ struct View {
     row: InputRow,
     controller: String,
     microphone: String,
+    push_to_talk: String,
     speech: String,
     hint: String,
     selected: usize,
@@ -50,6 +51,7 @@ impl View {
             row: settings.input.row,
             controller: settings.input.controller_label(),
             microphone: settings.input.microphone_label(),
+            push_to_talk: settings.input.push_to_talk_label(),
             speech: speech.to_owned(),
             hint: settings.button_hint(),
             selected: settings.selected,
@@ -252,6 +254,11 @@ impl Canvas {
                 settings.input.controller_label(),
             ),
             (
+                InputRow::PushToTalk,
+                "PUSH TO TALK",
+                settings.input.push_to_talk_label(),
+            ),
+            (
                 InputRow::Microphone,
                 "MICROPHONE",
                 settings.input.microphone_label(),
@@ -266,11 +273,11 @@ impl Canvas {
             let value: String = value.chars().take(36).collect();
             self.text(96, y.saturating_add(66), &format!("<  {value}  >"), 3, CYAN);
         }
-        self.text(96, 494, "SPEECH RUNS ON", 2, WHITE);
+        self.text(96, 630, "SPEECH RUNS ON", 2, WHITE);
         let speech: String = speech.chars().take(36).collect();
         self.text(
             360,
-            490,
+            626,
             &speech,
             3,
             if speech.starts_with("CPU") { AMBER } else { CYAN },
@@ -592,7 +599,7 @@ mod tests {
         press(&mut compositor, ButtonName::DpadRight);
         assert_eq!(compositor.settings().input.controller_label(), "DUALSHOCK 4 #1");
         assert!(compositor.controller_chosen("Wireless Controller"));
-        assert!(!compositor.controller_chosen("Xbox Controller"));
+        assert!(compositor.controller_chosen("Xbox Controller"));
         assert_eq!(
             store.controller()?,
             ControllerChoice::Auto,
@@ -603,6 +610,7 @@ mod tests {
             store.controller()?,
             ControllerChoice::Named("Wireless Controller".into())
         );
+        press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::DpadRight);
         assert_eq!(store.microphone()?, MicrophoneChoice::Auto);

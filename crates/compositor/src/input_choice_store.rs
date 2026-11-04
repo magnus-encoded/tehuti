@@ -74,6 +74,42 @@ impl Store {
         )
     }
 
+    /// # Errors
+    /// Returns read errors or invalid controller binding data.
+    pub fn controller_bindings(
+        &self,
+    ) -> io::Result<std::collections::BTreeMap<String, tehuti_protocol::ButtonName>> {
+        let Some(source) = self.line("controller-talk.json")? else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+        let bindings: std::collections::BTreeMap<String, tehuti_protocol::ButtonName> =
+            serde_json::from_str(&source).map_err(io::Error::other)?;
+        if bindings.values().any(|button| {
+            !matches!(
+                button,
+                tehuti_protocol::ButtonName::Record | tehuti_protocol::ButtonName::Start
+            )
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "controller talk must be Record or Start",
+            ));
+        }
+        Ok(bindings)
+    }
+
+    /// # Errors
+    /// Returns serialization, file write and replacement errors.
+    pub fn set_controller_bindings(
+        &self,
+        bindings: &std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
+    ) -> io::Result<()> {
+        self.replace(
+            "controller-talk.json",
+            &serde_json::to_string(bindings).map_err(io::Error::other)?,
+        )
+    }
+
     fn line(&self, name: &str) -> io::Result<Option<String>> {
         match std::fs::read_to_string(self.directory.join(name)) {
             Ok(value) => Ok(value
@@ -211,6 +247,26 @@ mod tests {
         reopened.set_controller(&ControllerChoice::Auto)?;
         assert!(!directory.path().join("tehuti/controller").exists());
         assert_eq!(reopened.controller()?, ControllerChoice::Auto);
+        Ok(())
+    }
+
+    #[test]
+    fn controller_bindings_survive_reopening_and_reject_invalid_buttons() -> std::io::Result<()> {
+        use tehuti_protocol::ButtonName;
+        let directory = tempfile::tempdir()?;
+        let store = Store::new(directory.path().to_path_buf());
+        let bindings = std::collections::BTreeMap::from([
+            ("Elite".into(), ButtonName::Start),
+            ("Share pad".into(), ButtonName::Record),
+        ]);
+        store.set_controller_bindings(&bindings)?;
+        let reopened = Store::new(directory.path().to_path_buf());
+        assert_eq!(reopened.controller_bindings()?, bindings);
+        std::fs::write(
+            directory.path().join("controller-talk.json"),
+            r#"{"Pad":"guide"}"#,
+        )?;
+        assert!(reopened.controller_bindings().is_err());
         Ok(())
     }
 
