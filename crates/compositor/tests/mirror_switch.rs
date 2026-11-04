@@ -124,7 +124,7 @@ mod tests {
             .raw
             .borrow_mut()
             .extend(press(KeyCode::BTN_SOUTH, 1));
-        first.pump_mirror(&|_| false).unwrap();
+        first.pump_mirror(&mut |_, _| false).unwrap();
 
         // The second pad's press reached the core before its mirror existed; its kernel state still holds it.
         second_handles.held.borrow_mut().push(KeyCode::BTN_EAST.code());
