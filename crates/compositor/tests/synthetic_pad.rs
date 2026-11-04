@@ -3096,6 +3096,16 @@ else:
         );
     }
 
+    fn assert_upward_workspace_feedback(compositor: &Compositor) {
+        assert!(
+            compositor
+                .voice_bar()
+                .segments()
+                .iter()
+                .any(|segment| segment.text == "UP · 1")
+        );
+    }
+
     #[test]
     fn workspace_feedback_does_not_delay_destination_focus_or_keys() {
         use smithay::input::keyboard::Keycode;
@@ -3117,22 +3127,16 @@ else:
         assert!(destination.is_some());
         let meta = Keycode::new(125 + 8);
         let down = Keycode::new(108 + 8);
-        let up = Keycode::new(103 + 8);
+        let upward = Keycode::new(103 + 8);
         compositor.host_key(meta, true);
         compositor.host_key(down, true);
         compositor.host_key(down, false);
         assert_eq!(compositor.layout_snapshot().focused_window, None);
-        compositor.host_key(up, true);
-        compositor.host_key(up, false);
+        compositor.host_key(upward, true);
+        compositor.host_key(upward, false);
         compositor.host_key(meta, false);
         assert_eq!(compositor.layout_snapshot().focused_window, destination);
-        assert!(
-            compositor
-                .voice_bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "UP · 1")
-        );
+        assert_upward_workspace_feedback(&compositor);
         let letter_a = Keycode::new(30 + 8);
         compositor.host_key(letter_a, true);
         compositor.host_key(letter_a, false);
@@ -3145,13 +3149,7 @@ else:
             display.flush_clients().unwrap();
             thread::sleep(Duration::from_millis(1));
         }
-        assert!(
-            compositor
-                .voice_bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "UP · 1")
-        );
+        assert_upward_workspace_feedback(&compositor);
         let trace: Vec<_> = client
             .join()
             .unwrap()
