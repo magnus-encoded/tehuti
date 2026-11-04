@@ -532,11 +532,11 @@ mod level_dim {
     fn empty_workspace_signpost_names_a_destination_that_voice_ranks_first() {
         scene(1, |compositor, _| {
             compositor.apply_layout_command(tehuti_core::layout::Command::FocusWorkspaceDown);
-            assert_eq!(compositor.voice_bar().segments()[0].text, "Workspace 2");
-            compositor.say(tehuti_protocol::Text::new("open Workspace 2".into()).unwrap());
+            assert_eq!(compositor.voice_bar().segments()[0].text, "2");
+            compositor.say(tehuti_protocol::Text::new("open 2".into()).unwrap());
             assert_eq!(
                 compositor.choice_list().unwrap().candidates()[0].candidate.name,
-                "Workspace 2"
+                "2"
             );
             compositor.apply_layout_command(tehuti_core::layout::Command::FocusWorkspaceUp);
             compositor.handle(&Event::Button {

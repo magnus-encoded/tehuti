@@ -18,6 +18,31 @@ mod context {
     }
 
     #[test]
+    fn restart_phrase_requires_true_and_disables_fuzzy_matching() {
+        let context = parse_context(
+            "app_id = '*'
+buttons = {}
+[speech]
+restart = { restart = true }",
+        )
+        .unwrap();
+        assert_eq!(
+            context.speech_action("restart"),
+            Some(tehuti_protocol::Action::Restart)
+        );
+        assert!(tehuti_protocol::destructive(&tehuti_protocol::Action::Restart));
+        assert!(
+            parse_context(
+                "app_id = '*'
+buttons = {}
+[speech]
+restart = { restart = false }"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn window_sizes_accept_fractions_and_named_presets() {
         let plain = parse_context("app_id = 'org.example.App'\nbuttons = {}").unwrap();
         assert_eq!(plain.window_column_width(), None);
