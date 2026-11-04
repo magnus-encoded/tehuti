@@ -756,14 +756,52 @@ impl Compositor {
         }
     }
 
+    fn physical_pointer_enabled(&self) -> bool {
+        self.speech_context
+            .as_deref()
+            .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &self.speech_title))
+            .is_some_and(tehuti_protocol::Context::physical_pointer)
+    }
+
+    pub fn host_pointer_motion(&mut self, dx: f64, dy: f64) {
+        if self.physical_pointer_enabled() && dx.is_finite() && dy.is_finite() {
+            self.pointer_motion(dx, dy);
+        }
+    }
+
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "absolute device coordinates map to the output"
+    )]
+    pub fn host_pointer_absolute(&mut self, x: f64, y: f64) {
+        if !self.physical_pointer_enabled() || !x.is_finite() || !y.is_finite() {
+            return;
+        }
+        if let Some(output) = &self.output
+            && let Some(geometry) = self.space.output_geometry(output)
+        {
+            let dx = f64::from(geometry.loc.x) + x.clamp(0.0, 1.0) * f64::from(geometry.size.w)
+                - self.pointer_location.x;
+            let dy = f64::from(geometry.loc.y) + y.clamp(0.0, 1.0) * f64::from(geometry.size.h)
+                - self.pointer_location.y;
+            self.host_pointer_motion(dx, dy);
+        }
+    }
+
+    pub fn host_pointer_button(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
+        if self.physical_pointer_enabled() {
+            self.pointer_click(button, pressed);
+        }
+    }
+
     #[expect(
         clippy::float_arithmetic,
         reason = "Smithay pointer coordinates and axis values use floating point"
     )]
-    fn pointer_motion(&mut self, x: i32, y: i32) {
+    fn pointer_motion(&mut self, x: f64, y: f64) {
         tracing::trace!(x, y, "mouse dispatch motion");
-        self.pointer_location.x += f64::from(x) / 1_000_000.0;
-        self.pointer_location.y += f64::from(y) / 1_000_000.0;
+        self.pointer_location.x += x;
+        self.pointer_location.y += y;
         self.move_pointer();
     }
     #[expect(
@@ -861,7 +899,7 @@ impl Compositor {
 
     #[must_use]
     pub fn cursor_location(&self) -> Option<(f64, f64)> {
-        self.mouse_mode
+        (self.mouse_mode || self.physical_pointer_enabled())
             .then_some((self.pointer_location.x, self.pointer_location.y))
     }
 
@@ -872,7 +910,7 @@ impl Compositor {
         output: &smithay::output::Output,
     ) -> Option<smithay::utils::Point<f64, smithay::utils::Physical>> {
         let scale = output.current_scale().fractional_scale();
-        self.mouse_mode.then(|| self.pointer_location.to_physical(scale))
+        (self.mouse_mode || self.physical_pointer_enabled()).then(|| self.pointer_location.to_physical(scale))
     }
 
     fn pointer_time(&self) -> u32 {
@@ -1708,7 +1746,13 @@ impl Compositor {
                 tracing::info!("push-to-talk ignored: password field active");
             }
             DispatchEffect::RunMenuCommand(command) => self.run_menu_command(command),
-            DispatchEffect::MovePointer { x, y } => self.pointer_motion(x, y),
+            DispatchEffect::MovePointer { x, y } => {
+                #[expect(
+                    clippy::float_arithmetic,
+                    reason = "core pointer deltas use millionths of a pixel"
+                )]
+                self.pointer_motion(f64::from(x) / 1_000_000.0, f64::from(y) / 1_000_000.0);
+            }
             DispatchEffect::Scroll { x, y } => self.pointer_scroll(x, y),
             DispatchEffect::Click { button, pressed } => self.pointer_click(button, pressed),
             DispatchEffect::MouseMode(active) => {

@@ -218,7 +218,10 @@ fn insert_keyboard(
     let input_token = event_loop
         .handle()
         .insert_source(input_backend, move |event, (), data| {
-            use smithay::backend::input::{InputEvent, KeyState, KeyboardKeyEvent};
+            use smithay::backend::input::{
+                AbsolutePositionEvent, ButtonState, InputEvent, KeyState, KeyboardKeyEvent,
+                PointerButtonEvent, PointerMotionEvent,
+            };
             if !data.seat_active {
                 return;
             }
@@ -243,6 +246,26 @@ fn insert_keyboard(
                             .host_key(event.key_code(), event.state() == KeyState::Pressed);
                         data.pacing.input_arrived = true;
                     }
+                }
+            } else if let InputEvent::PointerMotion { event } = event {
+                data.compositor
+                    .host_pointer_motion(event.delta_x(), event.delta_y());
+                data.pacing.input_arrived = true;
+            } else if let InputEvent::PointerMotionAbsolute { event } = event {
+                data.compositor
+                    .host_pointer_absolute(event.x_transformed(1), event.y_transformed(1));
+                data.pacing.input_arrived = true;
+            } else if let InputEvent::PointerButton { event } = event {
+                use tehuti_core::dispatch::PointerButton;
+                let button = match event.button_code() {
+                    0x110 => Some(PointerButton::Left),
+                    0x111 => Some(PointerButton::Right),
+                    _ => None,
+                };
+                if let Some(button) = button {
+                    data.compositor
+                        .host_pointer_button(button, event.state() == ButtonState::Pressed);
+                    data.pacing.input_arrived = true;
                 }
             } else if matches!(event, InputEvent::DeviceRemoved { .. }) {
                 keyboard_tty.borrow_mut().keyboard = tehuti::backend::EscapeKeyboard::default();
