@@ -3,7 +3,7 @@
 use core::time::Duration;
 use tehuti_core::layout::{OutputId, Snapshot, WorkspaceId};
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct Feedback {
     previous: Option<(OutputId, WorkspaceId, usize)>,
     current: Option<(WorkspaceId, String, &'static str, Duration)>,
@@ -16,7 +16,7 @@ impl Feedback {
                 return None;
             }
             let workspace = output.workspaces.get(output.active_workspace)?;
-            Some((output.output, workspace, output.active_workspace))
+            Some((output, workspace, output.active_workspace))
         });
         let Some((output, workspace, index)) = active else {
             self.previous = None;
@@ -24,9 +24,14 @@ impl Feedback {
             return;
         };
         if let Some((previous_output, previous_workspace, previous_index)) = self.previous {
-            if previous_output != output {
+            if previous_output != output.output {
                 self.current = None;
             } else if previous_workspace != workspace.workspace {
+                let previous_index = output
+                    .workspaces
+                    .iter()
+                    .position(|candidate| candidate.workspace == previous_workspace)
+                    .unwrap_or(previous_index);
                 let direction = if index < previous_index { "UP" } else { "DOWN" };
                 let name = workspace
                     .name
@@ -36,7 +41,7 @@ impl Feedback {
                 self.current = Some((workspace.workspace, name, direction, now));
             }
         }
-        self.previous = Some((output, workspace.workspace, index));
+        self.previous = Some((output.output, workspace.workspace, index));
     }
 
     pub(crate) fn text(&self, now: Duration, destinations: &crate::destinations::Table) -> Option<String> {
@@ -127,7 +132,7 @@ mod tests {
         let text = feedback
             .text(Duration::ZERO, &crate::destinations::Table::default())
             .unwrap();
-        assert_eq!(text, "DOWN · Writing");
+        assert_eq!(text, "UP · Writing");
         let bar = tehuti_core::bar::Bar::new()
             .with_feedback(tehuti_core::bar::Segment {
                 text: "Listening…".into(),
@@ -135,6 +140,6 @@ mod tests {
             })
             .with_navigation(text);
         let texts: Vec<_> = bar.segments().into_iter().map(|segment| segment.text).collect();
-        assert_eq!(texts, ["Desktop", "Listening…", "DOWN · Writing"]);
+        assert_eq!(texts, ["Desktop", "Listening…", "UP · Writing"]);
     }
 }
