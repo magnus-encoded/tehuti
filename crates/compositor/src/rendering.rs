@@ -269,3 +269,59 @@ mod tests {
         );
     }
 }
+
+type CaptureImage = dyn Fn(
+    &Compositor,
+    &smithay::output::Output,
+    &str,
+    bool,
+) -> Result<image::RgbaImage, Box<dyn core::error::Error>>;
+
+#[derive(Default)]
+pub(crate) struct OutputCapture(Option<Box<CaptureImage>>);
+
+impl core::fmt::Debug for OutputCapture {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("OutputCapture")
+            .field("gpu", &self.0.is_some())
+            .finish()
+    }
+}
+
+impl OutputCapture {
+    pub(crate) fn image(
+        &self,
+        compositor: &Compositor,
+        output: &smithay::output::Output,
+        clock: &str,
+        cursor: bool,
+    ) -> Result<image::RgbaImage, Box<dyn core::error::Error>> {
+        match &self.0 {
+            Some(capture) => capture(compositor, output, clock, cursor),
+            None => crate::driver_shot::image(compositor, output, clock, cursor),
+        }
+    }
+}
+
+impl Compositor {
+    /// Captures through the display renderer so imported client buffers stay visible.
+    /// A replaced device is held weakly and fails capture after it disappears.
+    pub fn capture_outputs_on<Device: 'static>(
+        &mut self,
+        device: &Rc<RefCell<Device>>,
+        renderer: fn(&mut Device) -> &mut GlesRenderer,
+    ) {
+        let device = Rc::downgrade(device);
+        self.output_capture.0 = Some(Box::new(move |compositor, output, clock, cursor| {
+            use smithay::backend::renderer::{Offscreen, gles::GlesRenderbuffer};
+            let device = device.upgrade().ok_or("capture device unavailable")?;
+            let mut device = device.try_borrow_mut()?;
+            let renderer = renderer(&mut device);
+            let mode = output.current_mode().ok_or("output mode unavailable")?;
+            let mut buffer: GlesRenderbuffer =
+                renderer.create_buffer(Fourcc::Abgr8888, (mode.size.w, mode.size.h).into())?;
+            crate::driver_shot::render_image(renderer, &mut buffer, compositor, output, clock, cursor)
+        }));
+    }
+}

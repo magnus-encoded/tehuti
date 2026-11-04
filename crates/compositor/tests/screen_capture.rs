@@ -77,19 +77,22 @@ mod capture {
             app: &mut Self,
             _: &ExtImageCopyCaptureSessionV1,
             event: ext_image_copy_capture_session_v1::Event,
-            _: &(),
+            (): &(),
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
             match event {
                 ext_image_copy_capture_session_v1::Event::BufferSize { width, height } => {
-                    app.size = Some((width, height))
+                    app.size = Some((width, height));
                 }
                 ext_image_copy_capture_session_v1::Event::ShmFormat { format } => {
-                    app.format = format.into_result().ok()
+                    app.format = format.into_result().ok();
                 }
                 ext_image_copy_capture_session_v1::Event::Stopped => app.failed = true,
-                _ => {}
+                ext_image_copy_capture_session_v1::Event::DmabufDevice { .. }
+                | ext_image_copy_capture_session_v1::Event::DmabufFormat { .. }
+                | ext_image_copy_capture_session_v1::Event::Done
+                | _ => {}
             }
         }
     }
@@ -98,7 +101,7 @@ mod capture {
             app: &mut Self,
             _: &ExtImageCopyCaptureFrameV1,
             event: ext_image_copy_capture_frame_v1::Event,
-            _: &(),
+            (): &(),
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
@@ -106,7 +109,9 @@ mod capture {
                 ext_image_copy_capture_frame_v1::Event::Ready => app.ready = true,
                 ext_image_copy_capture_frame_v1::Event::Failed { .. } => app.failed = true,
                 ext_image_copy_capture_frame_v1::Event::Damage { .. } => app.damage = true,
-                _ => {}
+                ext_image_copy_capture_frame_v1::Event::Transform { .. }
+                | ext_image_copy_capture_frame_v1::Event::PresentationTime { .. }
+                | _ => {}
             }
         }
     }
@@ -115,7 +120,7 @@ mod capture {
             app: &mut Self,
             _: &ZwlrScreencopyFrameV1,
             event: zwlr_screencopy_frame_v1::Event,
-            _: &(),
+            (): &(),
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
@@ -132,7 +137,10 @@ mod capture {
                 zwlr_screencopy_frame_v1::Event::Ready { .. } => app.ready = true,
                 zwlr_screencopy_frame_v1::Event::Failed => app.failed = true,
                 zwlr_screencopy_frame_v1::Event::Damage { .. } => app.damage = true,
-                _ => {}
+                zwlr_screencopy_frame_v1::Event::Flags { .. }
+                | zwlr_screencopy_frame_v1::Event::LinuxDmabuf { .. }
+                | zwlr_screencopy_frame_v1::Event::BufferDone
+                | _ => {}
             }
         }
     }
@@ -176,15 +184,22 @@ mod capture {
         InvalidDamage,
     }
 
-    fn client(stream: UnixStream, mode: Mode) {
-        let connection = Connection::from_socket(stream).unwrap();
-        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+    struct Capture {
+        session: Option<ExtImageCopyCaptureSessionV1>,
+        frame: Option<ExtImageCopyCaptureFrameV1>,
+        wlr: Option<ZwlrScreencopyFrameV1>,
+    }
+
+    fn start_capture(
+        globals: &wayland_client::globals::GlobalList,
+        queue: &mut wayland_client::EventQueue<App>,
+        app: &mut App,
+        mode: Mode,
+    ) -> Capture {
         let handle = queue.handle();
         let output: WlOutput = globals.bind(&handle, 1..=4, ()).unwrap();
-        let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
-        let mut app = App::default();
         let ext = !matches!(mode, Mode::Wlr(_) | Mode::Region);
-        let (session, frame, wlr) = if ext {
+        if ext {
             let source_manager: ExtOutputImageCaptureSourceManagerV1 =
                 globals.bind(&handle, 1..=1, ()).unwrap();
             let manager: ExtImageCopyCaptureManagerV1 = globals.bind(&handle, 1..=1, ()).unwrap();
@@ -195,12 +210,16 @@ mod capture {
                 &handle,
                 (),
             );
-            let _constraints = queue.roundtrip(&mut app).unwrap();
+            let _constraints = queue.roundtrip(app).unwrap();
             source.destroy();
             source_manager.destroy();
             manager.destroy();
             let frame = session.create_frame(&handle, ());
-            (Some(session), Some(frame), None)
+            Capture {
+                session: Some(session),
+                frame: Some(frame),
+                wlr: None,
+            }
         } else {
             let version = if let Mode::Wlr(version) = mode { version } else { 3 };
             let manager: ZwlrScreencopyManagerV1 = globals.bind(&handle, version..=version, ()).unwrap();
@@ -210,24 +229,19 @@ mod capture {
                 manager.capture_output(0, &output, &handle, ())
             };
             manager.destroy();
-            let _constraints = queue.roundtrip(&mut app).unwrap();
-            (None, None, Some(frame))
-        };
-        let (width, height) = app.size.unwrap();
-        assert_eq!(app.format, Some(wl_shm::Format::Abgr8888));
-        let padding = if ext { 12 } else { 0 };
-        let actual_width = if matches!(mode, Mode::WrongSize) {
-            width - 1
-        } else {
-            width
-        };
-        let (file, target) = buffer(&shm, &handle, actual_width, height, padding);
-        if matches!(mode, Mode::Truncated) {
-            file.set_len(0).unwrap();
+            let _constraints = queue.roundtrip(app).unwrap();
+            Capture {
+                session: None,
+                frame: None,
+                wlr: Some(frame),
+            }
         }
-        if let Some(frame) = &frame {
+    }
+
+    fn request_capture(capture: &Capture, target: &WlBuffer, mode: Mode, width: u32, height: u32) {
+        if let Some(frame) = &capture.frame {
             if !matches!(mode, Mode::MissingBuffer) {
-                frame.attach_buffer(&target);
+                frame.attach_buffer(target);
             }
             frame.damage_buffer(
                 if matches!(mode, Mode::InvalidDamage) {
@@ -244,13 +258,88 @@ mod capture {
                 frame.capture();
             }
         }
-        if let Some(frame) = &wlr {
-            if frame.version() >= 2 {
-                frame.copy_with_damage(&target);
+        if let Some(legacy) = &capture.wlr {
+            if legacy.version() >= 2 {
+                legacy.copy_with_damage(target);
             } else {
-                frame.copy(&target);
+                legacy.copy(target);
             }
         }
+    }
+
+    fn assert_pixels(file: &File, width: u32, padding: u32, ext: bool) {
+        let stride = width.checked_mul(4).unwrap().checked_add(padding).unwrap();
+        let mut pixel = [0; 4];
+        file.read_exact_at(&mut pixel, 0).unwrap();
+        assert_eq!(
+            pixel, [0x55; 4],
+            "capture preserves bytes before the buffer offset"
+        );
+        if ext {
+            file.read_exact_at(
+                &mut pixel,
+                u64::from(width.checked_mul(4).unwrap().checked_add(16).unwrap()),
+            )
+            .unwrap();
+            assert_eq!(pixel, [0x55; 4], "capture preserves row padding");
+        }
+        file.read_exact_at(
+            &mut pixel,
+            u64::from(stride.checked_mul(16).unwrap().checked_add(80).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(pixel, [32, 32, 32, 255], "capture includes the visible wallpaper");
+    }
+
+    fn finish_capture(
+        capture: Capture,
+        target: &WlBuffer,
+        queue: &mut wayland_client::EventQueue<App>,
+        app: &mut App,
+    ) {
+        if let Some(frame) = capture.frame {
+            frame.destroy();
+        }
+        if let Some(legacy) = capture.wlr {
+            legacy.destroy();
+        }
+        let _destroyed = queue.roundtrip(app).unwrap();
+        if let Some(session) = capture.session {
+            app.ready = false;
+            let frame = session.create_frame(&queue.handle(), ());
+            frame.attach_buffer(target);
+            frame.capture();
+            let _second = queue.roundtrip(app).unwrap();
+            assert!(
+                app.ready,
+                "destroying a frame permits another capture in the session"
+            );
+            frame.destroy();
+            session.destroy();
+        }
+    }
+
+    fn client(stream: UnixStream, mode: Mode) {
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+        let handle = queue.handle();
+        let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+        let mut app = App::default();
+        let capture = start_capture(&globals, &mut queue, &mut app, mode);
+        let ext = capture.frame.is_some();
+        let (width, height) = app.size.unwrap();
+        assert_eq!(app.format, Some(wl_shm::Format::Abgr8888));
+        let padding = if ext { 12 } else { 0 };
+        let actual_width = if matches!(mode, Mode::WrongSize) {
+            width.checked_sub(1).unwrap()
+        } else {
+            width
+        };
+        let (file, target) = buffer(&shm, &handle, actual_width, height, padding);
+        if matches!(mode, Mode::Truncated) {
+            file.set_len(0).unwrap();
+        }
+        request_capture(&capture, &target, mode, width, height);
         if matches!(mode, Mode::Duplicate | Mode::MissingBuffer | Mode::InvalidDamage) {
             assert!(
                 queue.roundtrip(&mut app).is_err(),
@@ -264,43 +353,11 @@ mod capture {
             return;
         }
         assert!(app.ready && !app.failed, "capture must finish successfully");
-        if ext || wlr.as_ref().is_some_and(|frame| frame.version() >= 2) {
+        if ext || capture.wlr.as_ref().is_some_and(|legacy| legacy.version() >= 2) {
             assert!(app.damage, "capture reports damage");
         }
-        let stride = width.checked_mul(4).unwrap().checked_add(padding).unwrap();
-        let mut pixel = [0; 4];
-        file.read_exact_at(&mut pixel, 0).unwrap();
-        assert_eq!(
-            pixel, [0x55; 4],
-            "capture preserves bytes before the buffer offset"
-        );
-        if ext {
-            file.read_exact_at(&mut pixel, u64::from(16 + width * 4)).unwrap();
-            assert_eq!(pixel, [0x55; 4], "capture preserves row padding");
-        }
-        file.read_exact_at(&mut pixel, u64::from(16 + 16 * stride + 16 * 4))
-            .unwrap();
-        assert_eq!(pixel, [32, 32, 32, 255], "capture includes the visible wallpaper");
-        if let Some(frame) = frame {
-            frame.destroy();
-        }
-        if let Some(frame) = wlr {
-            frame.destroy();
-        }
-        let _destroyed = queue.roundtrip(&mut app).unwrap();
-        if let Some(session) = session {
-            app.ready = false;
-            let frame = session.create_frame(&handle, ());
-            frame.attach_buffer(&target);
-            frame.capture();
-            let _second = queue.roundtrip(&mut app).unwrap();
-            assert!(
-                app.ready,
-                "destroying a frame permits another capture in the session"
-            );
-            frame.destroy();
-            session.destroy();
-        }
+        assert_pixels(&file, width, padding, ext);
+        finish_capture(capture, &target, &mut queue, &mut app);
     }
 
     fn pump(display: &mut Display<Compositor>, compositor: &mut Compositor) {
@@ -357,7 +414,7 @@ mod capture {
         }
     }
 
-    fn session_client(stream: UnixStream, ready: std::sync::mpsc::Sender<()>, removed: bool) {
+    fn session_client(stream: UnixStream, ready: &std::sync::mpsc::Sender<()>, removed: bool) {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -404,7 +461,7 @@ mod capture {
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
         let (ready, received) = std::sync::mpsc::channel();
-        let task = thread::spawn(move || session_client(stream, ready, removed));
+        let task = thread::spawn(move || session_client(stream, &ready, removed));
         let start = Instant::now();
         while !task.is_finished() {
             assert!(

@@ -510,10 +510,13 @@ fn copy(
     region: Option<(u32, u32, u32, u32)>,
 ) -> Result<(i32, i32), CopyError> {
     let clock = chrono::Local::now().format("%H:%M").to_string();
-    let mut image = crate::driver_shot::image(compositor, output, &clock, cursor).map_err(|error| {
-        tracing::warn!(%error, "screen capture failed");
-        CopyError::Render
-    })?;
+    let mut image = compositor
+        .output_capture
+        .image(compositor, output, &clock, cursor)
+        .map_err(|error| {
+            tracing::warn!(%error, "screen capture failed");
+            CopyError::Render
+        })?;
     if let Some((x, y, width, height)) = region {
         if x.checked_add(width).is_none_or(|right| right > image.width())
             || y.checked_add(height).is_none_or(|bottom| bottom > image.height())

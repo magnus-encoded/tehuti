@@ -154,6 +154,7 @@ pub(super) fn advertise(
     compositor: &mut Compositor,
 ) -> Result<(), Box<dyn Error>> {
     if let Rendering::Gles(gpu) = rendering {
+        compositor.capture_outputs_on(&gpu.device, GbmGlesDevice::renderer_mut);
         let (formats, device) =
             tehuti::rendering::client_formats(gpu.device.borrow_mut().renderer_mut(), display);
         compositor.enable_dmabuf_on(

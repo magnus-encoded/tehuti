@@ -125,6 +125,7 @@ pub struct Compositor {
     mouse_mode: bool,
     pub space: Space<LayoutWindow>,
     pub output: Option<Output>,
+    pub(crate) output_capture: crate::rendering::OutputCapture,
     pub(crate) capture_sessions: crate::screen_capture::Sessions,
     dispatch: tehuti_core::dispatch::State,
     menu_config: crate::system_menu::Config,
@@ -258,6 +259,7 @@ impl Compositor {
             mouse_mode: false,
             space: Space::default(),
             output: None,
+            output_capture: crate::rendering::OutputCapture::default(),
             capture_sessions: crate::screen_capture::Sessions::default(),
             // Agent launchers title windows Claude/Codex[: project]; mirror them until compositor config exists.
             dispatch: tehuti_core::dispatch::State::new(

@@ -49,6 +49,7 @@ pub(crate) fn insert(
     };
     let (formats, render_device) = tehuti::rendering::client_formats(backend.renderer(), display);
     let backend = Rc::new(RefCell::new(backend));
+    compositor.capture_outputs_on(&backend, WinitGraphicsBackend::renderer);
     let importer = backend.clone();
     compositor.enable_dmabuf(
         display,

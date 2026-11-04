@@ -3,7 +3,10 @@ use crate::state::Compositor;
 use core::error::Error;
 use smithay::backend::{
     allocator::Fourcc,
-    renderer::{Bind, ExportMem, Offscreen, damage::OutputDamageTracker, pixman::PixmanRenderer},
+    renderer::{
+        Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, damage::OutputDamageTracker,
+        pixman::PixmanRenderer,
+    },
 };
 use smithay::utils::{Rectangle, Transform};
 use std::path::Path;
@@ -47,13 +50,41 @@ pub(crate) fn image(
     let mode = output.current_mode().ok_or("output mode unavailable")?;
     let mut renderer = PixmanRenderer::new()?;
     let mut buffer = renderer.create_buffer(Fourcc::Abgr8888, (mode.size.w, mode.size.h).into())?;
-    let mut target = renderer.bind(&mut buffer)?;
+    render_image(
+        &mut renderer,
+        &mut buffer,
+        compositor,
+        output,
+        clock,
+        paint_cursor,
+    )
+}
+
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "capture rendering remains inside the compositor"
+)]
+pub(crate) fn render_image<R, Buffer>(
+    renderer: &mut R,
+    buffer: &mut Buffer,
+    compositor: &Compositor,
+    output: &smithay::output::Output,
+    clock: &str,
+    paint_cursor: bool,
+) -> Result<image::RgbaImage, Box<dyn Error>>
+where
+    R: Renderer + Bind<Buffer> + ExportMem + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+    R::Error: 'static,
+{
+    let mode = output.current_mode().ok_or("output mode unavailable")?;
+    let mut target = renderer.bind(buffer)?;
     let mut overlays = crate::overlays::Overlays::default();
-    let elements = overlays.elements_with_cursor(&mut renderer, output, compositor, clock, paint_cursor)?;
+    let elements = overlays.elements_with_cursor(renderer, output, compositor, clock, paint_cursor)?;
     let mut damage = OutputDamageTracker::from_output(output);
     crate::wallpaper::render_output(
         output,
-        &mut renderer,
+        renderer,
         &mut target,
         compositor,
         &elements.elements,
