@@ -411,90 +411,6 @@ impl MirrorCopy {
     }
 }
 
-/// The identity used by the virtual controller builder, independent of the source pad.
-#[must_use]
-pub fn virtual_pad_identity() -> evdev::InputId {
-    evdev::InputId::new(evdev::BusType::BUS_VIRTUAL, 0x045e, 0x028e, 0x0001)
-}
-
-/// The Xbox 360 button capabilities advertised to applications.
-#[must_use]
-pub fn virtual_pad_keys() -> evdev::AttributeSet<KeyCode> {
-    [
-        KeyCode::BTN_SOUTH,
-        KeyCode::BTN_EAST,
-        KeyCode::BTN_NORTH,
-        KeyCode::BTN_WEST,
-        KeyCode::BTN_TL,
-        KeyCode::BTN_TR,
-        KeyCode::BTN_SELECT,
-        KeyCode::BTN_START,
-        KeyCode::BTN_MODE,
-        KeyCode::BTN_THUMBL,
-        KeyCode::BTN_THUMBR,
-    ]
-    .into_iter()
-    .collect()
-}
-
-/// The Xbox axes, retaining the source's calibration where available.
-#[must_use]
-pub fn virtual_pad_axes(
-    source: &[(AbsoluteAxisCode, evdev::AbsInfo)],
-) -> Vec<(AbsoluteAxisCode, evdev::AbsInfo)> {
-    use AbsoluteAxisCode as Axis;
-    [
-        (Axis::ABS_X, -32768, 32767),
-        (Axis::ABS_Y, -32768, 32767),
-        (Axis::ABS_Z, 0, 255),
-        (Axis::ABS_RX, -32768, 32767),
-        (Axis::ABS_RY, -32768, 32767),
-        (Axis::ABS_RZ, 0, 255),
-        (Axis::ABS_HAT0X, -1, 1),
-        (Axis::ABS_HAT0Y, -1, 1),
-    ]
-    .into_iter()
-    .map(|(axis, minimum, maximum)| {
-        let info = source.iter().find(|(code, _)| *code == axis).map_or_else(
-            || evdev::AbsInfo::new(0, minimum, maximum, 0, 0, 0),
-            |(_, info)| *info,
-        );
-        (axis, info)
-    })
-    .collect()
-}
-
-/// Converts source face positions to the Xbox kernel button order.
-#[must_use]
-pub fn virtual_pad_event(source: &evdev::InputId, event: evdev::InputEvent) -> evdev::InputEvent {
-    if event.event_type() == evdev::EventType::KEY
-        && !tehuti_core::pad::Identity::for_device(source.vendor(), source.product()).swap_north_west
-    {
-        let code = match KeyCode::new(event.code()) {
-            KeyCode::BTN_NORTH => KeyCode::BTN_WEST,
-            KeyCode::BTN_WEST => KeyCode::BTN_NORTH,
-            _ => return event,
-        };
-        return evdev::InputEvent::new(event.event_type().0, code.code(), event.value());
-    }
-    event
-}
-
-struct VirtualPadSink {
-    device: evdev::uinput::VirtualDevice,
-    source: evdev::InputId,
-}
-
-impl MirrorSink for VirtualPadSink {
-    fn emit(&mut self, frame: &[evdev::InputEvent]) -> io::Result<()> {
-        let frame: Vec<_> = frame
-            .iter()
-            .map(|event| virtual_pad_event(&self.source, *event))
-            .collect();
-        self.device.emit(&frame)
-    }
-}
-
 /// Kernel operations used by a controller client.
 pub trait PadDevice {
     /// Acquires exclusive input ownership.
@@ -517,7 +433,7 @@ pub trait PadDevice {
     /// # Errors
     /// The client could not release its grab.
     fn ungrab(&mut self) -> io::Result<()>;
-    /// Creates a virtual controller with the Xbox layout and this controller's calibration.
+    /// Creates a virtual controller with this controller's capabilities.
     /// # Errors
     /// The kernel refused to create it; clients without uinput always refuse.
     fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
@@ -552,20 +468,16 @@ impl PadDevice for Device {
     }
 
     fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
-        let keys = virtual_pad_keys();
         let mut builder = evdev::uinput::VirtualDevice::builder()?
             .name("Tehuti virtual pad")
-            .input_id(virtual_pad_identity())
-            .with_phys(c"tehuti/virtual-pad")?
-            .with_keys(&keys)?;
-        let source_axes: Vec<_> = Self::get_absinfo(self)?.collect();
-        for (axis, info) in virtual_pad_axes(&source_axes) {
+            .input_id(self.input_id());
+        if let Some(keys) = self.supported_keys() {
+            builder = builder.with_keys(keys)?;
+        }
+        for (axis, info) in Self::get_absinfo(self)? {
             builder = builder.with_absolute_axis(&evdev::UinputAbsSetup::new(axis, info))?;
         }
-        Ok(Box::new(VirtualPadSink {
-            device: builder.build()?,
-            source: self.input_id(),
-        }))
+        Ok(Box::new(builder.build()?))
     }
 
     fn fetch_raw(&mut self) -> io::Result<Vec<evdev::InputEvent>> {
