@@ -1003,19 +1003,19 @@ restart = { restart = true }",
             std::process::ExitCode::from(75)
         );
 
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut quitting = Compositor::new(&display.handle()).unwrap();
         for name in [ButtonName::Guide, ButtonName::Start] {
-            compositor.handle(&Event::Button {
+            quitting.handle(&Event::Button {
                 name,
                 state: ButtonState::Pressed,
             });
         }
-        compositor.handle(&Event::Tick {
-            elapsed: std::time::Duration::from_secs(3),
+        quitting.handle(&Event::Tick {
+            elapsed: core::time::Duration::from_secs(3),
         });
-        assert!(compositor.quit_requested());
+        assert!(quitting.quit_requested());
         assert_eq!(
-            exit_code(false, compositor.quit_requested(), compositor.restart_requested()),
+            exit_code(false, quitting.quit_requested(), quitting.restart_requested()),
             std::process::ExitCode::from(20)
         );
     }
