@@ -78,7 +78,7 @@ impl Settings {
                 Page::Categories => format!("D-PAD: MOVE   {confirm}: OPEN   {back}: CLOSE"),
                 Page::Display => format!("D-PAD: MOVE   {confirm}: APPLY   {back}: BACK"),
                 Page::Input => {
-                    format!("UP / DOWN: MOVE   LEFT / RIGHT: CHANGE   {confirm}: APPLY   {back}: BACK")
+                    format!("UP/DOWN: ROW  LEFT/RIGHT: CHANGE  {confirm}: APPLY  {back}: BACK")
                 }
                 Page::Wallpaper => format!("D-PAD: PREVIEW   {confirm}: SAVE   {back}: CANCEL"),
             }

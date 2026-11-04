@@ -610,7 +610,15 @@ mod tests {
             store.controller()?,
             ControllerChoice::Named("Wireless Controller".into())
         );
+        assert!(!compositor.controller_chosen("Xbox Controller"));
         press(&mut compositor, ButtonName::DpadDown);
+        press(&mut compositor, ButtonName::DpadRight);
+        press(&mut compositor, ButtonName::DpadRight);
+        assert_eq!(compositor.settings().input.push_to_talk_label(), "MENU");
+        assert_eq!(
+            store.controller_bindings()?.get("Wireless Controller"),
+            Some(&ButtonName::Start)
+        );
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::DpadRight);
         assert_eq!(store.microphone()?, MicrophoneChoice::Auto);
