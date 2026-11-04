@@ -241,9 +241,10 @@ mod tests {
             "the replaced renderer imports nothing more"
         );
         assert_eq!(second.borrow().imports, 2, "imports reach the newest renderer");
-        let first = Rc::downgrade(&first);
+        let released = Rc::downgrade(&first);
+        drop(first);
         assert!(
-            first.upgrade().is_none(),
+            released.upgrade().is_none(),
             "the compositor holds no replaced renderer"
         );
     }
