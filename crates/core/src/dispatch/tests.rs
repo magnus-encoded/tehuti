@@ -3097,7 +3097,7 @@ fn cycling_controller_without_confirming_keeps_the_live_pad() {
             state.settings().input.active_controller.as_deref(),
             Some("Wireless Controller")
         );
-        assert!(input_effects(&world).is_empty());
+        assert_eq!(input_effects(&world), Vec::<Effect>::new());
         assert!(state.core().push_to_talk(ButtonName::Record));
         assert!(!state.core().push_to_talk(ButtonName::Start));
     }
