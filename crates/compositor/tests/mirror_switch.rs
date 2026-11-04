@@ -228,6 +228,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn releasing_a_plugin_button_on_the_old_pad_reaches_the_plugin_once() {
+        use tehuti_core::vpad::Verdict;
+        use tehuti_protocol::{ButtonName, ButtonState};
+
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut first, first_handles) = pad("first", &log);
+        let (mut second, second_handles) = pad("second", &log);
+        let (first_path, second_path) = (Path::new("event1"), Path::new("event2"));
+        let mut filter = start_override();
+        let mut plugin = Vec::new();
+        let _started = sync_mirrors(
+            &mut [(first_path, &mut first), (second_path, &mut second)],
+            true,
+            Some(first_path),
+            &|button| filter.consumed(button),
+        );
+        queue(&first_handles, KeyCode::BTN_START, 1);
+        first
+            .pump_mirror(&mut |button, state| {
+                let verdict = filter.step(button, state, &[0], &[]);
+                if verdict == Verdict::Plugin(0) {
+                    plugin.push((button, state));
+                }
+                verdict != Verdict::Pass
+            })
+            .unwrap();
+        second_handles.held.borrow_mut().push(KeyCode::BTN_EAST.code());
+        let _switched = sync_mirrors(
+            &mut [(first_path, &mut first), (second_path, &mut second)],
+            true,
+            Some(second_path),
+            &|button| filter.consumed(button),
+        );
+        assert!(!first.mirrored() && second.mirrored());
+        queue(&first_handles, KeyCode::BTN_START, 0);
+        for _ in 0..2 {
+            first
+                .pump_mirror(&mut |button, state| {
+                    let verdict = filter.step(button, state, &[], &[]);
+                    if verdict == Verdict::Plugin(0) {
+                        plugin.push((button, state));
+                    }
+                    verdict != Verdict::Pass
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            plugin,
+            [
+                (ButtonName::Start, ButtonState::Pressed),
+                (ButtonName::Start, ButtonState::Released),
+            ]
+        );
+        assert!(!filter.consumed(ButtonName::Start));
+        filter.clear(0);
+        assert_eq!(
+            filter.step(ButtonName::Start, ButtonState::Pressed, &[], &[]),
+            Verdict::Pass
+        );
+        assert!(never_sent(&log.borrow(), KeyCode::BTN_START));
+    }
+
     /// A filter where plugin 0 takes Start.
     fn start_override() -> tehuti_core::vpad::Filter {
         let mut filter = tehuti_core::vpad::Filter::default();

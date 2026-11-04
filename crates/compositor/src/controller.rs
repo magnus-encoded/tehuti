@@ -221,6 +221,8 @@ pub struct EvdevPad<D = Device> {
     translator: DpadHat,
     grabbed: bool,
     mirror: Option<Mirror>,
+    plugin_held: Vec<ButtonName>,
+    buffered: Vec<Event>,
 }
 
 /// The virtual controller presented to the application, with inputs kept from it.
@@ -585,6 +587,7 @@ impl<D: PadDevice> EvdevPad<D> {
     }
 
     /// Copies pending physical input to the virtual controller, except buttons `consume` keeps.
+    /// After removal, releases of plugin buttons still held reach `consume`.
     /// Every translated event stays buffered for [`InputSource::drain`].
     /// # Errors
     /// The physical pad could not be read or the virtual one written.
@@ -592,19 +595,38 @@ impl<D: PadDevice> EvdevPad<D> {
         &mut self,
         consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
     ) -> io::Result<()> {
-        let Self {
-            handles,
-            translator,
-            mirror: Some(mirror),
-            ..
-        } = self
-        else {
+        if self.mirror.is_none() && self.plugin_held.is_empty() {
             return Ok(());
-        };
-        let raw = handles.events().fetch_raw()?;
+        }
+        let raw = self.handles.events().fetch_raw()?;
         for event in raw {
-            if let Some(frame) = mirror.copy.take(event, translator, consume) {
-                mirror.device.emit(&frame)?;
+            if let Some(mirror) = &mut self.mirror {
+                let plugin_held = &mut self.plugin_held;
+                let mut track = |button, state| {
+                    let kept = consume(button, state);
+                    plugin_held.retain(|held| *held != button);
+                    if kept && state == ButtonState::Pressed {
+                        plugin_held.push(button);
+                    }
+                    kept
+                };
+                if let Some(frame) = mirror.copy.take(event, &mut self.translator, &mut track) {
+                    mirror.device.emit(&frame)?;
+                }
+            } else {
+                let translated = self.translator.translate(&event.destructure());
+                for input in &translated {
+                    if let Event::Button {
+                        name,
+                        state: ButtonState::Released,
+                    } = input
+                        && self.plugin_held.contains(name)
+                    {
+                        let _kept = consume(*name, ButtonState::Released);
+                        self.plugin_held.retain(|held| held != name);
+                    }
+                }
+                self.buffered.extend(translated);
             }
         }
         Ok(())
@@ -634,6 +656,8 @@ impl<D: PadDevice> EvdevPad<D> {
             translator,
             grabbed: true,
             mirror: None,
+            plugin_held: Vec::new(),
+            buffered: Vec::new(),
         }
     }
 
@@ -700,10 +724,13 @@ impl<D: PadDevice> InputSource for EvdevPad<D> {
     }
 
     fn drain(&mut self) -> io::Result<Vec<Event>> {
+        let mut events = core::mem::take(&mut self.buffered);
         if let Some(mirror) = &mut self.mirror {
-            return Ok(mirror.copy.drain());
+            events.extend(mirror.copy.drain());
+        } else {
+            events.extend(self.handles.events().drain(&mut self.translator)?);
         }
-        self.handles.events().drain(&mut self.translator)
+        Ok(events)
     }
 }
 
