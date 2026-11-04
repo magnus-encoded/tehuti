@@ -63,7 +63,7 @@ mod layout_helpers {
         let snapshot = layout.snapshot();
         assert_eq!(snapshot.outputs[0].active_workspace, 1);
         let workspace = &snapshot.outputs[0].workspaces[0];
-        assert!(workspace.helpers.is_empty());
+        assert_eq!(workspace.helpers, [] as [WindowId; 0]);
         let order: Vec<_> = workspace
             .columns
             .iter()
@@ -88,7 +88,7 @@ mod layout_helpers {
                 ..WindowRules::default()
             },
         )?;
-        let workspace = layout.snapshot().outputs[0].workspaces[0].workspace;
+        let workspace_id = layout.snapshot().outputs[0].workspaces[0].workspace;
         layout.apply(Command::FocusWorkspaceDown);
         layout.remove_output(OutputId(0))?;
         let area = Rect {
@@ -99,7 +99,7 @@ mod layout_helpers {
         };
         layout.add_output(OutputId(0), OutputGeometry { area, usable: area }, None)?;
         let snapshot = layout.snapshot();
-        assert_eq!(snapshot.outputs[0].workspaces[0].workspace, workspace);
+        assert_eq!(snapshot.outputs[0].workspaces[0].workspace, workspace_id);
         assert_eq!(snapshot.outputs[0].workspaces[0].helpers, vec![WindowId(1)]);
         layout.remove_output(OutputId(0))?;
         layout.remove_window(WindowId(1))?;
