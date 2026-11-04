@@ -195,6 +195,10 @@ pub struct Compositor {
     focus_change_dispatch: Option<DispatchInput>,
     /// Keys a held pad button keeps down, with the keycode they went down on.
     held_pad_keys: Vec<(KeyName, Keycode)>,
+    /// Host Meta keys currently down, as evdev codes; Meta is the Guide button.
+    meta_held: Vec<u32>,
+    /// Host keys a Meta chord consumed, so their release is consumed too.
+    consumed_host_keys: Vec<Keycode>,
     display: DisplayHandle,
 }
 
@@ -321,6 +325,8 @@ impl Compositor {
             keyboard_reserved: 0,
             focus_change_dispatch: None,
             held_pad_keys: Vec::new(),
+            meta_held: Vec::new(),
+            consumed_host_keys: Vec::new(),
             display: display.clone(),
         };
         compositor
@@ -2219,7 +2225,13 @@ impl Compositor {
     }
 
     /// Forwards one key from the host keyboard to the focused client.
+    ///
+    /// Meta is the Guide button and, while Meta is held, the arrows are the d-pad: both go to the core as pad buttons and
+    /// the client never sees them.
     pub fn host_key(&mut self, keycode: Keycode, pressed: bool) {
+        if self.host_key_as_pad(keycode, pressed) {
+            return;
+        }
         let state = if pressed {
             smithay::backend::input::KeyState::Pressed
         } else {
@@ -2228,9 +2240,91 @@ impl Compositor {
         self.send_keycode(keycode, state);
     }
 
+    fn host_key_as_pad(&mut self, keycode: Keycode, pressed: bool) -> bool {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        const KEY_UP: u32 = 103;
+        const KEY_LEFT: u32 = 105;
+        const KEY_RIGHT: u32 = 106;
+        const KEY_DOWN: u32 = 108;
+        const KEY_LEFTMETA: u32 = 125;
+        const KEY_RIGHTMETA: u32 = 126;
+        let button_state = if pressed {
+            ButtonState::Pressed
+        } else {
+            ButtonState::Released
+        };
+        let code = keycode.raw().saturating_sub(XKB_KEYCODE_OFFSET);
+        if matches!(code, KEY_LEFTMETA | KEY_RIGHTMETA) {
+            let was_held = !self.meta_held.is_empty();
+            self.meta_held.retain(|held| *held != code);
+            if pressed {
+                self.meta_held.push(code);
+            }
+            if was_held == self.meta_held.is_empty() {
+                self.handle(&Event::Button {
+                    name: ButtonName::Guide,
+                    state: button_state,
+                });
+            }
+            return true;
+        }
+        let name = match code {
+            KEY_UP => ButtonName::DpadUp,
+            KEY_DOWN => ButtonName::DpadDown,
+            KEY_LEFT => ButtonName::DpadLeft,
+            KEY_RIGHT => ButtonName::DpadRight,
+            _ => return false,
+        };
+        if pressed {
+            let reached_client = !self.consumed_host_keys.contains(&keycode)
+                && self.keyboard.pressed_keys().contains(&keycode);
+            if self.meta_held.is_empty() || reached_client {
+                return false;
+            }
+            if !self.consumed_host_keys.contains(&keycode) {
+                self.consumed_host_keys.push(keycode);
+            }
+        } else if self.consumed_host_keys.contains(&keycode) {
+            self.consumed_host_keys.retain(|held| *held != keycode);
+        } else {
+            return false;
+        }
+        self.handle(&Event::Button {
+            name,
+            state: button_state,
+        });
+        true
+    }
+
+    /// Switches to the workspace holding `window`, so a moved column keeps the focus.
+    fn follow_window(&mut self, window: Option<tehuti_core::layout::WindowId>) {
+        let Some(window) = window else {
+            return;
+        };
+        let snapshot = self.layout.snapshot();
+        let workspace = snapshot
+            .outputs
+            .iter()
+            .flat_map(|output| &output.workspaces)
+            .find(|workspace| {
+                workspace
+                    .columns
+                    .iter()
+                    .any(|column| column.tiles.iter().any(|tile| tile.window == window))
+            })
+            .map(|workspace| workspace.workspace);
+        if let Some(workspace) = workspace
+            && self.layout.focus_workspace_id(workspace).is_ok()
+        {
+            self.place_layout();
+        }
+    }
+
     /// Releases every held host and pad key, so a key held when the host window loses focus or the seat pauses does not stick.
     pub fn release_host_keys(&mut self) {
         self.held_pad_keys.clear();
+        self.meta_held.clear();
+        self.consumed_host_keys.clear();
         for keycode in self.keyboard.pressed_keys() {
             self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
         }
@@ -2314,9 +2408,19 @@ impl Compositor {
     }
 
     /// Applies a tiling command and places the mapped windows.
+    ///
+    /// Moving a column to another workspace takes the focus along with it.
     pub fn apply_layout_command(&mut self, command: tehuti_core::layout::Command) {
+        use tehuti_core::layout::Command;
+        let moved = self.layout.snapshot().focused_window;
         self.layout.apply(command);
         self.place_layout();
+        if matches!(
+            command,
+            Command::MoveColumnToWorkspaceUp | Command::MoveColumnToWorkspaceDown
+        ) {
+            self.follow_window(moved);
+        }
     }
 
     /// The next opening slot while the launcher is visible.
