@@ -3085,6 +3085,29 @@ fn controller_browsing_keeps_input_until_confirmation() {
 }
 
 #[test]
+fn cycling_controller_without_confirming_keeps_the_live_pad() {
+    let mut world = World::default();
+    let state = open_input(&mut world);
+    let mut state = world.run(state, Input::ActiveController("Wireless Controller".into()));
+    world.trace.clear();
+
+    for button in [ButtonName::DpadRight, ButtonName::DpadRight, ButtonName::DpadLeft] {
+        state = settings_button(&mut world, state, button);
+        assert_eq!(
+            state.settings().input.active_controller.as_deref(),
+            Some("Wireless Controller")
+        );
+        assert!(input_effects(&world).is_empty());
+        assert!(state.core().push_to_talk(ButtonName::Record));
+        assert!(!state.core().push_to_talk(ButtonName::Start));
+    }
+    assert_eq!(
+        state.settings().input.controller,
+        ControllerChoice::Named("Wireless Controller".into())
+    );
+}
+
+#[test]
 fn cancelling_controller_browsing_restores_the_saved_selection() {
     let mut world = World::default();
     let state = open_input(&mut world);

@@ -1711,8 +1711,13 @@ impl Compositor {
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
             DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
-            DispatchEffect::PersistControllerTalk(_name, _button) => {
-                let bindings = self.settings().input.controller_bindings.clone();
+            DispatchEffect::PersistControllerTalk(name, button) => {
+                let mut bindings = self.settings().input.controller_bindings.clone();
+                if let Some(button) = button {
+                    let _previous = bindings.insert(name, button);
+                } else {
+                    let _previous = bindings.remove(&name);
+                }
                 self.save_input_choice(|store| store.set_controller_bindings(&bindings));
                 if let Some(name) = self.settings().input.active_controller.clone() {
                     self.activate_controller(name);
