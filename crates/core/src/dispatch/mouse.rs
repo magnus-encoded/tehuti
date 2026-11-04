@@ -71,9 +71,7 @@ impl State {
                     .take()
                     .is_some_and(|elapsed| elapsed <= VIEW_DOUBLE_TAP_WINDOW);
                 if self.toggled {
-                    self.release(effects);
-                    self.active = !self.active;
-                    effects.push(Effect::MouseMode(self.active));
+                    self.toggle(effects);
                 }
             }
             ButtonState::Released => {
@@ -83,6 +81,12 @@ impl State {
             }
             ButtonState::Pressed => {}
         }
+    }
+
+    pub(super) fn toggle(&mut self, effects: &mut Vec<Effect>) {
+        self.release(effects);
+        self.active = !self.active;
+        effects.push(Effect::MouseMode(self.active));
     }
 
     pub(super) fn tick(

@@ -827,7 +827,7 @@ impl Compositor {
     }
     #[must_use]
     pub fn pad_passthrough(&self) -> bool {
-        self.dispatch.core().passthrough() && !self.dispatch.adjuster_owns_pad()
+        self.dispatch.core().passthrough() && !self.dispatch.overlay_owns_pad()
     }
 
     pub fn set_volume_backend(&mut self, backend: crate::volume::Backend) {
@@ -997,7 +997,7 @@ impl Compositor {
         if waiting
             || self.choice_list().is_some()
             || self.dispatch.keyboard().is_open()
-            || self.dispatch.adjuster_owns_pad()
+            || self.dispatch.overlay_owns_pad()
         {
             return;
         }
