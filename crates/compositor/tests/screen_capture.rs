@@ -51,6 +51,7 @@ mod capture {
         failed: bool,
         damage: bool,
         format: Option<wl_shm::Format>,
+        transform: Option<wayland_client::protocol::wl_output::Transform>,
     }
     impl Dispatch<WlRegistry, GlobalListContents> for App {
         fn event(
@@ -109,9 +110,10 @@ mod capture {
                 ext_image_copy_capture_frame_v1::Event::Ready => app.ready = true,
                 ext_image_copy_capture_frame_v1::Event::Failed { .. } => app.failed = true,
                 ext_image_copy_capture_frame_v1::Event::Damage { .. } => app.damage = true,
-                ext_image_copy_capture_frame_v1::Event::Transform { .. }
-                | ext_image_copy_capture_frame_v1::Event::PresentationTime { .. }
-                | _ => {}
+                ext_image_copy_capture_frame_v1::Event::Transform { transform } => {
+                    app.transform = transform.into_result().ok();
+                }
+                ext_image_copy_capture_frame_v1::Event::PresentationTime { .. } | _ => {}
             }
         }
     }
@@ -175,6 +177,7 @@ mod capture {
     #[derive(Clone, Copy)]
     enum Mode {
         Ext,
+        Nested,
         Wlr(u32),
         Region,
         WrongSize,
@@ -267,7 +270,7 @@ mod capture {
         }
     }
 
-    fn assert_pixels(file: &File, width: u32, padding: u32, ext: bool) {
+    fn assert_pixels(file: &File, width: u32, padding: u32, ext: bool, y: u32) {
         let stride = width.checked_mul(4).unwrap().checked_add(padding).unwrap();
         let mut pixel = [0; 4];
         file.read_exact_at(&mut pixel, 0).unwrap();
@@ -285,7 +288,7 @@ mod capture {
         }
         file.read_exact_at(
             &mut pixel,
-            u64::from(stride.checked_mul(16).unwrap().checked_add(80).unwrap()),
+            u64::from(stride.checked_mul(y).unwrap().checked_add(80).unwrap()),
         )
         .unwrap();
         assert_eq!(pixel, [32, 32, 32, 255], "capture includes the visible wallpaper");
@@ -356,7 +359,16 @@ mod capture {
         if ext || capture.wlr.as_ref().is_some_and(|legacy| legacy.version() >= 2) {
             assert!(app.damage, "capture reports damage");
         }
-        assert_pixels(&file, width, padding, ext);
+        let y = if matches!(mode, Mode::Nested) {
+            assert_eq!(
+                app.transform,
+                Some(wayland_client::protocol::wl_output::Transform::Flipped180)
+            );
+            height.checked_sub(17).unwrap()
+        } else {
+            16
+        };
+        assert_pixels(&file, width, padding, ext, y);
         finish_capture(capture, &target, &mut queue, &mut app);
     }
 
@@ -533,6 +545,141 @@ mod capture {
             pump(&mut display, &mut compositor);
         }
         task.join().unwrap();
+    }
+
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _killed = self.0.kill();
+            let _waited = self.0.wait();
+        }
+    }
+
+    fn x_display() -> Option<(ChildGuard, String)> {
+        use std::io::BufRead;
+        let process = std::process::Command::new("Xvfb")
+            .args([
+                "-displayfd",
+                "1",
+                "-screen",
+                "0",
+                "1280x720x24",
+                "-nolisten",
+                "tcp",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .ok()?;
+        let mut process = ChildGuard(process);
+        let output = process.0.stdout.take().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _reader = thread::spawn(move || {
+            let mut number = String::new();
+            let _line = std::io::BufReader::new(output).read_line(&mut number).unwrap();
+            sender.send(number).unwrap();
+        });
+        let number = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        Some((process, format!(":{}", number.trim())))
+    }
+
+    fn nested_socket(directory: &std::path::Path, process: &mut ChildGuard) -> std::path::PathBuf {
+        let start = Instant::now();
+        loop {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "nested startup timed out"
+            );
+            assert!(
+                process.0.try_wait().unwrap().is_none(),
+                "nested compositor exited"
+            );
+            if let Some(path) = std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("wayland-"))
+                        && path.extension().is_none()
+                })
+            {
+                return path;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn nested_compositor(
+        directory: &std::path::Path,
+        contexts: &std::path::Path,
+        display: &str,
+    ) -> ChildGuard {
+        ChildGuard(
+            std::process::Command::new(env!("CARGO_BIN_EXE_tehuti"))
+                .arg(contexts)
+                .env("DISPLAY", display)
+                .env("WINIT_UNIX_BACKEND", "x11")
+                .env_remove("WAYLAND_DISPLAY")
+                .env_remove("WAYLAND_SOCKET")
+                .env("XDG_RUNTIME_DIR", directory)
+                .env("XDG_CONFIG_HOME", directory.join("config"))
+                .env("XDG_DATA_HOME", directory.join("data"))
+                .env("XDG_CACHE_HOME", directory.join("cache"))
+                .env("TEHUTI_SCALE", "1")
+                .env("TEHUTI_TEST_SIZE", "1280x720")
+                .env("LIBGL_ALWAYS_SOFTWARE", "1")
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    fn nested_grim(socket: &std::path::Path, path: &std::path::Path, directory: &std::path::Path) {
+        let mut grim = ChildGuard(
+            std::process::Command::new("grim")
+                .arg(path)
+                .env("WAYLAND_DISPLAY", socket)
+                .env("XDG_RUNTIME_DIR", directory)
+                .env_remove("WAYLAND_SOCKET")
+                .spawn()
+                .unwrap(),
+        );
+        let start = Instant::now();
+        loop {
+            assert!(start.elapsed() < Duration::from_secs(10), "nested grim timed out");
+            if let Some(status) = grim.0.try_wait().unwrap() {
+                assert!(status.success(), "grim must capture the nested renderer");
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn ext_and_grim_capture_the_gles_nested_session() {
+        let Some((_host, display)) = x_display() else {
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let contexts = directory.path().join("contexts");
+        std::fs::create_dir(&contexts).unwrap();
+        std::fs::write(contexts.join("context.toml"), "app_id = '*'\nbuttons = {}\n").unwrap();
+        let mut compositor = nested_compositor(directory.path(), &contexts, &display);
+        let socket = nested_socket(directory.path(), &mut compositor);
+        let stream = UnixStream::connect(&socket).unwrap();
+        let task = thread::spawn(move || client(stream, Mode::Nested));
+        let start = Instant::now();
+        while !task.is_finished() {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "nested capture timed out"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        task.join().unwrap();
+        let path = directory.path().join("nested.png");
+        nested_grim(&socket, &path, directory.path());
+        let image = image::open(path).unwrap().to_rgba8();
+        assert_eq!(image.dimensions(), (1280, 720));
+        assert_eq!(*image.get_pixel(16, 16), image::Rgba([32, 32, 32, 255]));
     }
 
     #[test]

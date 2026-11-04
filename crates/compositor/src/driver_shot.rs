@@ -4,8 +4,8 @@ use core::error::Error;
 use smithay::backend::{
     allocator::Fourcc,
     renderer::{
-        Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, damage::OutputDamageTracker,
-        pixman::PixmanRenderer,
+        Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, TextureMapping,
+        damage::OutputDamageTracker, pixman::PixmanRenderer,
     },
 };
 use smithay::utils::{Rectangle, Transform};
@@ -98,7 +98,11 @@ where
         Fourcc::Abgr8888,
     )?;
     let pixels = renderer.map_texture(&mapping)?.to_vec();
-    let image = image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
-        .ok_or("invalid capture dimensions")?;
+    let mut image =
+        image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
+            .ok_or("invalid capture dimensions")?;
+    if mapping.flipped() {
+        image::imageops::flip_vertical_in_place(&mut image);
+    }
     Ok(image)
 }

@@ -297,10 +297,10 @@ impl OutputCapture {
         clock: &str,
         cursor: bool,
     ) -> Result<image::RgbaImage, Box<dyn core::error::Error>> {
-        match &self.0 {
-            Some(capture) => capture(compositor, output, clock, cursor),
-            None => crate::driver_shot::image(compositor, output, clock, cursor),
-        }
+        self.0.as_ref().map_or_else(
+            || crate::driver_shot::image(compositor, output, clock, cursor),
+            |capture| capture(compositor, output, clock, cursor),
+        )
     }
 }
 

@@ -525,6 +525,10 @@ fn copy(
         }
         image = image::imageops::crop_imm(&image, x, y, width, height).to_image();
     }
+    write_image(buffer, &image)
+}
+
+fn write_image(buffer: &WlBuffer, image: &image::RgbaImage) -> Result<(i32, i32), CopyError> {
     let width = i32::try_from(image.width()).map_err(|_| CopyError::Buffer)?;
     let height = i32::try_from(image.height()).map_err(|_| CopyError::Buffer)?;
     with_buffer_contents_mut(buffer, |pointer, length, data| {
