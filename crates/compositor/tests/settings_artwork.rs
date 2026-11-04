@@ -46,7 +46,7 @@ mod tests {
                 .filter(|(index, pixel)| {
                     let x = index.checked_rem(1280).unwrap_or_default();
                     let y = index.checked_div(1280).unwrap_or_default();
-                    (360..1200).contains(&x) && (480..530).contains(&y) && **pixel == colour
+                    (360..1200).contains(&x) && (620..650).contains(&y) && **pixel == colour
                 })
                 .count();
             Ok::<_, std::io::Error>(Vec::new())
