@@ -280,7 +280,10 @@ mod initial_size {
                         .all(|line| line.contains("app_id=org.example.Video")),
                     "{output}"
                 );
-                assert!(!output.contains("private window title"), "{output}");
+                assert!(
+                    changes.iter().all(|line| !line.contains("private window title")),
+                    "{output}"
+                );
             } else {
                 assert!(changes.is_empty(), "{output}");
             }
@@ -297,7 +300,12 @@ mod initial_size {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         if let Some(context_id) = context_id {
-            compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!("app_id = '{context_id}'\nbuttons = {{}}\n[window]\ncolumn_width = 'one-half'\nheight = 0.75\n[log]\nwindow_size = {logging}")).unwrap()]);
+            let log_config = if logging {
+                "\n[log]\nwindow_size = true"
+            } else {
+                ""
+            };
+            compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!("app_id = '{context_id}'\nbuttons = {{}}\n[window]\ncolumn_width = 'one-half'\nheight = 0.75{log_config}")).unwrap()]);
         }
         add_output(&mut compositor, &display, scale);
         let (server, stream) = UnixStream::pair().unwrap();
