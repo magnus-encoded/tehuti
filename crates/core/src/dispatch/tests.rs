@@ -3072,7 +3072,7 @@ fn controller_browsing_keeps_input_until_confirmation() {
         state.settings().input.controller,
         ControllerChoice::Named("Xbox Controller".into())
     );
-    assert!(input_effects(&world).is_empty());
+    assert_eq!(input_effects(&world), Vec::<Effect>::new());
     assert_eq!(state.settings().remaining, None);
     state = settings_button(&mut world, state, ButtonName::South);
     assert_eq!(
@@ -3092,7 +3092,7 @@ fn cancelling_controller_browsing_restores_the_saved_selection() {
     world.trace.clear();
     let state = settings_button(&mut world, state, ButtonName::East);
     assert_eq!(state.settings().input.controller, ControllerChoice::Auto);
-    assert!(input_effects(&world).is_empty());
+    assert_eq!(input_effects(&world), Vec::<Effect>::new());
 }
 
 #[test]
