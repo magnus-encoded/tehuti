@@ -509,7 +509,7 @@ mod tests {
             pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
                 .unwrap();
             route(&mut compositor, &mut pad).unwrap();
-            if index + 1 < keys.len() {
+            if index.saturating_add(1) < keys.len() {
                 assert!(!never_sent(&log.borrow(), *key));
             } else {
                 assert!(never_sent(&log.borrow(), *key), "completing press is kept");
