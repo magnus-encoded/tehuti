@@ -153,6 +153,7 @@ pub fn validate_actions(actions: Vec<Action>, permissions: &[Permission]) -> Res
             Action::SecretRequest { .. } => ("secret_request", None),
             Action::Launch { .. } => ("launch", None),
             Action::Close => ("close", None),
+            Action::Restart => ("restart", None),
             Action::Notice { .. } => ("notice", None),
             Action::Layout { .. } => ("layout", None),
             Action::ToggleTicker => ("toggle_ticker", None),

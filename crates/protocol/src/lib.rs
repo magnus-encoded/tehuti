@@ -713,6 +713,7 @@ impl Context {
             | MappingAction::Secret { .. }
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
+            | MappingAction::Restart { .. }
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
             | MappingAction::Ticker { .. } => None,
@@ -734,6 +735,7 @@ impl Context {
             | MappingAction::Secret { .. }
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
+            | MappingAction::Restart { .. }
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
             | MappingAction::Ticker { .. } => None,
@@ -807,6 +809,9 @@ enum MappingAction {
     Close {
         close: CloseMapping,
     },
+    Restart {
+        restart: RestartMapping,
+    },
     Notify {
         notify: Text,
     },
@@ -816,6 +821,25 @@ enum MappingAction {
     Ticker {
         ticker: TickerMapping,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestartMapping;
+
+impl serde::Serialize for RestartMapping {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(true)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RestartMapping {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if bool::deserialize(deserializer)? {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("restart must be true"))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -837,6 +861,7 @@ impl MappingAction {
                 desktop_entry: launch.clone(),
             },
             Self::Close { .. } => Action::Close,
+            Self::Restart { .. } => Action::Restart,
             Self::Notify { notify } => Action::Notice { text: notify.clone() },
             Self::Key { key, mods, .. } => Action::Key {
                 key: *key,
@@ -998,6 +1023,8 @@ pub enum Action {
     SecretRequest { reference: SecretReference },
     /// Release the controller and stop the compositor.
     Quit,
+    /// Release the controller and restart the compositor in its session.
+    Restart,
     /// Display a notice without changing the focused client.
     Notice { text: Text },
     /// Change the tiling layout; reserved for the core like `Close`.
