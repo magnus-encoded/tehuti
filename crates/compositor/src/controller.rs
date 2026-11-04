@@ -274,11 +274,12 @@ pub fn sync_mirrors<D: PadDevice>(
     pads: &mut [(&std::path::Path, &mut EvdevPad<D>)],
     mirrored: bool,
     active: Option<&std::path::Path>,
+    consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
 ) -> MirrorSync {
     let mut sync = MirrorSync::default();
     for (path, pad) in pads.iter_mut() {
         if !mirror_wanted(mirrored, active, path)
-            && let Err(error) = pad.set_mirror(false)
+            && let Err(error) = pad.set_mirror(false, consume)
         {
             warn!(%error, "virtual pad release failed");
         }
@@ -287,7 +288,7 @@ pub fn sync_mirrors<D: PadDevice>(
         if !mirror_wanted(mirrored, active, path) {
             continue;
         }
-        match pad.set_mirror(true) {
+        match pad.set_mirror(true, consume) {
             Ok(created) => sync.started |= created,
             Err(error) => {
                 warn!(%error, "virtual pad unavailable");
@@ -357,13 +358,30 @@ impl MirrorCopy {
     }
 
     /// A frame that presses every held key and hat in `state`, marking them held.
-    fn seed(&mut self, state: impl IntoIterator<Item = evdev::InputEvent>) -> Option<Vec<evdev::InputEvent>> {
-        let mut frame: Vec<_> = state.into_iter().filter(|event| event.value() != 0).collect();
+    /// Keys `consume` keeps are blocked instead, so their later release stays kept too.
+    fn seed(
+        &mut self,
+        state: impl IntoIterator<Item = evdev::InputEvent>,
+        translator: &mut DpadHat,
+        consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
+    ) -> Option<Vec<evdev::InputEvent>> {
+        let mut frame = Vec::new();
+        for event in state.into_iter().filter(|event| event.value() != 0) {
+            let key = (event.event_type().0, event.code());
+            let kept = translator
+                .translate(&event.destructure())
+                .into_iter()
+                .any(|input| matches!(input, Event::Button { name, state } if consume(name, state)));
+            if kept {
+                self.blocked.push(key);
+            } else {
+                self.held.push(key);
+                frame.push(event);
+            }
+        }
         if frame.is_empty() {
             return None;
         }
-        self.held
-            .extend(frame.iter().map(|event| (event.event_type().0, event.code())));
         frame.push(evdev::InputEvent::new(
             evdev::EventType::SYNCHRONIZATION.0,
             evdev::SynchronizationCode::SYN_REPORT.0,
@@ -518,9 +536,14 @@ impl<D: PadDevice> EvdevPad<D> {
     /// Presents or removes the virtual controller; true when it was just created.
     /// A new one starts out holding what the physical pad holds.
     /// Removal first releases whatever the virtual controller still holds.
+    /// `consume` is the [`Self::pump_mirror`] filter; held buttons it keeps are not shown.
     /// # Errors
     /// The kernel refused to create the uinput device.
-    pub fn set_mirror(&mut self, present: bool) -> io::Result<bool> {
+    pub fn set_mirror(
+        &mut self,
+        present: bool,
+        consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
+    ) -> io::Result<bool> {
         if !present {
             if let Some(mut mirror) = self.mirror.take()
                 && let Some(frame) = mirror.copy.release()
@@ -547,7 +570,12 @@ impl<D: PadDevice> EvdevPad<D> {
             .into_iter()
             .filter(|(axis, _)| *axis == AbsoluteAxisCode::ABS_HAT0X || *axis == AbsoluteAxisCode::ABS_HAT0Y)
             .map(|(axis, info)| evdev::InputEvent::new(evdev::EventType::ABSOLUTE.0, axis.0, info.value()));
-        if let Some(frame) = mirror.copy.seed(keys.chain(hats)) {
+        // A fresh translator reads the held state as presses; the pad's own one has seen them already.
+        let mut fresh = DpadHat {
+            identity: self.translator.identity,
+            ..DpadHat::default()
+        };
+        if let Some(frame) = mirror.copy.seed(keys.chain(hats), &mut fresh, consume) {
             mirror.device.emit(&frame)?;
         }
         self.mirror = Some(mirror);

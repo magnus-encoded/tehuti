@@ -935,7 +935,13 @@ fn sync_pad_grab(data: &mut LoopData) {
         .iter_mut()
         .map(|(path, controller)| (path.as_path(), &mut controller.pad))
         .collect();
-    let sync = controller::sync_mirrors(&mut pads, mirrored, data.active_pad.as_deref());
+    let compositor = &mut data.compositor;
+    let sync = controller::sync_mirrors(
+        &mut pads,
+        mirrored,
+        data.active_pad.as_deref(),
+        &mut |button, state| compositor.virtual_pad_button(button, state),
+    );
     for path in &sync.failed {
         if let Some(pad) = data.controllers.get_mut(path) {
             warn!("passing the physical pad through");

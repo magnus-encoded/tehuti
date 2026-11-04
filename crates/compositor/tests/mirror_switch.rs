@@ -44,6 +44,7 @@ mod tests {
         name: &'static str,
         raw: Rc<RefCell<VecDeque<InputEvent>>>,
         held: Rc<RefCell<Vec<u16>>>,
+        hat: Rc<core::cell::Cell<i32>>,
         log: Rc<RefCell<Log>>,
     }
 
@@ -55,7 +56,10 @@ mod tests {
             Ok(self.held.borrow().clone())
         }
         fn get_absinfo(&self) -> io::Result<Vec<(AbsoluteAxisCode, evdev::AbsInfo)>> {
-            Ok(Vec::new())
+            Ok(vec![(
+                AbsoluteAxisCode::ABS_HAT0X,
+                evdev::AbsInfo::new(self.hat.get(), -1, 1, 0, 0, 0),
+            )])
         }
         fn drain(&mut self, _hat: &mut DpadHat) -> io::Result<Vec<tehuti_protocol::Event>> {
             Ok(Vec::new())
@@ -77,19 +81,22 @@ mod tests {
     struct Handles {
         raw: Rc<RefCell<VecDeque<InputEvent>>>,
         held: Rc<RefCell<Vec<u16>>>,
+        hat: Rc<core::cell::Cell<i32>>,
     }
 
     fn pad(name: &'static str, log: &Rc<RefCell<Log>>) -> (EvdevPad<Synthetic>, Handles) {
         let raw = Rc::default();
         let held = Rc::default();
+        let hat = Rc::default();
         let device = |queue: &Rc<_>, keys: &Rc<_>| Synthetic {
             name,
             raw: Rc::clone(queue),
             held: Rc::clone(keys),
+            hat: Rc::clone(&hat),
             log: Rc::clone(log),
         };
         let pad = EvdevPad::new(device(&raw, &held), device(&raw, &held), DpadHat::default());
-        (pad, Handles { raw, held })
+        (pad, Handles { raw, held, hat })
     }
 
     fn press(code: KeyCode, value: i32) -> [InputEvent; 2] {
@@ -110,6 +117,7 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(first_path),
+            &mut |_, _| false,
         );
         assert!(first_sync.started && first_sync.failed.is_empty());
         first_handles
@@ -124,6 +132,7 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(second_path),
+            &mut |_, _| false,
         );
         assert!(second_sync.started && second_sync.failed.is_empty());
 
@@ -151,6 +160,61 @@ mod tests {
                 .is_some_and(|frame| frame.contains(&key(KeyCode::BTN_EAST, 1))),
             "the new mirror starts out holding what its pad holds: {:?}",
             log.frames
+        );
+    }
+
+    #[test]
+    fn a_held_button_a_plugin_keeps_never_reaches_the_game() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut kept, handles) = pad("kept", &log);
+        let path = Path::new("/dev/input/event1");
+        let mut consume = |name: tehuti_protocol::ButtonName, _: tehuti_protocol::ButtonState| {
+            name == tehuti_protocol::ButtonName::Start
+        };
+        handles.held.borrow_mut().push(KeyCode::BTN_START.code());
+
+        let sync = sync_mirrors(&mut [(path, &mut kept)], true, Some(path), &mut consume);
+        assert!(sync.started);
+        handles.raw.borrow_mut().extend(press(KeyCode::BTN_START, 0));
+        kept.pump_mirror(&mut consume).unwrap();
+        let _gone = sync_mirrors(&mut [(path, &mut kept)], true, None, &mut consume);
+
+        assert!(!kept.mirrored());
+        let start = KeyCode::BTN_START.code();
+        assert!(
+            log.borrow()
+                .frames
+                .iter()
+                .all(|(_, frame)| frame.iter().all(|(_, code, _)| *code != start)),
+            "the kept button is neither pressed nor released on the virtual pad: {:?}",
+            log.borrow().frames
+        );
+    }
+
+    #[test]
+    fn a_held_dpad_is_seeded_and_released() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut held, handles) = pad("dpad", &log);
+        let path = Path::new("/dev/input/event1");
+        handles.hat.set(-1);
+
+        let sync = sync_mirrors(&mut [(path, &mut held)], true, Some(path), &mut |_, _| false);
+        assert!(sync.started);
+        let _gone = sync_mirrors(&mut [(path, &mut held)], true, None, &mut |_, _| false);
+
+        let hat = (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_HAT0X.0);
+        let values: Vec<i32> = log
+            .borrow()
+            .frames
+            .iter()
+            .flat_map(|(_, frame)| frame.clone())
+            .filter(|(kind, code, _)| (*kind, *code) == hat)
+            .map(|(_, _, value)| value)
+            .collect();
+        assert_eq!(
+            values,
+            [-1, 0],
+            "the virtual pad shows the held D-pad, then lets go"
         );
     }
 }
