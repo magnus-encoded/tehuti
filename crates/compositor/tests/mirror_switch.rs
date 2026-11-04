@@ -8,10 +8,13 @@ mod tests {
     use evdev::{AbsoluteAxisCode, EventType, InputEvent, KeyCode, SynchronizationCode};
     use tehuti::controller::{DpadHat, EvdevPad, MirrorSink, PadDevice, sync_mirrors};
 
+    /// One frame as (type, code, value) triples, tagged with the pad that sent it.
+    type Sent = (&'static str, Vec<(u16, u16, i32)>);
+
     /// Every frame each virtual pad sent, and how many existed at once.
     #[derive(Debug, Default)]
     struct Log {
-        frames: Vec<(&'static str, Vec<(u16, u16, i32)>)>,
+        frames: Vec<Sent>,
         live: usize,
         most_live: usize,
     }
@@ -31,7 +34,8 @@ mod tests {
 
     impl Drop for Sink {
         fn drop(&mut self) {
-            self.1.borrow_mut().live -= 1;
+            let mut log = self.1.borrow_mut();
+            log.live = log.live.saturating_sub(1);
         }
     }
 
@@ -61,7 +65,7 @@ mod tests {
         }
         fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
             let mut log = self.log.borrow_mut();
-            log.live += 1;
+            log.live = log.live.saturating_add(1);
             log.most_live = log.most_live.max(log.live);
             Ok(Box::new(Sink(self.name, Rc::clone(&self.log))))
         }
@@ -78,10 +82,10 @@ mod tests {
     fn pad(name: &'static str, log: &Rc<RefCell<Log>>) -> (EvdevPad<Synthetic>, Handles) {
         let raw = Rc::default();
         let held = Rc::default();
-        let device = |raw: &Rc<_>, held: &Rc<_>| Synthetic {
+        let device = |queue: &Rc<_>, keys: &Rc<_>| Synthetic {
             name,
-            raw: Rc::clone(raw),
-            held: Rc::clone(held),
+            raw: Rc::clone(queue),
+            held: Rc::clone(keys),
             log: Rc::clone(log),
         };
         let pad = EvdevPad::new(device(&raw, &held), device(&raw, &held), DpadHat::default());
@@ -102,12 +106,12 @@ mod tests {
         let (mut second, second_handles) = pad("second", &log);
         let (first_path, second_path) = (Path::new("/dev/input/event1"), Path::new("/dev/input/event2"));
 
-        let sync = sync_mirrors(
+        let first_sync = sync_mirrors(
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(first_path),
         );
-        assert!(sync.started && sync.failed.is_empty());
+        assert!(first_sync.started && first_sync.failed.is_empty());
         first_handles
             .raw
             .borrow_mut()
@@ -116,12 +120,12 @@ mod tests {
 
         // The second pad's press reached the core before its mirror existed; its kernel state still holds it.
         second_handles.held.borrow_mut().push(KeyCode::BTN_EAST.code());
-        let sync = sync_mirrors(
+        let second_sync = sync_mirrors(
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(second_path),
         );
-        assert!(sync.started && sync.failed.is_empty());
+        assert!(second_sync.started && second_sync.failed.is_empty());
 
         let log = log.borrow();
         assert_eq!(log.most_live, 1, "the application never sees two virtual pads");
