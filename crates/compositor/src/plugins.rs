@@ -1,7 +1,10 @@
 //! Plugin processes and their non-blocking stdio sources.
 
 use crate::state::Compositor;
-use core::{cell::RefCell, time::Duration};
+use core::{
+    cell::{Cell, RefCell},
+    time::Duration,
+};
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -55,6 +58,7 @@ struct Session {
     child: Process,
     stdin: ChildStdin,
     output: VecDeque<u8>,
+    writer_disabled: Rc<Cell<bool>>,
     input: Vec<u8>,
     dropping_line: bool,
     status: Status,
@@ -199,6 +203,7 @@ impl Session {
                 Err(error) => return Err(error),
             }
         }
+        self.writer_disabled.set(true);
         Ok(PostAction::Disable)
     }
 
@@ -897,6 +902,7 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
         child: process,
         stdin,
         output: VecDeque::new(),
+        writer_disabled: Rc::new(Cell::new(false)),
         input: Vec::new(),
         dropping_line: false,
         status: Status::Starting,
@@ -949,13 +955,17 @@ fn start_process<Data: 'static>(
             return Err(error);
         }
     };
+    let writer_disabled = session.borrow().writer_disabled.clone();
     let wake_handle = handle.clone();
     let cleanup_handle = handle.clone();
     Ok((
         session,
         Box::new(move || {
-            if let Err(error) = wake_handle.enable(&token) {
-                tracing::warn!(%error, "plugin writer unavailable");
+            if writer_disabled.get() {
+                match wake_handle.enable(&token) {
+                    Ok(()) => writer_disabled.set(false),
+                    Err(error) => tracing::warn!(%error, "plugin writer unavailable"),
+                }
             }
         }),
         Box::new(move || {
@@ -984,11 +994,15 @@ fn insert_reader<Data: 'static>(
             ),
             move |_, source, data| {
                 let action = read_ready(&reader, source, data, compositor, &timer_handle);
-                if !reader.borrow().output.is_empty()
+                let session = reader.borrow();
+                if !session.output.is_empty()
+                    && session.writer_disabled.get()
                     && let Some(writer_handle) = writer_handle.upgrade()
-                    && let Err(error) = writer_handle.enable(&writer_token)
                 {
-                    tracing::warn!(%error, "plugin writer unavailable");
+                    match writer_handle.enable(&writer_token) {
+                        Ok(()) => session.writer_disabled.set(false),
+                        Err(error) => tracing::warn!(%error, "plugin writer unavailable"),
+                    }
                 }
                 Ok(action)
             },
@@ -1173,6 +1187,7 @@ fn fuzz_session() -> io::Result<Session> {
         child: Process { child: Some(child) },
         stdin,
         output: VecDeque::new(),
+        writer_disabled: Rc::new(Cell::new(false)),
         input: Vec::new(),
         dropping_line: false,
         status: Status::Starting,
@@ -1342,6 +1357,7 @@ mod tests {
                 child: Process { child: Some(child) },
                 stdin,
                 output: VecDeque::new(),
+                writer_disabled: Rc::new(Cell::new(false)),
                 input: Vec::new(),
                 dropping_line: false,
                 status: Status::Ready,
