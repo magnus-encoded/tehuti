@@ -282,10 +282,14 @@ pub fn sync_mirrors<D: PadDevice>(
 ) -> MirrorSync {
     let mut sync = MirrorSync::default();
     for (path, pad) in pads.iter_mut() {
-        if !mirror_wanted(mirrored, active, path)
-            && let Err(error) = pad.set_mirror(false, consumed)
-        {
-            warn!(%error, "virtual pad release failed");
+        if !mirror_wanted(mirrored, active, path) {
+            if let Err(error) = pad.set_mirror(false, consumed) {
+                warn!(%error, "virtual pad release failed");
+            }
+            // Another pad presents the virtual pad now; a parked one would make two.
+            if mirrored {
+                pad.unpark_mirror();
+            }
         }
     }
     for (path, pad) in pads.iter_mut() {
@@ -584,6 +588,11 @@ impl<D: PadDevice> EvdevPad<D> {
         }
         self.mirror = Some(mirror);
         Ok(true)
+    }
+
+    /// Removes the hidden virtual controller, so the application sees it unplugged.
+    pub fn unpark_mirror(&mut self) {
+        self.parked = None;
     }
 
     /// Whether the virtual controller is presented.
