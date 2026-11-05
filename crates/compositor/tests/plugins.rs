@@ -698,7 +698,7 @@ for line in sys.stdin:
                         .iter()
                         .filter(|message| message["method"] == "focus")
                         .count()
-                        >= 1 + batch * 4
+                        == 1 + batch * 4
                 });
             }
         });
