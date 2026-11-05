@@ -16,6 +16,30 @@ jobs:
           targets: i686-unknown-linux-gnu
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev python3 python3-pil foot
       - uses: Swatinem/rust-cache@v2
+      - name: Verify new mirror failure regression rejects the PR base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          test_file=crates/compositor/tests/mirror_switch.rs
+          regression=creation_failure_falls_back_once_per_source_pad
+          if ! git show "$BASE_SHA:$test_file" | grep -q "$regression"; then
+            controller=crates/compositor/src/controller.rs
+            main=crates/compositor/src/main.rs
+            cp "$controller" "$RUNNER_TEMP/controller.rs"
+            cp "$main" "$RUNNER_TEMP/main.rs"
+            trap 'cp "$RUNNER_TEMP/controller.rs" "$controller"; cp "$RUNNER_TEMP/main.rs" "$main"' EXIT
+            git show "$BASE_SHA:$controller" > "$controller"
+            git show "$BASE_SHA:$main" > "$main"
+            if CARGO_TARGET_DIR=target nice -n 19 cargo test --locked -p tehuti --test mirror_switch "$regression" > "$RUNNER_TEMP/regression.log" 2>&1; then
+              cat "$RUNNER_TEMP/regression.log"
+              echo "Regression unexpectedly passed on the PR base"
+              exit 1
+            fi
+            cat "$RUNNER_TEMP/regression.log"
+            grep -q "tests::$regression ... FAILED" "$RUNNER_TEMP/regression.log"
+          fi
       - run: XDG_RUNTIME_DIR=/tmp scripts/check
       - name: Release smoke
         run: |
