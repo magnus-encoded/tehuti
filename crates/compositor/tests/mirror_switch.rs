@@ -119,9 +119,9 @@ mod tests {
         let path = Path::new("/dev/input/event1");
         let mut sync = |mirrored| sync_mirrors(&mut [(path, &mut only)], mirrored, Some(path), &|_| false);
 
-        sync(true);
-        sync(false);
-        sync(true);
+        assert!(sync(true).started);
+        assert!(!sync(false).started);
+        assert!(sync(true).failed.is_empty());
 
         let log = log.borrow();
         assert_eq!(log.created, 1, "the application never sees the pad unplugged");
