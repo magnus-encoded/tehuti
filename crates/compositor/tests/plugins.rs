@@ -686,6 +686,29 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn consecutive_plugin_messages_do_not_warn_about_the_writer() {
+        let output = supervision_logs(|| {
+            let mut harness = Harness::new(&manifest(), "empty", 0, "json");
+            harness.ready();
+            for batch in 1..=3 {
+                harness.send((0..4).map(|_| focus("test")));
+                harness.pump_until(|harness| {
+                    harness
+                        .received()
+                        .iter()
+                        .filter(|message| message["method"] == "focus")
+                        .count()
+                        >= 1 + batch * 4
+                });
+            }
+        });
+        assert!(
+            !output.contains("plugin writer unavailable"),
+            "consecutive messages must reach the plugin without writer warnings: {output}"
+        );
+    }
+
+    #[test]
     fn crashing_processes_restart_with_exponential_backoff_without_input() {
         let output = supervision_logs(|| {
             let mut harness = Harness::with_script(&manifest(), include_str!("fixtures/plugins/crash.py"));
