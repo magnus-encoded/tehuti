@@ -17,6 +17,7 @@ mod tests {
         frames: Vec<Sent>,
         live: usize,
         most_live: usize,
+        created: usize,
     }
 
     struct Sink(&'static str, Rc<RefCell<Log>>);
@@ -70,6 +71,7 @@ mod tests {
         fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
             let mut log = self.log.borrow_mut();
             log.live = log.live.saturating_add(1);
+            log.created = log.created.saturating_add(1);
             log.most_live = log.most_live.max(log.live);
             Ok(Box::new(Sink(self.name, Rc::clone(&self.log))))
         }
@@ -108,6 +110,23 @@ mod tests {
             InputEvent::new(EventType::KEY.0, code.code(), value),
             InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
         ]
+    }
+
+    #[test]
+    fn focus_leaving_and_returning_keeps_the_same_virtual_pad() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut only, handles) = pad("only", &log);
+        let path = Path::new("/dev/input/event1");
+        let mut sync = |mirrored| sync_mirrors(&mut [(path, &mut only)], mirrored, Some(path), &|_| false);
+
+        sync(true);
+        sync(false);
+        sync(true);
+
+        let log = log.borrow();
+        assert_eq!(log.created, 1, "the application never sees the pad unplugged");
+        assert_eq!(log.live, 1);
+        drop(handles);
     }
 
     #[test]
