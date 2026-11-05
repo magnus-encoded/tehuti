@@ -1262,9 +1262,9 @@ mod tests {
         let (now, rest) = split_at_key_text(vec![key("slash"), text("hello"), key("enter")]);
         assert_eq!(now, vec![key("slash")]);
         assert_eq!(rest, vec![text("hello"), key("enter")]);
-        let (now, rest) = split_at_key_text(rest);
-        assert_eq!(now, vec![text("hello"), key("enter")]);
-        assert!(rest.is_empty());
+        let (later, after) = split_at_key_text(rest);
+        assert_eq!(later, vec![text("hello"), key("enter")]);
+        assert_eq!(after, Vec::new());
     }
 
     #[test]
@@ -1277,7 +1277,7 @@ mod tests {
         ] {
             let (now, rest) = split_at_key_text(actions.clone());
             assert_eq!(now, actions);
-            assert!(rest.is_empty());
+            assert_eq!(rest, Vec::new());
         }
     }
 
