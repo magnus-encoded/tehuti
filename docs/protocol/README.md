@@ -38,6 +38,9 @@ pending until a valid reply or the existing deadline. For unknown methods sent
 to a plugin, it may reply with error -32601 or stay silent; both mean declined.
 Valid plugin `initialize`, `button` and `focus` calls are ignored: plugins send
 only replies and `actions` notices.
+When an `actions` notice lists a `key` action directly followed by a `text`
+action, the core waits 50 ms after the key before applying the rest of the list
+in order to whatever has focus then, so the client can react to the key first.
 
 Ids are unsigned integers from 0 through 18446744073709551615, never strings,
 fractions or negative numbers. Replies require an id; notices should omit it
