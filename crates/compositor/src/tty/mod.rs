@@ -51,7 +51,7 @@ struct Scanout {
     pending: bool,
     modeset: bool,
     retry_at: Option<std::time::Instant>,
-    retry_delay: Duration,
+    recovery: tehuti::frame_recovery::Recovery,
     /// Frames drawn since start, which dates each scanout buffer's contents.
     drawn: u64,
     idle_frame_callbacks: tehuti::pacing::Interval,
@@ -562,7 +562,7 @@ impl Scanout {
             pending: false,
             modeset: true,
             retry_at: None,
-            retry_delay: Duration::ZERO,
+            recovery: tehuti::frame_recovery::Recovery::default(),
             drawn: 0,
             idle_frame_callbacks: tehuti::pacing::Interval::new(tehuti::pacing::IDLE_FRAME_CALLBACK),
             statistics: FrameStatistics {
@@ -627,6 +627,8 @@ impl Scanout {
         let retained = self.rollback.take();
         match self.render_frame(data) {
             Ok(()) => {
+                self.recovery = tehuti::frame_recovery::Recovery::default();
+                self.retry_at = None;
                 if !reverting {
                     self.preview = retained;
                 }
@@ -688,6 +690,25 @@ impl Scanout {
         false
     }
 
+    fn reject_preview(&mut self, data: &mut LoopData) -> Result<bool, Box<dyn Error>> {
+        let Some((mode, _, _)) = self.preview.as_ref() else {
+            return Ok(false);
+        };
+        let mode = *mode;
+        self.surface.use_mode(mode)?;
+        if let Some((_, renderer, next)) = self.preview.take() {
+            let previous = self.surface.current_mode();
+            let renderer = core::mem::replace(&mut self.renderer, renderer);
+            self.rollback = Some((previous, renderer, self.next));
+            advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
+            self.next = next;
+        }
+        self.set_output_mode(mode, data);
+        self.modeset = true;
+        data.compositor.display_mode_applied(None);
+        Ok(true)
+    }
+
     fn restore_mode(&mut self, device: &DrmDevice, data: &mut LoopData) {
         let mode = self.surface.current_mode();
         let restored = self
@@ -706,7 +727,11 @@ impl Scanout {
                 self.next = next;
                 self.set_output_mode(mode, data);
             }
-            Err(error) => warn!(%error, "DRM mode restoration failed; retaining scanout buffers"),
+            Err(error) => {
+                if self.retry_at.is_none() {
+                    warn!(%error, "DRM mode restoration failed; retaining scanout buffers");
+                }
+            }
         }
     }
 
@@ -726,29 +751,26 @@ impl Scanout {
         if self.pending {
             return Ok(());
         }
+        let mut mode_error = None;
         let result = mode::retry(
             &mut (&mut *self, data),
             |(tty, data)| tty.render_frame(data),
             |(tty, data), error| {
-                if !tty.modeset {
+                tty.damage = OutputDamageTracker::from_output(&tty.output);
+                if tty.reject_preview(data)? || !tty.modeset {
                     return Err(error);
                 }
-                let fallback = tty.fallback_mode(device, data);
-                if fallback {
-                    warn!(%error, "DRM modeset failed; trying next listed mode");
-                } else {
-                    warn!(%error, delay = ?mode::next_backoff(tty.retry_delay), "all listed DRM modes failed; backing off before retrying restored output");
-                }
-                Ok(fallback)
+                mode_error = Some(error);
+                Ok(tty.fallback_mode(device, data))
             },
             |(tty, data)| tty.restore_mode(device, data),
-        )?;
-        if result.is_some() {
-            self.retry_at = None;
-            self.retry_delay = Duration::ZERO;
-        } else {
-            self.retry_delay = mode::next_backoff(self.retry_delay);
-            self.retry_at = std::time::Instant::now().checked_add(self.retry_delay);
+        )
+        .and_then(|frame| frame.ok_or_else(|| mode_error.unwrap_or_else(|| "no usable DRM mode".into())));
+        match self.recovery.finish(result)? {
+            Some(()) => self.retry_at = None,
+            None => {
+                self.retry_at = std::time::Instant::now().checked_add(tehuti::frame_recovery::RETRY_INTERVAL);
+            }
         }
         Ok(())
     }
