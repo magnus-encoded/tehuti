@@ -121,7 +121,7 @@ mod tests {
 
         assert!(sync(true).started);
         assert!(!sync(false).started);
-        assert!(sync(true).failed.is_empty());
+        assert_eq!(sync(true).failed, Vec::<std::path::PathBuf>::new());
 
         let log = log.borrow();
         assert_eq!(log.created, 1, "the application never sees the pad unplugged");
