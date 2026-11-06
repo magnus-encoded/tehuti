@@ -922,10 +922,8 @@ fn advance_time(data: &mut LoopData) {
 fn sync_pad_grab(data: &mut LoopData) {
     let mirrored = data.compositor.virtual_pad();
     for pad in data.controllers.values_mut() {
-        if let Err(error) = pad
-            .pad
-            .set_passthrough(data.compositor.pad_passthrough() && !mirrored)
-        {
+        let passthrough = data.compositor.pad_passthrough() && (!mirrored || pad.pad.mirror_unavailable());
+        if let Err(error) = pad.pad.set_passthrough(passthrough) {
             warn!(%error, "controller ownership change failed; reopening");
             pad.watchdog.request_reopen();
         }
