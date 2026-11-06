@@ -5,6 +5,20 @@ mod tests {
     use tehuti::desktop_hints::{entry_metadata, icon_path, layout};
 
     #[test]
+    fn icon_decoder_rejects_broken_and_oversized_artwork() -> Result<(), Box<dyn core::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("icon.png");
+        image::RgbaImage::from_pixel(48, 24, image::Rgba([20, 80, 160, 255])).save(&path)?;
+        let decoded = tehuti::desktop_hints::read_icon(&path).ok_or("valid icon rejected")?;
+        assert_eq!((decoded.width(), decoded.height()), (48, 24));
+        image::RgbaImage::new(1025, 1).save(&path)?;
+        assert!(tehuti::desktop_hints::read_icon(&path).is_none());
+        std::fs::write(&path, b"broken PNG")?;
+        assert!(tehuti::desktop_hints::read_icon(&path).is_none());
+        Ok(())
+    }
+
+    #[test]
     fn favourites_lead_hints_in_configured_order() {
         let context = tehuti_protocol::parse_context("app_id = '*'\nfavourites = ['browser.desktop', 'absent.desktop', 'reader.desktop', 'browser.desktop']\n[buttons]\n[speech]\nRead = { launch = 'reader.desktop' }\nOther = { launch = 'other.desktop' }\nBrowse = { launch = 'browser.desktop' }").unwrap();
         assert_eq!(

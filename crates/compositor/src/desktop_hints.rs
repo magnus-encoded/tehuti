@@ -176,14 +176,38 @@ fn theme_icon(index: &str, base: &Path, filename: &str, themes: &mut Vec<String>
     None
 }
 
-pub(crate) fn load(phrases: &[(String, String)]) -> Vec<Hint> {
-    let directories = data_directories();
+/// Resolves an icon using the desktop's data directories and theme.
+#[must_use]
+pub fn resolve_icon(name: &str) -> Option<PathBuf> {
+    icon_path(name, &icon_roots(&data_directories()), "hicolor")
+}
+
+fn icon_roots(directories: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
         roots.push(PathBuf::from(home).join(".icons"));
     }
     roots.extend(directories.iter().map(|directory| directory.join("icons")));
     roots.extend(directories.iter().map(|directory| directory.join("pixmaps")));
+    roots
+}
+
+/// Decodes desktop artwork within the shell's image limits.
+#[must_use]
+pub fn read_icon(path: &Path) -> Option<image::DynamicImage> {
+    let mut reader = image::ImageReader::open(path).ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(1024);
+    limits.max_image_height = Some(1024);
+    limits.max_alloc = Some(8 * 1024 * 1024);
+    reader.limits(limits);
+    reader.set_format(image::ImageFormat::Png);
+    reader.decode().ok()
+}
+
+pub(crate) fn load(phrases: &[(String, String)]) -> Vec<Hint> {
+    let directories = data_directories();
+    let roots = icon_roots(&directories);
     phrases
         .iter()
         .filter_map(|(entry_id, caption)| {
@@ -248,19 +272,7 @@ pub(crate) fn draw(
                 [255, 208, 64, 255],
             );
         }
-        let icon = hint
-            .icon
-            .as_ref()
-            .and_then(|path| image::ImageReader::open(path).ok())
-            .and_then(|mut reader| {
-                let mut limits = image::Limits::default();
-                limits.max_image_width = Some(1024);
-                limits.max_image_height = Some(1024);
-                limits.max_alloc = Some(8 * 1024 * 1024);
-                reader.limits(limits);
-                reader.set_format(image::ImageFormat::Png);
-                reader.decode().ok()
-            });
+        let icon = hint.icon.as_ref().and_then(|path| read_icon(path));
         if let Some(icon) = icon {
             canvas.image(x, y, &icon.thumbnail(48, 48).to_rgba8());
         } else {
