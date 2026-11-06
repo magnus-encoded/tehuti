@@ -78,6 +78,7 @@ mod tests {
             AbsInfo::new(0, 0, 0, 0, 1, 0),
             AbsInfo::new(0, i32::MIN, i32::MAX, 0, i32::MAX, 0),
             AbsInfo::new(128, 0, 255, 1, 4, 0),
+            AbsInfo::new(0, -1, 1, i32::MAX, 0, 0),
         ];
         for info in calibrations {
             let source: Vec<_> = [
