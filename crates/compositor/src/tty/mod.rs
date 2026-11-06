@@ -42,6 +42,7 @@ struct Scanout {
     preview: Option<(Mode, render::DrmRendering, bool)>,
     rollback: Option<(Mode, render::DrmRendering, bool)>,
     surface: DrmSurface,
+    confirmed_mode: Mode,
     remaining_modes: std::collections::VecDeque<Mode>,
     listed_modes: Vec<Mode>,
     output: Output,
@@ -549,6 +550,7 @@ impl Scanout {
         global: GlobalId,
     ) -> Self {
         Self {
+            confirmed_mode: surface.pending_mode(),
             surface,
             renderer,
             remaining_modes,
@@ -574,24 +576,46 @@ impl Scanout {
     }
 
     fn settings_request(&mut self, device: &DrmDevice, data: &mut LoopData) {
-        while let Some((index, persist)) = data.compositor.take_settings_request() {
+        while let Some((index, persist)) =
+            tehuti::frame_recovery::when_idle(self.pending, || data.compositor.take_settings_request())
+        {
             let Some(mode) = self.listed_modes.get(index).copied() else {
                 data.compositor.display_mode_applied(None);
                 continue;
             };
             if persist {
+                self.confirmed_mode = mode;
                 self.preview = None;
                 let result = tehuti::display_mode_store::Store::from_env()
                     .and_then(|store| store.write(&mode_label(&mode)));
                 data.compositor.display_mode_saved(result);
                 continue;
             }
-            self.switch_settings_mode(device, mode, index, data);
+            let confirmed = self.confirmed_mode;
+            let result = tehuti::frame_recovery::switch_or_restore(
+                &mut (&mut *self, &mut *data),
+                confirmed,
+                |(scanout, data)| scanout.switch_settings_mode(device, mode, index, data),
+                |(scanout, data), confirmed| {
+                    scanout.restore_mode(device, confirmed, data);
+                    scanout.modeset = true;
+                    data.compositor.display_mode_applied(None);
+                },
+            );
+            if let Err(error) = result {
+                warn!(%error, "display mode rejected; restoring confirmed output");
+            }
             return;
         }
     }
 
-    fn switch_settings_mode(&mut self, device: &DrmDevice, mode: Mode, index: usize, data: &mut LoopData) {
+    fn switch_settings_mode(
+        &mut self,
+        device: &DrmDevice,
+        mode: Mode,
+        index: usize,
+        data: &mut LoopData,
+    ) -> Result<(), Box<dyn Error>> {
         let previous = self.surface.current_mode();
         let previous_next = self.next;
         let reverting = self.preview.as_ref().is_some_and(|(saved, _, _)| *saved == mode);
@@ -608,15 +632,7 @@ impl Scanout {
                     render::create(device.device_fd(), &self.surface).map(|renderer| (renderer, false))
                 }
             });
-        let (renderer, next) = match attempt {
-            Ok(result) => result,
-            Err(error) => {
-                warn!(%error, "display mode rejected");
-                self.restore_mode(device, data);
-                data.compositor.display_mode_applied(None);
-                return;
-            }
-        };
+        let (renderer, next) = attempt?;
         let previous_renderer = core::mem::replace(&mut self.renderer, renderer);
         advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
         self.rollback = Some((previous, previous_renderer, previous_next));
@@ -635,14 +651,11 @@ impl Scanout {
                 data.compositor.display_mode_applied(Some(index));
             }
             Err(error) => {
-                warn!(%error, "display modeset rejected; restoring current output");
                 self.rollback = retained;
-                self.restore_mode(device, data);
-                self.modeset = true;
-                self.pending = false;
-                data.compositor.display_mode_applied(None);
+                return Err(error);
             }
         }
+        Ok(())
     }
 
     fn set_output_mode(&mut self, mode: Mode, data: &mut LoopData) {
@@ -709,20 +722,30 @@ impl Scanout {
         Ok(true)
     }
 
-    fn restore_mode(&mut self, device: &DrmDevice, data: &mut LoopData) {
-        let mode = self.surface.current_mode();
+    fn restore_mode(&mut self, device: &DrmDevice, mode: Mode, data: &mut LoopData) {
         let restored = self
             .surface
             .use_mode(mode)
             .map_err(Box::<dyn Error>::from)
             .and_then(|()| {
-                mode::restored_renderer(mode, self.rollback.take(), || {
+                let retained = if self.preview.as_ref().is_some_and(|(saved, _, _)| *saved == mode) {
+                    self.preview.take()
+                } else if self.rollback.as_ref().is_some_and(|(saved, _, _)| *saved == mode) {
+                    self.rollback.take()
+                } else {
+                    None
+                };
+                mode::restored_renderer(mode, retained, || {
                     render::create(device.device_fd(), &self.surface)
                 })
             });
         match restored {
             Ok((renderer, next)) => {
-                self.renderer = renderer;
+                let previous = self.surface.current_mode();
+                let retired = core::mem::replace(&mut self.renderer, renderer);
+                if self.rollback.is_none() {
+                    self.rollback = Some((previous, retired, self.next));
+                }
                 advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
                 self.next = next;
                 self.set_output_mode(mode, data);
@@ -753,24 +776,28 @@ impl Scanout {
         }
         let mut mode_error = None;
         let result = mode::retry(
-            &mut (&mut *self, data),
+            &mut (&mut *self, &mut *data),
             |(tty, data)| tty.render_frame(data),
             |(tty, data), error| {
                 tty.damage = OutputDamageTracker::from_output(&tty.output);
-                if tty.reject_preview(data)? || !tty.modeset {
+                if tty.recovery.fallback_attempted() || tty.reject_preview(data)? || !tty.modeset {
                     return Err(error);
                 }
                 mode_error = Some(error);
                 Ok(tty.fallback_mode(device, data))
             },
-            |(tty, data)| tty.restore_mode(device, data),
+            |(tty, data)| tty.restore_mode(device, tty.confirmed_mode, data),
         )
         .and_then(|frame| frame.ok_or_else(|| mode_error.unwrap_or_else(|| "no usable DRM mode".into())));
-        match self.recovery.finish(result)? {
-            Some(()) => self.retry_at = None,
-            None => {
-                self.retry_at = std::time::Instant::now().checked_add(tehuti::frame_recovery::RETRY_INTERVAL);
+        if self.recovery.finish(result)?.is_some() {
+            self.retry_at = None;
+        } else {
+            if self.recovery.fallback_due() {
+                self.restore_mode(device, self.confirmed_mode, data);
+                self.modeset = true;
+                data.compositor.display_mode_applied(None);
             }
+            self.retry_at = std::time::Instant::now().checked_add(tehuti::frame_recovery::RETRY_INTERVAL);
         }
         Ok(())
     }
@@ -802,6 +829,10 @@ impl Scanout {
         let was_modeset = self.modeset;
         submit(&self.surface, drawn.framebuffer, &mut self.modeset)?;
         if was_modeset {
+            self.remaining_modes.clear();
+            if self.rollback.is_some() && self.preview.is_none() {
+                self.confirmed_mode = self.surface.pending_mode();
+            }
             self.rollback = None;
             let mode = self.surface.pending_mode();
             info!(
