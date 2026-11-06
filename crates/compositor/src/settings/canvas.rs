@@ -114,6 +114,50 @@ impl Canvas {
         }
     }
 
+    pub(crate) fn ellipsized_line(
+        &mut self,
+        bounds: (usize, usize, usize, usize),
+        runs: &[(&str, [u8; 4])],
+        size: usize,
+    ) {
+        let pixels = size as f32 * self.scale.1;
+        let width = bounds.2 as f32 * self.scale.0;
+        let ellipsis = self.font.metrics('…', pixels).advance_width.ceil();
+        let mut characters = Vec::new();
+        let mut advance = 0.0;
+        let mut prefix = 0;
+        let mut overflow = false;
+        'runs: for (text, colour) in runs {
+            for character in text.chars() {
+                let character = if character.is_control() { ' ' } else { character };
+                let metrics = self.font.metrics(character, pixels);
+                let right =
+                    advance + (metrics.xmin as f32 + metrics.width as f32).max(metrics.advance_width.ceil());
+                if right > width {
+                    overflow = true;
+                    break 'runs;
+                }
+                advance += metrics.advance_width.ceil();
+                characters.push((character.to_string(), *colour));
+                if right.max(advance) + ellipsis <= width {
+                    prefix = characters.len();
+                }
+            }
+        }
+        if overflow {
+            characters.truncate(prefix);
+            let colour = characters
+                .last()
+                .map_or_else(|| runs.first().map_or([0; 4], |run| run.1), |run| run.1);
+            characters.push(("…".into(), colour));
+        }
+        let fitted: Vec<_> = characters
+            .iter()
+            .map(|(text, colour)| (text.as_str(), *colour))
+            .collect();
+        self.line(bounds, &fitted, size);
+    }
+
     pub(crate) fn record_glyph(&mut self, before: &[u8], circle: (usize, usize, usize)) {
         let mut left = self.width;
         let mut top = self.height;
@@ -251,6 +295,43 @@ impl Canvas {
                 } else {
                     blend_pixel(pixel, color, pixel_alpha);
                 }
+            }
+        }
+    }
+
+    pub(crate) fn rounded_rectangle(
+        &mut self,
+        bounds: (usize, usize, usize, usize),
+        radius: usize,
+        colour: [u8; 4],
+    ) {
+        let (x, y, width, height) = bounds;
+        if radius == 0 {
+            self.rectangle(x, y, width, height, colour);
+            return;
+        }
+        let left = x as f32 * self.scale.0;
+        let top = y as f32 * self.scale.1;
+        let right = x.saturating_add(width) as f32 * self.scale.0;
+        let bottom = y.saturating_add(height) as f32 * self.scale.1;
+        let radius = radius.min(width / 2).min(height / 2) as f32 * self.scale.0.min(self.scale.1);
+        for row in (top.floor() as usize)..(bottom.ceil() as usize).min(self.height) {
+            for column in (left.floor() as usize)..(right.ceil() as usize).min(self.width) {
+                let sample_x = column as f32 + 0.5;
+                let sample_y = row as f32 + 0.5;
+                let horizontal = (left + radius - sample_x)
+                    .max(sample_x - (right - radius))
+                    .max(0.0);
+                let vertical = (top + radius - sample_y)
+                    .max(sample_y - (bottom - radius))
+                    .max(0.0);
+                let distance = if horizontal > 0.0 && vertical > 0.0 {
+                    horizontal.hypot(vertical)
+                } else {
+                    horizontal.max(vertical)
+                };
+                let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+                self.blend(column, row, colour, coverage);
             }
         }
     }
