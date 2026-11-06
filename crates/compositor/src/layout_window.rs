@@ -3,7 +3,10 @@ use core::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use smithay::{
-    backend::renderer::{ImportAll, Renderer, element::AsRenderElements},
+    backend::renderer::{
+        ImportAll, Renderer,
+        element::{AsRenderElements, utils::CropRenderElement},
+    },
     desktop::{Window, space::SpaceElement},
     output::Output,
     utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
@@ -16,6 +19,8 @@ pub struct LayoutWindow {
     window: Window,
     size: Rc<Cell<Size<i32, Logical>>>,
     brightness: Rc<Cell<f32>>,
+    requested_geometry: Rc<Cell<Size<i32, Logical>>>,
+    committed_size: Rc<Cell<Size<i32, Logical>>>,
     dim_revision: Rc<Cell<usize>>,
     /// Output overlaps reported while the surface had no buffer yet.
     deferred: Rc<RefCell<Vec<Deferred>>>,
@@ -27,6 +32,8 @@ impl LayoutWindow {
             window,
             size: Rc::new(Cell::new(Size::default())),
             brightness: Rc::new(Cell::new(1.0)),
+            requested_geometry: Rc::new(Cell::new(Size::default())),
+            committed_size: Rc::new(Cell::new(Size::default())),
             dim_revision: Rc::new(Cell::new(0)),
             deferred: Rc::new(RefCell::new(Vec::new())),
         }
@@ -56,6 +63,14 @@ impl LayoutWindow {
             })
             .unwrap_or(false)
         })
+    }
+
+    pub fn replace_committed_size(&self, size: Size<i32, Logical>) -> Size<i32, Logical> {
+        self.committed_size.replace(size)
+    }
+
+    pub fn replace_requested_geometry(&self, size: Size<i32, Logical>) -> Size<i32, Logical> {
+        self.requested_geometry.replace(size)
     }
 
     pub fn set_size(&self, size: Size<i32, Logical>) {
@@ -95,11 +110,17 @@ impl SpaceElement for LayoutWindow {
     }
 
     fn bbox(&self) -> Rectangle<i32, Logical> {
-        self.window.bbox()
+        self.window
+            .bbox()
+            .intersection(Rectangle::new(self.window.geometry().loc, self.size.get()))
+            .unwrap_or_default()
     }
 
     fn is_in_input_region(&self, point: &Point<f64, Logical>) -> bool {
-        self.window.is_in_input_region(point)
+        Rectangle::new(self.window.geometry().loc, self.size.get())
+            .to_f64()
+            .contains(*point)
+            && self.window.is_in_input_region(point)
     }
 
     fn z_index(&self) -> u8 {
@@ -141,7 +162,8 @@ impl<Render: Renderer + ImportAll> AsRenderElements<Render> for LayoutWindow
 where
     Window: AsRenderElements<Render>,
 {
-    type RenderElement = crate::dim::DimElement<<Window as AsRenderElements<Render>>::RenderElement>;
+    type RenderElement =
+        CropRenderElement<crate::dim::DimElement<<Window as AsRenderElements<Render>>::RenderElement>>;
 
     fn render_elements<Element: From<Self::RenderElement>>(
         &self,
@@ -150,15 +172,29 @@ where
         scale: Scale<f64>,
         alpha: f32,
     ) -> Vec<Element> {
+        let offset = self.window.geometry().loc.to_physical_precise_round(scale);
+        let tile = Rectangle::new(
+            (
+                location.x.saturating_add(offset.x),
+                location.y.saturating_add(offset.y),
+            )
+                .into(),
+            self.size.get().to_physical_precise_round(scale),
+        );
         self.window
             .render_elements(renderer, location, scale, alpha)
             .into_iter()
-            .map(|surface| {
-                Element::from(crate::dim::DimElement {
-                    surface,
-                    brightness: self.brightness.get(),
-                    revision: self.dim_revision.get(),
-                })
+            .filter_map(|surface| {
+                CropRenderElement::from_element(
+                    crate::dim::DimElement {
+                        surface,
+                        brightness: self.brightness.get(),
+                        revision: self.dim_revision.get(),
+                    },
+                    scale,
+                    tile,
+                )
+                .map(Element::from)
             })
             .collect()
     }

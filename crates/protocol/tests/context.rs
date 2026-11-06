@@ -6,6 +6,43 @@ mod context {
     use tehuti_protocol::{KeyName, parse_context};
 
     #[test]
+    fn window_size_logging_is_opt_in_and_validated() {
+        let base = "app_id = 'org.example.App'\nbuttons = {}";
+        assert!(!parse_context(base).unwrap().log_window_size());
+        for (value, expected) in [("true", true), ("false", false)] {
+            let context = parse_context(&format!("{base}\n[log]\nwindow_size = {value}")).unwrap();
+            assert_eq!(context.log_window_size(), expected);
+        }
+        assert!(parse_context(&format!("{base}\n[log]\nwindow_size = 'true'")).is_err());
+        assert!(parse_context(&format!("{base}\n[log]\nwindow_sizes = true")).is_err());
+    }
+
+    #[test]
+    fn restart_phrase_requires_true_and_disables_fuzzy_matching() {
+        let context = parse_context(
+            "app_id = '*'
+buttons = {}
+[speech]
+restart = { restart = true }",
+        )
+        .unwrap();
+        assert_eq!(
+            context.speech_action("restart"),
+            Some(tehuti_protocol::Action::Restart)
+        );
+        assert!(tehuti_protocol::destructive(&tehuti_protocol::Action::Restart));
+        assert!(
+            parse_context(
+                "app_id = '*'
+buttons = {}
+[speech]
+restart = { restart = false }"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn window_sizes_accept_fractions_and_named_presets() {
         let plain = parse_context("app_id = 'org.example.App'\nbuttons = {}").unwrap();
         assert_eq!(plain.window_column_width(), None);

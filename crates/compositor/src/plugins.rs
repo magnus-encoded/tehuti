@@ -974,6 +974,7 @@ fn insert_reader<Data: 'static>(
 ) -> io::Result<smithay::reexports::calloop::RegistrationToken> {
     let reader = session;
     let writer_handle = handle.downgrade();
+    let timer_handle = handle.clone();
     let reader_token = handle
         .insert_source(
             Generic::new(
@@ -982,7 +983,7 @@ fn insert_reader<Data: 'static>(
                 Mode::Level,
             ),
             move |_, source, data| {
-                let action = read_ready(&reader, source, compositor(data));
+                let action = read_ready(&reader, source, data, compositor, &timer_handle);
                 if !reader.borrow().output.is_empty()
                     && let Some(writer_handle) = writer_handle.upgrade()
                     && let Err(error) = writer_handle.enable(&writer_token)
@@ -996,11 +997,14 @@ fn insert_reader<Data: 'static>(
     Ok(reader_token)
 }
 
-fn read_ready(
+fn read_ready<Data: 'static>(
     reader: &Rc<RefCell<Session>>,
     mut source: &std::fs::File,
-    compositor: &mut Compositor,
+    data: &mut Data,
+    compositor_of: fn(&mut Data) -> &mut Compositor,
+    handle: &smithay::reexports::calloop::LoopHandle<'static, Data>,
 ) -> PostAction {
+    let compositor = compositor_of(data);
     let mut bytes = [0; 4096];
     for _attempt in 0..READ_ATTEMPTS {
         if reader.borrow().status == Status::Failed {
@@ -1022,7 +1026,9 @@ fn read_ready(
                     .borrow_mut()
                     .receive(bytes.get(..count).unwrap_or_default());
                 compositor.advance_time();
-                deliver(reader, compositor, deliveries);
+                deliver(reader, compositor, deliveries, &mut |rest| {
+                    schedule_rest(handle, compositor_of, rest);
+                });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 return PostAction::Continue;
@@ -1038,7 +1044,65 @@ fn read_ready(
     PostAction::Continue
 }
 
-fn deliver(reader: &Rc<RefCell<Session>>, compositor: &mut Compositor, deliveries: Vec<Delivery>) {
+/// How long a key action waits before text that follows it in one list, so the
+/// client can react to the key (for example, open a chat box) first.
+const KEY_TEXT_GAP: Duration = Duration::from_millis(50);
+
+/// Splits `actions` after the first key action directly followed by a text
+/// action: the first part applies now, the rest after [`KEY_TEXT_GAP`].
+fn split_at_key_text(mut actions: Vec<Action>) -> (Vec<Action>, Vec<Action>) {
+    let split = actions
+        .windows(2)
+        .position(|pair| matches!(pair, [Action::Key { .. }, Action::Text { .. }]));
+    match split {
+        Some(index) => {
+            let rest = actions.split_off(index.saturating_add(1));
+            (actions, rest)
+        }
+        None => (actions, Vec::new()),
+    }
+}
+
+/// Applies the part of `actions` due now and hands any delayed rest to `later`.
+fn apply_notice(compositor: &mut Compositor, actions: Vec<Action>, later: &mut dyn FnMut(Vec<Action>)) {
+    let (now, rest) = split_at_key_text(actions);
+    for action in now {
+        compositor.apply_plugin_action(&action);
+    }
+    if !rest.is_empty() {
+        later(rest);
+    }
+}
+
+fn schedule_rest<Data: 'static>(
+    handle: &smithay::reexports::calloop::LoopHandle<'static, Data>,
+    compositor_of: fn(&mut Data) -> &mut Compositor,
+    rest: Vec<Action>,
+) {
+    let next = handle.clone();
+    let mut pending = Some(rest);
+    let inserted = handle.insert_source(
+        smithay::reexports::calloop::timer::Timer::from_duration(KEY_TEXT_GAP),
+        move |_, (), data| {
+            if let Some(actions) = pending.take() {
+                apply_notice(compositor_of(data), actions, &mut |later| {
+                    schedule_rest(&next, compositor_of, later);
+                });
+            }
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        },
+    );
+    if let Err(error) = inserted {
+        tracing::warn!(%error, "plugin delayed actions dropped");
+    }
+}
+
+fn deliver(
+    reader: &Rc<RefCell<Session>>,
+    compositor: &mut Compositor,
+    deliveries: Vec<Delivery>,
+    later: &mut dyn FnMut(Vec<Action>),
+) {
     for delivery in deliveries {
         match delivery {
             Delivery::Reply {
@@ -1074,11 +1138,7 @@ fn deliver(reader: &Rc<RefCell<Session>>, compositor: &mut Compositor, deliverie
                 let plugin = reader.borrow().plugin;
                 compositor.set_pad_overrides(plugin, overrides);
             }
-            Delivery::Notice(actions) => {
-                for action in actions {
-                    compositor.apply_plugin_action(&action);
-                }
-            }
+            Delivery::Notice(actions) => apply_notice(compositor, actions, later),
         }
     }
 }
@@ -1188,6 +1248,38 @@ pub fn fuzz_stdout(bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(name: &str) -> Action {
+        serde_json::from_value(serde_json::json!({"type":"key","key":name})).unwrap()
+    }
+
+    fn text(value: &str) -> Action {
+        serde_json::from_value(serde_json::json!({"type":"text","text":value})).unwrap()
+    }
+
+    #[test]
+    fn text_after_a_key_waits_for_the_gap_in_order() {
+        let (now, rest) = split_at_key_text(vec![key("slash"), text("hello"), key("enter")]);
+        assert_eq!(now, vec![key("slash")]);
+        assert_eq!(rest, vec![text("hello"), key("enter")]);
+        let (later, after) = split_at_key_text(rest);
+        assert_eq!(later, vec![text("hello"), key("enter")]);
+        assert_eq!(after, Vec::new());
+    }
+
+    #[test]
+    fn lists_without_key_then_text_apply_at_once() {
+        for actions in [
+            vec![key("tab"), key("enter")],
+            vec![text("hi"), key("enter")],
+            vec![text("hi")],
+            Vec::new(),
+        ] {
+            let (now, rest) = split_at_key_text(actions.clone());
+            assert_eq!(now, actions);
+            assert_eq!(rest, Vec::new());
+        }
+    }
 
     #[test]
     fn plugins_cannot_request_secret_delivery() {

@@ -177,7 +177,7 @@ impl Table {
                 name: workspace
                     .name
                     .clone()
-                    .unwrap_or_else(|| format!("Workspace {}", index.saturating_add(1))),
+                    .unwrap_or_else(|| index.saturating_add(1).to_string()),
                 extra_names: Vec::new(),
                 routes: vec![route("desktop", Target::Workspace(workspace.workspace.0))],
                 source: Source::Workspace,

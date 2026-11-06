@@ -4,6 +4,9 @@
 //! Behaviour follows `docs/research/niri-behaviour-spec.md`. Coordinates are
 //! fractional logical pixels. Tile rectangles in a [`Snapshot`] are relative
 //! to the top-left corner of their output area, with the view offset applied.
+#[path = "layout_helpers.rs"]
+mod helpers;
+
 use core::fmt;
 use core::ops::{Add, AddAssign, Div, Mul, Sub};
 
@@ -133,9 +136,19 @@ impl Default for LayoutConfig {
     }
 }
 
+/// Whether a window participates in the column strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowKind {
+    #[default]
+    Ordinary,
+    Helper,
+}
+
 /// Opening properties; applied once, when the window is added.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WindowRules {
+    /// Helpers belong to a workspace without occupying a column.
+    pub kind: WindowKind,
     /// `Some(None)` lets the client choose its width.
     pub default_column_width: Option<Option<PresetSize>>,
     pub default_window_height: Option<PresetSize>,
@@ -300,6 +313,9 @@ pub struct WorkspaceView {
     /// Strip x coordinate shown at the working-area left edge.
     pub view_offset: f64,
     pub columns: Vec<ColumnView>,
+    /// Helpers follow all columns and retain their client size.
+    pub helpers: Vec<WindowId>,
+    pub helper_position: (f64, f64),
     pub focused_column: Option<usize>,
 }
 
@@ -374,6 +390,8 @@ struct Tile {
     max_height: Option<f64>,
     opened_view: Option<(f64, Option<WindowId>, f64)>,
     fullscreen_view: Option<(f64, WindowId)>,
+    /// The client entered this fullscreen itself, so it may also end it.
+    client_fullscreen: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -392,6 +410,8 @@ struct Workspace {
     name: Option<String>,
     original_output: Option<OutputId>,
     columns: Vec<Column>,
+    helpers: Vec<(WindowId, WindowRules)>,
+    focused_helper: Option<WindowId>,
     focused: Option<usize>,
     view: f64,
 }
@@ -576,13 +596,10 @@ impl Layout {
     }
     /// # Errors
     /// Returns an error for a duplicate window or when there is no output.
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "Opening rules are passed as an owned public command payload."
-    )]
     pub fn add_window(&mut self, identity: WindowId, rules: WindowRules) -> Result<(), LayoutError> {
         validate_rules(&rules)?;
-        if self.find_window(identity).is_some()
+        if self.contains_helper(identity)
+            || self.find_window(identity).is_some()
             || self
                 .detached
                 .iter()
@@ -593,6 +610,17 @@ impl Layout {
             return Err(LayoutError::DuplicateWindow(identity));
         }
         let (output, workspace, focus) = self.opening_target(&rules)?;
+        if rules.kind == WindowKind::Helper {
+            if let Some(target) = self
+                .outputs
+                .get_mut(output)
+                .and_then(|output| output.workspaces.get_mut(workspace))
+            {
+                target.helpers.push((identity, rules));
+            }
+            self.normalize();
+            return Ok(());
+        }
         let position = self.insert_window(identity, &rules, output, workspace);
         if focus {
             self.focus_window_for_open(output, workspace, position);
@@ -607,7 +635,8 @@ impl Layout {
     #[must_use]
     pub fn preview_window(&self, rules: WindowRules) -> Option<Rect> {
         let identity = (0..=u64::MAX).map(WindowId).find(|identity| {
-            self.find_window(*identity).is_none()
+            !self.contains_helper(*identity)
+                && self.find_window(*identity).is_none()
                 && !self
                     .detached
                     .iter()
@@ -695,6 +724,7 @@ impl Layout {
             max_height: rules.max_height,
             opened_view: Some((view, previous, anchor)),
             fullscreen_view: None,
+            client_fullscreen: false,
         };
         let width = if rules.open_maximized {
             Some(PresetSize::Proportion(1.0_f64))
@@ -729,11 +759,16 @@ impl Layout {
         self.focused = Some(target.identity);
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let workspace = &mut target.workspaces[workspace];
+        workspace.focused_helper = None;
         workspace.focused = Some(position);
     }
     /// # Errors
     /// Returns an error if the window does not exist.
     pub fn remove_window(&mut self, identity: WindowId) -> Result<(), LayoutError> {
+        if self.remove_helper(identity) {
+            self.normalize();
+            return Ok(());
+        }
         if let Some(workspace) = self.detached.iter_mut().find(|workspace| {
             workspace
                 .columns
@@ -827,13 +862,79 @@ impl Layout {
         Ok(())
     }
 
+    /// Enters or leaves fullscreen for a window on a client's own request.
+    ///
+    /// A client may only leave a fullscreen it entered itself: X11 clients
+    /// behind xwayland-satellite answer a compositor fullscreen whose size
+    /// is short of their monitor by asking to leave it again.
+    ///
+    /// The focused window takes the same path as [`Command::ToggleFullscreen`];
+    /// any other window changes mode without moving the view.
+    /// # Errors
+    /// Returns an error for an unknown window.
+    pub fn set_fullscreen(&mut self, identity: WindowId, fullscreen: bool) -> Result<(), LayoutError> {
+        let (output, workspace, column, tile) = self
+            .find_window(identity)
+            .ok_or(LayoutError::UnknownWindow(identity))?;
+        let focused = self.snapshot().focused_window == Some(identity);
+        let entry = self
+            .outputs
+            .get_mut(output)
+            .and_then(|output| output.workspaces.get_mut(workspace))
+            .and_then(|workspace| workspace.columns.get_mut(column))
+            .and_then(|column| column.tiles.get_mut(tile))
+            .ok_or(LayoutError::UnknownWindow(identity))?;
+        if (entry.mode == TileMode::Fullscreen) == fullscreen {
+            return Ok(());
+        }
+        if !fullscreen && !entry.client_fullscreen {
+            return Ok(());
+        }
+        if focused {
+            self.apply(Command::ToggleFullscreen);
+            if fullscreen
+                && let Some((at_output, at_workspace, at_column, at_tile)) = self.find_window(identity)
+                && let Some(entered) = self
+                    .outputs
+                    .get_mut(at_output)
+                    .and_then(|found| found.workspaces.get_mut(at_workspace))
+                    .and_then(|found| found.columns.get_mut(at_column))
+                    .and_then(|found| found.tiles.get_mut(at_tile))
+            {
+                entered.client_fullscreen = true;
+            }
+        } else {
+            entry.client_fullscreen = fullscreen;
+            entry.mode = if fullscreen {
+                TileMode::Fullscreen
+            } else {
+                TileMode::Normal
+            };
+            entry.fullscreen_view = None;
+            self.normalize();
+        }
+        Ok(())
+    }
+
     /// Focuses a connected window and its workspace and output.
     /// # Errors
     /// Returns an error if the window is not on a connected output.
     pub fn focus_window(&mut self, identity: WindowId) -> Result<(), LayoutError> {
+        if let Some((output, workspace)) = self.find_helper(identity) {
+            self.clear_helper_focus();
+            if let Some(target) = self.outputs.get_mut(output) {
+                self.focused = Some(target.identity);
+                target.active = workspace;
+                if let Some(workspace) = target.workspaces.get_mut(workspace) {
+                    workspace.focused_helper = Some(identity);
+                }
+            }
+            return Ok(());
+        }
         let (output, workspace, column, tile) = self
             .find_window(identity)
             .ok_or(LayoutError::UnknownWindow(identity))?;
+        self.clear_helper_focus();
         if let Some(target) = self.outputs.get_mut(output) {
             self.focused = Some(target.identity);
             target.active = workspace;
@@ -1097,6 +1198,10 @@ impl Layout {
     }
     /// A command without a focused target leaves the layout unchanged.
     pub fn apply(&mut self, command: Command) {
+        if self.helper_blocks(command) {
+            return;
+        }
+        self.clear_helper_focus();
         if let Command::SetColumnWidth(change) | Command::SetWindowHeight(change) = command
             && !valid_change(change)
         {
@@ -1729,6 +1834,7 @@ impl Workspace {
                     Command::ToggleWindowedFullscreen => TileMode::WindowedFullscreen,
                     _ => TileMode::MaximizedToEdges,
                 };
+                tile.client_fullscreen = false;
                 if tile.mode == mode {
                     tile.mode = TileMode::Normal;
                     if let Some((view, _)) = tile.fullscreen_view.take() {
@@ -1751,6 +1857,8 @@ impl Workspace {
             name: None,
             original_output: Some(output),
             columns: Vec::new(),
+            helpers: Vec::new(),
+            focused_helper: None,
             focused: None,
             view: 0.0_f64,
         }
@@ -1816,13 +1924,15 @@ impl Workspace {
         })
     }
     fn focused_window(&self) -> Option<WindowId> {
-        self.focused
-            .and_then(|index| self.columns.get(index))
-            .and_then(|column| column.tiles.get(column.focused))
-            .map(|tile| tile.window)
+        self.focused_helper.or_else(|| {
+            self.focused
+                .and_then(|index| self.columns.get(index))
+                .and_then(|column| column.tiles.get(column.focused))
+                .map(|tile| tile.window)
+        })
     }
     const fn empty_unnamed(&self) -> bool {
-        self.name.is_none() && self.columns.is_empty()
+        self.name.is_none() && self.columns.is_empty() && self.helpers.is_empty()
     }
 }
 
@@ -2021,7 +2131,7 @@ impl Output {
     }
     fn workspace_view(&self, workspace: &Workspace, working: Rect) -> WorkspaceView {
         let mut horizontal = working.x.add(self.config.gaps).sub(workspace.view);
-        let columns = workspace
+        let columns: Vec<ColumnView> = workspace
             .columns
             .iter()
             .map(|column| {
@@ -2054,12 +2164,19 @@ impl Output {
                 }
             })
             .collect();
+        let helper_x = columns
+            .iter()
+            .flat_map(|column| &column.tiles)
+            .map(|tile| tile.tile.x.add(tile.tile.width))
+            .fold(horizontal, f64::max);
         WorkspaceView {
             workspace: workspace.identity,
             name: workspace.name.clone(),
             original_output: workspace.original_output,
             view_offset: workspace.view,
             columns,
+            helpers: workspace.helpers.iter().map(|(identity, _)| *identity).collect(),
+            helper_position: (helper_x, working.y.add(self.config.gaps)),
             focused_column: workspace.focused,
         }
     }

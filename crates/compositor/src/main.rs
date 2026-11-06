@@ -964,10 +964,9 @@ fn sync_pad_grab(data: &mut LoopData) {
 fn pump_virtual_pads(data: &mut LoopData) {
     let compositor = &mut data.compositor;
     for controller in data.controllers.values_mut() {
-        if controller.pad.mirrored()
-            && let Err(error) = controller
-                .pad
-                .pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+        if let Err(error) = controller
+            .pad
+            .pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
         {
             warn!(%error, "virtual pad copy failed; reopening");
             controller.watchdog.request_reopen();
@@ -978,6 +977,47 @@ fn pump_virtual_pads(data: &mut LoopData) {
 #[cfg(test)]
 mod exit_code_tests {
     use super::exit_code;
+
+    #[test]
+    fn restart_and_quit_actions_choose_the_session_exit_status() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::state::Compositor;
+        use tehuti_protocol::{ButtonName, ButtonState, Event, Text, parse_context};
+
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            parse_context(
+                "app_id = '*'
+buttons = {}
+[speech]
+restart = { restart = true }",
+            )
+            .unwrap(),
+        ]);
+        compositor.say(Text::new("restart".into()).unwrap());
+        assert!(compositor.quit_requested());
+        assert_eq!(
+            exit_code(false, compositor.quit_requested(), compositor.restart_requested()),
+            std::process::ExitCode::from(75)
+        );
+
+        let mut quitting = Compositor::new(&display.handle()).unwrap();
+        for name in [ButtonName::Guide, ButtonName::Start] {
+            quitting.handle(&Event::Button {
+                name,
+                state: ButtonState::Pressed,
+            });
+        }
+        quitting.handle(&Event::Tick {
+            elapsed: core::time::Duration::from_secs(3),
+        });
+        assert!(quitting.quit_requested());
+        assert_eq!(
+            exit_code(false, quitting.quit_requested(), quitting.restart_requested()),
+            std::process::ExitCode::from(20)
+        );
+    }
 
     #[test]
     fn restart_exits_with_session_restart_status() {

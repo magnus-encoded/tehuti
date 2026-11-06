@@ -436,6 +436,7 @@ pub struct Context {
     dim: DimConfig,
     push_to_talk: Vec<ButtonName>,
     window: WindowConfig,
+    log: LogConfig,
     pad: PadConfig,
     ticker: TickerConfig,
     ticker_names: Vec<TickerName>,
@@ -523,7 +524,18 @@ impl<'de> serde::Deserialize<'de> for WindowFraction {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LogConfig {
+    window_size: bool,
+}
+
 impl Context {
+    #[must_use]
+    pub const fn log_window_size(&self) -> bool {
+        self.log.window_size
+    }
+
     #[must_use]
     pub const fn open_fullscreen(&self) -> bool {
         self.window.open_fullscreen
@@ -713,6 +725,7 @@ impl Context {
             | MappingAction::Secret { .. }
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
+            | MappingAction::Restart { .. }
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
             | MappingAction::Ticker { .. } => None,
@@ -734,6 +747,7 @@ impl Context {
             | MappingAction::Secret { .. }
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
+            | MappingAction::Restart { .. }
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
             | MappingAction::Ticker { .. } => None,
@@ -777,6 +791,8 @@ struct ContextFile {
     #[serde(default)]
     window: WindowConfig,
     #[serde(default)]
+    log: LogConfig,
+    #[serde(default)]
     ticker: TickerConfig,
     #[serde(default)]
     speech_matching: SpeechMatching,
@@ -807,6 +823,9 @@ enum MappingAction {
     Close {
         close: CloseMapping,
     },
+    Restart {
+        restart: RestartMapping,
+    },
     Notify {
         notify: Text,
     },
@@ -816,6 +835,25 @@ enum MappingAction {
     Ticker {
         ticker: TickerMapping,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestartMapping;
+
+impl serde::Serialize for RestartMapping {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(true)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RestartMapping {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if bool::deserialize(deserializer)? {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("restart must be true"))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -837,6 +875,7 @@ impl MappingAction {
                 desktop_entry: launch.clone(),
             },
             Self::Close { .. } => Action::Close,
+            Self::Restart { .. } => Action::Restart,
             Self::Notify { notify } => Action::Notice { text: notify.clone() },
             Self::Key { key, mods, .. } => Action::Key {
                 key: *key,
@@ -948,6 +987,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         push_to_talk: context.push_to_talk,
         pad: context.pad,
         window: context.window,
+        log: context.log,
         ticker_names: parse_ticker_names(&context.ticker.names)?,
         ticker: context.ticker,
         speech_matching: context.speech_matching,
@@ -998,6 +1038,8 @@ pub enum Action {
     SecretRequest { reference: SecretReference },
     /// Release the controller and stop the compositor.
     Quit,
+    /// Release the controller and restart the compositor in its session.
+    Restart,
     /// Display a notice without changing the focused client.
     Notice { text: Text },
     /// Change the tiling layout; reserved for the core like `Close`.

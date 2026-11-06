@@ -148,6 +148,7 @@ mod decorations {
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
+        toplevel.set_title("Test window".into());
         let decoration = manager.get_toplevel_decoration(&toplevel, &handle, ());
         decoration.set_mode(Mode::ClientSide);
         surface.commit();

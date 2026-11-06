@@ -90,6 +90,7 @@ mod synthetic_pad {
 
     /// `KEY_ENTER` from linux/input-event-codes.h, as `wl_keyboard.key` reports it.
     const KEY_ENTER: u32 = 28;
+    const KEY_LEFT_SHIFT: u32 = 42;
 
     #[derive(Debug, PartialEq, Eq)]
     enum Trace {
@@ -512,6 +513,7 @@ mod synthetic_pad {
             let surface = wayland.create_surface(&handle, ());
             let xdg = shell.get_xdg_surface(&surface, &handle, ());
             let toplevel = xdg.get_toplevel(&handle, ());
+            toplevel.set_title("Test window".into());
             toplevel.set_app_id("clipboard-test".into());
             surface.commit();
             let _created = queue.roundtrip(&mut app).unwrap();
@@ -799,6 +801,7 @@ mod synthetic_pad {
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
+        toplevel.set_title("Test window".into());
         toplevel.set_app_id("pointer-test".into());
         surface.commit();
         let mut app = App::default();
@@ -814,6 +817,7 @@ mod synthetic_pad {
         let other_surface = compositor.create_surface(&handle, ());
         let other_xdg = wm_base.get_xdg_surface(&other_surface, &handle, ());
         let other_toplevel = other_xdg.get_toplevel(&handle, ());
+        other_toplevel.set_title("Test window".into());
         other_toplevel.set_app_id("other-window".into());
         other_surface.commit();
         let _other_configured = queue.roundtrip(&mut app).unwrap();
@@ -1206,6 +1210,7 @@ mod synthetic_pad {
             let surface = compositor.create_surface(&handle, ());
             let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
             let toplevel = xdg_surface.get_toplevel(&handle, ());
+            toplevel.set_title("Test window".into());
             toplevel.set_app_id(parent_id.into());
             surface.commit();
             (surface, xdg_surface, toplevel)
@@ -1234,6 +1239,7 @@ mod synthetic_pad {
             let next_surface = compositor.create_surface(&handle, ());
             let next_xdg_surface = wm_base.get_xdg_surface(&next_surface, &handle, ());
             let next_toplevel = next_xdg_surface.get_toplevel(&handle, ());
+            next_toplevel.set_title("Test window".into());
             next_toplevel.set_app_id(app_id.into());
             next_surface.commit();
             let _changed_focus = queue.roundtrip(&mut app).unwrap();
@@ -1394,6 +1400,7 @@ mod synthetic_pad {
                             ids.push(wayland_client::Proxy::id(&surface));
                             let xdg = shell.get_xdg_surface(&surface, &handle, ());
                             let toplevel = xdg.get_toplevel(&handle, ());
+                            toplevel.set_title("Test window".into());
                             toplevel.set_app_id("test".into());
                             surface.commit();
                             windows.push((surface, xdg, toplevel));
@@ -1938,6 +1945,7 @@ mod synthetic_pad {
                 let surface = compositor.create_surface(&handle, ());
                 let xdg = wm_base.get_xdg_surface(&surface, &handle, ());
                 let toplevel = xdg.get_toplevel(&handle, ());
+                toplevel.set_title("Test window".into());
                 toplevel.set_app_id("test".into());
                 surface.commit();
                 let _configured = queue.roundtrip(&mut app).unwrap();
@@ -2697,12 +2705,28 @@ else:
         text_state: ClientTextState,
         plugin: bool,
     ) -> App {
+        exchange_with_plugin_directory(app_id, text, text_state, plugin, None)
+    }
+
+    fn exchange_with_plugin_directory(
+        app_id: &'static str,
+        text: Option<&str>,
+        text_state: ClientTextState,
+        plugin: bool,
+        directory: Option<&std::path::Path>,
+    ) -> App {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         if plugin {
-            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
-            compositor.set_plugins(tehuti::plugins::install(&event_loop, &directory, |state| state).unwrap());
+            let default_directory =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+            compositor.set_plugins(
+                tehuti::plugins::install(&event_loop, directory.unwrap_or(&default_directory), |state| {
+                    state
+                })
+                .unwrap(),
+            );
         }
         load_test_context(&mut compositor, text);
         if plugin {
@@ -3092,6 +3116,77 @@ else:
                 Trace::Key(30, KeyState::Released),
                 Trace::Key(42, KeyState::Released),
                 Trace::Mods(0),
+            ]
+        );
+    }
+
+    fn assert_upward_workspace_feedback(compositor: &Compositor) {
+        assert!(
+            compositor
+                .voice_bar()
+                .segments()
+                .iter()
+                .any(|segment| segment.text == "UP · 1")
+        );
+    }
+
+    #[test]
+    fn workspace_feedback_does_not_delay_destination_focus_or_keys() {
+        use smithay::input::keyboard::Keycode;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || {
+            run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
+        });
+        let started = Instant::now();
+        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        let destination = compositor.layout_snapshot().focused_window;
+        assert!(destination.is_some());
+        let meta = Keycode::new(125 + 8);
+        let down = Keycode::new(108 + 8);
+        let upward = Keycode::new(103 + 8);
+        compositor.host_key(meta, true);
+        compositor.host_key(down, true);
+        compositor.host_key(down, false);
+        assert_eq!(compositor.layout_snapshot().focused_window, None);
+        compositor.host_key(upward, true);
+        compositor.host_key(upward, false);
+        compositor.host_key(meta, false);
+        assert_eq!(compositor.layout_snapshot().focused_window, destination);
+        assert_upward_workspace_feedback(&compositor);
+        let letter_a = Keycode::new(30 + 8);
+        compositor.host_key(letter_a, true);
+        compositor.host_key(letter_a, false);
+        while !client.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "destination input stalled"
+            );
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_upward_workspace_feedback(&compositor);
+        let trace: Vec<_> = client
+            .join()
+            .unwrap()
+            .keyboard_trace
+            .into_iter()
+            .skip_while(|event| !matches!(event, Trace::Key(..)))
+            .filter(|event| matches!(event, Trace::Key(..)))
+            .collect();
+        assert_eq!(
+            trace,
+            vec![
+                Trace::Key(30, KeyState::Pressed),
+                Trace::Key(30, KeyState::Released),
             ]
         );
     }
@@ -3500,16 +3595,95 @@ else:
                 vec![
                     (30, KeyState::Pressed),
                     (30, KeyState::Released),
+                    (KEY_LEFT_SHIFT, KeyState::Pressed),
                     (30, KeyState::Pressed),
                     (30, KeyState::Released),
+                    (KEY_LEFT_SHIFT, KeyState::Released),
+                    (KEY_LEFT_SHIFT, KeyState::Pressed),
                     (2, KeyState::Pressed),
                     (2, KeyState::Released),
+                    (KEY_LEFT_SHIFT, KeyState::Released),
                     (KEY_ENTER, KeyState::Pressed),
                     (KEY_ENTER, KeyState::Released),
                 ]
             );
             assert_eq!(app.modifiers, (0, 0, 0));
         }
+    }
+
+    #[test]
+    fn osk_and_plugin_text_preserve_shift_in_real_key_events() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("text.py");
+        std::fs::write(&executable, r"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get('method') == 'initialize':
+        result = {'protocol_version': 0, 'encoding': 'json', 'events': ['button']}
+    elif message.get('method') == 'button':
+        result = [{'type': 'text', 'text': '/g Hello! @Bob?'}, {'type': 'key', 'key': 'enter'}] if message['params']['state'] == 'pressed' else []
+    else:
+        continue
+    print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}), flush=True)
+").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            directory.path().join("text.json"),
+            r#"{
+            "executable":"./text.py", "app_ids":["test"], "events":["button"],
+            "start":"always", "permissions":["text", "key"]
+        }"#,
+        )
+        .unwrap();
+
+        for plugin in [false, true] {
+            let app = exchange_with_plugin_directory(
+                "test",
+                Some("/g Hello! @Bob?"),
+                ClientTextState::Absent,
+                plugin,
+                Some(directory.path()),
+            );
+            assert_real_key_text(app);
+        }
+    }
+
+    fn assert_real_key_text(app: App) {
+        use smithay::input::keyboard::xkb;
+
+        assert_eq!(app.keyboard_text, "/g Hello! @Bob?\r");
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = xkb::Keymap::new_from_string(
+            &context,
+            app.keymap_source.trim_end_matches('\0').into(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .unwrap();
+        let mut state = xkb::State::new(&keymap);
+        let mut text = String::new();
+        let mut held = std::collections::HashSet::new();
+        for (key, event) in app.keys {
+            let code = xkb::Keycode::new(key.saturating_add(8));
+            match event {
+                KeyState::Pressed => {
+                    assert!(held.insert(key), "duplicate press: {key}");
+                    text.push_str(&state.key_get_utf8(code));
+                    let _changed = state.update_key(code, xkb::KeyDirection::Down);
+                }
+                KeyState::Released => {
+                    assert!(held.remove(&key), "unmatched release: {key}");
+                    let _changed = state.update_key(code, xkb::KeyDirection::Up);
+                }
+                KeyState::Repeated | _ => panic!("unexpected key state"),
+            }
+        }
+        assert_eq!(text, "/g Hello! @Bob?\r", "real key events preserve Shift");
+        assert!(held.is_empty());
+        assert_eq!(app.modifiers, (0, 0, 0));
     }
 
     #[derive(Clone)]

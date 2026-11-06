@@ -112,7 +112,7 @@ pub struct Candidate<'context> {
 #[must_use]
 pub fn destructive(action: &Action) -> bool {
     match action {
-        Action::Close | Action::Quit => true,
+        Action::Close | Action::Quit | Action::Restart => true,
         Action::Launch { desktop_entry } => DESTRUCTIVE_LAUNCHES
             .iter()
             .any(|part| desktop_entry.as_str().contains(part)),

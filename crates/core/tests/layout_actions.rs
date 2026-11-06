@@ -179,6 +179,62 @@ mod layout_actions {
         }
     }
 
+    #[test]
+    fn client_fullscreen_requests_enter_and_leave_fullscreen() {
+        let mut layout = layout(2);
+        let tile = |current: &Layout, window| {
+            let snapshot = current.snapshot();
+            snapshot.outputs[0].workspaces[0]
+                .columns
+                .iter()
+                .flat_map(|column| column.tiles.iter())
+                .find(|tile| tile.window == window)
+                .unwrap()
+                .clone()
+        };
+        for window in [WindowId(0), WindowId(1)] {
+            layout.set_fullscreen(window, true).unwrap();
+            assert!(tile(&layout, window).fullscreen_requested);
+            layout.set_fullscreen(window, true).unwrap();
+            assert!(
+                tile(&layout, window).fullscreen_requested,
+                "a repeated request keeps fullscreen"
+            );
+            layout.set_fullscreen(window, false).unwrap();
+            assert!(!tile(&layout, window).fullscreen_requested);
+        }
+        assert!(layout.set_fullscreen(WindowId(9), true).is_err());
+    }
+
+    #[test]
+    fn client_unset_keeps_a_compositor_fullscreen() {
+        // An X11 client through xwayland-satellite hears the fullscreen state,
+        // finds the size short of its monitor and asks to leave fullscreen.
+        let mut layout = layout(2);
+        let focused = layout.snapshot().focused_window.unwrap();
+        let fullscreen = |current: &Layout| {
+            current.snapshot().outputs[0].workspaces[0]
+                .columns
+                .iter()
+                .flat_map(|column| column.tiles.iter())
+                .find(|tile| tile.window == focused)
+                .unwrap()
+                .fullscreen_requested
+        };
+        layout.apply(Command::ToggleFullscreen);
+        assert!(fullscreen(&layout));
+        layout.set_fullscreen(focused, false).unwrap();
+        assert!(
+            fullscreen(&layout),
+            "the client cannot end a compositor fullscreen"
+        );
+        layout.set_fullscreen(focused, true).unwrap();
+        layout.set_fullscreen(focused, false).unwrap();
+        assert!(fullscreen(&layout), "a repeated request does not take ownership");
+        layout.apply(Command::ToggleFullscreen);
+        assert!(!fullscreen(&layout), "the toggle still leaves fullscreen");
+    }
+
     proptest! {
         #[test]
         fn routed_actions_match_direct_layout_commands(
