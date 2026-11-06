@@ -263,13 +263,19 @@ impl Launcher {
         self.list.decorate(footer, fill);
     }
 
+    /// The original destination for a row in the ranked list.
+    #[must_use]
+    pub fn candidate_destination(&self, index: usize) -> Option<usize> {
+        self.indices.get(index).copied()
+    }
+
     pub fn confirm(&mut self) -> Option<usize> {
         if !self.list.is_open() {
             return None;
         }
         self.list.confirm();
         match self.list.selected()? {
-            Choice::Candidate(index) => self.indices.get(index).copied(),
+            Choice::Candidate(index) => self.candidate_destination(index),
             Choice::Create => None,
         }
     }
