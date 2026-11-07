@@ -121,7 +121,8 @@ mod scale {
         let geometry = compositor.layout_snapshot().outputs[0].geometry;
         let area = geometry.area;
         assert_eq!(
-            geometry.usable.height, 1048.0,
+            geometry.usable.height.total_cmp(&1048.0),
+            core::cmp::Ordering::Equal,
             "the bar reserves 32 logical pixels"
         );
         assert_eq!(
@@ -157,7 +158,10 @@ mod scale {
         assert_eq!(output.current_scale().integer_scale(), 3);
         let geometry = compositor.layout_snapshot().outputs[0].geometry;
         assert_eq!((geometry.area.width, geometry.area.height), (1280.0, 720.0));
-        assert_eq!(geometry.usable.height, 688.0);
+        assert_eq!(
+            geometry.usable.height.total_cmp(&688.0),
+            core::cmp::Ordering::Equal
+        );
         assert_eq!(compositor.settings().scale.get(), 3);
     }
 }

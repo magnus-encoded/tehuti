@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod widen_resizing_client {
-    use core::time::Duration;
+    use core::{ops::Sub as _, time::Duration};
     use std::{
         io::Write,
         os::{fd::AsFd, unix::net::UnixStream},
@@ -249,9 +249,8 @@ mod widen_resizing_client {
                 .flat_map(|column| &column.tiles)
                 .find(|tile| Some(tile.window) == snapshot.focused_window)
                 .unwrap();
-            assert_eq!(
-                f64::from(size.w),
-                tile.requested_client.width.round(),
+            assert!(
+                f64::from(size.w).sub(tile.requested_client.width.round()).abs() < f64::EPSILON,
                 "the client resized to its tile"
             );
             assert!(location.x >= 0, "{location:?} {size:?}");

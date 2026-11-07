@@ -149,6 +149,20 @@ impl Compositor {
     }
 }
 
+/// Captures the output scene using the same GLES renderer that imports client buffers.
+///
+/// # Errors
+/// Returns an error when rendering or framebuffer readback fails.
+pub fn capture_frame(
+    renderer: &mut GlesRenderer,
+    compositor: &Compositor,
+    clock: &str,
+) -> Result<image::RgbaImage, Box<dyn core::error::Error>> {
+    crate::driver_shot::capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+        renderer, compositor, clock,
+    )
+}
+
 /// Binds legacy EGL clients and discovers the renderer's dma-buf capabilities.
 #[must_use]
 pub fn client_formats(

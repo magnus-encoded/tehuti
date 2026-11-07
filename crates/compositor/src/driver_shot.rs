@@ -1,9 +1,12 @@
-//! Software capture through the same scene and overlays as the output renderer.
+//! Capture through the output renderer, with software capture for headless outputs.
 use crate::state::Compositor;
 use core::error::Error;
 use smithay::backend::{
     allocator::Fourcc,
-    renderer::{Bind, ExportMem, Offscreen, damage::OutputDamageTracker, pixman::PixmanRenderer},
+    renderer::{
+        Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, TextureMapping,
+        damage::OutputDamageTracker, pixman::PixmanRenderer,
+    },
 };
 use smithay::utils::{Rectangle, Transform};
 use std::path::Path;
@@ -25,17 +28,40 @@ pub(crate) fn save_with_clock(
     path: &Path,
     clock: &str,
 ) -> Result<(), Box<dyn Error>> {
+    let image = if let Some(capture) = &compositor.capture_source.0 {
+        capture(compositor, clock)?
+    } else {
+        capture::<_, smithay::reexports::pixman::Image<'static, 'static>>(
+            &mut PixmanRenderer::new()?,
+            compositor,
+            clock,
+        )?
+    };
+    image.save_with_format(path, image::ImageFormat::Png)?;
+    Ok(())
+}
+
+#[expect(clippy::redundant_pub_crate, reason = "used by the rendering module")]
+pub(super) fn capture<R, B>(
+    renderer: &mut R,
+    compositor: &Compositor,
+    clock: &str,
+) -> Result<image::RgbaImage, Box<dyn Error>>
+where
+    R: Renderer + ImportAll + ImportMem + Offscreen<B> + Bind<B> + ExportMem,
+    R::TextureId: Send + Clone + 'static,
+    R::Error: 'static,
+{
     let output = compositor.output.as_ref().ok_or("output unavailable")?;
     let mode = output.current_mode().ok_or("output mode unavailable")?;
-    let mut renderer = PixmanRenderer::new()?;
-    let mut buffer = renderer.create_buffer(Fourcc::Abgr8888, (mode.size.w, mode.size.h).into())?;
+    let mut buffer: B = renderer.create_buffer(Fourcc::Abgr8888, (mode.size.w, mode.size.h).into())?;
     let mut target = renderer.bind(&mut buffer)?;
     let mut overlays = crate::overlays::Overlays::default();
-    let elements = overlays.elements(&mut renderer, output, compositor, clock)?;
+    let elements = overlays.elements(renderer, output, compositor, clock)?;
     let mut damage = OutputDamageTracker::from_output(output);
     crate::wallpaper::render_output(
         output,
-        &mut renderer,
+        renderer,
         &mut target,
         compositor,
         &elements.elements,
@@ -52,9 +78,8 @@ pub(crate) fn save_with_clock(
     let mut image =
         image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
             .ok_or("invalid capture dimensions")?;
-    if output.current_transform() == Transform::Flipped180 {
+    if (output.current_transform() == Transform::Flipped180) != mapping.flipped() {
         image::imageops::flip_vertical_in_place(&mut image);
     }
-    image.save_with_format(path, image::ImageFormat::Png)?;
-    Ok(())
+    Ok(image)
 }
