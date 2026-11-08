@@ -324,6 +324,10 @@ enum SpaceHold {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
+    #[expect(
+        clippy::min_ident_chars,
+        reason = "Up matches the other D-pad direction names"
+    )]
     Up,
     Down,
     Left,
