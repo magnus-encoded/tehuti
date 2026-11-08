@@ -13,6 +13,8 @@ pub enum Command {
     TaskMonitor,
     Settings,
     Screenshot,
+    StartRecording,
+    StopRecording,
     Custom(usize),
 }
 
@@ -37,12 +39,14 @@ impl Command {
             Self::TaskMonitor => ("task_monitor", "TASK MONITOR"),
             Self::Settings => ("settings", "SETTINGS"),
             Self::Screenshot => ("screenshot", "SCREENSHOT"),
+            Self::StartRecording => ("start_recording", "START RECORDING"),
+            Self::StopRecording => ("stop_recording", "STOP RECORDING"),
             Self::Custom(_) => ("entry", ""),
         }
     }
 }
 
-pub const ITEMS: [Command; 8] = [
+pub const ITEMS: [Command; 10] = [
     Command::LogOut,
     Command::Restart,
     Command::Plasma,
@@ -51,6 +55,8 @@ pub const ITEMS: [Command; 8] = [
     Command::TaskMonitor,
     Command::Settings,
     Command::Screenshot,
+    Command::StartRecording,
+    Command::StopRecording,
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -113,7 +119,12 @@ impl Menu {
         if self.confirming
             || matches!(
                 command,
-                Command::TaskMonitor | Command::Settings | Command::Screenshot | Command::Custom(_)
+                Command::TaskMonitor
+                    | Command::Settings
+                    | Command::Screenshot
+                    | Command::StartRecording
+                    | Command::StopRecording
+                    | Command::Custom(_)
             )
         {
             return Some(command);

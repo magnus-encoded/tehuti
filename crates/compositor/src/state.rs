@@ -182,6 +182,7 @@ pub struct Compositor {
     _viewporter_state: ViewporterState,
     _fractional_scale_state: FractionalScaleManagerState,
     pub(crate) dmabuf: crate::rendering::DmabufSupport,
+    pub(super) recording: Option<crate::recording::Session>,
     pub(crate) capture_source: crate::screenshot::CaptureSource,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
@@ -318,6 +319,7 @@ impl Compositor {
             _viewporter_state: ViewporterState::new::<Self>(display),
             _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
             dmabuf: crate::rendering::DmabufSupport::default(),
+            recording: None,
             capture_source: crate::screenshot::CaptureSource::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
@@ -439,7 +441,10 @@ impl Compositor {
         json!({"version": 1, "clock_ms": self.driver_elapsed.as_millis(), "windows": windows, "focus": focused.map(|identity| identity.0),
             "level": format!("{:?}", self.dispatch.core().level()), "launcher": launcher,
             "overlays": {"keyboard": self.on_screen_keyboard().is_open(), "settings": self.settings().open, "menu": self.dispatch.core().menu().is_some()},
-            "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar})
+            "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar,
+            "menu_text": self.dispatch.core().menu().map(tehuti_core::menu::Menu::text),
+            "notices": tehuti_core::overlay::STACK.into_iter().filter_map(|layer| self.overlay_notice(layer)).collect::<Vec<_>>(),
+            "recording": self.recording_active()})
     }
 
     /// Installs contexts before accepting clients.
@@ -746,6 +751,7 @@ impl Compositor {
         tracing::trace!(?elapsed, "dispatch tick");
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
         self.keep_invitation();
+        self.poll_recording();
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
@@ -765,6 +771,7 @@ impl Compositor {
         reason = "Smithay pointer coordinates and axis values use floating point"
     )]
     fn pointer_motion(&mut self, x: i32, y: i32) {
+        self.record_event("pointer_motion", serde_json::json!({"x": x, "y": y}));
         tracing::trace!(x, y, "mouse dispatch motion");
         self.pointer_location.x += f64::from(x) / 1_000_000.0;
         self.pointer_location.y += f64::from(y) / 1_000_000.0;
@@ -775,6 +782,7 @@ impl Compositor {
         reason = "Smithay pointer coordinates and axis values use floating point"
     )]
     fn pointer_scroll(&mut self, x: i32, y: i32) {
+        self.record_event("pointer_scroll", serde_json::json!({"x": x, "y": y}));
         use smithay::backend::input::{Axis, AxisSource};
         if self.mouse_mode {
             self.move_pointer();
@@ -815,6 +823,10 @@ impl Compositor {
         }
     }
     fn pointer_click(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
+        self.record_event(
+            "pointer_click",
+            serde_json::json!({"button": format!("{button:?}"), "pressed": pressed}),
+        );
         self.move_pointer();
         if pressed && let Some((window, _)) = self.space.element_under(self.pointer_location) {
             let identity = self
@@ -981,6 +993,7 @@ impl Compositor {
         };
         let _rejection = self.dispatch(input);
         self.after_event(event);
+        self.record_screen();
     }
 
     fn after_event(&mut self, event: &Event) {
@@ -1033,6 +1046,7 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        self.record_event("input", serde_json::json!({"event": format!("{input:?}")}));
         let elapsed = dispatch_elapsed(&input);
         self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
@@ -1073,6 +1087,7 @@ impl Compositor {
         }
         self.update_window_dimming();
         self.reserve_keyboard_height();
+        self.record_screen();
     }
 
     pub(crate) fn set_keyboard_surrounding(&mut self, surrounding: Option<(String, usize, usize)>) {
@@ -1381,6 +1396,7 @@ impl Compositor {
 
     #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
+        self.record_event("effect", serde_json::json!({"effect": format!("{effect:?}")}));
         match effect {
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
@@ -1489,6 +1505,14 @@ impl Compositor {
     }
 
     fn run_menu_command(&mut self, command: tehuti_core::menu::Command) {
+        if command == tehuti_core::menu::Command::StartRecording {
+            self.start_recording();
+            return;
+        }
+        if command == tehuti_core::menu::Command::StopRecording {
+            self.stop_recording();
+            return;
+        }
         if command == tehuti_core::menu::Command::Screenshot {
             match crate::screenshot::save(self) {
                 Ok(path) => self.show_notice(&format!("SCREENSHOT SAVED: {}", path.display())),
@@ -2243,6 +2267,10 @@ impl Compositor {
     /// Meta is the Guide button and, while Meta is held, the arrows are the d-pad: both go to the core as pad buttons and
     /// the client never sees them.
     pub fn host_key(&mut self, keycode: Keycode, pressed: bool) {
+        self.record_event(
+            "key",
+            serde_json::json!({"keycode": keycode.raw(), "pressed": pressed}),
+        );
         if self.host_key_as_pad(keycode, pressed) {
             return;
         }
@@ -2551,6 +2579,7 @@ impl Compositor {
         {
             bar = bar.with_navigation(text);
         }
+        bar = bar.with_recording(self.recording_active());
         bar.font = self.settings().bar_font;
         bar
     }

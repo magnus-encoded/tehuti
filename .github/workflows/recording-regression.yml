@@ -1,0 +1,44 @@
+name: recording regression
+on:
+  pull_request:
+    paths:
+      - 'crates/core/**'
+      - '.github/workflows/recording-regression.yml'
+jobs:
+  before-and-after:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Recording regression passes on branch
+        run: cargo test --locked -p tehuti-core --test recording
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+      - name: Recording controls regression fails on origin/main
+        shell: bash
+        run: |
+          # Copy only the baseline-compatible public-seam test.
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('crates/core/tests/recording.rs').read_text()
+          start = source.index('    #[test]')
+          end = source.index('    #[test]', start + 1)
+          Path('baseline/crates/core/tests/recording.rs').write_text(
+              source[:start] + source[start:end] + '}\n')
+          PY
+          set +e
+          cargo test --manifest-path baseline/Cargo.toml --locked -p tehuti-core --test recording > baseline.log 2>&1
+          result=$?
+          set -e
+          cat baseline.log
+          [ "$result" -ne 0 ]
+          grep -q 'recording control must be offered in the system menu' baseline.log
+          printf 'New recording controls test: FAIL on origin/main (%s), PASS on branch.\n' '${{ github.event.pull_request.base.sha }}' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recording-baseline
+          path: baseline.log

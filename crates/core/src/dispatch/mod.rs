@@ -1164,6 +1164,17 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if matches!(event, Event::Focus { .. }) {
         state.tool_pad = ToolPad::Idle;
     }
+    if let Event::Speech { text } = &event {
+        let command = match tehuti_protocol::normalize_phrase(text.as_str()).as_str() {
+            "start recording" => Some(crate::menu::Command::StartRecording),
+            "stop recording" => Some(crate::menu::Command::StopRecording),
+            _ => None,
+        };
+        if let Some(command) = command {
+            effects.push(Effect::RunMenuCommand(command));
+            return;
+        }
+    }
     if launcher_event(state, &event, effects) {
         return;
     }

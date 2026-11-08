@@ -28,17 +28,20 @@ pub(crate) fn save_with_clock(
     path: &Path,
     clock: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let image = if let Some(capture) = &compositor.capture_source.0 {
-        capture(compositor, clock)?
+    frame(compositor, clock)?.save_with_format(path, image::ImageFormat::Png)?;
+    Ok(())
+}
+
+pub(super) fn frame(compositor: &Compositor, clock: &str) -> Result<image::RgbaImage, Box<dyn Error>> {
+    if let Some(capture) = &compositor.capture_source.0 {
+        capture(compositor, clock)
     } else {
         capture::<_, smithay::reexports::pixman::Image<'static, 'static>>(
             &mut PixmanRenderer::new()?,
             compositor,
             clock,
-        )?
-    };
-    image.save_with_format(path, image::ImageFormat::Png)?;
-    Ok(())
+        )
+    }
 }
 
 #[expect(clippy::redundant_pub_crate, reason = "used by the rendering module")]
