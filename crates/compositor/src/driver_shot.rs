@@ -32,6 +32,7 @@ pub(crate) fn save_with_clock(
     Ok(())
 }
 
+#[expect(clippy::redundant_pub_crate, reason = "shared output capture stays internal")]
 pub(super) fn frame(compositor: &Compositor, clock: &str) -> Result<image::RgbaImage, Box<dyn Error>> {
     if let Some(capture) = &compositor.capture_source.0 {
         capture(compositor, clock)

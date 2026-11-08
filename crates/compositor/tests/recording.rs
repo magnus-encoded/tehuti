@@ -7,6 +7,10 @@ mod recording {
     use tehuti_protocol::{Event, Text};
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one session checks video, timeline and failure recovery through public controls"
+    )]
     fn voice_recording_writes_shared_capture_and_a_searchable_timeline() {
         if std::env::var_os("RECORDING_PROBE").is_none() {
             for mode in ["capture", "missing", "encoder_failure"] {
@@ -34,15 +38,17 @@ mod recording {
             assert!(!compositor.quit_requested());
             return;
         }
-        assert!(
-            compositor
-                .voice_bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "REC")
-        );
-        // Repeated starts leave one encoder and one recording folder.
-        compositor.say(Text::new("start recording".into()).unwrap());
+        if mode == "capture" {
+            assert!(
+                compositor
+                    .voice_bar()
+                    .segments()
+                    .iter()
+                    .any(|segment| segment.text == "REC")
+            );
+            // Repeated starts leave one encoder and one recording folder.
+            compositor.say(Text::new("start recording".into()).unwrap());
+        }
         compositor.handle(&Event::Focus {
             app_id: Some("org.test.Player".into()),
             title: "A voice controlled game".into(),

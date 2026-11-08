@@ -57,7 +57,6 @@ pub mod wallpaper_pack;
 pub mod decorations;
 pub mod display_mode_store;
 pub mod input_choice_store;
-mod recording;
 mod screenshot;
 pub mod settings;
 pub mod system_menu;

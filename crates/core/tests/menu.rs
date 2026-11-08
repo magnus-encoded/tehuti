@@ -137,12 +137,12 @@ mod menu {
     }
 
     #[test]
-    fn up_wraps_to_screenshot() {
+    fn up_wraps_to_stop_recording() {
         let mut menu = Some(Menu::default());
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
         assert_eq!(
             button(&mut menu, ButtonName::South, ButtonState::Pressed),
-            Some(Command::Screenshot)
+            Some(Command::StopRecording)
         );
         assert!(menu.is_none());
     }

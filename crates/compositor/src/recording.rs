@@ -8,7 +8,7 @@ use image::RgbaImage;
 use serde_json::{Value, json};
 use std::{
     fs::File,
-    io::{self, Write},
+    io::{self, Read as _, Write},
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
@@ -29,6 +29,7 @@ pub(super) struct Session {
     started: Instant,
     next_frame: Instant,
     scene: Value,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Compositor {
@@ -45,7 +46,7 @@ impl Compositor {
         match start(self) {
             Ok(session) => {
                 self.recording = Some(session);
-                self.record_event("start", json!({}));
+                self.record_event("start", json!({"action": "start_recording"}));
                 self.poll_recording();
             }
             Err(error) => self.show_notice(&format!("RECORDING FAILED: {error}")),
@@ -57,6 +58,19 @@ impl Compositor {
         if let Some(session) = &self.recording {
             session.stop.store(true, Ordering::Relaxed);
         }
+    }
+
+    pub(super) fn record_debug(&mut self, kind: &str, event: &impl core::fmt::Debug) {
+        if self.recording_active() {
+            self.record_event(kind, json!({"event": format!("{event:?}")}));
+        }
+    }
+
+    pub(super) fn record_surface_change(&mut self) {
+        if let Some(session) = &mut self.recording {
+            session.scene = Value::Null;
+        }
+        self.record_screen();
     }
 
     pub(super) fn record_event(&mut self, kind: &str, data: Value) {
@@ -76,8 +90,11 @@ impl Compositor {
             return;
         }
         let mut scene = self.driver_scene();
-        scene["clock"] = json!(chrono::Local::now().format("%H:%M").to_string());
         if let Some(object) = scene.as_object_mut() {
+            let _clock = object.insert(
+                "clock".into(),
+                json!(chrono::Local::now().format("%H:%M").to_string()),
+            );
             let _clock = object.remove("clock_ms");
         }
         if self
@@ -96,7 +113,11 @@ impl Compositor {
         let result = self
             .recording
             .as_ref()
-            .and_then(|session| session.result.try_recv().ok());
+            .and_then(|session| match session.result.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err("recording worker disconnected".into())),
+            });
         if let Some(result) = result {
             self.recording = None;
             match result {
@@ -152,64 +173,79 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         .join("Videos/Recordings")
         .join(chrono::Local::now().format("%Y-%m-%d_%H-%M-%S-%f").to_string());
     let (width, height) = dimensions(frame.width(), frame.height());
+    let (frames, receive_frames) = mpsc::sync_channel(1);
+    let (events, receive_events) = mpsc::sync_channel(256);
+    let (send_result, status_receiver) = mpsc::sync_channel(1);
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let started = Instant::now();
+    let worker = std::thread::Builder::new()
+        .name("tehuti-recording".into())
+        .spawn(move || {
+            let result = (|| {
+                let child = spawn_encoder(&path, (width, height))?;
+                let timeline = File::create_new(path.join("timeline.jsonl"))?;
+                encode(
+                    child,
+                    &frame,
+                    (width, height),
+                    timeline,
+                    (&receive_frames, &receive_events),
+                    &worker_stop,
+                    started,
+                )
+            })()
+            .map(|()| path)
+            .map_err(|error: io::Error| error.to_string());
+            let _sent = send_result.send(result);
+        })?;
+    Ok(Session {
+        frames,
+        events,
+        result: status_receiver,
+        stop,
+        started,
+        next_frame: started.checked_add(INTERVAL).unwrap_or(started),
+        scene: Value::Null,
+        worker: Some(worker),
+    })
+}
+
+fn spawn_encoder(path: &std::path::Path, (width, height): (u32, u32)) -> io::Result<Encoder> {
     let sink = default_monitor()?;
-    std::fs::create_dir_all(&path)?;
-    let timeline = File::create_new(path.join("timeline.jsonl"))?;
+    std::fs::create_dir_all(path)?;
     let log = File::create_new(path.join("ffmpeg.log"))?;
     let mut command = Command::new("ffmpeg");
     let _args = command
+        .args(["-hide_banner", "-nostdin", "-n"])
         .args([
-            "-hide_banner",
-            "-nostdin",
-            "-n",
             "-thread_queue_size",
             "64",
             "-f",
             "rawvideo",
             "-pixel_format",
             "rgba",
+        ])
+        .args([
             "-video_size",
             &format!("{width}x{height}"),
             "-framerate",
             "30",
             "-i",
             "pipe:0",
-            "-thread_queue_size",
-            "64",
-            "-f",
-            "pulse",
-            "-i",
-            &sink,
-            "-thread_queue_size",
-            "64",
-            "-f",
-            "pulse",
-            "-i",
-            "default",
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-map",
-            "2:a:0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "23",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
+        ])
+        .args(["-thread_queue_size", "64", "-f", "pulse", "-i", &sink])
+        .args(["-thread_queue_size", "64", "-f", "pulse", "-i", "default"])
+        .args(["-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0"])
+        .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"])
+        .args(["-pix_fmt", "yuv420p", "-c:a", "aac"])
+        .args([
             "-metadata:s:a:0",
             "title=System output",
             "-metadata:s:a:1",
             "title=Microphone",
-            "-shortest",
-            "-movflags",
-            "+faststart",
         ])
+        .args(["-shortest", "-movflags", "+faststart"])
         .arg(path.join("video.mp4"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -221,47 +257,42 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
             error
         }
     })?);
-    let (frames, receive_frames) = mpsc::sync_channel(1);
-    let (events, receive_events) = mpsc::sync_channel(256);
-    let (send_result, result) = mpsc::sync_channel(1);
-    let stop = Arc::new(AtomicBool::new(false));
-    let worker_stop = Arc::clone(&stop);
-    let started = Instant::now();
-    let _worker = std::thread::Builder::new()
-        .name("tehuti-recording".into())
-        .spawn(move || {
-            let result = encode(
-                child,
-                frame,
-                (width, height),
-                timeline,
-                &receive_frames,
-                &receive_events,
-                &worker_stop,
-            )
-            .map(|()| path)
-            .map_err(|error| error.to_string());
-            let _sent = send_result.send(result);
-        })?;
-    Ok(Session {
-        frames,
-        events,
-        result,
-        stop,
-        started,
-        next_frame: started,
-        scene: Value::Null,
-    })
+    Ok(child)
 }
 
 fn default_monitor() -> io::Result<String> {
-    let result = Command::new("pactl").arg("get-default-sink").output()?;
-    if !result.status.success() {
-        return Err(io::Error::other(
-            "cannot find system audio: pactl get-default-sink failed",
-        ));
+    let mut probe = Encoder(
+        Command::new("pactl")
+            .arg("get-default-sink")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                io::Error::new(error.kind(), format!("pactl (pulseaudio-utils package): {error}"))
+            })?,
+    );
+    let deadline = Instant::now().checked_add(Duration::from_secs(2));
+    loop {
+        if let Some(status) = probe.0.try_wait()? {
+            if !status.success() {
+                return Err(io::Error::other("pactl get-default-sink failed"));
+            }
+            break;
+        }
+        if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+            return Err(io::Error::other("default audio sink lookup timed out"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
-    let sink = String::from_utf8(result.stdout).map_err(io::Error::other)?;
+    let mut sink = String::new();
+    probe
+        .0
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("audio lookup stdout unavailable"))?
+        .take(4096)
+        .read_to_string(&mut sink)?;
     let sink = sink.trim();
     if sink.is_empty() {
         return Err(io::Error::other("default audio sink unavailable"));
@@ -295,12 +326,12 @@ fn fit(frame: &RgbaImage, size: (u32, u32)) -> RgbaImage {
 
 fn encode(
     mut child: Encoder,
-    mut frame: RgbaImage,
+    frame: &RgbaImage,
     size: (u32, u32),
     mut timeline: File,
-    frames: &Receiver<RgbaImage>,
-    events: &Receiver<Value>,
+    (frames, events): (&Receiver<RgbaImage>, &Receiver<Value>),
     stop: &AtomicBool,
+    started: Instant,
 ) -> io::Result<()> {
     let result = (|| {
         let mut pipe = child
@@ -309,17 +340,13 @@ fn encode(
             .take()
             .ok_or_else(|| io::Error::other("ffmpeg stdin unavailable"))?;
         rustix::fs::fcntl_setfl(&pipe, rustix::fs::OFlags::NONBLOCK)?;
-        let mut deadline = Instant::now();
-        let mut pixels = fit(&frame, size);
+        let mut deadline = started;
+        let mut pixels = fit(frame, size);
         loop {
-            for event in events.try_iter() {
-                serde_json::to_writer(&mut timeline, &event)?;
-                timeline.write_all(b"\n")?;
-            }
+            flush_events(&mut timeline, events)?;
             match frames.try_recv() {
                 Ok(next) => {
-                    frame = next;
-                    pixels = fit(&frame, size);
+                    pixels = fit(&next, size);
                 }
                 Err(mpsc::TryRecvError::Disconnected) => break,
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -331,9 +358,22 @@ fn encode(
             deadline = deadline.checked_add(INTERVAL).unwrap_or_else(Instant::now);
             std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
         }
+        flush_events(&mut timeline, events)?;
         timeline.sync_all()?;
         Ok(())
     })();
+    finish_encoder(&mut child, result)
+}
+
+fn flush_events(timeline: &mut File, events: &Receiver<Value>) -> io::Result<()> {
+    for event in events.try_iter() {
+        serde_json::to_writer(&mut *timeline, &event)?;
+        timeline.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+fn finish_encoder(child: &mut Encoder, result: io::Result<()>) -> io::Result<()> {
     if result.is_err() {
         let _killed = child.0.kill();
     }
@@ -361,6 +401,9 @@ fn encode(
 impl Drop for Session {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _joined = worker.join();
+        }
     }
 }
 

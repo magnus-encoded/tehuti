@@ -42,7 +42,11 @@ mod recording {
             ("Start recording.", "start_recording"),
             ("STOP RECORDING!", "stop_recording"),
         ] {
-            let mut state = State::default();
+            let mut state = step(
+                State::default(),
+                Input::Launcher(tehuti_core::launcher::Launcher::invitation(None)),
+            )
+            .0;
             let mut input = Input::Event {
                 event: Event::Speech {
                     text: Text::new(phrase.into()).unwrap(),
@@ -55,12 +59,20 @@ mod recording {
                 state = next;
                 input = Input::Resume;
                 for effect in effects {
+                    assert!(
+                        !matches!(effect, Effect::QueryPlugin(Event::Speech { .. })),
+                        "recording phrases must precede plugins"
+                    );
+                    assert!(
+                        !matches!(effect, Effect::OpenLauncher(_)),
+                        "recording phrases must precede the launcher"
+                    );
                     if let Effect::RunMenuCommand(command) = effect {
                         commands.push(command.key());
                     } else if let Effect::QueryPlugin(_) = effect {
-                        panic!("recording phrases must precede plugins");
-                    } else if let Effect::OpenLauncher(_) = effect {
-                        panic!("recording phrases must precede the launcher");
+                        input = Input::PluginActive(true);
+                    } else if let Effect::DispatchPlugin { .. } = effect {
+                        input = Input::PluginRequest(None);
                     } else if let Effect::ReadClock = effect {
                         input = Input::ClockRead(Duration::ZERO);
                     } else if let Effect::ConfirmSecret(_) = effect {

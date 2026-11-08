@@ -1,5 +1,8 @@
 //! Smithay state and protocol handlers for one output and its tiling layout.
 
+#[path = "recording.rs"]
+mod recording;
+
 use std::time::Instant;
 
 use crate::layout_window::LayoutWindow;
@@ -182,7 +185,7 @@ pub struct Compositor {
     _viewporter_state: ViewporterState,
     _fractional_scale_state: FractionalScaleManagerState,
     pub(crate) dmabuf: crate::rendering::DmabufSupport,
-    pub(super) recording: Option<crate::recording::Session>,
+    recording: Option<recording::Session>,
     pub(crate) capture_source: crate::screenshot::CaptureSource,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
@@ -1046,7 +1049,7 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
-        self.record_event("input", serde_json::json!({"event": format!("{input:?}")}));
+        self.record_debug("input", &input);
         let elapsed = dispatch_elapsed(&input);
         self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
@@ -1396,7 +1399,7 @@ impl Compositor {
 
     #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
-        self.record_event("effect", serde_json::json!({"effect": format!("{effect:?}")}));
+        self.record_debug("effect", &effect);
         match effect {
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
@@ -3356,6 +3359,7 @@ impl CompositorHandler for Compositor {
                 let _serial = toplevel.send_configure();
             }
         }
+        self.record_surface_change();
     }
 }
 
