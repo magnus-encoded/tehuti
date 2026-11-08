@@ -35,6 +35,7 @@ pub(crate) fn save_with_clock(
             &mut PixmanRenderer::new()?,
             compositor,
             clock,
+            false,
         )?
     };
     image.save_with_format(path, image::ImageFormat::Png)?;
@@ -46,6 +47,7 @@ pub(super) fn capture<R, B>(
     renderer: &mut R,
     compositor: &Compositor,
     clock: &str,
+    gl_readback: bool,
 ) -> Result<image::RgbaImage, Box<dyn Error>>
 where
     R: Renderer + ImportAll + ImportMem + Offscreen<B> + Bind<B> + ExportMem,
@@ -78,7 +80,7 @@ where
     let mut image =
         image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
             .ok_or("invalid capture dimensions")?;
-    if (output.current_transform() == Transform::Flipped180) != mapping.flipped() {
+    if (output.current_transform() == Transform::Flipped180) != (mapping.flipped() ^ gl_readback) {
         image::imageops::flip_vertical_in_place(&mut image);
     }
     Ok(image)
