@@ -2009,7 +2009,7 @@ impl Tile {
         let tile_rect = match self.mode {
             TileMode::Normal | TileMode::WindowedFullscreen => normal,
             TileMode::Fullscreen => Rect {
-                x: 0.0,
+                x: normal.x,
                 y: 0.0,
                 width: geometry.area.width,
                 height: geometry.area.height,
