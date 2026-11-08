@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod layout_wiring {
     use tehuti_core::layout::{
-        Layout, LayoutConfig, LayoutError, OutputGeometry, OutputId, Rect, WindowId, WindowRules,
+        CenterFocusedColumn, Command, Layout, LayoutConfig, LayoutError, OutputGeometry, OutputId,
+        PresetSize, Rect, WindowId, WindowRules,
     };
 
     fn geometry(width: f64) -> OutputGeometry {
@@ -12,6 +13,53 @@ mod layout_wiring {
             height: 600.0,
         };
         OutputGeometry { area, usable: area }
+    }
+
+    #[test]
+    fn widening_a_third_column_settles_before_a_focus_round_trip() -> Result<(), LayoutError> {
+        let mut layout = Layout::try_new(LayoutConfig {
+            gaps: 10.0,
+            border: 0.0,
+            center_focused_column: CenterFocusedColumn::OnOverflow,
+            always_center_single_column: false,
+            default_column_width: Some(PresetSize::Proportion(1.0 / 3.0)),
+            preset_column_widths: vec![PresetSize::Proportion(1.0 / 3.0), PresetSize::Proportion(0.75)],
+            ..LayoutConfig::default()
+        })?;
+        layout.add_output(OutputId(0), geometry(1200.0), None)?;
+        layout.add_window(WindowId(0), WindowRules::default())?;
+        layout.add_window(WindowId(1), WindowRules::default())?;
+        layout.apply(Command::SwitchPresetColumnWidth);
+        let widened = layout.snapshot().outputs[0].workspaces[0].view_offset;
+        layout.report_client_width(WindowId(1), 885.0)?;
+        assert_eq!(layout.snapshot().outputs[0].workspaces[0].view_offset, widened);
+        layout.apply(Command::FocusColumnLeft);
+        layout.apply(Command::FocusColumnRight);
+        assert_eq!(layout.snapshot().outputs[0].workspaces[0].view_offset, widened);
+        Ok(())
+    }
+
+    #[test]
+    fn committed_width_settles_before_a_focus_round_trip() -> Result<(), LayoutError> {
+        let mut layout = Layout::try_new(LayoutConfig {
+            gaps: 10.0,
+            border: 0.0,
+            center_focused_column: CenterFocusedColumn::OnOverflow,
+            always_center_single_column: false,
+            default_column_width: None,
+            ..LayoutConfig::default()
+        })?;
+        layout.add_output(OutputId(0), geometry(1200.0), None)?;
+        layout.add_window(WindowId(0), WindowRules::default())?;
+        layout.report_client_width(WindowId(0), 400.0)?;
+        layout.add_window(WindowId(1), WindowRules::default())?;
+        layout.report_client_width(WindowId(1), 400.0)?;
+        layout.report_client_width(WindowId(1), 885.0)?;
+        let widened = layout.snapshot().outputs[0].workspaces[0].view_offset;
+        layout.apply(Command::FocusColumnLeft);
+        layout.apply(Command::FocusColumnRight);
+        assert_eq!(layout.snapshot().outputs[0].workspaces[0].view_offset, widened);
+        Ok(())
     }
 
     #[test]

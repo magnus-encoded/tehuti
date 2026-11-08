@@ -849,16 +849,28 @@ impl Layout {
         let (output, workspace, column, _) = self
             .find_window(identity)
             .ok_or(LayoutError::UnknownWindow(identity))?;
+        let focused = self.outputs.get(output).is_some_and(|output| {
+            output.active == workspace
+                && output
+                    .workspaces
+                    .get(workspace)
+                    .is_some_and(|workspace| workspace.focused == Some(column))
+        });
         let column = self
             .outputs
             .get_mut(output)
             .and_then(|output| output.workspaces.get_mut(workspace))
             .and_then(|workspace| workspace.columns.get_mut(column))
             .ok_or(LayoutError::UnknownWindow(identity))?;
+        let changed = column.width.is_none() && column.client_width != width;
         if column.width.is_none() {
             column.client_width = width;
         }
-        self.scroll(output, None, false);
+        if changed && focused {
+            self.scroll_after_width_change(output);
+        } else {
+            self.scroll(output, None, false);
+        }
         Ok(())
     }
 
@@ -1148,6 +1160,22 @@ impl Layout {
             || output.config.always_center_single_column
                 && output.workspaces[output.active].columns.len() == 1
     }
+    fn scroll_after_width_change(&mut self, output: usize) {
+        let previous = self.outputs.get(output).and_then(|output| {
+            let workspace = output.workspaces.get(output.active)?;
+            let focused = workspace.focused?;
+            workspace
+                .columns
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| index.abs_diff(focused) == 1)
+                .max_by(|(_, left), (_, right)| {
+                    output.column_width(left).total_cmp(&output.column_width(right))
+                })
+                .map(|(index, _)| index)
+        });
+        self.scroll(output, previous, false);
+    }
     fn scroll(&mut self, output: usize, previous: Option<usize>, center: bool) {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let active = self.outputs[output].active;
@@ -1252,7 +1280,17 @@ impl Layout {
             } else {
                 None
             };
-            self.scroll(current, prior, command == Command::CenterColumn);
+            if matches!(
+                command,
+                Command::SetColumnWidth(_)
+                    | Command::SwitchPresetColumnWidth
+                    | Command::SwitchPresetColumnWidthBack
+                    | Command::MaximizeColumn
+            ) {
+                self.scroll_after_width_change(current);
+            } else {
+                self.scroll(current, prior, command == Command::CenterColumn);
+            }
         }
     }
     #[expect(
