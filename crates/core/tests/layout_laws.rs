@@ -1742,7 +1742,7 @@ mod layout_laws {
         }
 
         #[test]
-        fn nm_1_nm_2_fullscreen_respects_reserved_output_space_and_stays_in_the_strip(
+        fn nm_1_nm_2_fullscreen_fills_output_and_stays_in_the_strip(
             config in config_strategy(),
             geometry in geometry_strategy(),
             ops in ops_strategy(),
@@ -1756,8 +1756,8 @@ mod layout_laws {
             let tile = tile_of(&snap, window).cloned().ok_or_else(|| TestCaseError::fail("window lost"))?;
             prop_assert_eq!(tile.mode, TileMode::Fullscreen);
             prop_assert!(tile.fullscreen_requested);
-            prop_assert!(near(tile.requested_client.width, geometry.usable.width));
-            prop_assert!(near(tile.requested_client.height, geometry.usable.height));
+            prop_assert!(near(tile.requested_client.width, geometry.area.width));
+            prop_assert!(near(tile.requested_client.height, geometry.area.height));
             prop_assert_eq!(focused_workspace(&snap).map(|workspace| workspace.columns.len()), columns);
         }
 
