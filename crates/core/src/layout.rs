@@ -885,9 +885,6 @@ impl Layout {
             .and_then(|column| column.tiles.get_mut(tile))
             .ok_or(LayoutError::UnknownWindow(identity))?;
         if (entry.mode == TileMode::Fullscreen) == fullscreen {
-            if fullscreen {
-                entry.client_fullscreen = true;
-            }
             return Ok(());
         }
         if !fullscreen && !entry.client_fullscreen {
