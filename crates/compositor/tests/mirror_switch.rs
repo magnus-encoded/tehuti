@@ -99,7 +99,9 @@ mod tests {
             if self.log.borrow().gone {
                 return Err(io::Error::from_raw_os_error(19));
             }
-            Ok(self.raw.borrow_mut().drain(..).collect())
+            let mut raw = self.raw.borrow_mut();
+            let count = raw.len().min(2);
+            Ok(raw.drain(..count).collect())
         }
     }
 
@@ -291,6 +293,32 @@ mod tests {
         assert_eq!(log.created, 1, "the application never sees the pad unplugged");
         assert_eq!(log.live, 1);
         drop(handles);
+    }
+
+    #[test]
+    fn one_wakeup_emits_the_whole_backlog_after_focus_returns() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut only, handles) = pad("only", &log);
+        only.set_mirror(true, &|_| false).unwrap();
+        only.set_mirror(false, &|_| false).unwrap();
+        only.set_mirror(true, &|_| false).unwrap();
+        log.borrow_mut().frames.clear();
+        for value in [1, 0, 1, 0] {
+            queue(&handles, KeyCode::BTN_SOUTH, value);
+        }
+
+        only.pump_mirror(&mut |_, _| false).unwrap();
+
+        let values: Vec<_> = log
+            .borrow()
+            .frames
+            .iter()
+            .flat_map(|(_, frame)| frame)
+            .filter(|(kind, code, _)| *kind == EventType::KEY.0 && *code == KeyCode::BTN_SOUTH.code())
+            .map(|(_, _, value)| *value)
+            .collect();
+        assert_eq!(values, [1, 0, 1, 0]);
+        assert_eq!(log.borrow().created, 1);
     }
 
     #[test]
