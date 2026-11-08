@@ -3455,22 +3455,7 @@ impl Compositor {
                     })
                 })
             });
-        let context_fullscreen = context.is_some_and(tehuti_protocol::Context::open_fullscreen);
-        let rules = tehuti_core::layout::WindowRules {
-            kind: if Self::is_helper(&surface) {
-                tehuti_core::layout::WindowKind::Helper
-            } else {
-                tehuti_core::layout::WindowKind::Ordinary
-            },
-            open_fullscreen: context_fullscreen || client_fullscreen,
-            default_column_width: context
-                .and_then(tehuti_protocol::Context::window_column_width)
-                .map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
-            default_window_height: context
-                .and_then(tehuti_protocol::Context::window_height)
-                .map(tehuti_core::layout::PresetSize::Proportion),
-            ..Default::default()
-        };
+        let rules = Self::window_rules(&surface, context, client_fullscreen);
         match self.layout.add_window(identity, rules) {
             Ok(()) => {
                 if client_fullscreen && let Err(error) = self.layout.set_fullscreen(identity, true) {
@@ -3481,6 +3466,29 @@ impl Compositor {
                 self.place_layout();
             }
             Err(error) => tracing::warn!(%error, "window layout failed"),
+        }
+    }
+
+    fn window_rules(
+        surface: &ToplevelSurface,
+        context: Option<&tehuti_protocol::Context>,
+        client_fullscreen: bool,
+    ) -> tehuti_core::layout::WindowRules {
+        tehuti_core::layout::WindowRules {
+            kind: if Self::is_helper(surface) {
+                tehuti_core::layout::WindowKind::Helper
+            } else {
+                tehuti_core::layout::WindowKind::Ordinary
+            },
+            open_fullscreen: context.is_some_and(tehuti_protocol::Context::open_fullscreen)
+                || client_fullscreen,
+            default_column_width: context
+                .and_then(tehuti_protocol::Context::window_column_width)
+                .map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
+            default_window_height: context
+                .and_then(tehuti_protocol::Context::window_height)
+                .map(tehuti_core::layout::PresetSize::Proportion),
+            ..Default::default()
         }
     }
 }

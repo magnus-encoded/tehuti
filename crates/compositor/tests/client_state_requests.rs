@@ -160,6 +160,7 @@ mod client_state_requests {
         fullscreen: Option<Vec<u32>>,
         unfullscreen: Option<Vec<u32>>,
         unfullscreen_size: Option<(i32, i32)>,
+        windowed_configures: usize,
     }
 
     /// Roundtrips until the compositor goes quiet, drawing every acknowledged configure.
@@ -180,7 +181,7 @@ mod client_state_requests {
         }
     }
 
-    fn client(stream: UnixStream, early_fullscreen: bool) -> Report {
+    fn client(stream: UnixStream, early_fullscreen: bool, windowed_size: bool) -> Report {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -211,34 +212,61 @@ mod client_state_requests {
             report.unfullscreen_size = app.configures.last().map(|configure| (configure.0, configure.1));
             return report;
         }
+        if windowed_size {
+            let count = app.configures.len();
+            draw(&shm, &surface, &handle, (800, 600));
+            settle(&mut queue, &mut app, &shm, &surface);
+            report.windowed_configures = app.configures.len().saturating_sub(count);
+            return report;
+        }
+        exercise_state_requests(
+            &mut queue,
+            &mut app,
+            &shm,
+            &surface,
+            &handle,
+            &toplevel,
+            &mut report,
+        );
+        report
+    }
+
+    fn exercise_state_requests(
+        queue: &mut wayland_client::EventQueue<App>,
+        app: &mut App,
+        shm: &WlShm,
+        surface: &WlSurface,
+        handle: &QueueHandle<App>,
+        toplevel: &XdgToplevel,
+        report: &mut Report,
+    ) {
         let mut count = app.configures.len();
         toplevel.set_maximized();
-        settle(&mut queue, &mut app, &shm, &surface);
+        settle(queue, app, shm, surface);
         report.after_maximize = app.configures.len().saturating_sub(count);
         count = app.configures.len();
         app.echo_maximize = Some(toplevel.clone());
         toplevel.set_maximized();
         for _ in 0..60 {
-            let _dispatched = queue.roundtrip(&mut app).unwrap();
+            let _dispatched = queue.roundtrip(app).unwrap();
             if core::mem::take(&mut app.acked) {
-                draw(&shm, &surface, &handle, (OUTPUT_WIDTH, OUTPUT_HEIGHT));
+                draw(shm, surface, handle, (OUTPUT_WIDTH, OUTPUT_HEIGHT));
             }
         }
         app.echo_maximize = None;
-        settle(&mut queue, &mut app, &shm, &surface);
+        settle(queue, app, shm, surface);
         report.echoed = app.configures.len().saturating_sub(count);
         count = app.configures.len();
         toplevel.unset_maximized();
-        settle(&mut queue, &mut app, &shm, &surface);
+        settle(queue, app, shm, surface);
         report.after_unmaximize = app.configures.len().saturating_sub(count);
         toplevel.set_fullscreen(None);
-        settle(&mut queue, &mut app, &shm, &surface);
+        settle(queue, app, shm, surface);
         report.fullscreen = app.configures.last().map(|configure| configure.2.clone());
         toplevel.unset_fullscreen();
-        settle(&mut queue, &mut app, &shm, &surface);
+        settle(queue, app, shm, surface);
         report.unfullscreen = app.configures.last().map(|configure| configure.2.clone());
         report.unfullscreen_size = app.configures.last().map(|configure| (configure.0, configure.1));
-        report
     }
 
     fn pump(display: &mut Display<Compositor>, compositor: &mut Compositor, duration: Duration) {
@@ -275,7 +303,7 @@ mod client_state_requests {
         compositor.fill_output();
     }
 
-    fn run(early_fullscreen: bool) -> Report {
+    fn run(early_fullscreen: bool, windowed_size: bool) -> Report {
         let mut display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         attach_output(&display, &mut compositor);
@@ -284,7 +312,7 @@ mod client_state_requests {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let thread = thread::spawn(move || client(stream, early_fullscreen));
+        let thread = thread::spawn(move || client(stream, early_fullscreen, windowed_size));
         let started = Instant::now();
         while !thread.is_finished() {
             assert!(started.elapsed() < Duration::from_secs(20), "client timed out");
@@ -295,7 +323,7 @@ mod client_state_requests {
 
     #[test]
     fn tiled_clients_hear_they_are_tiled_and_get_answers() {
-        let report = run(false);
+        let report = run(false, false);
         let fullscreen_state = u32::from(xdg_toplevel::State::Fullscreen);
         let tiled = [
             xdg_toplevel::State::TiledLeft,
@@ -325,8 +353,15 @@ mod client_state_requests {
     }
 
     #[test]
+    fn windowed_client_drawing_its_requested_size_gets_stable_configure() {
+        let report = run(false, true);
+        assert_eq!(report.first_count, 1, "{report:?}");
+        assert_eq!(report.windowed_configures, 0, "{report:?}");
+    }
+
+    #[test]
     fn fullscreen_before_first_commit_configures_output_once_and_restores_tile() {
-        let report = run(true);
+        let report = run(true, false);
         assert_eq!(report.first_count, 1, "{report:?}");
         assert_eq!(report.first_size, (OUTPUT_WIDTH, OUTPUT_HEIGHT), "{report:?}");
         assert!(report.first.contains(&u32::from(xdg_toplevel::State::Fullscreen)));
