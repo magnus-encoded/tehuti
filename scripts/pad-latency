@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Report pad latency in microseconds from RUST_LOG=info,pad_latency=debug logs."""
+
+import argparse
+import math
+import re
+import sys
+from collections import defaultdict
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+FIELD = re.compile(r'(\w+)=(?:"([^"]*)"|(\S+))')
+
+
+def samples(lines):
+    result = defaultdict(list)
+    focus = None
+    for line in lines:
+        line = ANSI.sub("", line)
+        if "pad_latency:" not in line:
+            continue
+        fields = {key: quoted or bare for key, quoted, bare in FIELD.findall(line)}
+        try:
+            at = int(fields["at_us"])
+            stage = fields["stage"]
+            if stage == "window_focus":
+                focus = at
+            elif stage == "read":
+                add(result, "physical_to_read", at - int(fields["physical_us"]))
+            elif stage == "emit":
+                age = at - int(fields["physical_us"])
+                add(result, "physical_to_emit", age)
+                add(result, "read_to_emit", at - int(fields["read_us"]))
+                if focus is not None and at >= focus:
+                    add(result, "first_emit_after_focus", age)
+                    add(result, "focus_to_first_emit", at - focus)
+                    focus = None
+        except (KeyError, ValueError):
+            continue
+    return result
+
+
+def add(result, name, value):
+    if value >= 0:
+        result[name].append(value)
+
+
+def report(data):
+    rows = ["stage count p50_us p95_us p99_us max_us"]
+    for name, values in sorted(data.items()):
+        values = sorted(values)
+        quantiles = [values[math.ceil(len(values) * q) - 1] for q in (0.5, 0.95, 0.99)]
+        rows.append(" ".join(map(str, [name, len(values), *quantiles, values[-1]])))
+    return "\n".join(rows)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("log", nargs="?", help="log file (default: stdin)")
+    args = parser.parse_args()
+    if args.log:
+        with open(args.log, encoding="utf-8") as log:
+            data = samples(log)
+    else:
+        data = samples(sys.stdin)
+    if not data:
+        parser.exit(1, "No pad latency samples; capture with RUST_LOG=info,pad_latency=debug.\n")
+    print(report(data))
+
+
+if __name__ == "__main__":
+    main()
