@@ -31,12 +31,6 @@ mod tests {
         let pixels =
             tehuti::choice_list::raster(&list, PadFamily::Letters, (1920, 1080)).ok_or("missing artwork")?;
         assert_eq!(pixels.get(0..4), Some([0, 0, 0, 0].as_slice()));
-        let header_right_edge = (60_usize * 1920 + 1919) * 4;
-        assert_eq!(
-            pixels.get(header_right_edge..header_right_edge + 4),
-            Some([98, 86, 72, 255].as_slice()),
-            "the header preserves the thin panel outline",
-        );
         let colours: std::collections::HashSet<_> = pixels.as_chunks::<4>().0.iter().copied().collect();
         assert!(colours.len() > 40, "fontdue gives smooth text coverage");
         assert!(
@@ -198,6 +192,14 @@ mod tests {
     }
 
     fn pixel(pixels: &[u8], x: usize, y: usize) -> [u8; 4] {
+        let top = (0..1080)
+            .find(|row| {
+                let start = (row * 1920 + 640) * 4;
+                pixels.get(start..start + 4) == Some([98, 86, 72, 255].as_slice())
+            })
+            .unwrap_or_default();
+        let x = x.saturating_sub(640);
+        let y = y.saturating_add(top);
         let start = y.saturating_mul(1920).saturating_add(x).saturating_mul(4);
         pixels
             .get(start..start.saturating_add(4))
@@ -268,45 +270,42 @@ mod tests {
     }
 
     #[test]
-    fn launcher_rows_keep_their_natural_height_above_empty_panel_space()
-    -> Result<(), Box<dyn core::error::Error>> {
-        for rows in 1..=5 {
-            let launcher = launcher(rows);
-            let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
-                .ok_or("artwork")?;
-            let edge = [98, 86, 72, 255];
-            let bottom = (0..1080)
-                .rev()
-                .find(|y| pixel(&pixels, 1280, *y) == edge)
-                .ok_or("edge")?;
-            assert!(
-                (1032..=1048).contains(&bottom),
-                "{rows} rows: panel ends at {bottom}, leaving space above the bar"
-            );
-            let live = [119, 88, 36, 255];
-            let selected = (0..1080).filter(|y| pixel(&pixels, 1700, *y) == live).count();
-            assert!(
-                selected == 72,
-                "{rows} rows: selected row is {selected}px, row must keep its natural height"
-            );
+    fn launcher_sizes_to_content_and_centres_on_every_aspect_ratio() -> Result<(), Box<dyn core::error::Error>>
+    {
+        for size in [(3840, 1600), (1920, 1080), (800, 1200), (640, 360)] {
+            let mut previous = 0;
+            for rows in 0..=5 {
+                let launcher = launcher(rows);
+                let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, size)
+                    .ok_or("artwork")?;
+                let width = usize::try_from(size.0)?;
+                let edges: Vec<_> = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, pixel)| **pixel == [98, 86, 72, 255])
+                    .map(|(index, _)| (index % width, index / width))
+                    .collect();
+                let left = edges.iter().map(|edge| edge.0).min().ok_or("left")?;
+                let right = edges.iter().map(|edge| edge.0).max().ok_or("right")?;
+                let top = edges.iter().map(|edge| edge.1).min().ok_or("top")?;
+                let bottom = edges.iter().map(|edge| edge.1).max().ok_or("bottom")?;
+                assert!(
+                    left.abs_diff(width - right - 1) <= 1,
+                    "horizontal centre at {size:?}"
+                );
+                let available = usize::try_from(size.1 - tehuti_core::bar::HEIGHT)?;
+                assert!(
+                    top.abs_diff(available - bottom - 1) <= 1,
+                    "vertical centre at {size:?}"
+                );
+                let height = bottom - top + 1;
+                assert!(height <= available * 4 / 5, "height cap at {size:?}");
+                assert!(height >= previous, "more rows cannot shrink the panel");
+                previous = height;
+            }
         }
-        Ok(())
-    }
-
-    #[test]
-    fn the_panel_stops_above_a_scaled_bar() -> Result<(), Box<dyn core::error::Error>> {
-        let launcher = launcher(2);
-        let pixels = tehuti::choice_list::raster_scaled(launcher.list(), PadFamily::Letters, (1920, 1080), 2)
-            .ok_or("artwork")?;
-        let edge = [98, 86, 72, 255];
-        let bottom = (0..1080)
-            .rev()
-            .find(|y| pixel(&pixels, 1280, *y) == edge)
-            .ok_or("edge")?;
-        assert!(
-            (1000..1016).contains(&bottom),
-            "panel ends at {bottom}; the doubled bar starts at 1016"
-        );
         Ok(())
     }
 }

@@ -128,6 +128,42 @@ routes = [{{steps = [{{icon = 'missing-icon-for-547', target = {{kind = 'action'
     }
 
     #[test]
+    fn desktop_and_executable_routes_offer_one_application() {
+        use tehuti::destinations::{Destination, Route, Source, Step, Target};
+        let entry = |target, source| Destination {
+            name: "kitty".into(),
+            extra_names: Vec::new(),
+            routes: vec![Route {
+                context: None,
+                steps: vec![Step {
+                    icon: "terminal".into(),
+                    target,
+                }],
+            }],
+            source,
+        };
+        let entries = [
+            entry(Target::Application("kitty".into()), Source::Custom),
+            entry(Target::Desktop("kitty.desktop".into()), Source::Desktop),
+        ];
+        let (rows, routes) = tehuti::launcher::destinations(
+            &entries,
+            tehuti_core::unit_verbs::DestinationKind::Application,
+            None,
+        );
+        let mut duplicate = entries[1].clone();
+        duplicate.routes.push(duplicate.routes[0].clone());
+        let (desktop_rows, _) = tehuti::launcher::destinations(
+            &[duplicate],
+            tehuti_core::unit_verbs::DestinationKind::Application,
+            None,
+        );
+        assert_eq!(desktop_rows.len(), 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(routes[0].steps[0].target, Target::Desktop("kitty.desktop".into()));
+    }
+
+    #[test]
     fn guide_item_names_rank_their_destination_first() {
         let root = tempfile::tempdir().unwrap();
         let display = Display::<Compositor>::new().unwrap();

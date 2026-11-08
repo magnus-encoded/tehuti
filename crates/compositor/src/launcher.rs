@@ -18,7 +18,25 @@ pub fn destinations(
         if kind == tehuti_core::unit_verbs::DestinationKind::Project && entry.source != Source::Project {
             continue;
         }
-        for route in &entry.routes {
+        for (index, route) in entry.routes.iter().enumerate() {
+            if entry.source == Source::Desktop && index > 0 {
+                continue;
+            }
+            if route.steps.len() == 1
+                && let Some(target) = route.steps.first().map(|step| &step.target)
+                && let Target::Application(app) = target
+                && entries.iter().any(|other| {
+                    other.source == Source::Desktop
+                        && other.routes.iter().any(|route| {
+                            route.steps.iter().any(|step| {
+                                matches!(&step.target,
+                            Target::Desktop(id) if id.strip_suffix(".desktop") == Some(app.as_str()))
+                            })
+                        })
+                })
+            {
+                continue;
+            }
             let open = route
                 .steps
                 .iter()

@@ -153,13 +153,9 @@ impl Buffer {
         let Some(Artwork { buffer, .. }) = &self.cached else {
             return Ok(None);
         };
-        let logical = crate::scale::logical_size(mode.size, output.current_scale().integer_scale());
-        let offset = compositor
-            .launcher_slot()
-            .map_or(0.0, |slot| slot.x - f64::from(logical.w) * 2.0 / 3.0);
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            (offset * f64::from(output.current_scale().integer_scale()), 0.0),
+            (0.0, 0.0),
             buffer,
             None,
             Some(smithay::utils::Rectangle::from_size(
@@ -197,24 +193,73 @@ fn raster_with_icons(
     if !list.is_open() {
         return None;
     }
-    let mut canvas = Canvas::new(size)?;
-    canvas.reference(1920, 1080);
-    let bottom = panel_bottom(size, scale)?;
-    let _layout = paint(&mut canvas, list, family, bottom, icons);
-    Some(canvas.pixels)
+    let (width, height, left, top) = panel_geometry(list, size, scale)?;
+    let natural = content_height(list);
+    let mut canvas = Canvas::new((width.checked_mul(3)?, height))?;
+    canvas.reference(1920, natural);
+    let _layout = paint(&mut canvas, list, family, natural, icons);
+    let mut output = Canvas::new(size)?;
+    let stride = usize::try_from(size.0).ok()?.checked_mul(4)?;
+    let row_bytes = usize::try_from(width).ok()?.checked_mul(4)?;
+    for row in 0..usize::try_from(height).ok()? {
+        let source = row
+            .checked_mul(row_bytes.checked_mul(3)?)?
+            .checked_add(row_bytes.checked_mul(2)?)?;
+        let target = usize::try_from(top)
+            .ok()?
+            .checked_add(row)?
+            .checked_mul(stride)?
+            .checked_add(usize::try_from(left).ok()?.checked_mul(4)?)?;
+        output
+            .pixels
+            .get_mut(target..target.checked_add(row_bytes)?)?
+            .copy_from_slice(canvas.pixels.get(source..source.checked_add(row_bytes)?)?);
+    }
+    Some(output.pixels)
 }
 
-fn panel_bottom(size: (i32, i32), scale: i32) -> Option<usize> {
-    // The bar's physical height in 1080-high reference units, rounded up.
-    let bar = usize::try_from(
-        tehuti_core::bar::HEIGHT
-            .saturating_mul(scale.max(1))
-            .saturating_mul(1080)
-            .saturating_add(size.1.saturating_sub(1))
-            .checked_div(size.1)?,
-    )
-    .ok()?;
-    Some(1080usize.saturating_sub(bar))
+fn content_height(list: &List) -> usize {
+    let mut height = 132usize.saturating_add(list.slots().scopes.len().saturating_mul(24));
+    if list.slots().create.is_some() {
+        height = height.saturating_add(128);
+    }
+    let mut section = None;
+    for row in list.candidates().get(list.visible()).unwrap_or_default() {
+        if list.show_headings() && section != Some(row.close) {
+            height = height.saturating_add(28);
+            section = Some(row.close);
+        }
+        height = height.saturating_add(72);
+    }
+    height.saturating_add(FOOTER)
+}
+
+fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32, i32, i32)> {
+    let scale = scale.max(1);
+    let available = size
+        .1
+        .checked_sub(tehuti_core::bar::HEIGHT.saturating_mul(scale))?;
+    let natural = i32::try_from(content_height(list)).ok()?;
+    let width = 640i32
+        .saturating_mul(scale)
+        .min(size.0.saturating_mul(9).checked_div(10)?)
+        .min(
+            available
+                .saturating_mul(4)
+                .checked_div(5)?
+                .saturating_mul(640)
+                .checked_div(natural)?,
+        );
+    let height = width.checked_mul(natural)?.checked_div(640)?;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    Some((
+        width,
+        height,
+        size.0.checked_sub(width)?.checked_div(2)?,
+        available.checked_sub(height)?.checked_div(2)?,
+    ))
 }
 
 fn label(canvas: &mut Canvas, x: usize, y: usize, width: usize, text: &str, size: usize, colour: [u8; 4]) {
@@ -346,10 +391,13 @@ fn paint_footer(canvas: &mut Canvas, list: &List, y: usize, footer_top: usize) {
 /// Layout reported by the same paint pass used for screenshots.
 #[must_use]
 pub fn scene(list: &List, family: PadFamily, size: (i32, i32)) -> Option<serde_json::Value> {
+    let (width, height, left, top) = panel_geometry(list, size, 1)?;
     let mut canvas = Canvas::new(size)?;
     canvas.reference(1920, 1080);
     canvas.trace = true;
-    Some(paint(&mut canvas, list, family, panel_bottom(size, 1)?, &[]))
+    let mut layout = paint(&mut canvas, list, family, content_height(list), &[]);
+    layout["panel"] = serde_json::json!({"x": left, "y": top, "width": width, "height": height});
+    Some(layout)
 }
 
 fn panel(canvas: &mut Canvas, height: usize) {
