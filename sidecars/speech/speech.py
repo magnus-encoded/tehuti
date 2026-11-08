@@ -142,8 +142,9 @@ class Recording:
 
 class Take:
     """One push-to-talk, recorded from every source at once."""
-    def __init__(self, session):
+    def __init__(self, session, prompt=""):
         self.session = session
+        self.prompt = prompt
         self.recordings = []
         self.cancelled = threading.Event()
         self.worker = None
@@ -190,11 +191,11 @@ class Speech:
             self.releasing.worker.join()
             self.releasing = None
 
-    def start(self, session):
+    def start(self, session, prompt=""):
         self.cancel_tail()
         if self.capture is not None:
             return
-        take = Take(session)
+        take = Take(session, prompt)
         for source in self.sources():
             target = [] if source is None else ["--target", source]
             try:
@@ -235,8 +236,10 @@ class Speech:
         if remaining == 0 and capture.poll() is None:
             capture.send_signal(signal.SIGINT)
 
-    def transcribe_audio(self, audio):
+    def transcribe_audio(self, audio, prompt=""):
         priming = {"hotwords": self.hotwords} if self.hotwords else {}
+        if prompt:
+            priming["initial_prompt"] = prompt
         with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
             with wave.open(recording.name, "wb") as output:
                 output.setnchannels(1)
@@ -269,7 +272,7 @@ class Speech:
                 if not self.model_lock.acquire(blocking=False):
                     return
                 try:
-                    text = self.transcribe_audio(audio)
+                    text = self.transcribe_audio(audio, capture.prompt)
                 finally:
                     self.model_lock.release()
                 if self.capture is capture and text:
@@ -338,7 +341,7 @@ class Speech:
                     reply({"session": session, "error": "silent"})
                     return
                 with self.model_lock:
-                    text = self.transcribe_audio(bytes(winner.audio))
+                    text = self.transcribe_audio(bytes(winner.audio), take.prompt)
                 reply({"session": session, "text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)
@@ -373,6 +376,10 @@ def run(stream, speech, device=None):
                 continue
             if set(command) == {"start"} and type(command["start"]) is int and command["start"] >= 0:
                 speech.start(command["start"])
+            elif (set(command) == {"start", "prompt"}
+                  and type(command["start"]) is int and command["start"] >= 0
+                  and isinstance(command["prompt"], str) and "\0" not in command["prompt"]):
+                speech.start(command["start"], " ".join(command["prompt"].split()[:100]))
             elif (set(command) == {"stop", "transcribe"}
                   and type(command["stop"]) is int and command["stop"] >= 0
                   and type(command["transcribe"]) is bool):

@@ -18,6 +18,39 @@ spec.loader.exec_module(module)
 
 
 class SpeechTests(unittest.TestCase):
+    def test_start_prompt_is_optional_bounded_and_used_on_both_vad_attempts(self):
+        class Capture:
+            def __init__(self):
+                self.calls = []
+
+            def start(self, session, prompt=""):
+                self.calls.append((session, prompt))
+
+            def close(self):
+                pass
+
+        capture = Capture()
+        commands = [{"start": 1}, {"start": 2, "prompt": "Tehuti " * 101}]
+        with contextlib.redirect_stdout(io.StringIO()):
+            module.run(io.StringIO("".join(json.dumps(c) + "\n" for c in commands)), capture)
+        self.assertEqual(capture.calls, [(1, ""), (2, " ".join(["Tehuti"] * 100))])
+
+        class Model:
+            def __init__(self):
+                self.calls = []
+
+            def transcribe(self, path, **options):
+                self.calls.append(options)
+                return iter([]), None
+
+        model = Model()
+        speech = module.Speech(model)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            speech.transcribe_audio(b"\x00\x10" * 160, "chat with yell")
+        self.assertEqual([call["initial_prompt"] for call in model.calls],
+                         ["chat with yell", "chat with yell"])
+
     def test_ready_reply_names_the_chosen_device_and_compute_type(self):
         class Speech:
             def close(self):
@@ -321,7 +354,7 @@ time.sleep(60)
                 return iter([types.SimpleNamespace(text="old", no_speech_prob=0, avg_logprob=0)]), None
 
         speech = module.Speech(Model(), sources=lambda: [None])
-        capture = object()
+        capture = module.Take(0, "Tehuti")
         speech.capture = capture
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

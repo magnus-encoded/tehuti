@@ -5,6 +5,35 @@ mod speech_vocabulary {
     use tehuti_protocol::parse_context;
 
     #[test]
+    fn prompt_uses_focused_actions_then_global_without_aliases_or_other_contexts() {
+        let contexts = vec![
+            parse_context("app_id = '*'\n[buttons]\n[speech]\n'Global' = { key = 'enter' }").unwrap(),
+            parse_context("app_id = 'game'\nlabel = 'Mimiron'\n[buttons]\n[speech]\n'Yell' = { text = '/y ' }\n'Chat with yell' = { text = '/y ' }").unwrap(),
+            parse_context("app_id = 'editor'\n[buttons]\n[speech]\n'Edit' = { key = 'esc' }").unwrap(),
+        ];
+        assert_eq!(
+            speech_vocabulary::prompt(&contexts, Some("game"), ""),
+            "Chat with yell Global"
+        );
+        assert_eq!(speech_vocabulary::prompt(&contexts, None, ""), "Global");
+        assert_eq!(
+            speech_vocabulary::prompt(&contexts, Some("editor"), ""),
+            "Edit Global"
+        );
+        let phrase = vec!["word"; 110].join(" ");
+        let long = parse_context(&format!(
+            "app_id = '*'\n[buttons]\n[speech]\n'{phrase}' = {{ key = 'enter' }}"
+        ))
+        .unwrap();
+        assert_eq!(
+            speech_vocabulary::prompt(&[long], None, "")
+                .split_whitespace()
+                .count(),
+            100
+        );
+    }
+
+    #[test]
     fn vocabulary_contains_phrases_user_words_projects_skills_and_desktop_names() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -42,7 +71,11 @@ mod speech_vocabulary {
         }
         assert_eq!(words.iter().filter(|word| *word == "Orchid").count(), 1);
         let empty = speech_vocabulary::read(&[], &root.join("missing"), &root.join("missing"), &[], &[]);
-        assert_eq!(empty, Vec::<String>::new());
+        assert!(empty.iter().any(|word| word == "Tehuti"));
+        assert!(empty.iter().any(|word| word == "Mimiron"));
+        for channel in ["yell", "say", "general", "party", "guild"] {
+            assert!(empty.iter().any(|word| word == channel));
+        }
     }
     #[test]
     fn generic_project_command_resolves_folder_names_and_quotes_the_path() {
