@@ -299,9 +299,9 @@ mod tests {
     fn one_wakeup_emits_the_whole_backlog_after_focus_returns() {
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut only, handles) = pad("only", &log);
-        only.set_mirror(true, &|_| false).unwrap();
-        only.set_mirror(false, &|_| false).unwrap();
-        only.set_mirror(true, &|_| false).unwrap();
+        assert!(only.set_mirror(true, &|_| false).unwrap());
+        assert!(!only.set_mirror(false, &|_| false).unwrap());
+        assert!(only.set_mirror(true, &|_| false).unwrap());
         log.borrow_mut().frames.clear();
         for value in [1, 0, 1, 0] {
             queue(&handles, KeyCode::BTN_SOUTH, value);
