@@ -31,10 +31,10 @@ pub(crate) struct LoopData {
     compositor: Compositor,
     controllers: BTreeMap<PathBuf, AttachedController>,
     pad_gate: input::PadGate,
+    session_pad: controller::SessionPad,
     virtual_pad: Option<String>,
     /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
-    /// Unplugging it does not clear this: no pad matches the stale path, so no mirror exists
-    /// until another pad sends input and takes over.
+    /// A disconnected feeder leaves the session's virtual controller neutral.
     active_pad: Option<PathBuf>,
     controller_tokens: BTreeMap<PathBuf, calloop::RegistrationToken>,
     rescan_controller: bool,
@@ -403,6 +403,7 @@ fn start_session(
         compositor,
         controllers,
         pad_gate: input::PadGate::default(),
+        session_pad: controller::SessionPad::default(),
         controller_tokens,
         virtual_pad,
         active_pad: None,
@@ -819,7 +820,9 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
 /// because sticks are sampled on the loop's periodic work; such a read changes nothing and returns at once.
 fn route_controller_input(data: &mut LoopData) -> PostAction {
     let was_attached = !data.controllers.is_empty();
+    let before_pump = data.controllers.len();
     pump_virtual_pads(data);
+    let feeder_dropped = data.controllers.len() != before_pump;
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
     let active = &mut data.active_pad;
@@ -831,13 +834,13 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         }
         admitted
     });
-    if !removed.is_empty() {
+    if feeder_dropped || !removed.is_empty() {
         sync_controller_names(data);
     }
     if let Some(identity) = identity {
         data.compositor.set_pad_family(identity.family);
     }
-    if events.is_empty() && removed.is_empty() {
+    if events.is_empty() && removed.is_empty() && !feeder_dropped {
         data.pacing.pad_reads_without_input = data.pacing.pad_reads_without_input.saturating_add(1);
         return PostAction::Continue;
     }
@@ -922,10 +925,9 @@ fn advance_time(data: &mut LoopData) {
 fn sync_pad_grab(data: &mut LoopData) {
     let mirrored = data.compositor.virtual_pad();
     for pad in data.controllers.values_mut() {
-        if let Err(error) = pad
-            .pad
-            .set_passthrough(data.compositor.pad_passthrough() && !mirrored)
-        {
+        pad.pad.set_session(&data.session_pad);
+        let passthrough = data.compositor.pad_passthrough() && (!mirrored || pad.pad.mirror_unavailable());
+        if let Err(error) = pad.pad.set_passthrough(passthrough) {
             warn!(%error, "controller ownership change failed; reopening");
             pad.watchdog.request_reopen();
         }
@@ -963,15 +965,16 @@ fn sync_pad_grab(data: &mut LoopData) {
 /// Copies physical input to each virtual pad, applying plugin overrides before the core reads it.
 fn pump_virtual_pads(data: &mut LoopData) {
     let compositor = &mut data.compositor;
-    for controller in data.controllers.values_mut() {
+    data.controllers.retain(|_, controller| {
         if let Err(error) = controller
             .pad
             .pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
         {
-            warn!(%error, "virtual pad copy failed; reopening");
-            controller.watchdog.request_reopen();
+            warn!(%error, "controller input failed; dropping physical feeder");
+            return false;
         }
-    }
+        true
+    });
 }
 
 #[cfg(test)]

@@ -18,6 +18,9 @@ mod tests {
         live: usize,
         most_live: usize,
         created: usize,
+        refuse: bool,
+        grabs: usize,
+        ungrabs: usize,
     }
 
     struct Sink(&'static str, Rc<RefCell<Log>>);
@@ -43,6 +46,7 @@ mod tests {
     /// A synthetic pad: queued raw events and the keys its kernel state reports held.
     struct Synthetic {
         name: &'static str,
+        disconnected: Rc<core::cell::Cell<bool>>,
         raw: Rc<RefCell<VecDeque<InputEvent>>>,
         held: Rc<RefCell<Vec<u16>>>,
         hat: Rc<core::cell::Cell<i32>>,
@@ -51,6 +55,8 @@ mod tests {
 
     impl PadDevice for Synthetic {
         fn grab(&mut self) -> io::Result<()> {
+            let mut log = self.log.borrow_mut();
+            log.grabs = log.grabs.saturating_add(1);
             Ok(())
         }
         fn get_key_state(&self) -> io::Result<Vec<u16>> {
@@ -66,39 +72,58 @@ mod tests {
             Ok(Vec::new())
         }
         fn ungrab(&mut self) -> io::Result<()> {
+            let mut log = self.log.borrow_mut();
+            log.ungrabs = log.ungrabs.saturating_add(1);
             Ok(())
         }
         fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
             let mut log = self.log.borrow_mut();
-            log.live = log.live.saturating_add(1);
             log.created = log.created.saturating_add(1);
+            if log.refuse {
+                return Err(io::Error::from_raw_os_error(22));
+            }
+            log.live = log.live.saturating_add(1);
             log.most_live = log.most_live.max(log.live);
             Ok(Box::new(Sink(self.name, Rc::clone(&self.log))))
         }
         fn fetch_raw(&mut self) -> io::Result<Vec<InputEvent>> {
+            if self.disconnected.get() {
+                return Err(io::Error::from_raw_os_error(19));
+            }
             Ok(self.raw.borrow_mut().drain(..).collect())
         }
     }
 
     struct Handles {
+        disconnected: Rc<core::cell::Cell<bool>>,
         raw: Rc<RefCell<VecDeque<InputEvent>>>,
         held: Rc<RefCell<Vec<u16>>>,
         hat: Rc<core::cell::Cell<i32>>,
     }
 
     fn pad(name: &'static str, log: &Rc<RefCell<Log>>) -> (EvdevPad<Synthetic>, Handles) {
+        let disconnected = Rc::default();
         let raw = Rc::default();
         let held = Rc::default();
         let hat = Rc::default();
         let device = |queue: &Rc<_>, keys: &Rc<_>| Synthetic {
             name,
+            disconnected: Rc::clone(&disconnected),
             raw: Rc::clone(queue),
             held: Rc::clone(keys),
             hat: Rc::clone(&hat),
             log: Rc::clone(log),
         };
         let pad = EvdevPad::new(device(&raw, &held), device(&raw, &held), DpadHat::default());
-        (pad, Handles { raw, held, hat })
+        (
+            pad,
+            Handles {
+                disconnected,
+                raw,
+                held,
+                hat,
+            },
+        )
     }
 
     fn queue(handles: &Handles, code: KeyCode, value: i32) {
@@ -110,6 +135,154 @@ mod tests {
             InputEvent::new(EventType::KEY.0, code.code(), value),
             InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
         ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn arbitrary_feeder_sessions_keep_one_device(
+            sessions in proptest::collection::vec(proptest::collection::vec(proptest::bool::ANY, 1..8), 1..12),
+        ) {
+            let log = Rc::new(RefCell::new(Log::default()));
+            let retained = tehuti::controller::SessionPad::default();
+            for visibility in sessions {
+                let (mut feeder, _) = pad("feeder", &log);
+                feeder.set_session(&retained);
+                feeder.set_mirror(true, &|_| false).unwrap();
+                for visible in visibility {
+                    feeder.set_mirror(visible, &|_| false).unwrap();
+                }
+                drop(feeder);
+                proptest::prop_assert_eq!(log.borrow().created, 1);
+                proptest::prop_assert_eq!(log.borrow().live, 1);
+            }
+            drop(retained);
+            proptest::prop_assert_eq!(log.borrow().live, 0);
+        }
+    }
+
+    #[test]
+    fn physical_read_error_neutralizes_without_recreating_the_virtual_pad() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let session = tehuti::controller::SessionPad::default();
+        let (mut first, handles) = pad("first", &log);
+        first.set_session(&session);
+        first.set_mirror(true, &|_| false).unwrap();
+        queue(&handles, KeyCode::BTN_SOUTH, 1);
+        first.pump_mirror(&mut |_, _| false).unwrap();
+        handles.disconnected.set(true);
+        assert_eq!(
+            first.pump_mirror(&mut |_, _| false).unwrap_err().raw_os_error(),
+            Some(19)
+        );
+        assert!(!first.mirrored());
+        assert_eq!(log.borrow().created, 1);
+        assert_eq!(log.borrow().live, 1);
+        assert!(log.borrow().frames.iter().any(|(_, frame)| frame.contains(&(
+            EventType::KEY.0,
+            KeyCode::BTN_SOUTH.code(),
+            0
+        ))));
+    }
+
+    #[test]
+    fn active_feeder_switch_reuses_the_session_device() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let session = tehuti::controller::SessionPad::default();
+        let (mut first, _) = pad("first", &log);
+        let (mut second, handles) = pad("second", &log);
+        first.set_session(&session);
+        second.set_session(&session);
+        let paths = [Path::new("first"), Path::new("second")];
+        for active in [paths[0], paths[1], paths[0], paths[1]] {
+            let result = sync_mirrors(
+                &mut [(paths[0], &mut first), (paths[1], &mut second)],
+                true,
+                Some(active),
+                &|_| false,
+            );
+            assert!(result.failed.is_empty());
+        }
+        queue(&handles, KeyCode::BTN_EAST, 1);
+        second.pump_mirror(&mut |_, _| false).unwrap();
+        assert_eq!(log.borrow().created, 1);
+        assert_eq!(log.borrow().most_live, 1);
+        assert!(log.borrow().frames.iter().any(|(sink, frame)| *sink == "first"
+            && frame.contains(&(EventType::KEY.0, KeyCode::BTN_EAST.code(), 1))));
+    }
+
+    #[test]
+    fn disconnected_feeder_keeps_the_session_device_alive() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let session_pad = tehuti::controller::SessionPad::default();
+        let path = Path::new("event1");
+        let (mut first, handles) = pad("first", &log);
+        first.set_session(&session_pad);
+        sync_mirrors(&mut [(path, &mut first)], true, Some(path), &|_| false);
+        queue(&handles, KeyCode::BTN_SOUTH, 1);
+        first.pump_mirror(&mut |_, _| false).unwrap();
+        drop(first);
+        assert_eq!(log.borrow().live, 1, "disconnect must retain the game device");
+        assert!(log.borrow().frames.iter().any(|(_, frame)| frame.contains(&(
+            EventType::KEY.0,
+            KeyCode::BTN_SOUTH.code(),
+            0
+        ))));
+        let (mut second, handles) = pad("reconnected", &log);
+        second.set_session(&session_pad);
+        sync_mirrors(&mut [(path, &mut second)], true, Some(path), &|_| false);
+        queue(&handles, KeyCode::BTN_EAST, 1);
+        second.pump_mirror(&mut |_, _| false).unwrap();
+        assert_eq!(log.borrow().created, 1);
+        assert!(log.borrow().frames.iter().any(|(sink, frame)| *sink == "first"
+            && frame.contains(&(EventType::KEY.0, KeyCode::BTN_EAST.code(), 1))));
+        drop(second);
+        assert_eq!(log.borrow().live, 1);
+        drop(session_pad);
+        assert_eq!(log.borrow().live, 0);
+    }
+
+    #[test]
+    fn creation_failure_falls_back_once_per_source_pad() {
+        let log = Rc::new(RefCell::new(Log {
+            refuse: true,
+            ..Log::default()
+        }));
+        let (mut first, _) = pad("first", &log);
+        let (mut second, _) = pad("second", &log);
+        let paths = [Path::new("event1"), Path::new("event2")];
+        let mut failures = Vec::new();
+        for active in [Path::new("event1"), Path::new("event2"), Path::new("event1")] {
+            for mirrored in [true, true, false, true] {
+                let result = sync_mirrors(
+                    &mut [
+                        (Path::new("event1"), &mut first),
+                        (Path::new("event2"), &mut second),
+                    ],
+                    mirrored,
+                    Some(active),
+                    &|_| false,
+                );
+                for path in &result.failed {
+                    if path == Path::new("event1") {
+                        first.set_passthrough(true).unwrap();
+                    } else {
+                        second.set_passthrough(true).unwrap();
+                    }
+                }
+                failures.extend(result.failed);
+            }
+        }
+        assert_eq!(failures, paths.map(Path::to_path_buf));
+        assert_eq!(log.borrow().created, 2);
+        for pad in [&mut first, &mut second] {
+            pad.set_passthrough(true).unwrap();
+            for _ in 0..100 {
+                pad.set_passthrough(true).unwrap();
+            }
+        }
+        assert_eq!(log.borrow().grabs, 0);
+        assert_eq!(log.borrow().ungrabs, 2);
+        assert!(!first.mirrored() && !second.mirrored());
     }
 
     #[test]
