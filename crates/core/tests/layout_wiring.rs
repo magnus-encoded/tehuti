@@ -57,8 +57,8 @@ mod layout_wiring {
         let snap = layout.snapshot();
         let columns = &snap.outputs[0].workspaces[0].columns;
         assert_eq!(columns[0].width, None);
-        assert!(columns[0].tiles[0].requested_client.width.abs() < f64::EPSILON);
-        assert!((columns[1].tiles[0].tile.x - columns[0].tiles[0].tile.x - 310.0).abs() < f64::EPSILON);
+        assert_eq!(columns[0].tiles[0].requested_client.width, 0.0);
+        assert_eq!(columns[1].tiles[0].tile.x - columns[0].tiles[0].tile.x, 310.0);
         let before = layout.snapshot();
         assert!(layout.report_client_width(WindowId(0), f64::NAN).is_err());
         assert_eq!(layout.snapshot(), before);

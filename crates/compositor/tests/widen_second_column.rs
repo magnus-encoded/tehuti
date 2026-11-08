@@ -244,8 +244,9 @@ mod widen_second_column {
                 },
                 output.border,
             );
-            assert!(
-                width.sub(tile.requested_client.width.round()).abs() < f64::EPSILON,
+            assert_eq!(
+                width,
+                tile.requested_client.width.round(),
                 "column {index} drew at its tile width"
             );
             assert!(

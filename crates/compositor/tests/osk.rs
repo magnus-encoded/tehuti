@@ -39,18 +39,13 @@ mod osk {
         say(&mut compositor, "keyboard");
         assert!(compositor.on_screen_keyboard().is_open());
         assert_eq!(
-            (closed - usable_height(&compositor)).total_cmp(&f64::from(tehuti::osk::logical_height(
-                compositor.on_screen_keyboard()
-            ))),
-            core::cmp::Ordering::Equal
+            closed - usable_height(&compositor),
+            f64::from(tehuti::osk::logical_height(compositor.on_screen_keyboard()))
         );
         say(&mut compositor, "hello");
         tap(&mut compositor, ButtonName::East);
         assert!(!compositor.on_screen_keyboard().is_open());
-        assert_eq!(
-            usable_height(&compositor).total_cmp(&closed),
-            core::cmp::Ordering::Equal
-        );
+        assert_eq!(usable_height(&compositor), closed);
     }
 
     #[test]
