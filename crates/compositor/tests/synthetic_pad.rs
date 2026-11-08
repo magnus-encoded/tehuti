@@ -1699,7 +1699,12 @@ mod synthetic_pad {
             let tile = &output.workspaces[output.active_workspace].columns[0].tiles[0];
             assert_eq!(tile.fullscreen_requested, expected, "{context_id}: {setting}");
             if expected {
-                assert_eq!(tile.requested_client.width, output.geometry.usable.width);
+                assert_eq!(
+                    tile.requested_client
+                        .width
+                        .total_cmp(&output.geometry.usable.width),
+                    core::cmp::Ordering::Equal
+                );
             }
             compositor.handle(&Event::Button {
                 name: ButtonName::South,
