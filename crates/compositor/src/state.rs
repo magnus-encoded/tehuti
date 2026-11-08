@@ -170,6 +170,7 @@ pub struct Compositor {
     launch_socket: Option<std::ffi::OsString>,
     layout: tehuti_core::layout::Layout,
     layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
+    early_fullscreen: std::collections::HashSet<WlSurface>,
     /// The last layout written to the session log.
     layout_trace: tehuti_core::layout_trace::LayoutTrace,
     next_window: u64,
@@ -305,6 +306,7 @@ impl Compositor {
             speech_context: None,
             speech_title: String::new(),
             layout_windows: Vec::new(),
+            early_fullscreen: std::collections::HashSet::new(),
             layout_trace: tehuti_core::layout_trace::LayoutTrace::default(),
             next_window: 0,
             windows: tehuti_core::windows::Windows::new(),
@@ -2892,8 +2894,12 @@ impl Compositor {
                 .map(|_| *identity)
         });
         let Some(identity) = identity else {
-            if Self::awaits_answer(surface) {
-                let _serial = surface.send_configure();
+            if let Some(fullscreen) = fullscreen {
+                if fullscreen {
+                    let _inserted = self.early_fullscreen.insert(surface.wl_surface().clone());
+                } else {
+                    let _removed = self.early_fullscreen.remove(surface.wl_surface());
+                }
             }
             return;
         };
@@ -3438,6 +3444,7 @@ impl Compositor {
                 .and_then(|attributes| attributes.lock().ok()?.title.clone())
         })
         .unwrap_or_default();
+        let client_fullscreen = self.early_fullscreen.remove(surface.wl_surface());
         let context = app_id
             .as_deref()
             .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &title))
@@ -3448,13 +3455,14 @@ impl Compositor {
                     })
                 })
             });
+        let context_fullscreen = context.is_some_and(tehuti_protocol::Context::open_fullscreen);
         let rules = tehuti_core::layout::WindowRules {
             kind: if Self::is_helper(&surface) {
                 tehuti_core::layout::WindowKind::Helper
             } else {
                 tehuti_core::layout::WindowKind::Ordinary
             },
-            open_fullscreen: context.is_some_and(tehuti_protocol::Context::open_fullscreen),
+            open_fullscreen: context_fullscreen || client_fullscreen,
             default_column_width: context
                 .and_then(tehuti_protocol::Context::window_column_width)
                 .map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
@@ -3465,6 +3473,9 @@ impl Compositor {
         };
         match self.layout.add_window(identity, rules) {
             Ok(()) => {
+                if client_fullscreen && let Err(error) = self.layout.set_fullscreen(identity, true) {
+                    tracing::warn!(%error, "initial fullscreen request failed");
+                }
                 self.layout_windows
                     .push((identity, LayoutWindow::new(Window::new_wayland_window(surface))));
                 self.place_layout();
@@ -3519,6 +3530,7 @@ impl XdgShellHandler for Compositor {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let _removed = self.early_fullscreen.remove(surface.wl_surface());
         let identity = self.layout_windows.iter().find_map(|(identity, window)| {
             window
                 .toplevel()

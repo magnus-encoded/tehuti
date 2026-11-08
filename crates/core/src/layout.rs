@@ -885,6 +885,9 @@ impl Layout {
             .and_then(|column| column.tiles.get_mut(tile))
             .ok_or(LayoutError::UnknownWindow(identity))?;
         if (entry.mode == TileMode::Fullscreen) == fullscreen {
+            if fullscreen {
+                entry.client_fullscreen = true;
+            }
             return Ok(());
         }
         if !fullscreen && !entry.client_fullscreen {
@@ -2009,10 +2012,10 @@ impl Tile {
         let tile_rect = match self.mode {
             TileMode::Normal | TileMode::WindowedFullscreen => normal,
             TileMode::Fullscreen => Rect {
-                x: normal.x,
-                y: geometry.usable.y.sub(geometry.area.y),
-                width: geometry.usable.width,
-                height: geometry.usable.height,
+                x: 0.0,
+                y: 0.0,
+                width: geometry.area.width,
+                height: geometry.area.height,
             },
             TileMode::MaximizedToEdges => Rect {
                 x: geometry.usable.x.sub(geometry.area.x),

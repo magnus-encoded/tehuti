@@ -152,11 +152,14 @@ mod client_state_requests {
     #[derive(Debug, Default)]
     struct Report {
         first: Vec<u32>,
+        first_size: (i32, i32),
+        first_count: usize,
         after_maximize: usize,
         echoed: usize,
         after_unmaximize: usize,
         fullscreen: Option<Vec<u32>>,
         unfullscreen: Option<Vec<u32>>,
+        unfullscreen_size: Option<(i32, i32)>,
     }
 
     /// Roundtrips until the compositor goes quiet, drawing every acknowledged configure.
@@ -177,7 +180,7 @@ mod client_state_requests {
         }
     }
 
-    fn client(stream: UnixStream) -> Report {
+    fn client(stream: UnixStream, early_fullscreen: bool) -> Report {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -190,12 +193,24 @@ mod client_state_requests {
         let toplevel = xdg.get_toplevel(&handle, ());
         toplevel.set_title("Test window".into());
         toplevel.set_app_id("org.example.Game".into());
+        if early_fullscreen {
+            toplevel.set_fullscreen(None);
+        }
         surface.commit();
         settle(&mut queue, &mut app, &shm, &surface);
         let mut report = Report {
             first: app.configures.last().unwrap().2.clone(),
+            first_size: (app.configures[0].0, app.configures[0].1),
+            first_count: app.configures.len(),
             ..Report::default()
         };
+        if early_fullscreen {
+            toplevel.unset_fullscreen();
+            settle(&mut queue, &mut app, &shm, &surface);
+            report.unfullscreen = app.configures.last().map(|configure| configure.2.clone());
+            report.unfullscreen_size = app.configures.last().map(|configure| (configure.0, configure.1));
+            return report;
+        }
         let mut count = app.configures.len();
         toplevel.set_maximized();
         settle(&mut queue, &mut app, &shm, &surface);
@@ -222,6 +237,7 @@ mod client_state_requests {
         toplevel.unset_fullscreen();
         settle(&mut queue, &mut app, &shm, &surface);
         report.unfullscreen = app.configures.last().map(|configure| configure.2.clone());
+        report.unfullscreen_size = app.configures.last().map(|configure| (configure.0, configure.1));
         report
     }
 
@@ -259,7 +275,7 @@ mod client_state_requests {
         compositor.fill_output();
     }
 
-    fn run() -> Report {
+    fn run(early_fullscreen: bool) -> Report {
         let mut display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         attach_output(&display, &mut compositor);
@@ -268,7 +284,7 @@ mod client_state_requests {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let thread = thread::spawn(move || client(stream));
+        let thread = thread::spawn(move || client(stream, early_fullscreen));
         let started = Instant::now();
         while !thread.is_finished() {
             assert!(started.elapsed() < Duration::from_secs(20), "client timed out");
@@ -279,7 +295,7 @@ mod client_state_requests {
 
     #[test]
     fn tiled_clients_hear_they_are_tiled_and_get_answers() {
-        let report = run();
+        let report = run(false);
         let fullscreen_state = u32::from(xdg_toplevel::State::Fullscreen);
         let tiled = [
             xdg_toplevel::State::TiledLeft,
@@ -306,5 +322,24 @@ mod client_state_requests {
         let unfullscreen = report.unfullscreen.unwrap();
         assert!(!unfullscreen.contains(&fullscreen_state), "{unfullscreen:?}");
         assert!(unfullscreen.contains(&tiled[0]), "{unfullscreen:?}");
+    }
+
+    #[test]
+    fn fullscreen_before_first_commit_configures_output_once_and_restores_tile() {
+        let report = run(true);
+        assert_eq!(report.first_count, 1, "{report:?}");
+        assert_eq!(report.first_size, (OUTPUT_WIDTH, OUTPUT_HEIGHT), "{report:?}");
+        assert!(report.first.contains(&u32::from(xdg_toplevel::State::Fullscreen)));
+        let tile_size = report.unfullscreen_size.unwrap();
+        assert!(
+            tile_size.0 < OUTPUT_WIDTH && tile_size.1 < OUTPUT_HEIGHT,
+            "{report:?}"
+        );
+        assert!(
+            !report
+                .unfullscreen
+                .unwrap()
+                .contains(&u32::from(xdg_toplevel::State::Fullscreen))
+        );
     }
 }
