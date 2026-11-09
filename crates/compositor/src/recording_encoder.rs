@@ -50,6 +50,12 @@ impl FrameEncoder {
     pub const fn at_frame_boundary(&self) -> bool {
         self.offset == 0
     }
+
+    /// Completed frames and bytes of the current frame, for drain progress.
+    #[must_use]
+    pub const fn progress(&self) -> (u128, usize) {
+        (self.frames, self.offset)
+    }
 }
 
 /// Replaceable recording clock, audio discovery and encoder process.

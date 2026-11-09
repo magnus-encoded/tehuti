@@ -10,6 +10,7 @@ mod recording {
     struct Runtime {
         clock: Rc<core::cell::Cell<Duration>>,
         mode: String,
+        written: Rc<core::cell::Cell<usize>>,
     }
 
     impl tehuti::recording_encoder::Runtime for Runtime {
@@ -44,6 +45,20 @@ mod recording {
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect();
+            if matches!(self.mode.as_str(), "live" | "backlog") {
+                assert!(
+                    args.windows(2)
+                        .any(|args| args[0] == "-shortest_buf_duration" && args[1] == "1")
+                );
+                assert!(
+                    args.windows(2)
+                        .any(|args| { args[0] == "-movflags" && args[1] == "+frag_keyframe+empty_moov" })
+                );
+                assert!(
+                    args.windows(2)
+                        .any(|args| args[0] == "-max_interleave_delta" && args[1] == "1000000")
+                );
+            }
             let values = |flag: &str| {
                 args.windows(2)
                     .filter(|pair| pair[0] == flag)
@@ -61,6 +76,18 @@ mod recording {
                 video,
                 fail: self.mode.starts_with("encoder_failure"),
                 blocked: if self.mode == "flood" { 30 } else { 0 },
+                written: Rc::clone(&self.written),
+                frame_size: values("-video_size")[0]
+                    .split_once('x')
+                    .map(|(width, height)| {
+                        width
+                            .parse::<usize>()
+                            .unwrap()
+                            .checked_mul(height.parse::<usize>().unwrap())
+                            .and_then(|pixels| pixels.checked_mul(4))
+                            .unwrap()
+                    })
+                    .unwrap(),
             }))
         }
     }
@@ -71,6 +98,8 @@ mod recording {
         video: serde_json::Value,
         fail: bool,
         blocked: u32,
+        written: Rc<core::cell::Cell<usize>>,
+        frame_size: usize,
     }
     impl std::io::Write for Sink {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -84,6 +113,7 @@ mod recording {
             if self.video.get("pixel").is_none() {
                 self.video["pixel"] = serde_json::json!(&bytes[..4]);
             }
+            self.written.set(self.written.get().saturating_add(bytes.len()));
             Ok(bytes.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -92,6 +122,8 @@ mod recording {
     }
     impl tehuti::recording_encoder::Sink for Sink {
         fn finish(&mut self) -> std::io::Result<()> {
+            self.video["frames"] =
+                serde_json::json!(self.written.get().checked_div(self.frame_size).unwrap());
             std::fs::write(&self.path, serde_json::to_vec(&self.video)?)
         }
     }
@@ -115,7 +147,10 @@ mod recording {
         tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
         compositor.load_input_choices(tehuti::input_choice_store::Store::from_env().unwrap());
         let colour = Rc::new(RefCell::new(image::Rgba([240, 20, 60, 255])));
-        let (width, height) = if matches!(mode.as_str(), "duration" | "orientation") {
+        let (width, height) = if matches!(
+            mode.as_str(),
+            "duration" | "orientation" | "live" | "backlog" | "housekeeping"
+        ) {
             (64, 64)
         } else {
             (2560, 1440)
@@ -133,11 +168,13 @@ mod recording {
             Ok(frame)
         });
         let clock = Rc::new(core::cell::Cell::new(Duration::ZERO));
+        let written = Rc::new(core::cell::Cell::new(0));
         let real_time = matches!(mode.as_str(), "duration" | "orientation");
         if !real_time {
             compositor.set_recording_runtime(Rc::new(Runtime {
                 clock: Rc::clone(&clock),
                 mode: mode.clone(),
+                written: Rc::clone(&written),
             }));
         }
         compositor.say(Text::new("start recording".into()).unwrap());
@@ -178,6 +215,31 @@ mod recording {
         } else {
             clock.set(Duration::from_millis(100));
             compositor.advance_time();
+        }
+        if mode == "live" {
+            assert!(written.get() > 0, "video frames must reach ffmpeg before stop");
+            assert!(
+                !home
+                    .join("Videos/Recordings")
+                    .read_dir()
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path()
+                    .join("video.mp4")
+                    .exists()
+            );
+        }
+        if mode == "backlog" {
+            clock.set(Duration::from_secs(24));
+            compositor.advance_time();
+        }
+        if mode == "housekeeping" {
+            for step in 1..=20 {
+                clock.set(Duration::from_millis(step * 100));
+                compositor.advance_time();
+            }
         }
         if mode == "capture_failure" {
             *colour.borrow_mut() = image::Rgba([0, 0, 0, 255]);
@@ -236,7 +298,7 @@ mod recording {
                 std::thread::sleep(Duration::from_millis(10));
             }
         } else {
-            for _ in 0..100 {
+            for _ in 0..800 {
                 compositor.advance_time();
                 if compositor.visible_notice_text().is_some_and(|text| {
                     text.starts_with("RECORDING SAVED:") || text.starts_with("RECORDING FAILED:")
@@ -312,8 +374,14 @@ mod recording {
         let video: serde_json::Value =
             serde_json::from_slice(&std::fs::read(folder.join("video.mp4")).unwrap()).unwrap();
         assert_eq!(video["pixel"], serde_json::json!([20, 240, 40, 255]));
-        assert_eq!(video["size"], "1920x1080");
+        assert_eq!(video["size"], if width == 64 { "64x64" } else { "1920x1080" });
         assert_eq!(video["fps"], "30");
+        if mode == "backlog" {
+            assert_eq!(
+                video["frames"], 720,
+                "the fake ffmpeg must finalise every due frame"
+            );
+        }
         let microphones = match mode.as_str() {
             "named" => vec!["mic-b"],
             "auto" => vec!["mic-a"],
@@ -349,6 +417,14 @@ mod recording {
             && event["data"]["windows"].is_array()));
         assert!(events.iter().any(|event| event["kind"] == "stop"));
         assert!(events.iter().any(|event| event["kind"] == "key"));
+        if mode == "housekeeping" {
+            for housekeeping in ["PollSpeech", "PollSources", "Supervise"] {
+                assert!(
+                    !text.contains(housekeeping),
+                    "{housekeeping} must stay out of the timeline"
+                );
+            }
+        }
         assert!(text.contains("an unmapped phrase"));
         assert!(text.contains("SpeechRouted"));
         assert!(text.contains("org.test.Player"));
@@ -443,6 +519,21 @@ mod recording {
     #[test]
     fn timeline_pressure_keeps_recording_active() {
         isolated("flood");
+    }
+
+    #[test]
+    fn frames_reach_ffmpeg_during_recording() {
+        isolated("live");
+    }
+
+    #[test]
+    fn stopped_recording_with_backlog_finalises_video() {
+        isolated("backlog");
+    }
+
+    #[test]
+    fn timeline_omits_housekeeping_effects() {
+        isolated("housekeeping");
     }
 
     fn assert_top_left_marker(folder: &Path) {

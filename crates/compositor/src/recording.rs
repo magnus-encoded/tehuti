@@ -253,8 +253,8 @@ fn start_worker(
                 let timeline = File::create_new(path.join("timeline.jsonl"))?;
                 encode(
                     child,
+                    &path.join("video.mp4"),
                     &frame,
-                    size,
                     timeline,
                     (&receive_frames, &receive_events),
                     &worker_stop,
@@ -396,10 +396,21 @@ fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources:
     }
     map_tracks(&mut command, sources);
     let _output = command
-        .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"])
+        .args([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "23",
+            "-g",
+            "30",
+        ])
         .args(["-vf", "fps=30", "-pix_fmt", "yuv420p", "-c:a", "aac"])
         .args(["-af", "aresample=async=1:first_pts=0"])
-        .args(["-shortest", "-movflags", "+faststart"])
+        .args(["-shortest", "-shortest_buf_duration", "1"])
+        .args(["-max_interleave_delta", "1000000"])
+        .args(["-movflags", "+frag_keyframe+empty_moov"])
         .arg(path.join("video.mp4"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null());
@@ -472,8 +483,8 @@ fn fit(frame: &RgbaImage, size: (u32, u32)) -> RgbaImage {
 
 fn encode(
     mut child: Encoder,
+    output_path: &std::path::Path,
     frame: &RgbaImage,
-    size: (u32, u32),
     mut timeline: File,
     (frames, events): (&Receiver<(Duration, RgbaImage)>, &Receiver<Value>),
     stop: &AtomicU64,
@@ -487,7 +498,10 @@ fn encode(
             .ok_or_else(|| io::Error::other("ffmpeg stdin unavailable"))?;
         rustix::fs::fcntl_setfl(&pipe, rustix::fs::OFlags::NONBLOCK)?;
         let mut encoder = crate::recording_encoder::FrameEncoder::default();
+        let size = dimensions(frame.width(), frame.height());
         let mut pixels = fit(frame, size);
+        let mut drain_progress = encoder.progress();
+        let mut last_progress = Instant::now();
         loop {
             if child.0.try_wait()?.is_some() {
                 return Err(io::Error::other(
@@ -503,20 +517,19 @@ fn encode(
             {
                 pixels = fit(&next, size);
             }
-            if stopped_ms != u64::MAX
-                && started
-                    .elapsed()
-                    .saturating_sub(Duration::from_millis(stopped_ms))
-                    > Duration::from_secs(5)
-            {
-                return Err(io::Error::other("ffmpeg did not drain within five seconds"));
-            }
             let elapsed = if stopped_ms == u64::MAX {
                 started.elapsed()
             } else {
                 Duration::from_millis(stopped_ms)
             };
-            if encoder.write_due(&mut pipe, pixels.as_raw(), || elapsed)? {
+            let caught_up = encoder.write_due(&mut pipe, pixels.as_raw(), || elapsed)?;
+            if encoder.progress() != drain_progress {
+                drain_progress = encoder.progress();
+                last_progress = Instant::now();
+            } else if stopped_ms != u64::MAX && last_progress.elapsed() > Duration::from_secs(30) {
+                return Err(io::Error::other("ffmpeg stopped accepting video frames"));
+            }
+            if caught_up {
                 if stopped_ms != u64::MAX {
                     break;
                 }
@@ -530,7 +543,7 @@ fn encode(
         }
         Ok(())
     })();
-    finish_encoder(&mut child, result)
+    finish_encoder(&mut child, output_path, result)
 }
 
 fn finish_timeline(timeline: &mut File, events: &Receiver<Value>, stopped_ms: u64) -> io::Result<()> {
@@ -551,11 +564,16 @@ fn flush_events(timeline: &mut File, events: &Receiver<Value>) -> io::Result<()>
     Ok(())
 }
 
-fn finish_encoder(child: &mut Encoder, result: io::Result<()>) -> io::Result<()> {
+fn finish_encoder(
+    child: &mut Encoder,
+    output_path: &std::path::Path,
+    result: io::Result<()>,
+) -> io::Result<()> {
     if result.is_err() {
         let _killed = child.0.kill();
     }
-    let deadline = Instant::now().checked_add(Duration::from_secs(5));
+    let mut last_progress = Instant::now();
+    let mut size = 0;
     loop {
         if let Some(status) = child.0.try_wait()? {
             result?;
@@ -567,10 +585,15 @@ fn finish_encoder(child: &mut Encoder, result: io::Result<()>) -> io::Result<()>
                 ))
             };
         }
-        if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+        let current_size = std::fs::metadata(output_path).map_or(0, |metadata| metadata.len());
+        if current_size != size {
+            size = current_size;
+            last_progress = Instant::now();
+        }
+        if last_progress.elapsed() >= Duration::from_secs(30) {
             let _killed = child.0.kill();
             let _waited = child.0.wait();
-            return Err(io::Error::other("ffmpeg did not finish within five seconds"));
+            return Err(io::Error::other("ffmpeg stopped finalising the recording"));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
