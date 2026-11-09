@@ -16,6 +16,30 @@ jobs:
           targets: i686-unknown-linux-gnu
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev python3 python3-pil foot
       - uses: Swatinem/rust-cache@v2
+      - name: Prove screenshot regression against origin/main
+        run: |
+          git fetch origin main
+          cp crates/compositor/src/readback.rs "$RUNNER_TEMP/readback.rs"
+          python3 - <<'PYCODE'
+          import pathlib, subprocess
+          source = subprocess.check_output(["git", "show", "FETCH_HEAD:crates/compositor/src/driver_shot.rs"], text=True)
+          condition = next(line.strip() for line in source.splitlines() if line.strip().startswith("if (output.current_transform()"))
+          condition = condition.replace("output.current_transform()", "transform").replace("mapping.flipped()", "mapping_flipped")
+          path = pathlib.Path("crates/compositor/src/readback.rs")
+          current = path.read_text()
+          start = current.index("        let bottom_up =")
+          end = current.index("            image::imageops::flip_vertical_in_place", start)
+          path.write_text(current[:start] + "        let _renderer = self;\n        " + condition + "\n" + current[end:])
+          PYCODE
+          set +e
+          cargo test --locked -p tehuti --test readback > "$RUNNER_TEMP/readback-main.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/readback-main.log"
+          cp "$RUNNER_TEMP/readback.rs" crates/compositor/src/readback.rs
+          test "$status" -ne 0
+          grep -q 'readback_places_known_colours_in_the_top_and_bottom_rows .* FAILED' "$RUNNER_TEMP/readback-main.log"
+          cargo test --locked -p tehuti --test readback
       - run: XDG_RUNTIME_DIR=/tmp scripts/check
       - name: Release smoke
         run: |

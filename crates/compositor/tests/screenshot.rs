@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(actual.dimensions(), (1280, 720));
         assert_eq!(*actual.get_pixel(640, 360), image::Rgba([0, 0, 0, 255]));
         assert_eq!(*actual.get_pixel(16, 16), image::Rgba([32, 32, 32, 255]));
-        assert_ne!(*actual.get_pixel(16, 16), *actual.get_pixel(16, 703));
+        assert_eq!(*actual.get_pixel(16, 703), image::Rgba([47, 65, 88, 255]));
         assert_eq!(
             image::imageops::crop_imm(&actual, 0, 0, 1280, 650).to_image(),
             image::imageops::crop_imm(&expected, 0, 0, 1280, 650).to_image()

@@ -159,7 +159,10 @@ pub fn capture_frame(
     clock: &str,
 ) -> Result<image::RgbaImage, Box<dyn core::error::Error>> {
     crate::driver_shot::capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-        renderer, compositor, clock, true,
+        renderer,
+        compositor,
+        clock,
+        crate::readback::Readback::Gles,
     )
 }
 

@@ -1,4 +1,5 @@
 //! Capture through the output renderer, with software capture for headless outputs.
+use crate::readback::Readback;
 use crate::state::Compositor;
 use core::error::Error;
 use smithay::backend::{
@@ -8,7 +9,7 @@ use smithay::backend::{
         damage::OutputDamageTracker, pixman::PixmanRenderer,
     },
 };
-use smithay::utils::{Rectangle, Transform};
+use smithay::utils::Rectangle;
 use std::path::Path;
 
 #[expect(
@@ -35,7 +36,7 @@ pub(crate) fn save_with_clock(
             &mut PixmanRenderer::new()?,
             compositor,
             clock,
-            false,
+            Readback::Pixman,
         )?
     };
     image.save_with_format(path, image::ImageFormat::Png)?;
@@ -47,7 +48,7 @@ pub(super) fn capture<R, B>(
     renderer: &mut R,
     compositor: &Compositor,
     clock: &str,
-    gl_readback: bool,
+    readback: Readback,
 ) -> Result<image::RgbaImage, Box<dyn Error>>
 where
     R: Renderer + ImportAll + ImportMem + Offscreen<B> + Bind<B> + ExportMem,
@@ -77,11 +78,7 @@ where
         Fourcc::Abgr8888,
     )?;
     let pixels = renderer.map_texture(&mapping)?.to_vec();
-    let mut image =
-        image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
-            .ok_or("invalid capture dimensions")?;
-    if (output.current_transform() == Transform::Flipped180) != (mapping.flipped() ^ gl_readback) {
-        image::imageops::flip_vertical_in_place(&mut image);
-    }
-    Ok(image)
+    let image = image::RgbaImage::from_raw(u32::try_from(mode.size.w)?, u32::try_from(mode.size.h)?, pixels)
+        .ok_or("invalid capture dimensions")?;
+    Ok(readback.orient(image, output.current_transform(), mapping.flipped()))
 }
