@@ -67,27 +67,32 @@ mod recording {
         });
         compositor.say(Text::new("an unmapped phrase".into()).unwrap());
         compositor.host_key(smithay::input::keyboard::Keycode::new(38), true);
+        let ready_deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
+        while !home.join("encoder-ready").exists() && Instant::now() < ready_deadline {
+            compositor.advance_time();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            home.join("encoder-ready").exists(),
+            "recording must start an encoder for wall-clock video"
+        );
         if mode == "duration" {
             let until = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
             while Instant::now() < until {
                 compositor.advance_time();
                 std::thread::sleep(Duration::from_millis(100));
             }
+            assert!(!home.join("encoder-released").exists());
         }
-        let deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
-        while !home.join("encoder-ready").exists() && Instant::now() < deadline {
-            compositor.advance_time();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            home.join("encoder-ready").exists(),
-            "recording must start an encoder for wall-clock video"
-        );
         compositor.say(Text::new("stop recording".into()).unwrap());
+        if mode == "duration" {
+            std::fs::write(home.join("encoder-release"), []).unwrap();
+        }
+        let saved_deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
         while !compositor
             .visible_notice_text()
             .is_some_and(|text| text.starts_with("RECORDING SAVED:") || text.starts_with("RECORDING FAILED:"))
-            && Instant::now() < deadline
+            && Instant::now() < saved_deadline
         {
             compositor.advance_time();
             std::thread::sleep(Duration::from_millis(10));
@@ -126,6 +131,7 @@ mod recording {
             return;
         }
         if mode == "duration" {
+            assert!(home.join("encoder-released").exists());
             assert_wall_duration(folder);
             return;
         }
@@ -252,6 +258,7 @@ mod recording {
                 .all(|stream| stream["disposition"]["default"] == 0)
         );
         let elapsed = Duration::from_millis(elapsed_ms);
+        assert!(elapsed >= Duration::from_millis(2900));
         for stream in streams {
             let duration = Duration::from_secs_f64(stream["duration"].as_str().unwrap().parse().unwrap());
             assert!(
@@ -295,19 +302,33 @@ pathlib.Path(args[-1]).write_text(json.dumps({
             executable(
                 &bin.join("ffmpeg"),
                 r"#!/usr/bin/python3
-import os, sys, time
-args = sys.argv[1:]
+import os, shutil, subprocess, sys, time
 from pathlib import Path
-Path(os.environ['HOME'], 'encoder-ready').touch()
-# Hold the raw pipe across stop, below the writer's bounded stall timeout.
+args = sys.argv[1:]
+home = Path(os.environ['HOME'])
+prefix = b''
 if os.environ['RECORDING_PROBE'] == 'duration':
-    time.sleep(1.5)
+    # Two seconds of raw frames put packet rounding below the unchanged 5% bound.
+    prefix = sys.stdin.buffer.read(60 * 64 * 64 * 4)
+    if len(prefix) != 60 * 64 * 64 * 4:
+        sys.exit('recording must supply the buffered prefix')
+home.joinpath('encoder-ready').touch()
+if os.environ['RECORDING_PROBE'] == 'duration':
+    while not home.joinpath('encoder-release').exists():
+        time.sleep(0.001)
+    home.joinpath('encoder-released').touch()
 for index in range(len(args)):
     if args[index] == 'pulse':
         args[index] = 'lavfi'
     if args[index] in ('speakers.monitor', 'mic-a', 'mic-b'):
         args[index] = 'anullsrc=r=48000:cl=stereo'
 # Audio fixtures need no microphone or PulseAudio server.
+if os.environ['RECORDING_PROBE'] == 'duration':
+    child = subprocess.Popen(['/usr/bin/ffmpeg'] + args, stdin=subprocess.PIPE)
+    child.stdin.write(prefix)
+    shutil.copyfileobj(sys.stdin.buffer, child.stdin)
+    child.stdin.close()
+    sys.exit(child.wait())
 os.execv('/usr/bin/ffmpeg', ['ffmpeg'] + args)
 ",
             );
