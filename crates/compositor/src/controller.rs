@@ -249,17 +249,17 @@ impl core::fmt::Debug for SessionPad {
 
 impl MirrorSink for SessionPad {
     fn neutral(&mut self, frame: &[evdev::InputEvent]) -> io::Result<()> {
-        match self.0.borrow_mut().as_mut() {
-            Some(sink) => sink.neutral(frame),
-            None => Err(io::ErrorKind::NotConnected.into()),
-        }
+        self.0.borrow_mut().as_mut().map_or_else(
+            || Err(io::ErrorKind::NotConnected.into()),
+            |sink| sink.neutral(frame),
+        )
     }
 
     fn emit(&mut self, frame: &[evdev::InputEvent]) -> io::Result<()> {
-        match self.0.borrow_mut().as_mut() {
-            Some(sink) => sink.emit(frame),
-            None => Err(io::ErrorKind::NotConnected.into()),
-        }
+        self.0.borrow_mut().as_mut().map_or_else(
+            || Err(io::ErrorKind::NotConnected.into()),
+            |sink| sink.emit(frame),
+        )
     }
 }
 
@@ -665,8 +665,6 @@ impl PadDevice for Device {
             .map_err(|error| io::Error::new(error.kind(), format!("uinput open: {error}")))?
             .name("Tehuti virtual pad")
             .input_id(virtual_pad_identity())
-            .with_phys(c"tehuti/virtual-pad")
-            .map_err(|error| io::Error::new(error.kind(), format!("uinput with_phys: {error}")))?
             .with_keys(&keys)
             .map_err(|error| io::Error::new(error.kind(), format!("uinput with_keys: {error}")))?;
         let source_axes: Vec<_> = Self::get_absinfo(self)?.collect();
