@@ -16,7 +16,9 @@ jobs:
       - name: Recording regression passes on branch
         run: |
           cargo test --locked -p tehuti-core --test recording
-          XDG_RUNTIME_DIR=/tmp cargo test --locked -p tehuti --test recording
+          for attempt in 1 2 3; do
+            XDG_RUNTIME_DIR=/tmp cargo test --locked -p tehuti --test recording
+          done
           cargo test --locked -p tehuti --test readback
       - uses: actions/checkout@v4
         with:

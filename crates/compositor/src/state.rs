@@ -160,6 +160,7 @@ pub struct Compositor {
     secret_notice_until: Option<Instant>,
     notice_until: Option<Instant>,
     notice_text: Option<String>,
+    recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
     launchers: Vec<std::process::Child>,
     desktop_entries: crate::desktop::EntryCache,
@@ -298,6 +299,7 @@ impl Compositor {
             secret_notice_until: None,
             notice_until: None,
             notice_text: None,
+            recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
             launchers: Vec::new(),
             desktop_entries: crate::desktop::EntryCache::new()?,
@@ -643,7 +645,7 @@ impl Compositor {
 
     #[must_use]
     pub fn speech_notice_visible(&self) -> bool {
-        self.notice_until.is_some_and(|until| self.clock_now() < until)
+        self.recording_failure.is_some() || self.notice_until.is_some_and(|until| self.clock_now() < until)
     }
 
     #[must_use]
@@ -672,8 +674,9 @@ impl Compositor {
                 .is_some_and(|until| self.clock_now() < until)
                 .then(|| "SECRET DELIVERY UNAVAILABLE".into()),
             Overlay::Notice => self.speech_notice_visible().then(|| {
-                self.notice_text
+                self.recording_failure
                     .clone()
+                    .or_else(|| self.notice_text.clone())
                     .unwrap_or_else(|| "NO SPEECH MAPPING".into())
             }),
             Overlay::MouseNotice => self.mouse_mode.then(|| "MOUSE MODE".into()),
@@ -966,6 +969,17 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if matches!(
+            event,
+            Event::Button {
+                name: tehuti_protocol::ButtonName::B,
+                state: tehuti_protocol::ButtonState::Pressed,
+                ..
+            }
+        ) && self.recording_failure.take().is_some()
+        {
+            return;
+        }
         if matches!(event, Event::Speech { .. }) {
             let registrations = self
                 .plugins
@@ -2142,6 +2156,10 @@ impl Compositor {
             .unwrap_or((None, None))
     }
 
+    pub(super) fn show_recording_failure(&mut self, error: &str) {
+        self.recording_failure = Some(format!("RECORDING FAILED: {error}\nESC OR B TO DISMISS"));
+    }
+
     fn show_notice(&mut self, text: &str) {
         let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
         self.notice_text = Some(text.into());
@@ -2282,6 +2300,9 @@ impl Compositor {
     /// Meta is the Guide button and, while Meta is held, the arrows are the d-pad: both go to the core as pad buttons and
     /// the client never sees them.
     pub fn host_key(&mut self, keycode: Keycode, pressed: bool) {
+        if pressed && keycode.raw() == 9 && self.recording_failure.take().is_some() {
+            return;
+        }
         self.record_event(
             "key",
             &serde_json::json!({"keycode": keycode.raw(), "pressed": pressed}),

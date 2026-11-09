@@ -31,6 +31,9 @@ mod recording {
             (2560, 1440)
         };
         compositor.set_capture_source(&colour, move |colour, _, _| {
+            if colour[0] == 0 {
+                return Err(std::io::Error::other("capture temporarily unavailable").into());
+            }
             let mut frame = image::RgbaImage::from_pixel(width, height, *colour);
             for y in 0..16 {
                 for x in 0..16 {
@@ -76,17 +79,52 @@ mod recording {
             home.join("encoder-ready").exists(),
             "recording must start an encoder for wall-clock video"
         );
+        if mode == "capture_failure" {
+            *colour.borrow_mut() = image::Rgba([0, 0, 0, 255]);
+            for _ in 0..5 {
+                std::thread::sleep(Duration::from_millis(100));
+                compositor.advance_time();
+            }
+            assert!(
+                compositor
+                    .voice_bar()
+                    .segments()
+                    .iter()
+                    .any(|segment| segment.text == "REC")
+            );
+            *colour.borrow_mut() = image::Rgba([240, 20, 60, 255]);
+        }
+        if mode == "flood" {
+            for _ in 0..2048 {
+                compositor.host_key(smithay::input::keyboard::Keycode::new(38), true);
+            }
+            assert!(
+                compositor
+                    .voice_bar()
+                    .segments()
+                    .iter()
+                    .any(|segment| segment.text == "REC"),
+                "timeline pressure must leave recording active"
+            );
+        }
         if mode == "duration" {
-            let until = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+            let until = Instant::now().checked_add(Duration::from_secs(7)).unwrap();
             while Instant::now() < until {
                 compositor.advance_time();
+                assert!(
+                    compositor
+                        .voice_bar()
+                        .segments()
+                        .iter()
+                        .any(|segment| segment.text == "REC"),
+                    "a mid-recording encoder stall must leave recording active"
+                );
                 std::thread::sleep(Duration::from_millis(100));
             }
-            assert!(!home.join("encoder-released").exists());
+            assert!(home.join("encoder-released").exists());
         }
-        compositor.say(Text::new("stop recording".into()).unwrap());
-        if mode == "duration" {
-            std::fs::write(home.join("encoder-release"), []).unwrap();
+        if mode != "encoder_failure" {
+            compositor.say(Text::new("stop recording".into()).unwrap());
         }
         let saved_deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
         while !compositor
@@ -110,6 +148,20 @@ mod recording {
                     .visible_notice_text()
                     .unwrap()
                     .starts_with("RECORDING FAILED:")
+            );
+            std::thread::sleep(Duration::from_secs(4));
+            compositor.advance_time();
+            assert!(
+                compositor
+                    .visible_notice_text()
+                    .unwrap()
+                    .starts_with("RECORDING FAILED:")
+            );
+            compositor.host_key(smithay::input::keyboard::Keycode::new(9), true);
+            assert!(
+                !compositor
+                    .visible_notice_text()
+                    .is_some_and(|text| text.starts_with("RECORDING FAILED:"))
             );
             assert!(!compositor.quit_requested());
             return;
@@ -188,6 +240,16 @@ mod recording {
     #[test]
     fn recording_duration_matches_wall_time_with_a_delayed_encoder() {
         isolated("duration");
+    }
+
+    #[test]
+    fn capture_failure_keeps_recording_active() {
+        isolated("capture_failure");
+    }
+
+    #[test]
+    fn timeline_pressure_keeps_recording_active() {
+        isolated("flood");
     }
 
     #[test]
@@ -280,12 +342,14 @@ mod recording {
             executable(
                 &bin.join("ffmpeg"),
                 r"#!/usr/bin/python3
-import json, os, pathlib, sys
+import json, os, pathlib, sys, time
 args = sys.argv[1:]
 pathlib.Path(os.environ['HOME'], 'encoder-ready').touch()
 if os.environ['RECORDING_PROBE'] == 'encoder_failure':
     sys.exit(1)
 pixel = sys.stdin.buffer.read(4)
+if os.environ['RECORDING_PROBE'] == 'flood':
+    time.sleep(3.2)
 while sys.stdin.buffer.read(65536):
     pass
 pathlib.Path(args[-1]).write_text(json.dumps({
@@ -302,33 +366,37 @@ pathlib.Path(args[-1]).write_text(json.dumps({
             executable(
                 &bin.join("ffmpeg"),
                 r"#!/usr/bin/python3
-import os, shutil, subprocess, sys, time
+import os, subprocess, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 home = Path(os.environ['HOME'])
-prefix = b''
-if os.environ['RECORDING_PROBE'] == 'duration':
-    # Two seconds of raw frames put packet rounding below the unchanged 5% bound.
-    prefix = sys.stdin.buffer.read(60 * 64 * 64 * 4)
-    if len(prefix) != 60 * 64 * 64 * 4:
-        sys.exit('recording must supply the buffered prefix')
-home.joinpath('encoder-ready').touch()
-if os.environ['RECORDING_PROBE'] == 'duration':
-    while not home.joinpath('encoder-release').exists():
-        time.sleep(0.001)
-    home.joinpath('encoder-released').touch()
 for index in range(len(args)):
     if args[index] == 'pulse':
         args[index] = 'lavfi'
     if args[index] in ('speakers.monitor', 'mic-a', 'mic-b'):
         args[index] = 'anullsrc=r=48000:cl=stereo'
 # Audio fixtures need no microphone or PulseAudio server.
+for index in reversed(range(len(args))):
+    if args[index] == '-f' and args[index + 1] == 'lavfi':
+        args[index:index] = ['-re']
 if os.environ['RECORDING_PROBE'] == 'duration':
     child = subprocess.Popen(['/usr/bin/ffmpeg'] + args, stdin=subprocess.PIPE)
-    child.stdin.write(prefix)
-    shutil.copyfileobj(sys.stdin.buffer, child.stdin)
+    began = time.monotonic()
+    stalled = False
+    home.joinpath('encoder-ready').touch()
+    while True:
+        frame = sys.stdin.buffer.read(64 * 64 * 4)
+        if not frame:
+            break
+        child.stdin.write(frame)
+        child.stdin.flush()
+        if not stalled and time.monotonic() - began >= 1:
+            stalled = True
+            time.sleep(3.2)
+            home.joinpath('encoder-released').touch()
     child.stdin.close()
     sys.exit(child.wait())
+home.joinpath('encoder-ready').touch()
 os.execv('/usr/bin/ffmpeg', ['ffmpeg'] + args)
 ",
             );

@@ -49,12 +49,11 @@ impl Compositor {
                 self.record_event("start", &json!({"action": "start_recording"}));
                 self.poll_recording();
             }
-            Err(error) => self.show_notice(&format!("RECORDING FAILED: {error}")),
+            Err(error) => self.show_recording_failure(&error.to_string()),
         }
     }
 
     pub(super) fn stop_recording(&mut self) {
-        self.record_event("stop", &json!({}));
         if let Some(session) = &self.recording {
             session.request_stop();
         }
@@ -80,8 +79,7 @@ impl Compositor {
         }
         let event = json!({"time_ms": session.started.elapsed().as_millis(), "kind": kind, "data": data});
         if session.events.try_send(event).is_err() {
-            session.request_stop();
-            self.show_notice("RECORDING STOPPED: timeline writer unavailable or too slow");
+            tracing::warn!("recording timeline queue full; dropping event");
         }
     }
 
@@ -122,7 +120,7 @@ impl Compositor {
             self.recording = None;
             match result {
                 Ok(path) => self.show_notice(&format!("RECORDING SAVED: {}", path.display())),
-                Err(error) => self.show_notice(&format!("RECORDING FAILED: {error}")),
+                Err(error) => self.show_recording_failure(&error),
             }
             return;
         }
@@ -149,13 +147,12 @@ impl Compositor {
                         Err(mpsc::TrySendError::Full(_)) => {
                             tracing::warn!("recording capture queue full; repeating the previous frame");
                         }
-                        Err(mpsc::TrySendError::Disconnected(_)) => self.stop_recording(),
+                        Err(mpsc::TrySendError::Disconnected(_)) => {}
                     }
                 }
             }
             Err(error) => {
-                self.stop_recording();
-                self.show_notice(&format!("RECORDING CAPTURE FAILED: {error}"));
+                tracing::warn!(%error, "recording capture failed; repeating previous frame");
             }
         }
     }
@@ -274,6 +271,8 @@ fn spawn_encoder(
             &format!("{width}x{height}"),
             "-framerate",
             "30",
+            "-use_wallclock_as_timestamps",
+            "1",
             "-i",
             "pipe:0",
         ]);
@@ -290,7 +289,7 @@ fn spawn_encoder(
     map_tracks(&mut command, &sources);
     let _output = command
         .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"])
-        .args(["-pix_fmt", "yuv420p", "-c:a", "aac"])
+        .args(["-vf", "fps=30", "-pix_fmt", "yuv420p", "-c:a", "aac"])
         .args(["-af", "aresample=async=1:first_pts=0"])
         .args(["-shortest", "-movflags", "+faststart"])
         .arg(path.join("video.mp4"))
@@ -389,35 +388,60 @@ fn encode(
         rustix::fs::fcntl_setfl(&pipe, rustix::fs::OFlags::NONBLOCK)?;
         let mut deadline = started;
         let mut pixels = fit(frame, size);
-        let mut written = Duration::ZERO;
-        let mut pending = None;
+        let mut offset = 0;
         loop {
-            flush_events(&mut timeline, events)?;
-            if pending.is_none() {
-                match frames.try_recv() {
-                    Ok(next) => pending = Some(next),
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        return Err(io::Error::other("recording capture disconnected"));
-                    }
-                    Err(mpsc::TryRecvError::Empty) => {}
-                }
+            if child.0.try_wait()?.is_some() {
+                return Err(io::Error::other(
+                    "ffmpeg exited; see recording folder's ffmpeg.log",
+                ));
             }
-            if pending.as_ref().is_some_and(|(captured, _)| *captured <= written)
-                && let Some((_, next)) = pending.take()
-            {
-                pixels = fit(&next, size);
+            if let Err(error) = flush_events(&mut timeline, events) {
+                tracing::warn!(%error, "recording timeline write failed");
             }
             let stopped_ms = stop.load(Ordering::Relaxed);
-            if stopped_ms != u64::MAX && written >= Duration::from_millis(stopped_ms) {
+            if stopped_ms != u64::MAX {
                 break;
             }
-            write_frame(&mut pipe, pixels.as_raw())?;
-            written = written.saturating_add(INTERVAL);
-            deadline = deadline.checked_add(INTERVAL).unwrap_or_else(Instant::now);
-            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            if offset == 0 {
+                for (_, next) in frames.try_iter() {
+                    pixels = fit(&next, size);
+                }
+                if Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+            }
+            match pipe.write(pixels.as_raw().get(offset..).unwrap_or_default()) {
+                Ok(0) => std::thread::sleep(Duration::from_millis(2)),
+                Ok(count) => {
+                    offset = offset.saturating_add(count);
+                    if offset >= pixels.as_raw().len() {
+                        offset = 0;
+                        deadline = Instant::now().checked_add(INTERVAL).unwrap_or_else(Instant::now);
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "recording pipe unavailable; waiting for ffmpeg");
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
         }
-        flush_events(&mut timeline, events)?;
-        timeline.sync_all()?;
+        if let Err(error) = flush_events(&mut timeline, events).and_then(|()| {
+            serde_json::to_writer(
+                &mut timeline,
+                &json!({
+                    "time_ms": stop.load(Ordering::Relaxed), "kind": "stop", "data": {}
+                }),
+            )?;
+            timeline.write_all(b"\n")?;
+            timeline.sync_all()
+        }) {
+            tracing::warn!(%error, "recording timeline flush failed");
+        }
         Ok(())
     })();
     finish_encoder(&mut child, result)
@@ -482,23 +506,4 @@ impl Drop for Encoder {
         let _killed = self.0.kill();
         let _waited = self.0.wait();
     }
-}
-
-fn write_frame(pipe: &mut impl Write, mut pixels: &[u8]) -> io::Result<()> {
-    let deadline = Instant::now().checked_add(Duration::from_secs(2));
-    while !pixels.is_empty() {
-        match pipe.write(pixels) {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(count) => pixels = pixels.get(count..).unwrap_or_default(),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
-                    return Err(io::Error::other("ffmpeg stopped accepting frames"));
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
 }
