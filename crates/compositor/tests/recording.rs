@@ -71,7 +71,7 @@ mod recording {
             let until = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
             while Instant::now() < until {
                 compositor.advance_time();
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(100));
             }
         }
         let deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
@@ -145,7 +145,7 @@ mod recording {
         assert_eq!(video["inputs"], serde_json::json!(inputs));
         let titles: Vec<_> = microphones
             .iter()
-            .chain(["speakers.monitor"].iter())
+            .chain(core::iter::once(&"speakers.monitor"))
             .map(|source| format!("title={source}"))
             .collect();
         assert_eq!(video["titles"], serde_json::json!(titles));
@@ -214,7 +214,7 @@ mod recording {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .find(|event| event["kind"] == "stop")
-            .unwrap()["time_ms"]
+            .expect("timeline must contain the explicit stop")["time_ms"]
             .as_u64()
             .unwrap();
         let output = std::process::Command::new("/usr/bin/ffprobe")
@@ -268,37 +268,7 @@ mod recording {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    fn isolated(mode: &str) {
-        if matches!(mode, "duration" | "orientation")
-            && !["/usr/bin/ffmpeg", "/usr/bin/ffprobe"]
-                .iter()
-                .all(|program| Path::new(program).is_file())
-        {
-            return;
-        }
-        let directory = tempfile::tempdir().unwrap();
-        let bin = directory.path().join("bin");
-        std::fs::create_dir(&bin).unwrap();
-        executable(
-            &bin.join("pactl"),
-            "#!/bin/sh\ncase \"$1\" in get-default-source) echo mic-a;; *) echo speakers;; esac\n",
-        );
-        let listing = serde_json::json!(["mic-a", "mic-b"].map(|name| serde_json::json!({
-            "type": "PipeWire:Interface:Node", "info": {"props": {
-                "node.name": name, "media.class": "Audio/Source"}}
-        })));
-        executable(
-            &bin.join("pw-dump"),
-            &format!("#!/bin/sh\nprintf '%s' '{}'\n", listing),
-        );
-        let config = directory.path().join("config/tehuti");
-        std::fs::create_dir_all(&config).unwrap();
-        let choice = match mode {
-            "named" => "mic-b",
-            "auto" => "auto",
-            _ => "all",
-        };
-        std::fs::write(config.join("speech-source"), choice).unwrap();
+    fn install_encoder(bin: &Path, mode: &str) {
         if mode != "missing" {
             executable(
                 &bin.join("ffmpeg"),
@@ -342,6 +312,40 @@ os.execv('/usr/bin/ffmpeg', ['ffmpeg'] + args)
 ",
             );
         }
+    }
+
+    fn isolated(mode: &str) {
+        if matches!(mode, "duration" | "orientation")
+            && !["/usr/bin/ffmpeg", "/usr/bin/ffprobe"]
+                .iter()
+                .all(|program| Path::new(program).is_file())
+        {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let bin = directory.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        executable(
+            &bin.join("pactl"),
+            "#!/bin/sh\ncase \"$1\" in get-default-source) echo mic-a;; *) echo speakers;; esac\n",
+        );
+        let listing = serde_json::json!(["mic-a", "mic-b"].map(|name| serde_json::json!({
+            "type": "PipeWire:Interface:Node", "info": {"props": {
+                "node.name": name, "media.class": "Audio/Source"}}
+        })));
+        executable(
+            &bin.join("pw-dump"),
+            &format!("#!/bin/sh\nprintf '%s' '{listing}'\n"),
+        );
+        let config = directory.path().join("config/tehuti");
+        std::fs::create_dir_all(&config).unwrap();
+        let choice = match mode {
+            "named" => "mic-b",
+            "auto" => "auto",
+            _ => "all",
+        };
+        std::fs::write(config.join("speech-source"), choice).unwrap();
+        install_encoder(&bin, mode);
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
