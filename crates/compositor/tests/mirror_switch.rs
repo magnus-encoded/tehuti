@@ -463,10 +463,8 @@ mod tests {
             log.borrow().frames.last(),
             Some(&(
                 "first",
-                vec![
-                    (EventType::KEY.0, KeyCode::BTN_EAST.code(), 1),
-                    (EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
-                ]
+                // `VirtualDevice::emit` appends the SYN_REPORT itself.
+                vec![(EventType::KEY.0, KeyCode::BTN_EAST.code(), 1)]
             ))
         );
     }
