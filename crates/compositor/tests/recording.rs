@@ -13,7 +13,7 @@ mod recording {
     )]
     fn voice_recording_writes_shared_capture_and_a_searchable_timeline() {
         if std::env::var_os("RECORDING_PROBE").is_none() {
-            for mode in ["capture", "missing", "encoder_failure"] {
+            for mode in ["capture", "named", "auto", "missing", "encoder_failure"] {
                 isolated(mode);
             }
             return;
@@ -23,14 +23,21 @@ mod recording {
         let display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        compositor.load_input_choices(tehuti::input_choice_store::Store::from_env().unwrap());
         let colour = Rc::new(RefCell::new(image::Rgba([240, 20, 60, 255])));
-        let (width, height) = if mode == "duration" {
+        let (width, height) = if matches!(mode.as_str(), "duration" | "orientation") {
             (64, 64)
         } else {
             (2560, 1440)
         };
         compositor.set_capture_source(&colour, move |colour, _, _| {
-            Ok(image::RgbaImage::from_pixel(width, height, *colour))
+            let mut frame = image::RgbaImage::from_pixel(width, height, *colour);
+            for y in 0..16 {
+                for x in 0..16 {
+                    frame.put_pixel(x, y, image::Rgba([20, 240, 40, 255]));
+                }
+            }
+            Ok(frame)
         });
         compositor.say(Text::new("start recording".into()).unwrap());
         if mode == "missing" {
@@ -114,20 +121,43 @@ mod recording {
             .collect();
         assert_eq!(folders.len(), 1);
         let folder = &folders[0];
+        if mode == "orientation" {
+            assert_top_left_marker(folder);
+            return;
+        }
         if mode == "duration" {
             assert_wall_duration(folder);
             return;
         }
         let video: serde_json::Value =
             serde_json::from_slice(&std::fs::read(folder.join("video.mp4")).unwrap()).unwrap();
-        assert_eq!(video["pixel"], serde_json::json!([240, 20, 60, 255]));
+        assert_eq!(video["pixel"], serde_json::json!([20, 240, 40, 255]));
         assert_eq!(video["size"], "1920x1080");
         assert_eq!(video["fps"], "30");
-        assert_eq!(
-            video["inputs"],
-            serde_json::json!(["pipe:0", "speakers.monitor", "default"])
+        let microphones = match mode.as_str() {
+            "named" => vec!["mic-b"],
+            "auto" => vec!["mic-a"],
+            _ => vec!["mic-a", "mic-b"],
+        };
+        let mut inputs = vec!["pipe:0"];
+        inputs.extend(microphones.iter().copied());
+        inputs.push("speakers.monitor");
+        assert_eq!(video["inputs"], serde_json::json!(inputs));
+        let titles: Vec<_> = microphones
+            .iter()
+            .chain(["speakers.monitor"].iter())
+            .map(|source| format!("title={source}"))
+            .collect();
+        assert_eq!(video["titles"], serde_json::json!(titles));
+        assert_eq!(video["dispositions"][0], "default");
+        assert!(
+            video["dispositions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .skip(1)
+                .all(|value| value == "0")
         );
-        assert_eq!(video["maps"], serde_json::json!(["0:v:0", "1:a:0", "2:a:0"]));
         let text = std::fs::read_to_string(folder.join("timeline.jsonl")).unwrap();
         let events: Vec<serde_json::Value> = text
             .lines()
@@ -154,6 +184,30 @@ mod recording {
         isolated("duration");
     }
 
+    #[test]
+    fn recording_first_frame_keeps_a_top_left_marker() {
+        isolated("orientation");
+    }
+
+    fn assert_top_left_marker(folder: &Path) {
+        let output = std::process::Command::new("/usr/bin/ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(folder.join("video.mp4"))
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let frame = image::RgbaImage::from_raw(64, 64, output.stdout).unwrap();
+        let marker = frame.get_pixel(8, 8);
+        assert!(
+            marker[1] > 200 && marker[0] < 60 && marker[2] < 80,
+            "encoded first frame must keep the green marker top-left: {marker:?}"
+        );
+        for (x, y) in [(55, 8), (8, 55), (55, 55)] {
+            assert!(frame.get_pixel(x, y)[0] > 200, "marker moved to another corner");
+        }
+    }
+
     fn assert_wall_duration(folder: &Path) {
         let timeline = std::fs::read_to_string(folder.join("timeline.jsonl")).unwrap();
         let elapsed_ms = timeline
@@ -168,7 +222,7 @@ mod recording {
                 "-v",
                 "error",
                 "-show_entries",
-                "stream=codec_type,duration,start_time",
+                "stream=codec_type,duration,start_time:stream_tags=handler_name:stream_disposition=default",
                 "-of",
                 "json",
             ])
@@ -178,7 +232,25 @@ mod recording {
         assert!(output.status.success());
         let probe: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         let streams = probe["streams"].as_array().unwrap();
-        assert_eq!(streams.len(), 3, "video and both audio tracks must survive");
+        assert_eq!(
+            streams.len(),
+            4,
+            "video, both microphones and desktop audio must survive"
+        );
+        let audio: Vec<_> = streams
+            .iter()
+            .filter(|stream| stream["codec_type"] == "audio")
+            .collect();
+        for (stream, source) in audio.iter().zip(["mic-a", "mic-b", "speakers.monitor"]) {
+            assert_eq!(stream["tags"]["handler_name"], source);
+        }
+        assert_eq!(audio[0]["disposition"]["default"], 1);
+        assert!(
+            audio
+                .iter()
+                .skip(1)
+                .all(|stream| stream["disposition"]["default"] == 0)
+        );
         let elapsed = Duration::from_millis(elapsed_ms);
         for stream in streams {
             let duration = Duration::from_secs_f64(stream["duration"].as_str().unwrap().parse().unwrap());
@@ -197,7 +269,7 @@ mod recording {
     }
 
     fn isolated(mode: &str) {
-        if mode == "duration"
+        if matches!(mode, "duration" | "orientation")
             && !["/usr/bin/ffmpeg", "/usr/bin/ffprobe"]
                 .iter()
                 .all(|program| Path::new(program).is_file())
@@ -207,7 +279,26 @@ mod recording {
         let directory = tempfile::tempdir().unwrap();
         let bin = directory.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
-        executable(&bin.join("pactl"), "#!/bin/sh\nprintf 'speakers\\n'\n");
+        executable(
+            &bin.join("pactl"),
+            "#!/bin/sh\ncase \"$1\" in get-default-source) echo mic-a;; *) echo speakers;; esac\n",
+        );
+        let listing = serde_json::json!(["mic-a", "mic-b"].map(|name| serde_json::json!({
+            "type": "PipeWire:Interface:Node", "info": {"props": {
+                "node.name": name, "media.class": "Audio/Source"}}
+        })));
+        executable(
+            &bin.join("pw-dump"),
+            &format!("#!/bin/sh\nprintf '%s' '{}'\n", listing),
+        );
+        let config = directory.path().join("config/tehuti");
+        std::fs::create_dir_all(&config).unwrap();
+        let choice = match mode {
+            "named" => "mic-b",
+            "auto" => "auto",
+            _ => "all",
+        };
+        std::fs::write(config.join("speech-source"), choice).unwrap();
         if mode != "missing" {
             executable(
                 &bin.join("ffmpeg"),
@@ -224,12 +315,13 @@ pathlib.Path(args[-1]).write_text(json.dumps({
     'pixel': list(pixel), 'size': args[args.index('-video_size') + 1],
     'fps': args[args.index('-framerate') + 1],
     'inputs': [args[i + 1] for i, arg in enumerate(args) if arg == '-i'],
-    'maps': [args[i + 1] for i, arg in enumerate(args) if arg == '-map'],
+    'titles': [arg for arg in args if arg.startswith('title=')],
+    'dispositions': [args[i + 1] for i, arg in enumerate(args) if arg.startswith('-disposition:a:')],
 }))
 ",
             );
         }
-        if mode == "duration" {
+        if matches!(mode, "duration" | "orientation") {
             executable(
                 &bin.join("ffmpeg"),
                 r"#!/usr/bin/python3
@@ -238,11 +330,12 @@ args = sys.argv[1:]
 from pathlib import Path
 Path(os.environ['HOME'], 'encoder-ready').touch()
 # Hold the raw pipe across stop, below the writer's bounded stall timeout.
-time.sleep(1.5)
+if os.environ['RECORDING_PROBE'] == 'duration':
+    time.sleep(1.5)
 for index in range(len(args)):
     if args[index] == 'pulse':
         args[index] = 'lavfi'
-    if args[index] in ('speakers.monitor', 'default'):
+    if args[index] in ('speakers.monitor', 'mic-a', 'mic-b'):
         args[index] = 'anullsrc=r=48000:cl=stereo'
 # Audio fixtures need no microphone or PulseAudio server.
 os.execv('/usr/bin/ffmpeg', ['ffmpeg'] + args)

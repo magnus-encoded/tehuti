@@ -182,11 +182,12 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
     let stop = Arc::new(AtomicU64::new(u64::MAX));
     let worker_stop = Arc::clone(&stop);
     let started = Instant::now();
+    let microphone = compositor.settings().input.microphone.clone();
     let worker = std::thread::Builder::new()
         .name("tehuti-recording".into())
         .spawn(move || {
             let result = (|| {
-                let child = spawn_encoder(&path, (width, height))?;
+                let child = spawn_encoder(&path, (width, height), &microphone)?;
                 let timeline = File::create_new(path.join("timeline.jsonl"))?;
                 encode(
                     child,
@@ -214,8 +215,23 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
     })
 }
 
-fn spawn_encoder(path: &std::path::Path, (width, height): (u32, u32)) -> io::Result<Encoder> {
-    let sink = default_monitor()?;
+fn spawn_encoder(
+    path: &std::path::Path,
+    (width, height): (u32, u32),
+    microphone: &tehuti_core::dispatch::MicrophoneChoice,
+) -> io::Result<Encoder> {
+    use tehuti_core::dispatch::MicrophoneChoice;
+    let mut sources = match microphone {
+        MicrophoneChoice::Named(name) => vec![name.clone()],
+        MicrophoneChoice::Auto => vec![audio_probe("get-default-source")?],
+        MicrophoneChoice::All => crate::input_choice_store::list_microphones()
+            .recv_timeout(Duration::from_secs(4))
+            .map_err(io::Error::other)?
+            .into_iter()
+            .map(|microphone| microphone.name)
+            .collect(),
+    };
+    sources.push(format!("{}.monitor", audio_probe("get-default-sink")?));
     std::fs::create_dir_all(path)?;
     let log = File::create_new(path.join("ffmpeg.log"))?;
     let mut command = Command::new("ffmpeg");
@@ -239,21 +255,35 @@ fn spawn_encoder(path: &std::path::Path, (width, height): (u32, u32)) -> io::Res
             "30",
             "-i",
             "pipe:0",
-        ])
-        .args(["-probesize", "32", "-analyzeduration", "1"])
-        .args(["-thread_queue_size", "64", "-f", "pulse", "-i", &sink])
-        .args(["-probesize", "32", "-analyzeduration", "1"])
-        .args(["-thread_queue_size", "64", "-f", "pulse", "-i", "default"])
-        .args(["-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0"])
+        ]);
+    for source in &sources {
+        let _input = command.args(["-probesize", "32", "-analyzeduration", "1"]).args([
+            "-thread_queue_size",
+            "64",
+            "-f",
+            "pulse",
+            "-i",
+            source,
+        ]);
+    }
+    let _video = command.args(["-map", "0:v:0"]);
+    for (index, source) in sources.iter().enumerate() {
+        let _track = command
+            .args(["-map", &format!("{}:a:0", index.saturating_add(1))])
+            .args([&format!("-metadata:s:a:{index}"), &format!("title={source}")])
+            .args([
+                &format!("-metadata:s:a:{index}"),
+                &format!("handler_name={source}"),
+            ])
+            .args([
+                &format!("-disposition:a:{index}"),
+                if index == 0 { "default" } else { "0" },
+            ]);
+    }
+    let _output = command
         .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"])
         .args(["-pix_fmt", "yuv420p", "-c:a", "aac"])
         .args(["-af", "aresample=async=1:first_pts=0"])
-        .args([
-            "-metadata:s:a:0",
-            "title=System output",
-            "-metadata:s:a:1",
-            "title=Microphone",
-        ])
         .args(["-shortest", "-movflags", "+faststart"])
         .arg(path.join("video.mp4"))
         .stdin(Stdio::piped())
@@ -269,10 +299,10 @@ fn spawn_encoder(path: &std::path::Path, (width, height): (u32, u32)) -> io::Res
     Ok(child)
 }
 
-fn default_monitor() -> io::Result<String> {
+fn audio_probe(operation: &str) -> io::Result<String> {
     let mut probe = Encoder(
         Command::new("pactl")
-            .arg("get-default-sink")
+            .arg(operation)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -306,7 +336,7 @@ fn default_monitor() -> io::Result<String> {
     if sink.is_empty() {
         return Err(io::Error::other("default audio sink unavailable"));
     }
-    Ok(format!("{sink}.monitor"))
+    Ok(sink.to_owned())
 }
 
 fn dimensions(width: u32, height: u32) -> (u32, u32) {

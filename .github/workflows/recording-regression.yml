@@ -16,7 +16,8 @@ jobs:
       - name: Recording regression passes on branch
         run: |
           cargo test --locked -p tehuti-core --test recording
-          XDG_RUNTIME_DIR=/tmp cargo test --locked -p tehuti --test recording recording_duration_matches_wall_time_with_a_delayed_encoder
+          XDG_RUNTIME_DIR=/tmp cargo test --locked -p tehuti --test recording
+          cargo test --locked -p tehuti --test readback
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -53,6 +54,17 @@ jobs:
           [ "$result" -ne 0 ]
           grep -q 'recording must start an encoder for wall-clock video' duration-baseline.log
           printf 'Duration regression: FAIL on origin/main (%s), PASS on branch.\n' '${{ github.event.pull_request.base.sha }}' >> "$GITHUB_STEP_SUMMARY"
+      - name: Encoded orientation regression fails on origin/main
+        shell: bash
+        run: |
+          set +e
+          XDG_RUNTIME_DIR=/tmp cargo test --manifest-path baseline/Cargo.toml --locked -p tehuti --test recording recording_first_frame_keeps_a_top_left_marker > orientation-baseline.log 2>&1
+          result=$?
+          set -e
+          cat orientation-baseline.log
+          [ "$result" -ne 0 ]
+          grep -q 'recording must start an encoder for wall-clock video' orientation-baseline.log
+          printf 'Encoded top-left marker regression: FAIL on origin/main (%s), PASS on branch.\n' '${{ github.event.pull_request.base.sha }}' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -60,3 +72,4 @@ jobs:
           path: |
             baseline.log
             duration-baseline.log
+            orientation-baseline.log
