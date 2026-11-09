@@ -308,8 +308,10 @@ mod recording {
             assert!(
                 writer
                     .bytes
-                    .chunks_exact(4)
-                    .all(|pixel| pixel == [20, 240, 40, 255])
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|pixel| *pixel == [20, 240, 40, 255])
             );
         }
     }
