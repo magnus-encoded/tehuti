@@ -24,6 +24,17 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: baseline
+      - name: Reserved speech regression fails on origin/main
+        shell: bash
+        run: |
+          cp crates/core/tests/reserved_speech.rs baseline/crates/core/tests/reserved_speech.rs
+          set +e
+          cargo test --manifest-path baseline/Cargo.toml --locked -p tehuti-core --test reserved_speech > reserved-baseline.log 2>&1
+          result=$?
+          set -e
+          cat reserved-baseline.log
+          [ "$result" -ne 0 ]
+          grep -q 'reserved command must bypass context fallback: new' reserved-baseline.log
       - name: Recording controls regression fails on origin/main
         shell: bash
         run: |
@@ -84,6 +95,7 @@ jobs:
           name: recording-baseline
           path: |
             baseline.log
+            reserved-baseline.log
             duration-baseline.log
             orientation-baseline.log
             east-baseline.log
