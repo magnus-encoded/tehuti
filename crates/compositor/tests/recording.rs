@@ -6,6 +6,96 @@ mod recording {
     use tehuti::state::Compositor;
     use tehuti_protocol::{Event, Text};
 
+    #[derive(Debug)]
+    struct Runtime {
+        clock: Rc<core::cell::Cell<Duration>>,
+        mode: String,
+    }
+
+    impl tehuti::recording_encoder::Runtime for Runtime {
+        fn now(&self) -> Duration {
+            self.clock.get()
+        }
+        fn audio_sources(
+            &self,
+            microphone: &tehuti_core::dispatch::MicrophoneChoice,
+        ) -> std::io::Result<Vec<String>> {
+            if self.mode == "missing" {
+                return Err(std::io::Error::other(
+                    "ffmpeg missing: install the ffmpeg package",
+                ));
+            }
+            let microphones = match microphone {
+                tehuti_core::dispatch::MicrophoneChoice::Named(name) => vec![name.as_str()],
+                tehuti_core::dispatch::MicrophoneChoice::Auto => vec!["mic-a"],
+                tehuti_core::dispatch::MicrophoneChoice::All => vec!["mic-a", "mic-b"],
+            };
+            Ok(microphones
+                .into_iter()
+                .chain(["speakers.monitor"])
+                .map(str::to_owned)
+                .collect())
+        }
+        fn spawn(
+            &self,
+            command: &std::process::Command,
+        ) -> std::io::Result<Box<dyn tehuti::recording_encoder::Sink>> {
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            let values = |flag: &str| {
+                args.windows(2)
+                    .filter(|pair| pair[0] == flag)
+                    .map(|pair| pair[1].clone())
+                    .collect::<Vec<_>>()
+            };
+            let video = serde_json::json!({
+                "size": values("-video_size")[0], "fps": values("-framerate")[0],
+                "inputs": values("-i"),
+                "titles": args.iter().filter(|arg| arg.starts_with("title=")).collect::<Vec<_>>(),
+                "dispositions": args.windows(2).filter(|pair| pair[0].starts_with("-disposition:a:")).map(|pair| &pair[1]).collect::<Vec<_>>(),
+            });
+            Ok(Box::new(Sink {
+                path: args.last().unwrap().into(),
+                video,
+                fail: self.mode.starts_with("encoder_failure"),
+                blocked: if self.mode == "flood" { 30 } else { 0 },
+            }))
+        }
+    }
+
+    #[derive(Debug)]
+    struct Sink {
+        path: std::path::PathBuf,
+        video: serde_json::Value,
+        fail: bool,
+        blocked: u32,
+    }
+    impl std::io::Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.fail {
+                return Err(std::io::Error::other("injected encoder failure"));
+            }
+            if self.blocked > 0 {
+                self.blocked -= 1;
+                return Err(std::io::ErrorKind::WouldBlock.into());
+            }
+            if self.video.get("pixel").is_none() {
+                self.video["pixel"] = serde_json::json!(&bytes[..4]);
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl tehuti::recording_encoder::Sink for Sink {
+        fn finish(&mut self) -> std::io::Result<()> {
+            std::fs::write(&self.path, serde_json::to_vec(&self.video)?)
+        }
+    }
+
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -42,6 +132,14 @@ mod recording {
             }
             Ok(frame)
         });
+        let clock = Rc::new(core::cell::Cell::new(Duration::ZERO));
+        let real_time = matches!(mode.as_str(), "duration" | "orientation");
+        if !real_time {
+            compositor.set_recording_runtime(Rc::new(Runtime {
+                clock: Rc::clone(&clock),
+                mode: mode.clone(),
+            }));
+        }
         compositor.say(Text::new("start recording".into()).unwrap());
         if mode == "missing" {
             assert!(
@@ -70,20 +168,21 @@ mod recording {
         });
         compositor.say(Text::new("an unmapped phrase".into()).unwrap());
         compositor.host_key(smithay::input::keyboard::Keycode::new(38), true);
-        let ready_deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
-        while !home.join("encoder-ready").exists() && Instant::now() < ready_deadline {
+        if real_time {
+            let ready_deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
+            while !home.join("encoder-ready").exists() && Instant::now() < ready_deadline {
+                compositor.advance_time();
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            assert!(home.join("encoder-ready").exists());
+        } else {
+            clock.set(Duration::from_millis(100));
             compositor.advance_time();
-            std::thread::sleep(Duration::from_millis(100));
         }
-        assert!(
-            home.join("encoder-ready").exists(),
-            "recording must start an encoder for wall-clock video: {:?}",
-            compositor.visible_notice_text()
-        );
         if mode == "capture_failure" {
             *colour.borrow_mut() = image::Rgba([0, 0, 0, 255]);
             for _ in 0..5 {
-                std::thread::sleep(Duration::from_millis(100));
+                clock.set(clock.get() + Duration::from_millis(100));
                 compositor.advance_time();
             }
             assert!(
@@ -127,14 +226,24 @@ mod recording {
         if !mode.starts_with("encoder_failure") {
             compositor.say(Text::new("stop recording".into()).unwrap());
         }
-        let saved_deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
-        while !compositor
-            .visible_notice_text()
-            .is_some_and(|text| text.starts_with("RECORDING SAVED:") || text.starts_with("RECORDING FAILED:"))
-            && Instant::now() < saved_deadline
-        {
-            compositor.advance_time();
-            std::thread::sleep(Duration::from_millis(10));
+        if real_time {
+            let saved_deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
+            while !compositor.visible_notice_text().is_some_and(|text| {
+                text.starts_with("RECORDING SAVED:") || text.starts_with("RECORDING FAILED:")
+            }) && Instant::now() < saved_deadline
+            {
+                compositor.advance_time();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        } else {
+            for _ in 0..100 {
+                compositor.advance_time();
+                if compositor.visible_notice_text().is_some_and(|text| {
+                    text.starts_with("RECORDING SAVED:") || text.starts_with("RECORDING FAILED:")
+                }) {
+                    break;
+                }
+            }
         }
         assert!(
             !compositor
@@ -150,7 +259,10 @@ mod recording {
                     .unwrap()
                     .starts_with("RECORDING FAILED:")
             );
-            std::thread::sleep(Duration::from_secs(4));
+            clock.set(clock.get() + Duration::from_secs(4));
+            compositor.handle(&Event::Tick {
+                elapsed: Duration::from_secs(4),
+            });
             compositor.advance_time();
             assert!(
                 compositor
@@ -423,37 +535,6 @@ mod recording {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    fn install_encoder(bin: &Path, mode: &str) {
-        if mode != "missing" {
-            executable(
-                &bin.join("ffmpeg"),
-                r"#!/usr/bin/python3
-import json, os, pathlib, sys, time
-args = sys.argv[1:]
-if os.environ['RECORDING_PROBE'].startswith('encoder_failure'):
-    pathlib.Path(os.environ['HOME'], 'encoder-ready').touch()
-    sys.exit(1)
-pixel = sys.stdin.buffer.read(4)
-pathlib.Path(os.environ['HOME'], 'encoder-ready').touch()
-if os.environ['RECORDING_PROBE'] == 'flood':
-    time.sleep(3.2)
-while sys.stdin.buffer.read(65536):
-    pass
-pathlib.Path(args[-1]).write_text(json.dumps({
-    'pixel': list(pixel), 'size': args[args.index('-video_size') + 1],
-    'fps': args[args.index('-framerate') + 1],
-    'inputs': [args[i + 1] for i, arg in enumerate(args) if arg == '-i'],
-    'titles': [arg for arg in args if arg.startswith('title=')],
-    'dispositions': [args[i + 1] for i, arg in enumerate(args) if arg.startswith('-disposition:a:')],
-}))
-",
-            );
-        }
-        if matches!(mode, "duration" | "orientation") {
-            install_video_encoder(bin);
-        }
-    }
-
     fn install_video_encoder(bin: &Path) {
         executable(
             &bin.join("ffmpeg"),
@@ -526,7 +607,9 @@ sys.exit(child.wait())
             _ => "all",
         };
         std::fs::write(config.join("speech-source"), choice).unwrap();
-        install_encoder(&bin, mode);
+        if matches!(mode, "duration" | "orientation") {
+            install_video_encoder(&bin);
+        }
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

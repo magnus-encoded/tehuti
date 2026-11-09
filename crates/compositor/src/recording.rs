@@ -30,9 +30,31 @@ pub(super) struct Session {
     next_frame: Instant,
     scene: Value,
     worker: Option<std::thread::JoinHandle<()>>,
+    injected: Option<Injected>,
+}
+
+#[derive(Debug)]
+struct Injected {
+    runtime: std::rc::Rc<dyn crate::recording_encoder::Runtime>,
+    began: Duration,
+    sink: Box<dyn crate::recording_encoder::Sink>,
+    encoder: crate::recording_encoder::FrameEncoder,
+    pixels: RgbaImage,
+    timeline: File,
+    events: Receiver<Value>,
+    frames: Receiver<(Duration, RgbaImage)>,
+    size: (u32, u32),
+    result: SyncSender<Result<PathBuf, String>>,
+    path: PathBuf,
 }
 
 impl Compositor {
+    /// Supplies a recording clock and encoder for an embedded recording runtime.
+    pub fn set_recording_runtime(&mut self, runtime: std::rc::Rc<dyn crate::recording_encoder::Runtime>) {
+        self.use_driver_clock();
+        self.recording_runtime = Some(runtime);
+    }
+
     pub(super) fn recording_active(&self) -> bool {
         self.recording
             .as_ref()
@@ -77,7 +99,7 @@ impl Compositor {
         if session.stop.load(Ordering::Relaxed) != u64::MAX {
             return;
         }
-        let event = json!({"time_ms": session.started.elapsed().as_millis(), "kind": kind, "data": data});
+        let event = json!({"time_ms": session.elapsed().as_millis(), "kind": kind, "data": data});
         if session.events.try_send(event).is_err() {
             tracing::warn!("recording timeline queue full; dropping event");
         }
@@ -108,6 +130,9 @@ impl Compositor {
     }
 
     pub(super) fn poll_recording(&mut self) {
+        if let Some(session) = &mut self.recording {
+            session.pump();
+        }
         let result = self
             .recording
             .as_ref()
@@ -128,7 +153,12 @@ impl Compositor {
             return;
         }
         self.record_screen();
-        let now = Instant::now();
+        let now = self.recording.as_ref().map_or_else(Instant::now, |session| {
+            session
+                .started
+                .checked_add(session.elapsed())
+                .unwrap_or(session.started)
+        });
         if self
             .recording
             .as_ref()
@@ -142,7 +172,7 @@ impl Compositor {
         match crate::driver_shot::frame(self, &chrono::Local::now().format("%H:%M").to_string()) {
             Ok(frame) => {
                 if let Some(session) = &self.recording {
-                    match session.frames.try_send((session.started.elapsed(), frame)) {
+                    match session.frames.try_send((session.elapsed(), frame)) {
                         Err(mpsc::TrySendError::Full(_)) => {
                             tracing::warn!("recording capture queue full; repeating the previous frame");
                         }
@@ -159,7 +189,9 @@ impl Compositor {
 
 fn start(compositor: &Compositor) -> io::Result<Session> {
     let search_path = std::env::var_os("PATH").unwrap_or_default();
-    if !std::env::split_paths(&search_path).any(|directory| directory.join("ffmpeg").is_file()) {
+    if compositor.recording_runtime.is_none()
+        && !std::env::split_paths(&search_path).any(|directory| directory.join("ffmpeg").is_file())
+    {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "ffmpeg missing: install the ffmpeg package",
@@ -177,7 +209,37 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
     let (send_result, status_receiver) = mpsc::sync_channel(1);
     let stop = Arc::new(AtomicU64::new(u64::MAX));
     let worker_stop = Arc::clone(&stop);
-    let started = Instant::now();
+    let started = compositor.clock_now();
+    if let Some(runtime) = &compositor.recording_runtime {
+        std::fs::create_dir_all(&path)?;
+        let sources = runtime.audio_sources(&compositor.settings().input.microphone)?;
+        let command = encoder_command(&path, (width, height), &sources);
+        let sink = runtime.spawn(&command)?;
+        let timeline = File::create_new(path.join("timeline.jsonl"))?;
+        return Ok(Session {
+            frames,
+            events,
+            result: status_receiver,
+            stop,
+            started,
+            next_frame: started.checked_add(INTERVAL).unwrap_or(started),
+            scene: Value::Null,
+            worker: None,
+            injected: Some(Injected {
+                runtime: std::rc::Rc::clone(runtime),
+                began: runtime.now(),
+                sink,
+                encoder: crate::recording_encoder::FrameEncoder::default(),
+                pixels: fit(&frame, (width, height)),
+                timeline,
+                events: receive_events,
+                frames: receive_frames,
+                size: (width, height),
+                result: send_result,
+                path,
+            }),
+        });
+    }
     let microphone = compositor.settings().input.microphone.clone();
     let worker = std::thread::Builder::new()
         .name("tehuti-recording".into())
@@ -208,6 +270,7 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         next_frame: started.checked_add(INTERVAL).unwrap_or(started),
         scene: Value::Null,
         worker: Some(worker),
+        injected: None,
     })
 }
 
@@ -251,6 +314,19 @@ fn spawn_encoder(
     let sources = audio_sources(microphone)?;
     std::fs::create_dir_all(path)?;
     let log = File::create_new(path.join("ffmpeg.log"))?;
+    let mut command = encoder_command(path, (width, height), &sources);
+    let _stderr = command.stderr(log);
+    let child = Encoder(command.spawn().map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            io::Error::new(error.kind(), "ffmpeg missing: install the ffmpeg package")
+        } else {
+            error
+        }
+    })?);
+    Ok(child)
+}
+
+fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources: &[String]) -> Command {
     let mut command = Command::new("ffmpeg");
     let _args = command
         .args(["-hide_banner", "-nostdin", "-n"])
@@ -273,7 +349,7 @@ fn spawn_encoder(
             "-i",
             "pipe:0",
         ]);
-    for source in &sources {
+    for source in sources {
         let _input = command.args(["-probesize", "32", "-analyzeduration", "1"]).args([
             "-thread_queue_size",
             "64",
@@ -283,7 +359,7 @@ fn spawn_encoder(
             source,
         ]);
     }
-    map_tracks(&mut command, &sources);
+    map_tracks(&mut command, sources);
     let _output = command
         .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"])
         .args(["-vf", "fps=30", "-pix_fmt", "yuv420p", "-c:a", "aac"])
@@ -291,16 +367,8 @@ fn spawn_encoder(
         .args(["-shortest", "-movflags", "+faststart"])
         .arg(path.join("video.mp4"))
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(log);
-    let child = Encoder(command.spawn().map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            io::Error::new(error.kind(), "ffmpeg missing: install the ffmpeg package")
-        } else {
-            error
-        }
-    })?);
-    Ok(child)
+        .stdout(Stdio::null());
+    command
 }
 
 fn audio_probe(operation: &str) -> io::Result<String> {
@@ -474,8 +542,54 @@ fn finish_encoder(child: &mut Encoder, result: io::Result<()>) -> io::Result<()>
 }
 
 impl Session {
+    fn elapsed(&self) -> Duration {
+        self.injected.as_ref().map_or_else(
+            || self.started.elapsed(),
+            |injected| injected.runtime.now().saturating_sub(injected.began),
+        )
+    }
+
+    fn pump(&mut self) {
+        let elapsed = self.elapsed();
+        let stopped = self.stop.load(Ordering::Relaxed);
+        let Some(injected) = &mut self.injected else {
+            return;
+        };
+        let result: io::Result<bool> = (|| {
+            flush_events(&mut injected.timeline, &injected.events)?;
+            if injected.encoder.at_frame_boundary()
+                && let Some((_, next)) = injected.frames.try_iter().last()
+            {
+                injected.pixels = fit(&next, injected.size);
+            }
+            let elapsed = if stopped == u64::MAX {
+                elapsed
+            } else {
+                Duration::from_millis(stopped)
+            };
+            if injected
+                .encoder
+                .write_due(&mut injected.sink, injected.pixels.as_raw(), || elapsed)?
+                && stopped != u64::MAX
+            {
+                finish_timeline(&mut injected.timeline, &injected.events, stopped)?;
+                injected.sink.finish()?;
+                return Ok(true);
+            }
+            Ok(false)
+        })();
+        match result {
+            Ok(false) => {}
+            Ok(true) => {
+                let _sent = injected.result.send(Ok(injected.path.clone()));
+            }
+            Err(error) => {
+                let _sent = injected.result.send(Err(error.to_string()));
+            }
+        }
+    }
     fn request_stop(&self) {
-        let elapsed = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX.saturating_sub(1));
+        let elapsed = u64::try_from(self.elapsed().as_millis()).unwrap_or(u64::MAX.saturating_sub(1));
         let _stopped = self
             .stop
             .compare_exchange(u64::MAX, elapsed, Ordering::Relaxed, Ordering::Relaxed);

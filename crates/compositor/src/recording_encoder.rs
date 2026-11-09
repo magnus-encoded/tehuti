@@ -51,3 +51,28 @@ impl FrameEncoder {
         self.offset == 0
     }
 }
+
+/// Replaceable recording clock, audio discovery and encoder process.
+pub trait Runtime: core::fmt::Debug {
+    /// Elapsed time on this runtime's clock.
+    fn now(&self) -> Duration;
+    /// Audio sources in track order.
+    ///
+    /// # Errors
+    /// Returns audio discovery failures.
+    fn audio_sources(&self, microphone: &tehuti_core::dispatch::MicrophoneChoice) -> io::Result<Vec<String>>;
+    /// Opens the encoder described by the production command.
+    ///
+    /// # Errors
+    /// Returns encoder startup failures.
+    fn spawn(&self, command: &std::process::Command) -> io::Result<Box<dyn Sink>>;
+}
+
+/// A recording encoder whose input and completion can be driven synchronously.
+pub trait Sink: Write + core::fmt::Debug {
+    /// Completes the recording after all due frames have been written.
+    ///
+    /// # Errors
+    /// Returns encoder completion failures.
+    fn finish(&mut self) -> io::Result<()>;
+}
