@@ -29,7 +29,7 @@ mod recording {
                         state: ButtonState::Pressed
                     }
                 )
-                .map(|command| command.key()),
+                .map(tehuti_core::menu::Command::key),
                 Some(key)
             );
             assert!(menu.is_none(), "recording starts and stops on one press");
@@ -73,13 +73,13 @@ mod recording {
                         input = Input::PluginActive(true);
                     } else if let Effect::DispatchPlugin { .. } = effect {
                         input = Input::PluginRequest(None);
-                    } else if let Effect::ReadClock = effect {
+                    } else if effect == Effect::ReadClock {
                         input = Input::ClockRead(Duration::ZERO);
                     } else if let Effect::ConfirmSecret(_) = effect {
                         input = Input::SecretConfirmation(false);
                     } else if let Effect::PollSpeech(_) = effect {
                         input = Input::SpeechPolled(vec![]);
-                    } else if let Effect::Supervise = effect {
+                    } else if effect == Effect::Supervise {
                         input = Input::Supervised(vec![]);
                     }
                 }
