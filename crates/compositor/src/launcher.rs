@@ -12,29 +12,16 @@ pub fn destinations(
     let mut destinations = Vec::new();
     let mut routes = Vec::new();
     for entry in entries {
-        if kind == tehuti_core::unit_verbs::DestinationKind::Creation {
-            continue;
-        }
-        if kind == tehuti_core::unit_verbs::DestinationKind::Project && entry.source != Source::Project {
+        if kind == DestinationKind::Creation
+            || (kind == DestinationKind::Project && entry.source != Source::Project)
+        {
             continue;
         }
         for (index, route) in entry.routes.iter().enumerate() {
             if entry.source == Source::Desktop && index > 0 {
                 continue;
             }
-            if route.steps.len() == 1
-                && let Some(target) = route.steps.first().map(|step| &step.target)
-                && let Target::Application(app) = target
-                && entries.iter().any(|other| {
-                    other.source == Source::Desktop
-                        && other.routes.iter().any(|route| {
-                            route.steps.iter().any(|step| {
-                                matches!(&step.target,
-                            Target::Desktop(id) if id.strip_suffix(".desktop") == Some(app.as_str()))
-                            })
-                        })
-                })
-            {
+            if duplicates_desktop_route(route, entries) {
                 continue;
             }
             let open = route
@@ -82,4 +69,24 @@ pub fn destinations(
         }
     }
     (destinations, routes)
+}
+
+fn duplicates_desktop_route(route: &Route, entries: &[Destination]) -> bool {
+    use crate::destinations::{Source, Target};
+    let [step] = route.steps.as_slice() else {
+        return false;
+    };
+    let Target::Application(application) = &step.target else {
+        return false;
+    };
+    entries.iter().any(|entry| {
+        entry.source == Source::Desktop
+            && entry.routes.iter().any(|desktop_route| {
+                desktop_route.steps.iter().any(|desktop_step| {
+                    matches!(&desktop_step.target,
+                        Target::Desktop(desktop_id)
+                            if desktop_id.strip_suffix(".desktop") == Some(application.as_str()))
+                })
+            })
+    })
 }

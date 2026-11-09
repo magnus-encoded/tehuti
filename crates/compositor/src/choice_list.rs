@@ -104,10 +104,6 @@ impl Buffer {
 
     /// # Errors
     /// Returns the renderer's memory import error.
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "overlay placement uses fractional output coordinates"
-    )]
     pub fn element<R>(
         &mut self,
         renderer: &mut R,
@@ -396,7 +392,7 @@ pub fn scene(list: &List, family: PadFamily, size: (i32, i32)) -> Option<serde_j
     canvas.reference(1920, 1080);
     canvas.trace = true;
     let mut layout = paint(&mut canvas, list, family, content_height(list), &[]);
-    layout["panel"] = serde_json::json!({"x": left, "y": top, "width": width, "height": height});
+    *layout.get_mut("panel")? = serde_json::json!({"x": left, "y": top, "width": width, "height": height});
     Some(layout)
 }
 
