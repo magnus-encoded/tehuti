@@ -117,7 +117,11 @@ mod tests {
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut only, handles) = pad("only", &log);
         let path = Path::new("/dev/input/event1");
-        let mut sync = |mirrored| sync_mirrors(&mut [(path, &mut only)], mirrored, Some(path), &|_| false);
+        let mut sync = |mirrored| {
+            sync_mirrors(&mut [(path, &mut only)], mirrored, Some(path), &mut None, &|_| {
+                false
+            })
+        };
 
         assert!(sync(true).started);
         assert!(!sync(false).started);
@@ -140,6 +144,7 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(first_path),
+            &mut None,
             &|_| false,
         );
         assert!(first_sync.started && first_sync.failed.is_empty());
@@ -152,6 +157,7 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(second_path),
+            &mut None,
             &|_| false,
         );
         assert!(second_sync.started && second_sync.failed.is_empty());
@@ -208,6 +214,7 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(first_path),
+            &mut None,
             &consumed,
         );
         queue(&first_handles, KeyCode::BTN_START, 1);
@@ -219,6 +226,7 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(second_path),
+            &mut None,
             &consumed,
         );
         assert!(switched.started && second.mirrored());
@@ -262,6 +270,7 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(first_path),
+            &mut None,
             &|button| filter.consumed(button),
         );
         queue(&first_handles, KeyCode::BTN_START, 1);
@@ -279,6 +288,7 @@ mod tests {
             &mut [(first_path, &mut first), (second_path, &mut second)],
             true,
             Some(second_path),
+            &mut None,
             &|button| filter.consumed(button),
         );
         assert!(!first.mirrored() && second.mirrored());
@@ -336,9 +346,9 @@ mod tests {
         let path = Path::new("/dev/input/event1");
         handles.hat.set(-1);
 
-        let sync = sync_mirrors(&mut [(path, &mut held)], true, Some(path), &|_| false);
+        let sync = sync_mirrors(&mut [(path, &mut held)], true, Some(path), &mut None, &|_| false);
         assert!(sync.started);
-        let _gone = sync_mirrors(&mut [(path, &mut held)], true, None, &|_| false);
+        let _gone = sync_mirrors(&mut [(path, &mut held)], true, None, &mut None, &|_| false);
 
         let hat = (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_HAT0X.0);
         let values: Vec<i32> = log
