@@ -83,3 +83,5 @@ mod driver_shot;
 pub mod volume;
 
 pub mod readback;
+
+pub mod recording_encoder;

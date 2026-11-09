@@ -270,8 +270,6 @@ fn spawn_encoder(
             &format!("{width}x{height}"),
             "-framerate",
             "30",
-            "-use_wallclock_as_timestamps",
-            "1",
             "-i",
             "pipe:0",
         ]);
@@ -385,9 +383,8 @@ fn encode(
             .take()
             .ok_or_else(|| io::Error::other("ffmpeg stdin unavailable"))?;
         rustix::fs::fcntl_setfl(&pipe, rustix::fs::OFlags::NONBLOCK)?;
-        let mut deadline = started;
+        let mut encoder = crate::recording_encoder::FrameEncoder::default();
         let mut pixels = fit(frame, size);
-        let mut offset = 0;
         loop {
             if child.0.try_wait()?.is_some() {
                 return Err(io::Error::other(
@@ -398,35 +395,31 @@ fn encode(
                 tracing::warn!(%error, "recording timeline write failed");
             }
             let stopped_ms = stop.load(Ordering::Relaxed);
-            if stopped_ms != u64::MAX {
-                break;
+            if encoder.at_frame_boundary()
+                && let Some((_, next)) = frames.try_iter().last()
+            {
+                pixels = fit(&next, size);
             }
-            if offset == 0 {
-                if let Some((_, next)) = frames.try_iter().last() {
-                    pixels = fit(&next, size);
-                }
-                if Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(2));
-                    continue;
-                }
+            if stopped_ms != u64::MAX
+                && started
+                    .elapsed()
+                    .saturating_sub(Duration::from_millis(stopped_ms))
+                    > Duration::from_secs(5)
+            {
+                return Err(io::Error::other("ffmpeg did not drain within five seconds"));
             }
-            match pipe.write(pixels.as_raw().get(offset..).unwrap_or_default()) {
-                Ok(0) => std::thread::sleep(Duration::from_millis(2)),
-                Ok(count) => {
-                    offset = offset.saturating_add(count);
-                    if offset >= pixels.as_raw().len() {
-                        offset = 0;
-                        deadline = Instant::now().checked_add(INTERVAL).unwrap_or_else(Instant::now);
-                    }
+            let elapsed = if stopped_ms == u64::MAX {
+                started.elapsed()
+            } else {
+                Duration::from_millis(stopped_ms)
+            };
+            if encoder.write_due(&mut pipe, pixels.as_raw(), || elapsed)? {
+                if stopped_ms != u64::MAX {
+                    break;
                 }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "recording pipe unavailable; waiting for ffmpeg");
-                    std::thread::sleep(Duration::from_millis(2));
-                }
+                std::thread::sleep(Duration::from_millis(2));
+            } else {
+                std::thread::yield_now();
             }
         }
         if let Err(error) = finish_timeline(&mut timeline, events, stop.load(Ordering::Relaxed)) {

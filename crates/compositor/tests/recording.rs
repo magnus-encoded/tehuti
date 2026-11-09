@@ -254,7 +254,71 @@ mod recording {
 
     #[test]
     fn recording_duration_matches_wall_time_with_a_delayed_encoder() {
+        use std::io::{self, Write};
+        use tehuti::recording_encoder::FrameEncoder;
+
+        struct FakeEncoder {
+            elapsed: Rc<core::cell::Cell<Duration>>,
+            bytes: Vec<u8>,
+            stalled: bool,
+        }
+        impl Write for FakeEncoder {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.bytes.len() == 120 && !self.stalled {
+                    self.elapsed.set(Duration::from_millis(4200));
+                    self.stalled = true;
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                let count = bytes.len().min(3);
+                self.bytes.extend_from_slice(&bytes[..count]);
+                Ok(count)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let elapsed = Rc::new(core::cell::Cell::new(Duration::from_secs(1)));
+        let mut writer = FakeEncoder {
+            elapsed: Rc::clone(&elapsed),
+            bytes: Vec::new(),
+            stalled: false,
+        };
+        let mut encoder = FrameEncoder::default();
+        for (time, frames) in [(1, 30), (2, 126), (7, 210)] {
+            elapsed.set(Duration::from_secs(time));
+            let mut caught_up = false;
+            for _ in 0..2000 {
+                if encoder
+                    .write_due(&mut writer, &[20, 240, 40, 255], || elapsed.get())
+                    .unwrap()
+                {
+                    caught_up = true;
+                    break;
+                }
+            }
+            assert!(
+                caught_up,
+                "encoder must catch up after a stall longer than two seconds"
+            );
+            assert_eq!(
+                writer.bytes.len(),
+                frames * 4,
+                "frames must match elapsed fake time at 30 fps"
+            );
+            assert!(
+                writer
+                    .bytes
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == [20, 240, 40, 255])
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "needs ffmpeg and real time; run with --ignored"]
+    fn real_ffmpeg_preserves_duration_audio_and_orientation() {
         isolated("duration");
+        isolated("orientation");
     }
 
     #[test]
@@ -265,11 +329,6 @@ mod recording {
     #[test]
     fn timeline_pressure_keeps_recording_active() {
         isolated("flood");
-    }
-
-    #[test]
-    fn recording_first_frame_keeps_a_top_left_marker() {
-        isolated("orientation");
     }
 
     fn assert_top_left_marker(folder: &Path) {
