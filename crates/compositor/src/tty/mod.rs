@@ -187,6 +187,52 @@ fn insert_wallpaper_redraw(
     Ok(wallpaper_token)
 }
 
+/// Scroll distance in pixels: touchpads report pixels, wheels report 120ths of a notch (15 px).
+#[expect(clippy::float_arithmetic, reason = "wheel notches convert to pixels")]
+fn axis_pixels<B: smithay::backend::input::InputBackend>(
+    event: &impl smithay::backend::input::PointerAxisEvent<B>,
+    axis: smithay::backend::input::Axis,
+) -> f64 {
+    event
+        .amount(axis)
+        .or_else(|| event.amount_v120(axis).map(|notches| notches / 8.0))
+        .unwrap_or(0.0)
+}
+
+/// Routes a physical mouse event to the focused application's pointer.
+fn host_pointer_event(
+    data: &mut LoopData,
+    event: smithay::backend::input::InputEvent<smithay::backend::libinput::LibinputInputBackend>,
+) {
+    use smithay::backend::input::{
+        AbsolutePositionEvent, Axis, ButtonState, InputEvent, PointerButtonEvent, PointerMotionEvent,
+    };
+    use tehuti_core::dispatch::PointerButton;
+    if let InputEvent::PointerMotion { event } = event {
+        data.compositor
+            .host_pointer_motion(event.delta_x(), event.delta_y());
+    } else if let InputEvent::PointerMotionAbsolute { event } = event {
+        data.compositor
+            .host_pointer_absolute(event.x_transformed(1), event.y_transformed(1));
+    } else if let InputEvent::PointerButton { event } = event {
+        let button = match event.button_code() {
+            0x110 => PointerButton::Left,
+            0x111 => PointerButton::Right,
+            _ => return,
+        };
+        data.compositor
+            .host_pointer_button(button, event.state() == ButtonState::Pressed);
+    } else if let InputEvent::PointerAxis { event } = event {
+        data.compositor.host_pointer_scroll(
+            axis_pixels(&event, Axis::Horizontal),
+            axis_pixels(&event, Axis::Vertical),
+        );
+    } else {
+        return;
+    }
+    data.pacing.input_arrived = true;
+}
+
 fn insert_keyboard(
     event_loop: &EventLoop<LoopData>,
     tty: &Rc<RefCell<Tty>>,
@@ -197,10 +243,7 @@ fn insert_keyboard(
     let input_token = event_loop
         .handle()
         .insert_source(input_backend, move |event, (), data| {
-            use smithay::backend::input::{
-                AbsolutePositionEvent, ButtonState, InputEvent, KeyState, KeyboardKeyEvent,
-                PointerButtonEvent, PointerMotionEvent,
-            };
+            use smithay::backend::input::{InputEvent, KeyState, KeyboardKeyEvent};
             if !data.seat_active {
                 return;
             }
@@ -226,29 +269,11 @@ fn insert_keyboard(
                         data.pacing.input_arrived = true;
                     }
                 }
-            } else if let InputEvent::PointerMotion { event } = event {
-                data.compositor
-                    .host_pointer_motion(event.delta_x(), event.delta_y());
-                data.pacing.input_arrived = true;
-            } else if let InputEvent::PointerMotionAbsolute { event } = event {
-                data.compositor
-                    .host_pointer_absolute(event.x_transformed(1), event.y_transformed(1));
-                data.pacing.input_arrived = true;
-            } else if let InputEvent::PointerButton { event } = event {
-                use tehuti_core::dispatch::PointerButton;
-                let button = match event.button_code() {
-                    0x110 => Some(PointerButton::Left),
-                    0x111 => Some(PointerButton::Right),
-                    _ => None,
-                };
-                if let Some(button) = button {
-                    data.compositor
-                        .host_pointer_button(button, event.state() == ButtonState::Pressed);
-                    data.pacing.input_arrived = true;
-                }
             } else if matches!(event, InputEvent::DeviceRemoved { .. }) {
                 keyboard_tty.borrow_mut().keyboard = tehuti::backend::EscapeKeyboard::default();
                 data.compositor.release_host_keys();
+            } else {
+                host_pointer_event(data, event);
             }
         })?;
     Ok(input_token)

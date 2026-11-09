@@ -970,12 +970,49 @@ mod synthetic_pad {
             thread::sleep(Duration::from_millis(1));
         }
         let app = client.join().unwrap();
-        assert!(app.motions.contains(&(112.5, 107.25)));
+        // The pointer ends at (112.5, 107.25); the window sits 16 px in from the output corner.
+        assert!(app.motions.contains(&(96.5, 91.25)));
         assert_eq!(
             app.clicks,
             vec![(0x110, PointerState::Pressed), (0x110, PointerState::Released)]
         );
         assert_eq!(app.pointer_focused, app.focused);
+    }
+
+    #[test]
+    fn host_scroll_reaches_the_surface_under_the_pointer() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(
+            ["pointer-test", "other-window"]
+                .map(|app_id| {
+                    tehuti_protocol::parse_context(&format!(
+                        "app_id = '{app_id}'\n[buttons]\n[pointer]\nphysical = true"
+                    ))
+                    .unwrap()
+                })
+                .to_vec(),
+        );
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || run_pointer_client(stream, &sender, Some(true)));
+        let began = Instant::now();
+        let mut sent = false;
+        while !client.is_finished() {
+            assert!(began.elapsed() < Duration::from_secs(5), "host scroll timed out");
+            let _events = display.dispatch_clients(&mut compositor).unwrap();
+            if !sent && receiver.try_recv().is_ok() {
+                compositor.host_pointer_scroll(0.0, 7.5);
+                sent = true;
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let _app = client.join().unwrap();
     }
 
     #[test]
