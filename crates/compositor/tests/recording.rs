@@ -77,7 +77,8 @@ mod recording {
         }
         assert!(
             home.join("encoder-ready").exists(),
-            "recording must start an encoder for wall-clock video"
+            "recording must start an encoder for wall-clock video: {:?}",
+            compositor.visible_notice_text()
         );
         if mode == "capture_failure" {
             *colour.borrow_mut() = image::Rgba([0, 0, 0, 255]);
@@ -177,7 +178,9 @@ mod recording {
             compositor
                 .visible_notice_text()
                 .unwrap()
-                .starts_with("RECORDING SAVED:")
+                .starts_with("RECORDING SAVED:"),
+            "notice: {:?}",
+            compositor.visible_notice_text()
         );
         let folders: Vec<_> = std::fs::read_dir(home.join("Videos/Recordings"))
             .unwrap()
@@ -276,7 +279,12 @@ mod recording {
             .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
             .output()
             .unwrap();
-        assert!(output.status.success());
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
         let frame = image::RgbaImage::from_raw(64, 64, output.stdout).unwrap();
         let marker = frame.get_pixel(8, 8);
         assert!(
@@ -309,7 +317,12 @@ mod recording {
             .arg(folder.join("video.mp4"))
             .output()
             .unwrap();
-        assert!(output.status.success());
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
         let probe: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         let streams = probe["streams"].as_array().unwrap();
         assert_eq!(
@@ -393,10 +406,6 @@ for index in range(len(args)):
         args[index] = 'lavfi'
     if args[index] in ('speakers.monitor', 'mic-a', 'mic-b'):
         args[index] = 'anullsrc=r=48000:cl=stereo'
-# Audio fixtures need no microphone or PulseAudio server.
-for index in reversed(range(len(args))):
-    if args[index] == '-f' and args[index + 1] == 'lavfi':
-        args[index:index] = ['-re']
 child = subprocess.Popen(['/usr/bin/ffmpeg'] + args, stdin=subprocess.PIPE)
 began = time.monotonic()
 stalled = False
@@ -417,13 +426,21 @@ sys.exit(child.wait())
         );
     }
 
+    fn encoder_logs(home: &Path) -> String {
+        let mut logs = String::new();
+        if let Ok(folders) = std::fs::read_dir(home.join("Videos/Recordings")) {
+            for folder in folders.flatten() {
+                logs.push_str(&std::fs::read_to_string(folder.path().join("ffmpeg.log")).unwrap_or_default());
+            }
+        }
+        logs
+    }
+
     fn isolated(mode: &str) {
-        if matches!(mode, "duration" | "orientation")
-            && !["/usr/bin/ffmpeg", "/usr/bin/ffprobe"]
-                .iter()
-                .all(|program| Path::new(program).is_file())
-        {
-            return;
+        if matches!(mode, "duration" | "orientation") {
+            for program in ["/usr/bin/ffmpeg", "/usr/bin/ffprobe"] {
+                assert!(Path::new(program).is_file(), "install ffmpeg: {program} missing");
+            }
         }
         let directory = tempfile::tempdir().unwrap();
         let bin = directory.path().join("bin");
@@ -463,9 +480,11 @@ sys.exit(child.wait())
             .unwrap();
         assert!(
             result.status.success(),
-            "{mode}: {}{}",
+            "{mode}: {}\n{}{}\n{}",
+            result.status,
             String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
+            String::from_utf8_lossy(&result.stderr),
+            encoder_logs(directory.path())
         );
     }
 }
