@@ -173,7 +173,7 @@ pub fn configure_session_projects(contexts: &mut [Context]) {
 /// The first alphabetic phrase per action, focused context before global, capped at 100 words.
 #[must_use]
 pub fn prompt(contexts: &[Context], app_id: Option<&str>, title: &str) -> String {
-    let own = app_id.and_then(|id| tehuti_core::own_context(contexts, id, title));
+    let own = app_id.and_then(|application_id| tehuti_core::own_context(contexts, application_id, title));
     let mut actions = Vec::new();
     let mut words = Vec::new();
     for context in own
