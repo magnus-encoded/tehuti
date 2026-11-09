@@ -531,6 +531,14 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
             return None;
         }
         let phrase = text.as_str();
+        if unit_verbs::launcher_request(phrase).is_some()
+            || matches!(
+                tehuti_protocol::normalize_phrase(phrase).as_str(),
+                "start recording" | "stop recording"
+            )
+        {
+            return None;
+        }
         if state.level == Level::App {
             let button = match tehuti_protocol::normalize_phrase(phrase).as_str() {
                 "tab left" => Some(ButtonName::LeftBumper),

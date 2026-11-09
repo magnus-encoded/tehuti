@@ -1,0 +1,83 @@
+name: recording regression
+on:
+  pull_request:
+    paths:
+      - 'crates/core/**'
+      - 'crates/compositor/**'
+      - '.github/workflows/recording-regression.yml'
+jobs:
+  before-and-after:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev ffmpeg
+      - uses: Swatinem/rust-cache@v2
+      - name: Recording regression passes on branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          CARGO_BUILD_JOBS=1 nice -n 19 cargo clippy --workspace --all-targets --locked -- -D warnings
+          CARGO_BUILD_JOBS=1 nice -n 19 cargo test -p tehuti-core 2>&1 | tee core-results.log
+          export XDG_RUNTIME_DIR=/tmp
+          for attempt in 1 2 3; do
+            CARGO_BUILD_JOBS=1 nice -n 19 cargo test -p tehuti --test recording 2>&1 | tee "recording-results-$attempt.log"
+          done
+          cargo test --locked -p tehuti --test readback
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+      - name: Reserved speech regression fails on origin/main
+        shell: bash
+        run: |
+          cp crates/core/tests/reserved_speech.rs baseline/crates/core/tests/reserved_speech.rs
+          set +e
+          cargo test --manifest-path baseline/Cargo.toml --locked -p tehuti-core --test reserved_speech > reserved-baseline.log 2>&1
+          result=$?
+          set -e
+          cat reserved-baseline.log
+          [ "$result" -ne 0 ]
+          grep -q 'reserved command must bypass context fallback: new' reserved-baseline.log
+      - name: Recording controls regression fails on origin/main
+        shell: bash
+        run: |
+          # Copy only the baseline-compatible public-seam test.
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('crates/core/tests/recording.rs').read_text()
+          start = source.index('    #[test]')
+          end = source.index('    #[test]', start + 1)
+          Path('baseline/crates/core/tests/recording.rs').write_text(
+              source[:start] + source[start:end] + '}\n')
+          PY
+          set +e
+          cargo test --manifest-path baseline/Cargo.toml --locked -p tehuti-core --test recording > baseline.log 2>&1
+          result=$?
+          set -e
+          cat baseline.log
+          [ "$result" -ne 0 ]
+          grep -q 'recording control must be offered in the system menu' baseline.log
+          printf 'New recording controls test: FAIL on origin/main (%s), PASS on branch.\n' '${{ github.event.pull_request.base.sha }}' >> "$GITHUB_STEP_SUMMARY"
+      - name: Duration regression fails on origin/main
+        shell: bash
+        run: |
+          cp crates/compositor/tests/recording.rs baseline/crates/compositor/tests/recording.rs
+          set +e
+          XDG_RUNTIME_DIR=/tmp cargo test --manifest-path baseline/Cargo.toml --locked -p tehuti --test recording recording_duration_matches_wall_time_with_a_delayed_encoder > duration-baseline.log 2>&1
+          result=$?
+          set -e
+          cat duration-baseline.log
+          [ "$result" -ne 0 ]
+          grep -q 'unresolved import `tehuti::recording_encoder`' duration-baseline.log
+          printf 'Duration regression: origin/main (%s) cannot compile the new encoder seam test; branch passes.\n' '${{ github.event.pull_request.base.sha }}' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recording-baseline
+          path: |
+            baseline.log
+            reserved-baseline.log
+            duration-baseline.log
+            core-results.log
+            recording-results-*.log

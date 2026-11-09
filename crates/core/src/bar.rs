@@ -51,6 +51,7 @@ pub struct Bar {
     windows: Vec<(String, bool)>,
     feedback: Option<Segment>,
     status: Option<String>,
+    recording: bool,
     navigation: Option<Segment>,
     remaining: Option<Duration>,
     level: crate::Level,
@@ -134,6 +135,7 @@ impl Bar {
             windows: Vec::new(),
             feedback: None,
             status: None,
+            recording: false,
             navigation: None,
             remaining: None,
             level: crate::Level::App,
@@ -246,9 +248,22 @@ impl Bar {
                 tone: Tone::Result,
             });
         }
+        if self.recording {
+            segments.push(Segment {
+                text: "REC".into(),
+                tone: Tone::Error,
+            });
+        }
         segments.extend(self.feedback.clone());
         segments.extend(self.navigation.clone());
         segments
+    }
+
+    /// Keeps the recording indicator visible at every navigation level.
+    #[must_use]
+    pub const fn with_recording(mut self, recording: bool) -> Self {
+        self.recording = recording;
+        self
     }
 
     /// Shows a plugin's status text at app level.

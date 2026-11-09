@@ -1160,6 +1160,19 @@ fn adjuster_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
     true
 }
 
+fn recording_event(event: &Event, effects: &mut Vec<Effect>) -> bool {
+    let Event::Speech { text } = event else {
+        return false;
+    };
+    let command = match tehuti_protocol::normalize_phrase(text.as_str()).as_str() {
+        "start recording" => crate::menu::Command::StartRecording,
+        "stop recording" => crate::menu::Command::StopRecording,
+        _ => return false,
+    };
+    effects.push(Effect::RunMenuCommand(command));
+    true
+}
+
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if matches!(event, Event::Focus { .. }) {
         state.tool_pad = ToolPad::Idle;
@@ -1725,6 +1738,9 @@ fn passthrough_view_talk(state: &mut State) {
 }
 
 fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
+    if !password_suppresses(state, &event) && recording_event(&event, effects) {
+        return;
+    }
     // Released here, before any layer that consumes the release, so a held key never sticks.
     if let Event::Button {
         name,
