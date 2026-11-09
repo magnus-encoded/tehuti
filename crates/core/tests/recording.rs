@@ -9,31 +9,41 @@ mod recording {
 
     #[test]
     fn recording_controls_are_available_without_session_confirmation() {
-        for key in ["start_recording", "stop_recording"] {
-            let item = tehuti_core::menu::ITEMS
-                .iter()
-                .find(|command| command.key() == key);
-            assert!(
-                item.is_some(),
-                "recording control must be offered in the system menu"
-            );
-            let mut menu = Some(Menu::for_command(
-                tehuti_core::pad::PadFamily::Letters,
-                *item.unwrap(),
-            ));
-            assert_eq!(
-                handle(
-                    &mut menu,
-                    &Event::Button {
-                        name: ButtonName::South,
-                        state: ButtonState::Pressed
-                    }
-                )
-                .map(tehuti_core::menu::Command::key),
-                Some(key)
-            );
-            assert!(menu.is_none(), "recording starts and stops on one press");
-        }
+        let key = "toggle_recording";
+        let item = tehuti_core::menu::ITEMS
+            .iter()
+            .find(|command| command.key() == key);
+        assert!(
+            item.is_some(),
+            "recording control must be offered in the system menu"
+        );
+        let mut menu = Some(Menu::for_command(
+            tehuti_core::pad::PadFamily::Letters,
+            *item.unwrap(),
+        ));
+        assert_eq!(
+            handle(
+                &mut menu,
+                &Event::Button {
+                    name: ButtonName::South,
+                    state: ButtonState::Pressed
+                }
+            )
+            .map(tehuti_core::menu::Command::key),
+            Some(key)
+        );
+        assert!(menu.is_none(), "recording starts and stops on one press");
+    }
+
+    #[test]
+    fn recording_menu_label_shows_the_available_action() {
+        let menu = Menu::new(tehuti_core::pad::PadFamily::Letters);
+        let idle = menu.text();
+        assert_eq!(idle.matches("START RECORDING").count(), 1);
+        assert!(!idle.contains("STOP RECORDING"));
+        let active = menu.with_recording(true).text();
+        assert_eq!(active.matches("STOP RECORDING").count(), 1);
+        assert!(!active.contains("START RECORDING"));
     }
 
     #[test]

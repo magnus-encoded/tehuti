@@ -24,8 +24,13 @@ mod recording {
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
         let colour = Rc::new(RefCell::new(image::Rgba([240, 20, 60, 255])));
-        compositor.set_capture_source(&colour, |colour, _, _| {
-            Ok(image::RgbaImage::from_pixel(2560, 1440, *colour))
+        let (width, height) = if mode == "duration" {
+            (64, 64)
+        } else {
+            (2560, 1440)
+        };
+        compositor.set_capture_source(&colour, move |colour, _, _| {
+            Ok(image::RgbaImage::from_pixel(width, height, *colour))
         });
         compositor.say(Text::new("start recording".into()).unwrap());
         if mode == "missing" {
@@ -55,12 +60,22 @@ mod recording {
         });
         compositor.say(Text::new("an unmapped phrase".into()).unwrap());
         compositor.host_key(smithay::input::keyboard::Keycode::new(38), true);
+        if mode == "duration" {
+            let until = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+            while Instant::now() < until {
+                compositor.advance_time();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         let deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
         while !home.join("encoder-ready").exists() && Instant::now() < deadline {
             compositor.advance_time();
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(home.join("encoder-ready").exists(), "encoder started");
+        assert!(
+            home.join("encoder-ready").exists(),
+            "recording must start an encoder for wall-clock video"
+        );
         compositor.say(Text::new("stop recording".into()).unwrap());
         while !compositor
             .visible_notice_text()
@@ -99,6 +114,10 @@ mod recording {
             .collect();
         assert_eq!(folders.len(), 1);
         let folder = &folders[0];
+        if mode == "duration" {
+            assert_wall_duration(folder);
+            return;
+        }
         let video: serde_json::Value =
             serde_json::from_slice(&std::fs::read(folder.join("video.mp4")).unwrap()).unwrap();
         assert_eq!(video["pixel"], serde_json::json!([240, 20, 60, 255]));
@@ -130,12 +149,61 @@ mod recording {
         );
     }
 
+    #[test]
+    fn recording_duration_matches_wall_time_with_a_delayed_encoder() {
+        isolated("duration");
+    }
+
+    fn assert_wall_duration(folder: &Path) {
+        let timeline = std::fs::read_to_string(folder.join("timeline.jsonl")).unwrap();
+        let elapsed_ms = timeline
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|event| event["kind"] == "stop")
+            .unwrap()["time_ms"]
+            .as_u64()
+            .unwrap();
+        let output = std::process::Command::new("/usr/bin/ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type,duration,start_time",
+                "-of",
+                "json",
+            ])
+            .arg(folder.join("video.mp4"))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let probe: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let streams = probe["streams"].as_array().unwrap();
+        assert_eq!(streams.len(), 3, "video and both audio tracks must survive");
+        let elapsed = Duration::from_millis(elapsed_ms);
+        for stream in streams {
+            let duration = Duration::from_secs_f64(stream["duration"].as_str().unwrap().parse().unwrap());
+            assert!(
+                duration.abs_diff(elapsed) <= elapsed.div_f64(20.0),
+                "video duration must match wall time within 5%, including audio: {duration:?} versus {elapsed:?}"
+            );
+            let start: f64 = stream["start_time"].as_str().unwrap().parse().unwrap();
+            assert!(start.abs() <= 0.05, "tracks must share the session origin");
+        }
+    }
+
     fn executable(path: &Path, text: &str) {
         std::fs::write(path, text).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     fn isolated(mode: &str) {
+        if mode == "duration"
+            && !["/usr/bin/ffmpeg", "/usr/bin/ffprobe"]
+                .iter()
+                .all(|program| Path::new(program).is_file())
+        {
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let bin = directory.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
@@ -158,6 +226,26 @@ pathlib.Path(args[-1]).write_text(json.dumps({
     'inputs': [args[i + 1] for i, arg in enumerate(args) if arg == '-i'],
     'maps': [args[i + 1] for i, arg in enumerate(args) if arg == '-map'],
 }))
+",
+            );
+        }
+        if mode == "duration" {
+            executable(
+                &bin.join("ffmpeg"),
+                r"#!/usr/bin/python3
+import os, sys, time
+args = sys.argv[1:]
+from pathlib import Path
+Path(os.environ['HOME'], 'encoder-ready').touch()
+# Hold the raw pipe across stop, below the writer's bounded stall timeout.
+time.sleep(1.5)
+for index in range(len(args)):
+    if args[index] == 'pulse':
+        args[index] = 'lavfi'
+    if args[index] in ('speakers.monitor', 'default'):
+        args[index] = 'anullsrc=r=48000:cl=stereo'
+# Audio fixtures need no microphone or PulseAudio server.
+os.execv('/usr/bin/ffmpeg', ['ffmpeg'] + args)
 ",
             );
         }

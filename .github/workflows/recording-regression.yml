@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'crates/core/**'
+      - 'crates/compositor/**'
       - '.github/workflows/recording-regression.yml'
 jobs:
   before-and-after:
@@ -10,9 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev ffmpeg
       - uses: Swatinem/rust-cache@v2
       - name: Recording regression passes on branch
-        run: cargo test --locked -p tehuti-core --test recording
+        run: |
+          cargo test --locked -p tehuti-core --test recording
+          XDG_RUNTIME_DIR=/tmp cargo test --locked -p tehuti --test recording recording_duration_matches_wall_time_with_a_delayed_encoder
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -37,8 +41,22 @@ jobs:
           [ "$result" -ne 0 ]
           grep -q 'recording control must be offered in the system menu' baseline.log
           printf 'New recording controls test: FAIL on origin/main (%s), PASS on branch.\n' '${{ github.event.pull_request.base.sha }}' >> "$GITHUB_STEP_SUMMARY"
+      - name: Duration regression fails on origin/main
+        shell: bash
+        run: |
+          cp crates/compositor/tests/recording.rs baseline/crates/compositor/tests/recording.rs
+          set +e
+          XDG_RUNTIME_DIR=/tmp cargo test --manifest-path baseline/Cargo.toml --locked -p tehuti --test recording recording_duration_matches_wall_time_with_a_delayed_encoder > duration-baseline.log 2>&1
+          result=$?
+          set -e
+          cat duration-baseline.log
+          [ "$result" -ne 0 ]
+          grep -q 'recording must start an encoder for wall-clock video' duration-baseline.log
+          printf 'Duration regression: FAIL on origin/main (%s), PASS on branch.\n' '${{ github.event.pull_request.base.sha }}' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: recording-baseline
-          path: baseline.log
+          path: |
+            baseline.log
+            duration-baseline.log

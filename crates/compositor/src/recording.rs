@@ -1,7 +1,7 @@
 //! Local video, separate `PulseAudio` tracks and a text timeline.
 use crate::state::Compositor;
 use core::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use image::RgbaImage;
@@ -22,10 +22,10 @@ const INTERVAL: Duration = Duration::from_nanos(33_333_334);
 
 #[derive(Debug)]
 pub(super) struct Session {
-    frames: SyncSender<RgbaImage>,
+    frames: SyncSender<(Duration, RgbaImage)>,
     events: SyncSender<Value>,
     result: Receiver<Result<PathBuf, String>>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<AtomicU64>,
     started: Instant,
     next_frame: Instant,
     scene: Value,
@@ -36,7 +36,7 @@ impl Compositor {
     pub(super) fn recording_active(&self) -> bool {
         self.recording
             .as_ref()
-            .is_some_and(|session| !session.stop.load(Ordering::Relaxed))
+            .is_some_and(|session| session.stop.load(Ordering::Relaxed) == u64::MAX)
     }
 
     pub(super) fn start_recording(&mut self) {
@@ -56,7 +56,7 @@ impl Compositor {
     pub(super) fn stop_recording(&mut self) {
         self.record_event("stop", &json!({}));
         if let Some(session) = &self.recording {
-            session.stop.store(true, Ordering::Relaxed);
+            session.request_stop();
         }
     }
 
@@ -75,12 +75,12 @@ impl Compositor {
 
     pub(super) fn record_event(&mut self, kind: &str, data: &Value) {
         let Some(session) = &self.recording else { return };
-        if session.stop.load(Ordering::Relaxed) {
+        if session.stop.load(Ordering::Relaxed) != u64::MAX {
             return;
         }
         let event = json!({"time_ms": session.started.elapsed().as_millis(), "kind": kind, "data": data});
         if session.events.try_send(event).is_err() {
-            session.stop.store(true, Ordering::Relaxed);
+            session.request_stop();
             self.show_notice("RECORDING STOPPED: timeline writer unavailable or too slow");
         }
     }
@@ -144,8 +144,11 @@ impl Compositor {
         match crate::driver_shot::frame(self, &chrono::Local::now().format("%H:%M").to_string()) {
             Ok(frame) => {
                 if let Some(session) = &self.recording {
-                    match session.frames.try_send(frame) {
-                        Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
+                    match session.frames.try_send((session.started.elapsed(), frame)) {
+                        Ok(()) => {}
+                        Err(mpsc::TrySendError::Full(_)) => {
+                            tracing::warn!("recording capture queue full; repeating the previous frame");
+                        }
                         Err(mpsc::TrySendError::Disconnected(_)) => self.stop_recording(),
                     }
                 }
@@ -176,7 +179,7 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
     let (frames, receive_frames) = mpsc::sync_channel(1);
     let (events, receive_events) = mpsc::sync_channel(256);
     let (send_result, status_receiver) = mpsc::sync_channel(1);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicU64::new(u64::MAX));
     let worker_stop = Arc::clone(&stop);
     let started = Instant::now();
     let worker = std::thread::Builder::new()
@@ -218,11 +221,14 @@ fn spawn_encoder(path: &std::path::Path, (width, height): (u32, u32)) -> io::Res
     let mut command = Command::new("ffmpeg");
     let _args = command
         .args(["-hide_banner", "-nostdin", "-n"])
+        .args(["-probesize", "32", "-analyzeduration", "1"])
         .args([
             "-thread_queue_size",
             "64",
             "-f",
             "rawvideo",
+            "-fpsprobesize",
+            "0",
             "-pixel_format",
             "rgba",
         ])
@@ -234,11 +240,14 @@ fn spawn_encoder(path: &std::path::Path, (width, height): (u32, u32)) -> io::Res
             "-i",
             "pipe:0",
         ])
+        .args(["-probesize", "32", "-analyzeduration", "1"])
         .args(["-thread_queue_size", "64", "-f", "pulse", "-i", &sink])
+        .args(["-probesize", "32", "-analyzeduration", "1"])
         .args(["-thread_queue_size", "64", "-f", "pulse", "-i", "default"])
         .args(["-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0"])
         .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"])
         .args(["-pix_fmt", "yuv420p", "-c:a", "aac"])
+        .args(["-af", "aresample=async=1:first_pts=0"])
         .args([
             "-metadata:s:a:0",
             "title=System output",
@@ -329,8 +338,8 @@ fn encode(
     frame: &RgbaImage,
     size: (u32, u32),
     mut timeline: File,
-    (frames, events): (&Receiver<RgbaImage>, &Receiver<Value>),
-    stop: &AtomicBool,
+    (frames, events): (&Receiver<(Duration, RgbaImage)>, &Receiver<Value>),
+    stop: &AtomicU64,
     started: Instant,
 ) -> io::Result<()> {
     let result = (|| {
@@ -342,19 +351,30 @@ fn encode(
         rustix::fs::fcntl_setfl(&pipe, rustix::fs::OFlags::NONBLOCK)?;
         let mut deadline = started;
         let mut pixels = fit(frame, size);
+        let mut written = Duration::ZERO;
+        let mut pending = None;
         loop {
             flush_events(&mut timeline, events)?;
-            match frames.try_recv() {
-                Ok(next) => {
-                    pixels = fit(&next, size);
+            if pending.is_none() {
+                match frames.try_recv() {
+                    Ok(next) => pending = Some(next),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        return Err(io::Error::other("recording capture disconnected"));
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
                 }
-                Err(mpsc::TryRecvError::Disconnected) => break,
-                Err(mpsc::TryRecvError::Empty) => {}
             }
-            write_frame(&mut pipe, pixels.as_raw())?;
-            if stop.load(Ordering::Relaxed) {
+            if pending.as_ref().is_some_and(|(captured, _)| *captured <= written)
+                && let Some((_, next)) = pending.take()
+            {
+                pixels = fit(&next, size);
+            }
+            let stopped_ms = stop.load(Ordering::Relaxed);
+            if stopped_ms != u64::MAX && written >= Duration::from_millis(stopped_ms) {
                 break;
             }
+            write_frame(&mut pipe, pixels.as_raw())?;
+            written = written.saturating_add(INTERVAL);
             deadline = deadline.checked_add(INTERVAL).unwrap_or_else(Instant::now);
             std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
         }
@@ -398,9 +418,18 @@ fn finish_encoder(child: &mut Encoder, result: io::Result<()>) -> io::Result<()>
     }
 }
 
+impl Session {
+    fn request_stop(&self) {
+        let elapsed = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX.saturating_sub(1));
+        let _stopped = self
+            .stop
+            .compare_exchange(u64::MAX, elapsed, Ordering::Relaxed, Ordering::Relaxed);
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.request_stop();
         if let Some(worker) = self.worker.take() {
             let _joined = worker.join();
         }

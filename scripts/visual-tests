@@ -135,7 +135,6 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             drive("press", "dpad_up")
             drive("press", "dpad_up")
             drive("press", "dpad_up")
-            drive("press", "dpad_up")
             drive("press", "A")
             drive("wait-for", "/overlays/settings", "true")
             capture("settings", lambda s: s["overlays"]["settings"])

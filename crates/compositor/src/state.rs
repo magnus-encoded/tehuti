@@ -445,7 +445,7 @@ impl Compositor {
             "level": format!("{:?}", self.dispatch.core().level()), "launcher": launcher,
             "overlays": {"keyboard": self.on_screen_keyboard().is_open(), "settings": self.settings().open, "menu": self.dispatch.core().menu().is_some()},
             "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar,
-            "menu_text": self.dispatch.core().menu().map(tehuti_core::menu::Menu::text),
+            "menu_text": self.dispatch.core().menu().map(|menu| menu.clone().with_recording(self.recording_active()).text()),
             "notices": tehuti_core::overlay::STACK.into_iter().filter_map(|layer| self.overlay_notice(layer)).collect::<Vec<_>>(),
             "recording": self.recording_active()})
     }
@@ -661,7 +661,11 @@ impl Compositor {
     fn overlay_notice(&self, layer: tehuti_core::overlay::Overlay) -> Option<String> {
         use tehuti_core::overlay::Overlay;
         match layer {
-            Overlay::SystemMenu => self.dispatch.core().menu().map(tehuti_core::menu::Menu::text),
+            Overlay::SystemMenu => self
+                .dispatch
+                .core()
+                .menu()
+                .map(|menu| menu.clone().with_recording(self.recording_active()).text()),
             Overlay::Secret => self.secret_confirmation_text(),
             Overlay::SecretUnavailable => self
                 .secret_notice_until
@@ -1508,6 +1512,14 @@ impl Compositor {
     }
 
     fn run_menu_command(&mut self, command: tehuti_core::menu::Command) {
+        if command == tehuti_core::menu::Command::ToggleRecording {
+            if self.recording_active() {
+                self.stop_recording();
+            } else {
+                self.start_recording();
+            }
+            return;
+        }
         if command == tehuti_core::menu::Command::StartRecording {
             self.start_recording();
             return;

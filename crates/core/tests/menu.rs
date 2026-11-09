@@ -52,10 +52,10 @@ mod menu {
         let mut menu = Some(Menu::default());
         assert_eq!(
             menu.as_ref().unwrap().text(),
-            "SYSTEM MENU\n> LOG OUT\n  RESTART TEHUTI\n  SWITCH TO PLASMA\n  REBOOT\n  SHUT DOWN\n  TASK MONITOR\n  SETTINGS\n  SCREENSHOT\n  START RECORDING\n  STOP RECORDING\nB OR GUIDE CLOSE"
+            "SYSTEM MENU\n> LOG OUT\n  RESTART TEHUTI\n  SWITCH TO PLASMA\n  REBOOT\n  SHUT DOWN\n  TASK MONITOR\n  SETTINGS\n  SCREENSHOT\n  START RECORDING\nB OR GUIDE CLOSE"
         );
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
-        assert!(menu.as_ref().unwrap().text().contains("\n> STOP RECORDING"));
+        assert!(menu.as_ref().unwrap().text().contains("\n> START RECORDING"));
         assert_eq!(
             button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed),
             None
@@ -137,12 +137,12 @@ mod menu {
     }
 
     #[test]
-    fn up_wraps_to_stop_recording() {
+    fn up_wraps_to_recording() {
         let mut menu = Some(Menu::default());
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
         assert_eq!(
             button(&mut menu, ButtonName::South, ButtonState::Pressed),
-            Some(Command::StopRecording)
+            Some(Command::ToggleRecording)
         );
         assert!(menu.is_none());
     }

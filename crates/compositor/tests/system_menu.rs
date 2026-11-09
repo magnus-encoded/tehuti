@@ -170,7 +170,7 @@ order = 10
             menu.as_ref()
                 .unwrap()
                 .text()
-                .contains("STOP RECORDING\n  Terminal\n  Peer\n  Later")
+                .contains("START RECORDING\n  Terminal\n  Peer\n  Later")
         );
         for _ in 0..tehuti_core::menu::ITEMS.len() {
             assert_eq!(
