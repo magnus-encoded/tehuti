@@ -1,4 +1,4 @@
-//! Local video, separate PulseAudio tracks and a text timeline.
+//! Local video, separate `PulseAudio` tracks and a text timeline.
 use crate::state::Compositor;
 use core::{
     sync::atomic::{AtomicBool, Ordering},
@@ -46,7 +46,7 @@ impl Compositor {
         match start(self) {
             Ok(session) => {
                 self.recording = Some(session);
-                self.record_event("start", json!({"action": "start_recording"}));
+                self.record_event("start", &json!({"action": "start_recording"}));
                 self.poll_recording();
             }
             Err(error) => self.show_notice(&format!("RECORDING FAILED: {error}")),
@@ -54,7 +54,7 @@ impl Compositor {
     }
 
     pub(super) fn stop_recording(&mut self) {
-        self.record_event("stop", json!({}));
+        self.record_event("stop", &json!({}));
         if let Some(session) = &self.recording {
             session.stop.store(true, Ordering::Relaxed);
         }
@@ -62,7 +62,7 @@ impl Compositor {
 
     pub(super) fn record_debug(&mut self, kind: &str, event: &impl core::fmt::Debug) {
         if self.recording_active() {
-            self.record_event(kind, json!({"event": format!("{event:?}")}));
+            self.record_event(kind, &json!({"event": format!("{event:?}")}));
         }
     }
 
@@ -73,7 +73,7 @@ impl Compositor {
         self.record_screen();
     }
 
-    pub(super) fn record_event(&mut self, kind: &str, data: Value) {
+    pub(super) fn record_event(&mut self, kind: &str, data: &Value) {
         let Some(session) = &self.recording else { return };
         if session.stop.load(Ordering::Relaxed) {
             return;
@@ -95,14 +95,14 @@ impl Compositor {
                 "clock".into(),
                 json!(chrono::Local::now().format("%H:%M").to_string()),
             );
-            let _clock = object.remove("clock_ms");
+            let _clock_ms = object.remove("clock_ms");
         }
         if self
             .recording
             .as_ref()
             .is_some_and(|session| session.scene != scene)
         {
-            self.record_event("screen", scene.clone());
+            self.record_event("screen", &scene);
             if let Some(session) = &mut self.recording {
                 session.scene = scene;
             }
@@ -286,7 +286,7 @@ fn default_monitor() -> io::Result<String> {
         std::thread::sleep(Duration::from_millis(5));
     }
     let mut sink = String::new();
-    probe
+    let _bytes_read = probe
         .0
         .stdout
         .take()

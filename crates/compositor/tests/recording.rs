@@ -143,7 +143,7 @@ mod recording {
         if mode != "missing" {
             executable(
                 &bin.join("ffmpeg"),
-                r#"#!/usr/bin/python3
+                r"#!/usr/bin/python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
 pathlib.Path(os.environ['HOME'], 'encoder-ready').touch()
@@ -158,7 +158,7 @@ pathlib.Path(args[-1]).write_text(json.dumps({
     'inputs': [args[i + 1] for i, arg in enumerate(args) if arg == '-i'],
     'maps': [args[i + 1] for i, arg in enumerate(args) if arg == '-map'],
 }))
-"#,
+",
             );
         }
         let result = std::process::Command::new(std::env::current_exe().unwrap())

@@ -774,7 +774,7 @@ impl Compositor {
         reason = "Smithay pointer coordinates and axis values use floating point"
     )]
     fn pointer_motion(&mut self, x: i32, y: i32) {
-        self.record_event("pointer_motion", serde_json::json!({"x": x, "y": y}));
+        self.record_event("pointer_motion", &serde_json::json!({"x": x, "y": y}));
         tracing::trace!(x, y, "mouse dispatch motion");
         self.pointer_location.x += f64::from(x) / 1_000_000.0;
         self.pointer_location.y += f64::from(y) / 1_000_000.0;
@@ -785,8 +785,8 @@ impl Compositor {
         reason = "Smithay pointer coordinates and axis values use floating point"
     )]
     fn pointer_scroll(&mut self, x: i32, y: i32) {
-        self.record_event("pointer_scroll", serde_json::json!({"x": x, "y": y}));
         use smithay::backend::input::{Axis, AxisSource};
+        self.record_event("pointer_scroll", &serde_json::json!({"x": x, "y": y}));
         if self.mouse_mode {
             self.move_pointer();
         } else {
@@ -828,7 +828,7 @@ impl Compositor {
     fn pointer_click(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
         self.record_event(
             "pointer_click",
-            serde_json::json!({"button": format!("{button:?}"), "pressed": pressed}),
+            &serde_json::json!({"button": format!("{button:?}"), "pressed": pressed}),
         );
         self.move_pointer();
         if pressed && let Some((window, _)) = self.space.element_under(self.pointer_location) {
@@ -2272,7 +2272,7 @@ impl Compositor {
     pub fn host_key(&mut self, keycode: Keycode, pressed: bool) {
         self.record_event(
             "key",
-            serde_json::json!({"keycode": keycode.raw(), "pressed": pressed}),
+            &serde_json::json!({"keycode": keycode.raw(), "pressed": pressed}),
         );
         if self.host_key_as_pad(keycode, pressed) {
             return;
@@ -2582,7 +2582,11 @@ impl Compositor {
         {
             bar = bar.with_navigation(text);
         }
-        bar = bar.with_recording(self.recording_active());
+        self.recording_bar(bar)
+    }
+
+    fn recording_bar(&self, bar: tehuti_core::bar::Bar) -> tehuti_core::bar::Bar {
+        let mut bar = bar.with_recording(self.recording_active());
         bar.font = self.settings().bar_font;
         bar
     }
