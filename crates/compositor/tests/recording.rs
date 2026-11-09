@@ -78,7 +78,7 @@ mod recording {
                 return Err(std::io::Error::other("injected encoder failure"));
             }
             if self.blocked > 0 {
-                self.blocked -= 1;
+                self.blocked = self.blocked.saturating_sub(1);
                 return Err(std::io::ErrorKind::WouldBlock.into());
             }
             if self.video.get("pixel").is_none() {

@@ -188,69 +188,73 @@ impl Compositor {
 }
 
 fn start(compositor: &Compositor) -> io::Result<Session> {
-    let search_path = std::env::var_os("PATH").unwrap_or_default();
-    if compositor.recording_runtime.is_none()
-        && !std::env::split_paths(&search_path).any(|directory| directory.join("ffmpeg").is_file())
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "ffmpeg missing: install the ffmpeg package",
-        ));
-    }
+    check_encoder(compositor)?;
     let frame = crate::driver_shot::frame(compositor, &chrono::Local::now().format("%H:%M").to_string())
         .map_err(|error| io::Error::other(error.to_string()))?;
     let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME unavailable"))?;
     let path = PathBuf::from(home)
         .join("Videos/Recordings")
         .join(chrono::Local::now().format("%Y-%m-%d_%H-%M-%S-%f").to_string());
-    let (width, height) = dimensions(frame.width(), frame.height());
     let (frames, receive_frames) = mpsc::sync_channel(1);
     let (events, receive_events) = mpsc::sync_channel(256);
     let (send_result, status_receiver) = mpsc::sync_channel(1);
     let stop = Arc::new(AtomicU64::new(u64::MAX));
-    let worker_stop = Arc::clone(&stop);
     let started = compositor.clock_now();
+    let mut session = Session {
+        frames,
+        events,
+        result: status_receiver,
+        stop,
+        started,
+        next_frame: started.checked_add(INTERVAL).unwrap_or(started),
+        scene: Value::Null,
+        worker: None,
+        injected: None,
+    };
     if let Some(runtime) = &compositor.recording_runtime {
-        std::fs::create_dir_all(&path)?;
-        let sources = runtime.audio_sources(&compositor.settings().input.microphone)?;
-        let command = encoder_command(&path, (width, height), &sources);
-        let sink = runtime.spawn(&command)?;
-        let timeline = File::create_new(path.join("timeline.jsonl"))?;
-        return Ok(Session {
-            frames,
-            events,
-            result: status_receiver,
-            stop,
-            started,
-            next_frame: started.checked_add(INTERVAL).unwrap_or(started),
-            scene: Value::Null,
-            worker: None,
-            injected: Some(Injected {
-                runtime: std::rc::Rc::clone(runtime),
-                began: runtime.now(),
-                sink,
-                encoder: crate::recording_encoder::FrameEncoder::default(),
-                pixels: fit(&frame, (width, height)),
-                timeline,
-                events: receive_events,
-                frames: receive_frames,
-                size: (width, height),
-                result: send_result,
-                path,
-            }),
-        });
+        session.injected = Some(injected(
+            runtime,
+            &compositor.settings().input.microphone,
+            path,
+            &frame,
+            receive_frames,
+            receive_events,
+            send_result,
+        )?);
+        return Ok(session);
     }
-    let microphone = compositor.settings().input.microphone.clone();
-    let worker = std::thread::Builder::new()
+    session.worker = Some(start_worker(
+        &session,
+        path,
+        frame,
+        compositor.settings().input.microphone.clone(),
+        (receive_frames, receive_events),
+        send_result,
+    )?);
+    Ok(session)
+}
+
+fn start_worker(
+    session: &Session,
+    path: PathBuf,
+    frame: RgbaImage,
+    microphone: tehuti_core::dispatch::MicrophoneChoice,
+    (receive_frames, receive_events): (Receiver<(Duration, RgbaImage)>, Receiver<Value>),
+    send_result: SyncSender<Result<PathBuf, String>>,
+) -> io::Result<std::thread::JoinHandle<()>> {
+    let worker_stop = Arc::clone(&session.stop);
+    let started = session.started;
+    let size = dimensions(frame.width(), frame.height());
+    std::thread::Builder::new()
         .name("tehuti-recording".into())
         .spawn(move || {
             let result = (|| {
-                let child = spawn_encoder(&path, (width, height), &microphone)?;
+                let child = spawn_encoder(&path, size, &microphone)?;
                 let timeline = File::create_new(path.join("timeline.jsonl"))?;
                 encode(
                     child,
                     &frame,
-                    (width, height),
+                    size,
                     timeline,
                     (&receive_frames, &receive_events),
                     &worker_stop,
@@ -260,17 +264,48 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
             .map(|()| path)
             .map_err(|error: io::Error| error.to_string());
             let _sent = send_result.send(result);
-        })?;
-    Ok(Session {
-        frames,
+        })
+}
+
+fn check_encoder(compositor: &Compositor) -> io::Result<()> {
+    let search_path = std::env::var_os("PATH").unwrap_or_default();
+    if compositor.recording_runtime.is_none()
+        && !std::env::split_paths(&search_path).any(|directory| directory.join("ffmpeg").is_file())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "ffmpeg missing: install the ffmpeg package",
+        ));
+    }
+    Ok(())
+}
+
+fn injected(
+    runtime: &std::rc::Rc<dyn crate::recording_encoder::Runtime>,
+    microphone: &tehuti_core::dispatch::MicrophoneChoice,
+    path: PathBuf,
+    frame: &RgbaImage,
+    frames: Receiver<(Duration, RgbaImage)>,
+    events: Receiver<Value>,
+    result: SyncSender<Result<PathBuf, String>>,
+) -> io::Result<Injected> {
+    let size = dimensions(frame.width(), frame.height());
+    std::fs::create_dir_all(&path)?;
+    let sources = runtime.audio_sources(microphone)?;
+    let sink = runtime.spawn(&encoder_command(&path, size, &sources))?;
+    let timeline = File::create_new(path.join("timeline.jsonl"))?;
+    Ok(Injected {
+        runtime: std::rc::Rc::clone(runtime),
+        began: runtime.now(),
+        sink,
+        encoder: crate::recording_encoder::FrameEncoder::default(),
+        pixels: fit(frame, size),
+        timeline,
         events,
-        result: status_receiver,
-        stop,
-        started,
-        next_frame: started.checked_add(INTERVAL).unwrap_or(started),
-        scene: Value::Null,
-        worker: Some(worker),
-        injected: None,
+        frames,
+        size,
+        result,
+        path,
     })
 }
 
