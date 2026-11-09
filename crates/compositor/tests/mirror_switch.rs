@@ -6,6 +6,7 @@ mod tests {
     use std::{collections::VecDeque, io, path::Path, rc::Rc};
 
     use evdev::{AbsoluteAxisCode, EventType, InputEvent, KeyCode, SynchronizationCode};
+    use proptest::prelude::*;
     use tehuti::controller::{DpadHat, EvdevPad, MirrorSink, PadDevice, sync_mirrors};
 
     /// One frame as (type, code, value) triples, tagged with the pad that sent it.
@@ -57,10 +58,17 @@ mod tests {
             Ok(self.held.borrow().clone())
         }
         fn get_absinfo(&self) -> io::Result<Vec<(AbsoluteAxisCode, evdev::AbsInfo)>> {
-            Ok(vec![(
-                AbsoluteAxisCode::ABS_HAT0X,
-                evdev::AbsInfo::new(self.hat.get(), -1, 1, 0, 0, 0),
-            )])
+            Ok(vec![
+                (
+                    AbsoluteAxisCode::ABS_HAT0X,
+                    evdev::AbsInfo::new(self.hat.get(), -1, 1, 0, 0, 0),
+                ),
+                (
+                    AbsoluteAxisCode::ABS_X,
+                    evdev::AbsInfo::new(0, -100, 100, 0, 0, 0),
+                ),
+                (AbsoluteAxisCode::ABS_Z, evdev::AbsInfo::new(0, 0, 255, 0, 0, 0)),
+            ])
         }
         fn drain(&mut self, _hat: &mut DpadHat) -> io::Result<Vec<tehuti_protocol::Event>> {
             Ok(Vec::new())
@@ -364,5 +372,144 @@ mod tests {
             [-1, 0],
             "the virtual pad shows the held D-pad, then lets go"
         );
+    }
+
+    fn axis(code: AbsoluteAxisCode, value: i32) -> [InputEvent; 2] {
+        [
+            InputEvent::new(EventType::ABSOLUTE.0, code.0, value),
+            InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
+        ]
+    }
+
+    /// What the application sees on the virtual pad after every frame so far.
+    fn shown(log: &Log) -> std::collections::BTreeMap<(u16, u16), i32> {
+        let mut state = std::collections::BTreeMap::new();
+        for (_, frame) in &log.frames {
+            for (kind, code, value) in frame {
+                if *kind != EventType::SYNCHRONIZATION.0 {
+                    let _previous = state.insert((*kind, *code), *value);
+                }
+            }
+        }
+        state
+    }
+
+    /// One pad mirrored with South held and the stick and trigger pushed, then unplugged.
+    fn unplugged(log: &Rc<RefCell<Log>>) -> Option<tehuti::controller::VirtualPad> {
+        let path = Path::new("/dev/input/event1");
+        let (mut first, handles) = pad("first", log);
+        let started = sync_mirrors(&mut [(path, &mut first)], true, Some(path), &mut None, &|_| false);
+        assert!(started.started);
+        queue(&handles, KeyCode::BTN_SOUTH, 1);
+        handles.raw.borrow_mut().extend(axis(AbsoluteAxisCode::ABS_X, 80));
+        handles
+            .raw
+            .borrow_mut()
+            .extend(axis(AbsoluteAxisCode::ABS_Z, 200));
+        first.pump_mirror(&mut |_, _| false).unwrap();
+        first.detach_virtual_pad()
+    }
+
+    #[test]
+    fn unplug_releases_buttons_centres_sticks_and_rests_triggers() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let spare = unplugged(&log);
+        assert!(spare.is_some());
+        let log = log.borrow();
+        assert_eq!(log.live, 1, "the virtual pad outlives the unplugged pad");
+        assert_eq!(
+            log.frames.last(),
+            Some(&(
+                "first",
+                vec![
+                    (EventType::KEY.0, KeyCode::BTN_SOUTH.code(), 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Z.0, 0),
+                    (EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
+                ]
+            )),
+            "{:?}",
+            log.frames
+        );
+    }
+
+    #[test]
+    fn a_reconnected_pad_takes_over_the_same_virtual_pad() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let mut spare = unplugged(&log);
+        let path = Path::new("/dev/input/event7");
+        let (mut second, _handles) = pad("second", &log);
+        let sync = sync_mirrors(&mut [(path, &mut second)], true, Some(path), &mut spare, &|_| {
+            false
+        });
+        assert!(sync.failed.is_empty() && second.mirrored() && spare.is_none());
+        let log = log.borrow();
+        assert_eq!(log.created, 1, "no second virtual pad is made");
+        assert_eq!((log.live, log.most_live), (1, 1));
+    }
+
+    #[test]
+    fn input_from_the_reconnected_pad_reaches_the_original_virtual_pad() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let mut spare = unplugged(&log);
+        let path = Path::new("/dev/input/event7");
+        let (mut second, handles) = pad("second", &log);
+        let _sync = sync_mirrors(&mut [(path, &mut second)], true, Some(path), &mut spare, &|_| {
+            false
+        });
+        queue(&handles, KeyCode::BTN_EAST, 1);
+        second.pump_mirror(&mut |_, _| false).unwrap();
+        assert_eq!(
+            log.borrow().frames.last(),
+            Some(&(
+                "first",
+                vec![
+                    (EventType::KEY.0, KeyCode::BTN_EAST.code(), 1),
+                    (EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
+                ]
+            ))
+        );
+    }
+
+    #[test]
+    fn switching_mirroring_off_drops_the_spare_virtual_pad() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let mut spare = unplugged(&log);
+        let path = Path::new("/dev/input/event7");
+        let (mut second, _handles) = pad("second", &log);
+        let _sync = sync_mirrors(&mut [(path, &mut second)], false, Some(path), &mut spare, &|_| {
+            false
+        });
+        assert!(spare.is_none() && !second.mirrored());
+        assert_eq!(log.borrow().live, 0, "the application sees the pad unplugged");
+    }
+
+    proptest! {
+        #[test]
+        fn unplugging_leaves_nothing_held(
+            series in proptest::collection::vec((0_usize..4, -100_i32..=100), 0..24),
+            parked in proptest::bool::ANY,
+        ) {
+            let codes = [KeyCode::BTN_SOUTH, KeyCode::BTN_EAST, KeyCode::BTN_TL];
+            let log = Rc::new(RefCell::new(Log::default()));
+            let path = Path::new("/dev/input/event1");
+            let (mut only, handles) = pad("only", &log);
+            let _started = sync_mirrors(&mut [(path, &mut only)], true, Some(path), &mut None, &|_| false);
+            for (input, value) in series {
+                let events = codes
+                    .get(input)
+                    .map_or_else(|| axis(AbsoluteAxisCode::ABS_X, value), |code| press(*code, i32::from(value > 0)));
+                handles.raw.borrow_mut().extend(events);
+            }
+            only.pump_mirror(&mut |_, _| false).unwrap();
+            if parked {
+                let _left = sync_mirrors(&mut [(path, &mut only)], false, Some(path), &mut None, &|_| false);
+            }
+            prop_assert!(only.detach_virtual_pad().is_some());
+            let log = log.borrow();
+            let state = shown(&log);
+            prop_assert!(state.values().all(|value| *value == 0), "{state:?}");
+            prop_assert_eq!(log.created, 1);
+        }
     }
 }

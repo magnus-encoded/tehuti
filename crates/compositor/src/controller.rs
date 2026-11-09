@@ -312,6 +312,10 @@ pub fn sync_mirrors<D: PadDevice>(
     consumed: &dyn Fn(ButtonName) -> bool,
 ) -> MirrorSync {
     let mut sync = MirrorSync::default();
+    // With mirroring off, a virtual pad left by an unplugged controller has no pad to feed.
+    if !mirrored {
+        *spare = None;
+    }
     for (path, pad) in pads.iter_mut() {
         if !mirror_wanted(mirrored, active, path) {
             if let Err(error) = pad.set_mirror(false, consumed) {
