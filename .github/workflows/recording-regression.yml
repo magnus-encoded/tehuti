@@ -67,6 +67,17 @@ jobs:
           [ "$result" -ne 0 ]
           grep -q 'recording must start an encoder for wall-clock video' orientation-baseline.log
           printf 'Encoded top-left marker regression: FAIL on origin/main (%s), PASS on branch.\n' '${{ github.event.pull_request.base.sha }}' >> "$GITHUB_STEP_SUMMARY"
+      - name: East button regression fails on origin/main
+        shell: bash
+        run: |
+          set +e
+          XDG_RUNTIME_DIR=/tmp cargo test --manifest-path baseline/Cargo.toml --locked -p tehuti --test recording east_button_dismisses_recording_encoder_failure > east-baseline.log 2>&1
+          result=$?
+          set -e
+          cat east-baseline.log
+          [ "$result" -ne 0 ]
+          grep -q 'recording must start an encoder for wall-clock video' east-baseline.log
+          printf 'East button regression: FAIL on origin/main (%s), PASS on branch.\n' '${{ github.event.pull_request.base.sha }}' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -75,3 +86,4 @@ jobs:
             baseline.log
             duration-baseline.log
             orientation-baseline.log
+            east-baseline.log

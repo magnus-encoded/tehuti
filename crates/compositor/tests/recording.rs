@@ -123,7 +123,7 @@ mod recording {
             }
             assert!(home.join("encoder-released").exists());
         }
-        if mode != "encoder_failure" {
+        if !mode.starts_with("encoder_failure") {
             compositor.say(Text::new("stop recording".into()).unwrap());
         }
         let saved_deadline = Instant::now().checked_add(Duration::from_secs(8)).unwrap();
@@ -142,7 +142,7 @@ mod recording {
                 .iter()
                 .any(|segment| segment.text == "REC")
         );
-        if mode == "encoder_failure" {
+        if mode.starts_with("encoder_failure") {
             assert!(
                 compositor
                     .visible_notice_text()
@@ -157,7 +157,14 @@ mod recording {
                     .unwrap()
                     .starts_with("RECORDING FAILED:")
             );
-            compositor.host_key(smithay::input::keyboard::Keycode::new(9), true);
+            if mode == "encoder_failure_east" {
+                compositor.handle(&Event::Button {
+                    name: tehuti_protocol::ButtonName::East,
+                    state: tehuti_protocol::ButtonState::Pressed,
+                });
+            } else {
+                compositor.host_key(smithay::input::keyboard::Keycode::new(9), true);
+            }
             assert!(
                 !compositor
                     .visible_notice_text()
@@ -235,6 +242,11 @@ mod recording {
                 .windows(2)
                 .all(|pair| pair[0]["time_ms"].as_u64() <= pair[1]["time_ms"].as_u64())
         );
+    }
+
+    #[test]
+    fn east_button_dismisses_recording_encoder_failure() {
+        isolated("encoder_failure_east");
     }
 
     #[test]
@@ -344,10 +356,11 @@ mod recording {
                 r"#!/usr/bin/python3
 import json, os, pathlib, sys, time
 args = sys.argv[1:]
-pathlib.Path(os.environ['HOME'], 'encoder-ready').touch()
-if os.environ['RECORDING_PROBE'] == 'encoder_failure':
+if os.environ['RECORDING_PROBE'].startswith('encoder_failure'):
+    pathlib.Path(os.environ['HOME'], 'encoder-ready').touch()
     sys.exit(1)
 pixel = sys.stdin.buffer.read(4)
+pathlib.Path(os.environ['HOME'], 'encoder-ready').touch()
 if os.environ['RECORDING_PROBE'] == 'flood':
     time.sleep(3.2)
 while sys.stdin.buffer.read(65536):
@@ -363,9 +376,14 @@ pathlib.Path(args[-1]).write_text(json.dumps({
             );
         }
         if matches!(mode, "duration" | "orientation") {
-            executable(
-                &bin.join("ffmpeg"),
-                r"#!/usr/bin/python3
+            install_video_encoder(bin);
+        }
+    }
+
+    fn install_video_encoder(bin: &Path) {
+        executable(
+            &bin.join("ffmpeg"),
+            r"#!/usr/bin/python3
 import os, subprocess, sys, time
 from pathlib import Path
 args = sys.argv[1:]
@@ -379,28 +397,24 @@ for index in range(len(args)):
 for index in reversed(range(len(args))):
     if args[index] == '-f' and args[index + 1] == 'lavfi':
         args[index:index] = ['-re']
-if os.environ['RECORDING_PROBE'] == 'duration':
-    child = subprocess.Popen(['/usr/bin/ffmpeg'] + args, stdin=subprocess.PIPE)
-    began = time.monotonic()
-    stalled = False
+child = subprocess.Popen(['/usr/bin/ffmpeg'] + args, stdin=subprocess.PIPE)
+began = time.monotonic()
+stalled = False
+while True:
+    frame = sys.stdin.buffer.read(64 * 64 * 4)
+    if not frame:
+        break
+    child.stdin.write(frame)
+    child.stdin.flush()
     home.joinpath('encoder-ready').touch()
-    while True:
-        frame = sys.stdin.buffer.read(64 * 64 * 4)
-        if not frame:
-            break
-        child.stdin.write(frame)
-        child.stdin.flush()
-        if not stalled and time.monotonic() - began >= 1:
-            stalled = True
-            time.sleep(3.2)
-            home.joinpath('encoder-released').touch()
-    child.stdin.close()
-    sys.exit(child.wait())
-home.joinpath('encoder-ready').touch()
-os.execv('/usr/bin/ffmpeg', ['ffmpeg'] + args)
+    if os.environ['RECORDING_PROBE'] == 'duration' and not stalled and time.monotonic() - began >= 1:
+        stalled = True
+        time.sleep(3.2)
+        home.joinpath('encoder-released').touch()
+child.stdin.close()
+sys.exit(child.wait())
 ",
-            );
-        }
+        );
     }
 
     fn isolated(mode: &str) {

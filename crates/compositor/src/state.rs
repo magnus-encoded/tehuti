@@ -972,7 +972,7 @@ impl Compositor {
         if matches!(
             event,
             Event::Button {
-                name: tehuti_protocol::ButtonName::B,
+                name: tehuti_protocol::ButtonName::East,
                 state: tehuti_protocol::ButtonState::Pressed,
                 ..
             }

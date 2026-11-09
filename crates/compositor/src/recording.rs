@@ -53,13 +53,13 @@ impl Compositor {
         }
     }
 
-    pub(super) fn stop_recording(&mut self) {
+    pub(super) fn stop_recording(&self) {
         if let Some(session) = &self.recording {
             session.request_stop();
         }
     }
 
-    pub(super) fn record_debug(&mut self, kind: &str, event: &impl core::fmt::Debug) {
+    pub(super) fn record_debug(&self, kind: &str, event: &impl core::fmt::Debug) {
         if self.recording_active() {
             self.record_event(kind, &json!({"event": format!("{event:?}")}));
         }
@@ -72,7 +72,7 @@ impl Compositor {
         self.record_screen();
     }
 
-    pub(super) fn record_event(&mut self, kind: &str, data: &Value) {
+    pub(super) fn record_event(&self, kind: &str, data: &Value) {
         let Some(session) = &self.recording else { return };
         if session.stop.load(Ordering::Relaxed) != u64::MAX {
             return;
@@ -143,11 +143,10 @@ impl Compositor {
             Ok(frame) => {
                 if let Some(session) = &self.recording {
                     match session.frames.try_send((session.started.elapsed(), frame)) {
-                        Ok(()) => {}
                         Err(mpsc::TrySendError::Full(_)) => {
                             tracing::warn!("recording capture queue full; repeating the previous frame");
                         }
-                        Err(mpsc::TrySendError::Disconnected(_)) => {}
+                        Ok(()) | Err(mpsc::TrySendError::Disconnected(_)) => {}
                     }
                 }
             }
@@ -403,7 +402,7 @@ fn encode(
                 break;
             }
             if offset == 0 {
-                for (_, next) in frames.try_iter() {
+                if let Some((_, next)) = frames.try_iter().last() {
                     pixels = fit(&next, size);
                 }
                 if Instant::now() < deadline {
@@ -430,21 +429,22 @@ fn encode(
                 }
             }
         }
-        if let Err(error) = flush_events(&mut timeline, events).and_then(|()| {
-            serde_json::to_writer(
-                &mut timeline,
-                &json!({
-                    "time_ms": stop.load(Ordering::Relaxed), "kind": "stop", "data": {}
-                }),
-            )?;
-            timeline.write_all(b"\n")?;
-            timeline.sync_all()
-        }) {
+        if let Err(error) = finish_timeline(&mut timeline, events, stop.load(Ordering::Relaxed)) {
             tracing::warn!(%error, "recording timeline flush failed");
         }
         Ok(())
     })();
     finish_encoder(&mut child, result)
+}
+
+fn finish_timeline(timeline: &mut File, events: &Receiver<Value>, stopped_ms: u64) -> io::Result<()> {
+    flush_events(timeline, events)?;
+    serde_json::to_writer(
+        &mut *timeline,
+        &json!({"time_ms": stopped_ms, "kind": "stop", "data": {}}),
+    )?;
+    timeline.write_all(b"\n")?;
+    timeline.sync_all()
 }
 
 fn flush_events(timeline: &mut File, events: &Receiver<Value>) -> io::Result<()> {
