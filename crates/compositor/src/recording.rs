@@ -215,11 +215,8 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
     })
 }
 
-fn spawn_encoder(
-    path: &std::path::Path,
-    (width, height): (u32, u32),
-    microphone: &tehuti_core::dispatch::MicrophoneChoice,
-) -> io::Result<Encoder> {
+/// Microphone tracks first (per the speech microphone setting), desktop sound last.
+fn audio_sources(microphone: &tehuti_core::dispatch::MicrophoneChoice) -> io::Result<Vec<String>> {
     use tehuti_core::dispatch::MicrophoneChoice;
     let mut sources = match microphone {
         MicrophoneChoice::Named(name) => vec![name.clone()],
@@ -228,10 +225,34 @@ fn spawn_encoder(
             .recv_timeout(Duration::from_secs(4))
             .map_err(io::Error::other)?
             .into_iter()
-            .map(|microphone| microphone.name)
+            .map(|choice| choice.name)
             .collect(),
     };
     sources.push(format!("{}.monitor", audio_probe("get-default-sink")?));
+    Ok(sources)
+}
+
+fn map_tracks(command: &mut Command, sources: &[String]) {
+    let _video = command.args(["-map", "0:v:0"]);
+    for (index, source) in sources.iter().enumerate() {
+        let _track = command
+            .args(["-map", &format!("{}:a:0", index.saturating_add(1))])
+            .args([&format!("-metadata:s:a:{index}"), &format!("title={source}")])
+            .args([
+                &format!("-metadata:s:a:{index}"),
+                &format!("handler_name={source}"),
+            ])
+            .arg(format!("-disposition:a:{index}"))
+            .arg(if index == 0 { "default" } else { "0" });
+    }
+}
+
+fn spawn_encoder(
+    path: &std::path::Path,
+    (width, height): (u32, u32),
+    microphone: &tehuti_core::dispatch::MicrophoneChoice,
+) -> io::Result<Encoder> {
+    let sources = audio_sources(microphone)?;
     std::fs::create_dir_all(path)?;
     let log = File::create_new(path.join("ffmpeg.log"))?;
     let mut command = Command::new("ffmpeg");
@@ -266,20 +287,7 @@ fn spawn_encoder(
             source,
         ]);
     }
-    let _video = command.args(["-map", "0:v:0"]);
-    for (index, source) in sources.iter().enumerate() {
-        let _track = command
-            .args(["-map", &format!("{}:a:0", index.saturating_add(1))])
-            .args([&format!("-metadata:s:a:{index}"), &format!("title={source}")])
-            .args([
-                &format!("-metadata:s:a:{index}"),
-                &format!("handler_name={source}"),
-            ])
-            .args([
-                &format!("-disposition:a:{index}"),
-                if index == 0 { "default" } else { "0" },
-            ]);
-    }
+    map_tracks(&mut command, &sources);
     let _output = command
         .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"])
         .args(["-pix_fmt", "yuv420p", "-c:a", "aac"])
