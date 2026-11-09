@@ -862,7 +862,7 @@ impl Layout {
             .and_then(|output| output.workspaces.get_mut(workspace))
             .and_then(|workspace| workspace.columns.get_mut(column))
             .ok_or(LayoutError::UnknownWindow(identity))?;
-        let changed = column.width.is_none() && column.client_width != width;
+        let changed = column.width.is_none() && column.client_width.to_bits() != width.to_bits();
         if column.width.is_none() {
             column.client_width = width;
         }
@@ -1160,6 +1160,19 @@ impl Layout {
             || output.config.always_center_single_column
                 && output.workspaces[output.active].columns.len() == 1
     }
+    fn scroll_after_command(&mut self, output: usize, previous: Option<usize>, command: Command) {
+        if matches!(
+            command,
+            Command::SetColumnWidth(_)
+                | Command::SwitchPresetColumnWidth
+                | Command::SwitchPresetColumnWidthBack
+                | Command::MaximizeColumn
+        ) {
+            self.scroll_after_width_change(output);
+        } else {
+            self.scroll(output, previous, command == Command::CenterColumn);
+        }
+    }
     fn scroll_after_width_change(&mut self, output: usize) {
         let previous = self.outputs.get(output).and_then(|output| {
             let workspace = output.workspaces.get(output.active)?;
@@ -1280,17 +1293,7 @@ impl Layout {
             } else {
                 None
             };
-            if matches!(
-                command,
-                Command::SetColumnWidth(_)
-                    | Command::SwitchPresetColumnWidth
-                    | Command::SwitchPresetColumnWidthBack
-                    | Command::MaximizeColumn
-            ) {
-                self.scroll_after_width_change(current);
-            } else {
-                self.scroll(current, prior, command == Command::CenterColumn);
-            }
+            self.scroll_after_command(current, prior, command);
         }
     }
     #[expect(
