@@ -757,6 +757,7 @@ impl Context {
     #[must_use]
     pub fn speech_action(&self, phrase: &str) -> Option<Action> {
         self.mapped_speech_action(phrase)
+            .or_else(|| self.folded_speech_action(phrase))
             .or_else(|| self.plural_speech_action(phrase))
             .or_else(|| self.unmatched_speech_action(phrase))
     }
@@ -770,7 +771,6 @@ impl Context {
         self.speech
             .get(&normalize_phrase(phrase))
             .filter(|entry| !entry.is_template())
-            .or_else(|| self.variant_entry(phrase))
             .map(|entry| entry.action.action())
             .or_else(|| {
                 let mut matches = self.speech.values().filter_map(|entry| {
@@ -788,10 +788,12 @@ impl Context {
         &self.warnings
     }
 
-    /// The phrase a transcript matches once digits and hyphens fold; consulted
-    /// only after the exact lookup.
-    fn variant_entry(&self, phrase: &str) -> Option<&SpeechEntry> {
+    /// The action of a phrase the transcript matches once digits and hyphens
+    /// fold; callers try it only once no exact phrase matched anywhere.
+    #[must_use]
+    pub fn folded_speech_action(&self, phrase: &str) -> Option<Action> {
         self.variant_lookup(&speech_variant_key(phrase))
+            .map(|entry| entry.action.action())
     }
 
     fn variant_lookup(&self, variant: &str) -> Option<&SpeechEntry> {
@@ -802,17 +804,21 @@ impl Context {
     }
 
     /// The action of a phrase whose last word is the plain plural or singular
-    /// of the transcript's; callers try it only once no exact phrase matched.
+    /// of the transcript's, when the shorter form has at least four letters;
+    /// callers try it only once no exact or folded phrase matched anywhere.
     #[must_use]
     pub fn plural_speech_action(&self, phrase: &str) -> Option<Action> {
         let key = speech_variant_key(phrase);
-        if key.is_empty() {
-            return None;
-        }
+        const SHORTEST: usize = 4;
+        let long_enough = |form: &str| form.chars().count() >= SHORTEST;
         key.strip_suffix('s')
-            .filter(|singular| !singular.is_empty())
+            .filter(|singular| long_enough(singular))
             .and_then(|singular| self.variant_lookup(singular))
-            .or_else(|| self.variant_lookup(&format!("{key}s")))
+            .or_else(|| {
+                long_enough(&key)
+                    .then(|| self.variant_lookup(&format!("{key}s")))
+                    .flatten()
+            })
             .map(|entry| entry.action.action())
     }
 
@@ -1266,10 +1272,10 @@ pub fn normalize_phrase(phrase: &str) -> String {
 /// The looser form a phrase and a transcript are compared in after the exact lookup fails.
 ///
 /// It is [`normalize_phrase`], then each standalone number 0 to 20 as its
-/// word (a digit run glued to letters counts as its own word), then the word breaks removed, so "camera-1", "camera 1" and "Camera one"
+/// word (not with a leading zero; a digit run glued to letters counts as its own word), then the word breaks removed, so "camera-1", "camera 1" and "Camera one"
 /// agree, as do "cock-pit" and "cockpit".
 #[must_use]
-pub fn speech_variant_key(phrase: &str) -> String {
+fn speech_variant_key(phrase: &str) -> String {
     const NUMBERS: [&str; 21] = [
         "zero",
         "one",
@@ -1310,6 +1316,7 @@ pub fn speech_variant_key(phrase: &str) -> String {
             run.parse::<usize>()
                 .ok()
                 .filter(|_| run.bytes().all(|byte| byte.is_ascii_digit()))
+                .filter(|_| run == "0" || !run.starts_with('0'))
                 .and_then(|number| NUMBERS.get(number).copied())
                 .unwrap_or(run)
         })

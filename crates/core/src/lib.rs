@@ -461,6 +461,13 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     (state, actions, false)
 }
 
+/// Whether a context maps the phrase exactly, folded or by plural.
+fn maps_phrase(context: &Context, phrase: &str) -> bool {
+    context.mapped_speech_action(phrase).is_some()
+        || context.folded_speech_action(phrase).is_some()
+        || context.plural_speech_action(phrase).is_some()
+}
+
 fn spoken_key_actions(state: &State, event: &Event) -> Option<Vec<Action>> {
     let Event::Speech { text } = event else {
         return None;
@@ -468,7 +475,7 @@ fn spoken_key_actions(state: &State, event: &Event) -> Option<Vec<Action>> {
     if [focused_context(state), global_context(state)]
         .into_iter()
         .flatten()
-        .any(|context| context.mapped_speech_action(text.as_str()).is_some())
+        .any(|context| maps_phrase(context, text.as_str()))
     {
         return None;
     }
@@ -565,6 +572,8 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
             .and_then(|context| context.mapped_speech_action(phrase))
             .or_else(|| global.and_then(|context| context.mapped_speech_action(phrase)))
             .or_else(|| (tehuti_protocol::normalize_phrase(phrase) == "close").then_some(Action::Close))
+            .or_else(|| focused.and_then(|context| context.folded_speech_action(phrase)))
+            .or_else(|| global.and_then(|context| context.folded_speech_action(phrase)))
             .or_else(|| focused.and_then(|context| context.plural_speech_action(phrase)))
             .or_else(|| global.and_then(|context| context.plural_speech_action(phrase)))
             .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.action))
@@ -599,7 +608,7 @@ fn fuzzy_speech_match(
         || focused
             .into_iter()
             .chain(global)
-            .any(|context| context.mapped_speech_action(phrase).is_some())
+            .any(|context| maps_phrase(context, phrase))
     {
         return None;
     }

@@ -248,29 +248,17 @@ restart = { restart = false }"
         }
     }
 
-    const NUMBER_WORDS: [&str; 21] = [
-        "zero",
-        "one",
-        "two",
-        "three",
-        "four",
-        "five",
-        "six",
-        "seven",
-        "eight",
-        "nine",
-        "ten",
-        "eleven",
-        "twelve",
-        "thirteen",
-        "fourteen",
-        "fifteen",
-        "sixteen",
-        "seventeen",
-        "eighteen",
-        "nineteen",
-        "twenty",
-    ];
+    /// Literal digit and word pairs, including both ends of the folded range.
+    fn number() -> impl Strategy<Value = (u8, &'static str)> {
+        prop::sample::select(vec![
+            (0, "zero"),
+            (1, "one"),
+            (3, "three"),
+            (7, "seven"),
+            (12, "twelve"),
+            (20, "twenty"),
+        ])
+    }
 
     fn speech_source(phrases: &[(&str, &str)]) -> String {
         use core::fmt::Write as _;
@@ -289,16 +277,16 @@ restart = { restart = false }"
         /// Law 1: a digit and its number word are the same token, both ways.
         #[test]
         fn digits_and_number_words_are_one_token(
-            number in 0_usize..=20,
+            (number, spelled_number) in number(),
             word in "[a-z]{3,8}",
             hyphen in proptest::bool::ANY,
         ) {
             let separator = if hyphen { "-" } else { " " };
-            let worded = speech_context(&[(&format!("{word} {}.", NUMBER_WORDS[number]), "enter")]);
+            let worded = speech_context(&[(&format!("{word} {}.", spelled_number), "enter")]);
             prop_assert!(worded.speech_action(&format!("{word}{separator}{number}")).is_some(), "no match");
             prop_assert!(worded.speech_action(&format!("{word}{number}")).is_some(), "glued digit");
             let digits = speech_context(&[(&format!("{word} {number}"), "enter")]);
-            prop_assert!(digits.speech_action(&format!("{}{separator}{}", word.to_uppercase(), NUMBER_WORDS[number])).is_some(), "no match");
+            prop_assert!(digits.speech_action(&format!("{}{separator}{}", word.to_uppercase(), spelled_number)).is_some(), "no match");
         }
 
         /// Law 2: a hyphen is a word break or nothing.
@@ -316,7 +304,7 @@ restart = { restart = false }"
         #[test]
         fn plural_or_singular_of_the_last_word_matches(word in "[a-z]{3,8}") {
             let singular = word.trim_end_matches('s').to_owned();
-            prop_assume!(singular.len() >= 2);
+            prop_assume!(singular.len() >= 4);
             let one = speech_context(&[(&format!("{singular}."), "enter")]);
             prop_assert!(one.speech_action(&format!("{singular}s")).is_some(), "no match");
             let many = speech_context(&[(&format!("Go {singular}s"), "enter")]);
@@ -343,8 +331,8 @@ restart = { restart = false }"
         /// Law 5: distinct phrases that fold alike still load, keep their exact
         /// forms, lose the shared folded form and are named in one warning.
         #[test]
-        fn phrases_that_fold_alike_load_with_a_warning(number in 0_usize..=20, word in "[a-z]{3,8}") {
-            let spelled = format!("{word}-{}", NUMBER_WORDS[number]);
+        fn phrases_that_fold_alike_load_with_a_warning((number, spelled_number) in number(), word in "[a-z]{3,8}") {
+            let spelled = format!("{word}-{}", spelled_number);
             let digits = format!("{word} {number}");
             let context = speech_context(&[(&digits, "enter"), (&spelled, "tab")]);
             let warnings = context.warnings();
@@ -369,10 +357,43 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn short_plurals_do_not_fold() {
+        for (phrase, spoken) in [
+            ("it", "its"),
+            ("its", "it"),
+            ("i", "is"),
+            ("is", "i"),
+            ("bu", "bus"),
+            ("bus", "bu"),
+            ("pas", "pass"),
+            ("pass", "pas"),
+        ] {
+            assert_eq!(
+                speech_context(&[(phrase, "enter")]).speech_action(spoken),
+                None,
+                "{spoken:?} for {phrase:?}"
+            );
+        }
+        assert!(
+            speech_context(&[("Rope", "enter")])
+                .speech_action("ropes")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn leading_zeros_do_not_fold() {
+        let context = speech_context(&[("Bay five", "enter"), ("Bay zero", "tab")]);
+        assert_eq!(context.speech_action("bay 05"), None);
+        assert!(context.speech_action("bay 0").is_some());
+        assert!(context.speech_action("bay0").is_some());
+    }
+
+    #[test]
     fn plural_yields_to_an_exact_phrase() {
-        let context = speech_context(&[("Wing", "enter"), ("Wings", "tab"), ("Pad", "space")]);
+        let context = speech_context(&[("Wing", "enter"), ("Wings", "tab"), ("Plank", "space")]);
         assert_ne!(context.speech_action("wings"), context.speech_action("wing"));
-        assert_eq!(context.speech_action("pads"), context.speech_action("pad"));
+        assert_eq!(context.speech_action("planks"), context.speech_action("plank"));
         let joined = speech_context(&[("Full screen", "enter")]);
         for spoken in ["full-screen", "fullscreen", "Full screen."] {
             assert!(joined.speech_action(spoken).is_some(), "{spoken:?}");
