@@ -283,8 +283,33 @@ app_id = '*'
         std::fs::write(&png, [])?;
         std::fs::write(root.join("hicolor/48x48/apps/vector.svg"), "<svg/>")?;
         assert_eq!(icon_path("reader", &[root.to_path_buf()], "custom"), Some(png));
-        assert_eq!(icon_path("vector", &[root.to_path_buf()], "custom"), None);
         assert_eq!(icon_path("missing", &[root.to_path_buf()], "custom"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn svg_only_theme_icon_is_found_and_rasterised() -> Result<(), Box<dyn core::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        std::fs::create_dir_all(root.join("hicolor/scalable/apps"))?;
+        std::fs::write(
+            root.join("hicolor/index.theme"),
+            "[Icon Theme]\nDirectories=scalable/apps\n",
+        )?;
+        let svg = root.join("hicolor/scalable/apps/vector.svg");
+        std::fs::write(
+            &svg,
+            "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><rect width='24' height='24' fill='#ff0000'/></svg>",
+        )?;
+        assert_eq!(
+            icon_path("vector", &[root.to_path_buf()], "hicolor"),
+            Some(svg.clone())
+        );
+        let icon = tehuti::desktop_hints::read_icon(&svg)
+            .ok_or("svg not rasterised")?
+            .to_rgba8();
+        assert_eq!(icon.dimensions(), (96, 96));
+        assert_eq!(icon.get_pixel(48, 48).0, [255, 0, 0, 255]);
         Ok(())
     }
 }

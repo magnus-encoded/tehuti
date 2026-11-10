@@ -451,18 +451,7 @@ fn paint_candidate(
         CORNER_RADIUS,
         if selected { LIVE } else { [43, 36, 30, 255] },
     );
-    if selected {
-        canvas.rounded_rectangle(
-            (LEFT.saturating_add(16), y.saturating_add(18), 4, 36),
-            2,
-            [230, 215, 178, 255],
-        );
-    }
-    if let Some(icon) = icon {
-        canvas.bgra_image_box(LEFT.saturating_add(INSET), y.saturating_add(16), 40, icon);
-    } else {
-        paint_initial(canvas, &row.candidate.name, y, selected);
-    }
+    paint_leading(canvas, &row.candidate.name, y, (selected, icon));
     if list
         .candidates()
         .first()
@@ -508,6 +497,19 @@ fn paint_candidate(
         );
     }
     selected_hint(canvas, list, family, y.saturating_add(12), selected);
+}
+
+fn paint_leading(
+    canvas: &mut Canvas,
+    name: &str,
+    y: usize,
+    (selected, icon): (bool, Option<&image::DynamicImage>),
+) {
+    if let Some(icon) = icon {
+        canvas.bgra_image_box(LEFT.saturating_add(INSET), y.saturating_add(16), 40, icon);
+    } else {
+        paint_initial(canvas, name, y, selected);
+    }
 }
 
 fn paint_initial(canvas: &mut Canvas, name: &str, y: usize, selected: bool) {
