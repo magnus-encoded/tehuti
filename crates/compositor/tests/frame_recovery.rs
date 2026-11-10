@@ -42,7 +42,9 @@ mod tests {
                 Err("page flip failed")
             };
             let fallbacks = &mut self.fallbacks;
-            Ok(self.recovery.finish(now, submitted, || *fallbacks = fallbacks.saturating_add(1))?)
+            Ok(self
+                .recovery
+                .finish(now, submitted, || *fallbacks = fallbacks.saturating_add(1))?)
         }
     }
 
@@ -73,7 +75,11 @@ mod tests {
         let elapsed = started.elapsed();
         drop(driver);
         let timed_out = *timed_out.borrow();
-        (Rc::try_unwrap(output).ok().unwrap().into_inner(), elapsed, timed_out)
+        (
+            Rc::try_unwrap(output).ok().unwrap().into_inner(),
+            elapsed,
+            timed_out,
+        )
     }
 
     #[test]

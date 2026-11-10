@@ -128,7 +128,8 @@ pub(crate) fn insert(
     let tty = Rc::new(RefCell::new(initialized_tty));
     let seat_token = insert_seat(event_loop, notifier, &tty)?;
     let keyboard_token = insert_keyboard(event_loop, &tty)?;
-    let frames = tehuti::frame_recovery::Driver::new(event_loop.handle().downgrade(), &tty, event_loop.get_signal());
+    let frames =
+        tehuti::frame_recovery::Driver::new(event_loop.handle().downgrade(), &tty, event_loop.get_signal());
     let flip_tty = tty.clone();
     let flip_frames = frames.clone();
     let flip_stop = event_loop.get_signal();
@@ -505,11 +506,14 @@ impl Tty {
             }
         }
     }
-
 }
 
 impl tehuti::frame_recovery::Frames<LoopData> for Tty {
-    fn render(&mut self, data: &mut LoopData, tick: bool) -> Result<Option<std::time::Instant>, Box<dyn Error>> {
+    fn render(
+        &mut self,
+        data: &mut LoopData,
+        tick: bool,
+    ) -> Result<Option<std::time::Instant>, Box<dyn Error>> {
         if !data.seat_active || !self.device.is_active() {
             return Ok(None);
         }
