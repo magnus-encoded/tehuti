@@ -5,32 +5,6 @@ mod destinations {
     use tehuti_protocol::parse_context;
 
     #[test]
-    fn desktop_captions_use_the_table_name_instead_of_a_legacy_launch_phrase() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join("applications")).unwrap();
-        std::fs::write(
-            root.path().join("applications/reader.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Library\nExec=reader\n",
-        )
-        .unwrap();
-        let contexts = vec![
-            parse_context("app_id = '*'\n[buttons]\n[speech]\nRead = { launch = 'reader.desktop' }").unwrap(),
-        ];
-        let table = Table::read(
-            root.path(),
-            &root.path().join("projects"),
-            &[root.path().into()],
-            &contexts,
-            &[],
-        )
-        .unwrap();
-        assert_eq!(
-            table.desktop_signposts(&contexts),
-            [("reader.desktop".into(), "Library".into())]
-        );
-    }
-
-    #[test]
     fn desktop_entries_name_the_app_ids_they_are_filed_under() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("applications/org")).unwrap();

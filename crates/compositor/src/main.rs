@@ -333,9 +333,6 @@ fn start_session(
         ..tehuti::destinations::Paths::default()
     });
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(context_directory)));
-    tehuti::wallpaper::set_launch_phrases(
-        compositor.destinations().desktop_signposts(compositor.contexts()),
-    )?;
     match tehuti::input_choice_store::Store::from_env() {
         Ok(store) => compositor.load_input_choices(store),
         Err(error) => warn!(%error, "input choices will not be saved"),
@@ -798,13 +795,6 @@ fn reload_contexts(data: &mut LoopData) {
         .and_then(|watch| watch.poll(std::time::Instant::now()))
     {
         data.compositor.apply_reload(reload);
-        if let Err(error) = tehuti::wallpaper::set_launch_phrases(
-            data.compositor
-                .destinations()
-                .desktop_signposts(data.compositor.contexts()),
-        ) {
-            warn!(%error, "desktop hints unavailable");
-        }
     }
 }
 

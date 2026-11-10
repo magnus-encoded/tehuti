@@ -464,7 +464,6 @@ impl Compositor {
         self.window_focus = None;
         self.sync_window_focus();
         self.rebuild_destinations();
-        crate::wallpaper::set_focus(self.dispatch.desktop_focus());
     }
 
     /// Names ticker buttons after the pad that sent the latest input.
@@ -489,7 +488,6 @@ impl Compositor {
                 tracing::info!(count = contexts.len(), "contexts reloaded");
                 self.dispatch.core_mut().replace_contexts(contexts);
                 self.sync_destination_windows();
-                crate::wallpaper::set_focus(self.dispatch.desktop_focus());
                 self.update_window_dimming();
                 self.show_notice("CONTEXTS RELOADED");
                 self.rebuild_destinations();
@@ -1104,7 +1102,6 @@ impl Compositor {
     }
 
     fn finish_dispatch_view(&mut self, previous: tehuti_core::Level) {
-        crate::wallpaper::set_focus(self.dispatch.desktop_focus());
         if previous != self.dispatch.core().level() {
             self.dim_elapsed = core::time::Duration::ZERO;
         }

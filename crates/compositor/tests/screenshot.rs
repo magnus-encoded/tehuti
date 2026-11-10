@@ -8,6 +8,24 @@ mod tests {
     use tehuti_protocol::ButtonName;
 
     #[test]
+    fn empty_nested_desktop_shot_has_no_favourite_icons() {
+        let directory = tempfile::tempdir().unwrap();
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let path = directory.path().join("empty-desktop.png");
+        let _shot = driver
+            .execute(&mut compositor, Request::Shot { path: path.clone() })
+            .unwrap();
+        let shot = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(*shot.get_pixel(40, 50), image::Rgba([0, 0, 0, 255]));
+        if let Some(destination) = std::env::var_os("TEHUTI_EMPTY_DESKTOP_SHOT") {
+            let _bytes = std::fs::copy(path, destination).unwrap();
+        }
+    }
+
+    #[test]
     fn screenshot_uses_the_current_output_capture_source() {
         use core::cell::RefCell;
         use std::rc::Rc;

@@ -202,6 +202,14 @@ mod helper_windows {
         let _configured = queue.roundtrip(&mut app).unwrap();
         draw(&shm, &game, &handle, (800, 600));
         let _mapped = queue.roundtrip(&mut app).unwrap();
+        let started = Instant::now();
+        while app.focused != Some(game.clone()) {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "game never receives keyboard focus"
+            );
+            let _focused = queue.roundtrip(&mut app).unwrap();
+        }
         ready.send(0).unwrap();
         let helper = compositor.create_surface(&handle, ());
         let helper_xdg = wm_base.get_xdg_surface(&helper, &handle, ());
