@@ -120,6 +120,23 @@ type SecretLookupReceiver = std::sync::mpsc::Receiver<SecretLookupResult>;
 /// XKB keycodes are evdev codes plus 8.
 const XKB_KEYCODE_OFFSET: u32 = 8;
 
+/// How long a tapped key stays down, so clients that poll key state see it.
+const TAP_HOLD: core::time::Duration = core::time::Duration::from_millis(40);
+
+/// Whether a calloop timer is waiting to release held taps.
+#[derive(Debug, PartialEq, Eq)]
+enum ReleaseTimer {
+    Idle,
+    Armed,
+}
+
+/// A tapped key (and its modifiers) waiting for release.
+#[derive(Debug)]
+struct HeldTap {
+    due: Instant,
+    release: Vec<Keycode>,
+}
+
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
@@ -159,6 +176,9 @@ pub struct Compositor {
     secret_confirmation: SecretConfirmationState,
     secret_notice_until: Option<Instant>,
     notice_until: Option<Instant>,
+    /// Keys held after a tap, with the instant each is released and whether a timer is armed for it.
+    held_taps: Vec<HeldTap>,
+    release_timer: ReleaseTimer,
     notice_text: Option<String>,
     recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
@@ -299,6 +319,8 @@ impl Compositor {
             secret_confirmation: SecretConfirmationState::default(),
             secret_notice_until: None,
             notice_until: None,
+            held_taps: Vec::new(),
+            release_timer: ReleaseTimer::Idle,
             notice_text: None,
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
@@ -760,6 +782,7 @@ impl Compositor {
         let elapsed = self.read_clock();
         tracing::trace!(?elapsed, "dispatch tick");
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
+        self.release_due_keys();
         self.keep_invitation();
         self.poll_recording();
     }
@@ -2189,7 +2212,7 @@ impl Compositor {
     fn tap(&mut self, key: KeyName) {
         let evdev_code = key.evdev_code();
         let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
-        self.tap_keycode(keycode);
+        self.tap_held(keycode, &[]);
     }
 
     fn press_held_key(&mut self, key: KeyName) {
@@ -2284,7 +2307,77 @@ impl Compositor {
         .filter(|(modifier, _)| mods.contains(modifier))
         .map(|(_, name)| name)
         .collect();
-        self.tap_keycode_with_keysyms(keycode, &names);
+        let Some(held) = self.resolve_modifiers(&names) else {
+            return;
+        };
+        self.tap_held(keycode, &held);
+    }
+
+    fn resolve_modifiers(&mut self, names: &[&str]) -> Option<Vec<Keycode>> {
+        let held = names
+            .iter()
+            .map(|name| self.resolve_keysym(name))
+            .collect::<Option<Vec<_>>>();
+        if held.is_none() {
+            tracing::warn!(?names, "modifier unavailable in active keymap");
+        }
+        held
+    }
+
+    /// Presses the modifiers and the key now, and releases them after [`TAP_HOLD`] so polling clients see the key down.
+    fn tap_held(&mut self, keycode: Keycode, modifiers: &[Keycode]) {
+        for code in modifiers {
+            self.send_keycode(*code, smithay::backend::input::KeyState::Pressed);
+        }
+        self.send_keycode(keycode, smithay::backend::input::KeyState::Pressed);
+        let mut release = vec![keycode];
+        release.extend(modifiers.iter().rev().copied());
+        if let Some(due) = self.clock_now().checked_add(TAP_HOLD) {
+            self.held_taps.push(HeldTap { due, release });
+        } else {
+            for code in release {
+                self.send_keycode(code, smithay::backend::input::KeyState::Released);
+            }
+        }
+    }
+
+    /// Releases every held tap whose hold time has passed.
+    pub fn release_due_keys(&mut self) {
+        let now = self.clock_now();
+        let (due, waiting): (Vec<_>, Vec<_>) = core::mem::take(&mut self.held_taps)
+            .into_iter()
+            .partition(|tap| tap.due <= now);
+        self.held_taps = waiting;
+        for tap in due {
+            for code in tap.release {
+                self.send_keycode(code, smithay::backend::input::KeyState::Released);
+            }
+        }
+    }
+
+    /// Returns the delay for a one-shot timer when held taps wait and none is armed.
+    pub fn take_release_request(&mut self) -> Option<core::time::Duration> {
+        if self.release_timer == ReleaseTimer::Armed {
+            return None;
+        }
+        let due = self.held_taps.iter().map(|tap| tap.due).min()?;
+        self.release_timer = ReleaseTimer::Armed;
+        Some(due.saturating_duration_since(self.clock_now()))
+    }
+
+    /// Called when the release timer fires; returns the delay to re-arm with, if taps remain.
+    pub fn release_timer_fired(&mut self) -> Option<core::time::Duration> {
+        self.release_due_keys();
+        let due = self.held_taps.iter().map(|tap| tap.due).min();
+        self.release_timer = if due.is_some() {
+            ReleaseTimer::Armed
+        } else {
+            ReleaseTimer::Idle
+        };
+        due.map(|due| {
+            due.saturating_duration_since(self.clock_now())
+                .max(core::time::Duration::from_millis(1))
+        })
     }
 
     /// Presses the named modifier keys around one key tap.
@@ -3885,5 +3978,23 @@ mod tests {
             Some("Speech is down, restarting")
         );
         assert!(compositor.speech_notice_visible());
+    }
+
+    #[test]
+    fn tapped_key_is_held_until_the_hold_time_passes() {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let keycode = smithay::input::keyboard::Keycode::new(9);
+        compositor.tap_held(keycode, &[]);
+        assert!(compositor.keyboard.pressed_keys().contains(&keycode));
+        assert!(compositor.take_release_request().is_some());
+
+        compositor.release_due_keys();
+        assert!(compositor.keyboard.pressed_keys().contains(&keycode));
+
+        std::thread::sleep(super::TAP_HOLD + Duration::from_millis(5));
+        compositor.release_due_keys();
+        assert!(!compositor.keyboard.pressed_keys().contains(&keycode));
+        assert_eq!(compositor.release_timer_fired(), None);
     }
 }
