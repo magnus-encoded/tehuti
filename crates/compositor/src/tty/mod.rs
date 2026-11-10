@@ -110,10 +110,6 @@ fn insert_device_watch(
     clippy::redundant_pub_crate,
     reason = "conflicts with the workspace unreachable_pub lint"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "backend setup registers related event sources"
-)]
 pub(crate) fn insert(
     event_loop: &EventLoop<'static, LoopData>,
     display: &DisplayHandle,
