@@ -1062,23 +1062,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut warnings = Vec::new();
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
-        let entry: SpeechEntryFile = value
-            .try_into()
-            .map_err(|error: toml::de::Error| error.to_string())?;
-        if matches!(entry.action, MappingAction::Key { hold: true, .. }) {
-            return Err(format!(
-                "speech phrase {mapped:?} cannot hold a key; hold is for buttons"
-            ));
-        }
-        record_launch_phrase(&mut launch_phrases, &entry.action, &mapped);
-        speech_templates::validate(&mapped, &entry.action)?;
+        let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
         let normalized = normalized_speech_phrase(&mapped)?;
-        let entry = SpeechEntry {
-            folded: fold_phrase(&mapped),
-            phrase: mapped.clone(),
-            action: entry.action,
-            icon: entry.icon,
-        };
         let template = entry.is_template();
         if speech.insert(normalized.clone(), entry).is_some() {
             return Err(format!(
@@ -1125,6 +1110,29 @@ fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
     Ok(())
 }
 
+fn speech_entry(
+    mapped: &str,
+    value: toml::Value,
+    launch_phrases: &mut Vec<(String, String)>,
+) -> Result<SpeechEntry, String> {
+    let entry: SpeechEntryFile = value
+        .try_into()
+        .map_err(|error: toml::de::Error| error.to_string())?;
+    if matches!(entry.action, MappingAction::Key { hold: true, .. }) {
+        return Err(format!(
+            "speech phrase {mapped:?} cannot hold a key; hold is for buttons"
+        ));
+    }
+    record_launch_phrase(launch_phrases, &entry.action, mapped);
+    speech_templates::validate(mapped, &entry.action)?;
+    Ok(SpeechEntry {
+        folded: fold_phrase(mapped),
+        phrase: mapped.to_owned(),
+        action: entry.action,
+        icon: entry.icon,
+    })
+}
+
 fn record_launch_phrase(phrases: &mut Vec<(String, String)>, action: &MappingAction, mapped: &str) {
     if let MappingAction::Launch { launch } = action
         && !phrases
@@ -1148,7 +1156,7 @@ fn insert_speech_variant(
     }
     let variant = speech_variant_key(mapped);
     let Some(slot) = variants.get_mut(&variant) else {
-        variants.insert(variant, Some(normalized));
+        variants.extend([(variant, Some(normalized))]);
         return None;
     };
     let other = slot.take();
