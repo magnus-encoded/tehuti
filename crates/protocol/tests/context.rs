@@ -445,8 +445,8 @@ restart = { restart = false }"
         for spoken in ["full-screen", "fullscreen", "Full screen."] {
             assert!(joined.speech_action(spoken).is_some(), "{spoken:?}");
         }
-        let hyphen = speech_context(&[("Lookout", "enter")]);
-        assert!(hyphen.speech_action("look-outs").is_some());
+        let hyphen = speech_context(&[("Lookpoint", "enter")]);
+        assert!(hyphen.speech_action("look-points").is_some());
     }
 
     #[test]
