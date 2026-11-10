@@ -565,6 +565,8 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
             .and_then(|context| context.mapped_speech_action(phrase))
             .or_else(|| global.and_then(|context| context.mapped_speech_action(phrase)))
             .or_else(|| (tehuti_protocol::normalize_phrase(phrase) == "close").then_some(Action::Close))
+            .or_else(|| focused.and_then(|context| context.plural_speech_action(phrase)))
+            .or_else(|| global.and_then(|context| context.plural_speech_action(phrase)))
             .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.action))
             .or_else(|| focused.and_then(|context| context.unmatched_speech_action(phrase)))
             .or_else(|| global.and_then(|context| context.unmatched_speech_action(phrase)))

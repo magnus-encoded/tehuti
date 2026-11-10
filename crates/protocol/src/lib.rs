@@ -754,6 +754,7 @@ impl Context {
     #[must_use]
     pub fn speech_action(&self, phrase: &str) -> Option<Action> {
         self.mapped_speech_action(phrase)
+            .or_else(|| self.plural_speech_action(phrase))
             .or_else(|| self.unmatched_speech_action(phrase))
     }
 
@@ -777,25 +778,31 @@ impl Context {
             })
     }
 
-    /// The phrase a transcript matches once digits, hyphens and a plain plural
-    /// of the last word are folded; consulted only after the exact lookup.
+    /// The phrase a transcript matches once digits and hyphens fold; consulted
+    /// only after the exact lookup.
     fn variant_entry(&self, phrase: &str) -> Option<&SpeechEntry> {
+        self.variant_lookup(&speech_variant_key(phrase))
+    }
+
+    fn variant_lookup(&self, variant: &str) -> Option<&SpeechEntry> {
+        self.speech_variants
+            .get(variant)
+            .and_then(|normalized| self.speech.get(normalized))
+    }
+
+    /// The action of a phrase whose last word is the plain plural or singular
+    /// of the transcript's; callers try it only once no exact phrase matched.
+    #[must_use]
+    pub fn plural_speech_action(&self, phrase: &str) -> Option<Action> {
         let key = speech_variant_key(phrase);
         if key.is_empty() {
             return None;
         }
-        let lookup = |variant: &str| {
-            self.speech_variants
-                .get(variant)
-                .and_then(|normalized| self.speech.get(normalized))
-        };
-        lookup(&key)
-            .or_else(|| {
-                key.strip_suffix('s')
-                    .filter(|singular| !singular.is_empty())
-                    .and_then(lookup)
-            })
-            .or_else(|| lookup(&format!("{key}s")))
+        key.strip_suffix('s')
+            .filter(|singular| !singular.is_empty())
+            .and_then(|singular| self.variant_lookup(singular))
+            .or_else(|| self.variant_lookup(&format!("{key}s")))
+            .map(|entry| entry.action.action())
     }
 
     /// Supplies discovered project names and absolute paths for `<project>` templates.
