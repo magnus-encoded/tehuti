@@ -784,9 +784,9 @@ impl Context {
         if key.is_empty() {
             return None;
         }
-        let lookup = |key: &str| {
+        let lookup = |variant: &str| {
             self.speech_variants
-                .get(key)
+                .get(variant)
                 .and_then(|normalized| self.speech.get(normalized))
         };
         lookup(&key)
@@ -1073,12 +1073,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
             ));
         }
         if !template {
-            let variant = speech_variant_key(&mapped);
-            if let Some(other) = speech_variants.insert(variant.clone(), normalized.clone()) {
-                return Err(format!(
-                    "speech phrase {mapped:?} duplicates {other:?}; both fold to {variant:?} once digits and hyphens fold"
-                ));
-            }
+            insert_speech_variant(&mut speech_variants, &mapped, normalized)?;
         }
     }
     Ok(Context {
@@ -1109,6 +1104,20 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
     if matches!(button, Some(ButtonName::Guide | ButtonName::Record)) {
         return Err("keyboard button cannot reserve Guide or Record".into());
+    }
+    Ok(())
+}
+
+fn insert_speech_variant(
+    variants: &mut std::collections::HashMap<String, String>,
+    mapped: &str,
+    normalized: String,
+) -> Result<(), String> {
+    let variant = speech_variant_key(mapped);
+    if let Some(other) = variants.insert(variant.clone(), normalized) {
+        return Err(format!(
+            "speech phrase {mapped:?} duplicates {other:?}; both fold to {variant:?} once digits and hyphens fold"
+        ));
     }
     Ok(())
 }
@@ -1210,8 +1219,9 @@ pub fn normalize_phrase(phrase: &str) -> String {
         .join(" ")
 }
 
-/// The looser form a phrase and a transcript are compared in after the exact
-/// lookup fails: [`normalize_phrase`], then each standalone number 0 to 20 as its
+/// The looser form a phrase and a transcript are compared in after the exact lookup fails.
+///
+/// It is [`normalize_phrase`], then each standalone number 0 to 20 as its
 /// word, then the word breaks removed, so "camera-1", "camera 1" and "Camera one"
 /// agree, as do "cock-pit" and "cockpit".
 #[must_use]
