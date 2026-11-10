@@ -790,7 +790,11 @@ impl Context {
                 .and_then(|normalized| self.speech.get(normalized))
         };
         lookup(&key)
-            .or_else(|| key.strip_suffix('s').filter(|singular| !singular.is_empty()).and_then(lookup))
+            .or_else(|| {
+                key.strip_suffix('s')
+                    .filter(|singular| !singular.is_empty())
+                    .and_then(lookup)
+            })
             .or_else(|| lookup(&format!("{key}s")))
     }
 
@@ -1213,9 +1217,27 @@ pub fn normalize_phrase(phrase: &str) -> String {
 #[must_use]
 pub fn speech_variant_key(phrase: &str) -> String {
     const NUMBERS: [&str; 21] = [
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
-        "eighteen", "nineteen", "twenty",
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
     ];
     normalize_phrase(phrase)
         .split(' ')

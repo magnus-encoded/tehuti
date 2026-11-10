@@ -249,9 +249,27 @@ restart = { restart = false }"
     }
 
     const NUMBER_WORDS: [&str; 21] = [
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
-        "eighteen", "nineteen", "twenty",
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
     ];
 
     fn speech_context(phrases: &[(&str, &str)]) -> tehuti_protocol::Context {
