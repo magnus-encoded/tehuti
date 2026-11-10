@@ -181,6 +181,8 @@ pub enum Effect {
     ConfirmPressed(bool),
     /// Invalidates secret confirmations for the old focus.
     ResetSecretFocus,
+    /// A focus gap outlasted [`FOCUS_GAP_GRACE`], so focus on no window applies; for the log.
+    FocusGapExpired,
     /// Carries out an action from routing.
     Apply(Action),
     /// Carries out a plugin decision or its fallback, unless quitting.
@@ -476,7 +478,8 @@ const fn input_elapsed(input: &Input) -> Duration {
     | Input::Event {
         event: Event::Tick { elapsed },
         ..
-    } = input
+    }
+    | Input::ClockRead(elapsed) = input
     {
         return *elapsed;
     }
@@ -508,9 +511,13 @@ fn focus_gap(state: &mut State, input: Input) -> GapStep {
     } = &input
     {
         let gap = core::mem::take(&mut state.focus_gap);
+        if matches!(gap, FocusGap::Away(_)) && state.core.has_focus(app_id.as_deref(), title) {
+            return GapStep::Done(Vec::new());
+        }
         if app_id.is_none() {
             if gap == FocusGap::Leaving {
                 state.gap_held.clone_from(&state.passthrough_buttons);
+                state.core.set_context_ancestors(None, Vec::new());
             } else if matches!(gap, FocusGap::Away(_)) {
                 state.focus_gap = gap;
                 return GapStep::Done(Vec::new());
@@ -518,8 +525,6 @@ fn focus_gap(state: &mut State, input: Input) -> GapStep {
                 state.focus_gap = FocusGap::Away(Duration::ZERO);
                 return GapStep::Done(Vec::new());
             }
-        } else if matches!(gap, FocusGap::Away(_)) && state.core.has_focus(app_id.as_deref(), title) {
-            return GapStep::Done(Vec::new());
         }
         return GapStep::Route(Box::new(input), Vec::new());
     }
@@ -529,6 +534,7 @@ fn focus_gap(state: &mut State, input: Input) -> GapStep {
         state.focus_gap = FocusGap::Away(away);
         if away >= FOCUS_GAP_GRACE {
             effects = leave_gap(state);
+            effects.push(Effect::FocusGapExpired);
         }
     }
     if let Input::Event {

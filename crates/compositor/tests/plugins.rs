@@ -282,6 +282,7 @@ for line in sys.stdin:
             | Effect::PluginAction(_)
             | Effect::PluginRejected(_)
             | Effect::Handle(_)
+            | Effect::FocusGapExpired
             | Effect::SpeechFailed { .. }
             | Effect::TranscriptReceived { .. }
             | Effect::SpeechRouted { .. }

@@ -1557,6 +1557,7 @@ impl Compositor {
             | DispatchEffect::PluginAction(_)
             | DispatchEffect::PluginRejected(_)
             | DispatchEffect::Handle(_)
+            | DispatchEffect::FocusGapExpired
             | DispatchEffect::SpeechFailed { .. }
             | DispatchEffect::TranscriptReceived { .. }
             | DispatchEffect::SpeechRouted { .. }) => {
@@ -1861,6 +1862,10 @@ impl Compositor {
             DispatchEffect::Handle(event) => {
                 self.handle(&event);
             }
+            DispatchEffect::FocusGapExpired => tracing::info!(
+                windows = ?self.destination_windows,
+                "focus stayed on no window past the grace; the desktop takes the pad"
+            ),
             DispatchEffect::SpeechFailed { session, reason } => {
                 tracing::warn!(session, ?reason, "speech transcription failed");
                 self.show_notice(match reason {
@@ -3397,11 +3402,14 @@ impl Compositor {
                 self.update_focus(toplevel);
             }
         } else if let Some((surface, app_id)) = self.window_focus.take() {
-            tracing::info!(
+            tracing::debug!(
                 ?app_id,
                 windows = ?self.destination_windows,
                 "focus left every window"
             );
+            if !self.pad_passthrough() {
+                self.dispatch.core_mut().set_context_ancestors(None, Vec::new());
+            }
             self.unfocused_window = Some(surface);
             self.handle(&Event::Focus {
                 app_id: None,
