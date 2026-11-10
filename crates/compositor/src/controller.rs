@@ -224,6 +224,8 @@ pub struct EvdevPad<D = Device> {
     /// The virtual controller kept while hidden, so the application never sees it unplugged.
     parked: Option<Mirror>,
     mirror_failed: bool,
+    /// The physical pad failed a read; it feeds nothing until the event loop drops it.
+    lost: bool,
     plugin_held: Vec<ButtonName>,
     buffered: Vec<Event>,
 }
@@ -757,7 +759,7 @@ impl<D: PadDevice> EvdevPad<D> {
             }
             return Ok(false);
         }
-        if self.mirror.is_some() || self.mirror_failed {
+        if self.mirror.is_some() || self.mirror_failed || self.lost {
             return Ok(false);
         }
         let (device, centres) = if let Some(parked) = self.parked.take() {
@@ -845,10 +847,45 @@ impl<D: PadDevice> EvdevPad<D> {
     /// Every translated event stays buffered for [`InputSource::drain`].
     /// # Errors
     /// The physical pad could not be read or the virtual one written.
+    ///
+    /// The first failure loses the physical pad: the virtual pad rests, is kept for the next pad,
+    /// plugin buttons are released, and later calls do nothing, so the failure is reported once.
     pub fn pump_mirror(
         &mut self,
         consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool,
     ) -> io::Result<()> {
+        if self.lost {
+            return Ok(());
+        }
+        let copied = self.copy_pending(&mut *consume);
+        if copied.is_err() {
+            self.lose(consume);
+        }
+        copied
+    }
+
+    /// Whether a failed read lost this physical pad.
+    #[must_use]
+    pub const fn lost(&self) -> bool {
+        self.lost
+    }
+
+    fn lose(&mut self, consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool) {
+        self.lost = true;
+        if let Some(mut mirror) = self.mirror.take() {
+            if let Some(frame) = mirror.rest()
+                && let Err(error) = mirror.device.emit(&frame)
+            {
+                warn!(%error, "virtual pad release failed");
+            }
+            self.parked = Some(mirror);
+        }
+        for button in core::mem::take(&mut self.plugin_held) {
+            let _kept = consume(button, ButtonState::Released);
+        }
+    }
+
+    fn copy_pending(&mut self, consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool) -> io::Result<()> {
         if self.mirror.is_none() && self.plugin_held.is_empty() {
             return Ok(());
         }
@@ -912,6 +949,7 @@ impl<D: PadDevice> EvdevPad<D> {
             mirror: None,
             parked: None,
             mirror_failed: false,
+            lost: false,
             plugin_held: Vec::new(),
             buffered: Vec::new(),
         }
