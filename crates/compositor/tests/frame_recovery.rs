@@ -62,9 +62,9 @@ mod tests {
         let timed_out = Rc::new(RefCell::new(false));
         let flag = timed_out.clone();
         let stop = event_loop.get_signal();
-        event_loop
+        let _guard = event_loop
             .handle()
-            .insert_source(Timer::from_duration(limit), move |_, (), _| {
+            .insert_source(Timer::from_duration(limit), move |_, (), ()| {
                 *flag.borrow_mut() = true;
                 stop.stop();
                 TimeoutAction::Drop
@@ -72,7 +72,7 @@ mod tests {
             .unwrap();
         let started = Instant::now();
         driver.render(&mut (), false);
-        event_loop.run(None, &mut (), |_| {}).unwrap();
+        event_loop.run(None, &mut (), |()| {}).unwrap();
         let elapsed = started.elapsed();
         drop(driver);
         let timed_out = *timed_out.borrow();
@@ -91,6 +91,34 @@ mod tests {
         assert_eq!(output.fallbacks, 1);
         assert!(elapsed >= RETRY_INTERVAL.saturating_mul(MAX_CONSECUTIVE_FAILURES.saturating_sub(1)));
         assert!(elapsed < RETRY_INTERVAL.saturating_mul(MAX_CONSECUTIVE_FAILURES.saturating_mul(4)));
+    }
+
+    #[test]
+    fn a_pending_retry_timer_keeps_nothing_alive_after_shutdown() {
+        let mut event_loop: EventLoop<'static, ()> = EventLoop::try_new().unwrap();
+        let output = Rc::new(RefCell::new(Output {
+            damaged: true,
+            failures_left: u32::MAX,
+            ..Output::default()
+        }));
+        let handle = Rc::new(event_loop.handle());
+        let driver = Driver::new(&handle, &output, event_loop.get_signal());
+        driver.render(&mut (), false);
+        let weak_output = Rc::downgrade(&output);
+        let weak_handle = Rc::downgrade(&handle);
+        drop((driver, output, handle));
+        assert!(
+            weak_output.upgrade().is_none(),
+            "the timer must not own the output"
+        );
+        assert!(
+            weak_handle.upgrade().is_none(),
+            "the timer must not own the loop handle"
+        );
+        event_loop
+            .dispatch(Some(RETRY_INTERVAL.saturating_mul(3)), &mut ())
+            .unwrap();
+        drop(event_loop);
     }
 
     #[test]
