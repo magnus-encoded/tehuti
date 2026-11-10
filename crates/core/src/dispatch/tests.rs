@@ -25,7 +25,10 @@ impl World {
         if self.compare_routed {
             let routed = routed_step(state.clone(), input.clone());
             let stepped = step(state, input);
-            assert_eq!(stepped, routed, "the focus gap changes nothing without passthrough");
+            assert_eq!(
+                stepped, routed,
+                "the focus gap changes nothing without passthrough"
+            );
             return stepped;
         }
         step(state, input)
@@ -4821,7 +4824,11 @@ fn gap_input() -> impl Strategy<Value = GapInput> {
     prop_oneof![
         (names, any::<bool>()).prop_map(|(name, pressed)| GapInput::Button(
             name,
-            if pressed { ButtonState::Pressed } else { ButtonState::Released }
+            if pressed {
+                ButtonState::Pressed
+            } else {
+                ButtonState::Released
+            }
         )),
         (-1000_i16..=1000, -1000_i16..=1000).prop_map(|(x, y)| GapInput::Sticks(x, y)),
         (0_u64..50).prop_map(GapInput::Tick),
@@ -4832,10 +4839,26 @@ fn drive(world: &mut World, state: State, input: &GapInput) -> State {
     match *input {
         GapInput::Button(name, button) => world.run(state, pad_button(name, button)),
         GapInput::Sticks(x, y) => {
-            let state = world.run(state, Input::Sticks(Sticks { left: (x, y), right: (x, y) }));
-            world.run(state, Input::Tick { elapsed: Duration::from_millis(10) })
+            let state = world.run(
+                state,
+                Input::Sticks(Sticks {
+                    left: (x, y),
+                    right: (x, y),
+                }),
+            );
+            world.run(
+                state,
+                Input::Tick {
+                    elapsed: Duration::from_millis(10),
+                },
+            )
         }
-        GapInput::Tick(millis) => world.run(state, Input::Tick { elapsed: Duration::from_millis(millis) }),
+        GapInput::Tick(millis) => world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_millis(millis),
+            },
+        ),
     }
 }
 
@@ -4930,11 +4953,27 @@ fn view_hold_takes_the_pad_back_during_a_gap_without_waiting_out_the_grace() {
     let mut world = World::default();
     let mut state = game(Vec::new(), true);
     state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
-    state = world.run(state, Input::Tick { elapsed: Duration::from_millis(400) });
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(400),
+        },
+    );
     state = world.run(state, no_focus());
-    state = world.run(state, Input::Tick { elapsed: Duration::from_millis(100) });
-    assert!(!state.core().passthrough(), "the takeback leaves after 100 ms of gap");
-    assert!(world.trace.contains(&Effect::Handle(no_window())), "the deferred focus applies at once");
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
+    assert!(
+        !state.core().passthrough(),
+        "the takeback leaves after 100 ms of gap"
+    );
+    assert!(
+        world.trace.contains(&Effect::Handle(no_window())),
+        "the deferred focus applies at once"
+    );
     world.trace.clear();
     state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
     let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
