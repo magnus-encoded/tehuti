@@ -333,7 +333,7 @@ impl Compositor {
             held_taps: Vec::new(),
             release_timer: ReleaseTimer::Idle,
             focus_epoch: 0,
-            tap_hold: core::time::Duration::ZERO,
+            tap_hold: TAP_HOLD,
             notice_text: None,
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
@@ -2222,13 +2222,6 @@ impl Compositor {
         self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
     }
 
-    /// Taps a key at once, release in the same instant; typed text relies on this order.
-    fn tap(&mut self, key: KeyName) {
-        let evdev_code = key.evdev_code();
-        let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
-        self.tap_keycode(keycode);
-    }
-
     fn press_held_key(&mut self, key: KeyName) {
         if self.held_pad_keys.iter().any(|(held, _)| *held == key) {
             return;
@@ -2338,9 +2331,9 @@ impl Compositor {
         held
     }
 
-    /// Turns on the [`TAP_HOLD`] delay for tapped keys; the running compositor does this, tests keep instant taps.
-    pub const fn hold_taps(&mut self) {
-        self.tap_hold = TAP_HOLD;
+    /// Makes key and chord taps press and release in the same instant, for tests that do not run the release timer.
+    pub const fn instant_taps(&mut self) {
+        self.tap_hold = core::time::Duration::ZERO;
     }
 
     /// Presses the modifiers and the key now, and releases them after [`TAP_HOLD`] so polling clients see the key down.
@@ -4090,7 +4083,6 @@ mod tests {
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_driver_input(false);
-        compositor.hold_taps();
         (display, compositor)
     }
 
