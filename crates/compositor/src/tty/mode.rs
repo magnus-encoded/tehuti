@@ -71,13 +71,6 @@ pub(super) fn restored_renderer<Mode: Copy + PartialEq, Renderer, Error>(
     rebuild().map(|renderer| (renderer, false))
 }
 
-pub(super) fn next_backoff(previous: core::time::Duration) -> core::time::Duration {
-    previous.saturating_mul(2).clamp(
-        core::time::Duration::from_millis(32),
-        core::time::Duration::from_secs(4),
-    )
-}
-
 pub(super) fn ordered_with_saved(
     modes: &[ListedMode],
     request: Option<Request>,
@@ -117,7 +110,7 @@ pub(super) fn retry<State, Value, Error>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ListedMode, Request, next_backoff, ordered, restored_renderer, retry};
+    use super::{ListedMode, Request, ordered, restored_renderer, retry};
     use proptest::prelude::*;
 
     #[test]
@@ -130,16 +123,6 @@ mod tests {
         assert_eq!(saved, Ok((1920, true)));
         let failed = restored_renderer(1920, None::<(u32, u32, bool)>, || Err("allocation failed"));
         assert_eq!(failed, Err("allocation failed"));
-    }
-
-    #[test]
-    fn exhausted_mode_backoff_doubles_and_caps_at_four_seconds() {
-        use core::time::Duration;
-        let mut delay = Duration::ZERO;
-        for millis in [32, 64, 128, 256, 512, 1024, 2048, 4000, 4000] {
-            delay = next_backoff(delay);
-            assert_eq!(delay, Duration::from_millis(millis));
-        }
     }
 
     const MODES: [ListedMode; 4] = [
@@ -298,14 +281,6 @@ mod tests {
         ) {
             let result = restored_renderer(restored, Some((saved, saved, next)), || Ok::<_, ()>(restored));
             prop_assert_eq!(result.map(|(renderer, _)| renderer), Ok(restored));
-        }
-
-        #[test]
-        fn backoff_never_shrinks_below_the_cap(millis in 0_u64..=4000) {
-            let previous = core::time::Duration::from_millis(millis);
-            let next = next_backoff(previous);
-            prop_assert!(next >= previous);
-            prop_assert!(next <= core::time::Duration::from_secs(4));
         }
 
         #[test]

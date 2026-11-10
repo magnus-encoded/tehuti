@@ -200,7 +200,7 @@ fn install_skill(path: Option<std::ffi::OsString>) -> Result<ExitCode, Box<dyn E
 }
 
 fn insert_backend(
-    event_loop: &EventLoop<LoopData>,
+    event_loop: &EventLoop<'static, LoopData>,
     display: &smithay::reexports::wayland_server::DisplayHandle,
     compositor: &mut Compositor,
 ) -> Result<Option<Redraw>, Box<dyn Error>> {
