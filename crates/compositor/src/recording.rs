@@ -24,7 +24,7 @@ const INTERVAL: Duration = Duration::from_nanos(33_333_334);
 const CAPTURE_LAG: Duration = Duration::from_millis(100);
 
 /// Recording time up to which video slots may be written.
-fn video_due(elapsed: Duration, stopped_ms: u64) -> Duration {
+const fn video_due(elapsed: Duration, stopped_ms: u64) -> Duration {
     if stopped_ms == u64::MAX {
         elapsed.saturating_sub(CAPTURE_LAG)
     } else {
@@ -235,8 +235,7 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         session.injected = Some(injected(
             runtime,
             &compositor.settings().input.microphone,
-            path,
-            wall_start,
+            (path, wall_start),
             &frame,
             receive_frames,
             receive_events,
@@ -305,8 +304,7 @@ fn check_encoder(compositor: &Compositor) -> io::Result<()> {
 fn injected(
     runtime: &std::rc::Rc<dyn crate::recording_encoder::Runtime>,
     microphone: &tehuti_core::dispatch::MicrophoneChoice,
-    path: PathBuf,
-    wall_start: Duration,
+    (path, wall_start): (PathBuf, Duration),
     frame: &RgbaImage,
     frames: Receiver<(Duration, RgbaImage)>,
     events: Receiver<Value>,
@@ -712,7 +710,7 @@ mod tests {
         args.iter()
             .enumerate()
             .filter(|(_, arg)| *arg == flag)
-            .filter_map(|(index, _)| args.get(index + 1).cloned())
+            .filter_map(|(index, _)| args.get(index.saturating_add(1)).cloned())
             .collect()
     }
 

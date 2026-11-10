@@ -129,7 +129,11 @@ impl<F> FrameSchedule<F> {
     /// The newest frame due by `slot`, if one became due since the previous call.
     pub fn advance(&mut self, slot: u128) -> Option<F> {
         let mut due = None;
-        while self.pending.front().is_some_and(|(at, _)| *at <= slot) {
+        while self
+            .pending
+            .front()
+            .is_some_and(|(due_slot, _)| *due_slot <= slot)
+        {
             due = self.pending.pop_front().map(|(_, frame)| frame);
         }
         due
@@ -228,7 +232,7 @@ mod tests {
     /// Captures from gaps; then the stamp each frame gets when the encoder writes slots in
     /// bursts of `bursts` slots, after every frame captured by the burst's end has arrived.
     fn stamps(gaps: &[u64], dropped: &[usize], bursts: u128) -> (Vec<Duration>, Vec<(usize, Duration)>) {
-        let mut at = Duration::ZERO;
+        let mut clock = Duration::ZERO;
         let captures: Vec<_> = gaps
             .iter()
             .map(|gap| {
@@ -247,7 +251,7 @@ mod tests {
                 if !dropped.contains(&next) {
                     schedule.push(captures[next], next);
                 }
-                next += 1;
+                next = next.saturating_add(1);
             }
             for written in slot..end {
                 if let Some(frame) = schedule.advance(written) {
@@ -272,7 +276,7 @@ mod tests {
             let (captures, shown) = stamps(&gaps, &[], bursts);
             for (frame, stamp) in shown {
                 let capture = captures[frame];
-                prop_assert!(stamp >= capture && stamp - capture < FRAME, "{capture:?} -> {stamp:?}");
+                prop_assert!(stamp >= capture && stamp.saturating_sub(capture) < FRAME, "{capture:?} -> {stamp:?}");
             }
         }
 
@@ -287,10 +291,10 @@ mod tests {
             let (captures, shown) = stamps(&gaps, &[], bursts);
             let (_, end) = shown.last().copied().unwrap();
             let wall = *captures.last().unwrap();
-            prop_assert!(end >= wall && end - wall < FRAME);
+            prop_assert!(end >= wall && end.saturating_sub(wall) < FRAME);
             for pair in shown.windows(2) {
-                let spacing = captures[pair[1].0] - captures[pair[0].0];
-                let stamped = pair[1].1 - pair[0].1;
+                let spacing = captures[pair[1].0].saturating_sub(captures[pair[0].0]);
+                let stamped = pair[1].1.saturating_sub(pair[0].1);
                 prop_assert!(stamped.abs_diff(spacing) < FRAME);
             }
         }
