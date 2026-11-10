@@ -57,13 +57,12 @@ mod fuzzy_speech {
 
     #[test]
     fn spaces_and_bare_names_inside_sentences_reach_the_mapping() {
-        for phrase in ["Hun er supertux."] {
-            let (state, actions) = route("[speech_matching]\nfuzzy = true", "", phrase);
-            assert_eq!(actions, vec![launch("game")], "{phrase}");
-            let matched = state.fuzzy_speech_match(phrase).unwrap();
-            assert_eq!(matched.action, launch("game"));
-            assert!(matched.score >= 800);
-        }
+        let phrase = "Hun er supertux.";
+        let (state, actions) = route("[speech_matching]\nfuzzy = true", "", phrase);
+        assert_eq!(actions, vec![launch("game")]);
+        let matched = state.fuzzy_speech_match(phrase).unwrap();
+        assert_eq!(matched.action, launch("game"));
+        assert!(matched.score >= 800);
     }
 
     #[test]
