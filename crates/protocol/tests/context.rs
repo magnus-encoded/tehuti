@@ -361,7 +361,7 @@ restart = { restart = false }"
     fn a_context_that_loaded_before_folding_still_loads() {
         let context = speech_context(&[("Ab part", "enter"), ("Abpart", "tab"), ("Bay 12", "space")]);
         assert_eq!(context.warnings().len(), 1, "{:?}", context.warnings());
-        assert!(context.speech_action("ab-part").is_none());
+        assert!(context.speech_action("a b part").is_none());
         assert!(context.speech_action("bay12").is_some());
         assert!(context.speech_action("Bay twelve").is_some());
         let empty: &[String] = &[];
