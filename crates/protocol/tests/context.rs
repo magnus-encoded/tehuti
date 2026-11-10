@@ -290,16 +290,16 @@ restart = { restart = false }"
         ) {
             let separator = if hyphen { "-" } else { " " };
             let worded = speech_context(&[(&format!("{word} {}.", NUMBER_WORDS[number]), "enter")]);
-            prop_assert!(worded.speech_action(&format!("{word}{separator}{number}")).is_some());
+            prop_assert!(worded.speech_action(&format!("{word}{separator}{number}")).is_some(), "no match");
             let digits = speech_context(&[(&format!("{word} {number}"), "enter")]);
-            prop_assert!(digits.speech_action(&format!("{}{separator}{}", word.to_uppercase(), NUMBER_WORDS[number])).is_some());
+            prop_assert!(digits.speech_action(&format!("{}{separator}{}", word.to_uppercase(), NUMBER_WORDS[number])).is_some(), "no match");
         }
 
         /// Law 2: a hyphen is a word break or nothing.
         #[test]
         fn a_hyphen_is_a_break_or_nothing(first in "[a-z]{2,6}", second in "[a-z]{2,6}") {
             let joined = speech_context(&[(&format!("{first}{second}"), "enter")]);
-            prop_assert!(joined.speech_action(&format!("{first}-{second}")).is_some());
+            prop_assert!(joined.speech_action(&format!("{first}-{second}")).is_some(), "no match");
             let spaced = speech_context(&[(&format!("{first} {second}"), "enter")]);
             for spoken in [format!("{first}-{second}"), format!("{first}{second}"), format!("{first} {second}.")] {
                 prop_assert!(spaced.speech_action(&spoken).is_some(), "{spoken:?}");
@@ -312,9 +312,9 @@ restart = { restart = false }"
             let singular = word.trim_end_matches('s').to_owned();
             prop_assume!(singular.len() >= 2);
             let one = speech_context(&[(&format!("{singular}."), "enter")]);
-            prop_assert!(one.speech_action(&format!("{singular}s")).is_some());
+            prop_assert!(one.speech_action(&format!("{singular}s")).is_some(), "no match");
             let many = speech_context(&[(&format!("Go {singular}s"), "enter")]);
-            prop_assert!(many.speech_action(&format!("go {singular}")).is_some());
+            prop_assert!(many.speech_action(&format!("go {singular}")).is_some(), "no match");
         }
 
         /// Law 4: exact matches always win over every variant, and the
