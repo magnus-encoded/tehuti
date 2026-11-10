@@ -5,6 +5,129 @@ mod tests {
     use tehuti_protocol::{ButtonName, ButtonState, Event, Text};
 
     #[test]
+    fn launcher_artwork_keeps_icons_with_ranked_routes_at_both_screen_sizes()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const PROBE: &str = "TEHUTI_LAUNCHER_ICON_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            for size in ["1024x600", "1920x1080"] {
+                let status = std::process::Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        "tests::launcher_artwork_keeps_icons_with_ranked_routes_at_both_screen_sizes",
+                        "--nocapture",
+                    ])
+                    .env(PROBE, "1")
+                    .env("TEHUTI_TEST_SIZE", size)
+                    .status()?;
+                assert!(status.success(), "icon artwork failed at {size}");
+            }
+            return Ok(());
+        }
+        let root = tempfile::tempdir()?;
+        icon_destinations(root.path())?;
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        tehuti::driver::headless_output(&display.handle(), &mut compositor)?;
+        compositor.configure_destinations(Paths {
+            config: root.path().into(),
+            projects: root.path().join("projects"),
+            data: Vec::new(),
+        });
+        let mut driver = tehuti::driver::Driver::bind(root.path(), tehuti::backend::Backend::Nested)?;
+        for query in ["open Browser Zulu", "open Browser Alpha"] {
+            let _scene = driver.execute(
+                &mut compositor,
+                tehuti::driver::Request::Say { text: query.into() },
+            )?;
+            let path = root.path().join("shot.png");
+            // Icons decode off the render thread, so poll until they land.
+            let mut attempts = 0_u32;
+            loop {
+                let _shot = driver.execute(
+                    &mut compositor,
+                    tehuti::driver::Request::Shot { path: path.clone() },
+                )?;
+                let pixels = image::open(&path)?.to_rgba8();
+                attempts = attempts.saturating_add(1);
+                match assert_ranked_icons(&pixels, query) {
+                    Ok(()) => break,
+                    Err(_) if attempts < 100 => std::thread::sleep(core::time::Duration::from_millis(50)),
+                    Err(error) => return Err(error),
+                }
+            }
+            if let Ok(copy) = std::env::var("TEHUTI_SHOT_COPY") {
+                let _bytes = std::fs::copy(
+                    &path,
+                    format!("{copy}-{}.png", std::env::var("TEHUTI_TEST_SIZE")?),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn assert_ranked_icons(
+        pixels: &image::RgbaImage,
+        query: &str,
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        let red_top = pixels
+            .enumerate_pixels()
+            .filter(|(_, _, pixel)| pixel.0 == [255, 0, 0, 255])
+            .map(|(_, y, _)| y)
+            .min()
+            .ok_or("red icon absent")?;
+        let blue_top = pixels
+            .enumerate_pixels()
+            .filter(|(_, _, pixel)| pixel.0 == [0, 0, 255, 255])
+            .map(|(_, y, _)| y)
+            .min()
+            .ok_or("blue icon absent")?;
+        if !pixels.pixels().any(|pixel| pixel.0 == [0, 200, 0, 255]) {
+            return Err("svg icon absent".into());
+        }
+        assert_eq!(
+            blue_top < red_top,
+            query == "open Browser Zulu",
+            "icons must follow ranked routes"
+        );
+        Ok(())
+    }
+
+    fn icon_destinations(root: &std::path::Path) -> Result<(), Box<dyn core::error::Error>> {
+        let red = root.join("red.png");
+        let blue = root.join("blue.png");
+        image::RgbaImage::from_pixel(48, 48, image::Rgba([255, 0, 0, 255])).save(&red)?;
+        image::RgbaImage::from_pixel(48, 24, image::Rgba([0, 0, 255, 255])).save(&blue)?;
+        let green = root.join("green.svg");
+        std::fs::write(
+            &green,
+            "<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><circle cx='32' cy='32' r='30' fill='#00c800'/></svg>",
+        )?;
+        std::fs::write(
+            root.join("destinations.toml"),
+            format!(
+                r#"
+[[destinations]]
+name = "Browser Alpha"
+routes = [{{steps = [{{icon = '{}', target = {{kind = 'action', value = {{type = 'notice', text = 'Alpha'}}}}}}]}}]
+[[destinations]]
+name = "Browser Zulu"
+routes = [{{steps = [{{icon = '{}', target = {{kind = 'action', value = {{type = 'notice', text = 'Zulu'}}}}}}]}}]
+[[destinations]]
+name = "Browser Vector"
+routes = [{{steps = [{{icon = '{}', target = {{kind = 'action', value = {{type = 'notice', text = 'Vector'}}}}}}]}}]
+[[destinations]]
+name = "Browser missing icon"
+routes = [{{steps = [{{icon = 'missing-icon-for-547', target = {{kind = 'action', value = {{type = 'notice', text = 'Missing'}}}}}}]}}]
+"#,
+                red.display(),
+                blue.display(),
+                green.display()
+            ),
+        )?;
+        Ok(())
+    }
+
+    #[test]
     fn guide_item_names_rank_their_destination_first() {
         let root = tempfile::tempdir().unwrap();
         let display = Display::<Compositor>::new().unwrap();

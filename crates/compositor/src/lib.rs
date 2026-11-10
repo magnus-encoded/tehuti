@@ -9,6 +9,7 @@ pub mod config_check;
 pub mod controller;
 pub mod input;
 pub mod instance;
+pub mod skill_install;
 pub mod state;
 
 pub mod contexts;
@@ -83,3 +84,5 @@ mod driver_shot;
 pub mod volume;
 
 pub mod readback;
+
+pub mod recording_encoder;

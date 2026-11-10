@@ -148,23 +148,6 @@ impl Table {
             .collect()
     }
 
-    /// Captions for configured desktop hints, preserving favourite order.
-    #[must_use]
-    pub fn desktop_signposts(&self, contexts: &[Context]) -> Vec<(String, String)> {
-        crate::desktop_hints::launch_phrases(contexts)
-            .into_iter()
-            .filter_map(|(entry, _)| {
-                let desktop = if entry.ends_with(".desktop") {
-                    entry.clone()
-                } else {
-                    format!("{entry}.desktop")
-                };
-                self.name_for(&Target::Desktop(desktop))
-                    .map(|name| (entry, name.into()))
-            })
-            .collect()
-    }
-
     pub(crate) fn update_workspaces(&mut self, snapshot: &tehuti_core::layout::Snapshot) {
         self.entries.retain(|entry| entry.source != Source::Workspace);
         for (index, workspace) in snapshot

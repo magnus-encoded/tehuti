@@ -1,6 +1,5 @@
 //! Capture through the output renderer, with software capture for headless outputs.
-use crate::readback::Readback;
-use crate::state::Compositor;
+use crate::{readback::Readback, state::Compositor};
 use core::error::Error;
 use smithay::backend::{
     allocator::Fourcc,
@@ -29,18 +28,22 @@ pub(crate) fn save_with_clock(
     path: &Path,
     clock: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let image = if let Some(capture) = &compositor.capture_source.0 {
-        capture(compositor, clock)?
+    frame(compositor, clock)?.save_with_format(path, image::ImageFormat::Png)?;
+    Ok(())
+}
+
+#[expect(clippy::redundant_pub_crate, reason = "shared output capture stays internal")]
+pub(super) fn frame(compositor: &Compositor, clock: &str) -> Result<image::RgbaImage, Box<dyn Error>> {
+    if let Some(capture) = &compositor.capture_source.0 {
+        capture(compositor, clock)
     } else {
         capture::<_, smithay::reexports::pixman::Image<'static, 'static>>(
             &mut PixmanRenderer::new()?,
             compositor,
             clock,
             Readback::Pixman,
-        )?
-    };
-    image.save_with_format(path, image::ImageFormat::Png)?;
-    Ok(())
+        )
+    }
 }
 
 #[expect(clippy::redundant_pub_crate, reason = "used by the rendering module")]
@@ -60,6 +63,7 @@ where
     let mut buffer: B = renderer.create_buffer(Fourcc::Abgr8888, (mode.size.w, mode.size.h).into())?;
     let mut target = renderer.bind(&mut buffer)?;
     let mut overlays = crate::overlays::Overlays::default();
+    overlays.settle_icons(compositor);
     let elements = overlays.elements(renderer, output, compositor, clock)?;
     let mut damage = OutputDamageTracker::from_output(output);
     crate::wallpaper::render_output(

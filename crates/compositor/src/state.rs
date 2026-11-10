@@ -1,5 +1,8 @@
 //! Smithay state and protocol handlers for one output and its tiling layout.
 
+#[path = "recording.rs"]
+mod recording;
+
 use std::time::Instant;
 
 use crate::layout_window::LayoutWindow;
@@ -157,6 +160,7 @@ pub struct Compositor {
     secret_notice_until: Option<Instant>,
     notice_until: Option<Instant>,
     notice_text: Option<String>,
+    recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
     launchers: Vec<std::process::Child>,
     desktop_entries: crate::desktop::EntryCache,
@@ -182,6 +186,8 @@ pub struct Compositor {
     _viewporter_state: ViewporterState,
     _fractional_scale_state: FractionalScaleManagerState,
     pub(crate) dmabuf: crate::rendering::DmabufSupport,
+    recording: Option<recording::Session>,
+    recording_runtime: Option<std::rc::Rc<dyn crate::recording_encoder::Runtime>>,
     pub(crate) capture_source: crate::screenshot::CaptureSource,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
@@ -294,6 +300,7 @@ impl Compositor {
             secret_notice_until: None,
             notice_until: None,
             notice_text: None,
+            recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
             launchers: Vec::new(),
             desktop_entries: crate::desktop::EntryCache::new()?,
@@ -318,6 +325,8 @@ impl Compositor {
             _viewporter_state: ViewporterState::new::<Self>(display),
             _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
             dmabuf: crate::rendering::DmabufSupport::default(),
+            recording: None,
+            recording_runtime: None,
             capture_source: crate::screenshot::CaptureSource::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
@@ -439,7 +448,10 @@ impl Compositor {
         json!({"version": 1, "clock_ms": self.driver_elapsed.as_millis(), "windows": windows, "focus": focused.map(|identity| identity.0),
             "level": format!("{:?}", self.dispatch.core().level()), "launcher": launcher,
             "overlays": {"keyboard": self.on_screen_keyboard().is_open(), "settings": self.settings().open, "menu": self.dispatch.core().menu().is_some()},
-            "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar})
+            "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar,
+            "menu_text": self.dispatch.core().menu().map(|menu| menu.clone().with_recording(self.recording_active()).text()),
+            "notices": tehuti_core::overlay::STACK.into_iter().filter_map(|layer| self.overlay_notice(layer)).collect::<Vec<_>>(),
+            "recording": self.recording_active()})
     }
 
     /// Installs contexts before accepting clients.
@@ -452,7 +464,6 @@ impl Compositor {
         self.window_focus = None;
         self.sync_window_focus();
         self.rebuild_destinations();
-        crate::wallpaper::set_focus(self.dispatch.desktop_focus());
     }
 
     /// Names ticker buttons after the pad that sent the latest input.
@@ -477,7 +488,6 @@ impl Compositor {
                 tracing::info!(count = contexts.len(), "contexts reloaded");
                 self.dispatch.core_mut().replace_contexts(contexts);
                 self.sync_destination_windows();
-                crate::wallpaper::set_focus(self.dispatch.desktop_focus());
                 self.update_window_dimming();
                 self.show_notice("CONTEXTS RELOADED");
                 self.rebuild_destinations();
@@ -635,7 +645,7 @@ impl Compositor {
 
     #[must_use]
     pub fn speech_notice_visible(&self) -> bool {
-        self.notice_until.is_some_and(|until| self.clock_now() < until)
+        self.recording_failure.is_some() || self.notice_until.is_some_and(|until| self.clock_now() < until)
     }
 
     #[must_use]
@@ -653,15 +663,20 @@ impl Compositor {
     fn overlay_notice(&self, layer: tehuti_core::overlay::Overlay) -> Option<String> {
         use tehuti_core::overlay::Overlay;
         match layer {
-            Overlay::SystemMenu => self.dispatch.core().menu().map(tehuti_core::menu::Menu::text),
+            Overlay::SystemMenu => self
+                .dispatch
+                .core()
+                .menu()
+                .map(|menu| menu.clone().with_recording(self.recording_active()).text()),
             Overlay::Secret => self.secret_confirmation_text(),
             Overlay::SecretUnavailable => self
                 .secret_notice_until
                 .is_some_and(|until| self.clock_now() < until)
                 .then(|| "SECRET DELIVERY UNAVAILABLE".into()),
             Overlay::Notice => self.speech_notice_visible().then(|| {
-                self.notice_text
+                self.recording_failure
                     .clone()
+                    .or_else(|| self.notice_text.clone())
                     .unwrap_or_else(|| "NO SPEECH MAPPING".into())
             }),
             Overlay::MouseNotice => self.mouse_mode.then(|| "MOUSE MODE".into()),
@@ -746,6 +761,7 @@ impl Compositor {
         tracing::trace!(?elapsed, "dispatch tick");
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
         self.keep_invitation();
+        self.poll_recording();
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
@@ -765,6 +781,7 @@ impl Compositor {
         reason = "Smithay pointer coordinates and axis values use floating point"
     )]
     fn pointer_motion(&mut self, x: i32, y: i32) {
+        self.record_event("pointer_motion", &serde_json::json!({"x": x, "y": y}));
         tracing::trace!(x, y, "mouse dispatch motion");
         self.pointer_location.x += f64::from(x) / 1_000_000.0;
         self.pointer_location.y += f64::from(y) / 1_000_000.0;
@@ -776,6 +793,7 @@ impl Compositor {
     )]
     fn pointer_scroll(&mut self, x: i32, y: i32) {
         use smithay::backend::input::{Axis, AxisSource};
+        self.record_event("pointer_scroll", &serde_json::json!({"x": x, "y": y}));
         if self.mouse_mode {
             self.move_pointer();
         } else {
@@ -815,6 +833,10 @@ impl Compositor {
         }
     }
     fn pointer_click(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
+        self.record_event(
+            "pointer_click",
+            &serde_json::json!({"button": format!("{button:?}"), "pressed": pressed}),
+        );
         self.move_pointer();
         if pressed && let Some((window, _)) = self.space.element_under(self.pointer_location) {
             let identity = self
@@ -947,6 +969,17 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if matches!(
+            event,
+            Event::Button {
+                name: tehuti_protocol::ButtonName::East,
+                state: tehuti_protocol::ButtonState::Pressed,
+                ..
+            }
+        ) && self.recording_failure.take().is_some()
+        {
+            return;
+        }
         if matches!(event, Event::Speech { .. }) {
             let registrations = self
                 .plugins
@@ -981,6 +1014,7 @@ impl Compositor {
         };
         let _rejection = self.dispatch(input);
         self.after_event(event);
+        self.record_screen();
     }
 
     fn after_event(&mut self, event: &Event) {
@@ -1033,6 +1067,7 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        self.record_debug("input", &input);
         let elapsed = dispatch_elapsed(&input);
         self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
@@ -1067,12 +1102,12 @@ impl Compositor {
     }
 
     fn finish_dispatch_view(&mut self, previous: tehuti_core::Level) {
-        crate::wallpaper::set_focus(self.dispatch.desktop_focus());
         if previous != self.dispatch.core().level() {
             self.dim_elapsed = core::time::Duration::ZERO;
         }
         self.update_window_dimming();
         self.reserve_keyboard_height();
+        self.record_screen();
     }
 
     pub(crate) fn set_keyboard_surrounding(&mut self, surrounding: Option<(String, usize, usize)>) {
@@ -1191,6 +1226,22 @@ impl Compositor {
     #[must_use]
     pub const fn on_screen_keyboard(&self) -> &tehuti_core::keyboard::Keyboard {
         self.dispatch.keyboard()
+    }
+
+    pub(crate) fn launcher_icons(&self) -> Vec<String> {
+        let Some(launcher) = self.dispatch.launcher() else {
+            return Vec::new();
+        };
+        (0..launcher.list().slots().candidates.len())
+            .map(|index| {
+                launcher
+                    .candidate_destination(index)
+                    .and_then(|index| self.launcher_routes.get(index))
+                    .and_then(|route| route.steps.first())
+                    .map(|step| step.icon.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// Sends a start or stop to the speech sidecar; `false` when it fails.
@@ -1381,6 +1432,12 @@ impl Compositor {
 
     #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
+        if !matches!(
+            effect,
+            DispatchEffect::PollSpeech(_) | DispatchEffect::PollSources | DispatchEffect::Supervise
+        ) {
+            self.record_debug("effect", &effect);
+        }
         match effect {
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
@@ -1489,6 +1546,22 @@ impl Compositor {
     }
 
     fn run_menu_command(&mut self, command: tehuti_core::menu::Command) {
+        if command == tehuti_core::menu::Command::ToggleRecording {
+            if self.recording_active() {
+                self.stop_recording();
+            } else {
+                self.start_recording();
+            }
+            return;
+        }
+        if command == tehuti_core::menu::Command::StartRecording {
+            self.start_recording();
+            return;
+        }
+        if command == tehuti_core::menu::Command::StopRecording {
+            self.stop_recording();
+            return;
+        }
         if command == tehuti_core::menu::Command::Screenshot {
             match crate::screenshot::save(self) {
                 Ok(path) => self.show_notice(&format!("SCREENSHOT SAVED: {}", path.display())),
@@ -2103,6 +2176,10 @@ impl Compositor {
             .unwrap_or((None, None))
     }
 
+    pub(super) fn show_recording_failure(&mut self, error: &str) {
+        self.recording_failure = Some(format!("RECORDING FAILED: {error}\nESC OR B TO DISMISS"));
+    }
+
     fn show_notice(&mut self, text: &str) {
         let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
         self.notice_text = Some(text.into());
@@ -2243,6 +2320,13 @@ impl Compositor {
     /// Meta is the Guide button and, while Meta is held, the arrows are the d-pad: both go to the core as pad buttons and
     /// the client never sees them.
     pub fn host_key(&mut self, keycode: Keycode, pressed: bool) {
+        if pressed && keycode.raw() == 9 && self.recording_failure.take().is_some() {
+            return;
+        }
+        self.record_event(
+            "key",
+            &serde_json::json!({"keycode": keycode.raw(), "pressed": pressed}),
+        );
         if self.host_key_as_pad(keycode, pressed) {
             return;
         }
@@ -2551,6 +2635,11 @@ impl Compositor {
         {
             bar = bar.with_navigation(text);
         }
+        self.recording_bar(bar)
+    }
+
+    fn recording_bar(&self, bar: tehuti_core::bar::Bar) -> tehuti_core::bar::Bar {
+        let mut bar = bar.with_recording(self.recording_active());
         bar.font = self.settings().bar_font;
         bar
     }
@@ -3327,6 +3416,7 @@ impl CompositorHandler for Compositor {
                 let _serial = toplevel.send_configure();
             }
         }
+        self.record_surface_change();
     }
 }
 

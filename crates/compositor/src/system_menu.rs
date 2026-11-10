@@ -84,6 +84,9 @@ impl Config {
             | Command::Reboot
             | Command::ShutDown
             | Command::TaskMonitor
+            | Command::StartRecording
+            | Command::StopRecording
+            | Command::ToggleRecording
             | Command::Screenshot
             | Command::Settings
             | Command::Custom(_) => None,
@@ -107,6 +110,9 @@ impl Config {
             | Command::Reboot
             | Command::ShutDown
             | Command::TaskMonitor
+            | Command::StartRecording
+            | Command::StopRecording
+            | Command::ToggleRecording
             | Command::Screenshot
             | Command::Settings => self.commands.get(command.key()),
         };

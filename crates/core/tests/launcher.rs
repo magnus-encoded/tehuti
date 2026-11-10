@@ -34,6 +34,7 @@ mod tests {
                 .map(|row| row.candidate.name.as_str()),
             Some("Pokémon")
         );
+        assert_eq!(launcher.candidate_destination(0), Some(1));
         assert_eq!(launcher.confirm(), Some(1));
     }
 

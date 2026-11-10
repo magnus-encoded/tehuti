@@ -513,6 +513,21 @@ text = "a\u0000b"
     }
 
     #[test]
+    fn ticker_buttons_parse_and_unknown_names_are_kept_for_warnings() {
+        use tehuti_protocol::ButtonName;
+        let context = parse_context(
+            "app_id = 'test'\n[buttons]\n[ticker.buttons]\nsouth = 'Primary'\nleft_bumper = 'Wings'\nturbo = 'X'\nguide = 'Y'",
+        )
+        .unwrap();
+        assert_eq!(context.ticker_button(ButtonName::South), Some("Primary"));
+        assert_eq!(context.ticker_button(ButtonName::LeftBumper), Some("Wings"));
+        assert_eq!(context.ticker_button(ButtonName::East), None);
+        assert_eq!(context.unknown_ticker_buttons(), ["guide", "turbo"]);
+        let bad = "app_id = 'test'\n[buttons]\n[ticker.buttons]\nsouth = ' '";
+        assert!(parse_context(bad).is_err());
+    }
+
+    #[test]
     fn ticker_names_reject_bad_input() {
         let long = "x".repeat(25);
         let maximum_length = "x".repeat(24);

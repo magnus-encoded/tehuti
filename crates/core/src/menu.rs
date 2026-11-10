@@ -13,6 +13,9 @@ pub enum Command {
     TaskMonitor,
     Settings,
     Screenshot,
+    StartRecording,
+    StopRecording,
+    ToggleRecording,
     Custom(usize),
 }
 
@@ -37,12 +40,15 @@ impl Command {
             Self::TaskMonitor => ("task_monitor", "TASK MONITOR"),
             Self::Settings => ("settings", "SETTINGS"),
             Self::Screenshot => ("screenshot", "SCREENSHOT"),
+            Self::StartRecording => ("start_recording", "START RECORDING"),
+            Self::ToggleRecording => ("toggle_recording", "START RECORDING"),
+            Self::StopRecording => ("stop_recording", "STOP RECORDING"),
             Self::Custom(_) => ("entry", ""),
         }
     }
 }
 
-pub const ITEMS: [Command; 8] = [
+pub const ITEMS: [Command; 9] = [
     Command::LogOut,
     Command::Restart,
     Command::Plasma,
@@ -51,10 +57,12 @@ pub const ITEMS: [Command; 8] = [
     Command::TaskMonitor,
     Command::Settings,
     Command::Screenshot,
+    Command::ToggleRecording,
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Menu {
+    recording: bool,
     pad_family: PadFamily,
     entries: Vec<String>,
     selected: usize,
@@ -85,6 +93,20 @@ impl Menu {
         self
     }
 
+    #[must_use]
+    pub const fn with_recording(mut self, recording: bool) -> Self {
+        self.recording = recording;
+        self
+    }
+
+    fn item_label(&self, item: Command) -> &'static str {
+        if item == Command::ToggleRecording && self.recording {
+            "STOP RECORDING"
+        } else {
+            item.label()
+        }
+    }
+
     fn command(&self) -> Option<Command> {
         ITEMS.get(self.selected).copied().or_else(|| {
             self.entries
@@ -100,7 +122,7 @@ impl Menu {
                     .get(self.selected.saturating_sub(ITEMS.len()))
                     .map_or("CANCEL", String::as_str)
             },
-            |item| item.label(),
+            |item| self.item_label(*item),
         )
     }
 
@@ -113,7 +135,13 @@ impl Menu {
         if self.confirming
             || matches!(
                 command,
-                Command::TaskMonitor | Command::Settings | Command::Screenshot | Command::Custom(_)
+                Command::TaskMonitor
+                    | Command::Settings
+                    | Command::Screenshot
+                    | Command::StartRecording
+                    | Command::StopRecording
+                    | Command::ToggleRecording
+                    | Command::Custom(_)
             )
         {
             return Some(command);
@@ -153,7 +181,7 @@ impl Menu {
         let mut text = String::from("SYSTEM MENU");
         for (index, label) in ITEMS
             .iter()
-            .map(|item| item.label())
+            .map(|item| self.item_label(*item))
             .chain(self.entries.iter().map(String::as_str))
             .enumerate()
         {

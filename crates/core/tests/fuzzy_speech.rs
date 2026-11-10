@@ -6,11 +6,11 @@ mod fuzzy_speech {
 
     #[test]
     fn opted_in_context_routes_a_folded_norwegian_phrase() {
-        let context = parse_context("app_id = '*'\n[buttons]\n[speech]\n'Åpne Bærekraft.' = { launch = 'garden.desktop' }\n[speech_matching]\nfuzzy = true").unwrap();
+        let context = parse_context("app_id = '*'\n[buttons]\n[speech]\n'Vis Bærekraft.' = { launch = 'garden.desktop' }\n[speech_matching]\nfuzzy = true").unwrap();
         let (_, actions) = step(
             State::with_contexts(vec![context]),
             &Event::Speech {
-                text: Text::new("Åpne berekraft.".into()).unwrap(),
+                text: Text::new("Vis berekraft.".into()).unwrap(),
             },
         );
         assert_eq!(
@@ -35,7 +35,7 @@ mod fuzzy_speech {
     }
 
     fn route(global: &str, focused: &str, phrase: &str) -> (State, Vec<Action>) {
-        let mappings = "'Åpne Bærekraft.' = { launch = 'garden.desktop' }\n'SuperTux.' = { launch = 'game.desktop' }\n'Åpne SuperTux.' = { launch = 'game.desktop' }\n'Lukk vindu.' = { close = 'focused' }\n'Ned.' = { key = 'Down' }";
+        let mappings = "'Vis Bærekraft.' = { launch = 'garden.desktop' }\n'SuperTux.' = { launch = 'game.desktop' }\n'Vis SuperTux.' = { launch = 'game.desktop' }\n'Lukk vindu.' = { close = 'focused' }\n'Ned.' = { key = 'Down' }";
         let state = State::with_contexts(vec![
             context("*", global, mappings),
             context("editor", focused, ""),
@@ -57,12 +57,7 @@ mod fuzzy_speech {
 
     #[test]
     fn spaces_and_bare_names_inside_sentences_reach_the_mapping() {
-        for phrase in [
-            "Åpne Super Tux.",
-            "ÅpneSuperTux",
-            "Super. Tux.",
-            "Hun er supertux.",
-        ] {
+        for phrase in ["Vis Super Tux.", "VisSuperTux", "Super. Tux.", "Hun er supertux."] {
             let (state, actions) = route("[speech_matching]\nfuzzy = true", "", phrase);
             assert_eq!(actions, vec![launch("game")], "{phrase}");
             let matched = state.fuzzy_speech_match(phrase).unwrap();
@@ -87,23 +82,16 @@ mod fuzzy_speech {
                 "[speech_matching]\nfuzzy = false",
             ),
         ] {
-            let (_, actions) = route(global, focused, "Åpne berekraft.");
+            let (_, actions) = route(global, focused, "Vis berekraft.");
             assert!(matches!(actions.as_slice(), [Action::Notice { .. }]));
         }
-        let (_, actions) = route("", "[speech_matching]\nfuzzy = true", "Åpne berekraft.");
+        let (_, actions) = route("", "[speech_matching]\nfuzzy = true", "Vis berekraft.");
         assert_eq!(actions, vec![launch("garden")]);
     }
 
     #[test]
     fn noise_and_short_phrases_do_not_match() {
-        for phrase in [
-            "Hva?",
-            "Nde.",
-            "Åpne panseret.",
-            "Super.",
-            "Tux.",
-            "Ikke vinduet.",
-        ] {
+        for phrase in ["Hva?", "Nde.", "Vis panseret.", "Super.", "Tux.", "Ikke vinduet."] {
             let (_, actions) = route("[speech_matching]\nfuzzy = true", "", phrase);
             assert!(
                 matches!(actions.as_slice(), [Action::Notice { .. }]),
@@ -117,7 +105,7 @@ mod fuzzy_speech {
         let global = context(
             "*",
             "[speech_matching]\nfuzzy = true",
-            "'Åpne Bærekraft.' = { launch = 'garden.desktop' }\n'Åpne berekraft.' = { launch = 'exact.desktop' }",
+            "'Vis Bærekraft.' = { launch = 'garden.desktop' }\n'Vis berekraft.' = { launch = 'exact.desktop' }",
         );
         let focused = parse_context("app_id = 'editor'\nunmatched_speech = 'type'\n[buttons]\n[speech]\n'SuperTux.' = { launch = 'game.desktop' }").unwrap();
         let (state, _) = step(
@@ -129,7 +117,7 @@ mod fuzzy_speech {
         );
         for (phrase, expected) in [
             ("Super Tux.", launch("game")),
-            ("Åpne berekraft.", launch("exact")),
+            ("Vis berekraft.", launch("exact")),
         ] {
             let (_, actions) = step(
                 state.clone(),
@@ -143,13 +131,13 @@ mod fuzzy_speech {
 
     #[test]
     fn ambiguous_actions_are_rejected_and_destructive_actions_need_nine_tenths() {
-        let mappings = "'Åpne Mario.' = { launch = 'one.desktop' }\n'Åpne Maria.' = { launch = 'two.desktop' }\n'Lukk programmet.' = { close = 'focused' }\n'Åpne programmet.' = { launch = 'program.desktop' }";
+        let mappings = "'Vis Mario.' = { launch = 'one.desktop' }\n'Vis Maria.' = { launch = 'two.desktop' }\n'Lukk programmet.' = { close = 'focused' }\n'Vis programmet.' = { launch = 'program.desktop' }";
         let state = State::with_contexts(vec![context("*", "[speech_matching]\nfuzzy = 0.6", mappings)]);
         for (phrase, expected) in [
-            ("Åpne Marie.", None),
+            ("Vis Marie.", None),
             ("Lukk progammet.", Some(Action::Close)),
             ("Lukk proggrammer og.", None),
-            ("Åpne proggrammer og.", Some(launch("program"))),
+            ("Vis proggrammer og.", Some(launch("program"))),
         ] {
             let (_, actions) = step(
                 state.clone(),

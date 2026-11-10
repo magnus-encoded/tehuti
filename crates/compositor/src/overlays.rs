@@ -35,6 +35,11 @@ pub struct OverlayElements<R: Renderer> {
 }
 
 impl Overlays {
+    pub(crate) fn settle_icons(&mut self, compositor: &crate::state::Compositor) {
+        self.choices
+            .settle_icons(compositor.launcher_icons(), core::time::Duration::from_secs(2));
+    }
+
     /// The cursor, settings view, notice, bar and on-screen keyboard for `output`.
     ///
     /// # Errors

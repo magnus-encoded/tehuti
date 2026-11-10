@@ -88,29 +88,13 @@ Without the option, unmatched speech shows “No speech mapping” for three
 seconds above the client without changing focus. Record (Share) controls push-to-talk
 by default. Configured push-to-talk buttons never reach context mappings.
 
-## Favourite desktop launch icons
+## Legacy favourites key
 
-Set top-level `favourites` in the global context (`app_id = "*"`), before any
-TOML table:
-
-```toml
-app_id = "*"
-favourites = ["reader.desktop", "browser.desktop"]
-
-[buttons]
-
-[speech]
-Read = { launch = "reader.desktop" }
-Browse = { launch = "browser.desktop" }
-```
-
-The list defaults to empty. Favourites with global speech launch mappings appear
-first in the wallpaper hint grid, in list order. Other launch hints stay visible.
-Entries without a launch phrase are skipped; repeated favourites appear once.
-With no application focused, D-pad Right or Down selects the next favourite;
-Left or Up selects the previous one. Selection stops at either end. Confirm
-launches the selected entry using the connected pad's role (A, Cross, or Nintendo
-A). Open overlays keep ownership of the pad. Context reloads update favourites.
+The global context may still contain a top-level `favourites` list. Tehuti
+accepts the key so existing config files load, and ignores it: there are no
+desktop icons to draw or select with the D-pad. Speech launch mappings still launch
+their configured applications. `tehuti --check-config` warns when the key
+is present.
 
 ## Checking a config
 
@@ -205,7 +189,7 @@ speech = "icons"
 ```
 
 `speech` is `"all"` (the default), `"icons"` for phrases with an icon only,
-or `"none"`. Buttons resolve as routing does: the context's mapping, then the
+`"own"` for the context's own phrases without the global ones, or `"none"`. Buttons resolve as routing does: the context's mapping, then the
 global context's, then Enter on South. Each entry is a row of symbols drawn
 in colour, `trigger → result`. Buttons look as they do on the pad in use: on
 a symbol pad a blue cross, red circle, pink square and green triangle on dark
@@ -242,6 +226,22 @@ east = { key = "escape" }
 enter = "Jump"
 backspace = "Action"
 escape = "Pause"
+```
+
+`[ticker.buttons]` labels pad buttons with what they do in the application,
+such as `south = "Primary"` or `left_bumper = "Wings"`, using the button names
+of `[buttons]`. A label shows as `Ⓐ Primary` and sends nothing; it replaces
+what the ticker would show for that button. Labels are checked like names
+(non-empty, trimmed, at most 24 characters). An unknown button name does not
+stop the file loading: `tehuti --check-config` warns and the label is ignored.
+A passthrough context never shows buttons inherited from the global context,
+only its own mappings and labels, so labels are the way to describe the game.
+
+```toml
+[ticker.buttons]
+south = "Primary"
+east = "Secondary"
+left_bumper = "Wings"
 ```
 
 A phrase can name its icon:
