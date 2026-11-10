@@ -8,7 +8,7 @@ use std::{
 };
 
 use smithay::reexports::calloop::{
-    LoopSignal, WeakLoopHandle,
+    LoopHandle, LoopSignal,
     timer::{TimeoutAction, Timer},
 };
 
@@ -92,7 +92,8 @@ pub trait Frames<Data> {
 
 /// Renders frames and wakes the loop at each retry deadline.
 pub struct Driver<'l, Data, F> {
-    handle: WeakLoopHandle<'l, Data>,
+    /// Weak, so a pending retry timer does not keep its own loop alive.
+    handle: Weak<LoopHandle<'l, Data>>,
     frames: Weak<RefCell<F>>,
     stop: LoopSignal,
 }
@@ -109,9 +110,9 @@ impl<Data, F> Clone for Driver<'_, Data, F> {
 
 impl<'l, Data: 'l, F: Frames<Data> + 'l> Driver<'l, Data, F> {
     #[must_use]
-    pub fn new(handle: WeakLoopHandle<'l, Data>, frames: &Rc<RefCell<F>>, stop: LoopSignal) -> Self {
+    pub fn new(handle: &Rc<LoopHandle<'l, Data>>, frames: &Rc<RefCell<F>>, stop: LoopSignal) -> Self {
         Self {
-            handle,
+            handle: Rc::downgrade(handle),
             frames: Rc::downgrade(frames),
             stop,
         }

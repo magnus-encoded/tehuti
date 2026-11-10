@@ -128,8 +128,8 @@ pub(crate) fn insert(
     let tty = Rc::new(RefCell::new(initialized_tty));
     let seat_token = insert_seat(event_loop, notifier, &tty)?;
     let keyboard_token = insert_keyboard(event_loop, &tty)?;
-    let frames =
-        tehuti::frame_recovery::Driver::new(event_loop.handle().downgrade(), &tty, event_loop.get_signal());
+    let frames_handle = Rc::new(event_loop.handle());
+    let frames = tehuti::frame_recovery::Driver::new(&frames_handle, &tty, event_loop.get_signal());
     let flip_tty = tty.clone();
     let flip_frames = frames.clone();
     let flip_stop = event_loop.get_signal();
@@ -151,7 +151,11 @@ pub(crate) fn insert(
     let udev_token = insert_device_watch(event_loop, udev, &tty)?;
     let wallpaper_token = insert_wallpaper_redraw(event_loop, frames.clone())?;
     let shutdown_tty = tty;
-    let draw = Box::new(move |data: &mut LoopData| frames.render(data, false));
+    let draw = Box::new(move |data: &mut LoopData| {
+        // The redraw owns the handle that retry timers reach through.
+        let _owner = &frames_handle;
+        frames.render(data, false);
+    });
     Ok(crate::Redraw {
         draw,
         shutdown: Box::new(move |loop_to_stop, seat_active| {

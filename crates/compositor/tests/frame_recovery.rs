@@ -57,7 +57,8 @@ mod tests {
             failures_left: failures,
             ..Output::default()
         }));
-        let driver = Driver::new(event_loop.handle().downgrade(), &output, event_loop.get_signal());
+        let handle = Rc::new(event_loop.handle());
+        let driver = Driver::new(&handle, &output, event_loop.get_signal());
         let timed_out = Rc::new(RefCell::new(false));
         let flag = timed_out.clone();
         let stop = event_loop.get_signal();
