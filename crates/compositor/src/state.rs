@@ -123,6 +123,9 @@ const XKB_KEYCODE_OFFSET: u32 = 8;
 /// How long a tapped key stays down, so clients that poll key state see it.
 const TAP_HOLD: core::time::Duration = core::time::Duration::from_millis(40);
 
+/// The gap between releasing a held key and pressing it again for a re-tap: one 60 Hz frame.
+const RETAP_GAP: core::time::Duration = core::time::Duration::from_millis(17);
+
 /// Whether a calloop timer is waiting to release held taps.
 #[derive(Debug, PartialEq, Eq)]
 enum ReleaseTimer {
@@ -136,6 +139,10 @@ struct HeldKey {
     code: Keycode,
     due: Instant,
     modifier: bool,
+    /// False while a re-tap waits one frame after the release before pressing again.
+    pressed: bool,
+    /// The focus epoch when the tap began; a later focus change releases it.
+    epoch: u32,
 }
 
 #[derive(Debug)]
@@ -180,6 +187,7 @@ pub struct Compositor {
     /// Keys held after a tap, with the instant each is released and whether a timer is armed for it.
     held_taps: Vec<HeldKey>,
     release_timer: ReleaseTimer,
+    focus_epoch: u32,
     notice_text: Option<String>,
     recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
@@ -322,6 +330,7 @@ impl Compositor {
             notice_until: None,
             held_taps: Vec::new(),
             release_timer: ReleaseTimer::Idle,
+            focus_epoch: 0,
             notice_text: None,
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
@@ -2334,6 +2343,7 @@ impl Compositor {
             self.tap_keycode_with_keysyms_codes(keycode, modifiers);
             return;
         };
+        let epoch = self.focus_epoch;
         for code in modifiers {
             if let Some(held) = self.held_taps.iter_mut().find(|held| held.code == *code) {
                 held.due = due;
@@ -2343,18 +2353,33 @@ impl Compositor {
                     code: *code,
                     due,
                     modifier: true,
+                    pressed: true,
+                    epoch,
                 });
             }
         }
         if let Some(index) = self.held_taps.iter().position(|held| held.code == keycode) {
-            self.held_taps.remove(index);
-            self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
+            let held = self.held_taps.remove(index);
+            if held.pressed {
+                self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
+            }
+            let gap = self.clock_now().checked_add(RETAP_GAP).unwrap_or(due);
+            self.held_taps.push(HeldKey {
+                code: keycode,
+                due: gap,
+                modifier: false,
+                pressed: false,
+                epoch,
+            });
+            return;
         }
         self.send_keycode(keycode, smithay::backend::input::KeyState::Pressed);
         self.held_taps.push(HeldKey {
             code: keycode,
             due,
             modifier: false,
+            pressed: true,
+            epoch,
         });
     }
 
@@ -2371,7 +2396,27 @@ impl Compositor {
     /// Releases every held tap whose hold time has passed, keys before modifiers.
     pub fn release_due_keys(&mut self) {
         let now = self.clock_now();
+        self.press_deferred(now);
         self.release_held(|held| held.due <= now);
+    }
+
+    /// Presses the re-taps whose gap has passed and starts their hold.
+    fn press_deferred(&mut self, now: Instant) {
+        let epoch = self.focus_epoch;
+        let ready: Vec<Keycode> = self
+            .held_taps
+            .iter()
+            .filter(|held| !held.pressed && held.due <= now)
+            .map(|held| held.code)
+            .collect();
+        for code in ready {
+            self.send_keycode(code, smithay::backend::input::KeyState::Pressed);
+            if let Some(held) = self.held_taps.iter_mut().find(|held| held.code == code) {
+                held.pressed = true;
+                held.epoch = epoch;
+                held.due = now.checked_add(TAP_HOLD).unwrap_or(now);
+            }
+        }
     }
 
     /// Releases every held tap at once.
@@ -2385,7 +2430,7 @@ impl Compositor {
             .partition(selected);
         self.held_taps = waiting;
         released.sort_by_key(|held| held.modifier);
-        for held in released {
+        for held in released.into_iter().filter(|held| held.pressed) {
             self.send_keycode(held.code, smithay::backend::input::KeyState::Released);
         }
     }
@@ -2579,7 +2624,8 @@ impl Compositor {
     /// Runs the dispatch a keyboard focus change deferred, now that smithay's keyboard lock is free.
     fn flush_focus_change(&mut self) {
         if let Some(input) = self.focus_change_dispatch.take() {
-            self.release_all_held();
+            let epoch = self.focus_epoch;
+            self.release_held(|held| held.epoch < epoch);
             let _rejection = self.dispatch(input);
         }
     }
@@ -3854,6 +3900,7 @@ impl SeatHandler for Compositor {
             focused.and_then(smithay::reexports::wayland_server::Resource::client),
         );
         self.text_input.focus(focused.cloned());
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
         // smithay holds the keyboard lock here; a dispatch can relayout and call
         // `set_focus` again, which deadlocks. Defer it until the lock is released.
         self.focus_change_dispatch = Some(DispatchInput::TextField {
@@ -4063,7 +4110,10 @@ mod tests {
         compositor.advance_clocks(Duration::from_millis(30));
         compositor.release_due_keys();
         assert!(is_down(&compositor, 9));
-        compositor.advance_clocks(Duration::from_millis(10));
+        compositor.advance_clocks(Duration::from_millis(39));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+        compositor.advance_clocks(Duration::from_millis(1));
         compositor.release_due_keys();
         assert!(!is_down(&compositor, 9));
     }
@@ -4090,6 +4140,7 @@ mod tests {
     fn focus_change_releases_held_keys() {
         let (_display, mut compositor) = compositor();
         compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
+        compositor.focus_epoch += 1;
         compositor.focus_change_dispatch = Some(super::DispatchInput::TextField {
             active: false,
             changed: false,
@@ -4097,6 +4148,34 @@ mod tests {
         });
         compositor.flush_focus_change();
         assert!(!is_down(&compositor, 9));
+    }
+
+    #[test]
+    fn pending_focus_flush_keeps_a_modifier_pushed_after_the_change() {
+        let (_display, mut compositor) = compositor();
+        compositor.focus_epoch += 1;
+        compositor.focus_change_dispatch = Some(super::DispatchInput::TextField {
+            active: false,
+            changed: false,
+            kind: tehuti_core::keyboard::FieldKind::Normal,
+        });
+        let control = smithay::input::keyboard::Keycode::new(37);
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(38), &[control]);
+        assert!(is_down(&compositor, 37));
+        assert!(is_down(&compositor, 38));
+    }
+
+    #[test]
+    fn retap_leaves_a_gap_before_the_next_press() {
+        let (_display, mut compositor) = compositor();
+        let key = smithay::input::keyboard::Keycode::new(9);
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(5));
+        compositor.tap_held(key, &[]);
+        assert!(!is_down(&compositor, 9));
+        compositor.advance_clocks(super::RETAP_GAP);
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
     }
 
     #[test]
