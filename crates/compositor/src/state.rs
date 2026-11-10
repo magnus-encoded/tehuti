@@ -188,6 +188,8 @@ pub struct Compositor {
     held_taps: Vec<HeldKey>,
     release_timer: ReleaseTimer,
     focus_epoch: u32,
+    /// How long a tap holds its key; zero releases in the same call.
+    tap_hold: core::time::Duration,
     notice_text: Option<String>,
     recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
@@ -331,6 +333,7 @@ impl Compositor {
             held_taps: Vec::new(),
             release_timer: ReleaseTimer::Idle,
             focus_epoch: 0,
+            tap_hold: core::time::Duration::ZERO,
             notice_text: None,
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
@@ -2219,10 +2222,11 @@ impl Compositor {
         self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
     }
 
+    /// Taps a key at once, release in the same instant; typed text relies on this order.
     fn tap(&mut self, key: KeyName) {
         let evdev_code = key.evdev_code();
         let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
-        self.tap_held(keycode, &[]);
+        self.tap_keycode(keycode);
     }
 
     fn press_held_key(&mut self, key: KeyName) {
@@ -2334,12 +2338,23 @@ impl Compositor {
         held
     }
 
+    /// Turns on the [`TAP_HOLD`] delay for tapped keys; the running compositor does this, tests keep instant taps.
+    pub const fn hold_taps(&mut self) {
+        self.tap_hold = TAP_HOLD;
+    }
+
     /// Presses the modifiers and the key now, and releases them after [`TAP_HOLD`] so polling clients see the key down.
     ///
     /// Each keycode has one release time: a re-tap restarts the key, and a modifier shared with an earlier chord stays
     /// down until the later chord's hold ends.
     fn tap_held(&mut self, keycode: Keycode, modifiers: &[Keycode]) {
-        let Some(due) = self.clock_now().checked_add(TAP_HOLD) else {
+        let duration = self.tap_hold;
+        let due = if duration.is_zero() {
+            None
+        } else {
+            self.clock_now().checked_add(duration)
+        };
+        let Some(due) = due else {
             self.tap_keycode_with_keysyms_codes(keycode, modifiers);
             return;
         };
@@ -2414,7 +2429,7 @@ impl Compositor {
             if let Some(held) = self.held_taps.iter_mut().find(|held| held.code == code) {
                 held.pressed = true;
                 held.epoch = epoch;
-                held.due = now.checked_add(TAP_HOLD).unwrap_or(now);
+                held.due = now.checked_add(self.tap_hold).unwrap_or(now);
             }
         }
     }
@@ -2654,7 +2669,9 @@ impl Compositor {
         let surface = smithay::reexports::wayland_server::Resource::id(&focus);
         for character in text.chars() {
             if character == '\n' {
-                self.tap(KeyName::Enter);
+                self.tap_keycode(Keycode::new(
+                    KeyName::Enter.evdev_code().saturating_add(XKB_KEYCODE_OFFSET),
+                ));
                 continue;
             }
             let Some((keycode, modifiers)) = self.text_keys.get(&character).copied() else {
@@ -4073,6 +4090,7 @@ mod tests {
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_driver_input(false);
+        compositor.hold_taps();
         (display, compositor)
     }
 
