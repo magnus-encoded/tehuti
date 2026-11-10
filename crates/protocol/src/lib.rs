@@ -486,8 +486,11 @@ pub struct Context {
     label: Option<String>,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, SpeechEntry>,
-    /// Each non-template phrase's [`speech_variant_key`] to its `speech` key.
-    speech_variants: std::collections::HashMap<String, String>,
+    /// Each non-template phrase's [`speech_variant_key`] to its `speech` key, or
+    /// `None` once two distinct phrases share the folded form.
+    speech_variants: std::collections::HashMap<String, Option<String>>,
+    /// Problems that did not stop the load, for the edge to log.
+    warnings: Vec<String>,
     unmatched_speech: Option<UnmatchedSpeech>,
     launch_phrases: Vec<(String, String)>,
     favourites: Vec<String>,
@@ -778,6 +781,13 @@ impl Context {
             })
     }
 
+    /// Problems found while loading that left the context usable, such as two
+    /// phrases whose folded form was skipped because they share it.
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
     /// The phrase a transcript matches once digits and hyphens fold; consulted
     /// only after the exact lookup.
     fn variant_entry(&self, phrase: &str) -> Option<&SpeechEntry> {
@@ -786,7 +796,8 @@ impl Context {
 
     fn variant_lookup(&self, variant: &str) -> Option<&SpeechEntry> {
         self.speech_variants
-            .get(variant)
+            .get(variant)?
+            .as_ref()
             .and_then(|normalized| self.speech.get(normalized))
     }
 
@@ -1048,6 +1059,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_title(&context.app_id, context.title.as_deref())?;
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
     let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
+    let mut warnings = Vec::new();
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
         let entry: SpeechEntryFile = value
@@ -1074,7 +1086,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
             ));
         }
         if !template {
-            insert_speech_variant(&mut speech_variants, &mapped, normalized)?;
+            warnings.extend(insert_speech_variant(&mut speech_variants, &mapped, normalized));
         }
     }
     Ok(Context {
@@ -1084,6 +1096,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         buttons: context.buttons,
         speech,
         speech_variants,
+        warnings,
         launch_phrases,
         favourites: context.favourites,
         unmatched_speech: context.unmatched_speech,
@@ -1119,18 +1132,28 @@ fn record_launch_phrase(phrases: &mut Vec<(String, String)>, action: &MappingAct
     }
 }
 
+/// Records a phrase's folded form; a second distinct phrase with the same form
+/// skips it for both and returns a warning naming them.
 fn insert_speech_variant(
-    variants: &mut std::collections::HashMap<String, String>,
+    variants: &mut std::collections::HashMap<String, Option<String>>,
     mapped: &str,
     normalized: String,
-) -> Result<(), String> {
+) -> Option<String> {
     let variant = speech_variant_key(mapped);
-    if let Some(other) = variants.insert(variant.clone(), normalized) {
-        return Err(format!(
-            "speech phrase {mapped:?} duplicates {other:?}; both fold to {variant:?} once digits and hyphens fold"
-        ));
+    match variants.entry(variant) {
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            slot.insert(Some(normalized));
+            None
+        }
+        std::collections::hash_map::Entry::Occupied(mut slot) => {
+            let other = slot.insert(None);
+            Some(format!(
+                "speech phrases {mapped:?} and {} fold alike to {:?}; only their exact forms match",
+                other.map_or_else(|| "others".to_owned(), |other| format!("{other:?}")),
+                slot.key(),
+            ))
+        }
     }
-    Ok(())
 }
 
 fn normalized_speech_phrase(mapped: &str) -> Result<String, String> {
@@ -1233,7 +1256,7 @@ pub fn normalize_phrase(phrase: &str) -> String {
 /// The looser form a phrase and a transcript are compared in after the exact lookup fails.
 ///
 /// It is [`normalize_phrase`], then each standalone number 0 to 20 as its
-/// word, then the word breaks removed, so "camera-1", "camera 1" and "Camera one"
+/// word (a digit run glued to letters counts as its own word), then the word breaks removed, so "camera-1", "camera 1" and "Camera one"
 /// agree, as do "cock-pit" and "cockpit".
 #[must_use]
 pub fn speech_variant_key(phrase: &str) -> String {
@@ -1260,14 +1283,31 @@ pub fn speech_variant_key(phrase: &str) -> String {
         "nineteen",
         "twenty",
     ];
-    normalize_phrase(phrase)
-        .split(' ')
-        .map(|word| {
-            word.parse::<usize>()
+    let normalized = normalize_phrase(phrase);
+    let mut runs: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let mut previous_digit = None;
+    for (index, character) in normalized.char_indices() {
+        let digit = character.is_ascii_digit();
+        if character == ' ' || previous_digit.is_some_and(|was| was != digit) {
+            runs.push(&normalized[start..index]);
+            start = index;
+        }
+        if character == ' ' {
+            start = index + 1;
+            previous_digit = None;
+        } else {
+            previous_digit = Some(digit);
+        }
+    }
+    runs.push(&normalized[start..]);
+    runs.into_iter()
+        .map(|run| {
+            run.parse::<usize>()
                 .ok()
-                .filter(|_| word.bytes().all(|byte| byte.is_ascii_digit()))
+                .filter(|_| run.bytes().all(|byte| byte.is_ascii_digit()))
                 .and_then(|number| NUMBERS.get(number).copied())
-                .unwrap_or(word)
+                .unwrap_or(run)
         })
         .collect()
 }

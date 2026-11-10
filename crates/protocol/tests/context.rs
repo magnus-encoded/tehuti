@@ -296,6 +296,7 @@ restart = { restart = false }"
             let separator = if hyphen { "-" } else { " " };
             let worded = speech_context(&[(&format!("{word} {}.", NUMBER_WORDS[number]), "enter")]);
             prop_assert!(worded.speech_action(&format!("{word}{separator}{number}")).is_some(), "no match");
+            prop_assert!(worded.speech_action(&format!("{word}{number}")).is_some(), "glued digit");
             let digits = speech_context(&[(&format!("{word} {number}"), "enter")]);
             prop_assert!(digits.speech_action(&format!("{}{separator}{}", word.to_uppercase(), NUMBER_WORDS[number])).is_some(), "no match");
         }
@@ -339,16 +340,31 @@ restart = { restart = false }"
             }
         }
 
-        /// Law 5: distinct phrases that fold alike are reported as duplicates.
+        /// Law 5: distinct phrases that fold alike still load, keep their exact
+        /// forms, lose the shared folded form and are named in one warning.
         #[test]
-        fn phrases_that_fold_alike_are_reported(number in 0_usize..=20, word in "[a-z]{3,8}") {
-            let source = format!(
-                "app_id = 'test'\n[buttons]\n[speech]\n\"{word} {number}\" = {{ key = 'enter' }}\n\"{word}-{}\" = {{ key = 'tab' }}\n",
-                NUMBER_WORDS[number],
-            );
-            let error = parse_context(&source).unwrap_err();
-            prop_assert!(error.contains("duplicates"), "{}", error);
+        fn phrases_that_fold_alike_load_with_a_warning(number in 0_usize..=20, word in "[a-z]{3,8}") {
+            let spelled = format!("{word}-{}", NUMBER_WORDS[number]);
+            let digits = format!("{word} {number}");
+            let context = speech_context(&[(&digits, "enter"), (&spelled, "tab")]);
+            let warnings = context.warnings();
+            prop_assert_eq!(warnings.len(), 1);
+            prop_assert!(warnings[0].contains(&format!("{digits:?}")) && warnings[0].contains(&format!("{spelled:?}")), "{}", warnings[0]);
+            prop_assert_ne!(context.speech_action(&digits), context.speech_action(&spelled));
+            prop_assert!(context.speech_action(&digits).is_some(), "exact digits");
+            prop_assert!(context.speech_action(&spelled).is_some(), "exact spelled");
+            prop_assert!(context.speech_action(&format!("{word}{number}")).is_none(), "folded form skipped");
         }
+    }
+
+    #[test]
+    fn a_context_that_loaded_before_folding_still_loads() {
+        let context = speech_context(&[("Ab part", "enter"), ("Abpart", "tab"), ("Bay 12", "space")]);
+        assert_eq!(context.warnings().len(), 1, "{:?}", context.warnings());
+        assert!(context.speech_action("ab-part").is_none());
+        assert!(context.speech_action("bay12").is_some());
+        assert!(context.speech_action("Bay twelve").is_some());
+        assert!(speech_context(&[("Go", "enter")]).warnings().is_empty());
     }
 
     #[test]
