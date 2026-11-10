@@ -548,6 +548,7 @@ fn run(
             }
         }
         sync_pad_grab(data);
+        arm_key_release(data, &handle);
         if work_due || input_arrived {
             redraw(data);
         }
@@ -565,6 +566,24 @@ fn run(
     }
     result?;
     Ok(())
+}
+
+/// Arms a one-shot timer that releases tapped keys after their hold time.
+fn arm_key_release(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
+    let Some(delay) = data.compositor.take_release_request() else {
+        return;
+    };
+    let timer = calloop::timer::Timer::from_duration(delay);
+    let armed = handle.insert_source(timer, |_, (), loop_data| {
+        loop_data.compositor.release_timer_fired().map_or(
+            calloop::timer::TimeoutAction::Drop,
+            calloop::timer::TimeoutAction::ToDuration,
+        )
+    });
+    if armed.is_err() {
+        warn!("key release timer failed; releasing now");
+        data.compositor.release_timer_failed();
+    }
 }
 
 /// Runs the backend's redraw, if it has one.
