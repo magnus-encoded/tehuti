@@ -40,8 +40,8 @@ mod tests {
         let colours: std::collections::HashSet<_> = pixels.as_chunks::<4>().0.iter().copied().collect();
         assert!(colours.len() > 40, "fontdue gives smooth text coverage");
         assert!(
-            colours.contains(&[72, 68, 63, 255]),
-            "missing icons use a neutral tile"
+            colours.contains(&[151, 117, 57, 255]),
+            "missing icons fall back to the initial tile"
         );
         assert!(
             colours.contains(&[119, 88, 36, 255]),
