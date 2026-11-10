@@ -57,7 +57,7 @@ mod fuzzy_speech {
 
     #[test]
     fn spaces_and_bare_names_inside_sentences_reach_the_mapping() {
-        for phrase in ["Vis Super Tux.", "VisSuperTux", "Super. Tux.", "Hun er supertux."] {
+        for phrase in ["Vis Super Tux.", "VisSuperTux", "Hun er supertux."] {
             let (state, actions) = route("[speech_matching]\nfuzzy = true", "", phrase);
             assert_eq!(actions, vec![launch("game")], "{phrase}");
             let matched = state.fuzzy_speech_match(phrase).unwrap();
@@ -68,9 +68,11 @@ mod fuzzy_speech {
 
     #[test]
     fn exact_phrases_win_and_are_not_reported_as_fuzzy() {
-        let (state, actions) = route("[speech_matching]\nfuzzy = true", "", "SuperTux!");
-        assert_eq!(actions, vec![launch("game")]);
-        assert!(state.fuzzy_speech_match("SuperTux!").is_none());
+        for phrase in ["SuperTux!", "Super. Tux."] {
+            let (state, actions) = route("[speech_matching]\nfuzzy = true", "", phrase);
+            assert_eq!(actions, vec![launch("game")], "{phrase}");
+            assert!(state.fuzzy_speech_match(phrase).is_none(), "{phrase}");
+        }
     }
 
     #[test]
