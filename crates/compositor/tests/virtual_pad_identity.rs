@@ -42,92 +42,77 @@ mod tests {
     }
 
     #[test]
-    fn virtual_pad_axes_keep_calibration_and_exclude_source_extras() {
-        use evdev::{AbsInfo, AbsoluteAxisCode as Axis};
-        let source = [
-            (Axis::ABS_X, AbsInfo::new(128, 0, 255, 1, 4, 0)),
-            (Axis::ABS_MISC, AbsInfo::new(0, 0, 100, 0, 0, 0)),
-        ];
-        let axes = tehuti::controller::virtual_pad_axes(&source);
-        let codes: Vec<_> = axes.iter().map(|(axis, _)| *axis).collect();
-        assert_eq!(
-            codes,
-            [
-                Axis::ABS_X,
-                Axis::ABS_Y,
-                Axis::ABS_Z,
-                Axis::ABS_RX,
-                Axis::ABS_RY,
-                Axis::ABS_RZ,
-                Axis::ABS_HAT0X,
-                Axis::ABS_HAT0Y
-            ]
-        );
-        let (_, x) = axes.iter().find(|(axis, _)| *axis == Axis::ABS_X).unwrap();
-        assert_eq!((x.minimum(), x.maximum(), x.flat()), (0, 255, 4));
-        let (_, hat) = axes.iter().find(|(axis, _)| *axis == Axis::ABS_HAT0X).unwrap();
-        assert_eq!((hat.minimum(), hat.maximum()), (-1, 1));
+    fn virtual_pad_name_and_phys_are_fixed() {
+        assert_eq!(tehuti::controller::VIRTUAL_PAD_NAME, "Tehuti virtual pad");
+        assert_eq!(tehuti::controller::VIRTUAL_PAD_PHYS, c"tehuti/virtual-pad");
     }
 
     #[test]
-    fn every_advertised_axis_passes_kernel_absinfo_validation() {
-        use evdev::{AbsInfo, AbsoluteAxisCode as Axis};
-        let calibrations = [
-            AbsInfo::new(0, 10, -10, 0, 0, 0),
-            AbsInfo::new(0, -1, 1, 0, 3, 0),
-            AbsInfo::new(0, 0, 0, 0, 1, 0),
-            AbsInfo::new(0, i32::MIN, i32::MAX, 0, i32::MAX, 0),
-            AbsInfo::new(128, 0, 255, 1, 4, 0),
-            AbsInfo::new(0, -1, 1, i32::MAX, 0, 0),
-        ];
-        for info in calibrations {
-            let source: Vec<_> = [
-                Axis::ABS_X,
-                Axis::ABS_Y,
-                Axis::ABS_Z,
-                Axis::ABS_RX,
-                Axis::ABS_RY,
-                Axis::ABS_RZ,
-                Axis::ABS_HAT0X,
-                Axis::ABS_HAT0Y,
-            ]
+    fn virtual_pad_advertises_the_xbox_axis_ranges() {
+        use evdev::AbsoluteAxisCode as Axis;
+        let advertised: Vec<_> = tehuti::controller::virtual_pad_axes()
             .into_iter()
-            .map(|axis| (axis, info))
+            .map(|(axis, info)| (axis, info.minimum(), info.maximum(), info.flat()))
             .collect();
-            for frames in [&[][..], source.as_slice()] {
-                for (axis, advertised) in tehuti::controller::virtual_pad_axes(frames) {
-                    assert!(advertised.maximum() >= advertised.minimum(), "{axis:?}");
-                    if let Some(range) = advertised.maximum().checked_sub(advertised.minimum()) {
-                        assert!(advertised.flat() <= range, "{axis:?}");
-                    }
-                    assert_ne!(axis, Axis::ABS_MT_SLOT);
-                }
-            }
-        }
+        assert_eq!(
+            advertised,
+            [
+                (Axis::ABS_X, -32768, 32767, 0),
+                (Axis::ABS_Y, -32768, 32767, 0),
+                (Axis::ABS_Z, 0, 255, 0),
+                (Axis::ABS_RX, -32768, 32767, 0),
+                (Axis::ABS_RY, -32768, 32767, 0),
+                (Axis::ABS_RZ, 0, 255, 0),
+                (Axis::ABS_HAT0X, -1, 1, 0),
+                (Axis::ABS_HAT0Y, -1, 1, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_byte_stick_reaches_the_full_xbox_range() {
+        use evdev::{AbsInfo, AbsoluteAxisCode as Axis, EventType, InputEvent};
+        let source = [(Axis::ABS_X, AbsInfo::new(128, 0, 255, 1, 4, 0))];
+        let shown = |value| {
+            tehuti::controller::virtual_pad_value(
+                &source,
+                InputEvent::new(EventType::ABSOLUTE.0, Axis::ABS_X.0, value),
+            )
+            .value()
+        };
+        assert_eq!((shown(0), shown(127), shown(255)), (-32768, 0, 32767));
+        let hat = InputEvent::new(EventType::ABSOLUTE.0, Axis::ABS_HAT0X.0, -1);
+        assert_eq!(tehuti::controller::virtual_pad_value(&source, hat), hat);
     }
 
     proptest::proptest! {
         #[test]
-        fn arbitrary_source_calibration_never_advertises_invalid_absinfo(
-            value in proptest::prelude::any::<i32>(),
+        fn scaling_maps_ends_and_centre_exactly(
             minimum in proptest::prelude::any::<i32>(),
             maximum in proptest::prelude::any::<i32>(),
-            fuzz in proptest::prelude::any::<i32>(),
-            flat in proptest::prelude::any::<i32>(),
-            resolution in proptest::prelude::any::<i32>(),
+            target in proptest::sample::select(vec![(-32768, 32767), (0, 255)]),
         ) {
-            let axes = tehuti::controller::virtual_pad_axes(&[]);
-            let source: Vec<_> = axes.iter().map(|(axis, _)| {
-                (*axis, evdev::AbsInfo::new(value, minimum, maximum, fuzz, flat, resolution))
-            }).collect();
-            // https://github.com/torvalds/linux/blob/master/drivers/input/misc/uinput.c
-            for (axis, info) in tehuti::controller::virtual_pad_axes(&source) {
-                proptest::prop_assert!(info.maximum() >= info.minimum(), "{:?}", axis);
-                if let Some(range) = info.maximum().checked_sub(info.minimum()) {
-                    proptest::prop_assert!(info.flat() <= range, "{:?}", axis);
-                }
-                proptest::prop_assert_ne!(axis, evdev::AbsoluteAxisCode::ABS_MT_SLOT);
-            }
+            proptest::prop_assume!(maximum > minimum);
+            let scale = |value| tehuti::controller::scale_axis(value, (minimum, maximum), target);
+            proptest::prop_assert_eq!(scale(minimum), target.0);
+            proptest::prop_assert_eq!(scale(maximum), target.1);
+            proptest::prop_assert_eq!(scale(minimum.midpoint(maximum)), target.0.midpoint(target.1));
+        }
+
+        #[test]
+        fn scaling_is_monotonic_and_stays_in_range(
+            minimum in proptest::prelude::any::<i32>(),
+            maximum in proptest::prelude::any::<i32>(),
+            first in proptest::prelude::any::<i32>(),
+            second in proptest::prelude::any::<i32>(),
+            target in proptest::sample::select(vec![(-32768, 32767), (0, 255)]),
+        ) {
+            proptest::prop_assume!(maximum > minimum);
+            let (low, high) = (first.min(second), first.max(second));
+            let scale = |value| tehuti::controller::scale_axis(value, (minimum, maximum), target);
+            proptest::prop_assert!(scale(low) <= scale(high));
+            proptest::prop_assert!((target.0..=target.1).contains(&scale(low)));
+            proptest::prop_assert!((target.0..=target.1).contains(&scale(high)));
         }
     }
 
