@@ -373,14 +373,14 @@ fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources:
             "rawvideo",
             "-fpsprobesize",
             "0",
+            "-use_wallclock_as_timestamps",
+            "1",
             "-pixel_format",
             "rgba",
         ])
         .args([
             "-video_size",
             &format!("{width}x{height}"),
-            "-framerate",
-            "30",
             "-i",
             "pipe:0",
         ]);
@@ -410,6 +410,7 @@ fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources:
         .args(["-af", "aresample=async=1:first_pts=0"])
         .args(["-shortest", "-shortest_buf_duration", "1"])
         .args(["-max_interleave_delta", "1000000"])
+        .args(["-frag_duration", "1000000", "-flush_packets", "1"])
         .args(["-movflags", "+frag_keyframe+empty_moov"])
         .arg(path.join("video.mp4"))
         .stdin(Stdio::piped())
@@ -500,8 +501,7 @@ fn encode(
         let mut encoder = crate::recording_encoder::FrameEncoder::default();
         let size = dimensions(frame.width(), frame.height());
         let mut pixels = fit(frame, size);
-        let mut drain_progress = encoder.progress();
-        let mut last_progress = Instant::now();
+        let mut drain_watch = crate::recording_encoder::DrainWatch::new(started.elapsed());
         loop {
             if child.0.try_wait()?.is_some() {
                 return Err(io::Error::other(
@@ -523,11 +523,15 @@ fn encode(
                 Duration::from_millis(stopped_ms)
             };
             let caught_up = encoder.write_due(&mut pipe, pixels.as_raw(), || elapsed)?;
-            if encoder.progress() != drain_progress {
-                drain_progress = encoder.progress();
-                last_progress = Instant::now();
-            } else if stopped_ms != u64::MAX && last_progress.elapsed() > Duration::from_secs(30) {
+            let (written_frames, partial_bytes) = encoder.progress();
+            let progress = u64::try_from(written_frames)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(u64::try_from(pixels.len()).unwrap_or(u64::MAX))
+                .saturating_add(u64::try_from(partial_bytes).unwrap_or(u64::MAX));
+            if stopped_ms != u64::MAX && drain_watch.stalled(started.elapsed(), progress) {
                 return Err(io::Error::other("ffmpeg stopped accepting video frames"));
+            } else if stopped_ms == u64::MAX {
+                let _stalled = drain_watch.stalled(started.elapsed(), progress);
             }
             if caught_up {
                 if stopped_ms != u64::MAX {
@@ -569,34 +573,14 @@ fn finish_encoder(
     output_path: &std::path::Path,
     result: io::Result<()>,
 ) -> io::Result<()> {
-    if result.is_err() {
-        let _killed = child.0.kill();
-    }
-    let mut last_progress = Instant::now();
-    let mut size = 0;
-    loop {
-        if let Some(status) = child.0.try_wait()? {
-            result?;
-            return if status.success() {
-                Ok(())
-            } else {
-                Err(io::Error::other(
-                    "ffmpeg failed; see recording folder's ffmpeg.log",
-                ))
-            };
-        }
-        let current_size = std::fs::metadata(output_path).map_or(0, |metadata| metadata.len());
-        if current_size != size {
-            size = current_size;
-            last_progress = Instant::now();
-        }
-        if last_progress.elapsed() >= Duration::from_secs(30) {
-            let _killed = child.0.kill();
-            let _waited = child.0.wait();
-            return Err(io::Error::other("ffmpeg stopped finalising the recording"));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let began = Instant::now();
+    crate::recording_encoder::finish_process_with_clock(
+        &mut child.0,
+        output_path,
+        result,
+        || began.elapsed(),
+        || std::thread::sleep(Duration::from_millis(20)),
+    )
 }
 
 impl Session {
@@ -670,5 +654,18 @@ impl Drop for Encoder {
     fn drop(&mut self) {
         let _killed = self.0.kill();
         let _waited = self.0.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn video_frames_are_stamped_with_capture_time_not_a_fixed_rate() {
+        let command = super::encoder_command(std::path::Path::new("/x"), (64, 64), &[]);
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        let input = args.iter().position(|arg| arg == "pipe:0").unwrap();
+        let wallclock = args.iter().position(|arg| arg == "-use_wallclock_as_timestamps").unwrap();
+        assert!(wallclock < input && args[wallclock + 1] == "1");
+        assert!(!args[..input].contains(&"-framerate".to_owned()));
     }
 }
