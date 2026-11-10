@@ -20,7 +20,9 @@ use std::{
 
 const INTERVAL: Duration = Duration::from_nanos(33_333_334);
 
-/// Video writing trails the clock by one frame, so a capture reaches the schedule before its slot.
+/// Video writing trails the clock by one frame. `write_due` writes slot `s` once
+/// `now - lag >= (s + 1) / 30`, and a frame for slot `s` is captured by `s / 30 + 17 ms`, so render
+/// and queue get about 50 ms. A frame later than that is shown one slot late, not lost.
 const CAPTURE_LAG: Duration = INTERVAL;
 
 /// Recording time up to which video slots may be written.
@@ -740,6 +742,81 @@ mod tests {
         assert_eq!(
             after(&args, "-af"),
             ["asetpts=PTS-1700000000.250000/TB,aresample=async=1:first_pts=0"]
+        );
+    }
+
+    /// Runs the production command on real ffmpeg, with each pulse input replaced by a tone the
+    /// way the pulse demuxer stamps it: on the wall clock, here starting 500 ms after `wall_start`.
+    /// Returns where the tone begins in the recorded file.
+    fn tone_start_in_recording(folder: &std::path::Path) -> Duration {
+        use std::io::Write as _;
+        let wall_start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let tone_at = wall_start.saturating_add(Duration::from_millis(500));
+        let sources = vec!["tone".to_owned()];
+        let production = super::encoder_command(folder, (64, 64), wall_start, &sources);
+        let mut args: Vec<String> = production
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        while let Some(flag) = args.iter().position(|arg| arg == "-wallclock") {
+            let _removed: Vec<_> = args.drain(flag..flag.saturating_add(2)).collect();
+        }
+        for arg in &mut args {
+            if arg == "pulse" {
+                "lavfi".clone_into(arg);
+            } else if arg == "tone" {
+                *arg = format!(
+                    "sine=frequency=440:sample_rate=48000,asetpts=PTS+{}.{:06}/TB",
+                    tone_at.as_secs(),
+                    tone_at.subsec_micros()
+                );
+            }
+        }
+        let mut child = std::process::Command::new("/usr/bin/ffmpeg")
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("install ffmpeg: /usr/bin/ffmpeg missing");
+        let mut pipe = child.stdin.take().unwrap();
+        for _ in 0..60 {
+            pipe.write_all(&[40_u8; 64 * 64 * 4]).unwrap();
+        }
+        drop(pipe);
+        assert!(child.wait().unwrap().success());
+        let probe = std::process::Command::new("/usr/bin/ffmpeg")
+            .args(["-hide_banner", "-nostdin", "-i"])
+            .arg(folder.join("video.mp4"))
+            .args([
+                "-map",
+                "0:a:0",
+                "-af",
+                "silencedetect=n=-40dB:d=0.1",
+                "-f",
+                "null",
+                "-",
+            ])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&probe.stderr);
+        let end = log
+            .split("silence_end: ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .map_or(0.0, |seconds| seconds.parse::<f64>().unwrap());
+        Duration::from_secs_f64(end)
+    }
+
+    #[test]
+    fn audio_that_starts_late_on_the_wall_clock_lands_late_in_the_recording() {
+        let folder = tempfile::tempdir().unwrap();
+        let start = tone_start_in_recording(folder.path());
+        assert!(
+            start.abs_diff(Duration::from_millis(500)) <= Duration::from_millis(50),
+            "tone captured 500 ms after recording start begins at {start:?}"
         );
     }
 

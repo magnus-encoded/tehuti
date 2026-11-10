@@ -76,12 +76,13 @@ pub const FPS: u128 = 30;
 /// Captured frames the schedule holds before dropping the oldest pending one.
 const PENDING: usize = 16;
 
-/// The first 30 fps slot at or after `capture`, both measured from recording start.
+/// The 30 fps slot nearest to `capture`, both measured from recording start.
 ///
-/// Slot `n` is shown at `n / 30` s, so a frame is stamped less than one frame after it was captured.
+/// Slot `n` is shown at `n / 30` s, so a frame is stamped within half a frame (17 ms) of its
+/// capture. Captures are at least one frame apart, so no two share a slot.
 #[must_use]
 pub const fn slot_of(capture: Duration) -> u128 {
-    capture.as_nanos().saturating_mul(FPS).div_ceil(1_000_000_000)
+    capture.as_nanos().saturating_mul(FPS).saturating_add(500_000_000) / 1_000_000_000
 }
 
 /// Presentation time of a slot, measured from recording start.
@@ -127,6 +128,8 @@ impl<F> FrameSchedule<F> {
     }
 
     /// The newest frame due by `slot`, if one became due since the previous call.
+    ///
+    /// A frame that arrives after its own slot was written is shown at the next slot asked for.
     pub fn advance(&mut self, slot: u128) -> Option<F> {
         let mut due = None;
         while self
@@ -228,6 +231,7 @@ mod tests {
     use proptest::prelude::*;
 
     const FRAME: Duration = Duration::from_nanos(33_333_334);
+    const HALF_FRAME: Duration = Duration::from_nanos(16_666_667);
 
     /// Captures from gaps; then the stamp each frame gets when the encoder writes slots in
     /// bursts of `bursts` slots, after every frame captured by the burst's end has arrived.
@@ -276,7 +280,7 @@ mod tests {
             let (captures, shown) = stamps(&gaps, &[], bursts);
             for (frame, stamp) in shown {
                 let capture = captures[frame];
-                prop_assert!(stamp >= capture && stamp.saturating_sub(capture) < FRAME, "{capture:?} -> {stamp:?}");
+                prop_assert!(stamp.abs_diff(capture) <= HALF_FRAME, "{capture:?} -> {stamp:?}");
             }
         }
 
@@ -291,11 +295,11 @@ mod tests {
             let (captures, shown) = stamps(&gaps, &[], bursts);
             let (_, end) = shown.last().copied().unwrap();
             let wall = *captures.last().unwrap();
-            prop_assert!(end >= wall && end.saturating_sub(wall) < FRAME);
+            prop_assert!(end.abs_diff(wall) <= HALF_FRAME);
             for pair in shown.windows(2) {
                 let spacing = captures[pair[1].0].saturating_sub(captures[pair[0].0]);
                 let stamped = pair[1].1.saturating_sub(pair[0].1);
-                prop_assert!(stamped.abs_diff(spacing) < FRAME);
+                prop_assert!(stamped.abs_diff(spacing) <= FRAME);
             }
         }
 
@@ -307,6 +311,19 @@ mod tests {
             let kept: Vec<_> = all.into_iter().filter(|(frame, _)| *frame != gone).collect();
             prop_assert_eq!(kept, holed);
         }
+    }
+
+    #[test]
+    fn a_frame_arriving_after_its_slot_is_shown_at_the_next_slot() {
+        let mut schedule = FrameSchedule::default();
+        schedule.push(Duration::ZERO, 'a');
+        assert_eq!(schedule.advance(0), Some('a'));
+        assert_eq!(schedule.advance(1), None);
+        assert_eq!(schedule.advance(2), None);
+        // Captured for slot 1, but slots 1 and 2 were already written.
+        schedule.push(Duration::from_nanos(33_333_334), 'b');
+        assert_eq!(schedule.advance(3), Some('b'));
+        assert_eq!(schedule.advance(4), None);
     }
 
     #[test]
