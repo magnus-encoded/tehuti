@@ -20,8 +20,8 @@ use std::{
 
 const INTERVAL: Duration = Duration::from_nanos(33_333_334);
 
-/// How far video writing trails the clock, so a frame reaches the schedule before its slot.
-const CAPTURE_LAG: Duration = Duration::from_millis(100);
+/// Video writing trails the clock by one frame, so a capture reaches the schedule before its slot.
+const CAPTURE_LAG: Duration = INTERVAL;
 
 /// Recording time up to which video slots may be written.
 const fn video_due(elapsed: Duration, stopped_ms: u64) -> Duration {
@@ -747,10 +747,10 @@ mod tests {
     fn video_writing_trails_the_clock_until_stop() {
         assert_eq!(
             super::video_due(Duration::from_secs(1), u64::MAX),
-            Duration::from_millis(900)
+            Duration::from_nanos(966_666_666)
         );
         assert_eq!(
-            super::video_due(Duration::from_millis(50), u64::MAX),
+            super::video_due(Duration::from_millis(20), u64::MAX),
             Duration::ZERO
         );
         assert_eq!(
