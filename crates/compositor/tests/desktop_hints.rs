@@ -312,4 +312,28 @@ app_id = '*'
         assert_eq!(icon.get_pixel(48, 48).0, [255, 0, 0, 255]);
         Ok(())
     }
+
+    #[test]
+    fn icon_loader_never_blocks_and_bad_svg_yields_none() -> Result<(), Box<dyn core::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let bad = directory.path().join("bad.svg");
+        let good = directory.path().join("good.svg");
+        std::fs::write(&bad, "<svg><unclosed")?;
+        std::fs::write(
+            &good,
+            "<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'/>",
+        )?;
+        let started = std::time::Instant::now();
+        let receiver = tehuti::desktop_hints::spawn_icon_loader(vec![Some(bad), None, Some(good)]);
+        assert!(started.elapsed() < core::time::Duration::from_millis(100));
+        let mut results = std::collections::BTreeMap::new();
+        while let Ok((index, icon)) = receiver.recv_timeout(core::time::Duration::from_secs(5)) {
+            let _previous = results.insert(index, icon.is_some());
+        }
+        assert_eq!(
+            results.into_iter().collect::<Vec<_>>(),
+            vec![(0, false), (2, true)]
+        );
+        Ok(())
+    }
 }

@@ -45,6 +45,7 @@ pub struct Buffer {
     cached: Option<Artwork>,
     icon_names: Vec<String>,
     icons: Vec<Option<image::DynamicImage>>,
+    pending: Option<std::sync::mpsc::Receiver<(usize, Option<image::DynamicImage>)>>,
 }
 
 #[derive(Debug)]
@@ -59,15 +60,45 @@ struct Artwork {
 impl Buffer {
     fn update_icons(&mut self, icon_names: Vec<String>) {
         if self.icon_names != icon_names {
-            self.icons = icon_names
+            let paths = icon_names
                 .iter()
-                .map(|name| {
-                    crate::desktop_hints::resolve_icon(name)
-                        .and_then(|path| crate::desktop_hints::read_icon(&path))
-                })
+                .map(|name| crate::desktop_hints::resolve_icon(name))
                 .collect();
+            self.icons = icon_names.iter().map(|_| None).collect();
+            self.pending = Some(crate::desktop_hints::spawn_icon_loader(paths));
             self.icon_names = icon_names;
             self.cached = None;
+        }
+        if let Some(receiver) = &self.pending {
+            while let Ok((index, icon)) = receiver.try_recv() {
+                if let Some(slot) = self.icons.get_mut(index) {
+                    *slot = icon;
+                    self.cached = None;
+                }
+            }
+        }
+    }
+
+    /// Waits (bounded) for pending icons; only offline shots call this, never a live frame.
+    pub(crate) fn settle_icons(&mut self, icon_names: Vec<String>, budget: core::time::Duration) {
+        self.update_icons(icon_names);
+        let Some(deadline) = std::time::Instant::now().checked_add(budget) else {
+            return;
+        };
+        let mut remaining = self.icons.iter().filter(|icon| icon.is_none()).count();
+        while remaining > 0 {
+            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                break;
+            };
+            let Some(receiver) = &self.pending else { break };
+            let Ok((index, icon)) = receiver.recv_timeout(left) else {
+                break;
+            };
+            if let Some(slot) = self.icons.get_mut(index) {
+                *slot = icon;
+                self.cached = None;
+            }
+            remaining = remaining.saturating_sub(1);
         }
     }
 

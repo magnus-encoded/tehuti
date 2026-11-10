@@ -212,6 +212,25 @@ pub fn read_icon(path: &Path) -> Option<image::DynamicImage> {
     reader.decode().ok()
 }
 
+/// Decodes icons on a worker thread so a slow or hostile file never stalls a frame.
+/// Each message is `(index, decoded)`; a file that fails or never finishes leaves
+/// its slot on the neutral icon.
+#[must_use]
+pub fn spawn_icon_loader(
+    paths: Vec<Option<PathBuf>>,
+) -> std::sync::mpsc::Receiver<(usize, Option<image::DynamicImage>)> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    for (index, path) in paths.into_iter().enumerate() {
+        let Some(path) = path else { continue };
+        let sender = sender.clone();
+        // Detached on purpose: a stuck decode only strands its own thread.
+        drop(std::thread::spawn(move || {
+            drop(sender.send((index, read_icon(&path))));
+        }));
+    }
+    receiver
+}
+
 /// Rasterises vector artwork to a square RGBA image sized for launcher rows.
 #[expect(
     clippy::float_arithmetic,

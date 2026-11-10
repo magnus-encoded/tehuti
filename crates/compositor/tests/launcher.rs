@@ -40,12 +40,27 @@ mod tests {
                 tehuti::driver::Request::Say { text: query.into() },
             )?;
             let path = root.path().join("shot.png");
-            let _shot = driver.execute(
-                &mut compositor,
-                tehuti::driver::Request::Shot { path: path.clone() },
-            )?;
-            let pixels = image::open(path)?.to_rgba8();
-            assert_ranked_icons(&pixels, query)?;
+            // Icons decode off the render thread, so poll until they land.
+            let mut attempts = 0_u32;
+            loop {
+                let _shot = driver.execute(
+                    &mut compositor,
+                    tehuti::driver::Request::Shot { path: path.clone() },
+                )?;
+                let pixels = image::open(&path)?.to_rgba8();
+                attempts = attempts.saturating_add(1);
+                match assert_ranked_icons(&pixels, query) {
+                    Ok(()) => break,
+                    Err(_) if attempts < 100 => std::thread::sleep(core::time::Duration::from_millis(50)),
+                    Err(error) => return Err(error),
+                }
+            }
+            if let Ok(copy) = std::env::var("TEHUTI_SHOT_COPY") {
+                let _bytes = std::fs::copy(
+                    &path,
+                    format!("{copy}-{}.png", std::env::var("TEHUTI_TEST_SIZE")?),
+                )?;
+            }
         }
         Ok(())
     }
@@ -66,6 +81,9 @@ mod tests {
             .map(|(_, y, _)| y)
             .min()
             .ok_or("blue icon absent")?;
+        if !pixels.pixels().any(|pixel| pixel.0 == [0, 200, 0, 255]) {
+            return Err("svg icon absent".into());
+        }
         assert_eq!(
             blue_top < red_top,
             query == "open Browser Zulu",
@@ -79,6 +97,11 @@ mod tests {
         let blue = root.join("blue.png");
         image::RgbaImage::from_pixel(48, 48, image::Rgba([255, 0, 0, 255])).save(&red)?;
         image::RgbaImage::from_pixel(48, 24, image::Rgba([0, 0, 255, 255])).save(&blue)?;
+        let green = root.join("green.svg");
+        std::fs::write(
+            &green,
+            "<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><circle cx='32' cy='32' r='30' fill='#00c800'/></svg>",
+        )?;
         std::fs::write(
             root.join("destinations.toml"),
             format!(
@@ -90,11 +113,15 @@ routes = [{{steps = [{{icon = '{}', target = {{kind = 'action', value = {{type =
 name = "Browser Zulu"
 routes = [{{steps = [{{icon = '{}', target = {{kind = 'action', value = {{type = 'notice', text = 'Zulu'}}}}}}]}}]
 [[destinations]]
+name = "Browser Vector"
+routes = [{{steps = [{{icon = '{}', target = {{kind = 'action', value = {{type = 'notice', text = 'Vector'}}}}}}]}}]
+[[destinations]]
 name = "Browser missing icon"
 routes = [{{steps = [{{icon = 'missing-icon-for-547', target = {{kind = 'action', value = {{type = 'notice', text = 'Missing'}}}}}}]}}]
 "#,
                 red.display(),
-                blue.display()
+                blue.display(),
+                green.display()
             ),
         )?;
         Ok(())
