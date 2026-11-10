@@ -91,8 +91,8 @@ by default. Configured push-to-talk buttons never reach context mappings.
 ## Legacy favourites key
 
 The global context may still contain a top-level `favourites` list. Tehuti
-accepts the key so existing config files load, but it no longer draws desktop
-icons or selects them with the D-pad. Speech launch mappings still launch
+accepts the key so existing config files load, and ignores it: there are no
+desktop icons to draw or select with the D-pad. Speech launch mappings still launch
 their configured applications. `tehuti --check-config` warns when the key
 is present.
 
