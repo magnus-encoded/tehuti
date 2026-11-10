@@ -1,5 +1,8 @@
 //! Smithay state and protocol handlers for one output and its tiling layout.
 
+#[path = "recording.rs"]
+mod recording;
+
 use std::time::Instant;
 
 use crate::layout_window::LayoutWindow;
@@ -117,6 +120,31 @@ type SecretLookupReceiver = std::sync::mpsc::Receiver<SecretLookupResult>;
 /// XKB keycodes are evdev codes plus 8.
 const XKB_KEYCODE_OFFSET: u32 = 8;
 
+/// How long a tapped key stays down, so clients that poll key state see it.
+const TAP_HOLD: core::time::Duration = core::time::Duration::from_millis(40);
+
+/// The gap between releasing a held key and pressing it again for a re-tap: one 60 Hz frame.
+const RETAP_GAP: core::time::Duration = core::time::Duration::from_millis(17);
+
+/// Whether a calloop timer is waiting to release held taps.
+#[derive(Debug, PartialEq, Eq)]
+enum ReleaseTimer {
+    Idle,
+    Armed,
+}
+
+/// A key pressed by a tap, released once its hold time passes.
+#[derive(Debug)]
+struct HeldKey {
+    code: Keycode,
+    due: Instant,
+    modifier: bool,
+    /// False while a re-tap waits one frame after the release before pressing again.
+    pressed: bool,
+    /// The focus epoch when the tap began; a later focus change releases it.
+    epoch: u32,
+}
+
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
@@ -156,7 +184,14 @@ pub struct Compositor {
     secret_confirmation: SecretConfirmationState,
     secret_notice_until: Option<Instant>,
     notice_until: Option<Instant>,
+    /// Keys held after a tap, with the instant each is released and whether a timer is armed for it.
+    held_taps: Vec<HeldKey>,
+    release_timer: ReleaseTimer,
+    focus_epoch: u32,
+    /// How long a tap holds its key; zero releases in the same call.
+    tap_hold: core::time::Duration,
     notice_text: Option<String>,
+    recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
     launchers: Vec<std::process::Child>,
     desktop_entries: crate::desktop::EntryCache,
@@ -170,6 +205,7 @@ pub struct Compositor {
     launch_socket: Option<std::ffi::OsString>,
     layout: tehuti_core::layout::Layout,
     layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
+    early_fullscreen: std::collections::HashSet<WlSurface>,
     /// The last layout written to the session log.
     layout_trace: tehuti_core::layout_trace::LayoutTrace,
     next_window: u64,
@@ -181,6 +217,9 @@ pub struct Compositor {
     _viewporter_state: ViewporterState,
     _fractional_scale_state: FractionalScaleManagerState,
     pub(crate) dmabuf: crate::rendering::DmabufSupport,
+    recording: Option<recording::Session>,
+    recording_runtime: Option<std::rc::Rc<dyn crate::recording_encoder::Runtime>>,
+    pub(crate) capture_source: crate::screenshot::CaptureSource,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
@@ -291,7 +330,12 @@ impl Compositor {
             secret_confirmation: SecretConfirmationState::default(),
             secret_notice_until: None,
             notice_until: None,
+            held_taps: Vec::new(),
+            release_timer: ReleaseTimer::Idle,
+            focus_epoch: 0,
+            tap_hold: TAP_HOLD,
             notice_text: None,
+            recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
             launchers: Vec::new(),
             desktop_entries: crate::desktop::EntryCache::new()?,
@@ -305,6 +349,7 @@ impl Compositor {
             speech_context: None,
             speech_title: String::new(),
             layout_windows: Vec::new(),
+            early_fullscreen: std::collections::HashSet::new(),
             layout_trace: tehuti_core::layout_trace::LayoutTrace::default(),
             next_window: 0,
             windows: tehuti_core::windows::Windows::new(),
@@ -315,6 +360,9 @@ impl Compositor {
             _viewporter_state: ViewporterState::new::<Self>(display),
             _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
             dmabuf: crate::rendering::DmabufSupport::default(),
+            recording: None,
+            recording_runtime: None,
+            capture_source: crate::screenshot::CaptureSource::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
             data_device_state: DataDeviceState::new::<Self>(display),
@@ -435,7 +483,10 @@ impl Compositor {
         json!({"version": 1, "clock_ms": self.driver_elapsed.as_millis(), "windows": windows, "focus": focused.map(|identity| identity.0),
             "level": format!("{:?}", self.dispatch.core().level()), "launcher": launcher,
             "overlays": {"keyboard": self.on_screen_keyboard().is_open(), "settings": self.settings().open, "menu": self.dispatch.core().menu().is_some()},
-            "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar})
+            "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar,
+            "menu_text": self.dispatch.core().menu().map(|menu| menu.clone().with_recording(self.recording_active()).text()),
+            "notices": tehuti_core::overlay::STACK.into_iter().filter_map(|layer| self.overlay_notice(layer)).collect::<Vec<_>>(),
+            "recording": self.recording_active()})
     }
 
     /// Installs contexts before accepting clients.
@@ -448,7 +499,6 @@ impl Compositor {
         self.window_focus = None;
         self.sync_window_focus();
         self.rebuild_destinations();
-        crate::wallpaper::set_focus(self.dispatch.desktop_focus());
     }
 
     /// Names ticker buttons after the pad that sent the latest input.
@@ -473,7 +523,6 @@ impl Compositor {
                 tracing::info!(count = contexts.len(), "contexts reloaded");
                 self.dispatch.core_mut().replace_contexts(contexts);
                 self.sync_destination_windows();
-                crate::wallpaper::set_focus(self.dispatch.desktop_focus());
                 self.update_window_dimming();
                 self.show_notice("CONTEXTS RELOADED");
                 self.rebuild_destinations();
@@ -631,7 +680,7 @@ impl Compositor {
 
     #[must_use]
     pub fn speech_notice_visible(&self) -> bool {
-        self.notice_until.is_some_and(|until| self.clock_now() < until)
+        self.recording_failure.is_some() || self.notice_until.is_some_and(|until| self.clock_now() < until)
     }
 
     #[must_use]
@@ -649,15 +698,20 @@ impl Compositor {
     fn overlay_notice(&self, layer: tehuti_core::overlay::Overlay) -> Option<String> {
         use tehuti_core::overlay::Overlay;
         match layer {
-            Overlay::SystemMenu => self.dispatch.core().menu().map(tehuti_core::menu::Menu::text),
+            Overlay::SystemMenu => self
+                .dispatch
+                .core()
+                .menu()
+                .map(|menu| menu.clone().with_recording(self.recording_active()).text()),
             Overlay::Secret => self.secret_confirmation_text(),
             Overlay::SecretUnavailable => self
                 .secret_notice_until
                 .is_some_and(|until| self.clock_now() < until)
                 .then(|| "SECRET DELIVERY UNAVAILABLE".into()),
             Overlay::Notice => self.speech_notice_visible().then(|| {
-                self.notice_text
+                self.recording_failure
                     .clone()
+                    .or_else(|| self.notice_text.clone())
                     .unwrap_or_else(|| "NO SPEECH MAPPING".into())
             }),
             Overlay::MouseNotice => self.mouse_mode.then(|| "MOUSE MODE".into()),
@@ -741,7 +795,9 @@ impl Compositor {
         let elapsed = self.read_clock();
         tracing::trace!(?elapsed, "dispatch tick");
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
+        self.release_due_keys();
         self.keep_invitation();
+        self.poll_recording();
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
@@ -761,6 +817,7 @@ impl Compositor {
         reason = "Smithay pointer coordinates and axis values use floating point"
     )]
     fn pointer_motion(&mut self, x: i32, y: i32) {
+        self.record_event("pointer_motion", &serde_json::json!({"x": x, "y": y}));
         tracing::trace!(x, y, "mouse dispatch motion");
         self.pointer_location.x += f64::from(x) / 1_000_000.0;
         self.pointer_location.y += f64::from(y) / 1_000_000.0;
@@ -772,6 +829,7 @@ impl Compositor {
     )]
     fn pointer_scroll(&mut self, x: i32, y: i32) {
         use smithay::backend::input::{Axis, AxisSource};
+        self.record_event("pointer_scroll", &serde_json::json!({"x": x, "y": y}));
         if self.mouse_mode {
             self.move_pointer();
         } else {
@@ -811,6 +869,10 @@ impl Compositor {
         }
     }
     fn pointer_click(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
+        self.record_event(
+            "pointer_click",
+            &serde_json::json!({"button": format!("{button:?}"), "pressed": pressed}),
+        );
         self.move_pointer();
         if pressed && let Some((window, _)) = self.space.element_under(self.pointer_location) {
             let identity = self
@@ -943,6 +1005,17 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if matches!(
+            event,
+            Event::Button {
+                name: tehuti_protocol::ButtonName::East,
+                state: tehuti_protocol::ButtonState::Pressed,
+                ..
+            }
+        ) && self.recording_failure.take().is_some()
+        {
+            return;
+        }
         if matches!(event, Event::Speech { .. }) {
             let registrations = self
                 .plugins
@@ -977,6 +1050,7 @@ impl Compositor {
         };
         let _rejection = self.dispatch(input);
         self.after_event(event);
+        self.record_screen();
     }
 
     fn after_event(&mut self, event: &Event) {
@@ -1029,6 +1103,7 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        self.record_debug("input", &input);
         let elapsed = dispatch_elapsed(&input);
         self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
@@ -1063,12 +1138,12 @@ impl Compositor {
     }
 
     fn finish_dispatch_view(&mut self, previous: tehuti_core::Level) {
-        crate::wallpaper::set_focus(self.dispatch.desktop_focus());
         if previous != self.dispatch.core().level() {
             self.dim_elapsed = core::time::Duration::ZERO;
         }
         self.update_window_dimming();
         self.reserve_keyboard_height();
+        self.record_screen();
     }
 
     pub(crate) fn set_keyboard_surrounding(&mut self, surrounding: Option<(String, usize, usize)>) {
@@ -1187,6 +1262,22 @@ impl Compositor {
     #[must_use]
     pub const fn on_screen_keyboard(&self) -> &tehuti_core::keyboard::Keyboard {
         self.dispatch.keyboard()
+    }
+
+    pub(crate) fn launcher_icons(&self) -> Vec<String> {
+        let Some(launcher) = self.dispatch.launcher() else {
+            return Vec::new();
+        };
+        (0..launcher.list().slots().candidates.len())
+            .map(|index| {
+                launcher
+                    .candidate_destination(index)
+                    .and_then(|index| self.launcher_routes.get(index))
+                    .and_then(|route| route.steps.first())
+                    .map(|step| step.icon.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// Sends a start or stop to the speech sidecar; `false` when it fails.
@@ -1377,6 +1468,12 @@ impl Compositor {
 
     #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
+        if !matches!(
+            effect,
+            DispatchEffect::PollSpeech(_) | DispatchEffect::PollSources | DispatchEffect::Supervise
+        ) {
+            self.record_debug("effect", &effect);
+        }
         match effect {
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {
@@ -1485,6 +1582,22 @@ impl Compositor {
     }
 
     fn run_menu_command(&mut self, command: tehuti_core::menu::Command) {
+        if command == tehuti_core::menu::Command::ToggleRecording {
+            if self.recording_active() {
+                self.stop_recording();
+            } else {
+                self.start_recording();
+            }
+            return;
+        }
+        if command == tehuti_core::menu::Command::StartRecording {
+            self.start_recording();
+            return;
+        }
+        if command == tehuti_core::menu::Command::StopRecording {
+            self.stop_recording();
+            return;
+        }
         if command == tehuti_core::menu::Command::Screenshot {
             match crate::screenshot::save(self) {
                 Ok(path) => self.show_notice(&format!("SCREENSHOT SAVED: {}", path.display())),
@@ -2099,16 +2212,14 @@ impl Compositor {
             .unwrap_or((None, None))
     }
 
+    pub(super) fn show_recording_failure(&mut self, error: &str) {
+        self.recording_failure = Some(format!("RECORDING FAILED: {error}\nESC OR B TO DISMISS"));
+    }
+
     fn show_notice(&mut self, text: &str) {
         let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
         self.notice_text = Some(text.into());
         self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
-    }
-
-    fn tap(&mut self, key: KeyName) {
-        let evdev_code = key.evdev_code();
-        let keycode = Keycode::new(evdev_code.saturating_add(XKB_KEYCODE_OFFSET));
-        self.tap_keycode(keycode);
     }
 
     fn press_held_key(&mut self, key: KeyName) {
@@ -2203,7 +2314,164 @@ impl Compositor {
         .filter(|(modifier, _)| mods.contains(modifier))
         .map(|(_, name)| name)
         .collect();
-        self.tap_keycode_with_keysyms(keycode, &names);
+        let Some(held) = self.resolve_modifiers(&names) else {
+            return;
+        };
+        self.tap_held(keycode, &held);
+    }
+
+    fn resolve_modifiers(&mut self, names: &[&str]) -> Option<Vec<Keycode>> {
+        let held = names
+            .iter()
+            .map(|name| self.resolve_keysym(name))
+            .collect::<Option<Vec<_>>>();
+        if held.is_none() {
+            tracing::warn!(?names, "modifier unavailable in active keymap");
+        }
+        held
+    }
+
+    /// Makes key and chord taps press and release in the same instant, for tests that do not run the release timer.
+    pub const fn instant_taps(&mut self) {
+        self.tap_hold = core::time::Duration::ZERO;
+    }
+
+    /// Presses the modifiers and the key now, and releases them after [`TAP_HOLD`] so polling clients see the key down.
+    ///
+    /// Each keycode has one release time: a re-tap restarts the key, and a modifier shared with an earlier chord stays
+    /// down until the later chord's hold ends.
+    fn tap_held(&mut self, keycode: Keycode, modifiers: &[Keycode]) {
+        let duration = self.tap_hold;
+        let due = if duration.is_zero() {
+            None
+        } else {
+            self.clock_now().checked_add(duration)
+        };
+        let Some(due) = due else {
+            self.tap_keycode_with_keysyms_codes(keycode, modifiers);
+            return;
+        };
+        let epoch = self.focus_epoch;
+        for code in modifiers {
+            if let Some(held) = self.held_taps.iter_mut().find(|held| held.code == *code) {
+                held.due = due;
+            } else {
+                self.send_keycode(*code, smithay::backend::input::KeyState::Pressed);
+                self.held_taps.push(HeldKey {
+                    code: *code,
+                    due,
+                    modifier: true,
+                    pressed: true,
+                    epoch,
+                });
+            }
+        }
+        if let Some(index) = self.held_taps.iter().position(|held| held.code == keycode) {
+            let held = self.held_taps.remove(index);
+            if held.pressed {
+                self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
+            }
+            let gap = self.clock_now().checked_add(RETAP_GAP).unwrap_or(due);
+            self.held_taps.push(HeldKey {
+                code: keycode,
+                due: gap,
+                modifier: false,
+                pressed: false,
+                epoch,
+            });
+            return;
+        }
+        self.send_keycode(keycode, smithay::backend::input::KeyState::Pressed);
+        self.held_taps.push(HeldKey {
+            code: keycode,
+            due,
+            modifier: false,
+            pressed: true,
+            epoch,
+        });
+    }
+
+    fn tap_keycode_with_keysyms_codes(&mut self, keycode: Keycode, modifiers: &[Keycode]) {
+        for code in modifiers {
+            self.send_keycode(*code, smithay::backend::input::KeyState::Pressed);
+        }
+        self.tap_keycode(keycode);
+        for code in modifiers.iter().rev() {
+            self.send_keycode(*code, smithay::backend::input::KeyState::Released);
+        }
+    }
+
+    /// Releases every held tap whose hold time has passed, keys before modifiers.
+    pub fn release_due_keys(&mut self) {
+        let now = self.clock_now();
+        self.press_deferred(now);
+        self.release_held(|held| held.due <= now);
+    }
+
+    /// Presses the re-taps whose gap has passed and starts their hold.
+    fn press_deferred(&mut self, now: Instant) {
+        let epoch = self.focus_epoch;
+        let ready: Vec<Keycode> = self
+            .held_taps
+            .iter()
+            .filter(|held| !held.pressed && held.due <= now)
+            .map(|held| held.code)
+            .collect();
+        for code in ready {
+            self.send_keycode(code, smithay::backend::input::KeyState::Pressed);
+            if let Some(held) = self.held_taps.iter_mut().find(|held| held.code == code) {
+                held.pressed = true;
+                held.epoch = epoch;
+                held.due = now.checked_add(self.tap_hold).unwrap_or(now);
+            }
+        }
+    }
+
+    /// Releases every held tap at once.
+    pub fn release_all_held(&mut self) {
+        self.release_held(|_| true);
+    }
+
+    fn release_held(&mut self, selected: impl Fn(&HeldKey) -> bool) {
+        let (mut released, waiting): (Vec<_>, Vec<_>) = core::mem::take(&mut self.held_taps)
+            .into_iter()
+            .partition(selected);
+        self.held_taps = waiting;
+        released.sort_by_key(|held| held.modifier);
+        for held in released.into_iter().filter(|held| held.pressed) {
+            self.send_keycode(held.code, smithay::backend::input::KeyState::Released);
+        }
+    }
+
+    /// Called when the release timer could not be armed: nothing will fire, so release now.
+    pub fn release_timer_failed(&mut self) {
+        self.release_timer = ReleaseTimer::Idle;
+        self.release_all_held();
+    }
+
+    /// Returns the delay for a one-shot timer when held taps wait and none is armed.
+    pub fn take_release_request(&mut self) -> Option<core::time::Duration> {
+        if self.release_timer == ReleaseTimer::Armed {
+            return None;
+        }
+        let due = self.held_taps.iter().map(|held| held.due).min()?;
+        self.release_timer = ReleaseTimer::Armed;
+        Some(due.saturating_duration_since(self.clock_now()))
+    }
+
+    /// Called when the release timer fires; returns the delay to re-arm with, if taps remain.
+    pub fn release_timer_fired(&mut self) -> Option<core::time::Duration> {
+        self.release_due_keys();
+        let due = self.held_taps.iter().map(|held| held.due).min();
+        self.release_timer = if due.is_some() {
+            ReleaseTimer::Armed
+        } else {
+            ReleaseTimer::Idle
+        };
+        due.map(|due| {
+            due.saturating_duration_since(self.clock_now())
+                .max(core::time::Duration::from_millis(1))
+        })
     }
 
     /// Presses the named modifier keys around one key tap.
@@ -2239,6 +2507,13 @@ impl Compositor {
     /// Meta is the Guide button and, while Meta is held, the arrows are the d-pad: both go to the core as pad buttons and
     /// the client never sees them.
     pub fn host_key(&mut self, keycode: Keycode, pressed: bool) {
+        if pressed && keycode.raw() == 9 && self.recording_failure.take().is_some() {
+            return;
+        }
+        self.record_event(
+            "key",
+            &serde_json::json!({"keycode": keycode.raw(), "pressed": pressed}),
+        );
         if self.host_key_as_pad(keycode, pressed) {
             return;
         }
@@ -2357,6 +2632,8 @@ impl Compositor {
     /// Runs the dispatch a keyboard focus change deferred, now that smithay's keyboard lock is free.
     fn flush_focus_change(&mut self) {
         if let Some(input) = self.focus_change_dispatch.take() {
+            let epoch = self.focus_epoch;
+            self.release_held(|held| held.epoch < epoch);
             let _rejection = self.dispatch(input);
         }
     }
@@ -2385,7 +2662,9 @@ impl Compositor {
         let surface = smithay::reexports::wayland_server::Resource::id(&focus);
         for character in text.chars() {
             if character == '\n' {
-                self.tap(KeyName::Enter);
+                self.tap_keycode(Keycode::new(
+                    KeyName::Enter.evdev_code().saturating_add(XKB_KEYCODE_OFFSET),
+                ));
                 continue;
             }
             let Some((keycode, modifiers)) = self.text_keys.get(&character).copied() else {
@@ -2547,6 +2826,11 @@ impl Compositor {
         {
             bar = bar.with_navigation(text);
         }
+        self.recording_bar(bar)
+    }
+
+    fn recording_bar(&self, bar: tehuti_core::bar::Bar) -> tehuti_core::bar::Bar {
+        let mut bar = bar.with_recording(self.recording_active());
         bar.font = self.settings().bar_font;
         bar
     }
@@ -2892,8 +3176,12 @@ impl Compositor {
                 .map(|_| *identity)
         });
         let Some(identity) = identity else {
-            if Self::awaits_answer(surface) {
-                let _serial = surface.send_configure();
+            if let Some(fullscreen) = fullscreen {
+                if fullscreen {
+                    let _inserted = self.early_fullscreen.insert(surface.wl_surface().clone());
+                } else {
+                    let _removed = self.early_fullscreen.remove(surface.wl_surface());
+                }
             }
             return;
         };
@@ -3319,6 +3607,7 @@ impl CompositorHandler for Compositor {
                 let _serial = toplevel.send_configure();
             }
         }
+        self.record_surface_change();
     }
 }
 
@@ -3438,6 +3727,7 @@ impl Compositor {
                 .and_then(|attributes| attributes.lock().ok()?.title.clone())
         })
         .unwrap_or_default();
+        let client_fullscreen = self.early_fullscreen.remove(surface.wl_surface());
         let context = app_id
             .as_deref()
             .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &title))
@@ -3448,8 +3738,26 @@ impl Compositor {
                     })
                 })
             });
-        let rules = tehuti_core::layout::WindowRules {
-            kind: if Self::is_helper(&surface) {
+        let rules = Self::window_rules(&surface, context);
+        match self.layout.add_window(identity, rules) {
+            Ok(()) => {
+                if client_fullscreen && let Err(error) = self.layout.set_fullscreen(identity, true) {
+                    tracing::warn!(%error, "initial fullscreen request failed");
+                }
+                self.layout_windows
+                    .push((identity, LayoutWindow::new(Window::new_wayland_window(surface))));
+                self.place_layout();
+            }
+            Err(error) => tracing::warn!(%error, "window layout failed"),
+        }
+    }
+
+    fn window_rules(
+        surface: &ToplevelSurface,
+        context: Option<&tehuti_protocol::Context>,
+    ) -> tehuti_core::layout::WindowRules {
+        tehuti_core::layout::WindowRules {
+            kind: if Self::is_helper(surface) {
                 tehuti_core::layout::WindowKind::Helper
             } else {
                 tehuti_core::layout::WindowKind::Ordinary
@@ -3462,14 +3770,6 @@ impl Compositor {
                 .and_then(tehuti_protocol::Context::window_height)
                 .map(tehuti_core::layout::PresetSize::Proportion),
             ..Default::default()
-        };
-        match self.layout.add_window(identity, rules) {
-            Ok(()) => {
-                self.layout_windows
-                    .push((identity, LayoutWindow::new(Window::new_wayland_window(surface))));
-                self.place_layout();
-            }
-            Err(error) => tracing::warn!(%error, "window layout failed"),
         }
     }
 }
@@ -3519,6 +3819,7 @@ impl XdgShellHandler for Compositor {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let _removed = self.early_fullscreen.remove(surface.wl_surface());
         let identity = self.layout_windows.iter().find_map(|(identity, window)| {
             window
                 .toplevel()
@@ -3609,6 +3910,7 @@ impl SeatHandler for Compositor {
             focused.and_then(smithay::reexports::wayland_server::Resource::client),
         );
         self.text_input.focus(focused.cloned());
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
         // smithay holds the keyboard lock here; a dispatch can relayout and call
         // `set_focus` again, which deadlocks. Defer it until the lock is released.
         self.focus_change_dispatch = Some(DispatchInput::TextField {
@@ -3775,5 +4077,125 @@ mod tests {
             Some("Speech is down, restarting")
         );
         assert!(compositor.speech_notice_visible());
+    }
+
+    fn compositor() -> (Display<Compositor>, Compositor) {
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_driver_input(false);
+        (display, compositor)
+    }
+
+    fn is_down(compositor: &Compositor, code: u32) -> bool {
+        compositor
+            .keyboard
+            .pressed_keys()
+            .contains(&smithay::input::keyboard::Keycode::new(code))
+    }
+
+    #[test]
+    fn tapped_key_is_held_until_the_hold_time_passes() {
+        let (_display, mut compositor) = compositor();
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
+        assert!(is_down(&compositor, 9));
+        assert!(compositor.take_release_request().is_some());
+
+        compositor.advance_clocks(Duration::from_millis(39));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+
+        compositor.advance_clocks(Duration::from_millis(1));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 9));
+        assert_eq!(compositor.release_timer_fired(), None);
+    }
+
+    #[test]
+    fn double_tap_is_not_released_by_the_first_hold() {
+        let (_display, mut compositor) = compositor();
+        let key = smithay::input::keyboard::Keycode::new(9);
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(30));
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(30));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+        compositor.advance_clocks(Duration::from_millis(39));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+        compositor.advance_clocks(Duration::from_millis(1));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 9));
+    }
+
+    #[test]
+    fn shared_modifier_stays_down_for_the_later_chord() {
+        let (_display, mut compositor) = compositor();
+        let control = smithay::input::keyboard::Keycode::new(37);
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(38), &[control]);
+        compositor.advance_clocks(Duration::from_millis(30));
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(39), &[control]);
+        compositor.advance_clocks(Duration::from_millis(10));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 38));
+        assert!(is_down(&compositor, 39));
+        assert!(is_down(&compositor, 37));
+        compositor.advance_clocks(Duration::from_millis(30));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 39));
+        assert!(!is_down(&compositor, 37));
+    }
+
+    #[test]
+    fn focus_change_releases_held_keys() {
+        let (_display, mut compositor) = compositor();
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
+        compositor.focus_epoch += 1;
+        compositor.focus_change_dispatch = Some(super::DispatchInput::TextField {
+            active: false,
+            changed: false,
+            kind: tehuti_core::keyboard::FieldKind::Normal,
+        });
+        compositor.flush_focus_change();
+        assert!(!is_down(&compositor, 9));
+    }
+
+    #[test]
+    fn pending_focus_flush_keeps_a_modifier_pushed_after_the_change() {
+        let (_display, mut compositor) = compositor();
+        compositor.focus_epoch += 1;
+        compositor.focus_change_dispatch = Some(super::DispatchInput::TextField {
+            active: false,
+            changed: false,
+            kind: tehuti_core::keyboard::FieldKind::Normal,
+        });
+        let control = smithay::input::keyboard::Keycode::new(37);
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(38), &[control]);
+        assert!(is_down(&compositor, 37));
+        assert!(is_down(&compositor, 38));
+    }
+
+    #[test]
+    fn retap_leaves_a_gap_before_the_next_press() {
+        let (_display, mut compositor) = compositor();
+        let key = smithay::input::keyboard::Keycode::new(9);
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(5));
+        compositor.tap_held(key, &[]);
+        assert!(!is_down(&compositor, 9));
+        compositor.advance_clocks(super::RETAP_GAP);
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+    }
+
+    #[test]
+    fn failed_timer_releases_at_once_and_stays_idle() {
+        let (_display, mut compositor) = compositor();
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
+        assert!(compositor.take_release_request().is_some());
+        compositor.release_timer_failed();
+        assert!(!is_down(&compositor, 9));
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
+        assert!(compositor.take_release_request().is_some());
     }
 }

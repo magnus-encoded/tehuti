@@ -27,6 +27,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 font8x8 = "0.3"
 chrono = "0.4"
+resvg = { version = "0.48.1", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [dev-dependencies]

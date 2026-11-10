@@ -8,6 +8,7 @@ usage: tehuti <context-directory> [application] [arguments...]
        tehuti --help | -h
        tehuti --version | -V
        tehuti --check-config [config-directory]
+       tehuti --install-skill [path]
 ";
 
 /// What one run of the binary does.
@@ -17,6 +18,8 @@ pub enum Invocation {
     Version,
     /// Check the configuration directory; the rest of the arguments follow the option.
     CheckConfig(Vec<OsString>),
+    /// Install the agent skill under the given skills directory, or `~/.agents/skills`.
+    InstallSkill(Option<OsString>),
     /// Start the compositor with this context directory and optional first client.
     Session {
         context_directory: OsString,
@@ -47,6 +50,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
         Some("--help" | "-h") => Ok(Invocation::Help),
         Some("--version" | "-V") => Ok(Invocation::Version),
         Some("--check-config") => Ok(Invocation::CheckConfig(arguments.collect())),
+        Some("--install-skill") => Ok(Invocation::InstallSkill(arguments.next())),
         _ if first.as_encoded_bytes().starts_with(b"-") => Err(UsageError::UnknownOption(first)),
         _ => Ok(Invocation::Session {
             context_directory: first,
@@ -59,4 +63,25 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
 #[must_use]
 pub fn format_version(version: &str, hash: &str, date: &str) -> String {
     format!("tehuti {version} ({hash} {date})")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_skill_without_a_path_uses_the_default() {
+        assert_eq!(
+            parse([OsString::from("--install-skill")]),
+            Ok(Invocation::InstallSkill(None))
+        );
+    }
+
+    #[test]
+    fn install_skill_takes_an_optional_path() {
+        assert_eq!(
+            parse(["--install-skill", "/tmp/skills"].map(OsString::from)),
+            Ok(Invocation::InstallSkill(Some(OsString::from("/tmp/skills"))))
+        );
+    }
 }

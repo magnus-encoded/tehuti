@@ -94,8 +94,8 @@ mod tests {
             .into_iter()
             .map(|axis| (axis, info))
             .collect();
-            for source in [&[][..], source.as_slice()] {
-                for (axis, advertised) in tehuti::controller::virtual_pad_axes(source) {
+            for frames in [&[][..], source.as_slice()] {
+                for (axis, advertised) in tehuti::controller::virtual_pad_axes(frames) {
                     assert!(advertised.maximum() >= advertised.minimum(), "{axis:?}");
                     if let Some(range) = advertised.maximum().checked_sub(advertised.minimum()) {
                         assert!(advertised.flat() <= range, "{axis:?}");

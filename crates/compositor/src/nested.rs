@@ -49,6 +49,9 @@ pub(crate) fn insert(
     };
     let (formats, render_device) = tehuti::rendering::client_formats(backend.renderer(), display);
     let backend = Rc::new(RefCell::new(backend));
+    compositor.set_capture_source(&backend, |backend, compositor, clock| {
+        tehuti::rendering::capture_frame(backend.renderer(), compositor, clock)
+    });
     let importer = backend.clone();
     compositor.enable_dmabuf(
         display,

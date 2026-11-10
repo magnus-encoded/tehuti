@@ -153,7 +153,11 @@ pub(super) fn advertise(
     display: &DisplayHandle,
     compositor: &mut Compositor,
 ) -> Result<(), Box<dyn Error>> {
+    compositor.clear_capture_source();
     if let Rendering::Gles(gpu) = rendering {
+        compositor.set_capture_source(&gpu.device, |device, compositor, clock| {
+            tehuti::rendering::capture_frame(device.renderer_mut(), compositor, clock)
+        });
         let (formats, device) =
             tehuti::rendering::client_formats(gpu.device.borrow_mut().renderer_mut(), display);
         compositor.enable_dmabuf_on(

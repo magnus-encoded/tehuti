@@ -40,11 +40,75 @@ mod tests {
         let colours: std::collections::HashSet<_> = pixels.as_chunks::<4>().0.iter().copied().collect();
         assert!(colours.len() > 40, "fontdue gives smooth text coverage");
         assert!(
+            colours.contains(&[151, 117, 57, 255]),
+            "missing icons fall back to the initial tile"
+        );
+        assert!(
             colours.contains(&[119, 88, 36, 255]),
             "selected row uses the Live tone"
         );
         Ok(())
     }
+    #[test]
+    fn long_entry_lines_render_as_padded_ellipses() -> Result<(), Box<dyn core::error::Error>> {
+        let artwork = |name: String, meta: String| {
+            tehuti::choice_list::raster(
+                &List::ordered(Slots {
+                    candidates: vec![Candidate {
+                        name,
+                        meta: Some(meta),
+                    }],
+                    action: "Open".into(),
+                    ..Slots::default()
+                }),
+                PadFamily::Letters,
+                (1920, 1080),
+            )
+            .ok_or("artwork")
+        };
+        let long = artwork("W".repeat(200), "W".repeat(200))?;
+        let truncated = artwork(format!("{}…", "W".repeat(15)), format!("{}…", "W".repeat(31)))?;
+        assert!(
+            long == truncated,
+            "each line reserves room for a complete ellipsis"
+        );
+        for y in 144..192 {
+            for x in 1888..1908 {
+                assert_eq!(
+                    pixel(&long, x, y),
+                    [119, 88, 36, 255],
+                    "right padding stays clear"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unicode_and_line_breaks_stay_inside_the_entry() -> Result<(), Box<dyn core::error::Error>> {
+        for size in [(1920, 1080), (1280, 720), (2560, 1440)] {
+            let render = |suffix: &str| {
+                tehuti::choice_list::raster(
+                    &List::ordered(Slots {
+                        candidates: vec![Candidate {
+                            name: format!("{}{}", "Æ界e\u{301}\n".repeat(100), suffix),
+                            meta: Some(format!("{}{}", "日本語\t".repeat(100), suffix)),
+                        }],
+                        ..Slots::default()
+                    }),
+                    PadFamily::Letters,
+                    size,
+                )
+                .ok_or("artwork")
+            };
+            assert!(
+                render("one")? == render("two")?,
+                "overflow cannot alter pixels at {size:?}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn synthetic_pad_moves_and_confirms_the_cached_overlay() -> Result<(), Box<dyn core::error::Error>> {
         let display = Display::<Compositor>::new()?;
@@ -220,7 +284,7 @@ mod tests {
                 "{rows} rows: panel ends at {bottom}, leaving space above the bar"
             );
             let live = [119, 88, 36, 255];
-            let selected = (0..1080).filter(|y| pixel(&pixels, 1900, *y) == live).count();
+            let selected = (0..1080).filter(|y| pixel(&pixels, 1700, *y) == live).count();
             assert!(
                 selected == 72,
                 "{rows} rows: selected row is {selected}px, row must keep its natural height"

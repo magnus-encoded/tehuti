@@ -4,7 +4,7 @@ mod global_context {
     use tehuti_core::{State, step};
     use tehuti_protocol::{Action, ButtonName, ButtonState, Event, KeyName, Text, parse_context};
 
-    const GLOBAL: &str = "app_id = '*'\n[buttons]\nwest = { key = 'backspace' }\n[speech]\n'Open Atlas.' = { key = 'enter' }\n'Clear.' = { key = 'escape' }";
+    const GLOBAL: &str = "app_id = '*'\n[buttons]\nwest = { key = 'backspace' }\n[speech]\n'Show Atlas.' = { key = 'enter' }\n'Clear.' = { key = 'escape' }";
 
     fn state(focused: Option<&str>) -> State {
         let browser = parse_context(
@@ -35,7 +35,7 @@ mod global_context {
     #[test]
     fn global_phrase_beats_focused_typing_and_focused_phrase_wins_conflicts() {
         assert_eq!(
-            speak(state(Some("browser")), "open atlas"),
+            speak(state(Some("browser")), "show atlas"),
             vec![Action::Key {
                 key: KeyName::Enter,
                 mods: Vec::new()
@@ -76,7 +76,7 @@ mod global_context {
         #[test]
         fn global_phrase_runs_under_any_focus(
             focused in proptest::option::of("[a-z]{1,8}"),
-            spoken in prop::sample::select(vec!["Open Atlas.", "open atlas", "OPEN ATLAS!"]),
+            spoken in prop::sample::select(vec!["Show Atlas.", "show atlas", "SHOW ATLAS!"]),
         ) {
             prop_assert_eq!(
                 speak(state(focused.as_deref()), spoken),

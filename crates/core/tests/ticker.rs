@@ -289,6 +289,69 @@ right_stick = { ticker = "toggle" }
     }
 
     #[test]
+    fn passthrough_columns_level_hides_global_button_mappings() {
+        let contexts = contexts(&[
+            GLOBAL,
+            "app_id = 'game'\n[buttons]\nnorth = { key = 'x' }\n[pad]\npassthrough = true",
+        ]);
+        let entries = texts(&ticker::entries(
+            &contexts,
+            Some("game"),
+            PadFamily::Letters,
+            Level::Columns,
+        ));
+        assert!(!entries.iter().any(|entry| entry.contains("Esc")), "{entries:?}");
+        assert!(
+            !entries.iter().any(|entry| entry.starts_with("A ")),
+            "{entries:?}"
+        );
+        assert!(entries.iter().any(|entry| entry.starts_with("Y ")), "{entries:?}");
+    }
+
+    #[test]
+    fn button_labels_show_in_passthrough_and_elsewhere() {
+        let game = "app_id = 'game'\n[buttons]\n[pad]\npassthrough = true\n[ticker.buttons]\nsouth = 'Primary'\nleft_bumper = 'Wings'";
+        let contexts = contexts(&[GLOBAL, game]);
+        let entries = texts(&ticker::entries(
+            &contexts,
+            Some("game"),
+            PadFamily::Letters,
+            Level::App,
+        ));
+        assert_eq!(entries[2..4], ["A -> Primary", "LB -> Wings"]);
+        let plain = self::contexts(&[
+            GLOBAL,
+            "app_id = 'g'\n[buttons]\n[ticker.buttons]\nsouth = 'Jump'",
+        ]);
+        let plain_entries = texts(&ticker::entries(
+            &plain,
+            Some("g"),
+            PadFamily::Letters,
+            Level::App,
+        ));
+        assert!(
+            plain_entries.contains(&"A -> Jump".to_owned()),
+            "{plain_entries:?}"
+        );
+    }
+
+    #[test]
+    fn own_speech_skips_global_phrases() {
+        let contexts = contexts(&[
+            GLOBAL,
+            "app_id = 'g'\n[buttons]\n[ticker]\nspeech = 'own'\n[speech]\n'Hopp.' = { key = 'space' }",
+        ]);
+        let entries = texts(&ticker::entries(
+            &contexts,
+            Some("g"),
+            PadFamily::Letters,
+            Level::App,
+        ));
+        assert!(entries.iter().any(|entry| entry.contains("Hopp")), "{entries:?}");
+        assert!(!entries.iter().any(|entry| entry.contains("Lukk")), "{entries:?}");
+    }
+
+    #[test]
     fn the_ticker_is_off_unless_a_context_turns_it_on() {
         let off = State::with_contexts(contexts(&["app_id = '*'\n[buttons]\neast = { key = 'escape' }"]));
         assert!(off.bar().ticker().is_none(), "off by default");

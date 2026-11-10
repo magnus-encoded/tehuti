@@ -2,6 +2,13 @@
 
 #[cfg(test)]
 mod synthetic_pad {
+    /// A compositor whose taps release at once; the tests here do not run the release timer.
+    fn instant_compositor(display: &Display<Compositor>) -> Compositor {
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.instant_taps();
+        compositor
+    }
+
     use core::{
         sync::atomic::{AtomicU64, Ordering},
         time::Duration,
@@ -49,7 +56,7 @@ mod synthetic_pad {
     #[test]
     fn default_compositor_labels_agent_windows_with_the_project() {
         let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut pad = SyntheticPad::default();
         pad.push(Event::Focus {
             app_id: Some("kitty".into()),
@@ -62,7 +69,7 @@ mod synthetic_pad {
     #[test]
     fn disconnect_and_seat_pause_cancel_escape_before_reconnect() {
         let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         for first in [ButtonName::Guide, ButtonName::Start] {
             for name in [ButtonName::Start, ButtonName::Guide] {
                 compositor.controller_input(tehuti_core::controller::Input::Event(Event::Button {
@@ -101,6 +108,7 @@ mod synthetic_pad {
     #[derive(Debug, Default)]
     struct App {
         keys: Vec<(u32, KeyState)>,
+        key_times: Vec<u32>,
         repeat_info: Option<(i32, i32)>,
         clicks: Vec<(u32, wayland_client::protocol::wl_pointer::ButtonState)>,
         pointer_focused: Option<wayland_client::backend::ObjectId>,
@@ -148,7 +156,7 @@ mod synthetic_pad {
     ) -> (Option<u32>, App, u64) {
         use smithay::backend::allocator::{Format, Fourcc, Modifier};
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let formats = if supports_dmabuf {
             vec![Format {
                 code: Fourcc::Argb8888,
@@ -362,7 +370,7 @@ mod synthetic_pad {
     #[test]
     fn viewporter_is_advertised_and_rejects_invalid_destinations() {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let (server, client) = UnixStream::pair().unwrap();
         let _client = display
             .handle()
@@ -469,7 +477,7 @@ mod synthetic_pad {
     #[test]
     fn selection_is_offered_to_another_client_after_keyboard_focus_changes() {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let streams: Vec<_> = (0..2)
             .map(|_| {
                 let (server, client) = UnixStream::pair().unwrap();
@@ -588,9 +596,11 @@ mod synthetic_pad {
             if let wl_keyboard::Event::Key {
                 key,
                 state: WEnum::Value(state),
+                time,
                 ..
             } = event
             {
+                app.key_times.push(time);
                 app.keys.push((key, state));
                 app.keyboard_trace.push(Trace::Key(key, state));
                 if state == KeyState::Pressed {
@@ -854,7 +864,7 @@ mod synthetic_pad {
     fn mouse_mode_click_reaches_the_surface_under_the_pointer() {
         use wayland_client::protocol::wl_pointer::ButtonState as PointerState;
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let (server, client) = UnixStream::pair().unwrap();
         let _client = display
             .handle()
@@ -943,7 +953,7 @@ mod synthetic_pad {
             negative in prop::bool::ANY,
         ) {
             let display: Display<Compositor> = Display::new().unwrap();
-            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut compositor = instant_compositor(&display);
             toggle_pointer_mode(&mut compositor);
             compositor.sample_sticks(tehuti_core::dispatch::Sticks {
                 left: (if negative { -1000 } else { 1000 }, 0),
@@ -1004,7 +1014,7 @@ mod synthetic_pad {
     fn right_stick_scrolls_only_outside_passthrough_and_targets_the_mode_focus() {
         for mouse_mode in [false, true] {
             let mut display: Display<Compositor> = Display::new().unwrap();
-            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut compositor = instant_compositor(&display);
             compositor.set_contexts(vec![
                 tehuti_protocol::parse_context(
                     "app_id = 'org.example.Game'\nbuttons = {}\n[pad]\npassthrough = true",
@@ -1064,7 +1074,7 @@ mod synthetic_pad {
     #[test]
     fn a_contextless_xdg_child_receives_its_parent_button_mapping() {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context("app_id = 'launcher'\n[buttons]\nwest = { key = 'escape' }")
                 .unwrap(),
@@ -1110,7 +1120,7 @@ mod synthetic_pad {
         let shell = std::fs::canonicalize("/bin/sh").unwrap();
         let launcher = shell.file_name().unwrap().to_str().unwrap();
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(&format!(
                 "app_id = '{launcher}'\n[buttons]\nwest = {{ key = 'escape' }}"
@@ -1375,7 +1385,7 @@ mod synthetic_pad {
         ) {
             let directory = unresponsive_plugin("stalled");
             let mut display: Display<Compositor> = Display::new().unwrap();
-            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut compositor = instant_compositor(&display);
             compositor.set_contexts(vec![tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'enter'\n[speech]\nconfirm = { key = 'enter' }").unwrap()]);
             let mut event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
             let (server, client) = UnixStream::pair().unwrap();
@@ -1585,7 +1595,7 @@ mod synthetic_pad {
     #[test]
     fn notices_preserve_focus_and_close_transfers_it_to_the_remaining_client() {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![tehuti_protocol::parse_context(
             "app_id = 'test'\n[buttons]\n[speech]\nnotice = { notify = 'Ready' }\nunknown = { launch = 'tehuti-missing-entry-9.desktop' }\nclose = { close = 'focused' }"
         ).unwrap()]);
@@ -1686,7 +1696,7 @@ mod synthetic_pad {
             ("*", "open_fullscreen = true", false),
         ] {
             let mut display: Display<Compositor> = Display::new().unwrap();
-            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut compositor = instant_compositor(&display);
             compositor.set_contexts(vec![
                 tehuti_protocol::parse_context(&format!(
                     "app_id = '{context_id}'\nbuttons = {{}}\n[window]\n{setting}"
@@ -1724,7 +1734,7 @@ mod synthetic_pad {
     #[test]
     fn layout_actions_place_windows_as_the_layout_model_does() {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(
                 "app_id = 'test'\n[buttons]\neast = { layout = 'move-column-left' }\n[speech]\n\
@@ -1825,7 +1835,7 @@ mod synthetic_pad {
         chords: &[Option<ButtonName>],
     ) -> Vec<(usize, Option<usize>, usize)> {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(
                 "app_id = 'test'\n[buttons]\n[speech]\nclose = { close = 'focused' }",
@@ -1971,7 +1981,7 @@ mod synthetic_pad {
     fn save_this_as_records_the_focused_window_and_keeps_live_routes() {
         let directory = tempfile::tempdir().unwrap();
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.configure_destinations(tehuti::destinations::Paths {
             config: directory.path().into(),
             projects: directory.path().join("projects"),
@@ -2026,7 +2036,7 @@ mod synthetic_pad {
     #[test]
     fn window_commits_preserve_held_push_to_talk() {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let (server, client) = UnixStream::pair().unwrap();
         let _inserted = display
             .handle()
@@ -2086,7 +2096,7 @@ mod synthetic_pad {
 
     fn sidecar_transcript_in_context(passthrough: bool) {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(&format!("app_id = 'test'\n[buttons]\n[speech]\nconfirm = {{ key = 'tab' }}\n[pad]\npassthrough = {passthrough}"))
                 .unwrap(),
@@ -2142,7 +2152,7 @@ mod synthetic_pad {
     #[test]
     fn unmatched_speech_shows_no_speech_mapping_overlay() {
         let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.handle(&Event::Speech {
             text: tehuti_protocol::Text::new("unknown".into()).unwrap(),
         });
@@ -2160,7 +2170,7 @@ mod synthetic_pad {
     fn failed_transcription_shows_speech_failed_overlay() {
         use tehuti_core::speech::SpeechInput;
         let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.speech_input(SpeechInput::Available);
         compositor.speech_input(SpeechInput::Press);
         compositor.speech_input(SpeechInput::Release);
@@ -2175,7 +2185,7 @@ mod synthetic_pad {
     fn silent_capture_shows_mic_silent_overlay() {
         use tehuti_core::speech::SpeechInput;
         let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.speech_input(SpeechInput::Available);
         compositor.speech_input(SpeechInput::Press);
         compositor.speech_input(SpeechInput::Release);
@@ -2204,7 +2214,7 @@ mod synthetic_pad {
     fn synthetic_guide_taps_and_holds_route_in_every_mode() {
         for mode in 0..3 {
             let display: Display<Compositor> = Display::new().unwrap();
-            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut compositor = instant_compositor(&display);
             let mut pad = SyntheticPad::default();
             if mode == 1 {
                 for _ in 0..2 {
@@ -2261,7 +2271,7 @@ mod synthetic_pad {
     fn guide_hold_releases_the_synthetic_pad_and_exits_the_event_loop() {
         use smithay::reexports::calloop::EventLoop;
         let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut pad = SyntheticPad::default();
         pad.push(Event::Button {
             name: ButtonName::Guide,
@@ -2433,7 +2443,7 @@ mod synthetic_pad {
     fn check_hanging_plugin_deadline(change_focus: bool) {
         let directory = unresponsive_plugin("stalled");
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         load_test_context(&mut compositor, None);
         let mut event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
         compositor
@@ -2551,7 +2561,7 @@ else:
         use smithay::reexports::calloop::EventLoop;
         let directory = unresponsive_plugin(mode);
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context("app_id = 'other'\n[buttons.east]\nkey = 'tab'").unwrap(),
             tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
@@ -2716,7 +2726,7 @@ else:
         directory: Option<&std::path::Path>,
     ) -> App {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         if plugin {
             let default_directory =
@@ -2779,13 +2789,50 @@ else:
         client.join().unwrap()
     }
 
+    #[test]
+    fn a_context_key_action_holds_the_key_for_the_tap_hold_time() {
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_contexts(vec![
+            tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
+        ]);
+        let (server_end, client_end) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
+        let mut pad = SyntheticPad::default();
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            pad.push(synthetic_button(ButtonName::East, state));
+        }
+        let mut sent = false;
+        let began = Instant::now();
+        while !worker.is_finished() {
+            assert!(began.elapsed() < Duration::from_secs(5), "key delivery stalled");
+            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+            compositor.release_due_keys();
+            if !sent && receiver.try_recv().is_ok() {
+                sent = true;
+                route(&mut compositor, &mut pad).unwrap();
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let app = worker.join().unwrap();
+        assert_eq!(app.keys, vec![(1, KeyState::Pressed), (1, KeyState::Released)]);
+        let held = app.key_times[1].saturating_sub(app.key_times[0]);
+        assert!((40..100).contains(&held), "key was held for {held} ms");
+    }
+
     fn exchange_shortcuts(
         context: tehuti_protocol::Context,
         buttons: &[ButtonName],
         phrases: &[&str],
     ) -> App {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![context]);
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
@@ -2969,7 +3016,7 @@ else:
     fn sticky_ctrl_then_c_from_the_on_screen_keyboard_presses_real_ctrl() {
         use tehuti_core::keyboard::{Key, Modifier};
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(
                 "app_id = 'test'\n[buttons]\n[keyboard]\non_text_field = 'open'\nterminal = true",
@@ -3023,7 +3070,7 @@ else:
         const CHILD: &str = "TEHUTI_REPEAT_TEST_EXPECTED";
         if let Ok(expected) = std::env::var(CHILD) {
             let mut display: Display<Compositor> = Display::new().unwrap();
-            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut compositor = instant_compositor(&display);
             let (server_end, client_end) = UnixStream::pair().unwrap();
             let _client = display
                 .handle()
@@ -3080,7 +3127,7 @@ else:
     fn host_keyboard_reaches_the_focused_client_and_releases_on_focus_loss() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
@@ -3134,7 +3181,7 @@ else:
     fn workspace_feedback_does_not_delay_destination_focus_or_keys() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
@@ -3195,7 +3242,7 @@ else:
     fn meta_and_arrows_move_focus_without_reaching_the_client() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
@@ -3251,7 +3298,7 @@ else:
     fn meta_takes_only_arrows_the_client_never_saw_and_moves_once_per_hold() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
@@ -3316,7 +3363,7 @@ else:
     fn tapping_meta_switches_arrows_from_focus_to_moving_the_column() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         let (server_end, client_end) = UnixStream::pair().unwrap();
         let _client = display
@@ -3396,7 +3443,7 @@ else:
         /// `KEY_X` from linux/input-event-codes.h.
         const KEY_X: u32 = 45;
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(
                 "app_id = 'mgba-qt'\n[buttons]\nsouth = { key = 'x', hold = true }",
@@ -3749,7 +3796,7 @@ for line in sys.stdin:
             .finish();
         tracing::subscriber::with_default(subscriber, || {
             let display: Display<Compositor> = Display::new().unwrap();
-            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut compositor = instant_compositor(&display);
             load_test_context(&mut compositor, Some("hello"));
             compositor.handle(&Event::Focus {
                 app_id: Some("test".into()),
@@ -3908,7 +3955,7 @@ for line in sys.stdin:
     #[test]
     fn controller_confirmation_delivers_fake_secret_to_the_focused_wayland_client() {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         compositor.set_secret_provider(Box::new(FakeSecretProvider));
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(
@@ -3974,7 +4021,7 @@ for line in sys.stdin:
                 ClientTextState::FocusChanged,
             ] {
                 let mut display: Display<Compositor> = Display::new().unwrap();
-                let mut compositor = Compositor::new(&display.handle()).unwrap();
+                let mut compositor = instant_compositor(&display);
                 compositor.set_contexts(vec![
                     tehuti_protocol::parse_context(&format!(
                         "app_id = 'test'\n[buttons]\n[keyboard]\non_text_field = '{mode}'"
@@ -4055,7 +4102,7 @@ for line in sys.stdin:
         contents: Option<(&str, i32)>,
     ) {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         let (server, client) = UnixStream::pair().unwrap();
         let _client = display
@@ -4104,7 +4151,7 @@ for line in sys.stdin:
     #[test]
     fn synced_dictation_fits_text_input_messages() {
         let mut display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut compositor = instant_compositor(&display);
         let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         let (server, client) = UnixStream::pair().unwrap();
         let _client = display
@@ -4150,7 +4197,7 @@ for line in sys.stdin:
     fn application_selection_is_replaced_without_deleting_adjacent_text() {
         for text_state in [ClientTextState::Selected, ClientTextState::ReversedSelection] {
             let mut display: Display<Compositor> = Display::new().unwrap();
-            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut compositor = instant_compositor(&display);
             let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
             let (server, client) = UnixStream::pair().unwrap();
             let _client = display
@@ -4201,7 +4248,7 @@ for line in sys.stdin:
             (ContentPurpose::Number, Key::Char(',')),
         ] {
             let mut display: Display<Compositor> = Display::new().unwrap();
-            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            let mut compositor = instant_compositor(&display);
             let mut event_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
             let (server, client) = UnixStream::pair().unwrap();
             let _client = display
