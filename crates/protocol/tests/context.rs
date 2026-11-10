@@ -282,7 +282,7 @@ restart = { restart = false }"
             hyphen in proptest::bool::ANY,
         ) {
             let separator = if hyphen { "-" } else { " " };
-            let worded = speech_context(&[(&format!("{word} {}.", spelled_number), "enter")]);
+            let worded = speech_context(&[(&format!("{word} {spelled_number}."), "enter")]);
             prop_assert!(worded.speech_action(&format!("{word}{separator}{number}")).is_some(), "no match");
             prop_assert!(worded.speech_action(&format!("{word}{number}")).is_some(), "glued digit");
             let digits = speech_context(&[(&format!("{word} {number}"), "enter")]);
@@ -332,7 +332,7 @@ restart = { restart = false }"
         /// forms, lose the shared folded form and are named in one warning.
         #[test]
         fn phrases_that_fold_alike_load_with_a_warning((number, spelled_number) in number(), word in "[a-z]{3,8}") {
-            let spelled = format!("{word}-{}", spelled_number);
+            let spelled = format!("{word}-{spelled_number}");
             let digits = format!("{word} {number}");
             let context = speech_context(&[(&digits, "enter"), (&spelled, "tab")]);
             let warnings = context.warnings();
