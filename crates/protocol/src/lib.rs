@@ -1051,13 +1051,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
                 "speech phrase {mapped:?} cannot hold a key; hold is for buttons"
             ));
         }
-        if let MappingAction::Launch { launch } = &entry.action
-            && !launch_phrases
-                .iter()
-                .any(|(desktop_entry, _)| desktop_entry == launch.as_str())
-        {
-            launch_phrases.push((launch.as_str().to_owned(), mapped.clone()));
-        }
+        record_launch_phrase(&mut launch_phrases, &entry.action, &mapped);
         speech_templates::validate(&mapped, &entry.action)?;
         let normalized = normalized_speech_phrase(&mapped)?;
         let entry = SpeechEntry {
@@ -1106,6 +1100,16 @@ fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
         return Err("keyboard button cannot reserve Guide or Record".into());
     }
     Ok(())
+}
+
+fn record_launch_phrase(phrases: &mut Vec<(String, String)>, action: &MappingAction, mapped: &str) {
+    if let MappingAction::Launch { launch } = action
+        && !phrases
+            .iter()
+            .any(|(desktop_entry, _)| desktop_entry == launch.as_str())
+    {
+        phrases.push((launch.as_str().to_owned(), mapped.to_owned()));
+    }
 }
 
 fn insert_speech_variant(
