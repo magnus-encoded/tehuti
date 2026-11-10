@@ -53,23 +53,6 @@ impl Canvas {
         })
     }
 
-    pub(crate) fn from_pixels(size: (i32, i32), pixels: Vec<u8>) -> Option<Self> {
-        let width = usize::try_from(size.0).ok().filter(|value| *value > 0)?;
-        let height = usize::try_from(size.1).ok().filter(|value| *value > 0)?;
-        if width.checked_mul(height)?.checked_mul(4)? != pixels.len() {
-            return None;
-        }
-        Some(Self {
-            pixels,
-            glyphs: Vec::new(),
-            trace: false,
-            width,
-            height,
-            scale: (1.0, 1.0),
-            font: FONT.as_ref()?,
-        })
-    }
-
     pub(crate) fn reference(&mut self, width: usize, height: usize) {
         self.scale = (
             self.width as f32 / width as f32,

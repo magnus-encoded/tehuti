@@ -95,6 +95,7 @@ pub fn check(directory: &Path) -> Report {
                 }
             }
             report_shadowing(&mut report, &loaded);
+            report_legacy_favourites(&mut report, &loaded);
         }
         Err(error) => report.push(&error.path, Severity::Error, error.message),
     }
@@ -160,6 +161,22 @@ fn check_plugins(directory: &Path, report: &mut Report) {
             Severity::Warning,
             format!("never loaded: plugins load only from {}", plugins.display()),
         );
+    }
+}
+
+fn report_legacy_favourites(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
+    for (path, _) in loaded {
+        let has_favourites = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|source| toml::from_str::<toml::Table>(&source).ok())
+            .is_some_and(|table| table.contains_key("favourites"));
+        if has_favourites {
+            report.push(
+                path,
+                Severity::Warning,
+                "favourites has no desktop icon or D-pad effect".into(),
+            );
+        }
     }
 }
 

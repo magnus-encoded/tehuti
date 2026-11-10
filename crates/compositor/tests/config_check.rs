@@ -7,6 +7,23 @@ mod config_check {
     use tehuti::config_check::{Severity, check};
 
     #[test]
+    fn legacy_favourites_load_with_a_warning() {
+        for entries in ["[]", "['browser.desktop']"] {
+            let directory = tempfile::tempdir().unwrap();
+            write(
+                directory.path(),
+                "global/context.toml",
+                &format!("app_id = '*'\nfavourites = {entries}\n[buttons]\n"),
+            );
+            let report = check(directory.path());
+            assert!(!report.has_errors(), "{report}");
+            assert_eq!(report.findings.len(), 1, "{report}");
+            assert_eq!(report.findings[0].severity, Severity::Warning);
+            assert!(report.findings[0].message.contains("favourites"));
+        }
+    }
+
+    #[test]
     fn reports_each_broken_menu_entry() {
         let directory = tempfile::tempdir().unwrap();
         write(

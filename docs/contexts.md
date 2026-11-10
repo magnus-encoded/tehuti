@@ -88,29 +88,13 @@ Without the option, unmatched speech shows “No speech mapping” for three
 seconds above the client without changing focus. Record (Share) controls push-to-talk
 by default. Configured push-to-talk buttons never reach context mappings.
 
-## Favourite desktop launch icons
+## Legacy favourites key
 
-Set top-level `favourites` in the global context (`app_id = "*"`), before any
-TOML table:
-
-```toml
-app_id = "*"
-favourites = ["reader.desktop", "browser.desktop"]
-
-[buttons]
-
-[speech]
-Read = { launch = "reader.desktop" }
-Browse = { launch = "browser.desktop" }
-```
-
-The list defaults to empty. Favourites with global speech launch mappings appear
-first in the wallpaper hint grid, in list order. Other launch hints stay visible.
-Entries without a launch phrase are skipped; repeated favourites appear once.
-With no application focused, D-pad Right or Down selects the next favourite;
-Left or Up selects the previous one. Selection stops at either end. Confirm
-launches the selected entry using the connected pad's role (A, Cross, or Nintendo
-A). Open overlays keep ownership of the pad. Context reloads update favourites.
+The global context may still contain a top-level `favourites` list. Tehuti
+accepts the key so existing config files load, but it no longer draws desktop
+icons or selects them with the D-pad. Speech launch mappings still launch
+their configured applications. `tehuti --check-config` warns when the key
+is present.
 
 ## Checking a config
 

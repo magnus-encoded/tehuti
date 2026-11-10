@@ -32,8 +32,6 @@ struct Request {
     redraw: Option<Ping>,
     image: Option<image::DynamicImage>,
     generation: u64,
-    phrases: Vec<(String, String)>,
-    focus: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -46,8 +44,6 @@ struct Prepared {
 #[derive(Debug)]
 pub struct Wallpaper {
     image: Option<image::DynamicImage>,
-    hints: Vec<crate::desktop_hints::Hint>,
-    focus: Option<usize>,
     buffers: std::collections::HashMap<(i32, i32), MemoryRenderBuffer>,
 }
 
@@ -63,30 +59,8 @@ impl Wallpaper {
         };
         Self {
             image,
-            hints: Vec::new(),
-            focus: None,
             buffers: std::collections::HashMap::new(),
         }
-    }
-
-    pub fn set_hints(&mut self, hints: Vec<crate::desktop_hints::Hint>) {
-        self.hints = hints;
-        self.buffers.clear();
-    }
-
-    /// Selects a configured launch phrase among the hints that loaded successfully.
-    pub fn set_launch_focus(&mut self, phrases: &[(String, String)], focus: Option<usize>) {
-        let visible = focus
-            .and_then(|index| phrases.get(index))
-            .and_then(|(_, caption)| self.hints.iter().position(|hint| hint.caption == *caption));
-        if self.focus != visible {
-            self.set_focus(visible);
-        }
-    }
-
-    pub fn set_focus(&mut self, focus: Option<usize>) {
-        self.focus = focus;
-        self.buffers.clear();
     }
 
     /// # Errors
@@ -108,13 +82,6 @@ impl Wallpaper {
                     .to_rgba8()
             },
         );
-        if !self.hints.is_empty() {
-            let raw =
-                crate::desktop_hints::draw(pixels.into_raw(), (size.w, size.h), &self.hints, self.focus)
-                    .ok_or("desktop hint canvas unavailable")?;
-            pixels =
-                image::RgbaImage::from_raw(width, height, raw).ok_or("desktop hint pixels unavailable")?;
-        }
         for pixel in pixels.pixels_mut() {
             let alpha = u16::from(pixel.0.last().copied().unwrap_or(255));
             for channel in pixel.0.iter_mut().take(3) {
@@ -222,8 +189,6 @@ impl Collection {
             current,
             wallpaper: Wallpaper {
                 image,
-                hints: Vec::new(),
-                focus: None,
                 buffers: std::collections::HashMap::new(),
             },
             store,
@@ -390,8 +355,6 @@ pub struct WallpaperCache {
     pending: std::collections::HashSet<(i32, i32)>,
     collection: Option<Collection>,
     generation: u64,
-    phrases: Vec<(String, String)>,
-    focus: Option<usize>,
     fresh: std::collections::HashSet<(i32, i32)>,
 }
 
@@ -402,14 +365,11 @@ fn prepare_wallpapers(
 ) {
     let mut wallpaper = Wallpaper::load(path);
     let mut worker_generation = u64::MAX;
-    let mut current_phrases = Vec::new();
     while let Ok(Request {
         size,
         redraw,
         image,
         generation,
-        phrases,
-        focus,
     }) = sizes.recv()
     {
         if generation != worker_generation && image.is_some() {
@@ -417,11 +377,6 @@ fn prepare_wallpapers(
             wallpaper.buffers.clear();
         }
         worker_generation = generation;
-        if current_phrases != phrases {
-            wallpaper.set_hints(crate::desktop_hints::load(&phrases));
-            current_phrases = phrases;
-        }
-        wallpaper.set_launch_focus(&current_phrases, focus);
         let buffer = match wallpaper.buffer(size) {
             Ok(buffer) => Some(buffer),
             Err(error) => {
@@ -464,8 +419,6 @@ impl WallpaperCache {
             pending: std::collections::HashSet::new(),
             collection: None,
             generation: 0,
-            phrases: Vec::new(),
-            focus: None,
             fresh: std::collections::HashSet::new(),
         }
     }
@@ -525,25 +478,6 @@ impl WallpaperCache {
             .save(index)
     }
 
-    pub fn set_launch_phrases(&mut self, phrases: Vec<(String, String)>) {
-        if self.phrases != phrases {
-            self.phrases = phrases;
-            self.generation = self.generation.wrapping_add(1);
-            self.ready.clear();
-            self.fresh.clear();
-            self.pending.clear();
-        }
-    }
-
-    pub fn set_focus(&mut self, focus: Option<usize>) {
-        if self.focus != focus {
-            self.focus = focus;
-            self.generation = self.generation.wrapping_add(1);
-            self.fresh.clear();
-            self.pending.clear();
-        }
-    }
-
     pub fn set_redraw_ping(&mut self, ping: Ping) {
         self.redraw = Some(ping);
     }
@@ -576,8 +510,6 @@ impl WallpaperCache {
                     .as_ref()
                     .map_or_else(|| None, |collection| collection.wallpaper.image.clone()),
                 generation: self.generation,
-                phrases: self.phrases.clone(),
-                focus: self.focus,
             }) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
@@ -643,30 +575,6 @@ pub fn unlock() -> std::io::Result<(Vec<String>, Vec<bool>, usize)> {
 pub fn thumbnail(index: usize) -> Option<image::RgbaImage> {
     let cache = wallpaper().lock().ok()?;
     Some(cache.collection.as_ref()?.thumbnails().get(index)?.clone())
-}
-
-/// # Errors
-/// Returns an error when the wallpaper cache is poisoned.
-pub fn set_launch_phrases(phrases: Vec<(String, String)>) -> Result<(), Box<dyn Error>> {
-    let mut cache = wallpaper().lock().map_err(|_| "wallpaper cache unavailable")?;
-    cache.set_launch_phrases(phrases);
-    if let Some(ping) = &cache.redraw {
-        ping.ping();
-    }
-    drop(cache);
-    Ok(())
-}
-
-/// Updates the desktop hint selection and requests a frame.
-pub fn set_focus(focus: Option<usize>) {
-    if let Ok(mut cache) = wallpaper().lock()
-        && cache.focus != focus
-    {
-        cache.set_focus(focus);
-        if let Some(ping) = &cache.redraw {
-            ping.ping();
-        }
-    }
 }
 
 fn wallpaper() -> &'static Mutex<WallpaperCache> {

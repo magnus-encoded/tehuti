@@ -1,59 +1,6 @@
-//! Voice launch hints prepared with wallpaper artwork.
+//! Desktop entry and icon lookup for launcher rows.
 
 use std::path::{Path, PathBuf};
-
-use crate::settings::canvas::Canvas;
-
-/// A desktop entry and its first configured launch phrase.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hint {
-    pub caption: String,
-    pub name: String,
-    pub icon: Option<PathBuf>,
-}
-
-/// Launch phrases from the first global context, matching dispatch priority.
-#[must_use]
-pub fn launch_phrases(contexts: &[tehuti_protocol::Context]) -> Vec<(String, String)> {
-    contexts
-        .iter()
-        .find(|context| context.app_id() == "*")
-        .map(|context| {
-            let mut phrases = context.launch_phrases().to_vec();
-            phrases.sort_by_key(|(desktop_entry, _)| {
-                context
-                    .favourites()
-                    .iter()
-                    .position(|entry| entry == desktop_entry)
-                    .unwrap_or(usize::MAX)
-            });
-            phrases
-        })
-        .unwrap_or_default()
-}
-
-/// Reads the main desktop entry group, ignoring localized keys and action groups.
-#[must_use]
-pub fn entry_metadata(source: &str) -> Option<(String, String)> {
-    let mut main = false;
-    let mut name = None;
-    let mut icon = String::new();
-    for line in source.lines().map(str::trim) {
-        if line.starts_with('[') {
-            main = line == "[Desktop Entry]";
-        } else if main
-            && !line.starts_with('#')
-            && let Some((key, value)) = line.split_once('=')
-        {
-            match key.trim() {
-                "Name" => name = Some(value.trim().to_owned()),
-                "Icon" => value.trim().clone_into(&mut icon),
-                _ => {}
-            }
-        }
-    }
-    name.filter(|name| !name.is_empty()).map(|name| (name, icon))
-}
 
 fn data_directories() -> Vec<PathBuf> {
     let mut directories = Vec::new();
@@ -70,27 +17,6 @@ fn data_directories() -> Vec<PathBuf> {
     }
     directories.push(PathBuf::from("/var/lib/flatpak/exports/share"));
     directories
-}
-
-fn desktop_path(directory: &Path, entry_id: &str, depth: usize) -> Option<PathBuf> {
-    if depth >= 16 {
-        return None;
-    }
-    let children = std::fs::read_dir(directory).ok()?;
-    for child in children.flatten() {
-        let name = child.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if name == entry_id && child.path().is_file() {
-            return Some(child.path());
-        }
-        if child.file_type().is_ok_and(|kind| kind.is_dir())
-            && let Some(rest) = entry_id.strip_prefix(&format!("{name}-"))
-            && let Some(path) = desktop_path(&child.path(), rest, depth.saturating_add(1))
-        {
-            return Some(path);
-        }
-    }
-    None
 }
 
 /// Resolves PNG, then SVG, icons through theme directories, inheritance and unthemed fallbacks.
@@ -267,95 +193,4 @@ fn rasterise_svg(path: &Path) -> Option<image::DynamicImage> {
         })
         .collect();
     image::RgbaImage::from_raw(SIZE, SIZE, straight).map(image::DynamicImage::ImageRgba8)
-}
-
-pub(crate) fn load(phrases: &[(String, String)]) -> Vec<Hint> {
-    let directories = data_directories();
-    let roots = icon_roots(&directories);
-    phrases
-        .iter()
-        .filter_map(|(entry_id, caption)| {
-            let entry_id = if Path::new(entry_id)
-                .extension()
-                .is_some_and(|extension| extension == "desktop")
-            {
-                entry_id.clone()
-            } else {
-                format!("{entry_id}.desktop")
-            };
-            let path = directories
-                .iter()
-                .find_map(|directory| desktop_path(&directory.join("applications"), &entry_id, 0))?;
-            let source = std::fs::read_to_string(path).ok()?;
-            let (name, icon) = entry_metadata(&source)?;
-            Some(Hint {
-                caption: caption.clone(),
-                name,
-                icon: icon_path(&icon, &roots, "hicolor"),
-            })
-        })
-        .collect()
-}
-
-/// Visible cells in row order, with space reserved for the bar.
-#[must_use]
-pub fn layout(size: (usize, usize), count: usize) -> Vec<(usize, usize)> {
-    let columns = size.0.saturating_sub(32) / 160;
-    let rows = size.1.saturating_sub(80) / 112;
-    (0..count.min(columns.saturating_mul(rows)))
-        .map(|index| {
-            (
-                32_usize.saturating_add(index.checked_rem(columns).unwrap_or(0).saturating_mul(160)),
-                48_usize.saturating_add(index.checked_div(columns).unwrap_or(0).saturating_mul(112)),
-            )
-        })
-        .collect()
-}
-
-pub(crate) fn draw(
-    pixels: Vec<u8>,
-    size: (i32, i32),
-    hints: &[Hint],
-    focus: Option<usize>,
-) -> Option<Vec<u8>> {
-    let mut canvas = Canvas::from_pixels(size, pixels)?;
-    for (index, (hint, (x, y))) in hints
-        .iter()
-        .zip(layout(
-            (usize::try_from(size.0).ok()?, usize::try_from(size.1).ok()?),
-            hints.len(),
-        ))
-        .enumerate()
-    {
-        if focus == Some(index) {
-            canvas.rectangle(
-                x.saturating_sub(3),
-                y.saturating_sub(3),
-                158,
-                106,
-                [255, 208, 64, 255],
-            );
-        }
-        let icon = hint.icon.as_ref().and_then(|path| read_icon(path));
-        if let Some(icon) = icon {
-            canvas.image(x, y, &icon.thumbnail(48, 48).to_rgba8());
-        } else {
-            canvas.rectangle(x, y, 48, 48, [40, 92, 116, 255]);
-            canvas.text(
-                x.saturating_add(12),
-                y.saturating_add(8),
-                &hint.name.chars().take(1).collect::<String>(),
-                4,
-                [255; 4],
-            );
-        }
-        canvas.rectangle(x, y.saturating_add(52), 152, 48, [0, 0, 0, 210]);
-        canvas.text_box(
-            (x.saturating_add(4), y.saturating_add(54), 144, 44),
-            &hint.caption,
-            2,
-            [255; 4],
-        );
-    }
-    Some(canvas.pixels)
 }

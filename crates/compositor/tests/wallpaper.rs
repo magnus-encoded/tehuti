@@ -22,6 +22,24 @@ mod wallpaper {
         wallpaper::{Wallpaper, WallpaperCache},
     };
 
+    #[test]
+    fn empty_desktop_wallpaper_contains_no_hint_icons() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let mut wallpaper = Wallpaper::load(&directory.path().join("missing.png"));
+        wallpaper.buffer((352, 200).into())?.render().draw(|pixels| {
+            assert!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|pixel| pixel == &[0, 0, 0, 255]),
+                "empty desktop wallpaper must contain only the background"
+            );
+            Ok::<_, std::io::Error>(Vec::new())
+        })?;
+        Ok(())
+    }
+
     #[derive(Debug)]
     struct FailedArtwork(smithay::backend::renderer::element::Id);
 
