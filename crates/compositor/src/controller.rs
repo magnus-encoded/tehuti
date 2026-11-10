@@ -223,6 +223,7 @@ pub struct EvdevPad<D = Device> {
     mirror: Option<Mirror>,
     /// The virtual controller kept while hidden, so the application never sees it unplugged.
     parked: Option<Mirror>,
+    mirror_failed: bool,
     plugin_held: Vec<ButtonName>,
     buffered: Vec<Event>,
 }
@@ -337,6 +338,7 @@ pub fn sync_mirrors<D: PadDevice>(
         match pad.set_mirror(true, consumed) {
             Ok(created) => sync.started |= created,
             Err(error) => {
+                pad.mirror_failed = true;
                 warn!(%error, "virtual pad unavailable");
                 sync.failed.push(path.to_path_buf());
             }
@@ -455,6 +457,154 @@ impl MirrorCopy {
     }
 }
 
+/// The name the virtual controller shows, the same for every source pad.
+pub const VIRTUAL_PAD_NAME: &str = "Tehuti virtual pad";
+
+/// The physical path the virtual controller reports, the same for every source pad.
+pub const VIRTUAL_PAD_PHYS: &core::ffi::CStr = c"tehuti/virtual-pad";
+
+/// The identity used by the virtual controller builder, independent of the source pad.
+#[must_use]
+pub fn virtual_pad_identity() -> evdev::InputId {
+    evdev::InputId::new(evdev::BusType::BUS_VIRTUAL, 0x045e, 0x028e, 0x0001)
+}
+
+/// The Xbox 360 button capabilities advertised to applications.
+#[must_use]
+pub fn virtual_pad_keys() -> evdev::AttributeSet<KeyCode> {
+    [
+        KeyCode::BTN_SOUTH,
+        KeyCode::BTN_EAST,
+        KeyCode::BTN_NORTH,
+        KeyCode::BTN_WEST,
+        KeyCode::BTN_TL,
+        KeyCode::BTN_TR,
+        KeyCode::BTN_SELECT,
+        KeyCode::BTN_START,
+        KeyCode::BTN_MODE,
+        KeyCode::BTN_THUMBL,
+        KeyCode::BTN_THUMBR,
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// The Xbox axes and ranges advertised to applications, whatever the source pad reports.
+#[must_use]
+pub fn virtual_pad_axes() -> Vec<(AbsoluteAxisCode, evdev::AbsInfo)> {
+    XBOX_AXES
+        .iter()
+        .map(|(axis, minimum, maximum)| (*axis, evdev::AbsInfo::new(0, *minimum, *maximum, 0, 0, 0)))
+        .collect()
+}
+
+const XBOX_AXES: [(AbsoluteAxisCode, i32, i32); 8] = [
+    (AbsoluteAxisCode::ABS_X, -32768, 32767),
+    (AbsoluteAxisCode::ABS_Y, -32768, 32767),
+    (AbsoluteAxisCode::ABS_Z, 0, 255),
+    (AbsoluteAxisCode::ABS_RX, -32768, 32767),
+    (AbsoluteAxisCode::ABS_RY, -32768, 32767),
+    (AbsoluteAxisCode::ABS_RZ, 0, 255),
+    (AbsoluteAxisCode::ABS_HAT0X, -1, 1),
+    (AbsoluteAxisCode::ABS_HAT0Y, -1, 1),
+];
+
+/// Maps `value` from the `source` range onto the `target` range.
+///
+/// Minimum, midpoint and maximum land exactly on their targets, the map never decreases,
+/// and values outside the source range clamp. An empty or inverted source gives the target midpoint.
+#[must_use]
+pub fn scale_axis(value: i32, source: (i32, i32), target: (i32, i32)) -> i32 {
+    let target_mid = target.0.midpoint(target.1);
+    if source.1 <= source.0 {
+        return target_mid;
+    }
+    let source_mid = source.0.midpoint(source.1);
+    let value = value.clamp(source.0, source.1);
+    // One straight segment each side of the midpoint, in i128 so no product can overflow.
+    let segment = |input: (i32, i32), output: (i32, i32)| -> Option<i128> {
+        let span = i128::from(input.1).checked_sub(i128::from(input.0))?;
+        if span == 0 {
+            return Some(i128::from(output.0));
+        }
+        let offset = i128::from(value).checked_sub(i128::from(input.0))?;
+        let reach = i128::from(output.1).checked_sub(i128::from(output.0))?;
+        i128::from(output.0).checked_add(offset.checked_mul(reach)?.checked_div(span)?)
+    };
+    let scaled = if value <= source_mid {
+        segment((source.0, source_mid), (target.0, target_mid))
+    } else {
+        segment((source_mid, source.1), (target_mid, target.1))
+    };
+    scaled
+        .and_then(|scaled| i32::try_from(scaled).ok())
+        .map_or(target_mid, |scaled| scaled.clamp(target.0, target.1))
+}
+
+/// Scales a source stick or trigger value into the advertised Xbox range.
+/// Hats and axes without a valid source range pass through unchanged.
+#[must_use]
+pub fn virtual_pad_value(
+    source: &[(AbsoluteAxisCode, evdev::AbsInfo)],
+    event: evdev::InputEvent,
+) -> evdev::InputEvent {
+    if event.event_type() != evdev::EventType::ABSOLUTE {
+        return event;
+    }
+    let axis = AbsoluteAxisCode(event.code());
+    if axis == AbsoluteAxisCode::ABS_HAT0X || axis == AbsoluteAxisCode::ABS_HAT0Y {
+        return event;
+    }
+    let Some((_, minimum, maximum)) = XBOX_AXES.iter().find(|(code, _, _)| *code == axis) else {
+        return event;
+    };
+    let Some((_, info)) = source.iter().find(|(code, _)| *code == axis) else {
+        return event;
+    };
+    if info.maximum() <= info.minimum() {
+        return event;
+    }
+    let value = scale_axis(
+        event.value(),
+        (info.minimum(), info.maximum()),
+        (*minimum, *maximum),
+    );
+    evdev::InputEvent::new(event.event_type().0, event.code(), value)
+}
+
+/// Converts source face positions to the Xbox kernel button order.
+#[must_use]
+pub fn virtual_pad_event(source: &evdev::InputId, event: evdev::InputEvent) -> evdev::InputEvent {
+    if event.event_type() == evdev::EventType::KEY
+        && !tehuti_core::pad::Identity::for_device(source.vendor(), source.product()).swap_north_west
+    {
+        let code = match KeyCode::new(event.code()) {
+            KeyCode::BTN_NORTH => KeyCode::BTN_WEST,
+            KeyCode::BTN_WEST => KeyCode::BTN_NORTH,
+            _ => return event,
+        };
+        return evdev::InputEvent::new(event.event_type().0, code.code(), event.value());
+    }
+    event
+}
+
+struct VirtualPadSink {
+    device: evdev::uinput::VirtualDevice,
+    source: evdev::InputId,
+    /// The source pad's calibration, for scaling into the advertised Xbox ranges.
+    axes: Vec<(AbsoluteAxisCode, evdev::AbsInfo)>,
+}
+
+impl MirrorSink for VirtualPadSink {
+    fn emit(&mut self, frame: &[evdev::InputEvent]) -> io::Result<()> {
+        let frame: Vec<_> = frame
+            .iter()
+            .map(|event| virtual_pad_value(&self.axes, virtual_pad_event(&self.source, *event)))
+            .collect();
+        self.device.emit(&frame)
+    }
+}
+
 /// Kernel operations used by a controller client.
 pub trait PadDevice {
     /// Acquires exclusive input ownership.
@@ -477,7 +627,7 @@ pub trait PadDevice {
     /// # Errors
     /// The client could not release its grab.
     fn ungrab(&mut self) -> io::Result<()>;
-    /// Creates a virtual controller with this controller's capabilities.
+    /// Creates a virtual controller with the Xbox layout and this controller's calibration.
     /// # Errors
     /// The kernel refused to create it; clients without uinput always refuse.
     fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
@@ -512,16 +662,28 @@ impl PadDevice for Device {
     }
 
     fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
-        let mut builder = evdev::uinput::VirtualDevice::builder()?
-            .name("Tehuti virtual pad")
-            .input_id(self.input_id());
-        if let Some(keys) = self.supported_keys() {
-            builder = builder.with_keys(keys)?;
+        let keys = virtual_pad_keys();
+        let mut builder = evdev::uinput::VirtualDevice::builder()
+            .map_err(|error| io::Error::new(error.kind(), format!("uinput open: {error}")))?
+            .name(VIRTUAL_PAD_NAME)
+            .input_id(virtual_pad_identity())
+            .with_phys(VIRTUAL_PAD_PHYS)
+            .map_err(|error| io::Error::new(error.kind(), format!("uinput with_phys: {error}")))?
+            .with_keys(&keys)
+            .map_err(|error| io::Error::new(error.kind(), format!("uinput with_keys: {error}")))?;
+        let source_axes: Vec<_> = Self::get_absinfo(self)?.collect();
+        for (axis, info) in virtual_pad_axes() {
+            builder = builder
+                .with_absolute_axis(&evdev::UinputAbsSetup::new(axis, info))
+                .map_err(|error| io::Error::new(error.kind(), format!("uinput axis {axis:?}: {error}")))?;
         }
-        for (axis, info) in Self::get_absinfo(self)? {
-            builder = builder.with_absolute_axis(&evdev::UinputAbsSetup::new(axis, info))?;
-        }
-        Ok(Box::new(builder.build()?))
+        Ok(Box::new(VirtualPadSink {
+            device: builder
+                .build()
+                .map_err(|error| io::Error::new(error.kind(), format!("uinput build: {error}")))?,
+            source: self.input_id(),
+            axes: source_axes,
+        }))
     }
 
     fn fetch_raw(&mut self) -> io::Result<Vec<evdev::InputEvent>> {
@@ -595,7 +757,7 @@ impl<D: PadDevice> EvdevPad<D> {
             }
             return Ok(false);
         }
-        if self.mirror.is_some() {
+        if self.mirror.is_some() || self.mirror_failed {
             return Ok(false);
         }
         let (device, centres) = if let Some(parked) = self.parked.take() {
@@ -644,6 +806,12 @@ impl<D: PadDevice> EvdevPad<D> {
     /// Removes the hidden virtual controller, so the application sees it unplugged.
     pub fn unpark_mirror(&mut self) {
         self.parked = None;
+    }
+
+    /// Whether this source pad must use physical passthrough after a mirror failure.
+    #[must_use]
+    pub const fn mirror_unavailable(&self) -> bool {
+        self.mirror_failed
     }
 
     /// Hands over the virtual controller when the physical pad goes away.
@@ -743,6 +911,7 @@ impl<D: PadDevice> EvdevPad<D> {
             grabbed: true,
             mirror: None,
             parked: None,
+            mirror_failed: false,
             plugin_held: Vec::new(),
             buffered: Vec::new(),
         }

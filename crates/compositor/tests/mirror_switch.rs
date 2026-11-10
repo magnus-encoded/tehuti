@@ -19,6 +19,9 @@ mod tests {
         live: usize,
         most_live: usize,
         created: usize,
+        refuse: bool,
+        grabs: usize,
+        ungrabs: usize,
     }
 
     struct Sink(&'static str, Rc<RefCell<Log>>);
@@ -52,6 +55,8 @@ mod tests {
 
     impl PadDevice for Synthetic {
         fn grab(&mut self) -> io::Result<()> {
+            let mut log = self.log.borrow_mut();
+            log.grabs = log.grabs.saturating_add(1);
             Ok(())
         }
         fn get_key_state(&self) -> io::Result<Vec<u16>> {
@@ -74,12 +79,17 @@ mod tests {
             Ok(Vec::new())
         }
         fn ungrab(&mut self) -> io::Result<()> {
+            let mut log = self.log.borrow_mut();
+            log.ungrabs = log.ungrabs.saturating_add(1);
             Ok(())
         }
         fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
             let mut log = self.log.borrow_mut();
-            log.live = log.live.saturating_add(1);
             log.created = log.created.saturating_add(1);
+            if log.refuse {
+                return Err(io::Error::from_raw_os_error(22));
+            }
+            log.live = log.live.saturating_add(1);
             log.most_live = log.most_live.max(log.live);
             Ok(Box::new(Sink(self.name, Rc::clone(&self.log))))
         }
@@ -118,6 +128,51 @@ mod tests {
             InputEvent::new(EventType::KEY.0, code.code(), value),
             InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
         ]
+    }
+
+    #[test]
+    fn creation_failure_falls_back_once_per_source_pad() {
+        let log = Rc::new(RefCell::new(Log {
+            refuse: true,
+            ..Log::default()
+        }));
+        let (mut first, _) = pad("first", &log);
+        let (mut second, _) = pad("second", &log);
+        let paths = [Path::new("event1"), Path::new("event2")];
+        let mut failures = Vec::new();
+        for active in [Path::new("event1"), Path::new("event2"), Path::new("event1")] {
+            for mirrored in [true, true, false, true] {
+                let result = sync_mirrors(
+                    &mut [
+                        (Path::new("event1"), &mut first),
+                        (Path::new("event2"), &mut second),
+                    ],
+                    mirrored,
+                    Some(active),
+                    &mut None,
+                    &|_| false,
+                );
+                for path in &result.failed {
+                    if path == Path::new("event1") {
+                        first.set_passthrough(true).unwrap();
+                    } else {
+                        second.set_passthrough(true).unwrap();
+                    }
+                }
+                failures.extend(result.failed);
+            }
+        }
+        assert_eq!(failures, paths.map(Path::to_path_buf));
+        assert_eq!(log.borrow().created, 2);
+        for pad in [&mut first, &mut second] {
+            pad.set_passthrough(true).unwrap();
+            for _ in 0..100 {
+                pad.set_passthrough(true).unwrap();
+            }
+        }
+        assert_eq!(log.borrow().grabs, 0);
+        assert_eq!(log.borrow().ungrabs, 2);
+        assert!(!first.mirrored() && !second.mirrored());
     }
 
     #[test]
