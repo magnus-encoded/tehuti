@@ -1419,7 +1419,12 @@ impl Compositor {
 
     #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
-        self.record_debug("effect", &effect);
+        if !matches!(
+            effect,
+            DispatchEffect::PollSpeech(_) | DispatchEffect::PollSources | DispatchEffect::Supervise
+        ) {
+            self.record_debug("effect", &effect);
+        }
         match effect {
             DispatchEffect::ReadClock => Some(DispatchInput::ClockRead(self.read_clock())),
             DispatchEffect::InvalidReply => {

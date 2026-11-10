@@ -253,8 +253,8 @@ fn start_worker(
                 let timeline = File::create_new(path.join("timeline.jsonl"))?;
                 encode(
                     child,
+                    &path.join("video.mp4"),
                     &frame,
-                    size,
                     timeline,
                     (&receive_frames, &receive_events),
                     &worker_stop,
@@ -373,17 +373,12 @@ fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources:
             "rawvideo",
             "-fpsprobesize",
             "0",
+            "-use_wallclock_as_timestamps",
+            "1",
             "-pixel_format",
             "rgba",
         ])
-        .args([
-            "-video_size",
-            &format!("{width}x{height}"),
-            "-framerate",
-            "30",
-            "-i",
-            "pipe:0",
-        ]);
+        .args(["-video_size", &format!("{width}x{height}"), "-i", "pipe:0"]);
     for source in sources {
         let _input = command.args(["-probesize", "32", "-analyzeduration", "1"]).args([
             "-thread_queue_size",
@@ -396,10 +391,22 @@ fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources:
     }
     map_tracks(&mut command, sources);
     let _output = command
-        .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"])
+        .args([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "23",
+            "-g",
+            "30",
+        ])
         .args(["-vf", "fps=30", "-pix_fmt", "yuv420p", "-c:a", "aac"])
         .args(["-af", "aresample=async=1:first_pts=0"])
-        .args(["-shortest", "-movflags", "+faststart"])
+        .args(["-shortest", "-shortest_buf_duration", "1"])
+        .args(["-max_interleave_delta", "1000000"])
+        .args(["-frag_duration", "1000000", "-flush_packets", "1"])
+        .args(["-movflags", "+frag_keyframe+empty_moov"])
         .arg(path.join("video.mp4"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null());
@@ -472,8 +479,8 @@ fn fit(frame: &RgbaImage, size: (u32, u32)) -> RgbaImage {
 
 fn encode(
     mut child: Encoder,
+    output_path: &std::path::Path,
     frame: &RgbaImage,
-    size: (u32, u32),
     mut timeline: File,
     (frames, events): (&Receiver<(Duration, RgbaImage)>, &Receiver<Value>),
     stop: &AtomicU64,
@@ -487,7 +494,9 @@ fn encode(
             .ok_or_else(|| io::Error::other("ffmpeg stdin unavailable"))?;
         rustix::fs::fcntl_setfl(&pipe, rustix::fs::OFlags::NONBLOCK)?;
         let mut encoder = crate::recording_encoder::FrameEncoder::default();
+        let size = dimensions(frame.width(), frame.height());
         let mut pixels = fit(frame, size);
+        let mut drain_watch = crate::recording_encoder::DrainWatch::new(started.elapsed());
         loop {
             if child.0.try_wait()?.is_some() {
                 return Err(io::Error::other(
@@ -503,20 +512,23 @@ fn encode(
             {
                 pixels = fit(&next, size);
             }
-            if stopped_ms != u64::MAX
-                && started
-                    .elapsed()
-                    .saturating_sub(Duration::from_millis(stopped_ms))
-                    > Duration::from_secs(5)
-            {
-                return Err(io::Error::other("ffmpeg did not drain within five seconds"));
-            }
             let elapsed = if stopped_ms == u64::MAX {
                 started.elapsed()
             } else {
                 Duration::from_millis(stopped_ms)
             };
-            if encoder.write_due(&mut pipe, pixels.as_raw(), || elapsed)? {
+            let caught_up = encoder.write_due(&mut pipe, pixels.as_raw(), || elapsed)?;
+            let (written_frames, partial_bytes) = encoder.progress();
+            let progress = u64::try_from(written_frames)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(u64::try_from(pixels.len()).unwrap_or(u64::MAX))
+                .saturating_add(u64::try_from(partial_bytes).unwrap_or(u64::MAX));
+            if stopped_ms != u64::MAX && drain_watch.stalled(started.elapsed(), progress) {
+                return Err(io::Error::other("ffmpeg stopped accepting video frames"));
+            } else if stopped_ms == u64::MAX {
+                let _stalled = drain_watch.stalled(started.elapsed(), progress);
+            }
+            if caught_up {
                 if stopped_ms != u64::MAX {
                     break;
                 }
@@ -530,7 +542,7 @@ fn encode(
         }
         Ok(())
     })();
-    finish_encoder(&mut child, result)
+    finish_encoder(&mut child, output_path, result)
 }
 
 fn finish_timeline(timeline: &mut File, events: &Receiver<Value>, stopped_ms: u64) -> io::Result<()> {
@@ -551,29 +563,19 @@ fn flush_events(timeline: &mut File, events: &Receiver<Value>) -> io::Result<()>
     Ok(())
 }
 
-fn finish_encoder(child: &mut Encoder, result: io::Result<()>) -> io::Result<()> {
-    if result.is_err() {
-        let _killed = child.0.kill();
-    }
-    let deadline = Instant::now().checked_add(Duration::from_secs(5));
-    loop {
-        if let Some(status) = child.0.try_wait()? {
-            result?;
-            return if status.success() {
-                Ok(())
-            } else {
-                Err(io::Error::other(
-                    "ffmpeg failed; see recording folder's ffmpeg.log",
-                ))
-            };
-        }
-        if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
-            let _killed = child.0.kill();
-            let _waited = child.0.wait();
-            return Err(io::Error::other("ffmpeg did not finish within five seconds"));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+fn finish_encoder(
+    child: &mut Encoder,
+    output_path: &std::path::Path,
+    result: io::Result<()>,
+) -> io::Result<()> {
+    let began = Instant::now();
+    crate::recording_encoder::finish_process_with_clock(
+        &mut child.0,
+        output_path,
+        result,
+        || began.elapsed(),
+        || std::thread::sleep(Duration::from_millis(20)),
+    )
 }
 
 impl Session {
@@ -647,5 +649,24 @@ impl Drop for Encoder {
     fn drop(&mut self) {
         let _killed = self.0.kill();
         let _waited = self.0.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn video_frames_are_stamped_with_capture_time_not_a_fixed_rate() {
+        let command = super::encoder_command(std::path::Path::new("/x"), (64, 64), &[]);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let input = args.iter().position(|arg| arg == "pipe:0").unwrap();
+        let wallclock = args
+            .iter()
+            .position(|arg| arg == "-use_wallclock_as_timestamps")
+            .unwrap();
+        assert!(wallclock < input && args[wallclock + 1] == "1");
+        assert!(!args[..input].contains(&"-framerate".to_owned()));
     }
 }
