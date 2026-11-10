@@ -90,6 +90,8 @@ pub enum Input {
         kind: crate::keyboard::FieldKind,
     },
     ControllerDisconnected,
+    /// The focused window, or the one a focus gap left, is closing.
+    FocusedWindowClosed,
     /// Whether the compositor currently presents a pending secret confirmation.
     SecretPrompt(bool),
     Sticks(Sticks),
@@ -179,6 +181,8 @@ pub enum Effect {
     ConfirmPressed(bool),
     /// Invalidates secret confirmations for the old focus.
     ResetSecretFocus,
+    /// A focus gap outlasted [`FOCUS_GAP_GRACE`], so focus on no window applies; for the log.
+    FocusGapExpired,
     /// Carries out an action from routing.
     Apply(Action),
     /// Carries out a plugin decision or its fallback, unless quitting.
@@ -263,6 +267,9 @@ pub struct State {
     opening_button: Option<ButtonName>,
     passthrough_buttons: Vec<ButtonName>,
     passthrough_ptt: bool,
+    focus_gap: FocusGap,
+    /// Buttons held when a focus gap gave the pad back; their releases reach nothing.
+    gap_held: Vec<ButtonName>,
     takeback: Takeback,
     frames: Vec<Frame>,
     settings: Settings,
@@ -293,6 +300,8 @@ impl State {
             opening_button: None,
             passthrough_buttons: Vec::new(),
             passthrough_ptt: false,
+            focus_gap: FocusGap::Idle,
+            gap_held: Vec::new(),
             takeback: Takeback::Idle,
             frames: Vec::new(),
             settings: Settings::default(),
@@ -433,9 +442,132 @@ enum SecretPrompt {
     Visible,
 }
 
+/// How long focus may rest on no window before a passthrough window gives up the pad.
+/// Helper surfaces flicker focus away several times a second, each gap far shorter.
+pub const FOCUS_GAP_GRACE: Duration = Duration::from_millis(500);
+
+/// Focus on no window while a passthrough window keeps the pad.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum FocusGap {
+    #[default]
+    Idle,
+    /// Focus left for no window this long ago; the pad stays passed through.
+    Away(Duration),
+    /// The next focus on no window applies at once.
+    Leaving,
+}
+
+enum GapStep {
+    Route(Box<Input>, Vec<Effect>),
+    Done(Vec<Effect>),
+}
+
+const fn no_window() -> Event {
+    Event::Focus {
+        app_id: None,
+        title: String::new(),
+    }
+}
+
+fn pad_passed_through(state: &State) -> bool {
+    state.core.passthrough() && !state.overlay_owns_pad()
+}
+
+const fn input_elapsed(input: &Input) -> Duration {
+    if let Input::Tick { elapsed }
+    | Input::Event {
+        event: Event::Tick { elapsed },
+        ..
+    }
+    | Input::ClockRead(elapsed) = input
+    {
+        return *elapsed;
+    }
+    if let Input::Event { elapsed, .. } = input {
+        return *elapsed;
+    }
+    Duration::ZERO
+}
+
+fn leave_gap(state: &mut State) -> Vec<Effect> {
+    state.focus_gap = FocusGap::Leaving;
+    vec![Effect::Handle(no_window())]
+}
+
+/// Holds a passthrough window's pad through a short focus gap to no window.
+fn focus_gap(state: &mut State, input: Input) -> GapStep {
+    if input == Input::FocusedWindowClosed {
+        if matches!(state.focus_gap, FocusGap::Away(_)) {
+            return GapStep::Done(leave_gap(state));
+        }
+        if pad_passed_through(state) {
+            state.focus_gap = FocusGap::Leaving;
+        }
+        return GapStep::Done(Vec::new());
+    }
+    if let Input::Event {
+        event: Event::Focus { app_id, title },
+        ..
+    } = &input
+    {
+        let gap = core::mem::take(&mut state.focus_gap);
+        if matches!(gap, FocusGap::Away(_)) && state.core.has_focus(app_id.as_deref(), title) {
+            return GapStep::Done(Vec::new());
+        }
+        if app_id.is_none() {
+            if gap == FocusGap::Leaving {
+                state.gap_held.clone_from(&state.passthrough_buttons);
+                state.core.set_context_ancestors(None, Vec::new());
+            } else if matches!(gap, FocusGap::Away(_)) {
+                state.focus_gap = gap;
+                return GapStep::Done(Vec::new());
+            } else if pad_passed_through(state) {
+                state.focus_gap = FocusGap::Away(Duration::ZERO);
+                return GapStep::Done(Vec::new());
+            }
+        }
+        return GapStep::Route(Box::new(input), Vec::new());
+    }
+    let mut effects = Vec::new();
+    if let FocusGap::Away(away) = state.focus_gap {
+        let away = away.saturating_add(input_elapsed(&input));
+        state.focus_gap = FocusGap::Away(away);
+        if away >= FOCUS_GAP_GRACE {
+            effects = leave_gap(state);
+            effects.push(Effect::FocusGapExpired);
+        }
+    }
+    if let Input::Event {
+        event: Event::Button { name, state: button },
+        elapsed,
+    } = &input
+        && let Some(index) = state.gap_held.iter().position(|held| held == name)
+    {
+        let _released = state.gap_held.remove(index);
+        if *button == ButtonState::Released {
+            return GapStep::Route(Box::new(Input::Tick { elapsed: *elapsed }), effects);
+        }
+    }
+    GapStep::Route(Box::new(input), effects)
+}
+
 /// Advances routing by one input. Performs no I/O.
 #[must_use]
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
+    let (input, mut gap) = match focus_gap(&mut state, input) {
+        GapStep::Done(effects) => return (state, effects),
+        GapStep::Route(input, effects) => (*input, effects),
+    };
+    let (mut state, mut effects) = routed_step(state, input);
+    if matches!(state.focus_gap, FocusGap::Away(_)) && !pad_passed_through(&state) {
+        gap.append(&mut leave_gap(&mut state));
+    }
+    effects.append(&mut gap);
+    (state, effects)
+}
+
+/// Routes one input as if focus always applied at once.
+fn routed_step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut released = Vec::new();
     if matches!(
         &input,
@@ -495,6 +627,7 @@ fn volume_read(mut state: State, value: Option<u8>) -> State {
     state
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per input group")]
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::Menu(command) => {
@@ -541,7 +674,8 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         input @ (Input::SecretPrompt(_)
         | Input::Sticks(_)
         | Input::TextField { .. }
-        | Input::ControllerDisconnected) => state_input(state, &input),
+        | Input::ControllerDisconnected
+        | Input::FocusedWindowClosed) => state_input(state, &input),
         Input::PluginReply { key, result } => plugin_reply(state, key, result),
         reply @ (Input::ClockRead(_)
         | Input::PluginActive(_)
@@ -588,6 +722,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::Sticks(_)
         | Input::TextField { .. }
         | Input::ControllerDisconnected
+        | Input::FocusedWindowClosed
         | Input::PluginReply { .. }
         | Input::ClockRead(_)
         | Input::PluginActive(_)
@@ -626,7 +761,8 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
             }
         }
         Input::ControllerDisconnected => disconnect_controller(&mut state, &mut effects),
-        Input::Menu(_)
+        Input::FocusedWindowClosed
+        | Input::Menu(_)
         | Input::Launcher(_)
         | Input::CloseInvitation
         | Input::Adjusters(_)
@@ -701,6 +837,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::PluginExited { .. }
         | Input::TextField { .. }
         | Input::ControllerDisconnected
+        | Input::FocusedWindowClosed
         | Input::SecretPrompt(_)
         | Input::Sticks(_)
         | Input::PluginActive(_)
