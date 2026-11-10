@@ -79,6 +79,10 @@ confirm = { key = "enter" }
 ```
 
 Phrase matching ignores case, surrounding whitespace and trailing punctuation.
+When no phrase matches exactly, numbers 0 to 20 match their words and hyphens and
+word breaks are ignored ("bay-3" and "bay3" match "Bay three"); then a plain plural
+or singular of a last word of four or more letters matches. A phrase matched by
+fold or plural takes the utterance before spoken keys do, as exact phrases already do.
 The first initialized plugin subscribed to speech for the focused application replaces these mappings.
 Set top-level `unmatched_speech = "type"` before any TOML table to type unmatched
 speech into the focused window, followed by one space. Mapped phrases still win.

@@ -382,6 +382,53 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn plurals_apply_to_a_long_last_word_only() {
+        for (phrase, spoken) in [
+            ("open a", "open as"),
+            ("open as", "open a"),
+            ("turn it", "turn its"),
+            ("turn its", "turn it"),
+            ("go up", "go ups"),
+            ("go ups", "go up"),
+        ] {
+            assert_eq!(
+                speech_context(&[(phrase, "enter")]).speech_action(spoken),
+                None,
+                "{spoken:?} for {phrase:?}"
+            );
+        }
+        assert!(
+            speech_context(&[("Open rope", "enter")])
+                .speech_action("open ropes")
+                .is_some()
+        );
+        assert!(
+            speech_context(&[("Open ropes", "enter")])
+                .speech_action("open rope")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn homophones_of_numbers_do_not_match() {
+        for (phrase, spoken) in [
+            ("one", "on"),
+            ("two", "to"),
+            ("four", "for"),
+            ("eight", "ate"),
+            ("zero", "oh"),
+        ] {
+            for (mapped, heard) in [(phrase, spoken), (spoken, phrase)] {
+                assert_eq!(
+                    speech_context(&[(mapped, "enter")]).speech_action(heard),
+                    None,
+                    "{heard:?} for {mapped:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn leading_zeros_do_not_fold() {
         let context = speech_context(&[("Bay five", "enter"), ("Bay zero", "tab")]);
         assert_eq!(context.speech_action("bay 05"), None);

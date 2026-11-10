@@ -19,5 +19,5 @@
 | Unmatched speech | A transcript with no phrase mapping. A context may opt into typing it with a trailing space through `unmatched_speech = "type"`. |
 | Fuzzy speech match | An opt-in match by a folded Norwegian spelling key when no exact phrase matches, with a unique action above the similarity threshold. |
 | Folded phrase match | A match tried once no exact phrase matches anywhere: numbers 0 to 20 written as digits count as their words (not with a leading zero), digits glued to letters split off, and word breaks and hyphens drop, so "bay-3", "bay3" and "Bay three" agree. |
-| Plural phrase match | A match tried after every folded match: a trailing plural "s" on the transcript or phrase is added or removed, when the shorter form has at least four letters. |
+| Plural phrase match | A match tried after every folded match: a trailing plural "s" on the last word of the transcript is added or removed, when that word's shorter form has at least four letters and every word before it is equal after folding. |
 | Folds alike | Two distinct phrases in one context with the same folded form. The context still loads; both keep their exact forms, neither is reachable folded, and the load logs one warning naming both. |

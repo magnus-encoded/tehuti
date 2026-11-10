@@ -809,14 +809,17 @@ impl Context {
     #[must_use]
     pub fn plural_speech_action(&self, phrase: &str) -> Option<Action> {
         const SHORTEST: usize = 4;
-        let key = speech_variant_key(phrase);
-        let long_enough = |form: &str| form.chars().count() >= SHORTEST;
-        key.strip_suffix('s')
+        let long_enough =
+            |word: &str| word.chars().filter(|character| character.is_alphabetic()).count() >= SHORTEST;
+        let mut words = speech_variant_words(phrase);
+        let last = words.pop()?;
+        let before = words.concat();
+        last.strip_suffix('s')
             .filter(|singular| long_enough(singular))
-            .and_then(|singular| self.variant_lookup(singular))
+            .and_then(|singular| self.variant_lookup(&format!("{before}{singular}")))
             .or_else(|| {
-                long_enough(&key)
-                    .then(|| self.variant_lookup(&format!("{key}s")))
+                long_enough(&last)
+                    .then(|| self.variant_lookup(&format!("{before}{last}s")))
                     .flatten()
             })
             .map(|entry| entry.action.action())
@@ -1276,6 +1279,11 @@ pub fn normalize_phrase(phrase: &str) -> String {
 /// agree, as do "cock-pit" and "cockpit".
 #[must_use]
 fn speech_variant_key(phrase: &str) -> String {
+    speech_variant_words(phrase).concat()
+}
+
+/// The folded words of a phrase, before [`speech_variant_key`] joins them.
+fn speech_variant_words(phrase: &str) -> Vec<String> {
     const NUMBERS: [&str; 21] = [
         "zero",
         "one",
@@ -1319,6 +1327,7 @@ fn speech_variant_key(phrase: &str) -> String {
                 .filter(|_| run == "0" || !run.starts_with('0'))
                 .and_then(|number| NUMBERS.get(number).copied())
                 .unwrap_or(run)
+                .to_owned()
         })
         .collect()
 }
