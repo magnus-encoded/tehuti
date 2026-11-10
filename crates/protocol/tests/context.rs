@@ -272,12 +272,16 @@ restart = { restart = false }"
         "twenty",
     ];
 
+    fn speech_source(phrases: &[(&str, &str)]) -> String {
+        let lines: String = phrases
+            .iter()
+            .map(|(phrase, key)| format!("{phrase:?} = {{ key = '{key}' }}\n"))
+            .collect();
+        format!("app_id = 'test'\n[buttons]\n[speech]\n{lines}")
+    }
+
     fn speech_context(phrases: &[(&str, &str)]) -> tehuti_protocol::Context {
-        let mut source = String::from("app_id = 'test'\n[buttons]\n[speech]\n");
-        for (phrase, key) in phrases {
-            source.push_str(&format!("{phrase:?} = {{ key = '{key}' }}\n"));
-        }
-        parse_context(&source).unwrap()
+        parse_context(&speech_source(phrases)).unwrap()
     }
 
     proptest! {
@@ -325,11 +329,7 @@ restart = { restart = false }"
         ) {
             const KEYS: [&str; 6] = ["enter", "tab", "escape", "space", "up", "down"];
             let phrases: Vec<_> = words.iter().map(String::as_str).zip(KEYS).collect();
-            let mut source = String::from("app_id = 'test'\n[buttons]\n[speech]\n");
-            for (phrase, key) in &phrases {
-                source.push_str(&format!("{phrase:?} = {{ key = '{key}' }}\n"));
-            }
-            let Ok(context) = parse_context(&source) else {
+            let Ok(context) = parse_context(&speech_source(&phrases)) else {
                 return Ok(());
             };
             for (phrase, key) in &phrases {
