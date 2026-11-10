@@ -204,7 +204,10 @@ mod helper_windows {
         let _mapped = queue.roundtrip(&mut app).unwrap();
         let started = Instant::now();
         while app.focused != Some(game.clone()) {
-            assert!(started.elapsed() < Duration::from_secs(5), "game never receives keyboard focus");
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "game never receives keyboard focus"
+            );
             let _focused = queue.roundtrip(&mut app).unwrap();
         }
         ready.send(0).unwrap();
