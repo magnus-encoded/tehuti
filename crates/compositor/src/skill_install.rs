@@ -34,17 +34,31 @@ pub fn skill_directory(skills_root: &Path) -> PathBuf {
     skills_root.join(SKILL_NAME)
 }
 
-/// Writes `SKILL.md` and `agents/openai.yaml` under `skills_root`; returns the `SKILL.md` path.
+/// Paths written by [`install`], and whether they replaced an earlier install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    pub skill: PathBuf,
+    pub openai_yaml: PathBuf,
+    pub updated: bool,
+}
+
+/// Writes `SKILL.md` and `agents/openai.yaml` under `skills_root`, overwriting any earlier install.
 ///
 /// # Errors
 /// Returns an error when a directory or file cannot be written.
-pub fn install(skills_root: &Path, commit: &str) -> io::Result<PathBuf> {
+pub fn install(skills_root: &Path, commit: &str) -> io::Result<Installed> {
     let directory = skill_directory(skills_root);
     std::fs::create_dir_all(directory.join("agents"))?;
-    let skill_path = directory.join("SKILL.md");
-    std::fs::write(&skill_path, render_skill(commit))?;
-    std::fs::write(directory.join("agents/openai.yaml"), OPENAI_YAML)?;
-    Ok(skill_path)
+    let skill = directory.join("SKILL.md");
+    let openai_yaml = directory.join("agents/openai.yaml");
+    let updated = skill.exists() || openai_yaml.exists();
+    std::fs::write(&skill, render_skill(commit))?;
+    std::fs::write(&openai_yaml, OPENAI_YAML)?;
+    Ok(Installed {
+        skill,
+        openai_yaml,
+        updated,
+    })
 }
 
 /// `~/.agents/skills` for the given home directory.
@@ -60,7 +74,9 @@ mod tests {
     #[test]
     fn custom_path_receives_both_files() {
         let root = tempfile::tempdir().unwrap();
-        let path = install(root.path(), "abc123").unwrap();
+        let installed = install(root.path(), "abc123").unwrap();
+        assert!(!installed.updated);
+        let path = installed.skill;
         assert_eq!(path, root.path().join("write-a-tehuti-context/SKILL.md"));
         let skill = std::fs::read_to_string(&path).unwrap();
         assert!(skill.contains("name: write-a-tehuti-context\n"));
@@ -72,6 +88,18 @@ mod tests {
         assert!(yaml.contains("display_name:"));
         assert!(yaml.contains("short_description:"));
         assert!(yaml.contains("allow_implicit_invocation: true"));
+    }
+
+    #[test]
+    fn rerunning_overwrites_and_reports_an_update() {
+        let root = tempfile::tempdir().unwrap();
+        let first = install(root.path(), "old").unwrap();
+        assert!(!first.updated);
+        let installed = install(root.path(), "new").unwrap();
+        assert!(installed.updated);
+        let skill = std::fs::read_to_string(&installed.skill).unwrap();
+        assert!(skill.contains("/blob/new/") && !skill.contains("/blob/old/"));
+        assert!(installed.openai_yaml.ends_with("agents/openai.yaml"));
     }
 
     #[test]

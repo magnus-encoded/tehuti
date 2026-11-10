@@ -64,3 +64,24 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
 pub fn format_version(version: &str, hash: &str, date: &str) -> String {
     format!("tehuti {version} ({hash} {date})")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_skill_without_a_path_uses_the_default() {
+        assert_eq!(
+            parse([OsString::from("--install-skill")]),
+            Ok(Invocation::InstallSkill(None))
+        );
+    }
+
+    #[test]
+    fn install_skill_takes_an_optional_path() {
+        assert_eq!(
+            parse(["--install-skill", "/tmp/skills"].map(OsString::from)),
+            Ok(Invocation::InstallSkill(Some(OsString::from("/tmp/skills"))))
+        );
+    }
+}

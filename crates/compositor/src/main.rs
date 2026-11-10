@@ -188,8 +188,14 @@ fn install_skill(path: Option<std::ffi::OsString>) -> Result<ExitCode, Box<dyn E
             std::env::var_os("HOME").ok_or("HOME is not set")?,
         )),
     };
-    let written = tehuti::skill_install::install(&root, env!("TEHUTI_GIT_HASH"))?;
-    writeln!(std::io::stdout().lock(), "installed {}", written.display())?;
+    let done = tehuti::skill_install::install(&root, env!("TEHUTI_GIT_HASH"))?;
+    let verb = if done.updated { "updated" } else { "installed" };
+    writeln!(
+        std::io::stdout().lock(),
+        "{verb} {}\n{verb} {}",
+        done.skill.display(),
+        done.openai_yaml.display()
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
