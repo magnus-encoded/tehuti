@@ -180,6 +180,25 @@ fn check_config(mut arguments: impl Iterator<Item = std::ffi::OsString>) -> Resu
     })
 }
 
+fn install_skill(path: Option<std::ffi::OsString>) -> Result<ExitCode, Box<dyn Error>> {
+    use std::io::Write;
+    let root = match path {
+        Some(path) => PathBuf::from(path),
+        None => tehuti::skill_install::default_root(&PathBuf::from(
+            std::env::var_os("HOME").ok_or("HOME is not set")?,
+        )),
+    };
+    let done = tehuti::skill_install::install(&root, env!("TEHUTI_GIT_HASH"))?;
+    let verb = if done.updated { "updated" } else { "installed" };
+    writeln!(
+        std::io::stdout().lock(),
+        "{verb} {}\n{verb} {}",
+        done.skill.display(),
+        done.openai_yaml.display()
+    )?;
+    Ok(ExitCode::SUCCESS)
+}
+
 fn insert_backend(
     event_loop: &EventLoop<LoopData>,
     display: &smithay::reexports::wayland_server::DisplayHandle,
@@ -227,6 +246,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         Ok(tehuti::cli::Invocation::Help) => return print_usage(),
         Ok(tehuti::cli::Invocation::Version) => return print_version(),
         Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
+        Ok(tehuti::cli::Invocation::InstallSkill(path)) => return install_skill(path),
         Ok(tehuti::cli::Invocation::Session {
             context_directory,
             application,
