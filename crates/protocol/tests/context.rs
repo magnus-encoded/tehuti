@@ -364,7 +364,8 @@ restart = { restart = false }"
         assert!(context.speech_action("ab-part").is_none());
         assert!(context.speech_action("bay12").is_some());
         assert!(context.speech_action("Bay twelve").is_some());
-        assert_eq!(speech_context(&[("Go", "enter")]).warnings(), &[] as &[String]);
+        let empty: &[String] = &[];
+        assert_eq!(speech_context(&[("Go", "enter")]).warnings(), empty);
     }
 
     #[test]
