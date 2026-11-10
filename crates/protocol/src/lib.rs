@@ -486,6 +486,11 @@ pub struct Context {
     label: Option<String>,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, SpeechEntry>,
+    /// Each non-template phrase's [`speech_variant_key`] to its `speech` key, or
+    /// `None` once two distinct phrases share the folded form.
+    speech_variants: std::collections::HashMap<String, Option<String>>,
+    /// Problems that did not stop the load, for the edge to log.
+    warnings: Vec<String>,
     unmatched_speech: Option<UnmatchedSpeech>,
     launch_phrases: Vec<(String, String)>,
     favourites: Vec<String>,
@@ -752,6 +757,8 @@ impl Context {
     #[must_use]
     pub fn speech_action(&self, phrase: &str) -> Option<Action> {
         self.mapped_speech_action(phrase)
+            .or_else(|| self.folded_speech_action(phrase))
+            .or_else(|| self.plural_speech_action(phrase))
             .or_else(|| self.unmatched_speech_action(phrase))
     }
 
@@ -772,6 +779,50 @@ impl Context {
                 let first = matches.next()?;
                 matches.all(|action| action == first).then_some(first)
             })
+    }
+
+    /// Problems found while loading that left the context usable, such as two
+    /// phrases whose folded form was skipped because they share it.
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// The action of a phrase the transcript matches once digits and hyphens
+    /// fold; callers try it only once no exact phrase matched anywhere.
+    #[must_use]
+    pub fn folded_speech_action(&self, phrase: &str) -> Option<Action> {
+        self.variant_lookup(&speech_variant_key(phrase))
+            .map(|entry| entry.action.action())
+    }
+
+    fn variant_lookup(&self, variant: &str) -> Option<&SpeechEntry> {
+        self.speech_variants
+            .get(variant)?
+            .as_ref()
+            .and_then(|normalized| self.speech.get(normalized))
+    }
+
+    /// The action of a phrase whose last word is the plain plural or singular
+    /// of the transcript's, when the shorter form has at least four letters;
+    /// callers try it only once no exact or folded phrase matched anywhere.
+    #[must_use]
+    pub fn plural_speech_action(&self, phrase: &str) -> Option<Action> {
+        const SHORTEST: usize = 4;
+        let long_enough =
+            |word: &str| word.chars().filter(|character| character.is_alphabetic()).count() >= SHORTEST;
+        let mut words = speech_variant_words(phrase);
+        let last = words.pop()?;
+        let before = words.concat();
+        last.strip_suffix('s')
+            .filter(|singular| long_enough(singular))
+            .and_then(|singular| self.variant_lookup(&format!("{before}{singular}")))
+            .or_else(|| {
+                long_enough(&last)
+                    .then(|| self.variant_lookup(&format!("{before}{last}s")))
+                    .flatten()
+            })
+            .map(|entry| entry.action.action())
     }
 
     /// Supplies discovered project names and absolute paths for `<project>` templates.
@@ -1016,36 +1067,24 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
+    let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
+    let mut warnings = Vec::new();
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
-        let entry: SpeechEntryFile = value
-            .try_into()
-            .map_err(|error: toml::de::Error| error.to_string())?;
-        if matches!(entry.action, MappingAction::Key { hold: true, .. }) {
-            return Err(format!(
-                "speech phrase {mapped:?} cannot hold a key; hold is for buttons"
-            ));
-        }
-        if let MappingAction::Launch { launch } = &entry.action
-            && !launch_phrases
-                .iter()
-                .any(|(desktop_entry, _)| desktop_entry == launch.as_str())
-        {
-            launch_phrases.push((launch.as_str().to_owned(), mapped.clone()));
-        }
-        speech_templates::validate(&mapped, &entry.action)?;
+        let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
         let normalized = normalized_speech_phrase(&mapped)?;
-        let entry = SpeechEntry {
-            folded: fold_phrase(&mapped),
-            phrase: mapped.clone(),
-            action: entry.action,
-            icon: entry.icon,
-        };
+        let template = entry.is_template();
         if speech.insert(normalized.clone(), entry).is_some() {
             return Err(format!(
                 "speech phrase {mapped:?} duplicates another phrase that also normalizes to {normalized:?}"
             ));
         }
+        warnings.extend(insert_speech_variant(
+            &mut speech_variants,
+            &mapped,
+            normalized,
+            template,
+        ));
     }
     Ok(Context {
         app_id: context.app_id,
@@ -1053,6 +1092,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         label: parse_label(context.label)?,
         buttons: context.buttons,
         speech,
+        speech_variants,
+        warnings,
         launch_phrases,
         favourites: context.favourites,
         unmatched_speech: context.unmatched_speech,
@@ -1076,6 +1117,62 @@ fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
         return Err("keyboard button cannot reserve Guide or Record".into());
     }
     Ok(())
+}
+
+fn speech_entry(
+    mapped: &str,
+    value: toml::Value,
+    launch_phrases: &mut Vec<(String, String)>,
+) -> Result<SpeechEntry, String> {
+    let entry: SpeechEntryFile = value
+        .try_into()
+        .map_err(|error: toml::de::Error| error.to_string())?;
+    if matches!(entry.action, MappingAction::Key { hold: true, .. }) {
+        return Err(format!(
+            "speech phrase {mapped:?} cannot hold a key; hold is for buttons"
+        ));
+    }
+    record_launch_phrase(launch_phrases, &entry.action, mapped);
+    speech_templates::validate(mapped, &entry.action)?;
+    Ok(SpeechEntry {
+        folded: fold_phrase(mapped),
+        phrase: mapped.to_owned(),
+        action: entry.action,
+        icon: entry.icon,
+    })
+}
+
+fn record_launch_phrase(phrases: &mut Vec<(String, String)>, action: &MappingAction, mapped: &str) {
+    if let MappingAction::Launch { launch } = action
+        && !phrases
+            .iter()
+            .any(|(desktop_entry, _)| desktop_entry == launch.as_str())
+    {
+        phrases.push((launch.as_str().to_owned(), mapped.to_owned()));
+    }
+}
+
+/// Records a phrase's folded form; a second distinct phrase with the same form
+/// skips it for both and returns a warning naming them.
+fn insert_speech_variant(
+    variants: &mut std::collections::HashMap<String, Option<String>>,
+    mapped: &str,
+    normalized: String,
+    template: bool,
+) -> Option<String> {
+    if template {
+        return None;
+    }
+    let variant = speech_variant_key(mapped);
+    let Some(slot) = variants.get_mut(&variant) else {
+        variants.extend([(variant, Some(normalized))]);
+        return None;
+    };
+    let other = slot.take();
+    Some(format!(
+        "speech phrases {mapped:?} and {} fold alike to {variant:?}; only their exact forms match",
+        other.map_or_else(|| "others".to_owned(), |other| format!("{other:?}")),
+    ))
 }
 
 fn normalized_speech_phrase(mapped: &str) -> Result<String, String> {
@@ -1173,6 +1270,66 @@ pub fn normalize_phrase(phrase: &str) -> String {
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The looser form a phrase and a transcript are compared in after the exact lookup fails.
+///
+/// It is [`normalize_phrase`], then each standalone number 0 to 20 as its
+/// word (not with a leading zero; a digit run glued to letters counts as its own word), then the word breaks removed, so "camera-1", "camera 1" and "Camera one"
+/// agree, as do "cock-pit" and "cockpit".
+#[must_use]
+fn speech_variant_key(phrase: &str) -> String {
+    speech_variant_words(phrase).concat()
+}
+
+/// The folded words of a phrase, before [`speech_variant_key`] joins them.
+fn speech_variant_words(phrase: &str) -> Vec<String> {
+    const NUMBERS: [&str; 21] = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+    ];
+    let mut spaced = String::new();
+    let mut previous: Option<char> = None;
+    for character in normalize_phrase(phrase).chars() {
+        if previous.is_some_and(|before| {
+            before != ' ' && character != ' ' && before.is_ascii_digit() != character.is_ascii_digit()
+        }) {
+            spaced.push(' ');
+        }
+        spaced.push(character);
+        previous = Some(character);
+    }
+    spaced
+        .split(' ')
+        .map(|run| {
+            run.parse::<usize>()
+                .ok()
+                .filter(|_| run.bytes().all(|byte| byte.is_ascii_digit()))
+                .filter(|_| run == "0" || !run.starts_with('0'))
+                .and_then(|number| NUMBERS.get(number).copied())
+                .unwrap_or(run)
+                .to_owned()
+        })
+        .collect()
 }
 
 mod speech_templates;

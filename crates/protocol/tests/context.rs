@@ -248,6 +248,207 @@ restart = { restart = false }"
         }
     }
 
+    /// Literal digit and word pairs, including both ends of the folded range.
+    fn number() -> impl Strategy<Value = (u8, &'static str)> {
+        prop::sample::select(vec![
+            (0, "zero"),
+            (1, "one"),
+            (3, "three"),
+            (7, "seven"),
+            (12, "twelve"),
+            (20, "twenty"),
+        ])
+    }
+
+    fn speech_source(phrases: &[(&str, &str)]) -> String {
+        use core::fmt::Write as _;
+        let mut source = String::from("app_id = 'test'\n[buttons]\n[speech]\n");
+        for (phrase, key) in phrases {
+            writeln!(source, "{phrase:?} = {{ key = '{key}' }}").unwrap();
+        }
+        source
+    }
+
+    fn speech_context(phrases: &[(&str, &str)]) -> tehuti_protocol::Context {
+        parse_context(&speech_source(phrases)).unwrap()
+    }
+
+    proptest! {
+        /// Law 1: a digit and its number word are the same token, both ways.
+        #[test]
+        fn digits_and_number_words_are_one_token(
+            (number, spelled_number) in number(),
+            word in "[a-z]{3,8}",
+            hyphen in proptest::bool::ANY,
+        ) {
+            let separator = if hyphen { "-" } else { " " };
+            let worded = speech_context(&[(&format!("{word} {spelled_number}."), "enter")]);
+            prop_assert!(worded.speech_action(&format!("{word}{separator}{number}")).is_some(), "no match");
+            prop_assert!(worded.speech_action(&format!("{word}{number}")).is_some(), "glued digit");
+            let digits = speech_context(&[(&format!("{word} {number}"), "enter")]);
+            prop_assert!(digits.speech_action(&format!("{}{separator}{}", word.to_uppercase(), spelled_number)).is_some(), "no match");
+        }
+
+        /// Law 2: a hyphen is a word break or nothing.
+        #[test]
+        fn a_hyphen_is_a_break_or_nothing(first in "[a-z]{2,6}", second in "[a-z]{2,6}") {
+            let joined = speech_context(&[(&format!("{first}{second}"), "enter")]);
+            prop_assert!(joined.speech_action(&format!("{first}-{second}")).is_some(), "no match");
+            let spaced = speech_context(&[(&format!("{first} {second}"), "enter")]);
+            for spoken in [format!("{first}-{second}"), format!("{first}{second}"), format!("{first} {second}.")] {
+                prop_assert!(spaced.speech_action(&spoken).is_some(), "{spoken:?}");
+            }
+        }
+
+        /// Law 3: a plain plural or singular of the last word matches.
+        #[test]
+        fn plural_or_singular_of_the_last_word_matches(word in "[a-z]{3,8}") {
+            let singular = word.trim_end_matches('s').to_owned();
+            prop_assume!(singular.len() >= 4);
+            let one = speech_context(&[(&format!("{singular}."), "enter")]);
+            prop_assert!(one.speech_action(&format!("{singular}s")).is_some(), "no match");
+            let many = speech_context(&[(&format!("Go {singular}s"), "enter")]);
+            prop_assert!(many.speech_action(&format!("go {singular}")).is_some(), "no match");
+        }
+
+        /// Law 4: exact matches always win over every variant, and the
+        /// variants never change what an already-matching transcript maps to.
+        #[test]
+        fn exact_matches_always_win(
+            words in prop::collection::btree_set("[a-z]{2,5}( [a-z0-9]{1,5})?", 1..6),
+        ) {
+            const KEYS: [&str; 6] = ["enter", "tab", "escape", "space", "up", "down"];
+            let phrases: Vec<_> = words.iter().map(String::as_str).zip(KEYS).collect();
+            let Ok(context) = parse_context(&speech_source(&phrases)) else {
+                return Ok(());
+            };
+            for (phrase, key) in &phrases {
+                let expected = speech_context(&[(phrase, key)]).speech_action(phrase);
+                prop_assert_eq!(context.speech_action(phrase), expected, "{:?}", phrase);
+            }
+        }
+
+        /// Law 5: distinct phrases that fold alike still load, keep their exact
+        /// forms, lose the shared folded form and are named in one warning.
+        #[test]
+        fn phrases_that_fold_alike_load_with_a_warning((number, spelled_number) in number(), word in "[a-z]{3,8}") {
+            let spelled = format!("{word}-{spelled_number}");
+            let digits = format!("{word} {number}");
+            let context = speech_context(&[(&digits, "enter"), (&spelled, "tab")]);
+            let warnings = context.warnings();
+            prop_assert_eq!(warnings.len(), 1);
+            prop_assert!(warnings[0].contains(&format!("{digits:?}")) && warnings[0].contains(&format!("{spelled:?}")), "{}", warnings[0]);
+            prop_assert_ne!(context.speech_action(&digits), context.speech_action(&spelled));
+            prop_assert!(context.speech_action(&digits).is_some(), "exact digits");
+            prop_assert!(context.speech_action(&spelled).is_some(), "exact spelled");
+            prop_assert!(context.speech_action(&format!("{word}{number}")).is_none(), "folded form skipped");
+        }
+    }
+
+    #[test]
+    fn a_context_that_loaded_before_folding_still_loads() {
+        let context = speech_context(&[("Ab part", "enter"), ("Abpart", "tab"), ("Bay 12", "space")]);
+        assert_eq!(context.warnings().len(), 1, "{:?}", context.warnings());
+        assert!(context.speech_action("a b part").is_none());
+        assert!(context.speech_action("bay12").is_some());
+        assert!(context.speech_action("Bay twelve").is_some());
+        let empty: &[String] = &[];
+        assert_eq!(speech_context(&[("Go", "enter")]).warnings(), empty);
+    }
+
+    #[test]
+    fn short_plurals_do_not_fold() {
+        for (phrase, spoken) in [
+            ("it", "its"),
+            ("its", "it"),
+            ("i", "is"),
+            ("is", "i"),
+            ("bu", "bus"),
+            ("bus", "bu"),
+            ("pas", "pass"),
+            ("pass", "pas"),
+        ] {
+            assert_eq!(
+                speech_context(&[(phrase, "enter")]).speech_action(spoken),
+                None,
+                "{spoken:?} for {phrase:?}"
+            );
+        }
+        assert!(
+            speech_context(&[("Rope", "enter")])
+                .speech_action("ropes")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn plurals_apply_to_a_long_last_word_only() {
+        for (phrase, spoken) in [
+            ("open a", "open as"),
+            ("open as", "open a"),
+            ("turn it", "turn its"),
+            ("turn its", "turn it"),
+            ("go up", "go ups"),
+            ("go ups", "go up"),
+        ] {
+            assert_eq!(
+                speech_context(&[(phrase, "enter")]).speech_action(spoken),
+                None,
+                "{spoken:?} for {phrase:?}"
+            );
+        }
+        assert!(
+            speech_context(&[("Open rope", "enter")])
+                .speech_action("open ropes")
+                .is_some()
+        );
+        assert!(
+            speech_context(&[("Open ropes", "enter")])
+                .speech_action("open rope")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn homophones_of_numbers_do_not_match() {
+        for (phrase, spoken) in [
+            ("one", "on"),
+            ("two", "to"),
+            ("four", "for"),
+            ("eight", "ate"),
+            ("zero", "oh"),
+        ] {
+            for (mapped, heard) in [(phrase, spoken), (spoken, phrase)] {
+                assert_eq!(
+                    speech_context(&[(mapped, "enter")]).speech_action(heard),
+                    None,
+                    "{heard:?} for {mapped:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn leading_zeros_do_not_fold() {
+        let context = speech_context(&[("Bay five", "enter"), ("Bay zero", "tab")]);
+        assert_eq!(context.speech_action("bay 05"), None);
+        assert!(context.speech_action("bay 0").is_some());
+        assert!(context.speech_action("bay0").is_some());
+    }
+
+    #[test]
+    fn plural_yields_to_an_exact_phrase() {
+        let context = speech_context(&[("Wing", "enter"), ("Wings", "tab"), ("Plank", "space")]);
+        assert_ne!(context.speech_action("wings"), context.speech_action("wing"));
+        assert_eq!(context.speech_action("planks"), context.speech_action("plank"));
+        let joined = speech_context(&[("Full screen", "enter")]);
+        for spoken in ["full-screen", "fullscreen", "Full screen."] {
+            assert!(joined.speech_action(spoken).is_some(), "{spoken:?}");
+        }
+        let hyphen = speech_context(&[("Lookpoint", "enter")]);
+        assert!(hyphen.speech_action("look-points").is_some());
+    }
+
     #[test]
     fn transcript_with_inner_punctuation_matches() {
         let context =

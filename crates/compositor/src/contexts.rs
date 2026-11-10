@@ -167,7 +167,13 @@ fn load_one(path: &Path) -> Result<Option<Context>, LoadError> {
         message,
     };
     match read_context(path) {
-        Ok(source) => parse_context(&source).map(Some).map_err(failed),
+        Ok(source) => {
+            let context = parse_context(&source).map_err(failed)?;
+            for warning in context.warnings() {
+                tracing::warn!(path = %path.display(), %warning, "context speech phrase");
+            }
+            Ok(Some(context))
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(failed(error.to_string())),
     }
