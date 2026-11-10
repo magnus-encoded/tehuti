@@ -221,6 +221,7 @@ mod tests {
                     "input flows after reconnect {}", round
                 );
                 if round == drops {
+                    prop_assert_eq!(log.borrow().live, 1, "one virtual pad is live");
                     break;
                 }
                 queue(&handles, KeyCode::BTN_SOUTH, 1);
@@ -240,7 +241,7 @@ mod tests {
             }
             let log = log.borrow();
             prop_assert_eq!(log.created, 1, "the virtual pad is made once");
-            prop_assert_eq!((log.live, log.most_live), (1, 1));
+            prop_assert_eq!(log.most_live, 1, "never two at once");
         }
     }
 
