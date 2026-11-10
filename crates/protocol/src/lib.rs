@@ -1085,9 +1085,12 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
                 "speech phrase {mapped:?} duplicates another phrase that also normalizes to {normalized:?}"
             ));
         }
-        if !template {
-            warnings.extend(insert_speech_variant(&mut speech_variants, &mapped, normalized));
-        }
+        warnings.extend(insert_speech_variant(
+            &mut speech_variants,
+            &mapped,
+            normalized,
+            template,
+        ));
     }
     Ok(Context {
         app_id: context.app_id,
@@ -1138,22 +1141,21 @@ fn insert_speech_variant(
     variants: &mut std::collections::HashMap<String, Option<String>>,
     mapped: &str,
     normalized: String,
+    template: bool,
 ) -> Option<String> {
-    let variant = speech_variant_key(mapped);
-    match variants.entry(variant) {
-        std::collections::hash_map::Entry::Vacant(slot) => {
-            slot.insert(Some(normalized));
-            None
-        }
-        std::collections::hash_map::Entry::Occupied(mut slot) => {
-            let other = slot.insert(None);
-            Some(format!(
-                "speech phrases {mapped:?} and {} fold alike to {:?}; only their exact forms match",
-                other.map_or_else(|| "others".to_owned(), |other| format!("{other:?}")),
-                slot.key(),
-            ))
-        }
+    if template {
+        return None;
     }
+    let variant = speech_variant_key(mapped);
+    let Some(slot) = variants.get_mut(&variant) else {
+        variants.insert(variant, Some(normalized));
+        return None;
+    };
+    let other = slot.take();
+    Some(format!(
+        "speech phrases {mapped:?} and {} fold alike to {variant:?}; only their exact forms match",
+        other.map_or_else(|| "others".to_owned(), |other| format!("{other:?}")),
+    ))
 }
 
 fn normalized_speech_phrase(mapped: &str) -> Result<String, String> {
@@ -1283,25 +1285,19 @@ pub fn speech_variant_key(phrase: &str) -> String {
         "nineteen",
         "twenty",
     ];
-    let normalized = normalize_phrase(phrase);
-    let mut runs: Vec<&str> = Vec::new();
-    let mut start = 0;
-    let mut previous_digit = None;
-    for (index, character) in normalized.char_indices() {
-        let digit = character.is_ascii_digit();
-        if character == ' ' || previous_digit.is_some_and(|was| was != digit) {
-            runs.push(&normalized[start..index]);
-            start = index;
+    let mut spaced = String::new();
+    let mut previous: Option<char> = None;
+    for character in normalize_phrase(phrase).chars() {
+        if previous.is_some_and(|before| {
+            before != ' ' && character != ' ' && before.is_ascii_digit() != character.is_ascii_digit()
+        }) {
+            spaced.push(' ');
         }
-        if character == ' ' {
-            start = index + 1;
-            previous_digit = None;
-        } else {
-            previous_digit = Some(digit);
-        }
+        spaced.push(character);
+        previous = Some(character);
     }
-    runs.push(&normalized[start..]);
-    runs.into_iter()
+    spaced
+        .split(' ')
         .map(|run| {
             run.parse::<usize>()
                 .ok()
