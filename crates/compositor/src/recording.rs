@@ -20,6 +20,20 @@ use std::{
 
 const INTERVAL: Duration = Duration::from_nanos(33_333_334);
 
+/// Video writing trails the clock by one frame. `write_due` writes slot `s` once
+/// `now - lag >= (s + 1) / 30`, and a frame for slot `s` is captured by `s / 30 + 17 ms`, so render
+/// and queue get about 50 ms. A frame later than that is shown one slot late, not lost.
+const CAPTURE_LAG: Duration = INTERVAL;
+
+/// Recording time up to which video slots may be written.
+const fn video_due(elapsed: Duration, stopped_ms: u64) -> Duration {
+    if stopped_ms == u64::MAX {
+        elapsed.saturating_sub(CAPTURE_LAG)
+    } else {
+        Duration::from_millis(stopped_ms)
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct Session {
     frames: SyncSender<(Duration, RgbaImage)>,
@@ -27,6 +41,8 @@ pub(super) struct Session {
     result: Receiver<Result<PathBuf, String>>,
     stop: Arc<AtomicU64>,
     started: Instant,
+    /// `started` on the wall clock `PulseAudio` stamps audio with, since the Unix epoch.
+    wall_start: Duration,
     next_frame: Instant,
     scene: Value,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -39,6 +55,7 @@ struct Injected {
     began: Duration,
     sink: Box<dyn crate::recording_encoder::Sink>,
     encoder: crate::recording_encoder::FrameEncoder,
+    schedule: crate::recording_encoder::FrameSchedule<RgbaImage>,
     pixels: RgbaImage,
     timeline: File,
     events: Receiver<Value>,
@@ -169,10 +186,11 @@ impl Compositor {
         if let Some(session) = &mut self.recording {
             session.next_frame = now.checked_add(INTERVAL).unwrap_or(now);
         }
+        let captured = self.recording.as_ref().map_or(Duration::ZERO, Session::elapsed);
         match crate::driver_shot::frame(self, &chrono::Local::now().format("%H:%M").to_string()) {
             Ok(frame) => {
                 if let Some(session) = &self.recording {
-                    match session.frames.try_send((session.elapsed(), frame)) {
+                    match session.frames.try_send((captured, frame)) {
                         Err(mpsc::TrySendError::Full(_)) => {
                             tracing::warn!("recording capture queue full; repeating the previous frame");
                         }
@@ -200,12 +218,16 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
     let (send_result, status_receiver) = mpsc::sync_channel(1);
     let stop = Arc::new(AtomicU64::new(u64::MAX));
     let started = compositor.clock_now();
+    let wall_start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     let mut session = Session {
         frames,
         events,
         result: status_receiver,
         stop,
         started,
+        wall_start,
         next_frame: started.checked_add(INTERVAL).unwrap_or(started),
         scene: Value::Null,
         worker: None,
@@ -215,7 +237,7 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         session.injected = Some(injected(
             runtime,
             &compositor.settings().input.microphone,
-            path,
+            (path, wall_start),
             &frame,
             receive_frames,
             receive_events,
@@ -244,12 +266,13 @@ fn start_worker(
 ) -> io::Result<std::thread::JoinHandle<()>> {
     let worker_stop = Arc::clone(&session.stop);
     let started = session.started;
+    let wall_start = session.wall_start;
     let size = dimensions(frame.width(), frame.height());
     std::thread::Builder::new()
         .name("tehuti-recording".into())
         .spawn(move || {
             let result = (|| {
-                let child = spawn_encoder(&path, size, &microphone)?;
+                let child = spawn_encoder(&path, size, wall_start, &microphone)?;
                 let timeline = File::create_new(path.join("timeline.jsonl"))?;
                 encode(
                     child,
@@ -283,7 +306,7 @@ fn check_encoder(compositor: &Compositor) -> io::Result<()> {
 fn injected(
     runtime: &std::rc::Rc<dyn crate::recording_encoder::Runtime>,
     microphone: &tehuti_core::dispatch::MicrophoneChoice,
-    path: PathBuf,
+    (path, wall_start): (PathBuf, Duration),
     frame: &RgbaImage,
     frames: Receiver<(Duration, RgbaImage)>,
     events: Receiver<Value>,
@@ -292,13 +315,14 @@ fn injected(
     let size = dimensions(frame.width(), frame.height());
     std::fs::create_dir_all(&path)?;
     let sources = runtime.audio_sources(microphone)?;
-    let sink = runtime.spawn(&encoder_command(&path, size, &sources))?;
+    let sink = runtime.spawn(&encoder_command(&path, size, wall_start, &sources))?;
     let timeline = File::create_new(path.join("timeline.jsonl"))?;
     Ok(Injected {
         runtime: std::rc::Rc::clone(runtime),
         began: runtime.now(),
         sink,
         encoder: crate::recording_encoder::FrameEncoder::default(),
+        schedule: crate::recording_encoder::FrameSchedule::default(),
         pixels: fit(frame, size),
         timeline,
         events,
@@ -344,12 +368,13 @@ fn map_tracks(command: &mut Command, sources: &[String]) {
 fn spawn_encoder(
     path: &std::path::Path,
     (width, height): (u32, u32),
+    wall_start: Duration,
     microphone: &tehuti_core::dispatch::MicrophoneChoice,
 ) -> io::Result<Encoder> {
     let sources = audio_sources(microphone)?;
     std::fs::create_dir_all(path)?;
     let log = File::create_new(path.join("ffmpeg.log"))?;
-    let mut command = encoder_command(path, (width, height), &sources);
+    let mut command = encoder_command(path, (width, height), wall_start, &sources);
     let _stderr = command.stderr(log);
     let child = Encoder(command.spawn().map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
@@ -361,10 +386,21 @@ fn spawn_encoder(
     Ok(child)
 }
 
-fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources: &[String]) -> Command {
+/// Builds the encoder command.
+///
+/// Video arrives as a constant 30 fps grid starting at recording start (see
+/// `FrameSchedule`). `PulseAudio` stamps audio with the wall clock (`-wallclock 1`); `-copyts`
+/// keeps those stamps and `asetpts` subtracts `wall_start`, the wall-clock recording start, so
+/// both streams share the timeline's zero.
+fn encoder_command(
+    path: &std::path::Path,
+    (width, height): (u32, u32),
+    wall_start: Duration,
+    sources: &[String],
+) -> Command {
     let mut command = Command::new("ffmpeg");
     let _args = command
-        .args(["-hide_banner", "-nostdin", "-n"])
+        .args(["-hide_banner", "-nostdin", "-n", "-copyts"])
         .args(["-probesize", "32", "-analyzeduration", "1"])
         .args([
             "-thread_queue_size",
@@ -373,8 +409,8 @@ fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources:
             "rawvideo",
             "-fpsprobesize",
             "0",
-            "-use_wallclock_as_timestamps",
-            "1",
+            "-framerate",
+            "30",
             "-pixel_format",
             "rgba",
         ])
@@ -385,6 +421,8 @@ fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources:
             "64",
             "-f",
             "pulse",
+            "-wallclock",
+            "1",
             "-i",
             source,
         ]);
@@ -401,8 +439,15 @@ fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources:
             "-g",
             "30",
         ])
-        .args(["-vf", "fps=30", "-pix_fmt", "yuv420p", "-c:a", "aac"])
-        .args(["-af", "aresample=async=1:first_pts=0"])
+        .args(["-pix_fmt", "yuv420p", "-c:a", "aac"])
+        .args([
+            "-af",
+            &format!(
+                "asetpts=PTS-{}.{:06}/TB,aresample=async=1:first_pts=0",
+                wall_start.as_secs(),
+                wall_start.subsec_micros()
+            ),
+        ])
         .args(["-shortest", "-shortest_buf_duration", "1"])
         .args(["-max_interleave_delta", "1000000"])
         .args(["-frag_duration", "1000000", "-flush_packets", "1"])
@@ -494,6 +539,7 @@ fn encode(
             .ok_or_else(|| io::Error::other("ffmpeg stdin unavailable"))?;
         rustix::fs::fcntl_setfl(&pipe, rustix::fs::OFlags::NONBLOCK)?;
         let mut encoder = crate::recording_encoder::FrameEncoder::default();
+        let mut schedule = crate::recording_encoder::FrameSchedule::default();
         let size = dimensions(frame.width(), frame.height());
         let mut pixels = fit(frame, size);
         let mut drain_watch = crate::recording_encoder::DrainWatch::new(started.elapsed());
@@ -507,16 +553,15 @@ fn encode(
                 tracing::warn!(%error, "recording timeline write failed");
             }
             let stopped_ms = stop.load(Ordering::Relaxed);
-            if encoder.at_frame_boundary()
-                && let Some((_, next)) = frames.try_iter().last()
-            {
-                pixels = fit(&next, size);
+            for (captured, next) in frames.try_iter() {
+                schedule.push(captured, fit(&next, size));
             }
-            let elapsed = if stopped_ms == u64::MAX {
-                started.elapsed()
-            } else {
-                Duration::from_millis(stopped_ms)
-            };
+            if encoder.at_frame_boundary()
+                && let Some(next) = schedule.advance(encoder.progress().0)
+            {
+                pixels = next;
+            }
+            let elapsed = video_due(started.elapsed(), stopped_ms);
             let caught_up = encoder.write_due(&mut pipe, pixels.as_raw(), || elapsed)?;
             let (written_frames, partial_bytes) = encoder.progress();
             let progress = u64::try_from(written_frames)
@@ -594,16 +639,15 @@ impl Session {
         };
         let result: io::Result<bool> = (|| {
             flush_events(&mut injected.timeline, &injected.events)?;
-            if injected.encoder.at_frame_boundary()
-                && let Some((_, next)) = injected.frames.try_iter().last()
-            {
-                injected.pixels = fit(&next, injected.size);
+            for (captured, next) in injected.frames.try_iter() {
+                injected.schedule.push(captured, fit(&next, injected.size));
             }
-            let elapsed = if stopped == u64::MAX {
-                elapsed
-            } else {
-                Duration::from_millis(stopped)
-            };
+            if injected.encoder.at_frame_boundary()
+                && let Some(next) = injected.schedule.advance(injected.encoder.progress().0)
+            {
+                injected.pixels = next;
+            }
+            let elapsed = video_due(elapsed, stopped);
             if injected
                 .encoder
                 .write_due(&mut injected.sink, injected.pixels.as_raw(), || elapsed)?
@@ -654,19 +698,141 @@ impl Drop for Encoder {
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+
+    fn args(sources: &[String]) -> Vec<String> {
+        let start = Duration::new(1_700_000_000, 250_000_000);
+        super::encoder_command(std::path::Path::new("/x"), (64, 64), start, sources)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn after(args: &[String], flag: &str) -> Vec<String> {
+        args.iter()
+            .enumerate()
+            .filter(|(_, arg)| *arg == flag)
+            .filter_map(|(index, _)| args.get(index.saturating_add(1)).cloned())
+            .collect()
+    }
+
     #[test]
-    fn video_frames_are_stamped_with_capture_time_not_a_fixed_rate() {
-        let command = super::encoder_command(std::path::Path::new("/x"), (64, 64), &[]);
-        let args: Vec<_> = command
+    fn video_is_a_constant_grid_from_recording_start_not_arrival_time() {
+        let args = args(&[]);
+        let input = args.iter().position(|arg| arg == "pipe:0").unwrap();
+        assert!(!args.contains(&"-use_wallclock_as_timestamps".to_owned()));
+        assert_eq!(after(&args[..input], "-framerate"), ["30"]);
+        assert!(args.contains(&"-copyts".to_owned()));
+    }
+
+    #[test]
+    fn audio_is_stamped_on_the_wall_clock_shifted_to_recording_start() {
+        let sources = vec!["mic".to_owned(), "desk.monitor".to_owned()];
+        let args = args(&sources);
+        let pulse: Vec<_> = args
+            .windows(5)
+            .filter(|window| window[0] == "-f" && window[1] == "pulse")
+            .collect();
+        assert_eq!(pulse.len(), 2);
+        assert!(
+            pulse
+                .iter()
+                .all(|window| window[2] == "-wallclock" && window[3] == "1")
+        );
+        assert_eq!(
+            after(&args, "-af"),
+            ["asetpts=PTS-1700000000.250000/TB,aresample=async=1:first_pts=0"]
+        );
+    }
+
+    /// Runs the production command on real ffmpeg, with each pulse input replaced by a tone the
+    /// way the pulse demuxer stamps it: on the wall clock, here starting 500 ms after `wall_start`.
+    /// Returns where the tone begins in the recorded file.
+    fn tone_start_in_recording(folder: &std::path::Path) -> Duration {
+        use std::io::Write as _;
+        let wall_start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let tone_at = wall_start.saturating_add(Duration::from_millis(500));
+        let sources = vec!["tone".to_owned()];
+        let production = super::encoder_command(folder, (64, 64), wall_start, &sources);
+        let mut args: Vec<String> = production
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        let input = args.iter().position(|arg| arg == "pipe:0").unwrap();
-        let wallclock = args
-            .iter()
-            .position(|arg| arg == "-use_wallclock_as_timestamps")
+        while let Some(flag) = args.iter().position(|arg| arg == "-wallclock") {
+            let _removed: Vec<_> = args.drain(flag..flag.saturating_add(2)).collect();
+        }
+        for arg in &mut args {
+            if arg == "pulse" {
+                "lavfi".clone_into(arg);
+            } else if arg == "tone" {
+                *arg = format!(
+                    "sine=frequency=440:sample_rate=48000,asetpts=PTS+{}.{:06}/TB",
+                    tone_at.as_secs(),
+                    tone_at.subsec_micros()
+                );
+            }
+        }
+        let mut child = std::process::Command::new("/usr/bin/ffmpeg")
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("install ffmpeg: /usr/bin/ffmpeg missing");
+        let mut pipe = child.stdin.take().unwrap();
+        for _ in 0..60 {
+            pipe.write_all(&[40_u8; 64 * 64 * 4]).unwrap();
+        }
+        drop(pipe);
+        assert!(child.wait().unwrap().success());
+        let probe = std::process::Command::new("/usr/bin/ffmpeg")
+            .args(["-hide_banner", "-nostdin", "-i"])
+            .arg(folder.join("video.mp4"))
+            .args([
+                "-map",
+                "0:a:0",
+                "-af",
+                "silencedetect=n=-40dB:d=0.1",
+                "-f",
+                "null",
+                "-",
+            ])
+            .output()
             .unwrap();
-        assert!(wallclock < input && args[wallclock + 1] == "1");
-        assert!(!args[..input].contains(&"-framerate".to_owned()));
+        let log = String::from_utf8_lossy(&probe.stderr);
+        let end = log
+            .split("silence_end: ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .map_or(0.0, |seconds| seconds.parse::<f64>().unwrap());
+        Duration::from_secs_f64(end)
+    }
+
+    #[test]
+    fn audio_that_starts_late_on_the_wall_clock_lands_late_in_the_recording() {
+        let folder = tempfile::tempdir().unwrap();
+        let start = tone_start_in_recording(folder.path());
+        assert!(
+            start.abs_diff(Duration::from_millis(500)) <= Duration::from_millis(50),
+            "tone captured 500 ms after recording start begins at {start:?}"
+        );
+    }
+
+    #[test]
+    fn video_writing_trails_the_clock_until_stop() {
+        assert_eq!(
+            super::video_due(Duration::from_secs(1), u64::MAX),
+            Duration::from_nanos(966_666_666)
+        );
+        assert_eq!(
+            super::video_due(Duration::from_millis(20), u64::MAX),
+            Duration::ZERO
+        );
+        assert_eq!(
+            super::video_due(Duration::from_secs(1), 1_500),
+            Duration::from_millis(1_500)
+        );
     }
 }

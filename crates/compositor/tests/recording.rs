@@ -66,7 +66,7 @@ mod recording {
                     .collect::<Vec<_>>()
             };
             let video = serde_json::json!({
-                "size": values("-video_size")[0], "fps": values("-vf")[0],
+                "size": values("-video_size")[0], "fps": values("-framerate")[0],
                 "inputs": values("-i"),
                 "titles": args.iter().filter(|arg| arg.starts_with("title=")).collect::<Vec<_>>(),
                 "dispositions": args.windows(2).filter(|pair| pair[0].starts_with("-disposition:a:")).map(|pair| &pair[1]).collect::<Vec<_>>(),
@@ -399,7 +399,7 @@ mod recording {
             serde_json::from_slice(&std::fs::read(folder.join("video.mp4")).unwrap()).unwrap();
         assert_eq!(video["pixel"], serde_json::json!([20, 240, 40, 255]));
         assert_eq!(video["size"], if width == 64 { "64x64" } else { "1920x1080" });
-        assert_eq!(video["fps"], "fps=30");
+        assert_eq!(video["fps"], "30");
         if mode == "backlog" {
             assert_eq!(
                 video["frames"], 720,
@@ -773,11 +773,14 @@ import os, subprocess, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 home = Path(os.environ['HOME'])
+# Model the pulse demuxer: lavfi silence stamped on the wall clock like `-wallclock 1`.
+while '-wallclock' in args:
+    del args[args.index('-wallclock'):args.index('-wallclock') + 2]
 for index in range(len(args)):
     if args[index] == 'pulse':
         args[index] = 'lavfi'
     if args[index] in ('speakers.monitor', 'mic-a', 'mic-b'):
-        args[index] = 'anullsrc=r=48000:cl=stereo'
+        args[index] = f'anullsrc=r=48000:cl=stereo,asetpts=PTS+{time.time():.6f}/TB'
 child = subprocess.Popen(['/usr/bin/ffmpeg'] + args, stdin=subprocess.PIPE)
 began = time.monotonic()
 stalled = False
