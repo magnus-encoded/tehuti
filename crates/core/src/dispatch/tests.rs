@@ -16,13 +16,20 @@ struct World {
     clock: VecDeque<Duration>,
     request: Option<(RequestKey, Vec<Permission>)>,
     close_focus: Option<Event>,
+    stepper: Stepper,
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum Stepper {
+    #[default]
+    Plain,
     /// Checks every step against routing with focus applied at once.
-    compare_routed: bool,
+    CompareRouted,
 }
 
 impl World {
     fn step(&self, state: State, input: Input) -> (State, Vec<Effect>) {
-        if self.compare_routed {
+        if self.stepper == Stepper::CompareRouted {
             let routed = routed_step(state.clone(), input.clone());
             let stepped = step(state, input);
             assert_eq!(
@@ -4914,10 +4921,10 @@ proptest! {
             state = world.run(state, pad_button(*name, ButtonState::Pressed));
         }
         state = world.run(state, no_focus());
-        state = world.run(state, Input::Tick { elapsed: FOCUS_GAP_GRACE / 2 });
+        state = world.run(state, Input::Tick { elapsed: Duration::from_millis(250) });
         prop_assert!(state.core().virtual_pad(), "inside the grace the game keeps the pad");
         world.trace.clear();
-        state = world.run(state, Input::Tick { elapsed: FOCUS_GAP_GRACE / 2 + Duration::from_millis(extra) });
+        state = world.run(state, Input::Tick { elapsed: FOCUS_GAP_GRACE.saturating_add(Duration::from_millis(extra)) });
         prop_assert!(!state.core().passthrough());
         prop_assert!(!state.core().virtual_pad(), "the virtual pad lets go of every held button");
         for name in &held {
@@ -4936,7 +4943,7 @@ proptest! {
         closed in any::<bool>(),
     ) {
         let names: Vec<String> = contexts.iter().map(|context| context.app_id().to_owned()).collect();
-        let mut world = World { compare_routed: true, ..World::default() };
+        let mut world = World { stepper: Stepper::CompareRouted, ..World::default() };
         let mut state = State::new(crate::State::with_contexts(contexts));
         for (index, app) in apps.iter().enumerate() {
             let app_id = app.and_then(|app| names.get(app).cloned());
@@ -4944,7 +4951,7 @@ proptest! {
                 state = world.run(state, Input::FocusedWindowClosed);
             }
             state = world.event(state, Event::Focus { app_id, title: String::new() });
-            for input in inputs.iter().skip(index * 3).take(3) {
+            for input in inputs.chunks(3).nth(index).unwrap_or_default() {
                 state = drive(&mut world, state, input);
             }
         }
