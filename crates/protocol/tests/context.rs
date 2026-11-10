@@ -248,6 +248,103 @@ restart = { restart = false }"
         }
     }
 
+    const NUMBER_WORDS: [&str; 21] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+        "eighteen", "nineteen", "twenty",
+    ];
+
+    fn speech_context(phrases: &[(&str, &str)]) -> tehuti_protocol::Context {
+        let mut source = String::from("app_id = 'test'\n[buttons]\n[speech]\n");
+        for (phrase, key) in phrases {
+            source.push_str(&format!("{phrase:?} = {{ key = '{key}' }}\n"));
+        }
+        parse_context(&source).unwrap()
+    }
+
+    proptest! {
+        /// Law 1: a digit and its number word are the same token, both ways.
+        #[test]
+        fn digits_and_number_words_are_one_token(
+            number in 0_usize..=20,
+            word in "[a-z]{3,8}",
+            hyphen in proptest::bool::ANY,
+        ) {
+            let separator = if hyphen { "-" } else { " " };
+            let worded = speech_context(&[(&format!("{word} {}.", NUMBER_WORDS[number]), "enter")]);
+            prop_assert!(worded.speech_action(&format!("{word}{separator}{number}")).is_some());
+            let digits = speech_context(&[(&format!("{word} {number}"), "enter")]);
+            prop_assert!(digits.speech_action(&format!("{}{separator}{}", word.to_uppercase(), NUMBER_WORDS[number])).is_some());
+        }
+
+        /// Law 2: a hyphen is a word break or nothing.
+        #[test]
+        fn a_hyphen_is_a_break_or_nothing(first in "[a-z]{2,6}", second in "[a-z]{2,6}") {
+            let joined = speech_context(&[(&format!("{first}{second}"), "enter")]);
+            prop_assert!(joined.speech_action(&format!("{first}-{second}")).is_some());
+            let spaced = speech_context(&[(&format!("{first} {second}"), "enter")]);
+            for spoken in [format!("{first}-{second}"), format!("{first}{second}"), format!("{first} {second}.")] {
+                prop_assert!(spaced.speech_action(&spoken).is_some(), "{spoken:?}");
+            }
+        }
+
+        /// Law 3: a plain plural or singular of the last word matches.
+        #[test]
+        fn plural_or_singular_of_the_last_word_matches(word in "[a-z]{3,8}") {
+            let singular = word.trim_end_matches('s').to_owned();
+            prop_assume!(singular.len() >= 2);
+            let one = speech_context(&[(&format!("{singular}."), "enter")]);
+            prop_assert!(one.speech_action(&format!("{singular}s")).is_some());
+            let many = speech_context(&[(&format!("Go {singular}s"), "enter")]);
+            prop_assert!(many.speech_action(&format!("go {singular}")).is_some());
+        }
+
+        /// Law 4: exact matches always win over every variant, and the
+        /// variants never change what an already-matching transcript maps to.
+        #[test]
+        fn exact_matches_always_win(
+            words in prop::collection::btree_set("[a-z]{2,5}( [a-z0-9]{1,5})?", 1..6),
+        ) {
+            const KEYS: [&str; 6] = ["enter", "tab", "escape", "space", "up", "down"];
+            let phrases: Vec<_> = words.iter().map(String::as_str).zip(KEYS).collect();
+            let mut source = String::from("app_id = 'test'\n[buttons]\n[speech]\n");
+            for (phrase, key) in &phrases {
+                source.push_str(&format!("{phrase:?} = {{ key = '{key}' }}\n"));
+            }
+            let Ok(context) = parse_context(&source) else {
+                return Ok(());
+            };
+            for (phrase, key) in &phrases {
+                let expected = speech_context(&[(phrase, key)]).speech_action(phrase);
+                prop_assert_eq!(context.speech_action(phrase), expected, "{:?}", phrase);
+            }
+        }
+
+        /// Law 5: distinct phrases that fold alike are reported as duplicates.
+        #[test]
+        fn phrases_that_fold_alike_are_reported(number in 0_usize..=20, word in "[a-z]{3,8}") {
+            let source = format!(
+                "app_id = 'test'\n[buttons]\n[speech]\n\"{word} {number}\" = {{ key = 'enter' }}\n\"{word}-{}\" = {{ key = 'tab' }}\n",
+                NUMBER_WORDS[number],
+            );
+            let error = parse_context(&source).unwrap_err();
+            prop_assert!(error.contains("duplicates"), "{}", error);
+        }
+    }
+
+    #[test]
+    fn plural_yields_to_an_exact_phrase() {
+        let context = speech_context(&[("Wing", "enter"), ("Wings", "tab"), ("Pad", "space")]);
+        assert_ne!(context.speech_action("wings"), context.speech_action("wing"));
+        assert_eq!(context.speech_action("pads"), context.speech_action("pad"));
+        let joined = speech_context(&[("Full screen", "enter")]);
+        for spoken in ["full-screen", "fullscreen", "Full screen."] {
+            assert!(joined.speech_action(spoken).is_some(), "{spoken:?}");
+        }
+        let hyphen = speech_context(&[("Lookout", "enter")]);
+        assert!(hyphen.speech_action("look-outs").is_some());
+    }
+
     #[test]
     fn transcript_with_inner_punctuation_matches() {
         let context =

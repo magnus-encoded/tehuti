@@ -486,6 +486,8 @@ pub struct Context {
     label: Option<String>,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     speech: std::collections::HashMap<String, SpeechEntry>,
+    /// Each non-template phrase's [`speech_variant_key`] to its `speech` key.
+    speech_variants: std::collections::HashMap<String, String>,
     unmatched_speech: Option<UnmatchedSpeech>,
     launch_phrases: Vec<(String, String)>,
     favourites: Vec<String>,
@@ -764,6 +766,7 @@ impl Context {
         self.speech
             .get(&normalize_phrase(phrase))
             .filter(|entry| !entry.is_template())
+            .or_else(|| self.variant_entry(phrase))
             .map(|entry| entry.action.action())
             .or_else(|| {
                 let mut matches = self.speech.values().filter_map(|entry| {
@@ -772,6 +775,23 @@ impl Context {
                 let first = matches.next()?;
                 matches.all(|action| action == first).then_some(first)
             })
+    }
+
+    /// The phrase a transcript matches once digits, hyphens and a plain plural
+    /// of the last word are folded; consulted only after the exact lookup.
+    fn variant_entry(&self, phrase: &str) -> Option<&SpeechEntry> {
+        let key = speech_variant_key(phrase);
+        if key.is_empty() {
+            return None;
+        }
+        let lookup = |key: &str| {
+            self.speech_variants
+                .get(key)
+                .and_then(|normalized| self.speech.get(normalized))
+        };
+        lookup(&key)
+            .or_else(|| key.strip_suffix('s').filter(|singular| !singular.is_empty()).and_then(lookup))
+            .or_else(|| lookup(&format!("{key}s")))
     }
 
     /// Supplies discovered project names and absolute paths for `<project>` templates.
@@ -1016,6 +1036,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
+    let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
         let entry: SpeechEntryFile = value
@@ -1041,10 +1062,19 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
             action: entry.action,
             icon: entry.icon,
         };
+        let template = entry.is_template();
         if speech.insert(normalized.clone(), entry).is_some() {
             return Err(format!(
                 "speech phrase {mapped:?} duplicates another phrase that also normalizes to {normalized:?}"
             ));
+        }
+        if !template {
+            let variant = speech_variant_key(&mapped);
+            if let Some(other) = speech_variants.insert(variant.clone(), normalized.clone()) {
+                return Err(format!(
+                    "speech phrase {mapped:?} duplicates {other:?}; both fold to {variant:?} once digits and hyphens fold"
+                ));
+            }
         }
     }
     Ok(Context {
@@ -1053,6 +1083,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         label: parse_label(context.label)?,
         buttons: context.buttons,
         speech,
+        speech_variants,
         launch_phrases,
         favourites: context.favourites,
         unmatched_speech: context.unmatched_speech,
@@ -1173,6 +1204,29 @@ pub fn normalize_phrase(phrase: &str) -> String {
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The looser form a phrase and a transcript are compared in after the exact
+/// lookup fails: [`normalize_phrase`], then each standalone number 0 to 20 as its
+/// word, then the word breaks removed, so "camera-1", "camera 1" and "Camera one"
+/// agree, as do "cock-pit" and "cockpit".
+#[must_use]
+pub fn speech_variant_key(phrase: &str) -> String {
+    const NUMBERS: [&str; 21] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+        "eighteen", "nineteen", "twenty",
+    ];
+    normalize_phrase(phrase)
+        .split(' ')
+        .map(|word| {
+            word.parse::<usize>()
+                .ok()
+                .filter(|_| word.bytes().all(|byte| byte.is_ascii_digit()))
+                .and_then(|number| NUMBERS.get(number).copied())
+                .unwrap_or(word)
+        })
+        .collect()
 }
 
 mod speech_templates;
