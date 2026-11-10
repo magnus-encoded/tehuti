@@ -79,6 +79,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::PluginExited { .. }
         | DispatchInput::TextField { .. }
         | DispatchInput::ControllerDisconnected
+        | DispatchInput::FocusedWindowClosed
         | DispatchInput::SecretPrompt(_)
         | DispatchInput::Sticks(_)
         | DispatchInput::PluginActive(_)
@@ -225,6 +226,8 @@ pub struct Compositor {
     data_device_state: DataDeviceState,
     keyboard: KeyboardHandle<Self>,
     window_focus: Option<(WlSurface, Option<String>)>,
+    /// The window focus last left for no window, until a window takes focus.
+    unfocused_window: Option<WlSurface>,
     controller_session: tehuti_core::controller::State,
     seat: Seat<Self>,
     shortcut_keycodes: Vec<(Keycode, u32)>,
@@ -323,6 +326,7 @@ impl Compositor {
             ))),
             secret_lookup: None,
             window_focus: None,
+            unfocused_window: None,
             secret_focus_generation: 0,
             secret_surface_id: 0,
             secret_focus_surface: None,
@@ -3392,8 +3396,13 @@ impl Compositor {
             if let Some(toplevel) = window.toplevel() {
                 self.update_focus(toplevel);
             }
-        } else if self.window_focus.take().is_some() {
-            self.dispatch.core_mut().set_context_ancestors(None, Vec::new());
+        } else if let Some((surface, app_id)) = self.window_focus.take() {
+            tracing::info!(
+                ?app_id,
+                windows = ?self.destination_windows,
+                "focus left every window"
+            );
+            self.unfocused_window = Some(surface);
             self.handle(&Event::Focus {
                 app_id: None,
                 title: String::new(),
@@ -3409,6 +3418,7 @@ impl Compositor {
                     return;
                 }
                 self.window_focus = Some(focus);
+                self.unfocused_window = None;
                 let windows = self
                     .layout_windows
                     .iter()
@@ -3819,6 +3829,13 @@ impl XdgShellHandler for Compositor {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let closing = Some(surface.wl_surface());
+        if self.window_focus.as_ref().map(|(focused, _)| focused) == closing
+            || self.unfocused_window.as_ref() == closing
+        {
+            self.unfocused_window = None;
+            let _rejection = self.dispatch(DispatchInput::FocusedWindowClosed);
+        }
         let _removed = self.early_fullscreen.remove(surface.wl_surface());
         let identity = self.layout_windows.iter().find_map(|(identity, window)| {
             window

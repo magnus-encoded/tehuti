@@ -16,9 +16,21 @@ struct World {
     clock: VecDeque<Duration>,
     request: Option<(RequestKey, Vec<Permission>)>,
     close_focus: Option<Event>,
+    /// Checks every step against routing with focus applied at once.
+    compare_routed: bool,
 }
 
 impl World {
+    fn step(&self, state: State, input: Input) -> (State, Vec<Effect>) {
+        if self.compare_routed {
+            let routed = routed_step(state.clone(), input.clone());
+            let stepped = step(state, input);
+            assert_eq!(stepped, routed, "the focus gap changes nothing without passthrough");
+            return stepped;
+        }
+        step(state, input)
+    }
+
     fn run(&mut self, state: State, input: Input) -> State {
         let depth = state.busy();
         self.run_at_depth(state, input, depth)
@@ -53,7 +65,7 @@ impl World {
         reason = "the harness answers every dispatch effect in one table"
     )]
     fn run_at_depth(&mut self, state: State, input: Input, depth: usize) -> State {
-        let (mut state, mut effects) = step(state, input);
+        let (mut state, mut effects) = self.step(state, input);
         loop {
             let mut reply = Input::Resume;
             for effect in effects {
@@ -119,7 +131,7 @@ impl World {
             if state.busy() <= depth {
                 return state;
             }
-            (state, effects) = step(state, reply);
+            (state, effects) = self.step(state, reply);
         }
     }
 }
@@ -4745,4 +4757,217 @@ fn gauge_hide_delay_restarts_on_every_change() {
             .iter()
             .any(|effect| matches!(effect, Effect::SetVolume(_)))
     );
+}
+
+fn no_focus() -> Input {
+    Input::Event {
+        event: Event::Focus {
+            app_id: None,
+            title: String::new(),
+        },
+        elapsed: Duration::ZERO,
+    }
+}
+
+fn desktop_action(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::Apply(_)
+            | Effect::PluginAction(_)
+            | Effect::Scroll { .. }
+            | Effect::MovePointer { .. }
+            | Effect::Click { .. }
+            | Effect::Chord(_)
+            | Effect::ConfirmSecret(_)
+            | Effect::MouseMode(_)
+    )
+}
+
+fn enter() -> Effect {
+    Effect::Apply(Action::Key {
+        key: KeyName::Enter,
+        mods: Vec::new(),
+    })
+}
+
+/// A passthrough game over a global context that maps South to Enter.
+fn game(mut contexts: Vec<tehuti_protocol::Context>, virtual_pad: bool) -> State {
+    let game = tehuti_protocol::parse_context(&format!(
+        "app_id = 'org.example.Game'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = {virtual_pad}"
+    ))
+    .unwrap();
+    contexts.insert(0, game);
+    configured(contexts, "org.example.Game")
+}
+
+#[derive(Debug, Clone)]
+enum GapInput {
+    Button(ButtonName, ButtonState),
+    Sticks(i16, i16),
+    Tick(u64),
+}
+
+fn gap_input() -> impl Strategy<Value = GapInput> {
+    let names = prop::sample::select(vec![
+        ButtonName::South,
+        ButtonName::East,
+        ButtonName::North,
+        ButtonName::West,
+        ButtonName::LeftBumper,
+        ButtonName::RightBumper,
+        ButtonName::DpadUp,
+        ButtonName::DpadDown,
+    ]);
+    prop_oneof![
+        (names, any::<bool>()).prop_map(|(name, pressed)| GapInput::Button(
+            name,
+            if pressed { ButtonState::Pressed } else { ButtonState::Released }
+        )),
+        (-1000_i16..=1000, -1000_i16..=1000).prop_map(|(x, y)| GapInput::Sticks(x, y)),
+        (0_u64..50).prop_map(GapInput::Tick),
+    ]
+}
+
+fn drive(world: &mut World, state: State, input: &GapInput) -> State {
+    match *input {
+        GapInput::Button(name, button) => world.run(state, pad_button(name, button)),
+        GapInput::Sticks(x, y) => {
+            let state = world.run(state, Input::Sticks(Sticks { left: (x, y), right: (x, y) }));
+            world.run(state, Input::Tick { elapsed: Duration::from_millis(10) })
+        }
+        GapInput::Tick(millis) => world.run(state, Input::Tick { elapsed: Duration::from_millis(millis) }),
+    }
+}
+
+fn gap_millis(inputs: &[GapInput]) -> u64 {
+    inputs
+        .iter()
+        .map(|input| match input {
+            GapInput::Sticks(..) => 10,
+            GapInput::Tick(millis) => *millis,
+            GapInput::Button(..) => 0,
+        })
+        .sum()
+}
+
+proptest! {
+    #[test]
+    fn short_focus_gaps_never_turn_the_pad_into_a_desktop_pad(
+        contexts in arbitrary_contexts(),
+        virtual_pad in any::<bool>(),
+        gaps in prop::collection::vec(prop::collection::vec(gap_input(), 0..12), 1..6),
+    ) {
+        let mut world = World::default();
+        let mut state = game(contexts, virtual_pad);
+        state = world.run(state, Input::Speech(SpeechInput::Available));
+        world.trace.clear();
+        for gap in gaps {
+            prop_assume!(u128::from(gap_millis(&gap)) < FOCUS_GAP_GRACE.as_millis());
+            state = world.run(state, no_focus());
+            for input in &gap {
+                state = drive(&mut world, state, input);
+                prop_assert!(state.core().passthrough(), "the gap keeps the pad passed through");
+                prop_assert_eq!(state.core().virtual_pad(), virtual_pad, "the virtual pad stays");
+            }
+            state = world.event(state, focus("org.example.Game"));
+            prop_assert!(state.core().passthrough());
+        }
+        prop_assert!(!world.trace.iter().any(desktop_action), "no desktop action in a gap: {:?}", world.trace);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Handle(Event::Focus { .. }))));
+    }
+
+    #[test]
+    fn a_gap_past_the_grace_releases_held_buttons_then_gives_the_desktop_the_pad(
+        contexts in arbitrary_contexts(),
+        held in prop::sample::subsequence(vec![ButtonName::South, ButtonName::East, ButtonName::North, ButtonName::West], 1..4),
+        extra in 0_u64..2000,
+    ) {
+        let mut world = World::default();
+        let mut state = game(contexts, true);
+        for name in &held {
+            state = world.run(state, pad_button(*name, ButtonState::Pressed));
+        }
+        state = world.run(state, no_focus());
+        state = world.run(state, Input::Tick { elapsed: FOCUS_GAP_GRACE / 2 });
+        prop_assert!(state.core().virtual_pad(), "inside the grace the game keeps the pad");
+        world.trace.clear();
+        state = world.run(state, Input::Tick { elapsed: FOCUS_GAP_GRACE / 2 + Duration::from_millis(extra) });
+        prop_assert!(!state.core().passthrough());
+        prop_assert!(!state.core().virtual_pad(), "the virtual pad lets go of every held button");
+        for name in &held {
+            state = world.run(state, pad_button(*name, ButtonState::Released));
+        }
+        prop_assert!(!world.trace.iter().any(desktop_action), "held buttons release into nothing: {:?}", world.trace);
+        let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+        prop_assert!(world.trace.contains(&enter()), "a fresh press is a desktop press");
+    }
+
+    #[test]
+    fn without_passthrough_the_focus_gap_changes_nothing(
+        contexts in arbitrary_contexts(),
+        apps in prop::collection::vec(prop::option::of(0_usize..5), 1..8),
+        inputs in prop::collection::vec(gap_input(), 0..24),
+        closed in any::<bool>(),
+    ) {
+        let names: Vec<String> = contexts.iter().map(|context| context.app_id().to_owned()).collect();
+        let mut world = World { compare_routed: true, ..World::default() };
+        let mut state = State::new(crate::State::with_contexts(contexts));
+        for (index, app) in apps.iter().enumerate() {
+            let app_id = app.and_then(|app| names.get(app).cloned());
+            if closed {
+                state = world.run(state, Input::FocusedWindowClosed);
+            }
+            state = world.event(state, Event::Focus { app_id, title: String::new() });
+            for input in inputs.iter().skip(index * 3).take(3) {
+                state = drive(&mut world, state, input);
+            }
+        }
+    }
+}
+
+#[test]
+fn view_hold_takes_the_pad_back_during_a_gap_without_waiting_out_the_grace() {
+    let mut world = World::default();
+    let mut state = game(Vec::new(), true);
+    state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+    state = world.run(state, Input::Tick { elapsed: Duration::from_millis(400) });
+    state = world.run(state, no_focus());
+    state = world.run(state, Input::Tick { elapsed: Duration::from_millis(100) });
+    assert!(!state.core().passthrough(), "the takeback leaves after 100 ms of gap");
+    assert!(world.trace.contains(&Effect::Handle(no_window())), "the deferred focus applies at once");
+    world.trace.clear();
+    state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+    let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+    assert!(world.trace.contains(&enter()));
+}
+
+#[test]
+fn focus_moving_to_another_window_during_a_gap_applies_at_once() {
+    let editor = tehuti_protocol::parse_context("app_id = 'org.example.Editor'\n[buttons]").unwrap();
+    let mut world = World::default();
+    let mut state = game(vec![editor], true);
+    state = world.run(state, no_focus());
+    state = world.event(state, focus("org.example.Editor"));
+    assert!(!state.core().passthrough());
+    let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+    assert!(world.trace.contains(&enter()));
+}
+
+#[test]
+fn closing_the_passthrough_window_hands_the_pad_back_at_once() {
+    for close_first in [false, true] {
+        let mut world = World::default();
+        let mut state = game(Vec::new(), true);
+        if close_first {
+            state = world.run(state, Input::FocusedWindowClosed);
+            state = world.run(state, no_focus());
+        } else {
+            state = world.run(state, no_focus());
+            assert!(state.core().passthrough());
+            state = world.run(state, Input::FocusedWindowClosed);
+        }
+        assert!(!state.core().passthrough(), "close_first = {close_first}");
+        let _state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+        assert!(world.trace.contains(&enter()), "close_first = {close_first}");
+    }
 }
