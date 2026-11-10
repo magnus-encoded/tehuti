@@ -311,6 +311,8 @@ pub enum TickerSpeech {
     All,
     /// Only phrases with an icon, given or built in.
     Icons,
+    /// Only the context's own phrases, none inherited from the global context.
+    Own,
     None,
 }
 
@@ -323,6 +325,9 @@ pub struct TickerConfig {
     /// What keys do in this application, as the file spells them (`enter`, `ctrl+s`).
     #[serde(default)]
     pub names: std::collections::BTreeMap<String, String>,
+    /// Display-only labels per pad button, as the file spells the button.
+    #[serde(default)]
+    pub buttons: std::collections::BTreeMap<String, String>,
 }
 
 /// Longest name a `[ticker.names]` entry may show, in characters.
@@ -350,6 +355,58 @@ fn sorted_mods(mods: &[Modifier]) -> Vec<Modifier> {
     mods.sort_by_key(|modifier| modifier_rank(*modifier));
     mods.dedup();
     mods
+}
+
+/// The labels `[ticker.buttons]` gives pad buttons, and the spellings that name no button.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TickerButtons {
+    labels: Vec<(ButtonName, String)>,
+    unknown: Vec<String>,
+}
+
+fn parse_ticker_buttons(
+    labels: &std::collections::BTreeMap<String, String>,
+) -> Result<TickerButtons, String> {
+    let mut parsed: Vec<(ButtonName, String)> = Vec::with_capacity(labels.len());
+    let mut unknown = Vec::new();
+    for (spelled, label) in labels {
+        let button = <ButtonName as serde::Deserialize>::deserialize(serde::de::value::StrDeserializer::<
+            serde::de::value::Error,
+        >::new(spelled))
+        .ok()
+        .filter(|button| *button != ButtonName::Guide);
+        let Some(button) = button else {
+            unknown.push(spelled.clone());
+            continue;
+        };
+        let trimmed = label.trim();
+        if trimmed.is_empty() {
+            return Err(format!("ticker.buttons {spelled:?} must not be empty"));
+        }
+        if trimmed != label {
+            return Err(format!(
+                "ticker.buttons {spelled:?} must not have leading or trailing spaces"
+            ));
+        }
+        if trimmed.chars().count() > TICKER_NAME_MAX {
+            return Err(format!(
+                "ticker.buttons {spelled:?} is longer than {TICKER_NAME_MAX} characters"
+            ));
+        }
+        if trimmed.chars().any(char::is_control) {
+            return Err(format!(
+                "ticker.buttons {spelled:?} must not contain control characters"
+            ));
+        }
+        if parsed.iter().any(|(other, _)| *other == button) {
+            return Err(format!("ticker.buttons {spelled:?} duplicates another entry"));
+        }
+        parsed.push((button, trimmed.to_owned()));
+    }
+    Ok(TickerButtons {
+        labels: parsed,
+        unknown,
+    })
 }
 
 fn parse_ticker_names(names: &std::collections::BTreeMap<String, String>) -> Result<Vec<TickerName>, String> {
@@ -440,6 +497,7 @@ pub struct Context {
     pad: PadConfig,
     ticker: TickerConfig,
     ticker_names: Vec<TickerName>,
+    ticker_buttons: TickerButtons,
     speech_matching: SpeechMatching,
     launcher: LauncherSettings,
     projects: Vec<(String, String)>,
@@ -583,6 +641,22 @@ impl Context {
     #[must_use]
     pub const fn ticker(&self) -> &TickerConfig {
         &self.ticker
+    }
+
+    /// The label `[ticker.buttons]` gives a pad button, if any.
+    #[must_use]
+    pub fn ticker_button(&self, button: ButtonName) -> Option<&str> {
+        self.ticker_buttons
+            .labels
+            .iter()
+            .find(|(labelled, _)| *labelled == button)
+            .map(|(_, label)| label.as_str())
+    }
+
+    /// `[ticker.buttons]` keys that name no pad button; they show nothing.
+    #[must_use]
+    pub fn unknown_ticker_buttons(&self) -> &[String] {
+        &self.ticker_buttons.unknown
     }
 
     /// The name `[ticker.names]` gives a key chord, if any; modifier order does not matter.
@@ -989,6 +1063,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         window: context.window,
         log: context.log,
         ticker_names: parse_ticker_names(&context.ticker.names)?,
+        ticker_buttons: parse_ticker_buttons(&context.ticker.buttons)?,
         ticker: context.ticker,
         speech_matching: context.speech_matching,
         launcher: context.launcher,

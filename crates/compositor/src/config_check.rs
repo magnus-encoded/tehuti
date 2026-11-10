@@ -96,6 +96,7 @@ pub fn check(directory: &Path) -> Report {
             }
             report_shadowing(&mut report, &loaded);
             report_legacy_favourites(&mut report, &loaded);
+            report_unknown_ticker_buttons(&mut report, &loaded);
         }
         Err(error) => report.push(&error.path, Severity::Error, error.message),
     }
@@ -175,6 +176,18 @@ fn report_legacy_favourites(report: &mut Report, loaded: &[(PathBuf, tehuti_prot
                 path,
                 Severity::Warning,
                 "favourites has no desktop icon or D-pad effect".into(),
+            );
+        }
+    }
+}
+
+fn report_unknown_ticker_buttons(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
+    for (path, context) in loaded {
+        for spelled in context.unknown_ticker_buttons() {
+            report.push(
+                path,
+                Severity::Warning,
+                format!("[ticker.buttons] {spelled:?} is not a pad button; the label is ignored"),
             );
         }
     }
