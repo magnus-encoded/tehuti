@@ -236,15 +236,15 @@ mod tests {
         let captures: Vec<_> = gaps
             .iter()
             .map(|gap| {
-                at = at.saturating_add(Duration::from_millis(*gap));
-                at
+                clock = clock.saturating_add(Duration::from_millis(*gap));
+                clock
             })
             .collect();
         let last = captures.last().map_or(0, |capture| slot_of(*capture));
         let mut schedule = FrameSchedule::default();
-        let mut next = 0;
+        let mut next: usize = 0;
         let mut shown = Vec::new();
-        let mut slot = 0;
+        let mut slot: u128 = 0;
         while slot <= last {
             let end = slot.saturating_add(bursts).min(last.saturating_add(1));
             while captures.get(next).is_some_and(|capture| slot_of(*capture) < end) {
