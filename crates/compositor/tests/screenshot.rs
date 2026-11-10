@@ -8,6 +8,71 @@ mod tests {
     use tehuti_protocol::ButtonName;
 
     #[test]
+    fn empty_nested_desktop_shot_has_no_favourite_icons() {
+        let directory = tempfile::tempdir().unwrap();
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let path = directory.path().join("empty-desktop.png");
+        let _shot = driver
+            .execute(&mut compositor, Request::Shot { path: path.clone() })
+            .unwrap();
+        let shot = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(*shot.get_pixel(40, 50), image::Rgba([0, 0, 0, 255]));
+        if let Some(destination) = std::env::var_os("TEHUTI_EMPTY_DESKTOP_SHOT") {
+            let _bytes = std::fs::copy(path, destination).unwrap();
+        }
+    }
+
+    #[test]
+    fn screenshot_uses_the_current_output_capture_source() {
+        use core::cell::RefCell;
+        use std::rc::Rc;
+        let directory = tempfile::tempdir().unwrap();
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let first = Rc::new(RefCell::new(image::Rgba([255, 0, 0, 255])));
+        let second = Rc::new(RefCell::new(image::Rgba([0, 255, 0, 255])));
+        let path = directory.path().join("shot.png");
+        for device in [&first, &second] {
+            compositor.set_capture_source(device, |colour, _, _| {
+                Ok(image::RgbaImage::from_pixel(1280, 720, *colour))
+            });
+            let _shot = driver
+                .execute(&mut compositor, Request::Shot { path: path.clone() })
+                .unwrap();
+            let image = image::open(&path).unwrap().to_rgba8();
+            assert_eq!(*image.get_pixel(640, 360), *device.borrow());
+        }
+        assert_eq!(Rc::strong_count(&first), 1);
+        assert_eq!(Rc::strong_count(&second), 1);
+        let busy = second.borrow_mut();
+        assert!(
+            driver
+                .execute(&mut compositor, Request::Shot { path: path.clone() })
+                .is_err()
+        );
+        drop(busy);
+        drop(second);
+        assert!(
+            driver
+                .execute(&mut compositor, Request::Shot { path: path.clone() })
+                .is_err()
+        );
+        compositor.clear_capture_source();
+        let _shot = driver
+            .execute(&mut compositor, Request::Shot { path: path.clone() })
+            .unwrap();
+        assert_eq!(
+            *image::open(path).unwrap().to_rgba8().get_pixel(640, 360),
+            image::Rgba([0, 0, 0, 255])
+        );
+    }
+
+    #[test]
     fn screenshot_menu_saves_the_frame_without_the_menu() {
         if std::env::var_os("SCREENSHOT_PROBE").is_none() {
             for mode in ["explicit", "fallback", "configured", "failure"] {

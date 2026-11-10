@@ -109,7 +109,16 @@ pub fn drain_pads<S: InputSource>(
 /// Like [`drain_pads`], keeping only the events `admit` accepts.
 pub fn drain_pads_admitted<S: InputSource>(
     pads: &mut std::collections::BTreeMap<std::path::PathBuf, S>,
+    admit: impl FnMut(&std::path::Path, &S, &Event) -> bool,
+) -> (Vec<Event>, Vec<std::path::PathBuf>) {
+    drain_pads_handing_over(pads, admit, |_| {})
+}
+
+/// Like [`drain_pads_admitted`], giving each failed pad to `dropped` before it goes.
+pub fn drain_pads_handing_over<S: InputSource>(
+    pads: &mut std::collections::BTreeMap<std::path::PathBuf, S>,
     mut admit: impl FnMut(&std::path::Path, &S, &Event) -> bool,
+    mut dropped: impl FnMut(&mut S),
 ) -> (Vec<Event>, Vec<std::path::PathBuf>) {
     let mut events = Vec::new();
     let mut removed = Vec::new();
@@ -121,6 +130,7 @@ pub fn drain_pads_admitted<S: InputSource>(
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "controller read failed; dropping it");
             removed.push(path.clone());
+            dropped(pad);
             false
         }
     });

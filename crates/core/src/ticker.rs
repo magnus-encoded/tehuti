@@ -436,8 +436,14 @@ fn button_entries(
         }];
         let chord = active.map_or(&[][..], Context::passthrough_push_to_talk);
         entries.push(talk_entry(chord_pieces(chord, pad)));
+        entries.extend(
+            BUTTONS
+                .iter()
+                .filter_map(|button| label_entry(active, *button, pad)),
+        );
         return entries;
     }
+    let passthrough = active.is_some_and(Context::passthrough);
     BUTTONS
         .iter()
         .filter_map(|button| {
@@ -445,40 +451,67 @@ fn button_entries(
             if talk.contains(button) {
                 return Some(talk_entry(trigger));
             }
-            if level == crate::Level::Columns {
-                if *button == ButtonName::LeftBumper {
-                    return Some(Entry::new(
-                        trigger,
-                        &Action::Layout {
-                            action: LayoutAction::FocusColumnLeft,
-                        },
-                        None,
-                    ));
-                }
-                if *button == ButtonName::RightBumper {
-                    return Some(Entry::new(
-                        trigger,
-                        &Action::Layout {
-                            action: LayoutAction::FocusColumnRight,
-                        },
-                        None,
-                    ));
-                }
+            if level == crate::Level::Columns
+                && let Some(action) = column_action(*button)
+            {
+                return Some(Entry::new(trigger, &action, None));
+            }
+            if let Some(entry) = label_entry(active, *button, pad) {
+                return Some(entry);
             }
             let context = active
                 .filter(|context| context.action_for(*button).is_some())
-                .or(global);
+                .or(if passthrough { None } else { global });
             let action = context
                 .and_then(|context| context.action_for(*button))
                 .or_else(|| {
-                    (*button == pad.button(crate::pad::Role::Confirm)).then_some(Action::Key {
-                        key: KeyName::Enter,
-                        mods: Vec::new(),
-                    })
+                    (!passthrough && *button == pad.button(crate::pad::Role::Confirm)).then_some(
+                        Action::Key {
+                            key: KeyName::Enter,
+                            mods: Vec::new(),
+                        },
+                    )
                 })?;
             Some(mapped_entry(trigger, context, *button, &action))
         })
         .collect()
+}
+
+/// What a bumper does at the columns level, if it is one.
+const fn column_action(button: ButtonName) -> Option<Action> {
+    match button {
+        ButtonName::LeftBumper => Some(Action::Layout {
+            action: LayoutAction::FocusColumnLeft,
+        }),
+        ButtonName::RightBumper => Some(Action::Layout {
+            action: LayoutAction::FocusColumnRight,
+        }),
+        ButtonName::South
+        | ButtonName::East
+        | ButtonName::North
+        | ButtonName::West
+        | ButtonName::LeftTrigger
+        | ButtonName::RightTrigger
+        | ButtonName::Select
+        | ButtonName::Record
+        | ButtonName::Start
+        | ButtonName::Guide
+        | ButtonName::LeftStick
+        | ButtonName::RightStick
+        | ButtonName::DpadUp
+        | ButtonName::DpadDown
+        | ButtonName::DpadLeft
+        | ButtonName::DpadRight => None,
+    }
+}
+
+/// The entry for a button the context labels: display only, it sends nothing.
+fn label_entry(active: Option<&Context>, button: ButtonName, pad: PadFamily) -> Option<Entry> {
+    let label = active?.ticker_button(button)?;
+    Some(Entry {
+        trigger: vec![pad.piece(button)],
+        result: vec![Piece::Text(label.into())],
+    })
 }
 
 /// The entry for a mapped button: the key's `[ticker.names]` name or its keycap, then `hold`.
@@ -542,7 +575,12 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
     }
     let mut seen = std::collections::HashSet::new();
     let mut groups: Vec<(Action, Option<String>, Vec<String>)> = Vec::new();
-    for context in active.into_iter().chain(global) {
+    let contexts = if shown == TickerSpeech::Own {
+        vec![active.or(global)]
+    } else {
+        vec![active, global]
+    };
+    for context in contexts.into_iter().flatten() {
         for mapping in context.speech_mappings() {
             if !seen.insert(normalize_phrase(mapping.phrase)) {
                 continue;

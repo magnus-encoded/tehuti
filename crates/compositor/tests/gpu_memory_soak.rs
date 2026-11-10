@@ -21,7 +21,7 @@ mod gpu_memory_soak {
             },
             drm::DrmNode,
             renderer::{
-                Bind, ImportDma, Offscreen,
+                Bind, Frame, ImportDma, Offscreen, Renderer,
                 damage::OutputDamageTracker,
                 gles::{GlesRenderbuffer, GlesRenderer},
                 multigpu::{
@@ -31,7 +31,7 @@ mod gpu_memory_soak {
             },
         },
         reexports::wayland_server::Display,
-        utils::DeviceFd,
+        utils::{DeviceFd, Rectangle, Transform},
     };
     use tehuti::{
         overlays::Overlays,
@@ -135,6 +135,17 @@ mod gpu_memory_soak {
     delegate_noop!(App: ignore ZwpLinuxDmabufV1);
     delegate_noop!(App: ignore ZwpLinuxBufferParamsV1);
 
+    /// Returns modifiers the test renderer can paint into.
+    fn render_modifiers(renderer: &GlesRenderer) -> Vec<Modifier> {
+        renderer
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .filter(|format| format.code == Fourcc::Argb8888)
+            .map(|format| format.modifier)
+            .collect()
+    }
+
     /// Allocates a fresh GPU buffer for every frame, as a resizing GL client does.
     fn draw_dmabuf(
         gbm: &mut GbmAllocator<DeviceFd>,
@@ -142,16 +153,35 @@ mod gpu_memory_soak {
         surface: &WlSurface,
         handle: &QueueHandle<App>,
         size: (i32, i32),
+        renderer: &mut GlesRenderer,
     ) {
+        let modifiers = render_modifiers(renderer);
         let buffer_object = gbm
             .create_buffer(
                 u32::try_from(size.0).unwrap(),
                 u32::try_from(size.1).unwrap(),
                 Fourcc::Argb8888,
-                &[Modifier::Invalid],
+                &modifiers,
             )
             .unwrap();
-        let exported = buffer_object.export().unwrap();
+        let mut exported = buffer_object.export().unwrap();
+        let mut target = renderer.bind(&mut exported).unwrap();
+        {
+            let mut frame = renderer
+                .render(&mut target, size.into(), Transform::Normal)
+                .unwrap();
+            frame
+                .clear([1.0, 0.0, 0.0, 1.0].into(), &[Rectangle::from_size(size.into())])
+                .unwrap();
+            frame
+                .clear(
+                    [0.0, 0.0, 1.0, 1.0].into(),
+                    &[Rectangle::from_size((size.0, size.1 / 2).into())],
+                )
+                .unwrap();
+            frame.finish().unwrap().wait().unwrap();
+        }
+        drop(target);
         let params = dmabuf.create_params(handle, ());
         let modifier = u64::from(exported.format().modifier);
         for (plane, ((plane_fd, offset), stride)) in exported
@@ -210,16 +240,22 @@ mod gpu_memory_soak {
     }
 
     /// Opens `count` windows per round, redraws them on every configure, closes them on `close`.
-    fn client(stream: UnixStream, count: usize, close: &mpsc::Receiver<bool>, closed: &mpsc::Sender<()>) {
+    fn client(
+        stream: UnixStream,
+        count: usize,
+        gpu_clients: bool,
+        close: &mpsc::Receiver<bool>,
+        closed: &mpsc::Sender<()>,
+    ) {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
         let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
         let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
         let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
-        let dmabuf: Option<ZwpLinuxDmabufV1> =
-            gpu_clients().then(|| globals.bind(&handle, 3..=3, ()).unwrap());
-        let mut gbm = gpu_clients().then(|| GbmAllocator::new(render_node(), GbmBufferFlags::RENDERING));
+        let dmabuf: Option<ZwpLinuxDmabufV1> = gpu_clients.then(|| globals.bind(&handle, 3..=3, ()).unwrap());
+        let mut gbm = gpu_clients.then(|| GbmAllocator::new(render_node(), GbmBufferFlags::RENDERING));
+        let mut painter = gpu_clients.then(device);
         loop {
             let mut app = App::default();
             let mut windows = Vec::new();
@@ -237,7 +273,14 @@ mod gpu_memory_soak {
                 for index in core::mem::take(&mut app.acked) {
                     match (&mut gbm, &dmabuf) {
                         (Some(gbm), Some(dmabuf)) => {
-                            draw_dmabuf(gbm, dmabuf, &windows[index].0, &handle, app.configured[index]);
+                            draw_dmabuf(
+                                gbm,
+                                dmabuf,
+                                &windows[index].0,
+                                &handle,
+                                app.configured[index],
+                                painter.as_mut().unwrap().renderer_mut(),
+                            );
                         }
                         _ => draw(&shm, &windows[index].0, &handle, app.configured[index]),
                     }
@@ -299,15 +342,81 @@ mod gpu_memory_soak {
         overlays: Overlays,
     }
 
-    /// Builds a renderer and routes client dmabuf imports to it, as the DRM backend does.
-    fn gpu(display: &Display<Compositor>, compositor: &mut Compositor) -> Gpu {
+    fn device() -> Device {
         let gbm = render_node();
         let mut api: GbmGlesBackend<GlesRenderer, DeviceFd> = GbmGlesBackend::default();
         api.add_node(DrmNode::from_file(gbm.as_fd()).unwrap(), gbm)
             .unwrap();
         let mut devices = Vec::new();
         api.enumerate(&mut devices).unwrap();
-        let device = Rc::new(RefCell::new(devices.pop().unwrap()));
+        devices.pop().unwrap()
+    }
+
+    #[test]
+    #[ignore = "needs a GPU render node; run with --ignored"]
+    fn screenshot_contains_dmabuf_client_pixels() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let mut gpu = gpu(&display, &mut compositor);
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (close, closing) = mpsc::channel();
+        let (closed, done) = mpsc::channel();
+        let thread = thread::spawn(move || client(stream, 1, true, &closing, &closed));
+        let started = Instant::now();
+        while compositor.space.elements().next().is_none() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            frame(&mut gpu, &mut compositor, &mut display);
+        }
+        frames_for(
+            &mut gpu,
+            &mut compositor,
+            &mut display,
+            Duration::from_millis(100),
+        );
+        let window = compositor.space.elements().next().unwrap();
+        let location = compositor.space.element_location(window).unwrap();
+        let size = window.geometry().size;
+        let upper = (
+            u32::try_from(location.x + size.w / 2).unwrap(),
+            u32::try_from(location.y + size.h / 4).unwrap(),
+        );
+        let lower = (upper.0, u32::try_from(location.y + size.h * 3 / 4).unwrap());
+        let path = directory.path().join("shot.png");
+        let mut driver =
+            tehuti::driver::Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let _shot = driver
+            .execute(
+                &mut compositor,
+                tehuti::driver::Request::Shot { path: path.clone() },
+            )
+            .unwrap();
+        close.send(true).unwrap();
+        while done.try_recv().is_err() {
+            frame(&mut gpu, &mut compositor, &mut display);
+        }
+        thread.join().unwrap();
+        let image = image::open(path).unwrap().to_rgba8();
+        assert_eq!(image.dimensions(), (1280, 720));
+        let colors = [
+            *image.get_pixel(upper.0, upper.1),
+            *image.get_pixel(lower.0, lower.1),
+        ];
+        assert!(colors.contains(&image::Rgba([0, 0, 255, 255])), "{colors:?}");
+        assert!(colors.contains(&image::Rgba([255, 0, 0, 255])), "{colors:?}");
+    }
+
+    /// Builds a renderer and routes client dmabuf imports to it, as the DRM backend does.
+    fn gpu(display: &Display<Compositor>, compositor: &mut Compositor) -> Gpu {
+        let device = Rc::new(RefCell::new(device()));
+        compositor.set_capture_source(&device, |device, compositor, clock| {
+            tehuti::rendering::capture_frame(device.renderer_mut(), compositor, clock)
+        });
         let (formats, _) =
             tehuti::rendering::client_formats(device.borrow_mut().renderer_mut(), &display.handle());
         compositor
@@ -403,7 +512,7 @@ mod gpu_memory_soak {
             .ok()
             .and_then(|rounds| rounds.parse().ok())
             .unwrap_or(60);
-        let thread = thread::spawn(move || client(stream, 3, &closing, &closed));
+        let thread = thread::spawn(move || client(stream, 3, gpu_clients(), &closing, &closed));
         let mut samples = Vec::new();
         for round in 0..rounds {
             if round == 1 {

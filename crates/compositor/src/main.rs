@@ -30,6 +30,8 @@ pub(crate) struct LoopData {
     display: Display<Compositor>,
     compositor: Compositor,
     controllers: BTreeMap<PathBuf, AttachedController>,
+    /// The virtual pad of an unplugged controller, kept so the application never loses it.
+    spare_virtual_pad: Option<controller::VirtualPad>,
     pad_gate: input::PadGate,
     virtual_pad: Option<String>,
     /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
@@ -178,6 +180,25 @@ fn check_config(mut arguments: impl Iterator<Item = std::ffi::OsString>) -> Resu
     })
 }
 
+fn install_skill(path: Option<std::ffi::OsString>) -> Result<ExitCode, Box<dyn Error>> {
+    use std::io::Write;
+    let root = match path {
+        Some(path) => PathBuf::from(path),
+        None => tehuti::skill_install::default_root(&PathBuf::from(
+            std::env::var_os("HOME").ok_or("HOME is not set")?,
+        )),
+    };
+    let done = tehuti::skill_install::install(&root, env!("TEHUTI_GIT_HASH"))?;
+    let verb = if done.updated { "updated" } else { "installed" };
+    writeln!(
+        std::io::stdout().lock(),
+        "{verb} {}\n{verb} {}",
+        done.skill.display(),
+        done.openai_yaml.display()
+    )?;
+    Ok(ExitCode::SUCCESS)
+}
+
 fn insert_backend(
     event_loop: &EventLoop<LoopData>,
     display: &smithay::reexports::wayland_server::DisplayHandle,
@@ -225,6 +246,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         Ok(tehuti::cli::Invocation::Help) => return print_usage(),
         Ok(tehuti::cli::Invocation::Version) => return print_version(),
         Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
+        Ok(tehuti::cli::Invocation::InstallSkill(path)) => return install_skill(path),
         Ok(tehuti::cli::Invocation::Session {
             context_directory,
             application,
@@ -331,9 +353,6 @@ fn start_session(
         ..tehuti::destinations::Paths::default()
     });
     compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(context_directory)));
-    tehuti::wallpaper::set_launch_phrases(
-        compositor.destinations().desktop_signposts(compositor.contexts()),
-    )?;
     match tehuti::input_choice_store::Store::from_env() {
         Ok(store) => compositor.load_input_choices(store),
         Err(error) => warn!(%error, "input choices will not be saved"),
@@ -402,6 +421,7 @@ fn start_session(
         display,
         compositor,
         controllers,
+        spare_virtual_pad: None,
         pad_gate: input::PadGate::default(),
         controller_tokens,
         virtual_pad,
@@ -528,6 +548,7 @@ fn run(
             }
         }
         sync_pad_grab(data);
+        arm_key_release(data, &handle);
         if work_due || input_arrived {
             redraw(data);
         }
@@ -545,6 +566,24 @@ fn run(
     }
     result?;
     Ok(())
+}
+
+/// Arms a one-shot timer that releases tapped keys after their hold time.
+fn arm_key_release(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
+    let Some(delay) = data.compositor.take_release_request() else {
+        return;
+    };
+    let timer = calloop::timer::Timer::from_duration(delay);
+    let armed = handle.insert_source(timer, |_, (), loop_data| {
+        loop_data.compositor.release_timer_fired().map_or(
+            calloop::timer::TimeoutAction::Drop,
+            calloop::timer::TimeoutAction::ToDuration,
+        )
+    });
+    if armed.is_err() {
+        warn!("key release timer failed; releasing now");
+        data.compositor.release_timer_failed();
+    }
 }
 
 /// Runs the backend's redraw, if it has one.
@@ -583,12 +622,26 @@ fn initial_discovery(attached: bool, compositor: &mut Compositor) -> controller:
     }
 }
 
+/// Drops controllers that asked to reopen, keeping their virtual pad for the next one.
+fn drop_reopened_controllers(data: &mut LoopData) {
+    let spare = &mut data.spare_virtual_pad;
+    data.controllers.retain(|_, pad| {
+        if !pad.watchdog.take_reopen() {
+            return true;
+        }
+        if let Some(kept) = pad.pad.detach_virtual_pad() {
+            *spare = Some(kept);
+        }
+        false
+    });
+}
+
 fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
     if !data.seat_active || data.compositor.quit_requested() {
         return;
     }
     let was_attached = !data.controllers.is_empty();
-    data.controllers.retain(|_, pad| !pad.watchdog.take_reopen());
+    drop_reopened_controllers(data);
     data.controller_tokens.retain(|path, token| {
         if data.controllers.contains_key(path) {
             true
@@ -781,13 +834,6 @@ fn reload_contexts(data: &mut LoopData) {
         .and_then(|watch| watch.poll(std::time::Instant::now()))
     {
         data.compositor.apply_reload(reload);
-        if let Err(error) = tehuti::wallpaper::set_launch_phrases(
-            data.compositor
-                .destinations()
-                .desktop_signposts(data.compositor.contexts()),
-        ) {
-            warn!(%error, "desktop hints unavailable");
-        }
     }
 }
 
@@ -823,14 +869,23 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
     let active = &mut data.active_pad;
-    let (events, removed) = input::drain_pads_admitted(&mut data.controllers, |path, controller, event| {
-        let admitted = gate.admit(path, compositor.controller_chosen(controller.pad.name()), event);
-        if admitted {
-            identity = Some(controller.pad.identity());
-            *active = Some(path.to_path_buf());
-        }
-        admitted
-    });
+    let spare = &mut data.spare_virtual_pad;
+    let (events, removed) = input::drain_pads_handing_over(
+        &mut data.controllers,
+        |path, controller, event| {
+            let admitted = gate.admit(path, compositor.controller_chosen(controller.pad.name()), event);
+            if admitted {
+                identity = Some(controller.pad.identity());
+                *active = Some(path.to_path_buf());
+            }
+            admitted
+        },
+        |controller| {
+            if let Some(kept) = controller.pad.detach_virtual_pad() {
+                *spare = Some(kept);
+            }
+        },
+    );
     if !removed.is_empty() {
         sync_controller_names(data);
     }
@@ -946,9 +1001,13 @@ fn sync_pad_grab(data: &mut LoopData) {
         .map(|(path, controller)| (path.as_path(), &mut controller.pad))
         .collect();
     let compositor = &data.compositor;
-    let sync = controller::sync_mirrors(&mut pads, mirrored, data.active_pad.as_deref(), &|button| {
-        compositor.virtual_pad_consumed(button)
-    });
+    let sync = controller::sync_mirrors(
+        &mut pads,
+        mirrored,
+        data.active_pad.as_deref(),
+        &mut data.spare_virtual_pad,
+        &|button| compositor.virtual_pad_consumed(button),
+    );
     for path in &sync.failed {
         if let Some(pad) = data.controllers.get_mut(path) {
             warn!("passing the physical pad through");

@@ -1,7 +1,41 @@
 //! Screenshot destination and capture for the system menu.
 use crate::state::Compositor;
+use core::cell::RefCell;
 use core::error::Error;
-use std::path::PathBuf;
+use std::{path::PathBuf, rc::Rc};
+
+type CaptureFrame = dyn Fn(&Compositor, &str) -> Result<image::RgbaImage, Box<dyn Error>>;
+
+#[derive(Default)]
+#[expect(clippy::redundant_pub_crate, reason = "stored in compositor state")]
+pub(crate) struct CaptureSource(pub Option<Box<CaptureFrame>>);
+
+impl core::fmt::Debug for CaptureSource {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_struct("CaptureSource").finish_non_exhaustive()
+    }
+}
+
+impl Compositor {
+    /// Uses software capture when the output backend has no GPU renderer.
+    pub fn clear_capture_source(&mut self) {
+        self.capture_source.0 = None;
+    }
+
+    /// Uses the output backend's renderer for screenshots, held weakly across replacement.
+    pub fn set_capture_source<D: 'static>(
+        &mut self,
+        device: &Rc<RefCell<D>>,
+        capture: impl Fn(&mut D, &Self, &str) -> Result<image::RgbaImage, Box<dyn Error>> + 'static,
+    ) {
+        let device = Rc::downgrade(device);
+        self.capture_source.0 = Some(Box::new(move |compositor, clock| {
+            let device = device.upgrade().ok_or("capture renderer unavailable")?;
+            let mut device = device.try_borrow_mut()?;
+            capture(&mut device, compositor, clock)
+        }));
+    }
+}
 
 #[expect(
     clippy::redundant_pub_crate,
