@@ -149,6 +149,7 @@ mod tests {
                     ],
                     mirrored,
                     Some(active),
+                    &mut None,
                     &|_| false,
                 );
                 for path in &result.failed {
