@@ -17,7 +17,7 @@
 | Pad family | The role positions and printed button glyphs shared by a group of controllers. |
 | Overlay stack | The fixed order in which overlays take the pad and appear above lower controls. Opening an interactive overlay releases held input below it. |
 | Tool word | A spoken word that opens or toggles a built-in tool (keyboard, mouse mode). Matched in every context, passthrough included, before any plugin sees the speech; the single list is `tool_words::TOOL_WORDS`. While a tool the word opened is up, it keeps the pad even in a passthrough context. |
-| Mapping ticker | An opt-in scrolling line on the bar listing the focused context's button and phrase mappings as coloured pad symbols, keycaps and icons for recognisable actions. Time moves it only while it is shown. |
+| Mapping ticker | An opt-in scrolling line on the bar listing the focused context's button and phrase mappings as coloured pad symbols, keycaps and icons for recognisable actions. Time moves it only while it is shown. A context can label buttons display-only with `[ticker.buttons]`; passthrough contexts never show inherited global buttons. |
 | Tick | Internal clock data carrying elapsed time into the core. It must never cross the plugin wire. |
 | Quit | The action that asks the compositor to release input and stop its event loop. |
 | Escape chord | Holding Guide and Start together for three seconds to emit one Quit. It consumes all Guide presses and releases before routing; an early release cancels the hold. |
