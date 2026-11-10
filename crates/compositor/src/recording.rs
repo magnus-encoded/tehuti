@@ -378,12 +378,7 @@ fn encoder_command(path: &std::path::Path, (width, height): (u32, u32), sources:
             "-pixel_format",
             "rgba",
         ])
-        .args([
-            "-video_size",
-            &format!("{width}x{height}"),
-            "-i",
-            "pipe:0",
-        ]);
+        .args(["-video_size", &format!("{width}x{height}"), "-i", "pipe:0"]);
     for source in sources {
         let _input = command.args(["-probesize", "32", "-analyzeduration", "1"]).args([
             "-thread_queue_size",
@@ -662,9 +657,15 @@ mod tests {
     #[test]
     fn video_frames_are_stamped_with_capture_time_not_a_fixed_rate() {
         let command = super::encoder_command(std::path::Path::new("/x"), (64, 64), &[]);
-        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
         let input = args.iter().position(|arg| arg == "pipe:0").unwrap();
-        let wallclock = args.iter().position(|arg| arg == "-use_wallclock_as_timestamps").unwrap();
+        let wallclock = args
+            .iter()
+            .position(|arg| arg == "-use_wallclock_as_timestamps")
+            .unwrap();
         assert!(wallclock < input && args[wallclock + 1] == "1");
         assert!(!args[..input].contains(&"-framerate".to_owned()));
     }
