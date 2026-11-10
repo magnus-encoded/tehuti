@@ -1,8 +1,7 @@
 //! A failed frame is retried before persistent failure ends the session.
 
-use core::{cell::RefCell, fmt::Display, time::Duration};
+use core::{cell::RefCell, error::Error, fmt::Display, time::Duration};
 use std::{
-    error::Error,
     rc::{Rc, Weak},
     time::Instant,
 };
@@ -98,6 +97,12 @@ pub struct Driver<'l, Data, F> {
     stop: LoopSignal,
 }
 
+impl<Data, F> core::fmt::Debug for Driver<'_, Data, F> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_struct("Driver").finish_non_exhaustive()
+    }
+}
+
 impl<Data, F> Clone for Driver<'_, Data, F> {
     fn clone(&self) -> Self {
         Self {
@@ -129,8 +134,8 @@ impl<'l, Data: 'l, F: Frames<Data> + 'l> Driver<'l, Data, F> {
             Ok(Some(deadline)) => {
                 let driver = self.clone();
                 let armed = self.handle.upgrade().map(|handle| {
-                    handle.insert_source(Timer::from_deadline(deadline), move |_, (), data| {
-                        driver.render(data, true);
+                    handle.insert_source(Timer::from_deadline(deadline), move |_, (), loop_data| {
+                        driver.render(loop_data, true);
                         TimeoutAction::Drop
                     })
                 });

@@ -2,8 +2,8 @@
 
 #[cfg(test)]
 mod tests {
-    use core::{cell::RefCell, time::Duration};
-    use std::{error::Error, rc::Rc, time::Instant};
+    use core::{cell::RefCell, error::Error, time::Duration};
+    use std::{rc::Rc, time::Instant};
 
     use proptest::prelude::*;
     use smithay::reexports::calloop::{
