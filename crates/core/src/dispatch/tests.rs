@@ -4896,7 +4896,10 @@ proptest! {
             prop_assert!(state.core().passthrough());
         }
         prop_assert!(!world.trace.iter().any(desktop_action), "no desktop action in a gap: {:?}", world.trace);
-        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::Handle(Event::Focus { .. }))));
+        prop_assert!(
+            !world.trace.iter().any(|effect| matches!(effect, Effect::Handle(Event::Focus { .. }))),
+            "a short gap never applies focus on no window"
+        );
     }
 
     #[test]

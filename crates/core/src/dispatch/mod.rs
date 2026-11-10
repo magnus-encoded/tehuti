@@ -456,11 +456,11 @@ enum FocusGap {
 }
 
 enum GapStep {
-    Route(Input, Vec<Effect>),
+    Route(Box<Input>, Vec<Effect>),
     Done(Vec<Effect>),
 }
 
-fn no_window() -> Event {
+const fn no_window() -> Event {
     Event::Focus {
         app_id: None,
         title: String::new(),
@@ -471,7 +471,7 @@ fn pad_passed_through(state: &State) -> bool {
     state.core.passthrough() && !state.overlay_owns_pad()
 }
 
-fn input_elapsed(input: &Input) -> Duration {
+const fn input_elapsed(input: &Input) -> Duration {
     if let Input::Tick { elapsed }
     | Input::Event {
         event: Event::Tick { elapsed },
@@ -521,7 +521,7 @@ fn focus_gap(state: &mut State, input: Input) -> GapStep {
         } else if matches!(gap, FocusGap::Away(_)) && state.core.has_focus(app_id.as_deref(), title) {
             return GapStep::Done(Vec::new());
         }
-        return GapStep::Route(input, Vec::new());
+        return GapStep::Route(Box::new(input), Vec::new());
     }
     let mut effects = Vec::new();
     if let FocusGap::Away(away) = state.focus_gap {
@@ -539,10 +539,10 @@ fn focus_gap(state: &mut State, input: Input) -> GapStep {
     {
         let _released = state.gap_held.remove(index);
         if *button == ButtonState::Released {
-            return GapStep::Route(Input::Tick { elapsed: *elapsed }, effects);
+            return GapStep::Route(Box::new(Input::Tick { elapsed: *elapsed }), effects);
         }
     }
-    GapStep::Route(input, effects)
+    GapStep::Route(Box::new(input), effects)
 }
 
 /// Advances routing by one input. Performs no I/O.
@@ -550,7 +550,7 @@ fn focus_gap(state: &mut State, input: Input) -> GapStep {
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let (input, mut gap) = match focus_gap(&mut state, input) {
         GapStep::Done(effects) => return (state, effects),
-        GapStep::Route(input, effects) => (input, effects),
+        GapStep::Route(input, effects) => (*input, effects),
     };
     let (mut state, mut effects) = routed_step(state, input);
     if matches!(state.focus_gap, FocusGap::Away(_)) && !pad_passed_through(&state) {
@@ -621,6 +621,7 @@ fn volume_read(mut state: State, value: Option<u8>) -> State {
     state
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per input group")]
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::Menu(command) => {
