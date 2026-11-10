@@ -34,18 +34,18 @@ mod folded_speech {
 
     #[test]
     fn a_global_exact_phrase_beats_a_focused_folded_one() {
-        let actions = route(
+        let exact = route(
             "'Bay 3' = { key = 'Tab' }",
             "'Bay-three' = { key = 'Enter' }",
             "Bay 3.",
         );
-        assert_eq!(actions, vec![key(KeyName::Tab)]);
-        let actions = route(
+        assert_eq!(exact, vec![key(KeyName::Tab)]);
+        let folded = route(
             "'Bay 3' = { key = 'Tab' }",
             "'Bay-three' = { key = 'Enter' }",
             "bay3",
         );
-        assert_eq!(actions, vec![key(KeyName::Enter)], "folded tries focused first");
+        assert_eq!(folded, vec![key(KeyName::Enter)], "folded tries focused first");
     }
 
     #[test]
