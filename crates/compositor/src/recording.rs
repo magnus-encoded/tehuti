@@ -184,10 +184,7 @@ impl Compositor {
         if let Some(session) = &mut self.recording {
             session.next_frame = now.checked_add(INTERVAL).unwrap_or(now);
         }
-        let captured = self
-            .recording
-            .as_ref()
-            .map_or(Duration::ZERO, Session::elapsed);
+        let captured = self.recording.as_ref().map_or(Duration::ZERO, Session::elapsed);
         match crate::driver_shot::frame(self, &chrono::Local::now().format("%H:%M").to_string()) {
             Ok(frame) => {
                 if let Some(session) = &self.recording {
@@ -737,7 +734,11 @@ mod tests {
             .filter(|window| window[0] == "-f" && window[1] == "pulse")
             .collect();
         assert_eq!(pulse.len(), 2);
-        assert!(pulse.iter().all(|window| window[2] == "-wallclock" && window[3] == "1"));
+        assert!(
+            pulse
+                .iter()
+                .all(|window| window[2] == "-wallclock" && window[3] == "1")
+        );
         assert_eq!(
             after(&args, "-af"),
             ["asetpts=PTS-1700000000.250000/TB,aresample=async=1:first_pts=0"]
@@ -746,8 +747,17 @@ mod tests {
 
     #[test]
     fn video_writing_trails_the_clock_until_stop() {
-        assert_eq!(super::video_due(Duration::from_secs(1), u64::MAX), Duration::from_millis(900));
-        assert_eq!(super::video_due(Duration::from_millis(50), u64::MAX), Duration::ZERO);
-        assert_eq!(super::video_due(Duration::from_secs(1), 1_500), Duration::from_millis(1_500));
+        assert_eq!(
+            super::video_due(Duration::from_secs(1), u64::MAX),
+            Duration::from_millis(900)
+        );
+        assert_eq!(
+            super::video_due(Duration::from_millis(50), u64::MAX),
+            Duration::ZERO
+        );
+        assert_eq!(
+            super::video_due(Duration::from_secs(1), 1_500),
+            Duration::from_millis(1_500)
+        );
     }
 }

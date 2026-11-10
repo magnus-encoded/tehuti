@@ -260,7 +260,10 @@ mod tests {
     }
 
     fn series() -> impl Strategy<Value = (Vec<u64>, u128)> {
-        (prop::collection::vec(prop_oneof![9 => 34u64..40, 1 => 100u64..900], 1..120), 1u128..40)
+        (
+            prop::collection::vec(prop_oneof![9 => 34u64..40, 1 => 100u64..900], 1..120),
+            1u128..40,
+        )
     }
 
     proptest! {
