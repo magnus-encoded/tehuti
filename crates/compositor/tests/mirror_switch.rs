@@ -20,6 +20,8 @@ mod tests {
         most_live: usize,
         created: usize,
         refuse: bool,
+        /// The physical pad is unplugged: reads fail with ENODEV.
+        gone: bool,
         grabs: usize,
         ungrabs: usize,
     }
@@ -94,6 +96,9 @@ mod tests {
             Ok(Box::new(Sink(self.name, Rc::clone(&self.log))))
         }
         fn fetch_raw(&mut self) -> io::Result<Vec<InputEvent>> {
+            if self.log.borrow().gone {
+                return Err(io::Error::from_raw_os_error(19));
+            }
             Ok(self.raw.borrow_mut().drain(..).collect())
         }
     }
@@ -173,6 +178,98 @@ mod tests {
         assert_eq!(log.borrow().grabs, 0);
         assert_eq!(log.borrow().ungrabs, 2);
         assert!(!first.mirrored() && !second.mirrored());
+        for _ in 0..100 {
+            let again = sync_mirrors(
+                &mut [(paths[0], &mut first)],
+                true,
+                Some(paths[0]),
+                &mut None,
+                &|_| false,
+            );
+            assert!(again.failed.is_empty() && !again.started);
+            first.pump_mirror(&mut |_, _| false).unwrap();
+        }
+        assert_eq!(log.borrow().created, 2, "a refused virtual pad is never retried");
+    }
+
+    /// Every key the application sees is up and every stick and trigger rests.
+    fn neutral(log: &Log) -> bool {
+        shown(log).iter().all(|(_, value)| *value == 0)
+    }
+
+    proptest! {
+        /// Laws 1 to 3: one virtual pad for the session, neutral while no pad is present,
+        /// and input flows again after each reconnect without a focus change.
+        #[test]
+        fn the_virtual_pad_outlives_any_number_of_read_failures(
+            drops in 1_usize..6,
+            reads_while_gone in 1_usize..20,
+        ) {
+            let log = Rc::new(RefCell::new(Log::default()));
+            let mut spare = None;
+            for round in 0..=drops {
+                let path = Path::new("/dev/input/event1");
+                let (mut current, handles) = pad("pad", &log);
+                let sync = sync_mirrors(&mut [(path, &mut current)], true, Some(path), &mut spare, &|_| false);
+                prop_assert!(sync.failed.is_empty() && current.mirrored() && spare.is_none());
+                queue(&handles, KeyCode::BTN_EAST, 1);
+                current.pump_mirror(&mut |_, _| false).unwrap();
+                let east = shown(&log.borrow()).get(&(EventType::KEY.0, KeyCode::BTN_EAST.code())).copied();
+                prop_assert_eq!(
+                    east,
+                    Some(1),
+                    "input flows after reconnect {}", round
+                );
+                if round == drops {
+                    prop_assert_eq!(log.borrow().live, 1, "one virtual pad is live");
+                    break;
+                }
+                queue(&handles, KeyCode::BTN_SOUTH, 1);
+                handles.raw.borrow_mut().extend(axis(AbsoluteAxisCode::ABS_X, 80));
+                current.pump_mirror(&mut |_, _| false).unwrap();
+                log.borrow_mut().gone = true;
+                prop_assert!(current.pump_mirror(&mut |_, _| false).is_err());
+                for _ in 0..reads_while_gone {
+                    prop_assert!(current.pump_mirror(&mut |_, _| false).is_ok(), "the drop is reported once");
+                }
+                prop_assert!(!current.mirrored());
+                prop_assert!(neutral(&log.borrow()), "{:?}", shown(&log.borrow()));
+                spare = current.detach_virtual_pad();
+                prop_assert!(spare.is_some());
+                prop_assert!(neutral(&log.borrow()));
+                log.borrow_mut().gone = false;
+            }
+            let log = log.borrow();
+            prop_assert_eq!(log.created, 1, "the virtual pad is made once");
+            prop_assert_eq!(log.most_live, 1, "never two at once");
+        }
+    }
+
+    #[test]
+    fn a_dropped_pad_releases_the_plugin_buttons_it_held() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let path = Path::new("/dev/input/event1");
+        let (mut only, handles) = pad("pad", &log);
+        let consumed = |button: tehuti_protocol::ButtonName| button == tehuti_protocol::ButtonName::Start;
+        let _sync = sync_mirrors(&mut [(path, &mut only)], true, Some(path), &mut None, &consumed);
+        let seen = RefCell::new(Vec::new());
+        let mut step = |button, state| {
+            seen.borrow_mut().push((button, state));
+            consumed(button)
+        };
+        queue(&handles, KeyCode::BTN_START, 1);
+        only.pump_mirror(&mut step).unwrap();
+        log.borrow_mut().gone = true;
+        assert!(only.pump_mirror(&mut step).is_err());
+        assert!(only.pump_mirror(&mut step).is_ok());
+        assert_eq!(
+            seen.borrow().last(),
+            Some(&(
+                tehuti_protocol::ButtonName::Start,
+                tehuti_protocol::ButtonState::Released
+            ))
+        );
+        assert!(never_sent(&log.borrow(), KeyCode::BTN_START));
     }
 
     #[test]

@@ -1020,12 +1020,17 @@ fn sync_pad_grab(data: &mut LoopData) {
 /// Copies physical input to each virtual pad, applying plugin overrides before the core reads it.
 fn pump_virtual_pads(data: &mut LoopData) {
     let compositor = &mut data.compositor;
+    let spare = &mut data.spare_virtual_pad;
     for controller in data.controllers.values_mut() {
         if let Err(error) = controller
             .pad
             .pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
         {
-            warn!(%error, "virtual pad copy failed; reopening");
+            // The physical pad is gone; the virtual pad stays, at rest, for the next one.
+            warn!(%error, "physical pad lost; keeping the virtual pad");
+            if let Some(kept) = controller.pad.detach_virtual_pad() {
+                *spare = Some(kept);
+            }
             controller.watchdog.request_reopen();
         }
     }
