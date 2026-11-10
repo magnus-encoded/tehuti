@@ -51,7 +51,6 @@ struct Scanout {
     next: bool,
     pending: bool,
     modeset: bool,
-    retry_at: Option<std::time::Instant>,
     recovery: tehuti::frame_recovery::Recovery,
     /// Frames drawn since start, which dates each scanout buffer's contents.
     drawn: u64,
@@ -116,7 +115,7 @@ fn insert_device_watch(
     reason = "backend setup registers related event sources"
 )]
 pub(crate) fn insert(
-    event_loop: &EventLoop<LoopData>,
+    event_loop: &EventLoop<'static, LoopData>,
     display: &DisplayHandle,
     compositor: &mut Compositor,
 ) -> Result<crate::Redraw, Box<dyn Error>> {
@@ -129,24 +128,19 @@ pub(crate) fn insert(
     let tty = Rc::new(RefCell::new(initialized_tty));
     let seat_token = insert_seat(event_loop, notifier, &tty)?;
     let keyboard_token = insert_keyboard(event_loop, &tty)?;
+    let frames = tehuti::frame_recovery::Driver::new(event_loop.handle().downgrade(), &tty, event_loop.get_signal());
     let flip_tty = tty.clone();
+    let flip_frames = frames.clone();
     let flip_stop = event_loop.get_signal();
     let drm_token = event_loop
         .handle()
         .insert_source(drm_notifier, move |event, _, data| match event {
             DrmEvent::VBlank(metadata) => {
                 trace!(?metadata, "DRM vblank");
-                let mut backend = flip_tty.borrow_mut();
-                if let Some(scanout) = &mut backend.scanout {
+                if let Some(scanout) = &mut flip_tty.borrow_mut().scanout {
                     scanout.pending = false;
                 }
-                if data.seat_active
-                    && backend.device.is_active()
-                    && let Err(error) = backend.render(data, true)
-                {
-                    warn!(%error, "DRM frame failed");
-                    flip_stop.stop();
-                }
+                flip_frames.render(data, true);
             }
             DrmEvent::Error(error) => {
                 warn!(%error, "DRM event failed");
@@ -154,19 +148,9 @@ pub(crate) fn insert(
             }
         })?;
     let udev_token = insert_device_watch(event_loop, udev, &tty)?;
-    let wallpaper_token = insert_wallpaper_redraw(event_loop, tty.clone())?;
-    let render_stop = event_loop.get_signal();
-    let shutdown_tty = tty.clone();
-    let draw = Box::new(move |data: &mut LoopData| {
-        let mut backend = tty.borrow_mut();
-        if !data.seat_active || !backend.device.is_active() {
-            return;
-        }
-        if let Err(error) = backend.render(data, false) {
-            warn!(%error, "DRM frame failed");
-            render_stop.stop();
-        }
-    });
+    let wallpaper_token = insert_wallpaper_redraw(event_loop, frames.clone())?;
+    let shutdown_tty = tty;
+    let draw = Box::new(move |data: &mut LoopData| frames.render(data, false));
     Ok(crate::Redraw {
         draw,
         shutdown: Box::new(move |loop_to_stop, seat_active| {
@@ -188,23 +172,16 @@ pub(crate) fn insert(
     })
 }
 
+type Frames = tehuti::frame_recovery::Driver<'static, LoopData, Tty>;
+
 fn insert_wallpaper_redraw(
-    event_loop: &EventLoop<LoopData>,
-    tty: Rc<RefCell<Tty>>,
+    event_loop: &EventLoop<'static, LoopData>,
+    frames: Frames,
 ) -> Result<RegistrationToken, Box<dyn Error>> {
     let (ping, source) = smithay::reexports::calloop::ping::make_ping()?;
-    let redraw_tty = tty;
-    let redraw_stop = event_loop.get_signal();
-    let wallpaper_token = event_loop.handle().insert_source(source, move |(), (), data| {
-        let mut backend = redraw_tty.borrow_mut();
-        if data.seat_active
-            && backend.device.is_active()
-            && let Err(error) = backend.render(data, true)
-        {
-            warn!(%error, "wallpaper frame failed");
-            redraw_stop.stop();
-        }
-    })?;
+    let wallpaper_token = event_loop
+        .handle()
+        .insert_source(source, move |(), (), data| frames.render(data, true))?;
     tehuti::wallpaper::set_redraw_ping(ping)?;
     Ok(wallpaper_token)
 }
@@ -529,14 +506,20 @@ impl Tty {
         }
     }
 
-    fn render(&mut self, data: &mut LoopData, tick: bool) -> Result<(), Box<dyn Error>> {
+}
+
+impl tehuti::frame_recovery::Frames<LoopData> for Tty {
+    fn render(&mut self, data: &mut LoopData, tick: bool) -> Result<Option<std::time::Instant>, Box<dyn Error>> {
+        if !data.seat_active || !self.device.is_active() {
+            return Ok(None);
+        }
         if self.rescan_pending {
             self.rescan(data);
         }
-        if let Some(scanout) = &mut self.scanout {
-            scanout.render(&self.device, data, tick)?;
+        match &mut self.scanout {
+            Some(scanout) => scanout.render(&self.device, data, tick),
+            None => Ok(None),
         }
-        Ok(())
     }
 }
 
@@ -563,7 +546,6 @@ impl Scanout {
             next: false,
             pending: false,
             modeset: true,
-            retry_at: None,
             recovery: tehuti::frame_recovery::Recovery::default(),
             drawn: 0,
             idle_frame_callbacks: tehuti::pacing::Interval::new(tehuti::pacing::IDLE_FRAME_CALLBACK),
@@ -643,8 +625,7 @@ impl Scanout {
         let retained = self.rollback.take();
         match self.render_frame(data) {
             Ok(()) => {
-                self.recovery = tehuti::frame_recovery::Recovery::default();
-                self.retry_at = None;
+                self.recovery.reset();
                 if !reverting {
                     self.preview = retained;
                 }
@@ -751,7 +732,7 @@ impl Scanout {
                 self.set_output_mode(mode, data);
             }
             Err(error) => {
-                if self.retry_at.is_none() {
+                if !self.recovery.retrying() {
                     warn!(%error, "DRM mode restoration failed; retaining scanout buffers");
                 }
             }
@@ -760,19 +741,25 @@ impl Scanout {
 
     /// Draws a frame if the output changed. `tick` first advances time, for callers
     /// the loop's periodic work has not just run for.
-    fn render(&mut self, device: &DrmDevice, data: &mut LoopData, tick: bool) -> Result<(), Box<dyn Error>> {
-        if self
-            .retry_at
-            .is_some_and(|deadline| std::time::Instant::now() < deadline)
-        {
-            return Ok(());
+    fn render(
+        &mut self,
+        device: &DrmDevice,
+        data: &mut LoopData,
+        tick: bool,
+    ) -> Result<Option<std::time::Instant>, Box<dyn Error>> {
+        if self.recovery.waiting(std::time::Instant::now()) {
+            return Ok(None);
         }
         if tick {
             crate::advance_time(data);
         }
         self.settings_request(device, data);
         if self.pending {
-            return Ok(());
+            return Ok(None);
+        }
+        if self.recovery.retrying() {
+            // The failed frame consumed its damage; redraw it whole.
+            self.damage = OutputDamageTracker::from_output(&self.output);
         }
         let mut mode_error = None;
         let result = mode::retry(
@@ -789,17 +776,16 @@ impl Scanout {
             |(tty, data)| tty.restore_mode(device, tty.confirmed_mode, data),
         )
         .and_then(|frame| frame.ok_or_else(|| mode_error.unwrap_or_else(|| "no usable DRM mode".into())));
-        if self.recovery.finish(result)?.is_some() {
-            self.retry_at = None;
-        } else {
-            if self.recovery.fallback_due() {
-                self.restore_mode(device, self.confirmed_mode, data);
-                self.modeset = true;
-                data.compositor.display_mode_applied(None);
-            }
-            self.retry_at = std::time::Instant::now().checked_add(tehuti::frame_recovery::RETRY_INTERVAL);
+        let mut fall_back = false;
+        let retry = self
+            .recovery
+            .finish(std::time::Instant::now(), result, || fall_back = true)?;
+        if fall_back {
+            self.restore_mode(device, self.confirmed_mode, data);
+            self.modeset = true;
+            data.compositor.display_mode_applied(None);
         }
-        Ok(())
+        Ok(retry)
     }
 
     fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {

@@ -1,68 +1,123 @@
-//! Frame failures use the production recovery policy without opening a device.
+//! Frame failures go through the production recovery and loop driver with a fake submit.
 
 #[cfg(test)]
 mod tests {
+    use core::{cell::RefCell, time::Duration};
+    use std::{error::Error, rc::Rc, time::Instant};
+
     use proptest::prelude::*;
-    use tehuti::frame_recovery::{MAX_CONSECUTIVE_FAILURES, Recovery};
+    use smithay::reexports::calloop::{
+        EventLoop,
+        timer::{TimeoutAction, Timer},
+    };
+    use tehuti::frame_recovery::{
+        Driver, FAILURES_BEFORE_FALLBACK, Frames, MAX_CONSECUTIVE_FAILURES, RETRY_INTERVAL, Recovery,
+    };
 
-    struct Backend {
-        failures_remaining: u32,
+    /// An output whose submit fails a set number of times. Like the DRM output it
+    /// draws only with new damage, unless the recovery retries a frame.
+    #[derive(Default)]
+    struct Output {
+        recovery: Recovery,
+        damaged: bool,
+        failures_left: u32,
+        attempts: u32,
+        presented: u32,
+        fallbacks: u32,
     }
 
-    impl Backend {
-        fn render(&mut self) -> Result<(), &'static str> {
-            if self.failures_remaining == 0 {
-                return Ok(());
+    impl Frames<()> for Output {
+        fn render(&mut self, _data: &mut (), _tick: bool) -> Result<Option<Instant>, Box<dyn Error>> {
+            let now = Instant::now();
+            if self.recovery.waiting(now) || !(self.damaged || self.recovery.retrying()) {
+                return Ok(None);
             }
-            self.failures_remaining = self.failures_remaining.saturating_sub(1);
-            Err("busy")
-        }
-    }
-
-    #[test]
-    fn transient_backend_failures_keep_the_session_running() {
-        for failures in [1, MAX_CONSECUTIVE_FAILURES - 1] {
-            let mut recovery = Recovery::default();
-            let mut backend = Backend {
-                failures_remaining: failures,
+            self.damaged = false;
+            self.attempts = self.attempts.saturating_add(1);
+            let submitted = if self.failures_left == 0 {
+                self.presented = self.presented.saturating_add(1);
+                Ok(())
+            } else {
+                self.failures_left = self.failures_left.saturating_sub(1);
+                Err("page flip failed")
             };
-            for _ in 0..failures {
-                assert_eq!(recovery.finish(backend.render()), Ok(None));
-            }
-            assert_eq!(recovery.finish(backend.render()), Ok(Some(())));
-            backend.failures_remaining = failures;
-            for _ in 0..failures {
-                assert_eq!(recovery.finish(backend.render()), Ok(None));
-            }
+            let fallbacks = &mut self.fallbacks;
+            Ok(self.recovery.finish(now, submitted, || *fallbacks = fallbacks.saturating_add(1))?)
         }
     }
 
+    /// Damages the output once, then runs the loop with no other source until it
+    /// stops or `limit` passes.
+    fn run(failures: u32, limit: Duration) -> (Output, Duration, bool) {
+        let mut event_loop: EventLoop<'static, ()> = EventLoop::try_new().unwrap();
+        let output = Rc::new(RefCell::new(Output {
+            damaged: true,
+            failures_left: failures,
+            ..Output::default()
+        }));
+        let driver = Driver::new(event_loop.handle().downgrade(), &output, event_loop.get_signal());
+        let timed_out = Rc::new(RefCell::new(false));
+        let flag = timed_out.clone();
+        let stop = event_loop.get_signal();
+        event_loop
+            .handle()
+            .insert_source(Timer::from_duration(limit), move |_, (), _| {
+                *flag.borrow_mut() = true;
+                stop.stop();
+                TimeoutAction::Drop
+            })
+            .unwrap();
+        let started = Instant::now();
+        driver.render(&mut (), false);
+        event_loop.run(None, &mut (), |_| {}).unwrap();
+        let elapsed = started.elapsed();
+        drop(driver);
+        let timed_out = *timed_out.borrow();
+        (Rc::try_unwrap(output).ok().unwrap().into_inner(), elapsed, timed_out)
+    }
+
     #[test]
-    fn persistent_backend_failure_ends_the_session_at_the_bound() {
-        let mut recovery = Recovery::default();
-        let mut backend = Backend {
-            failures_remaining: u32::MAX,
-        };
-        for _ in 1..MAX_CONSECUTIVE_FAILURES {
-            assert_eq!(recovery.finish(backend.render()), Ok(None));
-        }
-        assert_eq!(recovery.finish(backend.render()), Err("busy"));
+    fn a_persistent_failure_retries_on_its_own_timer_until_the_bound() {
+        let (output, elapsed, timed_out) = run(u32::MAX, Duration::from_secs(20));
+        assert!(!timed_out, "retries stalled without an outside wakeup");
+        assert_eq!(output.attempts, MAX_CONSECUTIVE_FAILURES);
+        assert_eq!(output.fallbacks, 1);
+        assert!(elapsed >= RETRY_INTERVAL.saturating_mul(MAX_CONSECUTIVE_FAILURES.saturating_sub(1)));
+        assert!(elapsed < RETRY_INTERVAL.saturating_mul(MAX_CONSECUTIVE_FAILURES.saturating_mul(4)));
+    }
+
+    #[test]
+    fn a_recovered_failure_presents_the_frame_without_client_activity() {
+        let (output, _, timed_out) = run(1, RETRY_INTERVAL.saturating_mul(10));
+        assert!(timed_out, "a recovered output keeps the session running");
+        assert_eq!((output.attempts, output.presented), (2, 1));
+        assert!(!output.recovery.retrying());
     }
 
     proptest! {
         #[test]
-        fn a_success_resets_any_failure_streak(failures in 0..MAX_CONSECUTIVE_FAILURES) {
+        fn the_fallback_runs_once_at_the_first_failure_past_its_threshold(
+            outcomes in prop::collection::vec(any::<bool>(), 0..120),
+        ) {
             let mut recovery = Recovery::default();
-            let mut backend = Backend { failures_remaining: failures };
-            for _ in 0..failures {
-                prop_assert_eq!(recovery.finish(backend.render()), Ok(None));
+            let mut streak = 0_u32;
+            let now = Instant::now();
+            let retry = now.checked_add(RETRY_INTERVAL).unwrap();
+            for failed in outcomes {
+                let result = if failed { Err("busy") } else { Ok(()) };
+                let mut fell_back = false;
+                let finished = recovery.finish(now, result, || fell_back = true);
+                streak = if failed { streak.saturating_add(1) } else { 0 };
+                prop_assert_eq!(fell_back, streak == FAILURES_BEFORE_FALLBACK);
+                prop_assert_eq!(recovery.fallback_attempted(), streak >= FAILURES_BEFORE_FALLBACK);
+                if streak >= MAX_CONSECUTIVE_FAILURES {
+                    prop_assert_eq!(finished, Err("busy"));
+                    break;
+                }
+                prop_assert_eq!(finished, Ok(failed.then_some(retry)));
+                prop_assert_eq!(recovery.waiting(now), failed);
+                prop_assert!(!recovery.waiting(retry));
             }
-            prop_assert_eq!(recovery.finish(backend.render()), Ok(Some(())));
-            backend.failures_remaining = MAX_CONSECUTIVE_FAILURES;
-            for _ in 1..MAX_CONSECUTIVE_FAILURES {
-                prop_assert_eq!(recovery.finish(backend.render()), Ok(None));
-            }
-            prop_assert_eq!(recovery.finish(backend.render()), Err("busy"));
         }
     }
 
@@ -124,28 +179,5 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(backend, ("1920x1080@60", 1));
         assert_eq!(request, None);
-    }
-
-    #[test]
-    fn persistent_failures_fall_back_before_the_session_ends() {
-        use tehuti::frame_recovery::{FAILURES_AFTER_FALLBACK, FAILURES_BEFORE_FALLBACK, Recovery};
-        let mut recovery = Recovery::default();
-        let mut mode = "1920x1080@60";
-        for _ in 1..FAILURES_BEFORE_FALLBACK {
-            assert_eq!(recovery.finish(Err::<(), _>("busy")), Ok(None));
-            assert!(!recovery.fallback_due());
-        }
-        assert_eq!(recovery.finish(Err::<(), _>("busy")), Ok(None));
-        if recovery.fallback_due() {
-            mode = "1920x1080@120";
-        }
-        assert_eq!(mode, "1920x1080@120");
-        for _ in 1..FAILURES_AFTER_FALLBACK {
-            assert_eq!(recovery.finish(Err::<(), _>("busy")), Ok(None));
-            assert!(!recovery.fallback_due());
-        }
-        assert_eq!(recovery.finish(Err::<(), _>("busy")), Err("busy"));
-        assert_eq!(recovery.finish(Ok::<_, &str>(())), Ok(Some(())));
-        assert!(!recovery.fallback_due());
     }
 }
