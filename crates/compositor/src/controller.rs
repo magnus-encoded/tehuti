@@ -522,14 +522,14 @@ pub fn scale_axis(value: i32, source: (i32, i32), target: (i32, i32)) -> i32 {
     let source_mid = source.0.midpoint(source.1);
     let value = value.clamp(source.0, source.1);
     // One straight segment each side of the midpoint, in i128 so no product can overflow.
-    let segment = |from: (i32, i32), to: (i32, i32)| -> Option<i128> {
-        let span = i128::from(from.1).checked_sub(i128::from(from.0))?;
+    let segment = |input: (i32, i32), output: (i32, i32)| -> Option<i128> {
+        let span = i128::from(input.1).checked_sub(i128::from(input.0))?;
         if span == 0 {
-            return Some(i128::from(to.0));
+            return Some(i128::from(output.0));
         }
-        let offset = i128::from(value).checked_sub(i128::from(from.0))?;
-        let reach = i128::from(to.1).checked_sub(i128::from(to.0))?;
-        i128::from(to.0).checked_add(offset.checked_mul(reach)?.checked_div(span)?)
+        let offset = i128::from(value).checked_sub(i128::from(input.0))?;
+        let reach = i128::from(output.1).checked_sub(i128::from(output.0))?;
+        i128::from(output.0).checked_add(offset.checked_mul(reach)?.checked_div(span)?)
     };
     let scaled = if value <= source_mid {
         segment((source.0, source_mid), (target.0, target_mid))
