@@ -18,7 +18,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 rustix = { version = "1", features = ["fs", "process"] }
 libc = "0.2"
-evdev = "0.13"
+evdev = { git = "https://github.com/emberian/evdev", rev = "7fee138a341f73b81b9c4f8c59e3527c6a169ea3" }
 smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_drm", "backend_gbm", "renderer_multi", "use_system_lib", "backend_udev", "backend_session_libseat", "renderer_pixman", "wayland_frontend", "desktop", "renderer_gl"] }
 tehuti-core = { path = "../core" }
 tehuti-protocol = { path = "../protocol" }

@@ -200,7 +200,7 @@ fn install_skill(path: Option<std::ffi::OsString>) -> Result<ExitCode, Box<dyn E
 }
 
 fn insert_backend(
-    event_loop: &EventLoop<LoopData>,
+    event_loop: &EventLoop<'static, LoopData>,
     display: &smithay::reexports::wayland_server::DisplayHandle,
     compositor: &mut Compositor,
 ) -> Result<Option<Redraw>, Box<dyn Error>> {
@@ -977,10 +977,8 @@ fn advance_time(data: &mut LoopData) {
 fn sync_pad_grab(data: &mut LoopData) {
     let mirrored = data.compositor.virtual_pad();
     for pad in data.controllers.values_mut() {
-        if let Err(error) = pad
-            .pad
-            .set_passthrough(data.compositor.pad_passthrough() && !mirrored)
-        {
+        let passthrough = data.compositor.pad_passthrough() && (!mirrored || pad.pad.mirror_unavailable());
+        if let Err(error) = pad.pad.set_passthrough(passthrough) {
             warn!(%error, "controller ownership change failed; reopening");
             pad.watchdog.request_reopen();
         }
@@ -1022,12 +1020,17 @@ fn sync_pad_grab(data: &mut LoopData) {
 /// Copies physical input to each virtual pad, applying plugin overrides before the core reads it.
 fn pump_virtual_pads(data: &mut LoopData) {
     let compositor = &mut data.compositor;
+    let spare = &mut data.spare_virtual_pad;
     for controller in data.controllers.values_mut() {
         if let Err(error) = controller
             .pad
             .pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
         {
-            warn!(%error, "virtual pad copy failed; reopening");
+            // The physical pad is gone; the virtual pad stays, at rest, for the next one.
+            warn!(%error, "physical pad lost; keeping the virtual pad");
+            if let Some(kept) = controller.pad.detach_virtual_pad() {
+                *spare = Some(kept);
+            }
             controller.watchdog.request_reopen();
         }
     }

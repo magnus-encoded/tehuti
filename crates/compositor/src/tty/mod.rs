@@ -42,6 +42,7 @@ struct Scanout {
     preview: Option<(Mode, render::DrmRendering, bool)>,
     rollback: Option<(Mode, render::DrmRendering, bool)>,
     surface: DrmSurface,
+    confirmed_mode: Mode,
     remaining_modes: std::collections::VecDeque<Mode>,
     listed_modes: Vec<Mode>,
     output: Output,
@@ -50,8 +51,7 @@ struct Scanout {
     next: bool,
     pending: bool,
     modeset: bool,
-    retry_at: Option<std::time::Instant>,
-    retry_delay: Duration,
+    recovery: tehuti::frame_recovery::Recovery,
     /// Frames drawn since start, which dates each scanout buffer's contents.
     drawn: u64,
     idle_frame_callbacks: tehuti::pacing::Interval,
@@ -110,12 +110,8 @@ fn insert_device_watch(
     clippy::redundant_pub_crate,
     reason = "conflicts with the workspace unreachable_pub lint"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "backend setup registers related event sources"
-)]
 pub(crate) fn insert(
-    event_loop: &EventLoop<LoopData>,
+    event_loop: &EventLoop<'static, LoopData>,
     display: &DisplayHandle,
     compositor: &mut Compositor,
 ) -> Result<crate::Redraw, Box<dyn Error>> {
@@ -128,24 +124,20 @@ pub(crate) fn insert(
     let tty = Rc::new(RefCell::new(initialized_tty));
     let seat_token = insert_seat(event_loop, notifier, &tty)?;
     let keyboard_token = insert_keyboard(event_loop, &tty)?;
+    let frames_handle = Rc::new(event_loop.handle());
+    let frames = tehuti::frame_recovery::Driver::new(&frames_handle, &tty, event_loop.get_signal());
     let flip_tty = tty.clone();
+    let flip_frames = frames.clone();
     let flip_stop = event_loop.get_signal();
     let drm_token = event_loop
         .handle()
         .insert_source(drm_notifier, move |event, _, data| match event {
             DrmEvent::VBlank(metadata) => {
                 trace!(?metadata, "DRM vblank");
-                let mut backend = flip_tty.borrow_mut();
-                if let Some(scanout) = &mut backend.scanout {
+                if let Some(scanout) = &mut flip_tty.borrow_mut().scanout {
                     scanout.pending = false;
                 }
-                if data.seat_active
-                    && backend.device.is_active()
-                    && let Err(error) = backend.render(data, true)
-                {
-                    warn!(%error, "DRM frame failed");
-                    flip_stop.stop();
-                }
+                flip_frames.render(data, true);
             }
             DrmEvent::Error(error) => {
                 warn!(%error, "DRM event failed");
@@ -153,18 +145,12 @@ pub(crate) fn insert(
             }
         })?;
     let udev_token = insert_device_watch(event_loop, udev, &tty)?;
-    let wallpaper_token = insert_wallpaper_redraw(event_loop, tty.clone())?;
-    let render_stop = event_loop.get_signal();
-    let shutdown_tty = tty.clone();
+    let wallpaper_token = insert_wallpaper_redraw(event_loop, frames.clone())?;
+    let shutdown_tty = tty;
     let draw = Box::new(move |data: &mut LoopData| {
-        let mut backend = tty.borrow_mut();
-        if !data.seat_active || !backend.device.is_active() {
-            return;
-        }
-        if let Err(error) = backend.render(data, false) {
-            warn!(%error, "DRM frame failed");
-            render_stop.stop();
-        }
+        // The redraw owns the handle that retry timers reach through.
+        let _owner = &frames_handle;
+        frames.render(data, false);
     });
     Ok(crate::Redraw {
         draw,
@@ -187,23 +173,16 @@ pub(crate) fn insert(
     })
 }
 
+type Frames = tehuti::frame_recovery::Driver<'static, LoopData, Tty>;
+
 fn insert_wallpaper_redraw(
-    event_loop: &EventLoop<LoopData>,
-    tty: Rc<RefCell<Tty>>,
+    event_loop: &EventLoop<'static, LoopData>,
+    frames: Frames,
 ) -> Result<RegistrationToken, Box<dyn Error>> {
     let (ping, source) = smithay::reexports::calloop::ping::make_ping()?;
-    let redraw_tty = tty;
-    let redraw_stop = event_loop.get_signal();
-    let wallpaper_token = event_loop.handle().insert_source(source, move |(), (), data| {
-        let mut backend = redraw_tty.borrow_mut();
-        if data.seat_active
-            && backend.device.is_active()
-            && let Err(error) = backend.render(data, true)
-        {
-            warn!(%error, "wallpaper frame failed");
-            redraw_stop.stop();
-        }
-    })?;
+    let wallpaper_token = event_loop
+        .handle()
+        .insert_source(source, move |(), (), data| frames.render(data, true))?;
     tehuti::wallpaper::set_redraw_ping(ping)?;
     Ok(wallpaper_token)
 }
@@ -527,15 +506,24 @@ impl Tty {
             }
         }
     }
+}
 
-    fn render(&mut self, data: &mut LoopData, tick: bool) -> Result<(), Box<dyn Error>> {
+impl tehuti::frame_recovery::Frames<LoopData> for Tty {
+    fn render(
+        &mut self,
+        data: &mut LoopData,
+        tick: bool,
+    ) -> Result<Option<std::time::Instant>, Box<dyn Error>> {
+        if !data.seat_active || !self.device.is_active() {
+            return Ok(None);
+        }
         if self.rescan_pending {
             self.rescan(data);
         }
-        if let Some(scanout) = &mut self.scanout {
-            scanout.render(&self.device, data, tick)?;
+        match &mut self.scanout {
+            Some(scanout) => scanout.render(&self.device, data, tick),
+            None => Ok(None),
         }
-        Ok(())
     }
 }
 
@@ -549,6 +537,7 @@ impl Scanout {
         global: GlobalId,
     ) -> Self {
         Self {
+            confirmed_mode: surface.pending_mode(),
             surface,
             renderer,
             remaining_modes,
@@ -561,8 +550,7 @@ impl Scanout {
             next: false,
             pending: false,
             modeset: true,
-            retry_at: None,
-            retry_delay: Duration::ZERO,
+            recovery: tehuti::frame_recovery::Recovery::default(),
             drawn: 0,
             idle_frame_callbacks: tehuti::pacing::Interval::new(tehuti::pacing::IDLE_FRAME_CALLBACK),
             statistics: FrameStatistics {
@@ -574,24 +562,46 @@ impl Scanout {
     }
 
     fn settings_request(&mut self, device: &DrmDevice, data: &mut LoopData) {
-        while let Some((index, persist)) = data.compositor.take_settings_request() {
+        while let Some((index, persist)) =
+            tehuti::frame_recovery::when_idle(self.pending, || data.compositor.take_settings_request())
+        {
             let Some(mode) = self.listed_modes.get(index).copied() else {
                 data.compositor.display_mode_applied(None);
                 continue;
             };
             if persist {
+                self.confirmed_mode = mode;
                 self.preview = None;
                 let result = tehuti::display_mode_store::Store::from_env()
                     .and_then(|store| store.write(&mode_label(&mode)));
                 data.compositor.display_mode_saved(result);
                 continue;
             }
-            self.switch_settings_mode(device, mode, index, data);
+            let confirmed = self.confirmed_mode;
+            let result = tehuti::frame_recovery::switch_or_restore(
+                &mut (&mut *self, &mut *data),
+                confirmed,
+                |(scanout, data)| scanout.switch_settings_mode(device, mode, index, data),
+                |(scanout, data), confirmed| {
+                    scanout.restore_mode(device, confirmed, data);
+                    scanout.modeset = true;
+                    data.compositor.display_mode_applied(None);
+                },
+            );
+            if let Err(error) = result {
+                warn!(%error, "display mode rejected; restoring confirmed output");
+            }
             return;
         }
     }
 
-    fn switch_settings_mode(&mut self, device: &DrmDevice, mode: Mode, index: usize, data: &mut LoopData) {
+    fn switch_settings_mode(
+        &mut self,
+        device: &DrmDevice,
+        mode: Mode,
+        index: usize,
+        data: &mut LoopData,
+    ) -> Result<(), Box<dyn Error>> {
         let previous = self.surface.current_mode();
         let previous_next = self.next;
         let reverting = self.preview.as_ref().is_some_and(|(saved, _, _)| *saved == mode);
@@ -608,15 +618,7 @@ impl Scanout {
                     render::create(device.device_fd(), &self.surface).map(|renderer| (renderer, false))
                 }
             });
-        let (renderer, next) = match attempt {
-            Ok(result) => result,
-            Err(error) => {
-                warn!(%error, "display mode rejected");
-                self.restore_mode(device, data);
-                data.compositor.display_mode_applied(None);
-                return;
-            }
-        };
+        let (renderer, next) = attempt?;
         let previous_renderer = core::mem::replace(&mut self.renderer, renderer);
         advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
         self.rollback = Some((previous, previous_renderer, previous_next));
@@ -627,20 +629,18 @@ impl Scanout {
         let retained = self.rollback.take();
         match self.render_frame(data) {
             Ok(()) => {
+                self.recovery.reset();
                 if !reverting {
                     self.preview = retained;
                 }
                 data.compositor.display_mode_applied(Some(index));
             }
             Err(error) => {
-                warn!(%error, "display modeset rejected; restoring current output");
                 self.rollback = retained;
-                self.restore_mode(device, data);
-                self.modeset = true;
-                self.pending = false;
-                data.compositor.display_mode_applied(None);
+                return Err(error);
             }
         }
+        Ok(())
     }
 
     fn set_output_mode(&mut self, mode: Mode, data: &mut LoopData) {
@@ -688,69 +688,108 @@ impl Scanout {
         false
     }
 
-    fn restore_mode(&mut self, device: &DrmDevice, data: &mut LoopData) {
-        let mode = self.surface.current_mode();
+    fn reject_preview(&mut self, data: &mut LoopData) -> Result<bool, Box<dyn Error>> {
+        let Some((mode, _, _)) = self.preview.as_ref() else {
+            return Ok(false);
+        };
+        let mode = *mode;
+        self.surface.use_mode(mode)?;
+        if let Some((_, renderer, next)) = self.preview.take() {
+            let previous = self.surface.current_mode();
+            let renderer = core::mem::replace(&mut self.renderer, renderer);
+            self.rollback = Some((previous, renderer, self.next));
+            advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
+            self.next = next;
+        }
+        self.set_output_mode(mode, data);
+        self.modeset = true;
+        data.compositor.display_mode_applied(None);
+        Ok(true)
+    }
+
+    fn restore_mode(&mut self, device: &DrmDevice, mode: Mode, data: &mut LoopData) {
         let restored = self
             .surface
             .use_mode(mode)
             .map_err(Box::<dyn Error>::from)
             .and_then(|()| {
-                mode::restored_renderer(mode, self.rollback.take(), || {
+                let retained = if self.preview.as_ref().is_some_and(|(saved, _, _)| *saved == mode) {
+                    self.preview.take()
+                } else if self.rollback.as_ref().is_some_and(|(saved, _, _)| *saved == mode) {
+                    self.rollback.take()
+                } else {
+                    None
+                };
+                mode::restored_renderer(mode, retained, || {
                     render::create(device.device_fd(), &self.surface)
                 })
             });
         match restored {
             Ok((renderer, next)) => {
-                self.renderer = renderer;
+                let previous = self.surface.current_mode();
+                let retired = core::mem::replace(&mut self.renderer, renderer);
+                if self.rollback.is_none() {
+                    self.rollback = Some((previous, retired, self.next));
+                }
                 advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
                 self.next = next;
                 self.set_output_mode(mode, data);
             }
-            Err(error) => warn!(%error, "DRM mode restoration failed; retaining scanout buffers"),
+            Err(error) => {
+                if !self.recovery.retrying() {
+                    warn!(%error, "DRM mode restoration failed; retaining scanout buffers");
+                }
+            }
         }
     }
 
     /// Draws a frame if the output changed. `tick` first advances time, for callers
     /// the loop's periodic work has not just run for.
-    fn render(&mut self, device: &DrmDevice, data: &mut LoopData, tick: bool) -> Result<(), Box<dyn Error>> {
-        if self
-            .retry_at
-            .is_some_and(|deadline| std::time::Instant::now() < deadline)
-        {
-            return Ok(());
+    fn render(
+        &mut self,
+        device: &DrmDevice,
+        data: &mut LoopData,
+        tick: bool,
+    ) -> Result<Option<std::time::Instant>, Box<dyn Error>> {
+        if self.recovery.waiting(std::time::Instant::now()) {
+            return Ok(None);
         }
         if tick {
             crate::advance_time(data);
         }
         self.settings_request(device, data);
         if self.pending {
-            return Ok(());
+            return Ok(None);
         }
+        if self.recovery.retrying() {
+            // The failed frame consumed its damage; redraw it whole.
+            self.damage = OutputDamageTracker::from_output(&self.output);
+        }
+        let mut mode_error = None;
         let result = mode::retry(
-            &mut (&mut *self, data),
+            &mut (&mut *self, &mut *data),
             |(tty, data)| tty.render_frame(data),
             |(tty, data), error| {
-                if !tty.modeset {
+                tty.damage = OutputDamageTracker::from_output(&tty.output);
+                if tty.recovery.fallback_attempted() || tty.reject_preview(data)? || !tty.modeset {
                     return Err(error);
                 }
-                let fallback = tty.fallback_mode(device, data);
-                if fallback {
-                    warn!(%error, "DRM modeset failed; trying next listed mode");
-                } else {
-                    warn!(%error, delay = ?mode::next_backoff(tty.retry_delay), "all listed DRM modes failed; backing off before retrying restored output");
-                }
-                Ok(fallback)
+                mode_error = Some(error);
+                Ok(tty.fallback_mode(device, data))
             },
-            |(tty, data)| tty.restore_mode(device, data),
-        )?;
-        if result.is_some() {
-            self.retry_at = None;
-            self.retry_delay = Duration::ZERO;
-        } else {
-            self.retry_delay = mode::next_backoff(self.retry_delay);
-            self.retry_at = std::time::Instant::now().checked_add(self.retry_delay);
+            |(tty, data)| tty.restore_mode(device, tty.confirmed_mode, data),
+        )
+        .and_then(|frame| frame.ok_or_else(|| mode_error.unwrap_or_else(|| "no usable DRM mode".into())));
+        let mut fall_back = false;
+        let retry = self
+            .recovery
+            .finish(std::time::Instant::now(), result, || fall_back = true)?;
+        if fall_back {
+            self.restore_mode(device, self.confirmed_mode, data);
+            self.modeset = true;
+            data.compositor.display_mode_applied(None);
         }
-        Ok(())
+        Ok(retry)
     }
 
     fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
@@ -780,6 +819,10 @@ impl Scanout {
         let was_modeset = self.modeset;
         submit(&self.surface, drawn.framebuffer, &mut self.modeset)?;
         if was_modeset {
+            self.remaining_modes.clear();
+            if self.rollback.is_some() && self.preview.is_none() {
+                self.confirmed_mode = self.surface.pending_mode();
+            }
             self.rollback = None;
             let mode = self.surface.pending_mode();
             info!(
