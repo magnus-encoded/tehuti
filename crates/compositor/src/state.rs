@@ -1231,6 +1231,22 @@ impl Compositor {
         self.dispatch.keyboard()
     }
 
+    pub(crate) fn launcher_icons(&self) -> Vec<String> {
+        let Some(launcher) = self.dispatch.launcher() else {
+            return Vec::new();
+        };
+        (0..launcher.list().slots().candidates.len())
+            .map(|index| {
+                launcher
+                    .candidate_destination(index)
+                    .and_then(|index| self.launcher_routes.get(index))
+                    .and_then(|route| route.steps.first())
+                    .map(|step| step.icon.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
     /// Sends a start or stop to the speech sidecar; `false` when it fails.
     fn send_speech_command(&mut self, command: &tehuti_core::speech::SpeechEffect) -> bool {
         match command {

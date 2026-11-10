@@ -43,6 +43,9 @@ const SELECTED_TEXT_WIDTH: usize = HINT_LEFT.saturating_sub(ROW_TEXT_LEFT).satur
 #[derive(Debug, Default)]
 pub struct Buffer {
     cached: Option<Artwork>,
+    icon_names: Vec<String>,
+    icons: Vec<Option<image::DynamicImage>>,
+    pending: Option<std::sync::mpsc::Receiver<(usize, Option<image::DynamicImage>)>>,
 }
 
 #[derive(Debug)]
@@ -55,6 +58,50 @@ struct Artwork {
 }
 
 impl Buffer {
+    fn update_icons(&mut self, icon_names: Vec<String>) {
+        if self.icon_names != icon_names {
+            let paths = icon_names
+                .iter()
+                .map(|name| crate::desktop_hints::resolve_icon(name))
+                .collect();
+            self.icons = icon_names.iter().map(|_| None).collect();
+            self.pending = Some(crate::desktop_hints::spawn_icon_loader(paths));
+            self.icon_names = icon_names;
+            self.cached = None;
+        }
+        if let Some(receiver) = &self.pending {
+            while let Ok((index, icon)) = receiver.try_recv() {
+                if let Some(slot) = self.icons.get_mut(index) {
+                    *slot = icon;
+                    self.cached = None;
+                }
+            }
+        }
+    }
+
+    /// Waits (bounded) for pending icons; only offline shots call this, never a live frame.
+    pub(crate) fn settle_icons(&mut self, icon_names: Vec<String>, budget: core::time::Duration) {
+        self.update_icons(icon_names);
+        let Some(deadline) = std::time::Instant::now().checked_add(budget) else {
+            return;
+        };
+        let mut remaining = self.icons.iter().filter(|icon| icon.is_none()).count();
+        while remaining > 0 {
+            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                break;
+            };
+            let Some(receiver) = &self.pending else { break };
+            let Ok((index, icon)) = receiver.recv_timeout(left) else {
+                break;
+            };
+            if let Some(slot) = self.icons.get_mut(index) {
+                *slot = icon;
+                self.cached = None;
+            }
+            remaining = remaining.saturating_sub(1);
+        }
+    }
+
     /// # Errors
     /// Returns the renderer's memory import error.
     #[expect(
@@ -78,6 +125,7 @@ impl Buffer {
             self.cached = None;
             return Ok(None);
         };
+        self.update_icons(compositor.launcher_icons());
         let size = (mode.size.w, mode.size.h);
         let family = compositor.pad_family();
         let scale = output.current_scale().integer_scale();
@@ -87,7 +135,7 @@ impl Buffer {
                 || previous.size != size
                 || previous.scale != scale
         }) {
-            self.cached = raster_scaled(list, family, size, scale).map(|pixels| Artwork {
+            self.cached = raster_with_icons(list, family, size, scale, &self.icons).map(|pixels| Artwork {
                 list: list.clone(),
                 family,
                 size,
@@ -136,13 +184,23 @@ pub fn raster(list: &List, family: PadFamily, size: (i32, i32)) -> Option<Vec<u8
 /// Like [`raster`], for an output whose integer `scale` also scales the bar.
 #[must_use]
 pub fn raster_scaled(list: &List, family: PadFamily, size: (i32, i32), scale: i32) -> Option<Vec<u8>> {
+    raster_with_icons(list, family, size, scale, &[])
+}
+
+fn raster_with_icons(
+    list: &List,
+    family: PadFamily,
+    size: (i32, i32),
+    scale: i32,
+    icons: &[Option<image::DynamicImage>],
+) -> Option<Vec<u8>> {
     if !list.is_open() {
         return None;
     }
     let mut canvas = Canvas::new(size)?;
     canvas.reference(1920, 1080);
     let bottom = panel_bottom(size, scale)?;
-    let _layout = paint(&mut canvas, list, family, bottom);
+    let _layout = paint(&mut canvas, list, family, bottom, icons);
     Some(canvas.pixels)
 }
 
@@ -204,7 +262,13 @@ fn border(canvas: &mut Canvas, y: usize, height: usize, colour: [u8; 4], dashed:
 const PANEL_TOP: usize = 0;
 const FOOTER: usize = 56;
 
-fn paint(canvas: &mut Canvas, list: &List, family: PadFamily, bottom: usize) -> serde_json::Value {
+fn paint(
+    canvas: &mut Canvas,
+    list: &List,
+    family: PadFamily,
+    bottom: usize,
+    icons: &[Option<image::DynamicImage>],
+) -> serde_json::Value {
     let mut row_bounds = Vec::new();
     let scopes = list.slots().scopes.len();
     let header = 84usize.saturating_add(scopes.saturating_mul(24));
@@ -239,7 +303,11 @@ fn paint(canvas: &mut Canvas, list: &List, family: PadFamily, bottom: usize) -> 
             section = Some(row.close);
         }
         row_bounds.push(serde_json::json!({"y": y, "height": row_height}));
-        paint_candidate(canvas, list, family, row, y, row_height);
+        let icon = match row.choice {
+            Choice::Candidate(index) => icons.get(index).and_then(Option::as_ref),
+            Choice::Create => None,
+        };
+        paint_candidate(canvas, list, family, row, (y, row_height), icon);
         y = y.saturating_add(row_height);
     }
     paint_footer(canvas, list, y, footer_top);
@@ -281,7 +349,7 @@ pub fn scene(list: &List, family: PadFamily, size: (i32, i32)) -> Option<serde_j
     let mut canvas = Canvas::new(size)?;
     canvas.reference(1920, 1080);
     canvas.trace = true;
-    Some(paint(&mut canvas, list, family, panel_bottom(size, 1)?))
+    Some(paint(&mut canvas, list, family, panel_bottom(size, 1)?, &[]))
 }
 
 fn panel(canvas: &mut Canvas, height: usize) {
@@ -403,9 +471,10 @@ fn paint_candidate(
     list: &List,
     family: PadFamily,
     row: &tehuti_core::choice_list::Ranked,
-    top: usize,
-    height: usize,
+    bounds: (usize, usize),
+    icon: Option<&image::DynamicImage>,
 ) {
+    let (top, height) = bounds;
     let y = top.saturating_add(height.saturating_sub(72) / 2);
     let selected = list.selected() == Some(row.choice);
     canvas.rounded_rectangle(
@@ -413,14 +482,7 @@ fn paint_candidate(
         CORNER_RADIUS,
         if selected { LIVE } else { [43, 36, 30, 255] },
     );
-    if selected {
-        canvas.rounded_rectangle(
-            (LEFT.saturating_add(16), y.saturating_add(18), 4, 36),
-            2,
-            [230, 215, 178, 255],
-        );
-    }
-    paint_initial(canvas, &row.candidate.name, y, selected);
+    paint_leading(canvas, &row.candidate.name, y, (selected, icon));
     if list
         .candidates()
         .first()
@@ -466,6 +528,19 @@ fn paint_candidate(
         );
     }
     selected_hint(canvas, list, family, y.saturating_add(12), selected);
+}
+
+fn paint_leading(
+    canvas: &mut Canvas,
+    name: &str,
+    y: usize,
+    (selected, icon): (bool, Option<&image::DynamicImage>),
+) {
+    if let Some(icon) = icon {
+        canvas.bgra_image_box(LEFT.saturating_add(INSET), y.saturating_add(16), 40, icon);
+    } else {
+        paint_initial(canvas, name, y, selected);
+    }
 }
 
 fn paint_initial(canvas: &mut Canvas, name: &str, y: usize, selected: bool) {

@@ -230,6 +230,22 @@ impl Canvas {
         }
     }
 
+    pub(crate) fn bgra_image_box(&mut self, x: usize, y: usize, side: usize, image: &image::DynamicImage) {
+        let width = (side as f32 * self.scale.0).round() as u32;
+        let height = (side as f32 * self.scale.1).round() as u32;
+        let mut image = image.thumbnail(width.max(1), height.max(1)).to_rgba8();
+        for pixel in image.pixels_mut() {
+            pixel.0.swap(0, 2);
+        }
+        let left = (x as f32 * self.scale.0).round() as usize;
+        let top = (y as f32 * self.scale.1).round() as usize;
+        self.image(
+            left.saturating_add(width.saturating_sub(image.width()) as usize / 2),
+            top.saturating_add(height.saturating_sub(image.height()) as usize / 2),
+            &image,
+        );
+    }
+
     pub(crate) fn image(&mut self, x: usize, y: usize, image: &image::RgbaImage) {
         for (column, row, pixel) in image.enumerate_pixels() {
             self.blend(

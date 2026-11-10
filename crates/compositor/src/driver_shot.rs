@@ -63,6 +63,7 @@ where
     let mut buffer: B = renderer.create_buffer(Fourcc::Abgr8888, (mode.size.w, mode.size.h).into())?;
     let mut target = renderer.bind(&mut buffer)?;
     let mut overlays = crate::overlays::Overlays::default();
+    overlays.settle_icons(compositor);
     let elements = overlays.elements(renderer, output, compositor, clock)?;
     let mut damage = OutputDamageTracker::from_output(output);
     crate::wallpaper::render_output(
