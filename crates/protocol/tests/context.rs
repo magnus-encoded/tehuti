@@ -273,11 +273,12 @@ restart = { restart = false }"
     ];
 
     fn speech_source(phrases: &[(&str, &str)]) -> String {
-        let lines: String = phrases
-            .iter()
-            .map(|(phrase, key)| format!("{phrase:?} = {{ key = '{key}' }}\n"))
-            .collect();
-        format!("app_id = 'test'\n[buttons]\n[speech]\n{lines}")
+        use core::fmt::Write as _;
+        let mut source = String::from("app_id = 'test'\n[buttons]\n[speech]\n");
+        for (phrase, key) in phrases {
+            writeln!(source, "{phrase:?} = {{ key = '{key}' }}").unwrap();
+        }
+        source
     }
 
     fn speech_context(phrases: &[(&str, &str)]) -> tehuti_protocol::Context {
