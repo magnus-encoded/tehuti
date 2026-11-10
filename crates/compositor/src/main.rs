@@ -582,7 +582,7 @@ fn arm_key_release(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopDat
     });
     if armed.is_err() {
         warn!("key release timer failed; releasing now");
-        data.compositor.release_due_keys();
+        data.compositor.release_timer_failed();
     }
 }
 
