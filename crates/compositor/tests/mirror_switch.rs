@@ -214,9 +214,10 @@ mod tests {
                 prop_assert!(sync.failed.is_empty() && current.mirrored() && spare.is_none());
                 queue(&handles, KeyCode::BTN_EAST, 1);
                 current.pump_mirror(&mut |_, _| false).unwrap();
+                let east = shown(&log.borrow()).get(&(EventType::KEY.0, KeyCode::BTN_EAST.code())).copied();
                 prop_assert_eq!(
-                    shown(&log.borrow()).get(&(EventType::KEY.0, KeyCode::BTN_EAST.code())),
-                    Some(&1),
+                    east,
+                    Some(1),
                     "input flows after reconnect {}", round
                 );
                 if round == drops {
