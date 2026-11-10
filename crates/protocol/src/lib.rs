@@ -808,8 +808,8 @@ impl Context {
     /// callers try it only once no exact or folded phrase matched anywhere.
     #[must_use]
     pub fn plural_speech_action(&self, phrase: &str) -> Option<Action> {
-        let key = speech_variant_key(phrase);
         const SHORTEST: usize = 4;
+        let key = speech_variant_key(phrase);
         let long_enough = |form: &str| form.chars().count() >= SHORTEST;
         key.strip_suffix('s')
             .filter(|singular| long_enough(singular))
