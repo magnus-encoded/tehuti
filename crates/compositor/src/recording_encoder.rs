@@ -213,6 +213,13 @@ pub trait Runtime: core::fmt::Debug {
     /// # Errors
     /// Returns encoder startup failures.
     fn spawn(&self, command: &std::process::Command) -> io::Result<Box<dyn Sink>>;
+    /// Opens the recording's timeline for writing.
+    ///
+    /// # Errors
+    /// Returns file creation failures.
+    fn timeline(&self, path: &Path) -> io::Result<Box<dyn Write>> {
+        Ok(Box::new(std::fs::File::create_new(path)?))
+    }
 }
 
 /// A recording encoder whose input and completion can be driven synchronously.

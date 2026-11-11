@@ -1107,7 +1107,12 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
-        self.record_debug("input", &input);
+        match &input {
+            // Loop ticks are not timeline events; sticks are sampled once per video frame.
+            DispatchInput::Tick { .. } => {}
+            DispatchInput::Sticks(sticks) => self.record_sticks(sticks),
+            _ => self.record_debug("input", &input),
+        }
         let elapsed = dispatch_elapsed(&input);
         self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
