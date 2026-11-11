@@ -8,7 +8,6 @@ use core::{
 use image::RgbaImage;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
     fs::File,
     io::{self, Read as _, Write},
     path::PathBuf,
@@ -29,9 +28,6 @@ const CAPTURE_LAG: Duration = INTERVAL;
 
 /// Timeline events the encoder loop writes before it turns back to video.
 const EVENT_BATCH: usize = 256;
-
-/// An input or effect identical to one recorded less than this long ago is not written again.
-const REPEAT_WINDOW: Duration = Duration::from_secs(1);
 
 /// Recording time up to which video slots may be written.
 const fn video_due(elapsed: Duration, stopped_ms: u64) -> Duration {
@@ -54,15 +50,17 @@ pub(super) struct Session {
     next_frame: Instant,
     scene: Value,
     worker: Option<std::thread::JoinHandle<()>>,
+    /// The timeline writer, joined on drop so the final `stop` line is on disk.
+    timeline: Option<std::thread::JoinHandle<()>>,
     injected: Option<Injected>,
     /// Events dropped since the timeline queue last accepted one.
     dropped_events: Cell<u64>,
     /// Frames repeated since the capture queue last accepted one.
     repeated_frames: Cell<u64>,
-    /// When each recent input or effect text was last seen, to collapse repeats.
-    recent: RefCell<HashMap<String, Duration>>,
     /// The newest stick sample, written at most once per video frame.
     sticks: RefCell<Option<String>>,
+    /// The last stick sample written, so a resting stick is not written every frame.
+    written_sticks: RefCell<String>,
 }
 
 #[derive(Debug)]
@@ -118,15 +116,7 @@ impl Compositor {
         if !self.recording_active() {
             return;
         }
-        let text = format!("{event:?}");
-        if self
-            .recording
-            .as_ref()
-            .is_some_and(|session| session.repeated(kind, &text))
-        {
-            return;
-        }
-        self.record_event(kind, &json!({"event": text}));
+        self.record_event(kind, &json!({"event": format!("{event:?}")}));
     }
 
     /// Keeps the newest stick sample; `poll_recording` writes it once per video frame.
@@ -142,11 +132,15 @@ impl Compositor {
         let Some(text) = self.recording.as_ref().and_then(|session| session.sticks.take()) else {
             return;
         };
-        if self
-            .recording
-            .as_ref()
-            .is_some_and(|session| !session.repeated("input", &text))
-        {
+        let changed = self.recording.as_ref().is_some_and(|session| {
+            let mut written = session.written_sticks.borrow_mut();
+            let changed = *written != text;
+            if changed {
+                written.clone_from(&text);
+            }
+            changed
+        });
+        if changed {
             self.record_event("input", &json!({"event": text}));
         }
     }
@@ -332,30 +326,54 @@ impl<W: Write> Timeline<W> {
 }
 
 /// Writes the timeline on its own thread, so a slow or stuck disk never holds up video.
-fn spawn_timeline(file: File, events: Receiver<Value>, stop: Arc<AtomicU64>) -> io::Result<()> {
-    let _detached = std::thread::Builder::new()
+///
+/// The thread ends after the stop flag is set and the queue is empty, or when the session is gone;
+/// either way the last line is `stop`, stamped with recording time.
+fn spawn_timeline(
+    out: impl Write + Send + 'static,
+    events: Receiver<Value>,
+    stop: Arc<AtomicU64>,
+    started: Instant,
+) -> io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
         .name("tehuti-timeline".into())
         .spawn(move || {
-            let mut timeline = Timeline::new(file);
+            let mut timeline = Timeline::new(out);
+            let stopped = || match stop.load(Ordering::Relaxed) {
+                u64::MAX => u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX - 1),
+                stopped => stopped,
+            };
             loop {
                 match events.recv_timeout(Duration::from_millis(50)) {
                     Ok(event) => timeline.write(&event),
                     Err(RecvTimeoutError::Timeout) => {
                         timeline.flush();
-                        let stopped = stop.load(Ordering::Relaxed);
-                        if stopped != u64::MAX {
-                            timeline.finish(stopped);
+                        if stop.load(Ordering::Relaxed) != u64::MAX {
+                            timeline.finish(stopped());
                             return;
                         }
                     }
                     Err(RecvTimeoutError::Disconnected) => {
-                        timeline.finish(stop.load(Ordering::Relaxed));
+                        timeline.finish(stopped());
                         return;
                     }
                 }
             }
-        })?;
-    Ok(())
+        })
+}
+
+/// Takes at most one captured frame per encoder pass.
+///
+/// Draining until empty never ends when scaling a frame takes longer than the capture
+/// interval: a new frame is always waiting, and video and timeline stall until stop.
+fn take_frame(
+    mut next: impl FnMut() -> Option<(Duration, RgbaImage)>,
+    schedule: &mut crate::recording_encoder::FrameSchedule<RgbaImage>,
+    size: (u32, u32),
+) {
+    if let Some((captured, frame)) = next() {
+        schedule.push(captured, fit(&frame, size));
+    }
 }
 
 fn start(compositor: &Compositor) -> io::Result<Session> {
@@ -384,11 +402,12 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         next_frame: started.checked_add(INTERVAL).unwrap_or(started),
         scene: Value::Null,
         worker: None,
+        timeline: None,
         injected: None,
         dropped_events: Cell::new(0),
         repeated_frames: Cell::new(0),
-        recent: RefCell::new(HashMap::new()),
         sticks: RefCell::new(None),
+        written_sticks: RefCell::new(String::new()),
     };
     if let Some(runtime) = &compositor.recording_runtime {
         session.injected = Some(injected(
@@ -402,12 +421,19 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         )?);
         return Ok(session);
     }
+    std::fs::create_dir_all(&path)?;
+    session.timeline = Some(spawn_timeline(
+        File::create_new(path.join("timeline.jsonl"))?,
+        receive_events,
+        Arc::clone(&session.stop),
+        started,
+    )?);
     session.worker = Some(start_worker(
         &session,
         path,
         frame,
         compositor.settings().input.microphone.clone(),
-        (receive_frames, receive_events),
+        receive_frames,
         send_result,
     )?);
     Ok(session)
@@ -418,7 +444,7 @@ fn start_worker(
     path: PathBuf,
     frame: RgbaImage,
     microphone: tehuti_core::dispatch::MicrophoneChoice,
-    (receive_frames, receive_events): (Receiver<(Duration, RgbaImage)>, Receiver<Value>),
+    receive_frames: Receiver<(Duration, RgbaImage)>,
     send_result: SyncSender<Result<PathBuf, String>>,
 ) -> io::Result<std::thread::JoinHandle<()>> {
     let worker_stop = Arc::clone(&session.stop);
@@ -430,8 +456,6 @@ fn start_worker(
         .spawn(move || {
             let result = (|| {
                 let child = spawn_encoder(&path, size, wall_start, &microphone)?;
-                let timeline = File::create_new(path.join("timeline.jsonl"))?;
-                spawn_timeline(timeline, receive_events, Arc::clone(&worker_stop))?;
                 encode(
                     child,
                     &path.join("video.mp4"),
@@ -706,11 +730,7 @@ fn encode(
                 ));
             }
             let stopped_ms = stop.load(Ordering::Relaxed);
-            // One frame per pass: draining until empty never ends when scaling a frame takes
-            // longer than the capture interval, and video would stall until stop.
-            if let Ok((captured, next)) = frames.try_recv() {
-                schedule.push(captured, fit(&next, size));
-            }
+            take_frame(|| frames.try_recv().ok(), &mut schedule, size);
             if encoder.at_frame_boundary()
                 && let Some(next) = schedule.advance(encoder.progress().0)
             {
@@ -776,9 +796,11 @@ impl Session {
                 injected.timeline.write(&event);
             }
             injected.timeline.flush();
-            for (captured, next) in injected.frames.try_iter() {
-                injected.schedule.push(captured, fit(&next, injected.size));
-            }
+            take_frame(
+                || injected.frames.try_recv().ok(),
+                &mut injected.schedule,
+                injected.size,
+            );
             if injected.encoder.at_frame_boundary()
                 && let Some(next) = injected.schedule.advance(injected.encoder.progress().0)
             {
@@ -809,19 +831,6 @@ impl Session {
             }
         }
     }
-    /// Whether `text` was recorded as `kind` within the repeat window; refreshes it either way.
-    fn repeated(&self, kind: &str, text: &str) -> bool {
-        let now = self.elapsed();
-        let mut recent = self.recent.borrow_mut();
-        let seen = recent
-            .insert(format!("{kind}:{text}"), now)
-            .is_some_and(|last| now.saturating_sub(last) < REPEAT_WINDOW);
-        if recent.len() > 64 {
-            recent.retain(|_, last| now.saturating_sub(*last) < REPEAT_WINDOW);
-        }
-        seen
-    }
-
     fn request_stop(&self) {
         recovered(&self.dropped_events, "timeline queue drained; events dropped");
         recovered(&self.repeated_frames, "capture queue drained; frames repeated");
@@ -837,6 +846,9 @@ impl Drop for Session {
         self.request_stop();
         if let Some(worker) = self.worker.take() {
             let _joined = worker.join();
+        }
+        if let Some(timeline) = self.timeline.take() {
+            let _joined = timeline.join();
         }
     }
 }
@@ -973,6 +985,78 @@ mod tests {
             start.abs_diff(Duration::from_millis(500)) <= Duration::from_millis(50),
             "tone captured 500 ms after recording start begins at {start:?}"
         );
+    }
+
+    #[test]
+    fn a_frame_source_faster_than_the_encoder_is_polled_once_per_pass() {
+        let mut polls = 0_u32;
+        let mut schedule = crate::recording_encoder::FrameSchedule::default();
+        super::take_frame(
+            || {
+                polls = polls.saturating_add(1);
+                assert!(polls < 100, "the pass never ends while frames keep arriving");
+                Some((Duration::ZERO, image::RgbaImage::new(4, 4)))
+            },
+            &mut schedule,
+            (4, 4),
+        );
+        assert_eq!(polls, 1);
+    }
+
+    #[derive(Clone, Default)]
+    struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Shared {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_timeline_thread_ends_with_a_timed_stop_line_when_stopped_or_abandoned() {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        for abandoned in [false, true] {
+            let out = Shared::default();
+            let (events, receive) = std::sync::mpsc::sync_channel(4);
+            let stop = Arc::new(AtomicU64::new(u64::MAX));
+            let thread = super::spawn_timeline(
+                out.clone(),
+                receive,
+                Arc::clone(&stop),
+                std::time::Instant::now(),
+            )
+            .unwrap();
+            events
+                .send(serde_json::json!({"time_ms": 5, "kind": "key", "data": {}}))
+                .unwrap();
+            if abandoned {
+                drop(events);
+            } else {
+                stop.store(1_500, Ordering::Relaxed);
+            }
+            thread.join().unwrap();
+            let text = String::from_utf8(out.0.lock().unwrap().clone()).unwrap();
+            let lines: Vec<serde_json::Value> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 2, "{text}");
+            assert_eq!(lines[1]["kind"], "stop");
+            let stopped = lines[1]["time_ms"].as_u64().unwrap();
+            if abandoned {
+                assert!(stopped < 1_000, "abandoned timeline stamped {stopped}");
+            } else {
+                assert_eq!(stopped, 1_500);
+            }
+        }
     }
 
     #[test]

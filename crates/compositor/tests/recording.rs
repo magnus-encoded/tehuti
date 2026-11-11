@@ -877,6 +877,11 @@ sys.exit(child.wait())
     }
 
     #[test]
+    fn two_identical_presses_100_ms_apart_are_both_written() {
+        isolated_in("recording::timeline_probe", "presses");
+    }
+
+    #[test]
     fn a_failing_timeline_disk_logs_one_line_and_the_video_still_finalises() {
         isolated_in("recording::timeline_probe", "failing");
     }
@@ -951,6 +956,25 @@ sys.exit(child.wait())
                     }
                     advance(&mut compositor, Duration::from_millis(tenth * 100));
                 }
+            }
+            "presses" => {
+                let south = |bytes: &RefCell<Vec<u8>>| {
+                    String::from_utf8_lossy(&bytes.borrow())
+                        .lines()
+                        .filter(|line| line.contains("South"))
+                        .count()
+                };
+                let press = Event::Button {
+                    name: tehuti_protocol::ButtonName::South,
+                    state: tehuti_protocol::ButtonState::Pressed,
+                };
+                compositor.handle(&press);
+                advance(&mut compositor, Duration::from_millis(100));
+                let first = south(&bytes);
+                compositor.handle(&press);
+                advance(&mut compositor, Duration::from_millis(200));
+                assert!(first > 0, "the first press is in the timeline");
+                assert_eq!(south(&bytes), first * 2, "the second press is written too");
             }
             _ => {
                 for tenth in 1..=30_u64 {
