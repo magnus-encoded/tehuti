@@ -88,7 +88,8 @@ impl Menu {
     /// Selects `command` when it is shown, else the first row.
     #[must_use]
     pub fn selecting(mut self, command: Command) -> Self {
-        self.selected = self.items().position(|item| item == command).unwrap_or_default();
+        let selected = self.items().position(|item| item == command).unwrap_or_default();
+        self.selected = selected;
         self
     }
 
