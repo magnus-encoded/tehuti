@@ -960,7 +960,8 @@ sys.exit(child.wait())
             }
         }
         compositor.say(Text::new("stop recording".into()).unwrap());
-        for _ in 0..800 {
+        // The fake encoder takes one frame per pass; ten minutes leave a backlog to finalise.
+        for _ in 0..40_000 {
             compositor.advance_time();
             if compositor.visible_notice_text().is_some_and(|text| {
                 text.starts_with("RECORDING SAVED:") || text.starts_with("RECORDING FAILED:")
