@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod recording_client;
+#[cfg(test)]
 mod recording {
     use core::{cell::RefCell, time::Duration};
     use smithay::reexports::wayland_server::Display;
@@ -393,6 +395,16 @@ mod recording {
                 .iter()
                 .any(|segment| segment.text == "REC")
         );
+        if mode == "streaming" {
+            assert!(
+                compositor
+                    .visible_notice_text()
+                    .unwrap()
+                    .contains("SILENT"),
+                "{:?}",
+                compositor.visible_notice_text()
+            );
+        }
         if mode.starts_with("encoder_failure") {
             assert!(
                 compositor
@@ -511,6 +523,215 @@ mod recording {
             events
                 .windows(2)
                 .all(|pair| pair[0]["time_ms"].as_u64() <= pair[1]["time_ms"].as_u64())
+        );
+    }
+
+    type EncodedFrames = Rc<RefCell<Vec<(Duration, Vec<u8>)>>>;
+
+    #[derive(Debug)]
+    struct PixelRuntime {
+        clock: Rc<core::cell::Cell<Duration>>,
+        pixels: EncodedFrames,
+    }
+
+    impl tehuti::recording_encoder::Runtime for PixelRuntime {
+        fn now(&self) -> Duration {
+            self.clock.get()
+        }
+        fn audio_sources(&self, _: &tehuti_core::dispatch::MicrophoneChoice) -> std::io::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn spawn(
+            &self,
+            command: &std::process::Command,
+        ) -> std::io::Result<Box<dyn tehuti::recording_encoder::Sink>> {
+            let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy()).collect();
+            let size = args.windows(2).find(|pair| pair[0] == "-video_size").unwrap()[1]
+                .split_once('x')
+                .unwrap();
+            Ok(Box::new(PixelSink {
+                pixels: Rc::clone(&self.pixels),
+                clock: Rc::clone(&self.clock),
+                pending: Vec::new(),
+                size: size
+                    .0
+                    .parse::<usize>()
+                    .map_err(std::io::Error::other)?
+                    .checked_mul(size.1.parse::<usize>().map_err(std::io::Error::other)?)
+                    .and_then(|pixels| pixels.checked_mul(4))
+                    .ok_or_else(|| std::io::Error::other("frame size overflow"))?,
+            }))
+        }
+    }
+
+    #[derive(Debug)]
+    struct PixelSink {
+        clock: Rc<core::cell::Cell<Duration>>,
+        pixels: EncodedFrames,
+        pending: Vec<u8>,
+        size: usize,
+    }
+    impl std::io::Write for PixelSink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let count = bytes.len().min(self.size / 2);
+            self.pending.extend_from_slice(&bytes[..count]);
+            if self.pending.len() == self.size {
+                self.pixels
+                    .borrow_mut()
+                    .push((self.clock.get(), core::mem::take(&mut self.pending)));
+            }
+            Ok(count)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl tehuti::recording_encoder::Sink for PixelSink {
+        fn finish(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn changing_tiled_client_reaches_encoder_under_backpressure() {
+        changing_client(
+            "tiled",
+            "recording::changing_tiled_client_reaches_encoder_under_backpressure",
+        );
+    }
+
+    #[test]
+    fn changing_fullscreen_client_reaches_encoder_under_backpressure() {
+        changing_client(
+            "fullscreen",
+            "recording::changing_fullscreen_client_reaches_encoder_under_backpressure",
+        );
+    }
+
+    fn assert_fresh_capture(compositor: &mut Compositor) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fresh.png");
+        let mut driver =
+            tehuti::driver::Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let _shot = driver
+            .execute(compositor, tehuti::driver::Request::Shot { path: path.clone() })
+            .unwrap();
+        assert!(
+            image::open(path)
+                .unwrap()
+                .to_rgba8()
+                .pixels()
+                .any(|pixel| pixel.0[1] > 80 && pixel.0[0] < 10 && pixel.0[2] < 10),
+            "the shared capture path already contains the new client pixels"
+        );
+    }
+
+    fn changing_client(mode: &str, test: &str) {
+        if std::env::var_os("RECORDING_PROBE").is_none() {
+            isolated_in(test, mode);
+            return;
+        }
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let client = super::recording_client::Client::new(&display, mode == "fullscreen");
+        client.paint(&mut display, &mut compositor, [0, 0, 255, 255]);
+        let clock = Rc::new(core::cell::Cell::new(Duration::ZERO));
+        let pixels = Rc::new(RefCell::new(Vec::new()));
+        compositor.set_recording_runtime(Rc::new(PixelRuntime {
+            clock: Rc::clone(&clock),
+            pixels: Rc::clone(&pixels),
+        }));
+        compositor.say(Text::new("start recording".into()).unwrap());
+        for step in 1..=90_u64 {
+            if step == 60 {
+                client.paint(&mut display, &mut compositor, [0, 255, 0, 255]);
+                assert_fresh_capture(&mut compositor);
+            }
+            clock.set(Duration::from_millis(step.saturating_mul(34)));
+            compositor.advance_time();
+        }
+        let frames = pixels.borrow();
+        assert!(
+            frames
+                .first()
+                .unwrap()
+                .1
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[0] > 80 && pixel[1] < 10 && pixel[2] < 10),
+            "initial client is red"
+        );
+        assert!(
+            frames
+                .last()
+                .unwrap()
+                .1
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[1] > 80 && pixel[0] < 10 && pixel[2] < 10),
+            "changing {mode} client must reach ffmpeg while recording"
+        );
+        drop(frames);
+        compositor.say(Text::new("stop recording".into()).unwrap());
+        for _ in 0..200 {
+            compositor.advance_time();
+        }
+        client.finish();
+    }
+
+    #[test]
+    fn slow_writer_receives_a_frame_no_older_than_one_interval_plus_write_time() {
+        if std::env::var_os("RECORDING_PROBE").is_none() {
+            isolated_in(
+                "recording::slow_writer_receives_a_frame_no_older_than_one_interval_plus_write_time",
+                "freshness",
+            );
+            return;
+        }
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let clock = Rc::new(core::cell::Cell::new(Duration::ZERO));
+        let pixels = Rc::new(RefCell::new(Vec::new()));
+        let source = Rc::new(RefCell::new(Rc::clone(&clock)));
+        compositor.set_capture_source(&source, |capture_clock, _, _| {
+            let stamp = u8::try_from(capture_clock.get().as_millis() / 34).unwrap();
+            Ok(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([stamp, 0, 0, 255]),
+            ))
+        });
+        compositor.set_recording_runtime(Rc::new(PixelRuntime {
+            clock: Rc::clone(&clock),
+            pixels: Rc::clone(&pixels),
+        }));
+        compositor.say(Text::new("start recording".into()).unwrap());
+        for step in 1..=90_u64 {
+            clock.set(Duration::from_millis(step.saturating_mul(34)));
+            compositor.advance_time();
+        }
+        for (completed, bytes) in pixels.borrow().iter().skip(2) {
+            let captured = Duration::from_millis(u64::from(bytes[0]) * 34);
+            assert!(
+                completed.saturating_sub(captured) <= Duration::from_millis(102),
+                "completed at {completed:?}, but captured at {captured:?}"
+            );
+            assert!(
+                bytes.as_chunks::<4>().0.iter().all(|pixel| pixel == &bytes[..4]),
+                "partial frames must not tear"
+            );
+        }
+        compositor.say(Text::new("stop recording".into()).unwrap());
+        for _ in 0..200 {
+            compositor.advance_time();
+        }
+        assert_eq!(
+            pixels.borrow().len(),
+            91,
+            "video duration follows the clock despite dropped captures"
         );
     }
 
@@ -1115,7 +1336,14 @@ sys.exit(child.wait())
             .env("HOME", directory.path())
             .env("XDG_CONFIG_HOME", directory.path().join("config"))
             .env("PATH", bin)
-            .env("TEHUTI_TEST_SIZE", "1280x720")
+            .env(
+                "TEHUTI_TEST_SIZE",
+                if matches!(mode, "tiled" | "fullscreen") {
+                    "320x240"
+                } else {
+                    "1280x720"
+                },
+            )
             .output()
             .unwrap();
         assert!(
