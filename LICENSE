@@ -6,7 +6,9 @@ MPL-2.0 (LICENSES/MPL-2.0.txt):
   and the docs that describe them (README.md, docs/ except as listed below).
 
 Apache-2.0 (LICENSES/Apache-2.0.txt):
-  crates/protocol, docs/protocol, docs/contexts.md, examples.
+  crates/protocol, docs/protocol, docs/contexts.md, and the top-level examples/ directory.
+  Example programs inside a crate (such as crates/compositor/examples/)
+  follow their crate's licence.
 
 The bundled Liberation fonts keep their own licence:
   crates/compositor/assets/Liberation-LICENSE
