@@ -397,10 +397,7 @@ mod recording {
         );
         if mode == "streaming" {
             assert!(
-                compositor
-                    .visible_notice_text()
-                    .unwrap()
-                    .contains("SILENT"),
+                compositor.visible_notice_text().unwrap().contains("SILENT"),
                 "{:?}",
                 compositor.visible_notice_text()
             );
