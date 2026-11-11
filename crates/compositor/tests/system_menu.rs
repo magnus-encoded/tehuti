@@ -523,7 +523,8 @@ task_monitor = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY
             elapsed: Duration::from_millis(500),
         });
         pad(&mut compositor, ButtonName::Guide, ButtonState::Released);
-        for name in [ButtonName::DpadDown; 6].into_iter().chain([ButtonName::South]) {
+        // Settings is third from the bottom; Reboot and Shut Down are hidden without a menu file.
+        for name in [ButtonName::DpadUp; 3].into_iter().chain([ButtonName::South]) {
             pad(&mut compositor, name, ButtonState::Pressed);
             pad(&mut compositor, name, ButtonState::Released);
         }
