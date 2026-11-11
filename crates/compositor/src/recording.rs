@@ -292,7 +292,7 @@ fn silent_tracks(log: &str) -> Vec<&'static str> {
         return Vec::new();
     };
     let mut silent = Vec::new();
-    if microphones.iter().any(|silent| *silent) {
+    if microphones.iter().any(|track| *track) {
         silent.push("MIC TRACK SILENT");
     }
     if *desktop {
@@ -799,9 +799,10 @@ fn encode(
         }
         Ok(writer.freshness())
     })();
-    let freshness = result
-        .as_ref()
-        .map_or_else(|_| Default::default(), |freshness| *freshness);
+    let freshness = result.as_ref().map_or_else(
+        |_| crate::recording_encoder::Freshness::default(),
+        |freshness| *freshness,
+    );
     finish_encoder(&mut child, output_path, result.map(|_| ())).map(|()| freshness)
 }
 

@@ -145,7 +145,7 @@ impl<F> Latest<F> {
     }
 
     /// Takes the waiting capture, if one arrived since the last take.
-    pub fn take(&mut self) -> Option<(Duration, F)> {
+    pub const fn take(&mut self) -> Option<(Duration, F)> {
         self.0.take()
     }
 }
@@ -304,20 +304,20 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
-    enum Op {
+    enum Step {
         Offer,
         Tick(u64),
         Write(usize),
         Stop,
     }
 
-    fn ops() -> impl Strategy<Value = Vec<Op>> {
+    fn ops() -> impl Strategy<Value = Vec<Step>> {
         prop::collection::vec(
             prop_oneof![
-                3 => Just(Op::Offer),
-                3 => (1u64..80).prop_map(Op::Tick),
-                4 => (0usize..=6).prop_map(Op::Write),
-                1 => Just(Op::Stop),
+                3 => Just(Step::Offer),
+                3 => (1u64..80).prop_map(Step::Tick),
+                4 => (0usize..=6).prop_map(Step::Write),
+                1 => Just(Step::Stop),
             ],
             1..300,
         )
@@ -339,20 +339,20 @@ mod tests {
             let mut pipe = Pipe { accept: 0, bytes: Vec::new() };
             let (mut now, mut stopped, mut newest, mut finished) = (Duration::ZERO, None, 0u32, false);
             let mut expected = Vec::new();
-            for op in ops {
-                match op {
-                    Op::Offer if stopped.is_none() => {
+            for step in ops {
+                match step {
+                    Step::Offer if stopped.is_none() => {
                         newest = newest.saturating_add(1);
                         let _replaced = latest.offer(now, newest.to_le_bytes().to_vec());
                     }
-                    Op::Offer => {}
-                    Op::Tick(ms) => now = now.saturating_add(Duration::from_millis(ms)),
-                    Op::Stop => stopped = stopped.or(Some(now)),
-                    Op::Write(accept) => {
+                    Step::Offer => {}
+                    Step::Tick(millis) => now = now.saturating_add(Duration::from_millis(millis)),
+                    Step::Stop => stopped = stopped.or(Some(now)),
+                    Step::Write(accept) => {
                         pipe.accept = accept;
                         let video = stopped.map_or(now, |stop| now.min(stop));
                         let before = pipe.bytes.len();
-                        let starts = before % 4 == 0;
+                        let starts = before.is_multiple_of(4);
                         let done = writer.write_due(&mut pipe, || latest.take(), video).unwrap();
                         if starts && pipe.bytes.len() > before {
                             expected.push(newest);
@@ -370,8 +370,10 @@ mod tests {
             }
             let shown: Vec<u32> = pipe
                 .bytes
-                .chunks_exact(4)
-                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| u32::from_le_bytes(*bytes))
                 .collect();
             prop_assert_eq!(&shown[..], &expected[..shown.len()]);
         }
@@ -394,7 +396,7 @@ mod tests {
         fn a_writer_that_keeps_up_never_falls_behind(frames in 1u64..2000, age in 0u64..=100) {
             let mut freshness = Freshness::default();
             for frame in 0..frames {
-                let video = Duration::from_millis(frame * 33);
+                let video = Duration::from_millis(frame.saturating_mul(33));
                 freshness.record(video, video.saturating_sub(Duration::from_millis(age)));
             }
             prop_assert!(!freshness.fell_behind());
@@ -405,7 +407,7 @@ mod tests {
     fn a_writer_stale_for_a_tenth_of_a_long_take_fell_behind() {
         let mut freshness = Freshness::default();
         for frame in 0..300_u64 {
-            let video = Duration::from_millis(frame * 33);
+            let video = Duration::from_millis(frame.saturating_mul(33));
             let captured = if frame < 30 { Duration::ZERO } else { video };
             freshness.record(video, captured);
         }
