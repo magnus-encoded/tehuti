@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_mirroring_off_drops_the_spare_virtual_pad() {
+    fn switching_mirroring_off_keeps_the_spare_virtual_pad() {
         let log = Rc::new(RefCell::new(Log::default()));
         let mut spare = unplugged(&log);
         let path = Path::new("/dev/input/event7");
@@ -631,7 +631,99 @@ mod tests {
             false
         });
         assert!(spare.is_none() && !second.mirrored());
-        assert_eq!(log.borrow().live, 0, "the application sees the pad unplugged");
+        let log = log.borrow();
+        assert_eq!((log.created, log.live), (1, 1), "the application keeps the same virtual pad");
+    }
+
+    proptest! {
+        /// Law 1 of #609: a held pad has the virtual pad before it sends any event,
+        /// whatever context has focus and whether or not a pad was ever active.
+        #[test]
+        fn a_held_pad_has_the_virtual_pad_before_any_event(
+            mirrored in proptest::bool::ANY,
+            active in proptest::option::of(proptest::bool::ANY),
+        ) {
+            let log = Rc::new(RefCell::new(Log::default()));
+            let path = Path::new("/dev/input/event1");
+            let stale = Path::new("/dev/input/event9");
+            let (mut only, _handles) = pad("only", &log);
+            let active = active.map(|current| if current { path } else { stale });
+            let sync = sync_mirrors(&mut [(path, &mut only)], mirrored, active, &mut None, &|_| false);
+            prop_assert!(sync.failed.is_empty());
+            let log = log.borrow();
+            prop_assert_eq!((log.created, log.live), (1, 1));
+            prop_assert!(neutral(&log), "{:?}", shown(&log));
+        }
+
+        /// Laws 2 to 4 of #609: one virtual pad for the whole session, across focus changes,
+        /// pad mode changes, drops and replugs; at rest while no passthrough context has focus.
+        #[test]
+        fn one_virtual_pad_for_the_session_at_rest_outside_passthrough(
+            steps in proptest::collection::vec((0_u8..4, proptest::bool::ANY, -100_i32..=100), 0..32),
+        ) {
+            let log = Rc::new(RefCell::new(Log::default()));
+            let path = Path::new("/dev/input/event1");
+            let mut spare = None;
+            let mut current = Some(pad("pad", &log));
+            let first = current.as_mut().map(|(only, _)| {
+                sync_mirrors(&mut [(path, only)], false, None, &mut spare, &|_| false)
+            });
+            prop_assert!(first.is_some_and(|sync| sync.failed.is_empty()));
+            for (kind, flag, value) in steps {
+                match (kind, current.as_mut()) {
+                    (0, Some((only, _))) => {
+                        let active = flag.then_some(path);
+                        let _sync = sync_mirrors(&mut [(path, only)], value > 0, active, &mut spare, &|_| false);
+                        if value <= 0 {
+                            prop_assert!(neutral(&log.borrow()), "{:?}", shown(&log.borrow()));
+                        }
+                    }
+                    (0, None) => {
+                        let _sync = sync_mirrors::<Synthetic>(&mut [], flag, Some(path), &mut spare, &|_| false);
+                    }
+                    (1, Some((only, handles))) => {
+                        queue(handles, KeyCode::BTN_SOUTH, i32::from(flag));
+                        handles.raw.borrow_mut().extend(axis(AbsoluteAxisCode::ABS_X, value));
+                        only.pump_mirror(&mut |_, _| false).unwrap();
+                        if !only.mirrored() {
+                            prop_assert!(neutral(&log.borrow()), "{:?}", shown(&log.borrow()));
+                        }
+                    }
+                    (2, Some((only, _))) => {
+                        log.borrow_mut().gone = true;
+                        let _lost = only.pump_mirror(&mut |_, _| false);
+                        if let Some(kept) = only.detach_virtual_pad() {
+                            spare = Some(kept);
+                        }
+                        log.borrow_mut().gone = false;
+                        current = None;
+                        prop_assert!(neutral(&log.borrow()), "{:?}", shown(&log.borrow()));
+                    }
+                    (3, None) => current = Some(pad("pad", &log)),
+                    _ => {}
+                }
+                prop_assert_eq!(log.borrow().live, 1, "the virtual pad never goes away");
+            }
+            let log = log.borrow();
+            prop_assert_eq!(log.created, 1, "nothing recreates the virtual pad");
+            prop_assert_eq!(log.most_live, 1, "never two at once");
+        }
+    }
+
+    #[test]
+    fn a_refused_virtual_pad_outside_passthrough_is_tried_once_and_keeps_the_grab() {
+        let log = Rc::new(RefCell::new(Log {
+            refuse: true,
+            ..Log::default()
+        }));
+        let path = Path::new("/dev/input/event1");
+        let (mut only, _handles) = pad("only", &log);
+        for round in 0..100 {
+            let sync = sync_mirrors(&mut [(path, &mut only)], round % 2 == 1, None, &mut None, &|_| false);
+            assert!(sync.failed.is_empty(), "no passthrough is forced outside a passthrough context");
+        }
+        assert!(only.mirror_unavailable());
+        assert_eq!(log.borrow().created, 1, "a refused virtual pad is never retried");
     }
 
     proptest! {
