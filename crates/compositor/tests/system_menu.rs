@@ -123,11 +123,17 @@ log_out = []",
             .recv_timeout(core::time::Duration::from_secs(10))
             .unwrap();
         assert!(failure.starts_with("Example FAILED"), "{failure}");
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let ok = Config::parse("reboot = [\"/bin/sh\", \"-c\", \"exit 0\"]").unwrap();
-        tehuti::system_menu::execute(&ok, Command::Reboot, "example-socket".as_ref(), sender).unwrap();
+        let (success_sender, success_receiver) = std::sync::mpsc::channel();
+        let success = Config::parse("reboot = [\"/bin/sh\", \"-c\", \"exit 0\"]").unwrap();
+        tehuti::system_menu::execute(
+            &success,
+            Command::Reboot,
+            "example-socket".as_ref(),
+            success_sender,
+        )
+        .unwrap();
         assert!(
-            receiver
+            success_receiver
                 .recv_timeout(core::time::Duration::from_secs(10))
                 .is_err()
         );
