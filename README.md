@@ -38,17 +38,88 @@ breaking changes to contexts and plugins. Bug reports are welcome as
 - **Rendering.** GPU (GLES) on the login session, with an automatic CPU
   fallback, or nested in a window on your current desktop.
 
+## Install
+
+Tehuti runs on Linux. There is no distribution package yet. You get it from a
+release build or from source; both start with a clone:
+
+```sh
+git clone https://github.com/magnus-encoded/tehuti
+cd tehuti
+```
+
+**From a release build (no Rust needed).** The releases are pre-releases, and
+the installer's default "latest" skips pre-releases, so name a tag from the
+[releases page](https://github.com/magnus-encoded/tehuti/releases):
+
+```sh
+scripts/install-release v0.123.0
+```
+
+It checks SHA256SUMS, puts the binary under `~/.local/lib/tehuti`, adds
+`tehuti` and `tehuti-speech` to `~/.local/bin` and sets up the speech venv.
+It needs `gh` or `curl`, Python 3 with venv support, `tar` and `sha256sum`, and
+the runtime libraries listed in [dist/README.md](dist/README.md). Builds exist
+for x86_64 and i686 Linux and need glibc 2.35 or newer.
+
+**From source.** You need a Rust toolchain, Python 3 with venv and pip, `foot`,
+and the development libraries for xkbcommon, Wayland, EGL, udev, libseat,
+libinput, GBM, DRM and Pixman. `scripts/try` builds Tehuti, sets up the speech
+venv on first run and opens a window with a foot terminal inside.
+
 ## Try it
 
-Run `scripts/try` from a terminal in your desktop. It builds Tehuti, sets up the
-speech venv on first run (in `~/.cache/tehuti-speech-venv`), then opens a window
-with a foot terminal inside. Tehuti takes the controller exclusively while it runs.
+From a clone, `scripts/try` runs Tehuti nested in a window on your current
+desktop, with the contexts in `examples/`. Tehuti takes the controller
+exclusively while it runs; hold Guide for three seconds to quit. The nested
+window needs read access to `/dev/input`, usually through the `input` group.
 
-You need a Rust toolchain, Python 3, `foot`, and the development libraries for
-xkbcommon, Wayland, EGL, udev, libseat, libinput, GBM, DRM and Pixman.
+With a release install, run `tehuti examples foot` from the clone instead.
+The command is `tehuti <context-directory> <app> [arguments...]`; it starts
+`<app>` as the first window.
 
-Prebuilt x86_64 and i686 Linux builds are on the
-[releases page](https://github.com/magnus-encoded/tehuti/releases).
+Check your own contexts without starting anything:
+
+```sh
+tehuti --check-config ~/.config/tehuti
+```
+
+It prints `N files checked, E errors, W warnings` and each problem. Only errors
+fail the check (exit 1); warnings are advice, and a config with many speech
+phrases can print a lot of them. Give the
+subcommand with the dashes: `tehuti check-config` is read as a context
+directory.
+
+## Run as a session
+
+To pick Tehuti at your login screen, run `sudo scripts/install-session` from the
+clone. It copies two files, refuses to overwrite and prints the paths to remove.
+Then choose "Tehuti" among the Wayland sessions. The session starts with no
+application; open apps from the launcher. Contexts and plugins are read from
+`~/.config/tehuti`. The launcher writes `~/.local/state/tehuti/session.log`.
+
+## Controller
+
+Tehuti reads pads that Linux exposes as a gamepad in `/dev/input` (wired or
+Bluetooth). It watches the directory, so a pad plugged in later is picked up.
+Your user needs read access to the device. Settings let you choose the
+controller from the pad.
+
+## Speech
+
+Hold Share to record, release to transcribe. Transcription runs locally with
+Whisper through a Python sidecar in the venv that `scripts/try` or
+`scripts/install-release` creates. The first transcription downloads the model
+(`small` by default, a few hundred megabytes; change it with
+`TEHUTI_SPEECH_MODEL`). The sidecar uses a GPU when CUDA works and the CPU
+otherwise; `TEHUTI_SPEECH_DEVICE=cpu` forces the CPU. Set `TEHUTI_NO_SPEECH=1` to
+skip speech and its dependencies.
+
+The voice bar along the bottom shows what was heard and what Tehuti did with
+it. Matching a phrase is exact after normalising, so list each likely
+mishearing as its own phrase. A context can also show its buttons and phrases
+as a scrolling hint line on the bar; see
+[docs/contexts.md](docs/contexts.md#mapping-ticker).
 
 **Emergency escape:** hold Guide (the home button) and Start together for three seconds.
 Start alone follows the app mapping. The hold counts only while both buttons
@@ -65,11 +136,9 @@ clears the failure count and retries Tehuti.
 If `startplasma-wayland` is missing from PATH, the launcher logs the problem
 and retries Tehuti with a delay.
 
-To log in to Tehuti from your display manager, see [dist/README.md](dist/README.md).
+More on the login session is in [dist/README.md](dist/README.md).
 
-## Speech and scale
-
-Hold Share to record, release to transcribe. Set `TEHUTI_NO_SPEECH=1` to skip it.
+## Scale
 
 `TEHUTI_SCALE` sets the integer output scale, for example `TEHUTI_SCALE=2`.
 Without it, modes wider than 2560 pixels use 2 and others use 1. Invalid values
@@ -78,7 +147,12 @@ nested window honours it too.
 
 ## Contexts
 
-`examples/foot/context.toml` (foot terminal):
+A context is one `context.toml` per application. Tehuti reads contexts from the
+directory you pass on the command line, and the session reads
+`~/.config/tehuti`. Each application gets a folder with its own `context.toml`;
+saving a file reloads it. The full format is in [docs/contexts.md](docs/contexts.md).
+
+`examples/foot/context.toml` maps a foot terminal:
 
 - South: Enter. East: Backspace. West: Space. Select: Escape.
 - D-pad: arrow keys. North: types `ls -la`. Start: shows a notice.
@@ -87,11 +161,33 @@ nested window honours it too.
   to `'` and compares NFC-normalized text, so "Hello." and "hello" are the same phrase.
 
 `examples/plugins/east-to-tab` remaps East to Tab, only for apps with app id `test`.
-Try it with `target/release/tehuti examples foot -- bash --norc --noprofile` (a plain shell keeps the demo predictable).
+Plugins are found in `<context-directory>/plugins/`, so copy it there to try it.
+Run `tehuti examples foot -- bash --norc --noprofile` to see the foot context.
 
-The full context format is in [docs/contexts.md](docs/contexts.md).
+### Your first context: mpv
+
+1. Make a folder and copy the example:
+   `mkdir -p ~/.config/tehuti/mpv && cp examples/mpv/context.toml ~/.config/tehuti/mpv/`
+2. Check it: `tehuti --check-config ~/.config/tehuti`.
+3. Start Tehuti with that directory and mpv, for example
+   `tehuti ~/.config/tehuti mpv some-video.mkv`.
+4. West pauses, the D-pad seeks and changes the volume, North toggles
+   fullscreen. Say "pause", "play" or "resume".
+5. Edit the file and save. The change applies without a restart. If Tehuti
+   shows a notice naming the file, the file has an error; the log has the rest.
+   Today a broken file also drops its last good version, so its buttons and
+   phrases stop working until you fix the file (#625).
+
+A button is a name such as `west`, `dpad_left`, `left_bumper` or
+`right_trigger`; the full list and the keys you can send are in
+[docs/contexts.md](docs/contexts.md). To send a letter or digit that is not
+one of those keys, use `text = "f"`. If the app has an id other than the one
+you wrote, the context does not apply; the voice bar's left chip shows the
+focused app id.
 
 ## Contributing and licence
+
+To share a context, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Run `scripts/check` before every commit; CI runs the same gate. Review rules are
 in [CODING_STANDARDS.md](CODING_STANDARDS.md), and each crate has a

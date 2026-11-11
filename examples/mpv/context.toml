@@ -1,0 +1,23 @@
+# mpv: pad buttons and spoken phrases.
+app_id = "mpv"
+
+[buttons]
+west = { key = "space" } # X: play / pause
+north = { text = "f" } # Y: full screen
+dpad_up = { text = "0" } # volume up
+dpad_down = { text = "9" } # volume down
+dpad_left = { key = "left" } # back 5 s
+dpad_right = { key = "right" } # forward 5 s
+
+[speech]
+"pause" = { key = "space" }
+"paws" = { key = "space" } # a mishearing
+"play" = { key = "space" }
+"resume" = { key = "space" }
+
+[ticker]
+enabled = true
+speech = "own"
+
+[ticker.names]
+space = "Play/Pause"
