@@ -119,7 +119,12 @@ impl Compositor {
 
     /// Keeps the newest continuous sample of `name`; `poll_recording` writes it once per video
     /// frame, and only when it changed. Discrete events go through `record_debug` unfiltered.
-    pub(super) fn record_sample(&self, kind: &'static str, name: &'static str, sample: &impl core::fmt::Debug) {
+    pub(super) fn record_sample(
+        &self,
+        kind: &'static str,
+        name: &'static str,
+        sample: &impl core::fmt::Debug,
+    ) {
         let Some(session) = &self.recording else { return };
         if session.stop.load(Ordering::Relaxed) != u64::MAX {
             return;
