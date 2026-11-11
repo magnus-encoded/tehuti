@@ -1,9 +1,15 @@
 //! Configured system menu commands, launched without a shell.
 
-use std::{collections::BTreeMap, io, path::PathBuf, process::Stdio};
+use std::{collections::BTreeMap, io, path::PathBuf, process::Stdio, sync::mpsc::Sender, time::Duration};
 use tehuti_core::menu::Command;
 
 const COMMANDS: [&str; 5] = ["log_out", "plasma", "reboot", "shut_down", "task_monitor"];
+
+static TASK_MONITOR: std::sync::LazyLock<Vec<String>> =
+    std::sync::LazyLock::new(|| vec!["plasma-systemmonitor".to_owned()]);
+
+/// How long a started menu command is watched for a failing exit.
+const EXIT_WATCH: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 struct Entry {
@@ -93,15 +99,44 @@ impl Config {
         }
     }
 
-    /// Passes one configured command to the executor.
-    ///
-    /// # Errors
-    /// The command is disabled or the executor failed.
-    pub fn run(
-        &self,
-        command: Command,
-        spawn: impl FnOnce(&str, &[String]) -> io::Result<()>,
-    ) -> io::Result<()> {
+    /// Built-in menu commands with nothing to run: no configured argv and no default.
+    #[must_use]
+    pub fn hidden(&self) -> Vec<Command> {
+        tehuti_core::menu::ITEMS
+            .into_iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    Command::LogOut | Command::Plasma | Command::Reboot | Command::ShutDown | Command::TaskMonitor
+                ) && self.session_exit_status(*command).is_none()
+                    && self.argv(*command).is_none()
+            })
+            .collect()
+    }
+
+    /// The name a notice uses for `command`.
+    #[must_use]
+    pub fn label(&self, command: Command) -> String {
+        match command {
+            Command::Custom(index) => self
+                .entries
+                .get(index)
+                .map_or_else(|| "MENU ENTRY".into(), |entry| entry.label.clone()),
+            Command::LogOut
+            | Command::Restart
+            | Command::Plasma
+            | Command::Reboot
+            | Command::ShutDown
+            | Command::TaskMonitor
+            | Command::StartRecording
+            | Command::StopRecording
+            | Command::ToggleRecording
+            | Command::Screenshot
+            | Command::Settings => command.label().into(),
+        }
+    }
+
+    fn argv(&self, command: Command) -> Option<(&String, &[String])> {
         let configured = match command {
             Command::Custom(index) => self.entries.get(index).map(|entry| &entry.argv),
             Command::LogOut
@@ -116,10 +151,24 @@ impl Config {
             | Command::Screenshot
             | Command::Settings => self.commands.get(command.key()),
         };
-        let task_monitor = vec!["plasma-systemmonitor".to_owned()];
-        let configured = configured.or_else(|| (command == Command::TaskMonitor).then_some(&task_monitor));
-        let (program, args) = configured
-            .and_then(|argv| argv.split_first())
+        match configured {
+            Some(argv) => argv.split_first(),
+            None if command == Command::TaskMonitor => TASK_MONITOR.split_first(),
+            None => None,
+        }
+    }
+
+    /// Passes one configured command to the executor.
+    ///
+    /// # Errors
+    /// The command is disabled or the executor failed.
+    pub fn run(
+        &self,
+        command: Command,
+        spawn: impl FnOnce(&str, &[String]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let (program, args) = self
+            .argv(command)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "menu command is not configured"))?;
         spawn(program, args).map_err(|error| io::Error::new(error.kind(), format!("{program}: {error}")))
     }
@@ -193,11 +242,18 @@ fn config_path() -> io::Result<PathBuf> {
     Ok(directory.join("tehuti/menu.toml"))
 }
 
-/// Starts a command from the validated menu config.
+/// Starts a command from the validated menu config. A non-zero exit within a few seconds
+/// sends one line naming the entry to `failures`.
 ///
 /// # Errors
 /// The command is disabled or could not be started.
-pub fn execute(config: &Config, command: Command, socket: &std::ffi::OsStr) -> io::Result<()> {
+pub fn execute(
+    config: &Config,
+    command: Command,
+    socket: &std::ffi::OsStr,
+    failures: Sender<String>,
+) -> io::Result<()> {
+    let label = config.label(command);
     config.run(command, |program, args| {
         let mut child = crate::client_env::command(std::ffi::OsStr::new(program), socket)
             .args(args)
@@ -205,7 +261,23 @@ pub fn execute(config: &Config, command: Command, socket: &std::ffi::OsStr) -> i
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
-        let _reaper = std::thread::spawn(move || child.wait());
+        let program = program.to_owned();
+        let _reaper = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            while started.elapsed() < EXIT_WATCH {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        if !status.success() {
+                            let _sent = failures.send(format!("{label} FAILED: {program} {status}"));
+                        }
+                        return;
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                    Err(_) => break,
+                }
+            }
+            let _status = child.wait();
+        });
         Ok(())
     })
 }

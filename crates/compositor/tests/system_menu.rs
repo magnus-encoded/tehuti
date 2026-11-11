@@ -31,7 +31,8 @@ mod system_menu {
         if std::env::var_os("TEHUTI_TEST_DEFAULT_MENU").is_none() {
             return;
         }
-        for index in [0, 2, 5] {
+        // Without a menu file Reboot and Shut Down are hidden, so Task Monitor is row 3.
+        for index in [0, 2, 3] {
             let display: Display<Compositor> = Display::new().unwrap();
             let mut compositor = Compositor::new(&display.handle()).unwrap();
             compositor.set_launch_socket("example-menu-socket".into());
@@ -56,7 +57,7 @@ mod system_menu {
             }
             press(&mut compositor, ButtonName::South);
             assert!(!compositor.quit_requested());
-            if index == 5 {
+            if index == 3 {
                 assert!(
                     compositor
                         .visible_notice_text()
@@ -70,6 +71,53 @@ mod system_menu {
             assert_eq!(compositor.log_out_requested(), index == 0);
             assert!(!compositor.restart_requested());
         }
+    }
+
+    #[test]
+    fn power_entries_without_a_command_are_hidden() {
+        let hidden = Config::default().hidden();
+        assert_eq!(hidden, [Command::Reboot, Command::ShutDown]);
+        let text = tehuti_core::menu::Menu::default().with_hidden(hidden).text();
+        assert!(!text.contains("REBOOT"), "{text}");
+        assert!(!text.contains("SHUT DOWN"), "{text}");
+        assert!(text.contains("TASK MONITOR"), "{text}");
+        let disabled = Config::parse("reboot = []
+log_out = []").unwrap().hidden();
+        assert_eq!(disabled, [Command::LogOut, Command::Reboot, Command::ShutDown]);
+    }
+
+    #[test]
+    fn power_entries_with_a_command_are_shown() {
+        let config = Config::parse("reboot = [\"example-reboot\"]\nshut_down = [\"example-poweroff\"]").unwrap();
+        assert!(config.hidden().is_empty());
+        let text = tehuti_core::menu::Menu::default().with_hidden(config.hidden()).text();
+        assert!(text.contains("REBOOT") && text.contains("SHUT DOWN"), "{text}");
+    }
+
+    #[test]
+    fn a_failed_spawn_names_the_entry() {
+        let config = Config::parse("reboot = [\"/nonexistent/example-reboot\"]").unwrap();
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let error = tehuti::system_menu::execute(&config, Command::Reboot, "example-socket".as_ref(), sender)
+            .unwrap_err();
+        assert!(error.to_string().contains("example-reboot"), "{error}");
+        assert_eq!(config.label(Command::Reboot), "REBOOT");
+    }
+
+    #[test]
+    fn a_command_that_exits_with_an_error_reports_the_entry() {
+        let config = Config::parse(
+            "[[entry]]\nlabel = \"Example\"\norder = 0\nexec = [\"/bin/sh\", \"-c\", \"exit 3\"]",
+        )
+        .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        tehuti::system_menu::execute(&config, Command::Custom(0), "example-socket".as_ref(), sender).unwrap();
+        let failure = receiver.recv_timeout(core::time::Duration::from_secs(10)).unwrap();
+        assert!(failure.starts_with("Example FAILED"), "{failure}");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let ok = Config::parse("reboot = [\"/bin/sh\", \"-c\", \"exit 0\"]").unwrap();
+        tehuti::system_menu::execute(&ok, Command::Reboot, "example-socket".as_ref(), sender).unwrap();
+        assert!(receiver.recv_timeout(core::time::Duration::from_secs(10)).is_err());
     }
 
     #[test]
@@ -229,12 +277,16 @@ order = 10
             &config,
             if custom {
                 r#"unknown = ["ignored"]
+reboot = ["example-reboot"]
+shut_down = ["example-poweroff"]
 [[entry]]
 label = "Capture"
 order = 0
 exec = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY\" > \"$TEHUTI_MENU_CAPTURE\""]"#
             } else {
-                r#"task_monitor = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY\" > \"$TEHUTI_MENU_CAPTURE\""]"#
+                r#"reboot = ["example-reboot"]
+shut_down = ["example-poweroff"]
+task_monitor = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY\" > \"$TEHUTI_MENU_CAPTURE\""]"#
             },
         )
         .unwrap();

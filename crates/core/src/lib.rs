@@ -47,6 +47,7 @@ pub struct State {
     level: Level,
     menu: Option<menu::Menu>,
     menu_entries: Vec<String>,
+    menu_hidden: Vec<menu::Command>,
     menu_buttons: Vec<ButtonName>,
     /// D-pad buttons pressed with Guide held, so a repeat does nothing and their release is consumed even after Guide.
     chord_buttons: Vec<ButtonName>,
@@ -60,6 +61,18 @@ pub struct State {
 impl State {
     pub fn set_menu_entries(&mut self, entries: Vec<String>) {
         self.menu_entries = entries;
+    }
+
+    /// Built-in menu commands with nothing to run; the menu leaves them out.
+    pub fn set_menu_hidden(&mut self, hidden: Vec<menu::Command>) {
+        self.menu_hidden = hidden;
+    }
+
+    #[must_use]
+    pub fn new_menu(&self) -> menu::Menu {
+        menu::Menu::new(self.pad_family)
+            .with_entries(self.menu_entries.clone())
+            .with_hidden(self.menu_hidden.clone())
     }
 
     #[must_use]
@@ -124,6 +137,7 @@ impl State {
             level: Level::App,
             menu: None,
             menu_entries: Vec::new(),
+            menu_hidden: Vec::new(),
             menu_buttons: Vec::new(),
             chord_buttons: Vec::new(),
             pending: Vec::new(),
@@ -830,7 +844,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             }
             if !state.start_held && state.guide_tap.is_some_and(|held| held >= GUIDE_TAP_WINDOW) {
                 state.guide_tap = None;
-                state.menu = Some(menu::Menu::new(state.pad_family).with_entries(state.menu_entries.clone()));
+                state.menu = Some(state.new_menu());
             }
             if state.start_held
                 && let Some(held) = &mut state.guide_held

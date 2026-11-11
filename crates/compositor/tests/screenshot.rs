@@ -214,16 +214,18 @@ mod tests {
                 },
             )
             .unwrap();
-        let index = tehuti_core::menu::ITEMS
+        // Screenshot is second from the bottom; Reboot and Shut Down may be hidden above it.
+        let from_bottom = tehuti_core::menu::ITEMS
             .iter()
+            .rev()
             .position(|item| item.key() == "screenshot")
             .expect("Screenshot menu item");
-        for _ in 0..index {
+        for _ in 0..=from_bottom {
             let _moved = driver
                 .execute(
                     compositor,
                     Request::Press {
-                        button: ButtonName::DpadDown,
+                        button: ButtonName::DpadUp,
                     },
                 )
                 .unwrap();

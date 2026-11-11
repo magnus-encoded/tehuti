@@ -156,6 +156,7 @@ pub struct Compositor {
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
     menu_config: crate::system_menu::Config,
+    menu_failures: (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>),
     settings_display: crate::settings::Display,
     bar_font_store: Option<crate::display_mode_store::Store>,
     /// The pad that drives Tehuti; previews before confirmation too.
@@ -292,6 +293,7 @@ impl Compositor {
         let pointer = seat.add_pointer();
         let mut compositor = Self {
             menu_config: crate::system_menu::Config::default(),
+            menu_failures: std::sync::mpsc::channel(),
             start_time: Instant::now(),
             pointer,
             pointer_location: (100.0, 100.0).into(),
@@ -412,6 +414,10 @@ impl Compositor {
             .dispatch
             .core_mut()
             .set_menu_entries(compositor.menu_config.labels());
+        compositor
+            .dispatch
+            .core_mut()
+            .set_menu_hidden(compositor.menu_config.hidden());
         compositor.rebuild_destinations();
         Ok(compositor)
     }
@@ -500,6 +506,9 @@ impl Compositor {
         self.dispatch
             .core_mut()
             .set_menu_entries(self.menu_config.labels());
+        self.dispatch
+            .core_mut()
+            .set_menu_hidden(self.menu_config.hidden());
         self.window_focus = None;
         self.sync_window_focus();
         self.rebuild_destinations();
@@ -629,7 +638,7 @@ impl Compositor {
             &self.destination_windows,
         ) {
             Ok(mut table) => {
-                table.add_menu();
+                table.add_menu(&self.menu_config.hidden());
                 table.update_workspaces(&self.layout.snapshot());
                 self.destinations = table;
                 let app_names = self.destinations.app_names();
@@ -1624,10 +1633,20 @@ impl Compositor {
             .launch_socket
             .as_deref()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotConnected, "no compositor socket"))
-            .and_then(|socket| crate::system_menu::execute(&self.menu_config, command, socket));
+            .and_then(|socket| {
+                crate::system_menu::execute(&self.menu_config, command, socket, self.menu_failures.0.clone())
+            });
         if let Err(error) = result {
+            let label = self.menu_config.label(command);
             tracing::warn!(?command, %error, "system menu command failed");
-            self.show_notice(&format!("MENU COMMAND UNAVAILABLE: {error}"));
+            self.show_notice(&format!("{label} FAILED: {error}"));
+        }
+    }
+
+    fn poll_menu_failures(&mut self) {
+        while let Ok(failure) = self.menu_failures.1.try_recv() {
+            tracing::warn!(%failure, "system menu command exited with an error");
+            self.show_notice(&failure);
         }
     }
 
@@ -1840,6 +1859,7 @@ impl Compositor {
                 self.poll_launchers();
                 self.desktop_entries.poll();
                 self.poll_microphones();
+                self.poll_menu_failures();
                 self.poll_volume();
             }
             DispatchEffect::ConfirmPressed(pressed) => self.secret_confirmation.confirm_pressed = pressed,
