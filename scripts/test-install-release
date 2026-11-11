@@ -10,6 +10,8 @@ mkdir -p "$HOME" "$FAKE_RELEASE" "$work/bin" "$work/package/sidecars/speech" "$w
 export PATH=$work/bin:$PATH
 cat > "$work/bin/gh" <<'SH'
 #!/bin/sh
+if [ "$1" = release ] && [ "$2" = list ]; then echo v9.9.9-pre; exit 0; fi
+[ "$1" = release ] && echo "$3" >> "$FAKE_RELEASE.tags"
 while [ "$#" -gt 0 ]; do
     if [ "$1" = --dir ]; then destination=$2; shift; fi
     shift
@@ -44,6 +46,7 @@ package() {
 }
 package x86_64
 "$repo/scripts/install-release" > "$work/output"
+[ "$(cat "$FAKE_RELEASE.tags")" = v9.9.9-pre ] || { echo 'Default did not resolve the newest release' >&2; exit 1; }
 if grep -q '^Rollback:' "$work/output"; then
     echo 'First install printed an invalid rollback' >&2; exit 1
 fi
