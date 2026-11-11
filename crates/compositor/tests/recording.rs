@@ -397,7 +397,7 @@ mod recording {
         );
         if mode == "streaming" {
             assert!(
-                compositor.visible_notice_text().unwrap().contains("SILENT"),
+                compositor.visible_notice_text().unwrap().contains("DESKTOP TRACK SILENT"),
                 "{:?}",
                 compositor.visible_notice_text()
             );
@@ -1074,6 +1074,99 @@ sys.exit(child.wait())
         );
     }
 
+    /// An encoder that reads one frame every 50 ms (20 fps, slower than the 30 fps clock) and
+    /// logs, per frame, the wall time it arrived and the capture stamp in its first pixel.
+    fn install_slow_encoder(bin: &Path) {
+        executable(
+            &bin.join("ffmpeg"),
+            r"#!/usr/bin/python3
+import os, sys, time
+from pathlib import Path
+log = open(Path(os.environ['HOME']) / 'frames.log', 'w')
+while True:
+    frame = sys.stdin.buffer.read(64 * 64 * 4)
+    if len(frame) < 64 * 64 * 4:
+        break
+    log.write(f'{time.time()} {int.from_bytes(frame[:4], 'little')}\n')
+    log.flush()
+    time.sleep(0.05)
+Path(sys.argv[-1]).write_bytes(b'video')
+",
+        );
+    }
+
+    /// Drives the threaded encoder path: a writer slower than the clock still sends fresh
+    /// captures before stop, and the file is finalised.
+    #[test]
+    fn a_slow_encoder_process_receives_fresh_frames_and_the_file_is_finalised() {
+        if std::env::var_os("RECORDING_PROBE").is_none() {
+            isolated_in(
+                "recording::a_slow_encoder_process_receives_fresh_frames_and_the_file_is_finalised",
+                "slow_process",
+            );
+            return;
+        }
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let started = Rc::new(RefCell::new(Instant::now()));
+        compositor.set_capture_source(&started, |started, _, _| {
+            let stamp = u32::try_from(started.elapsed().as_millis()).unwrap();
+            Ok(image::RgbaImage::from_pixel(64, 64, image::Rgba(stamp.to_le_bytes())))
+        });
+        compositor.say(Text::new("start recording".into()).unwrap());
+        let stop_at = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+        while Instant::now() < stop_at {
+            compositor.advance_time();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let stopped = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let stopped_stamp = started.borrow().elapsed().as_millis();
+        compositor.say(Text::new("stop recording".into()).unwrap());
+        let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+        while compositor
+            .visible_notice_text()
+            .is_none_or(|text| !text.contains("RECORDING SAVED"))
+            && Instant::now() < deadline
+        {
+            compositor.advance_time();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            compositor
+                .visible_notice_text()
+                .is_some_and(|text| text.contains("RECORDING SAVED")),
+            "{:?}",
+            compositor.visible_notice_text()
+        );
+        let folder = home
+            .join("Videos/Recordings")
+            .read_dir()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read(folder.join("video.mp4")).unwrap(), b"video");
+        let log = std::fs::read_to_string(home.join("frames.log")).unwrap();
+        let newest_before_stop = log
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(at, stamp)| (at.parse::<f64>().unwrap(), stamp.parse::<u128>().unwrap()))
+            .filter(|(at, _)| *at < stopped)
+            .map(|(_, stamp)| stamp)
+            .max()
+            .unwrap();
+        assert!(
+            newest_before_stop.saturating_add(500) >= stopped_stamp,
+            "newest capture sent before stop was {newest_before_stop} ms, stop at {stopped_stamp} ms"
+        );
+    }
+
     fn encoder_logs(home: &Path) -> String {
         let mut logs = String::new();
         if let Ok(folders) = std::fs::read_dir(home.join("Videos/Recordings")) {
@@ -1326,6 +1419,9 @@ sys.exit(child.wait())
         std::fs::write(config.join("speech-source"), choice).unwrap();
         if matches!(mode, "duration" | "orientation" | "streaming") {
             install_video_encoder(&bin);
+        }
+        if mode == "slow_process" {
+            install_slow_encoder(&bin);
         }
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test])

@@ -125,6 +125,125 @@ impl FrameEncoder {
     }
 }
 
+/// The newest capture waiting for the writer, stamped with its capture time.
+///
+/// Each offer replaces the waiting one, so a slow writer skips captures instead of
+/// falling behind them.
+#[derive(Debug)]
+pub struct Latest<F>(Option<(Duration, F)>);
+
+impl<F> Default for Latest<F> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<F> Latest<F> {
+    /// Replaces the waiting capture, returning the one it replaced.
+    pub fn offer(&mut self, captured: Duration, frame: F) -> Option<F> {
+        self.0.replace((captured, frame)).map(|(_, frame)| frame)
+    }
+
+    /// Takes the waiting capture, if one arrived since the last take.
+    pub fn take(&mut self) -> Option<(Duration, F)> {
+        self.0.take()
+    }
+}
+
+/// A written frame is stale when its capture is older than three frame intervals.
+pub const STALE: Duration = Duration::from_millis(100);
+
+/// Written frames, and how many of them showed a stale capture.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Freshness {
+    written: u64,
+    stale: u64,
+}
+
+impl Freshness {
+    /// Counts one written frame showing `captured` at video time `video`.
+    pub fn record(&mut self, video: Duration, captured: Duration) {
+        self.written = self.written.saturating_add(1);
+        if video.saturating_sub(captured) > STALE {
+            self.stale = self.stale.saturating_add(1);
+        }
+    }
+
+    /// Whether at least a tenth of the written frames, and one second of them, were stale.
+    #[must_use]
+    pub const fn fell_behind(self) -> bool {
+        self.stale >= 30 && self.stale.saturating_mul(10) >= self.written
+    }
+}
+
+/// Writes the newest capture on the 30 fps clock and counts how fresh each frame was.
+#[derive(Debug)]
+pub struct FrameWriter {
+    encoder: FrameEncoder,
+    shown: (Duration, Vec<u8>),
+    freshness: Freshness,
+}
+
+impl FrameWriter {
+    /// Starts with `first`, captured at recording start.
+    #[must_use]
+    pub fn new(first: Vec<u8>) -> Self {
+        Self {
+            encoder: FrameEncoder::default(),
+            shown: (Duration::ZERO, first),
+            freshness: Freshness::default(),
+        }
+    }
+
+    /// Writes one chunk of the frames due by video time `video`.
+    ///
+    /// A new frame starts from the capture `take` returns, or repeats the last one.
+    /// Returns whether all due frames have been written.
+    ///
+    /// # Errors
+    /// Returns errors from the encoder, except temporary backpressure and interruptions.
+    pub fn write_due(
+        &mut self,
+        writer: &mut impl Write,
+        take: impl FnOnce() -> Option<(Duration, Vec<u8>)>,
+        video: Duration,
+    ) -> io::Result<bool> {
+        if self.encoder.at_frame_boundary()
+            && let Some(next) = take()
+        {
+            self.shown = next;
+        }
+        let before = self.encoder.progress().0;
+        let done = self.encoder.write_due(writer, &self.shown.1, || video)?;
+        if self.encoder.progress().0 > before {
+            self.freshness.record(video, self.shown.0);
+        }
+        Ok(done)
+    }
+
+    /// Bytes written so far, for drain progress.
+    #[must_use]
+    pub fn progress(&self) -> u64 {
+        let (frames, partial) = self.encoder.progress();
+        u64::try_from(frames)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(u64::try_from(self.shown.1.len()).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(partial).unwrap_or(u64::MAX))
+    }
+
+    /// Frames written so far.
+    #[must_use]
+    pub const fn frames(&self) -> u128 {
+        self.encoder.progress().0
+    }
+
+    /// How fresh the written frames were.
+    #[must_use]
+    pub const fn freshness(&self) -> Freshness {
+        self.freshness
+    }
+}
+
 /// Replaceable recording clock, audio discovery and encoder process.
 pub trait Runtime: core::fmt::Debug {
     /// Elapsed time on this runtime's clock.
@@ -155,4 +274,141 @@ pub trait Sink: Write + core::fmt::Debug {
     /// # Errors
     /// Returns encoder completion failures.
     fn finish(&mut self) -> io::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Freshness, FrameWriter, Latest};
+    use core::time::Duration;
+    use proptest::prelude::*;
+    use std::io::{self, Write};
+
+    /// Accepts the next scripted number of bytes per write; zero is backpressure.
+    struct Pipe {
+        accept: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for Pipe {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.accept == 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            let count = bytes.len().min(self.accept);
+            self.bytes.extend_from_slice(&bytes[..count]);
+            Ok(count)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Offer,
+        Tick(u64),
+        Write(usize),
+        Stop,
+    }
+
+    fn ops() -> impl Strategy<Value = Vec<Op>> {
+        prop::collection::vec(
+            prop_oneof![
+                3 => Just(Op::Offer),
+                3 => (1u64..80).prop_map(Op::Tick),
+                4 => (0usize..=6).prop_map(Op::Write),
+                1 => Just(Op::Stop),
+            ],
+            1..300,
+        )
+    }
+
+    /// Frame clock target at `video`, as the encoder counts it.
+    fn target(video: Duration) -> u128 {
+        video.as_nanos().saturating_mul(30) / 1_000_000_000
+    }
+
+    proptest! {
+        /// Every written frame shows the newest capture offered before the write that began it,
+        /// the frame count never runs ahead of the clock and matches it when caught up, and after
+        /// stop nothing is written once the due frames are out.
+        #[test]
+        fn the_writer_shows_the_newest_capture_on_the_clock(ops in ops()) {
+            let mut latest = Latest::default();
+            let mut writer = FrameWriter::new(0u32.to_le_bytes().to_vec());
+            let mut pipe = Pipe { accept: 0, bytes: Vec::new() };
+            let (mut now, mut stopped, mut newest, mut finished) = (Duration::ZERO, None, 0u32, false);
+            let mut expected = Vec::new();
+            for op in ops {
+                match op {
+                    Op::Offer if stopped.is_none() => {
+                        newest = newest.saturating_add(1);
+                        let _replaced = latest.offer(now, newest.to_le_bytes().to_vec());
+                    }
+                    Op::Offer => {}
+                    Op::Tick(ms) => now = now.saturating_add(Duration::from_millis(ms)),
+                    Op::Stop => stopped = stopped.or(Some(now)),
+                    Op::Write(accept) => {
+                        pipe.accept = accept;
+                        let video = stopped.map_or(now, |stop| now.min(stop));
+                        let before = pipe.bytes.len();
+                        let starts = before % 4 == 0;
+                        let done = writer.write_due(&mut pipe, || latest.take(), video).unwrap();
+                        if starts && pipe.bytes.len() > before {
+                            expected.push(newest);
+                        }
+                        prop_assert!(writer.frames() <= target(video));
+                        if done {
+                            prop_assert_eq!(writer.frames(), target(video));
+                        }
+                        if finished {
+                            prop_assert_eq!(pipe.bytes.len(), before, "written after stop");
+                        }
+                        finished |= done && stopped.is_some();
+                    }
+                }
+            }
+            let shown: Vec<u32> = pipe
+                .bytes
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            prop_assert_eq!(&shown[..], &expected[..shown.len()]);
+        }
+
+        #[test]
+        fn a_take_returns_only_the_newest_offer(offers in prop::collection::vec(prop::option::of(any::<u8>()), 0..50)) {
+            let mut latest = Latest::default();
+            let mut waiting = None;
+            for offer in offers {
+                if let Some(frame) = offer {
+                    let _replaced = latest.offer(Duration::ZERO, frame);
+                    waiting = Some(frame);
+                } else {
+                    prop_assert_eq!(latest.take().map(|(_, frame)| frame), waiting.take());
+                }
+            }
+        }
+
+        #[test]
+        fn a_writer_that_keeps_up_never_falls_behind(frames in 1u64..2000, age in 0u64..=100) {
+            let mut freshness = Freshness::default();
+            for frame in 0..frames {
+                let video = Duration::from_millis(frame * 33);
+                freshness.record(video, video.saturating_sub(Duration::from_millis(age)));
+            }
+            prop_assert!(!freshness.fell_behind());
+        }
+    }
+
+    #[test]
+    fn a_writer_stale_for_a_tenth_of_a_long_take_fell_behind() {
+        let mut freshness = Freshness::default();
+        for frame in 0..300_u64 {
+            let video = Duration::from_millis(frame * 33);
+            let captured = if frame < 30 { Duration::ZERO } else { video };
+            freshness.record(video, captured);
+        }
+        assert!(freshness.fell_behind());
+    }
 }
