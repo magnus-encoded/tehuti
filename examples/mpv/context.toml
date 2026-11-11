@@ -1,29 +1,23 @@
-# Pad buttons and spoken phrases for mpv (app id "mpv").
+# mpv: pad buttons and spoken phrases.
 app_id = "mpv"
 
 [buttons]
-west = { key = "space" }              # play / pause
-dpad_left = { key = "left" }          # seek back (mpv default)
-dpad_right = { key = "right" }        # seek forward (mpv default)
-dpad_up = { text = "0" }              # volume up (mpv default key)
-dpad_down = { text = "9" }            # volume down (mpv default key)
-north = { text = "f" }                # fullscreen
-select = { key = "escape" }
-start = { notify = "mpv: west pause, d-pad seek and volume" }
+west = { key = "space" } # X: play / pause
+north = { text = "f" } # Y: full screen
+dpad_up = { text = "0" } # volume up
+dpad_down = { text = "9" } # volume down
+dpad_left = { key = "left" } # back 5 s
+dpad_right = { key = "right" } # forward 5 s
 
-# Matching ignores case and trailing punctuation, so "Pause." equals "pause".
-# There is no fuzzy matching by default: list each likely mishearing as its own phrase.
 [speech]
 "pause" = { key = "space" }
-"paws" = { key = "space" }
+"paws" = { key = "space" } # a mishearing
 "play" = { key = "space" }
 "resume" = { key = "space" }
-"forward" = { key = "right" }
-"skip" = { key = "right" }
-"back" = { key = "left" }
-"rewind" = { key = "left" }
-"louder" = { text = "0" }
-"quieter" = { text = "9" }
-"quiet her" = { text = "9" }
-"fullscreen" = { text = "f" }
-"full screen" = { text = "f" }
+
+[ticker]
+enabled = true
+speech = "own"
+
+[ticker.names]
+space = "Play/Pause"

@@ -172,9 +172,11 @@ Run `tehuti examples foot -- bash --norc --noprofile` to see the foot context.
 3. Start Tehuti with that directory and mpv, for example
    `tehuti ~/.config/tehuti mpv some-video.mkv`.
 4. West pauses, the D-pad seeks and changes the volume, North toggles
-   fullscreen. Say "pause", "forward" or "louder".
+   fullscreen. Say "pause", "play" or "resume".
 5. Edit the file and save. The change applies without a restart. If Tehuti
    shows a notice naming the file, the file has an error; the log has the rest.
+   Today a broken file also drops its last good version, so its buttons and
+   phrases stop working until you fix the file (#625).
 
 A button is a name such as `west`, `dpad_left`, `left_bumper` or
 `right_trigger`; the full list and the keys you can send are in
@@ -185,7 +187,7 @@ focused app id.
 
 ## Contributing and licence
 
-To share a context, open a pull request that adds `examples/<app>/context.toml`.
+To share a context, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Run `scripts/check` before every commit; CI runs the same gate. Review rules are
 in [CODING_STANDARDS.md](CODING_STANDARDS.md), and each crate has a
