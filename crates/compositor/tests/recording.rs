@@ -958,8 +958,8 @@ sys.exit(child.wait())
                 }
             }
             "presses" => {
-                let south = |bytes: &RefCell<Vec<u8>>| {
-                    String::from_utf8_lossy(&bytes.borrow())
+                let south = |disk: &RefCell<Vec<u8>>| {
+                    String::from_utf8_lossy(&disk.borrow())
                         .lines()
                         .filter(|line| line.contains("South"))
                         .count()
