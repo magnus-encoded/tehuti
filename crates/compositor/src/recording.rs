@@ -167,7 +167,10 @@ impl Compositor {
         match session.events.try_send(event) {
             Ok(()) => recovered(&session.dropped_events, "timeline queue drained; events dropped"),
             Err(TrySendError::Full(_)) => {
-                dropping(&session.dropped_events, "recording timeline queue full; dropping events");
+                dropping(
+                    &session.dropped_events,
+                    "recording timeline queue full; dropping events",
+                );
             }
             Err(TrySendError::Disconnected(_)) => {}
         }
@@ -243,7 +246,9 @@ impl Compositor {
             Ok(frame) => {
                 if let Some(session) = &self.recording {
                     match session.frames.try_send((captured, frame)) {
-                        Ok(()) => recovered(&session.repeated_frames, "capture queue drained; frames repeated"),
+                        Ok(()) => {
+                            recovered(&session.repeated_frames, "capture queue drained; frames repeated")
+                        }
                         Err(TrySendError::Full(_)) => dropping(
                             &session.repeated_frames,
                             "recording capture queue full; repeating the previous frame",
@@ -736,7 +741,6 @@ fn encode(
     })();
     finish_encoder(&mut child, output_path, result)
 }
-
 
 fn finish_encoder(
     child: &mut Encoder,
