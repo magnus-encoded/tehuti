@@ -1,6 +1,7 @@
 //! Local video, separate `PulseAudio` tracks and a text timeline.
 use crate::state::Compositor;
 use core::{
+    cell::{Cell, RefCell},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -13,7 +14,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc,
-        mpsc::{self, Receiver, SyncSender},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     },
     time::Instant,
 };
@@ -24,6 +25,9 @@ const INTERVAL: Duration = Duration::from_nanos(33_333_334);
 /// `now - lag >= (s + 1) / 30`, and a frame for slot `s` is captured by `s / 30 + 17 ms`, so render
 /// and queue get about 50 ms. A frame later than that is shown one slot late, not lost.
 const CAPTURE_LAG: Duration = INTERVAL;
+
+/// Timeline events the encoder loop writes before it turns back to video.
+const EVENT_BATCH: usize = 256;
 
 /// Recording time up to which video slots may be written.
 const fn video_due(elapsed: Duration, stopped_ms: u64) -> Duration {
@@ -46,7 +50,15 @@ pub(super) struct Session {
     next_frame: Instant,
     scene: Value,
     worker: Option<std::thread::JoinHandle<()>>,
+    /// The timeline writer, joined on drop so the final `stop` line is on disk.
+    timeline: Option<std::thread::JoinHandle<()>>,
     injected: Option<Injected>,
+    /// Events dropped since the timeline queue last accepted one.
+    dropped_events: Cell<u64>,
+    /// Frames repeated since the capture queue last accepted one.
+    repeated_frames: Cell<u64>,
+    /// Continuous samples (sticks, pointer motion, scroll), written at most once per video frame.
+    samples: RefCell<Vec<Sample>>,
 }
 
 #[derive(Debug)]
@@ -57,7 +69,7 @@ struct Injected {
     encoder: crate::recording_encoder::FrameEncoder,
     schedule: crate::recording_encoder::FrameSchedule<RgbaImage>,
     pixels: RgbaImage,
-    timeline: File,
+    timeline: Timeline<Box<dyn Write>>,
     events: Receiver<Value>,
     frames: Receiver<(Duration, RgbaImage)>,
     size: (u32, u32),
@@ -99,8 +111,53 @@ impl Compositor {
     }
 
     pub(super) fn record_debug(&self, kind: &str, event: &impl core::fmt::Debug) {
-        if self.recording_active() {
-            self.record_event(kind, &json!({"event": format!("{event:?}")}));
+        if !self.recording_active() {
+            return;
+        }
+        self.record_event(kind, &json!({"event": format!("{event:?}")}));
+    }
+
+    /// Keeps the newest continuous sample of `name`; `poll_recording` writes it once per video
+    /// frame, and only when it changed. Discrete events go through `record_debug` unfiltered.
+    pub(super) fn record_sample(
+        &self,
+        kind: &'static str,
+        name: &'static str,
+        sample: &impl core::fmt::Debug,
+    ) {
+        let Some(session) = &self.recording else { return };
+        if session.stop.load(Ordering::Relaxed) != u64::MAX {
+            return;
+        }
+        let text = format!("{sample:?}");
+        let mut samples = session.samples.borrow_mut();
+        if let Some(slot) = samples.iter_mut().find(|slot| slot.name == name) {
+            slot.pending = Some(text);
+        } else {
+            samples.push(Sample {
+                kind,
+                name,
+                pending: Some(text),
+                written: String::new(),
+            });
+        }
+    }
+
+    fn flush_samples(&self) {
+        let due: Vec<(&'static str, String)> = self.recording.as_ref().map_or_else(Vec::new, |session| {
+            session
+                .samples
+                .borrow_mut()
+                .iter_mut()
+                .filter_map(|slot| {
+                    let text = slot.pending.take().filter(|text| *text != slot.written)?;
+                    slot.written.clone_from(&text);
+                    Some((slot.kind, text))
+                })
+                .collect()
+        });
+        for (kind, text) in due {
+            self.record_event(kind, &json!({"event": text}));
         }
     }
 
@@ -117,8 +174,15 @@ impl Compositor {
             return;
         }
         let event = json!({"time_ms": session.elapsed().as_millis(), "kind": kind, "data": data});
-        if session.events.try_send(event).is_err() {
-            tracing::warn!("recording timeline queue full; dropping event");
+        match session.events.try_send(event) {
+            Ok(()) => recovered(&session.dropped_events, "timeline queue drained; events dropped"),
+            Err(TrySendError::Full(_)) => {
+                dropping(
+                    &session.dropped_events,
+                    "recording timeline queue full; dropping events",
+                );
+            }
+            Err(TrySendError::Disconnected(_)) => {}
         }
     }
 
@@ -186,15 +250,20 @@ impl Compositor {
         if let Some(session) = &mut self.recording {
             session.next_frame = now.checked_add(INTERVAL).unwrap_or(now);
         }
+        self.flush_samples();
         let captured = self.recording.as_ref().map_or(Duration::ZERO, Session::elapsed);
         match crate::driver_shot::frame(self, &chrono::Local::now().format("%H:%M").to_string()) {
             Ok(frame) => {
                 if let Some(session) = &self.recording {
                     match session.frames.try_send((captured, frame)) {
-                        Err(mpsc::TrySendError::Full(_)) => {
-                            tracing::warn!("recording capture queue full; repeating the previous frame");
+                        Ok(()) => {
+                            recovered(&session.repeated_frames, "capture queue drained; frames repeated");
                         }
-                        Ok(()) | Err(mpsc::TrySendError::Disconnected(_)) => {}
+                        Err(TrySendError::Full(_)) => dropping(
+                            &session.repeated_frames,
+                            "recording capture queue full; repeating the previous frame",
+                        ),
+                        Err(TrySendError::Disconnected(_)) => {}
                     }
                 }
             }
@@ -202,6 +271,133 @@ impl Compositor {
                 tracing::warn!(%error, "recording capture failed; repeating previous frame");
             }
         }
+    }
+}
+
+/// The newest value of one continuous input and the last one written.
+#[derive(Debug)]
+struct Sample {
+    kind: &'static str,
+    name: &'static str,
+    pending: Option<String>,
+    written: String,
+}
+
+/// Counts one dropped item; only the first of a run is logged.
+fn dropping(counter: &Cell<u64>, message: &'static str) {
+    let count = counter.get();
+    if count == 0 {
+        tracing::warn!("{message}");
+    }
+    counter.set(count.saturating_add(1));
+}
+
+/// Ends a run of dropped items with one line carrying its length.
+fn recovered(counter: &Cell<u64>, message: &'static str) {
+    let count = counter.replace(0);
+    if count > 0 {
+        tracing::warn!(count, "recording {message}");
+    }
+}
+
+/// Buffered timeline output that stops, with one log line, at its first write error.
+struct Timeline<W: Write> {
+    out: Option<io::BufWriter<W>>,
+}
+
+impl<W: Write> core::fmt::Debug for Timeline<W> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("Timeline")
+            .field("open", &self.out.is_some())
+            .finish()
+    }
+}
+
+impl<W: Write> Timeline<W> {
+    fn new(out: W) -> Self {
+        Self {
+            out: Some(io::BufWriter::new(out)),
+        }
+    }
+
+    fn write(&mut self, event: &Value) {
+        self.attempt(|out| {
+            serde_json::to_writer(&mut *out, event)?;
+            out.write_all(b"\n")
+        });
+    }
+
+    fn flush(&mut self) {
+        self.attempt(Write::flush);
+    }
+
+    fn finish(&mut self, stopped_ms: u64) {
+        self.write(&json!({"time_ms": stopped_ms, "kind": "stop", "data": {}}));
+        self.flush();
+    }
+
+    fn attempt(&mut self, write: impl FnOnce(&mut io::BufWriter<W>) -> io::Result<()>) {
+        if let Some(out) = &mut self.out
+            && let Err(error) = write(out)
+        {
+            tracing::warn!(%error, "recording timeline writer stopped; the video continues");
+            if let Some(failed) = self.out.take() {
+                // A failed writer must not be flushed again on drop.
+                let (_inner, _unwritten) = failed.into_parts();
+            }
+        }
+    }
+}
+
+/// Writes the timeline on its own thread, so a slow or stuck disk never holds up video.
+///
+/// The thread ends after the stop flag is set and the queue is empty, or when the session is gone;
+/// either way the last line is `stop`, stamped with recording time.
+fn spawn_timeline(
+    out: impl Write + Send + 'static,
+    events: Receiver<Value>,
+    stop: Arc<AtomicU64>,
+    started: Instant,
+) -> io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("tehuti-timeline".into())
+        .spawn(move || {
+            let mut timeline = Timeline::new(out);
+            let stopped = || match stop.load(Ordering::Relaxed) {
+                u64::MAX => u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX - 1),
+                stopped => stopped,
+            };
+            loop {
+                match events.recv_timeout(Duration::from_millis(50)) {
+                    Ok(event) => timeline.write(&event),
+                    Err(RecvTimeoutError::Timeout) => {
+                        timeline.flush();
+                        if stop.load(Ordering::Relaxed) != u64::MAX {
+                            timeline.finish(stopped());
+                            return;
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        timeline.finish(stopped());
+                        return;
+                    }
+                }
+            }
+        })
+}
+
+/// Takes at most one captured frame per encoder pass.
+///
+/// Draining until empty never ends when scaling a frame takes longer than the capture
+/// interval: a new frame is always waiting, and video and timeline stall until stop.
+fn take_frame(
+    mut next: impl FnMut() -> Option<(Duration, RgbaImage)>,
+    schedule: &mut crate::recording_encoder::FrameSchedule<RgbaImage>,
+    size: (u32, u32),
+) {
+    if let Some((captured, frame)) = next() {
+        schedule.push(captured, fit(&frame, size));
     }
 }
 
@@ -231,7 +427,11 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         next_frame: started.checked_add(INTERVAL).unwrap_or(started),
         scene: Value::Null,
         worker: None,
+        timeline: None,
         injected: None,
+        dropped_events: Cell::new(0),
+        repeated_frames: Cell::new(0),
+        samples: RefCell::new(Vec::new()),
     };
     if let Some(runtime) = &compositor.recording_runtime {
         session.injected = Some(injected(
@@ -245,12 +445,19 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         )?);
         return Ok(session);
     }
+    std::fs::create_dir_all(&path)?;
+    session.timeline = Some(spawn_timeline(
+        File::create_new(path.join("timeline.jsonl"))?,
+        receive_events,
+        Arc::clone(&session.stop),
+        started,
+    )?);
     session.worker = Some(start_worker(
         &session,
         path,
         frame,
         compositor.settings().input.microphone.clone(),
-        (receive_frames, receive_events),
+        receive_frames,
         send_result,
     )?);
     Ok(session)
@@ -261,7 +468,7 @@ fn start_worker(
     path: PathBuf,
     frame: RgbaImage,
     microphone: tehuti_core::dispatch::MicrophoneChoice,
-    (receive_frames, receive_events): (Receiver<(Duration, RgbaImage)>, Receiver<Value>),
+    receive_frames: Receiver<(Duration, RgbaImage)>,
     send_result: SyncSender<Result<PathBuf, String>>,
 ) -> io::Result<std::thread::JoinHandle<()>> {
     let worker_stop = Arc::clone(&session.stop);
@@ -273,13 +480,11 @@ fn start_worker(
         .spawn(move || {
             let result = (|| {
                 let child = spawn_encoder(&path, size, wall_start, &microphone)?;
-                let timeline = File::create_new(path.join("timeline.jsonl"))?;
                 encode(
                     child,
                     &path.join("video.mp4"),
                     &frame,
-                    timeline,
-                    (&receive_frames, &receive_events),
+                    &receive_frames,
                     &worker_stop,
                     started,
                 )
@@ -316,7 +521,7 @@ fn injected(
     std::fs::create_dir_all(&path)?;
     let sources = runtime.audio_sources(microphone)?;
     let sink = runtime.spawn(&encoder_command(&path, size, wall_start, &sources))?;
-    let timeline = File::create_new(path.join("timeline.jsonl"))?;
+    let timeline = Timeline::new(runtime.timeline(&path.join("timeline.jsonl"))?);
     Ok(Injected {
         runtime: std::rc::Rc::clone(runtime),
         began: runtime.now(),
@@ -526,8 +731,7 @@ fn encode(
     mut child: Encoder,
     output_path: &std::path::Path,
     frame: &RgbaImage,
-    mut timeline: File,
-    (frames, events): (&Receiver<(Duration, RgbaImage)>, &Receiver<Value>),
+    frames: &Receiver<(Duration, RgbaImage)>,
     stop: &AtomicU64,
     started: Instant,
 ) -> io::Result<()> {
@@ -549,13 +753,8 @@ fn encode(
                     "ffmpeg exited; see recording folder's ffmpeg.log",
                 ));
             }
-            if let Err(error) = flush_events(&mut timeline, events) {
-                tracing::warn!(%error, "recording timeline write failed");
-            }
             let stopped_ms = stop.load(Ordering::Relaxed);
-            for (captured, next) in frames.try_iter() {
-                schedule.push(captured, fit(&next, size));
-            }
+            take_frame(|| frames.try_recv().ok(), &mut schedule, size);
             if encoder.at_frame_boundary()
                 && let Some(next) = schedule.advance(encoder.progress().0)
             {
@@ -582,30 +781,9 @@ fn encode(
                 std::thread::yield_now();
             }
         }
-        if let Err(error) = finish_timeline(&mut timeline, events, stop.load(Ordering::Relaxed)) {
-            tracing::warn!(%error, "recording timeline flush failed");
-        }
         Ok(())
     })();
     finish_encoder(&mut child, output_path, result)
-}
-
-fn finish_timeline(timeline: &mut File, events: &Receiver<Value>, stopped_ms: u64) -> io::Result<()> {
-    flush_events(timeline, events)?;
-    serde_json::to_writer(
-        &mut *timeline,
-        &json!({"time_ms": stopped_ms, "kind": "stop", "data": {}}),
-    )?;
-    timeline.write_all(b"\n")?;
-    timeline.sync_all()
-}
-
-fn flush_events(timeline: &mut File, events: &Receiver<Value>) -> io::Result<()> {
-    for event in events.try_iter() {
-        serde_json::to_writer(&mut *timeline, &event)?;
-        timeline.write_all(b"\n")?;
-    }
-    Ok(())
 }
 
 fn finish_encoder(
@@ -638,10 +816,15 @@ impl Session {
             return;
         };
         let result: io::Result<bool> = (|| {
-            flush_events(&mut injected.timeline, &injected.events)?;
-            for (captured, next) in injected.frames.try_iter() {
-                injected.schedule.push(captured, fit(&next, injected.size));
+            for event in injected.events.try_iter().take(EVENT_BATCH) {
+                injected.timeline.write(&event);
             }
+            injected.timeline.flush();
+            take_frame(
+                || injected.frames.try_recv().ok(),
+                &mut injected.schedule,
+                injected.size,
+            );
             if injected.encoder.at_frame_boundary()
                 && let Some(next) = injected.schedule.advance(injected.encoder.progress().0)
             {
@@ -653,7 +836,10 @@ impl Session {
                 .write_due(&mut injected.sink, injected.pixels.as_raw(), || elapsed)?
                 && stopped != u64::MAX
             {
-                finish_timeline(&mut injected.timeline, &injected.events, stopped)?;
+                for event in injected.events.try_iter() {
+                    injected.timeline.write(&event);
+                }
+                injected.timeline.finish(stopped);
                 injected.sink.finish()?;
                 return Ok(true);
             }
@@ -670,6 +856,8 @@ impl Session {
         }
     }
     fn request_stop(&self) {
+        recovered(&self.dropped_events, "timeline queue drained; events dropped");
+        recovered(&self.repeated_frames, "capture queue drained; frames repeated");
         let elapsed = u64::try_from(self.elapsed().as_millis()).unwrap_or(u64::MAX.saturating_sub(1));
         let _stopped = self
             .stop
@@ -682,6 +870,9 @@ impl Drop for Session {
         self.request_stop();
         if let Some(worker) = self.worker.take() {
             let _joined = worker.join();
+        }
+        if let Some(timeline) = self.timeline.take() {
+            let _joined = timeline.join();
         }
     }
 }
@@ -818,6 +1009,74 @@ mod tests {
             start.abs_diff(Duration::from_millis(500)) <= Duration::from_millis(50),
             "tone captured 500 ms after recording start begins at {start:?}"
         );
+    }
+
+    #[test]
+    fn a_frame_source_faster_than_the_encoder_is_polled_once_per_pass() {
+        let mut polls = 0_u32;
+        let mut schedule = crate::recording_encoder::FrameSchedule::default();
+        super::take_frame(
+            || {
+                polls = polls.saturating_add(1);
+                assert!(polls < 100, "the pass never ends while frames keep arriving");
+                Some((Duration::ZERO, image::RgbaImage::new(4, 4)))
+            },
+            &mut schedule,
+            (4, 4),
+        );
+        assert_eq!(polls, 1);
+    }
+
+    #[derive(Clone, Default)]
+    struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Shared {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_timeline_thread_ends_with_a_timed_stop_line_when_stopped_or_abandoned() {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        for abandoned in [false, true] {
+            let out = Shared::default();
+            let (events, receive) = std::sync::mpsc::sync_channel(4);
+            let stop = Arc::new(AtomicU64::new(u64::MAX));
+            let thread =
+                super::spawn_timeline(out.clone(), receive, Arc::clone(&stop), std::time::Instant::now())
+                    .unwrap();
+            events
+                .send(serde_json::json!({"time_ms": 5, "kind": "key", "data": {}}))
+                .unwrap();
+            if abandoned {
+                drop(events);
+            } else {
+                stop.store(1_500, Ordering::Relaxed);
+            }
+            thread.join().unwrap();
+            let text = String::from_utf8(out.0.lock().unwrap().clone()).unwrap();
+            let lines: Vec<serde_json::Value> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 2, "{text}");
+            assert_eq!(lines[1]["kind"], "stop");
+            let stopped = lines[1]["time_ms"].as_u64().unwrap();
+            if abandoned {
+                assert!(stopped < 1_000, "abandoned timeline stamped {stopped}");
+            } else {
+                assert_eq!(stopped, 1_500);
+            }
+        }
     }
 
     #[test]

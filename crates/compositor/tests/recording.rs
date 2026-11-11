@@ -11,11 +11,65 @@ mod recording {
         clock: Rc<core::cell::Cell<Duration>>,
         mode: String,
         written: Rc<core::cell::Cell<usize>>,
+        timeline: Option<TimelineFake>,
+    }
+
+    /// A timeline disk that takes at most 64 bytes per write, or fails every write.
+    #[derive(Debug, Clone)]
+    struct TimelineFake {
+        bytes: Rc<RefCell<Vec<u8>>>,
+        fail: bool,
+    }
+
+    impl std::io::Write for TimelineFake {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.fail {
+                return Err(std::io::Error::other("injected timeline disk failure"));
+            }
+            let taken = bytes.len().min(64);
+            self.bytes.borrow_mut().extend_from_slice(&bytes[..taken]);
+            Ok(taken)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Log output of the probe, to count recorder warnings.
+    #[derive(Debug, Clone, Default)]
+    struct Logs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("log lock poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Logs {
+        fn lines_with(&self, text: &str) -> usize {
+            String::from_utf8_lossy(&self.0.lock().unwrap())
+                .lines()
+                .filter(|line| line.contains(text))
+                .count()
+        }
     }
 
     impl tehuti::recording_encoder::Runtime for Runtime {
         fn now(&self) -> Duration {
             self.clock.get()
+        }
+        fn timeline(&self, path: &Path) -> std::io::Result<Box<dyn std::io::Write>> {
+            match &self.timeline {
+                Some(fake) => Ok(Box::new(fake.clone())),
+                None => Ok(Box::new(std::fs::File::create_new(path)?)),
+            }
         }
         fn audio_sources(
             &self,
@@ -175,6 +229,7 @@ mod recording {
                 clock: Rc::clone(&clock),
                 mode: mode.clone(),
                 written: Rc::clone(&written),
+                timeline: None,
             }));
         }
         compositor.say(Text::new("start recording".into()).unwrap());
@@ -811,7 +866,218 @@ sys.exit(child.wait())
         logs
     }
 
+    #[test]
+    fn a_full_timeline_queue_logs_once_when_dropping_starts_and_once_with_the_count() {
+        isolated_in("recording::timeline_probe", "flood");
+    }
+
+    #[test]
+    fn ten_minutes_of_pad_motion_keep_the_timeline_current_without_ticks_or_repeats() {
+        isolated_in("recording::timeline_probe", "pad");
+    }
+
+    #[test]
+    fn two_identical_presses_100_ms_apart_are_both_written() {
+        isolated_in("recording::timeline_probe", "presses");
+    }
+
+    #[test]
+    fn a_failing_timeline_disk_logs_one_line_and_the_video_still_finalises() {
+        isolated_in("recording::timeline_probe", "failing");
+    }
+
+    /// Runs one timeline law in an isolated process; `isolated_in` sets `RECORDING_PROBE`.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one recording session per law, driven through public controls"
+    )]
+    fn timeline_probe() {
+        let Ok(mode) = std::env::var("RECORDING_PROBE") else {
+            return;
+        };
+        let logs = Logs::default();
+        let writer = logs.clone();
+        let _logging = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        compositor.load_input_choices(tehuti::input_choice_store::Store::from_env().unwrap());
+        let colour = Rc::new(RefCell::new(image::Rgba([240, 20, 60, 255])));
+        compositor.set_capture_source(&colour, |colour, _, _| {
+            Ok(image::RgbaImage::from_pixel(64, 64, *colour))
+        });
+        let clock = Rc::new(core::cell::Cell::new(Duration::ZERO));
+        let written = Rc::new(core::cell::Cell::new(0));
+        let bytes = Rc::new(RefCell::new(Vec::new()));
+        compositor.set_recording_runtime(Rc::new(Runtime {
+            clock: Rc::clone(&clock),
+            mode: mode.clone(),
+            written: Rc::clone(&written),
+            timeline: Some(TimelineFake {
+                bytes: Rc::clone(&bytes),
+                fail: mode == "failing",
+            }),
+        }));
+        compositor.say(Text::new("start recording".into()).unwrap());
+        let advance = |target: &mut Compositor, moment: Duration| {
+            clock.set(moment);
+            target.advance_time();
+        };
+        match mode.as_str() {
+            "flood" => {
+                // Nothing drains the queue between these keys.
+                for _ in 0..4096 {
+                    compositor.host_key(smithay::input::keyboard::Keycode::new(38), true);
+                }
+                assert_eq!(
+                    logs.lines_with("timeline queue full"),
+                    1,
+                    "dropping must log once, not per event"
+                );
+                advance(&mut compositor, Duration::from_millis(100));
+            }
+            "pad" => {
+                for tenth in 1..=6000_u64 {
+                    for sample in 0..10_i16 {
+                        let value = i16::try_from(tenth % 1000).unwrap() * 30 + sample;
+                        compositor.sample_sticks(tehuti_core::dispatch::Sticks {
+                            left: (value, -value),
+                            right: (0, value),
+                        });
+                        compositor.handle(&Event::Tick {
+                            elapsed: Duration::from_micros(371),
+                        });
+                    }
+                    advance(&mut compositor, Duration::from_millis(tenth * 100));
+                }
+            }
+            "presses" => {
+                let south = |disk: &RefCell<Vec<u8>>| {
+                    String::from_utf8_lossy(&disk.borrow())
+                        .lines()
+                        .filter(|line| line.contains("South"))
+                        .count()
+                };
+                let press = Event::Button {
+                    name: tehuti_protocol::ButtonName::South,
+                    state: tehuti_protocol::ButtonState::Pressed,
+                };
+                compositor.handle(&press);
+                advance(&mut compositor, Duration::from_millis(100));
+                let first = south(&bytes);
+                compositor.handle(&press);
+                advance(&mut compositor, Duration::from_millis(200));
+                assert!(first > 0, "the first press is in the timeline");
+                assert_eq!(south(&bytes), first * 2, "the second press is written too");
+            }
+            _ => {
+                for tenth in 1..=30_u64 {
+                    compositor.host_key(smithay::input::keyboard::Keycode::new(38), true);
+                    advance(&mut compositor, Duration::from_millis(tenth * 100));
+                }
+            }
+        }
+        compositor.say(Text::new("stop recording".into()).unwrap());
+        // The fake encoder takes one frame per pass; ten minutes leave a backlog to finalise.
+        for _ in 0..40_000 {
+            compositor.advance_time();
+            if compositor.visible_notice_text().is_some_and(|text| {
+                text.starts_with("RECORDING SAVED:") || text.starts_with("RECORDING FAILED:")
+            }) {
+                break;
+            }
+        }
+        assert!(
+            compositor
+                .visible_notice_text()
+                .is_some_and(|text| text.starts_with("RECORDING SAVED:")),
+            "notice: {:?}",
+            compositor.visible_notice_text()
+        );
+        let folder = std::fs::read_dir(
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join("Videos/Recordings"),
+        )
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+        let video: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(folder.join("video.mp4")).unwrap()).unwrap();
+        assert!(video["frames"].as_u64().unwrap() > 0, "the video must finalise");
+        if mode == "failing" {
+            assert_eq!(
+                logs.lines_with("timeline"),
+                1,
+                "a failing timeline must end with exactly one line"
+            );
+            return;
+        }
+        let text = String::from_utf8(bytes.borrow().clone()).unwrap();
+        let events: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let ending = events.last().unwrap();
+        assert_eq!(ending["kind"], "stop");
+        if mode == "flood" {
+            assert_eq!(
+                logs.lines_with("timeline queue"),
+                2,
+                "dropping ends with one line carrying the count"
+            );
+            assert!(
+                String::from_utf8_lossy(&logs.0.lock().unwrap()).contains("count="),
+                "the end line carries how many events were dropped"
+            );
+            return;
+        }
+        assert!(
+            !text.contains("Tick {"),
+            "loop ticks are not timeline events: {:?}",
+            text.lines().find(|line| line.contains("Tick {"))
+        );
+        let sticks = text.matches("Sticks").count();
+        assert!(sticks <= 6001, "{sticks} stick entries for 6000 video frames");
+        let mut counts = std::collections::HashMap::new();
+        for event in events
+            .iter()
+            .filter(|event| event["kind"] == "input" || event["kind"] == "effect")
+        {
+            *counts.entry(event["data"].to_string()).or_insert(0_u32) += 1;
+        }
+        assert!(
+            counts.values().all(|count| *count <= 600),
+            "a repeated identical event is written once: {:?}",
+            counts.iter().max_by_key(|(_, count)| **count)
+        );
+        let last = events[events.len() - 2]["time_ms"].as_u64().unwrap();
+        assert!(
+            ending["time_ms"].as_u64().unwrap().saturating_sub(last) <= 1000,
+            "last entry at {last} ms, video ends at {}",
+            ending["time_ms"]
+        );
+        assert_eq!(
+            logs.lines_with("queue"),
+            0,
+            "a pad in motion must not fill the queue"
+        );
+    }
+
     fn isolated(mode: &str) {
+        isolated_in(
+            "recording::voice_recording_writes_shared_capture_and_a_searchable_timeline",
+            mode,
+        );
+    }
+
+    fn isolated_in(test: &str, mode: &str) {
         if matches!(mode, "duration" | "orientation" | "streaming") {
             for program in ["/usr/bin/ffmpeg", "/usr/bin/ffprobe"] {
                 assert!(Path::new(program).is_file(), "install ffmpeg: {program} missing");
@@ -844,10 +1110,7 @@ sys.exit(child.wait())
             install_video_encoder(&bin);
         }
         let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "recording::voice_recording_writes_shared_capture_and_a_searchable_timeline",
-            ])
+            .args(["--exact", test])
             .env("RECORDING_PROBE", mode)
             .env("HOME", directory.path())
             .env("XDG_CONFIG_HOME", directory.path().join("config"))
