@@ -1,6 +1,11 @@
 # Declarative contexts
 
 Start with `tehuti <context-directory> <application> [arguments...]`.
+The login session uses `~/.config/tehuti` as the context directory and starts
+with no application. A first context is
+`~/.config/tehuti/<app>/context.toml`; `README.md` has a walk-through. Check
+files without starting Tehuti using `tehuti --check-config` (see "Checking a
+config").
 The directory can contain a `context.toml` and child directories with their own
 `context.toml`. Files load in path order. The first exact application-id match
 selects the active context; a matching `title` refines it. When no context matches the window, it inherits the

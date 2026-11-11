@@ -7,6 +7,24 @@ Each incoming line may contain at most 65,536 bytes before the newline.
 The core's output queue holds at most 65,536 bytes, including newlines;
 events that do not fit are logged and declined through the captured fallback.
 
+## Your first plugin
+
+1. Copy [east-to-tab.py](../../examples/plugins/east-to-tab.py) and
+   [east-to-tab.json](../../examples/plugins/east-to-tab.json) into
+   `<context-directory>/plugins/` (for the session, `~/.config/tehuti/plugins/`).
+2. Make the script executable. Change `app_ids` in the manifest to the app id
+   of the window you want it for.
+3. Start Tehuti with that directory and the app. East now sends Tab there.
+
+Test it without Tehuti by piping the lines from the
+[example session](#example-session) into it, for example
+`printf '%s\n' '<initialize line>' '<button line>' | ./east-to-tab.py`.
+A plugin may answer an event with a plain action list (the example does);
+`submit_actions` is an equivalent request form that carries the event id
+and returns an error object when rejected. Start with the plain list. A plugin that handles speech lists `speech` in its manifest
+`events` and replies to `speech` requests; see "Events and routing". A context
+and a plugin do not have to share a folder or an application id.
+
 ## Validation and errors
 
 Use `"jsonrpc":"2.0"` on every message. Batches are not supported.
