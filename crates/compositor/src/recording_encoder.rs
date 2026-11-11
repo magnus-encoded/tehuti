@@ -150,29 +150,27 @@ impl<F> Latest<F> {
     }
 }
 
-/// A written frame is stale when its capture is older than three frame intervals.
-pub const STALE: Duration = Duration::from_millis(100);
-
-/// Written frames, and how many of them showed a stale capture.
+/// Written frames, and how many were late: finished after the clock had already moved past
+/// them, so the video only kept wall-clock time because the writer was catching up.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Freshness {
     written: u64,
-    stale: u64,
+    late: u64,
 }
 
 impl Freshness {
-    /// Counts one written frame showing `captured` at video time `video`.
-    pub fn record(&mut self, video: Duration, captured: Duration) {
+    /// Counts one written frame; `late` when frames were still due after it.
+    pub const fn record(&mut self, late: bool) {
         self.written = self.written.saturating_add(1);
-        if video.saturating_sub(captured) > STALE {
-            self.stale = self.stale.saturating_add(1);
+        if late {
+            self.late = self.late.saturating_add(1);
         }
     }
 
-    /// Whether at least a tenth of the written frames, and one second of them, were stale.
+    /// Whether at least 30 frames, and at least a tenth of all written frames, were late.
     #[must_use]
     pub const fn fell_behind(self) -> bool {
-        self.stale >= 30 && self.stale.saturating_mul(10) >= self.written
+        self.late >= 30 && self.late.saturating_mul(10) >= self.written
     }
 }
 
@@ -215,8 +213,10 @@ impl FrameWriter {
         }
         let before = self.encoder.progress().0;
         let done = self.encoder.write_due(writer, &self.shown.1, || video)?;
-        if self.encoder.progress().0 > before {
-            self.freshness.record(video, self.shown.0);
+        let after = self.encoder.progress().0;
+        if after > before {
+            self.freshness
+                .record(after < video.as_nanos().saturating_mul(30) / 1_000_000_000);
         }
         Ok(done)
     }
@@ -391,26 +391,32 @@ mod tests {
                 }
             }
         }
+    }
 
-        #[test]
-        fn a_writer_that_keeps_up_never_falls_behind(frames in 1u64..2000, age in 0u64..=100) {
-            let mut freshness = Freshness::default();
-            for frame in 0..frames {
-                let video = Duration::from_millis(frame.saturating_mul(33));
-                freshness.record(video, video.saturating_sub(Duration::from_millis(age)));
-            }
-            prop_assert!(!freshness.fell_behind());
+    /// Writes for `ticks` one-frame clock steps, one write per step accepting `accept` bytes of a
+    /// 4-byte frame, offering the same capture every step.
+    fn freshness_of(ticks: u64, accept: usize) -> Freshness {
+        let mut latest = Latest::default();
+        let mut writer = FrameWriter::new(vec![7; 4]);
+        let mut pipe = Pipe {
+            accept,
+            bytes: Vec::new(),
+        };
+        for tick in 1..=ticks {
+            let video = Duration::from_nanos(tick.saturating_mul(33_333_334));
+            let _replaced = latest.offer(video, vec![7; 4]);
+            let _done = writer.write_due(&mut pipe, || latest.take(), video).unwrap();
         }
+        writer.freshness()
     }
 
     #[test]
-    fn a_writer_stale_for_a_tenth_of_a_long_take_fell_behind() {
-        let mut freshness = Freshness::default();
-        for frame in 0..300_u64 {
-            let video = Duration::from_millis(frame.saturating_mul(33));
-            let captured = if frame < 40 { Duration::ZERO } else { video };
-            freshness.record(video, captured);
-        }
-        assert!(freshness.fell_behind());
+    fn a_still_desktop_with_a_writer_that_keeps_up_does_not_warn() {
+        assert!(!freshness_of(3000, 4).fell_behind());
+    }
+
+    #[test]
+    fn a_writer_at_half_real_time_warns() {
+        assert!(freshness_of(3000, 2).fell_behind());
     }
 }

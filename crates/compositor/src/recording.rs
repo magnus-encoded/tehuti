@@ -2,7 +2,7 @@
 use crate::state::Compositor;
 use core::{
     cell::{Cell, RefCell},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 use image::RgbaImage;
@@ -24,7 +24,13 @@ type Saved = Result<(PathBuf, crate::recording_encoder::Freshness), String>;
 
 /// The capture slot; a panic while it was held leaves a whole frame or none, so it is reused.
 fn slot(frames: &Frames) -> std::sync::MutexGuard<'_, crate::recording_encoder::Latest<RgbaImage>> {
-    frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    frames.lock().unwrap_or_else(|poisoned| {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!("recording capture slot poisoned by a panic; reusing it");
+        }
+        poisoned.into_inner()
+    })
 }
 
 const INTERVAL: Duration = Duration::from_nanos(33_333_334);
@@ -276,7 +282,7 @@ fn saved_notice(path: &std::path::Path, freshness: crate::recording_encoder::Fre
         notice.push_str(warning);
     }
     if freshness.fell_behind() {
-        notice.push_str("\nWARNING: VIDEO FELL BEHIND; PARTS OF THE PICTURE ARE STALE");
+        notice.push_str("\nWARNING: VIDEO FELL BEHIND; FRAMES WERE WRITTEN LATE");
     }
     notice
 }

@@ -1100,7 +1100,7 @@ Path(sys.argv[-1]).write_bytes(b'video')
     }
 
     /// Drives the threaded encoder path: a writer slower than the clock still sends fresh
-    /// captures before stop, and the file is finalised.
+    /// captures, the file is finalised, and the saved notice says the video fell behind.
     #[test]
     fn a_slow_encoder_process_receives_fresh_frames_and_the_file_is_finalised() {
         if std::env::var_os("RECORDING_PROBE").is_none() {
@@ -1123,16 +1123,17 @@ Path(sys.argv[-1]).write_bytes(b'video')
             }))
         });
         compositor.say(Text::new("start recording".into()).unwrap());
-        let stop_at = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
-        while Instant::now() < stop_at {
+        // Main froze here: once the writer lagged 16 frames, no newer capture was ever sent.
+        let log = home.join("frames.log");
+        let deadline = Instant::now().checked_add(Duration::from_secs(60)).unwrap();
+        while newest_sent(&log) < 2000 {
+            assert!(
+                Instant::now() < deadline,
+                "no capture newer than 2 s reached the encoder"
+            );
             compositor.advance_time();
             std::thread::sleep(Duration::from_millis(5));
         }
-        let stopped = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
-        let stopped_stamp = started.borrow().elapsed().as_millis();
         compositor.say(Text::new("stop recording".into()).unwrap());
         wait_until_saved(&mut compositor);
         let folder = home
@@ -1144,10 +1145,12 @@ Path(sys.argv[-1]).write_bytes(b'video')
             .unwrap()
             .path();
         assert_eq!(std::fs::read(folder.join("video.mp4")).unwrap(), b"video");
-        let newest_before_stop = newest_sent_before(&home.join("frames.log"), stopped);
         assert!(
-            newest_before_stop.saturating_add(500) >= stopped_stamp,
-            "newest capture sent before stop was {newest_before_stop} ms, stop at {stopped_stamp} ms"
+            compositor
+                .visible_notice_text()
+                .is_some_and(|text| text.contains("VIDEO FELL BEHIND")),
+            "a 20 fps encoder under a 30 fps clock must warn: {:?}",
+            compositor.visible_notice_text()
         );
     }
 
@@ -1170,17 +1173,15 @@ Path(sys.argv[-1]).write_bytes(b'video')
         );
     }
 
-    /// The newest capture stamp the slow encoder received before wall time `stopped`.
-    fn newest_sent_before(log: &Path, stopped: f64) -> u128 {
+    /// The newest capture stamp the slow encoder has received so far.
+    fn newest_sent(log: &Path) -> u128 {
         std::fs::read_to_string(log)
-            .unwrap()
+            .unwrap_or_default()
             .lines()
             .filter_map(|line| line.split_once(' '))
-            .map(|(arrived, stamp)| (arrived.parse::<f64>().unwrap(), stamp.parse::<u128>().unwrap()))
-            .filter(|(arrived, _)| *arrived < stopped)
-            .map(|(_, stamp)| stamp)
+            .filter_map(|(_, stamp)| stamp.parse::<u128>().ok())
             .max()
-            .unwrap()
+            .unwrap_or(0)
     }
 
     fn encoder_logs(home: &Path) -> String {
