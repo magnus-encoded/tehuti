@@ -247,7 +247,7 @@ impl Compositor {
                 if let Some(session) = &self.recording {
                     match session.frames.try_send((captured, frame)) {
                         Ok(()) => {
-                            recovered(&session.repeated_frames, "capture queue drained; frames repeated")
+                            recovered(&session.repeated_frames, "capture queue drained; frames repeated");
                         }
                         Err(TrySendError::Full(_)) => dropping(
                             &session.repeated_frames,
@@ -323,9 +323,9 @@ impl<W: Write> Timeline<W> {
             && let Err(error) = write(out)
         {
             tracing::warn!(%error, "recording timeline writer stopped; the video continues");
-            if let Some(out) = self.out.take() {
+            if let Some(failed) = self.out.take() {
                 // A failed writer must not be flushed again on drop.
-                let (_inner, _unwritten) = out.into_parts();
+                let (_inner, _unwritten) = failed.into_parts();
             }
         }
     }
