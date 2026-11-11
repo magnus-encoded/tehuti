@@ -143,8 +143,6 @@ routes = [{{steps = [{{icon = 'missing-icon-for-547', target = {{kind = 'action'
             "LOG OUT",
             "RESTART TEHUTI",
             "SWITCH TO PLASMA",
-            "REBOOT",
-            "SHUT DOWN",
             "TASK MONITOR",
             "SETTINGS",
         ] {

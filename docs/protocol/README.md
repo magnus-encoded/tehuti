@@ -114,6 +114,12 @@ session and power actions require confirmation.
 Without overrides, Log Out and Switch to Plasma stop Tehuti with session exit
 statuses 21 and 20. Task Monitor launches `plasma-systemmonitor` when installed;
 a failed launch shows a notice naming the program.
+Reboot and Shut Down have no built-in command, because power commands differ per
+machine; the menu shows them only once `menu.toml` sets them, for example
+`reboot = ["systemctl", "reboot"]` and `shut_down = ["systemctl", "poweroff"]`.
+A command that cannot start, or exits with an error within five seconds, shows a
+notice naming the entry and logs one line. `tehuti --check-config` reports
+malformed menu commands.
 Built-in keys accept argv arrays; an empty array disables a command.
 Add custom commands after those keys using tables:
 

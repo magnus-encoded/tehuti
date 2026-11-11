@@ -65,6 +65,7 @@ pub struct Menu {
     recording: bool,
     pad_family: PadFamily,
     entries: Vec<String>,
+    hidden: Vec<Command>,
     selected: usize,
     confirming: bool,
     confirm_held: bool,
@@ -81,10 +82,31 @@ impl Menu {
 
     #[must_use]
     pub fn for_command(pad_family: PadFamily, command: Command) -> Self {
-        Self {
-            selected: ITEMS.iter().position(|item| *item == command).unwrap_or_default(),
-            ..Self::new(pad_family)
-        }
+        Self::new(pad_family).selecting(command)
+    }
+
+    /// Selects `command` when it is shown, else the first row.
+    #[must_use]
+    pub fn selecting(mut self, command: Command) -> Self {
+        let selected = self.items().position(|item| item == command).unwrap_or_default();
+        self.selected = selected;
+        self
+    }
+
+    /// Leaves out built-in commands that have nothing to run.
+    #[must_use]
+    pub fn with_hidden(mut self, hidden: Vec<Command>) -> Self {
+        self.hidden = hidden;
+        self.selected = 0;
+        self
+    }
+
+    fn items(&self) -> impl Iterator<Item = Command> + '_ {
+        ITEMS.into_iter().filter(|item| !self.hidden.contains(item))
+    }
+
+    fn item_count(&self) -> usize {
+        self.items().count()
     }
 
     #[must_use]
@@ -108,21 +130,22 @@ impl Menu {
     }
 
     fn command(&self) -> Option<Command> {
-        ITEMS.get(self.selected).copied().or_else(|| {
+        let count = self.item_count();
+        self.items().nth(self.selected).or_else(|| {
             self.entries
-                .get(self.selected.saturating_sub(ITEMS.len()))
-                .map(|_| Command::Custom(self.selected.saturating_sub(ITEMS.len())))
+                .get(self.selected.saturating_sub(count))
+                .map(|_| Command::Custom(self.selected.saturating_sub(count)))
         })
     }
 
     fn label(&self) -> &str {
-        ITEMS.get(self.selected).map_or_else(
+        self.items().nth(self.selected).map_or_else(
             || {
                 self.entries
-                    .get(self.selected.saturating_sub(ITEMS.len()))
+                    .get(self.selected.saturating_sub(self.item_count()))
                     .map_or("CANCEL", String::as_str)
             },
-            |item| self.item_label(*item),
+            |item| self.item_label(item),
         )
     }
 
@@ -160,7 +183,10 @@ impl Menu {
 
     fn move_selection(&mut self, upward: bool) {
         self.confirming = false;
-        let last = ITEMS.len().saturating_add(self.entries.len()).saturating_sub(1);
+        let last = self
+            .item_count()
+            .saturating_add(self.entries.len())
+            .saturating_sub(1);
         self.selected = if upward {
             self.selected.checked_sub(1).unwrap_or(last)
         } else if self.selected == last {
@@ -179,9 +205,9 @@ impl Menu {
             return format!("CONFIRM {label}?\n{confirm} CONFIRM / {back} CANCEL");
         }
         let mut text = String::from("SYSTEM MENU");
-        for (index, label) in ITEMS
-            .iter()
-            .map(|item| self.item_label(*item))
+        for (index, label) in self
+            .items()
+            .map(|item| self.item_label(item))
             .chain(self.entries.iter().map(String::as_str))
             .enumerate()
         {

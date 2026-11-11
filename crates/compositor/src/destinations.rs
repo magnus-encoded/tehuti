@@ -181,8 +181,11 @@ impl Table {
             .map(|entry| entry.name.as_str())
     }
 
-    pub(crate) fn add_menu(&mut self) {
-        for command in tehuti_core::menu::ITEMS {
+    pub(crate) fn add_menu(&mut self, hidden: &[tehuti_core::menu::Command]) {
+        for command in tehuti_core::menu::ITEMS
+            .into_iter()
+            .filter(|command| !hidden.contains(command))
+        {
             self.insert(Destination {
                 name: command.label().into(),
                 extra_names: Vec::new(),

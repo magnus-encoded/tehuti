@@ -47,6 +47,39 @@ mod menu {
         }
     }
 
+    proptest! {
+        #[test]
+        fn hidden_commands_are_never_shown_or_chosen(
+            mask in proptest::collection::vec(any::<bool>(), tehuti_core::menu::ITEMS.len()),
+            downs in 0usize..30,
+        ) {
+            let hidden: Vec<Command> = tehuti_core::menu::ITEMS
+                .into_iter()
+                .zip(&mask)
+                .filter_map(|(command, hide)| hide.then_some(command))
+                .collect();
+            let open = Menu::default().with_hidden(hidden.clone());
+            let text = open.text();
+            for command in &hidden {
+                let label = command.label();
+                prop_assert!(!text.lines().any(|line| line.trim_start_matches(['>', ' ']) == label));
+            }
+            let mut menu = Some(open);
+            for _ in 0..downs {
+                prop_assert_eq!(button(&mut menu, ButtonName::DpadDown, ButtonState::Pressed), None);
+            }
+            let mut chosen = None;
+            for _ in 0..2 {
+                let pressed = button(&mut menu, ButtonName::South, ButtonState::Pressed);
+                chosen = chosen.or(pressed);
+                let _released = button(&mut menu, ButtonName::South, ButtonState::Released);
+            }
+            if let Some(command) = chosen {
+                prop_assert!(!hidden.contains(&command));
+            }
+        }
+    }
+
     #[test]
     fn menu_text_marks_the_selected_command_and_wraps_forward() {
         let mut menu = Some(Menu::default());

@@ -633,7 +633,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::Menu(command) => {
             let mut effects = Vec::new();
             release_pad(&mut state, Handoff::Open(Overlay::SystemMenu), &mut effects);
-            state.core.menu = Some(crate::menu::Menu::for_command(state.core.pad_family(), command));
+            state.core.menu = Some(state.core.new_menu().selecting(command));
             (state, effects)
         }
         Input::Launcher(launcher) => {
