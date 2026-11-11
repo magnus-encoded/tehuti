@@ -84,7 +84,9 @@ Check your own contexts without starting anything:
 tehuti --check-config ~/.config/tehuti
 ```
 
-It prints `N files checked, E errors, W warnings` and each problem. Give the
+It prints `N files checked, E errors, W warnings` and each problem. Only errors
+fail the check (exit 1); warnings are advice, and a config with many speech
+phrases can print a lot of them. Give the
 subcommand with the dashes: `tehuti check-config` is read as a context
 directory.
 
