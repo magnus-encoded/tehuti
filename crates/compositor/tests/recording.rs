@@ -1090,7 +1090,7 @@ while True:
     frame = sys.stdin.buffer.read(64 * 64 * 4)
     if len(frame) < 64 * 64 * 4:
         break
-    stamp = int.from_bytes(frame[:4], 'little')
+    stamp = int.from_bytes(frame[:3], 'little')
     log.write(f'{time.time()} {stamp}\n')
     log.flush()
     time.sleep(0.05)
@@ -1117,11 +1117,10 @@ Path(sys.argv[-1]).write_bytes(b'video')
         let started = Rc::new(RefCell::new(Instant::now()));
         compositor.set_capture_source(&started, |started, _, _| {
             let stamp = u32::try_from(started.elapsed().as_millis()).unwrap();
-            Ok(image::RgbaImage::from_pixel(
-                64,
-                64,
-                image::Rgba(stamp.to_le_bytes()),
-            ))
+            Ok(image::RgbaImage::from_pixel(64, 64, {
+                let [low, middle, high, _] = stamp.to_le_bytes();
+                image::Rgba([low, middle, high, 255])
+            }))
         });
         compositor.say(Text::new("start recording".into()).unwrap());
         let stop_at = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
