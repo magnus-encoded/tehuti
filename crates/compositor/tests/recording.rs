@@ -41,7 +41,10 @@ mod recording {
 
     impl std::io::Write for Logs {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("log lock poisoned"))?
+                .extend_from_slice(bytes);
             Ok(bytes.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -917,9 +920,9 @@ sys.exit(child.wait())
             }),
         }));
         compositor.say(Text::new("start recording".into()).unwrap());
-        let step = |compositor: &mut Compositor, at: Duration| {
-            clock.set(at);
-            compositor.advance_time();
+        let advance = |target: &mut Compositor, moment: Duration| {
+            clock.set(moment);
+            target.advance_time();
         };
         match mode.as_str() {
             "flood" => {
@@ -932,7 +935,7 @@ sys.exit(child.wait())
                     1,
                     "dropping must log once, not per event"
                 );
-                step(&mut compositor, Duration::from_millis(100));
+                advance(&mut compositor, Duration::from_millis(100));
             }
             "pad" => {
                 for tenth in 1..=6000_u64 {
@@ -946,13 +949,13 @@ sys.exit(child.wait())
                             elapsed: Duration::from_micros(371),
                         });
                     }
-                    step(&mut compositor, Duration::from_millis(tenth * 100));
+                    advance(&mut compositor, Duration::from_millis(tenth * 100));
                 }
             }
             _ => {
                 for tenth in 1..=30_u64 {
                     compositor.host_key(smithay::input::keyboard::Keycode::new(38), true);
-                    step(&mut compositor, Duration::from_millis(tenth * 100));
+                    advance(&mut compositor, Duration::from_millis(tenth * 100));
                 }
             }
         }
@@ -996,8 +999,8 @@ sys.exit(child.wait())
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        let stop = events.last().unwrap();
-        assert_eq!(stop["kind"], "stop");
+        let ending = events.last().unwrap();
+        assert_eq!(ending["kind"], "stop");
         if mode == "flood" {
             assert_eq!(
                 logs.lines_with("timeline queue"),
@@ -1027,9 +1030,9 @@ sys.exit(child.wait())
         );
         let last = events[events.len() - 2]["time_ms"].as_u64().unwrap();
         assert!(
-            stop["time_ms"].as_u64().unwrap().saturating_sub(last) <= 1000,
+            ending["time_ms"].as_u64().unwrap().saturating_sub(last) <= 1000,
             "last entry at {last} ms, video ends at {}",
-            stop["time_ms"]
+            ending["time_ms"]
         );
         assert_eq!(
             logs.lines_with("queue"),
