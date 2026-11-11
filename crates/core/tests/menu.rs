@@ -70,7 +70,8 @@ mod menu {
             }
             let mut chosen = None;
             for _ in 0..2 {
-                chosen = chosen.or(button(&mut menu, ButtonName::South, ButtonState::Pressed));
+                let pressed = button(&mut menu, ButtonName::South, ButtonState::Pressed);
+                chosen = chosen.or(pressed);
                 let _released = button(&mut menu, ButtonName::South, ButtonState::Released);
             }
             if let Some(command) = chosen {
