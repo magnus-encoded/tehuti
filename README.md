@@ -96,5 +96,16 @@ The full context format is in [docs/contexts.md](docs/contexts.md).
 Run `scripts/check` before every commit; CI runs the same gate. Review rules are
 in [CODING_STANDARDS.md](CODING_STANDARDS.md), and each crate has a
 `GLOSSARY.md` listed in [GLOSSARY-MAP.md](GLOSSARY-MAP.md). Design decisions are
-recorded in [docs/adr](docs/adr). Licensing, including how contributions are
-handled, is decided in [ADR 0004](docs/adr/0004-licensing.md).
+recorded in [docs/adr](docs/adr). See [CONTRIBUTING.md](CONTRIBUTING.md) for
+how contributions are handled.
+
+### Licence
+
+Licensing is decided in [ADR 0004](docs/adr/0004-licensing.md); the texts are in
+[LICENSES](LICENSES) and the file map is in [LICENSE](LICENSE).
+
+- The core and compositor are under MPL-2.0: changes to Tehuti's files must be shared.
+- The protocol, its schemas and the examples are under Apache-2.0, so vendors may copy them into closed plugins.
+- Docs take the licence of the part they describe.
+- Plugins are separate programs and may use any licence.
+- The bundled Liberation fonts keep their own licence, in `crates/compositor/assets/Liberation-LICENSE`.
