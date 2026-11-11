@@ -94,7 +94,7 @@ log_out = []",
     fn power_entries_with_a_command_are_shown() {
         let config =
             Config::parse("reboot = [\"example-reboot\"]\nshut_down = [\"example-poweroff\"]").unwrap();
-        assert!(config.hidden().is_empty());
+        assert_eq!(config.hidden(), Vec::<Command>::new());
         let text = tehuti_core::menu::Menu::default()
             .with_hidden(config.hidden())
             .text();
