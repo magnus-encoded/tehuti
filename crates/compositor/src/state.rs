@@ -1479,7 +1479,15 @@ impl Compositor {
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         if !matches!(
             effect,
-            DispatchEffect::PollSpeech(_) | DispatchEffect::PollSources | DispatchEffect::Supervise
+            DispatchEffect::PollSpeech(_)
+                | DispatchEffect::PollSources
+                | DispatchEffect::Supervise
+                // Loop ticks offered to plugins are not timeline events either.
+                | DispatchEffect::QueryPlugin(Event::Tick { .. })
+                | DispatchEffect::DispatchPlugin {
+                    event: Event::Tick { .. },
+                    ..
+                }
         ) {
             self.record_debug("effect", &effect);
         }
