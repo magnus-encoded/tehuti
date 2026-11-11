@@ -13,7 +13,7 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 if command -v gh >/dev/null 2>&1; then
     if [ "$tag" = latest ]; then
         # Newest by publish date, pre-releases included.
-        tag=$(gh release list --repo "$repo" --limit 1 --json tagName --jq '.[0].tagName')
+        tag=$(gh release list --exclude-drafts --repo "$repo" --limit 1 --json tagName --jq '.[0].tagName')
         [ -n "$tag" ] || { echo 'No release found' >&2; exit 1; }
     fi
     gh release download "$tag" --repo "$repo" --pattern "tehuti-*-$arch-linux.tar.gz" --pattern SHA256SUMS --dir "$work"
@@ -29,6 +29,8 @@ else
 import json, re, sys
 release = json.load(open(sys.argv[1]))
 if isinstance(release, list):
+    if not release:
+        raise SystemExit('No release found')
     release = release[0]
 for asset in release['assets']:
     name = asset['name']

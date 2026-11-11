@@ -105,6 +105,19 @@ JSON
 PATH=$work/curl-bin "$repo/scripts/install-release" v1.0.0 > "$work/output"
 [ "$(cat "$(dirname "$(readlink -f "$live")")/VERSION")" = 3333333333333333333333333333333333333333 ]
 [ "$(wc -l < "$HOME/pip-calls")" -eq 1 ]
+# Without a tag the curl path takes the newest entry of the list response.
+printf '[%s,{"assets":[]}]\n' "$(cat "$FAKE_RELEASE/metadata.json")" > "$FAKE_RELEASE/metadata.json.list"
+mv "$FAKE_RELEASE/metadata.json.list" "$FAKE_RELEASE/metadata.json"
+printf '4444444444444444444444444444444444444444\n' > "$work/package/VERSION"
+package x86_64
+PATH=$work/curl-bin "$repo/scripts/install-release" > "$work/output"
+[ "$(cat "$(dirname "$(readlink -f "$live")")/VERSION")" = 4444444444444444444444444444444444444444 ]
+printf '[]\n' > "$FAKE_RELEASE/metadata.json"
+if PATH=$work/curl-bin "$repo/scripts/install-release" > "$work/output" 2>&1; then
+    echo 'Empty release list accepted' >&2; exit 1
+fi
+grep -F 'No release found' "$work/output" >/dev/null
+! grep -F Traceback "$work/output" >/dev/null
 # A pip failure leaves the selected build and launchers intact.
 printf 'dependency changed\n' > "$work/package/sidecars/speech/requirements.txt"
 package x86_64
