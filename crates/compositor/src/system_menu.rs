@@ -1,6 +1,7 @@
 //! Configured system menu commands, launched without a shell.
 
-use std::{collections::BTreeMap, io, path::PathBuf, process::Stdio, sync::mpsc::Sender, time::Duration};
+use core::time::Duration;
+use std::{collections::BTreeMap, io, path::PathBuf, process::Stdio, sync::mpsc::Sender};
 use tehuti_core::menu::Command;
 
 const COMMANDS: [&str; 5] = ["log_out", "plasma", "reboot", "shut_down", "task_monitor"];
