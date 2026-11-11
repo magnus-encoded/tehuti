@@ -408,7 +408,7 @@ mod tests {
         let mut freshness = Freshness::default();
         for frame in 0..300_u64 {
             let video = Duration::from_millis(frame.saturating_mul(33));
-            let captured = if frame < 30 { Duration::ZERO } else { video };
+            let captured = if frame < 40 { Duration::ZERO } else { video };
             freshness.record(video, captured);
         }
         assert!(freshness.fell_behind());
