@@ -1027,13 +1027,9 @@ mod tests {
             let out = Shared::default();
             let (events, receive) = std::sync::mpsc::sync_channel(4);
             let stop = Arc::new(AtomicU64::new(u64::MAX));
-            let thread = super::spawn_timeline(
-                out.clone(),
-                receive,
-                Arc::clone(&stop),
-                std::time::Instant::now(),
-            )
-            .unwrap();
+            let thread =
+                super::spawn_timeline(out.clone(), receive, Arc::clone(&stop), std::time::Instant::now())
+                    .unwrap();
             events
                 .send(serde_json::json!({"time_ms": 5, "kind": "key", "data": {}}))
                 .unwrap();
