@@ -278,7 +278,7 @@ pub trait Sink: Write + core::fmt::Debug {
 
 #[cfg(test)]
 mod tests {
-    use super::{Freshness, FrameWriter, Latest};
+    use super::{FrameWriter, Freshness, Latest};
     use core::time::Duration;
     use proptest::prelude::*;
     use std::io::{self, Write};

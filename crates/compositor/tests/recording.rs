@@ -397,7 +397,10 @@ mod recording {
         );
         if mode == "streaming" {
             assert!(
-                compositor.visible_notice_text().unwrap().contains("DESKTOP TRACK SILENT"),
+                compositor
+                    .visible_notice_text()
+                    .unwrap()
+                    .contains("DESKTOP TRACK SILENT"),
                 "{:?}",
                 compositor.visible_notice_text()
             );
@@ -1087,7 +1090,8 @@ while True:
     frame = sys.stdin.buffer.read(64 * 64 * 4)
     if len(frame) < 64 * 64 * 4:
         break
-    log.write(f'{time.time()} {int.from_bytes(frame[:4], 'little')}\n')
+    stamp = int.from_bytes(frame[:4], 'little')
+    log.write(f'{time.time()} {stamp}\n')
     log.flush()
     time.sleep(0.05)
 Path(sys.argv[-1]).write_bytes(b'video')
@@ -1113,7 +1117,11 @@ Path(sys.argv[-1]).write_bytes(b'video')
         let started = Rc::new(RefCell::new(Instant::now()));
         compositor.set_capture_source(&started, |started, _, _| {
             let stamp = u32::try_from(started.elapsed().as_millis()).unwrap();
-            Ok(image::RgbaImage::from_pixel(64, 64, image::Rgba(stamp.to_le_bytes())))
+            Ok(image::RgbaImage::from_pixel(
+                64,
+                64,
+                image::Rgba(stamp.to_le_bytes()),
+            ))
         });
         compositor.say(Text::new("start recording".into()).unwrap());
         let stop_at = Instant::now().checked_add(Duration::from_secs(3)).unwrap();

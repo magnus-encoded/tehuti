@@ -799,7 +799,9 @@ fn encode(
         }
         Ok(writer.freshness())
     })();
-    let freshness = result.as_ref().map_or_else(|_| Default::default(), |freshness| *freshness);
+    let freshness = result
+        .as_ref()
+        .map_or_else(|_| Default::default(), |freshness| *freshness);
     finish_encoder(&mut child, output_path, result.map(|_| ())).map(|()| freshness)
 }
 
@@ -908,7 +910,10 @@ mod tests {
             (vec!["-30.8", "-4.5"], vec![]),
             (vec!["-inf", "-4.5"], vec!["MIC TRACK SILENT"]),
             (vec!["-30.8", "-inf"], vec!["DESKTOP TRACK SILENT"]),
-            (vec!["-30.8", "-inf", "-inf"], vec!["MIC TRACK SILENT", "DESKTOP TRACK SILENT"]),
+            (
+                vec!["-30.8", "-inf", "-inf"],
+                vec!["MIC TRACK SILENT", "DESKTOP TRACK SILENT"],
+            ),
         ] {
             let log: String = levels.iter().map(|level| peak(level)).collect();
             assert_eq!(super::silent_tracks(&log), silent, "{log}");
