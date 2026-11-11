@@ -1107,7 +1107,12 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
-        self.record_debug("input", &input);
+        // Loop ticks are not timeline events; sticks are sampled once per video frame.
+        if let DispatchInput::Sticks(sticks) = &input {
+            self.record_sample("input", "sticks", sticks);
+        } else if !matches!(input, DispatchInput::Tick { .. }) {
+            self.record_debug("input", &input);
+        }
         let elapsed = dispatch_elapsed(&input);
         self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
@@ -1472,9 +1477,21 @@ impl Compositor {
 
     #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
-        if !matches!(
+        if matches!(effect, DispatchEffect::MovePointer { .. }) {
+            self.record_sample("effect", "pointer", &effect);
+        } else if matches!(effect, DispatchEffect::Scroll { .. }) {
+            self.record_sample("effect", "scroll", &effect);
+        } else if !matches!(
             effect,
-            DispatchEffect::PollSpeech(_) | DispatchEffect::PollSources | DispatchEffect::Supervise
+            DispatchEffect::PollSpeech(_)
+                | DispatchEffect::PollSources
+                | DispatchEffect::Supervise
+                // Loop ticks offered to plugins are not timeline events either.
+                | DispatchEffect::QueryPlugin(Event::Tick { .. })
+                | DispatchEffect::DispatchPlugin {
+                    event: Event::Tick { .. },
+                    ..
+                }
         ) {
             self.record_debug("effect", &effect);
         }
