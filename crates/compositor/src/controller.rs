@@ -304,8 +304,10 @@ pub struct MirrorSync {
     pub failed: Vec<std::path::PathBuf>,
 }
 
-/// Keeps exactly one virtual pad, on the active pad, while mirroring.
+/// Keeps exactly one virtual pad while any pad is held: mirroring on the active pad, at rest otherwise.
 ///
+/// The pad that holds it is the active one, or the first pad while none is active, so the virtual pad
+/// exists before the first event and outside passthrough contexts; a spare is kept for the next pad.
 /// Old mirrors go first, releasing what they hold, so the application never sees two.
 pub fn sync_mirrors<D: PadDevice>(
     pads: &mut [(&std::path::Path, &mut EvdevPad<D>)],
@@ -315,18 +317,32 @@ pub fn sync_mirrors<D: PadDevice>(
     consumed: &dyn Fn(ButtonName) -> bool,
 ) -> MirrorSync {
     let mut sync = MirrorSync::default();
-    // With mirroring off, a virtual pad left by an unplugged controller has no pad to feed.
-    if !mirrored {
-        *spare = None;
-    }
+    let holder = pads
+        .iter()
+        .map(|(path, _)| *path)
+        .find(|path| active == Some(*path))
+        .or_else(|| pads.first().map(|(path, _)| *path))
+        .map(std::path::Path::to_path_buf);
     for (path, pad) in pads.iter_mut() {
         if !mirror_wanted(mirrored, active, path) {
             if let Err(error) = pad.set_mirror(false, consumed) {
                 warn!(%error, "virtual pad release failed");
             }
-            // Another pad presents the virtual pad now; a parked one would make two.
-            if mirrored {
+            if holder.as_deref() != Some(*path) {
+                // Another pad holds the virtual pad; a parked one would make two.
                 pad.unpark_mirror();
+                continue;
+            }
+            if let Some(kept) = spare.take() {
+                pad.adopt_virtual_pad(kept);
+            }
+            match pad.park_virtual_pad() {
+                Ok(created) => sync.started |= created,
+                Err(error) => {
+                    // Physical passthrough follows from `mirror_unavailable` once a passthrough context has focus.
+                    pad.mirror_failed = true;
+                    warn!(%error, "virtual pad unavailable");
+                }
             }
         }
     }
@@ -752,7 +768,8 @@ impl<D: PadDevice> EvdevPad<D> {
     pub fn set_mirror(&mut self, present: bool, consumed: &dyn Fn(ButtonName) -> bool) -> io::Result<bool> {
         if !present {
             if let Some(mut mirror) = self.mirror.take() {
-                if let Some(frame) = mirror.copy.release() {
+                // Outside passthrough the virtual pad shows rest: nothing held, sticks centred.
+                if let Some(frame) = mirror.rest() {
                     mirror.device.emit(&frame)?;
                 }
                 self.parked = Some(mirror);
@@ -765,17 +782,7 @@ impl<D: PadDevice> EvdevPad<D> {
         let (device, centres) = if let Some(parked) = self.parked.take() {
             (parked.device, parked.centres)
         } else {
-            let centres = self
-                .handles
-                .probe()
-                .get_absinfo()?
-                .into_iter()
-                .filter(|(axis, _)| {
-                    *axis != AbsoluteAxisCode::ABS_HAT0X && *axis != AbsoluteAxisCode::ABS_HAT0Y
-                })
-                .map(|(axis, info)| (axis.0, resting_value(axis, info.minimum(), info.maximum())))
-                .collect();
-            (self.handles.events.virtual_pad()?, centres)
+            (self.handles.events.virtual_pad()?, self.centres()?)
         };
         let mut mirror = Mirror {
             device,
@@ -803,6 +810,38 @@ impl<D: PadDevice> EvdevPad<D> {
         }
         self.mirror = Some(mirror);
         Ok(true)
+    }
+
+    /// Creates the virtual controller hidden and at rest, unless it exists, failed or the pad is lost;
+    /// true when it was just created.
+    /// # Errors
+    /// The kernel refused to create the uinput device.
+    pub fn park_virtual_pad(&mut self) -> io::Result<bool> {
+        if self.mirror.is_some() || self.parked.is_some() || self.mirror_failed || self.lost {
+            return Ok(false);
+        }
+        let mut mirror = Mirror {
+            device: self.handles.events.virtual_pad()?,
+            copy: MirrorCopy::default(),
+            centres: self.centres()?,
+        };
+        if let Some(frame) = mirror.rest() {
+            mirror.device.emit(&frame)?;
+        }
+        self.parked = Some(mirror);
+        Ok(true)
+    }
+
+    /// Stick and trigger axes of the physical pad with their resting values.
+    fn centres(&self) -> io::Result<Vec<(u16, i32)>> {
+        Ok(self
+            .handles
+            .probe()
+            .get_absinfo()?
+            .into_iter()
+            .filter(|(axis, _)| *axis != AbsoluteAxisCode::ABS_HAT0X && *axis != AbsoluteAxisCode::ABS_HAT0Y)
+            .map(|(axis, info)| (axis.0, resting_value(axis, info.minimum(), info.maximum())))
+            .collect())
     }
 
     /// Removes the hidden virtual controller, so the application sees it unplugged.
