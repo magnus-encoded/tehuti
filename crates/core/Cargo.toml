@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "Tehuti core: the pure step that routes input to actions"
 edition.workspace = true
 repository.workspace = true
+license = "MPL-2.0"
 publish = false
 
 [lints]
