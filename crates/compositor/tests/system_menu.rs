@@ -87,7 +87,25 @@ log_out = []",
         )
         .unwrap()
         .hidden();
-        assert_eq!(disabled, [Command::LogOut, Command::Reboot, Command::ShutDown]);
+        assert_eq!(disabled, [Command::Reboot, Command::ShutDown]);
+    }
+
+    #[test]
+    fn log_out_survives_an_empty_or_missing_command() {
+        for source in ["log_out = []", ""] {
+            let config = Config::parse(source).unwrap();
+            assert!(!config.hidden().contains(&Command::LogOut), "{source:?}");
+            let text = tehuti_core::menu::Menu::default()
+                .with_hidden(config.hidden())
+                .text();
+            assert!(text.contains("LOG OUT"), "{source:?}: {text}");
+        }
+        let empty = Config::parse("log_out = []").unwrap();
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        assert!(
+            tehuti::system_menu::execute(&empty, Command::LogOut, "example-socket".as_ref(), sender).is_err()
+        );
+        assert_eq!(empty.label(Command::LogOut), "LOG OUT");
     }
 
     #[test]

@@ -101,6 +101,7 @@ impl Config {
     }
 
     /// Built-in menu commands with nothing to run: no configured argv and no default.
+    /// Log Out is never hidden, so a config slip cannot remove the way out of the session.
     #[must_use]
     pub fn hidden(&self) -> Vec<Command> {
         tehuti_core::menu::ITEMS
@@ -108,8 +109,7 @@ impl Config {
             .filter(|command| {
                 matches!(
                     command,
-                    Command::LogOut
-                        | Command::Plasma
+                    Command::Plasma
                         | Command::Reboot
                         | Command::ShutDown
                         | Command::TaskMonitor

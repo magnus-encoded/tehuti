@@ -14,6 +14,7 @@ from PIL import Image, ImageChops, ImageEnhance
 ROOT = Path(__file__).resolve().parent.parent
 GOLDENS = ROOT / "tests/visual/goldens"
 PENDING = {"launcher-empty", "launcher-window"}  # #379 owns launcher layout.
+REVIEW = {"menu"}  # Captured for review in the artefact; no golden yet.
 
 
 def compare(actual, expected, diff):
@@ -98,6 +99,8 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
                 else:
                     print(f"PENDING #379 {name}: review layout and enable golden")
                 return
+            if name in REVIEW:
+                return
             if name.startswith("launcher-"):
                 launcher_layout(scene)
             golden = GOLDENS / actual.name
@@ -132,6 +135,7 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             drive("clock", "advance", "500")
             drive("release", "guide")
             drive("wait-for", "/overlays/menu", "true")
+            capture("menu", lambda s: s["overlays"]["menu"])
             drive("press", "dpad_up")
             drive("press", "dpad_up")
             drive("press", "dpad_up")
