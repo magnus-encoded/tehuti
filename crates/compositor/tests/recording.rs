@@ -1135,6 +1135,24 @@ Path(sys.argv[-1]).write_bytes(b'video')
             .as_secs_f64();
         let stopped_stamp = started.borrow().elapsed().as_millis();
         compositor.say(Text::new("stop recording".into()).unwrap());
+        wait_until_saved(&mut compositor);
+        let folder = home
+            .join("Videos/Recordings")
+            .read_dir()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read(folder.join("video.mp4")).unwrap(), b"video");
+        let newest_before_stop = newest_sent_before(&home.join("frames.log"), stopped);
+        assert!(
+            newest_before_stop.saturating_add(500) >= stopped_stamp,
+            "newest capture sent before stop was {newest_before_stop} ms, stop at {stopped_stamp} ms"
+        );
+    }
+
+    fn wait_until_saved(compositor: &mut Compositor) {
         let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
         while compositor
             .visible_notice_text()
@@ -1151,28 +1169,19 @@ Path(sys.argv[-1]).write_bytes(b'video')
             "{:?}",
             compositor.visible_notice_text()
         );
-        let folder = home
-            .join("Videos/Recordings")
-            .read_dir()
+    }
+
+    /// The newest capture stamp the slow encoder received before wall time `stopped`.
+    fn newest_sent_before(log: &Path, stopped: f64) -> u128 {
+        std::fs::read_to_string(log)
             .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        assert_eq!(std::fs::read(folder.join("video.mp4")).unwrap(), b"video");
-        let log = std::fs::read_to_string(home.join("frames.log")).unwrap();
-        let newest_before_stop = log
             .lines()
             .filter_map(|line| line.split_once(' '))
-            .map(|(at, stamp)| (at.parse::<f64>().unwrap(), stamp.parse::<u128>().unwrap()))
-            .filter(|(at, _)| *at < stopped)
+            .map(|(arrived, stamp)| (arrived.parse::<f64>().unwrap(), stamp.parse::<u128>().unwrap()))
+            .filter(|(arrived, _)| *arrived < stopped)
             .map(|(_, stamp)| stamp)
             .max()
-            .unwrap();
-        assert!(
-            newest_before_stop.saturating_add(500) >= stopped_stamp,
-            "newest capture sent before stop was {newest_before_stop} ms, stop at {stopped_stamp} ms"
-        );
+            .unwrap()
     }
 
     fn encoder_logs(home: &Path) -> String {
