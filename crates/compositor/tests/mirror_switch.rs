@@ -632,7 +632,11 @@ mod tests {
         });
         assert!(spare.is_none() && !second.mirrored());
         let log = log.borrow();
-        assert_eq!((log.created, log.live), (1, 1), "the application keeps the same virtual pad");
+        assert_eq!(
+            (log.created, log.live),
+            (1, 1),
+            "the application keeps the same virtual pad"
+        );
     }
 
     proptest! {
@@ -719,8 +723,13 @@ mod tests {
         let path = Path::new("/dev/input/event1");
         let (mut only, _handles) = pad("only", &log);
         for round in 0..100 {
-            let sync = sync_mirrors(&mut [(path, &mut only)], round % 2 == 1, None, &mut None, &|_| false);
-            assert!(sync.failed.is_empty(), "no passthrough is forced outside a passthrough context");
+            let sync = sync_mirrors(&mut [(path, &mut only)], round % 2 == 1, None, &mut None, &|_| {
+                false
+            });
+            assert!(
+                sync.failed.is_empty(),
+                "no passthrough is forced outside a passthrough context"
+            );
         }
         assert!(only.mirror_unavailable());
         assert_eq!(log.borrow().created, 1, "a refused virtual pad is never retried");
