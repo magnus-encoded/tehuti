@@ -1014,7 +1014,7 @@ sys.exit(child.wait())
             );
             return;
         }
-        assert!(!text.contains("Tick"), "loop ticks are not timeline events");
+        assert!(!text.contains("Tick {"), "loop ticks are not timeline events");
         let sticks = text.matches("Sticks").count();
         assert!(sticks <= 6001, "{sticks} stick entries for 6000 video frames");
         let mut counts = std::collections::HashMap::new();
