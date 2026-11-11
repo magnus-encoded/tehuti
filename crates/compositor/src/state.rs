@@ -1109,7 +1109,7 @@ impl Compositor {
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
         // Loop ticks are not timeline events; sticks are sampled once per video frame.
         if let DispatchInput::Sticks(sticks) = &input {
-            self.record_sticks(sticks);
+            self.record_sample("input", "sticks", sticks);
         } else if !matches!(input, DispatchInput::Tick { .. }) {
             self.record_debug("input", &input);
         }
@@ -1477,7 +1477,11 @@ impl Compositor {
 
     #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
-        if !matches!(
+        if matches!(effect, DispatchEffect::MovePointer { .. }) {
+            self.record_sample("effect", "pointer", &effect);
+        } else if matches!(effect, DispatchEffect::Scroll { .. }) {
+            self.record_sample("effect", "scroll", &effect);
+        } else if !matches!(
             effect,
             DispatchEffect::PollSpeech(_)
                 | DispatchEffect::PollSources

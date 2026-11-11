@@ -57,10 +57,8 @@ pub(super) struct Session {
     dropped_events: Cell<u64>,
     /// Frames repeated since the capture queue last accepted one.
     repeated_frames: Cell<u64>,
-    /// The newest stick sample, written at most once per video frame.
-    sticks: RefCell<Option<String>>,
-    /// The last stick sample written, so a resting stick is not written every frame.
-    written_sticks: RefCell<String>,
+    /// Continuous samples (sticks, pointer motion, scroll), written at most once per video frame.
+    samples: RefCell<Vec<Sample>>,
 }
 
 #[derive(Debug)]
@@ -119,29 +117,42 @@ impl Compositor {
         self.record_event(kind, &json!({"event": format!("{event:?}")}));
     }
 
-    /// Keeps the newest stick sample; `poll_recording` writes it once per video frame.
-    pub(super) fn record_sticks(&self, sticks: &impl core::fmt::Debug) {
-        if let Some(session) = &self.recording
-            && session.stop.load(Ordering::Relaxed) == u64::MAX
-        {
-            *session.sticks.borrow_mut() = Some(format!("{sticks:?}"));
+    /// Keeps the newest continuous sample of `name`; `poll_recording` writes it once per video
+    /// frame, and only when it changed. Discrete events go through `record_debug` unfiltered.
+    pub(super) fn record_sample(&self, kind: &'static str, name: &'static str, sample: &impl core::fmt::Debug) {
+        let Some(session) = &self.recording else { return };
+        if session.stop.load(Ordering::Relaxed) != u64::MAX {
+            return;
+        }
+        let text = format!("{sample:?}");
+        let mut samples = session.samples.borrow_mut();
+        if let Some(slot) = samples.iter_mut().find(|slot| slot.name == name) {
+            slot.pending = Some(text);
+        } else {
+            samples.push(Sample {
+                kind,
+                name,
+                pending: Some(text),
+                written: String::new(),
+            });
         }
     }
 
-    fn flush_sticks(&self) {
-        let Some(text) = self.recording.as_ref().and_then(|session| session.sticks.take()) else {
-            return;
-        };
-        let changed = self.recording.as_ref().is_some_and(|session| {
-            let mut written = session.written_sticks.borrow_mut();
-            let changed = *written != text;
-            if changed {
-                written.clone_from(&text);
-            }
-            changed
+    fn flush_samples(&self) {
+        let due: Vec<(&'static str, String)> = self.recording.as_ref().map_or_else(Vec::new, |session| {
+            session
+                .samples
+                .borrow_mut()
+                .iter_mut()
+                .filter_map(|slot| {
+                    let text = slot.pending.take().filter(|text| *text != slot.written)?;
+                    slot.written.clone_from(&text);
+                    Some((slot.kind, text))
+                })
+                .collect()
         });
-        if changed {
-            self.record_event("input", &json!({"event": text}));
+        for (kind, text) in due {
+            self.record_event(kind, &json!({"event": text}));
         }
     }
 
@@ -234,7 +245,7 @@ impl Compositor {
         if let Some(session) = &mut self.recording {
             session.next_frame = now.checked_add(INTERVAL).unwrap_or(now);
         }
-        self.flush_sticks();
+        self.flush_samples();
         let captured = self.recording.as_ref().map_or(Duration::ZERO, Session::elapsed);
         match crate::driver_shot::frame(self, &chrono::Local::now().format("%H:%M").to_string()) {
             Ok(frame) => {
@@ -256,6 +267,15 @@ impl Compositor {
             }
         }
     }
+}
+
+/// The newest value of one continuous input and the last one written.
+#[derive(Debug)]
+struct Sample {
+    kind: &'static str,
+    name: &'static str,
+    pending: Option<String>,
+    written: String,
 }
 
 /// Counts one dropped item; only the first of a run is logged.
@@ -406,8 +426,7 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         injected: None,
         dropped_events: Cell::new(0),
         repeated_frames: Cell::new(0),
-        sticks: RefCell::new(None),
-        written_sticks: RefCell::new(String::new()),
+        samples: RefCell::new(Vec::new()),
     };
     if let Some(runtime) = &compositor.recording_runtime {
         session.injected = Some(injected(
