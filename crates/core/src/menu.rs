@@ -182,7 +182,10 @@ impl Menu {
 
     fn move_selection(&mut self, upward: bool) {
         self.confirming = false;
-        let last = self.item_count().saturating_add(self.entries.len()).saturating_sub(1);
+        let last = self
+            .item_count()
+            .saturating_add(self.entries.len())
+            .saturating_sub(1);
         self.selected = if upward {
             self.selected.checked_sub(1).unwrap_or(last)
         } else if self.selected == last {

@@ -107,7 +107,11 @@ impl Config {
             .filter(|command| {
                 matches!(
                     command,
-                    Command::LogOut | Command::Plasma | Command::Reboot | Command::ShutDown | Command::TaskMonitor
+                    Command::LogOut
+                        | Command::Plasma
+                        | Command::Reboot
+                        | Command::ShutDown
+                        | Command::TaskMonitor
                 ) && self.session_exit_status(*command).is_none()
                     && self.argv(*command).is_none()
             })

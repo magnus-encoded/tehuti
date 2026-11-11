@@ -81,16 +81,23 @@ mod system_menu {
         assert!(!text.contains("REBOOT"), "{text}");
         assert!(!text.contains("SHUT DOWN"), "{text}");
         assert!(text.contains("TASK MONITOR"), "{text}");
-        let disabled = Config::parse("reboot = []
-log_out = []").unwrap().hidden();
+        let disabled = Config::parse(
+            "reboot = []
+log_out = []",
+        )
+        .unwrap()
+        .hidden();
         assert_eq!(disabled, [Command::LogOut, Command::Reboot, Command::ShutDown]);
     }
 
     #[test]
     fn power_entries_with_a_command_are_shown() {
-        let config = Config::parse("reboot = [\"example-reboot\"]\nshut_down = [\"example-poweroff\"]").unwrap();
+        let config =
+            Config::parse("reboot = [\"example-reboot\"]\nshut_down = [\"example-poweroff\"]").unwrap();
         assert!(config.hidden().is_empty());
-        let text = tehuti_core::menu::Menu::default().with_hidden(config.hidden()).text();
+        let text = tehuti_core::menu::Menu::default()
+            .with_hidden(config.hidden())
+            .text();
         assert!(text.contains("REBOOT") && text.contains("SHUT DOWN"), "{text}");
     }
 
@@ -112,12 +119,18 @@ log_out = []").unwrap().hidden();
         .unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         tehuti::system_menu::execute(&config, Command::Custom(0), "example-socket".as_ref(), sender).unwrap();
-        let failure = receiver.recv_timeout(core::time::Duration::from_secs(10)).unwrap();
+        let failure = receiver
+            .recv_timeout(core::time::Duration::from_secs(10))
+            .unwrap();
         assert!(failure.starts_with("Example FAILED"), "{failure}");
         let (sender, receiver) = std::sync::mpsc::channel();
         let ok = Config::parse("reboot = [\"/bin/sh\", \"-c\", \"exit 0\"]").unwrap();
         tehuti::system_menu::execute(&ok, Command::Reboot, "example-socket".as_ref(), sender).unwrap();
-        assert!(receiver.recv_timeout(core::time::Duration::from_secs(10)).is_err());
+        assert!(
+            receiver
+                .recv_timeout(core::time::Duration::from_secs(10))
+                .is_err()
+        );
     }
 
     #[test]
