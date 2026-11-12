@@ -243,6 +243,8 @@ pub struct Compositor {
     meta_held: Vec<u32>,
     /// Host keys a Meta chord consumed, so their release is consumed too.
     consumed_host_keys: Vec<Keycode>,
+    virtual_pad_buttons: Vec<tehuti_protocol::ButtonName>,
+    virtual_pad_talk: Vec<tehuti_protocol::ButtonName>,
     display: DisplayHandle,
 }
 
@@ -383,6 +385,8 @@ impl Compositor {
             held_pad_keys: Vec::new(),
             meta_held: Vec::new(),
             consumed_host_keys: Vec::new(),
+            virtual_pad_buttons: Vec::new(),
+            virtual_pad_talk: Vec::new(),
             display: display.clone(),
         };
         compositor
@@ -763,29 +767,60 @@ impl Compositor {
 
     /// Forgets held physical buttons when the virtual pad starts.
     pub fn reset_virtual_pad(&mut self) {
+        self.virtual_pad_buttons.clear();
+        self.virtual_pad_talk.clear();
         if let Some(plugins) = &mut self.plugins {
             plugins.reset_pad();
         }
     }
 
-    /// Whether a plugin holds `button` from the virtual pad; reads only, so a new mirror can ask.
+    /// Whether Tehuti holds `button` from the virtual pad; reads only, so a new mirror can ask.
     #[must_use]
     pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
-        self.plugins
-            .as_ref()
-            .is_some_and(|plugins| plugins.pad_consumed(button))
+        self.virtual_pad_talk.contains(&button)
+            || self
+                .plugins
+                .as_ref()
+                .is_some_and(|plugins| plugins.pad_consumed(button))
     }
 
-    /// Applies plugin overrides to one physical button; true keeps it from the virtual pad.
+    /// Applies push-to-talk and plugin overrides; true keeps the button from the virtual pad.
     pub fn virtual_pad_button(
         &mut self,
         button: tehuti_protocol::ButtonName,
         state: tehuti_protocol::ButtonState,
     ) -> bool {
         let push_to_talk = self.dispatch.core().passthrough_push_to_talk();
-        self.plugins
+        let mut talk = self.virtual_pad_talk.contains(&button);
+        match state {
+            tehuti_protocol::ButtonState::Pressed => {
+                if !self.virtual_pad_buttons.contains(&button) {
+                    self.virtual_pad_buttons.push(button);
+                }
+                if !push_to_talk.is_empty()
+                    && push_to_talk.contains(&button)
+                    && push_to_talk
+                        .iter()
+                        .all(|member| self.virtual_pad_buttons.contains(member))
+                {
+                    for member in push_to_talk {
+                        if !self.virtual_pad_talk.contains(member) {
+                            self.virtual_pad_talk.push(*member);
+                        }
+                    }
+                    talk = true;
+                }
+            }
+            tehuti_protocol::ButtonState::Released => {
+                self.virtual_pad_buttons.retain(|held| *held != button);
+                self.virtual_pad_talk.retain(|held| *held != button);
+            }
+        }
+        let plugin = self
+            .plugins
             .as_mut()
-            .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk))
+            .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk));
+        talk || plugin
     }
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
