@@ -468,14 +468,31 @@ fn install_xwayland(
         process.poll(core::time::Duration::ZERO);
         let interval = core::time::Duration::from_millis(100);
         let mut previous = std::time::Instant::now();
+        let mut pending_ticks = 0_u32;
+        let mut given_up: Option<String> = None;
         let _token = event_loop
             .handle()
             .insert_source(Timer::from_duration(interval), move |_, (), data| {
                 let now = std::time::Instant::now();
                 let elapsed = now.duration_since(previous);
                 process.poll(elapsed);
-                if !process.sync_keymap(elapsed, data.compositor.keymap()) {
-                    tracing::debug!("Xwayland keymap synchronization pending; will retry");
+                let keymap = data.compositor.keymap();
+                if given_up.as_deref() != Some(keymap) {
+                    given_up = None;
+                    if process.sync_keymap(elapsed, keymap) {
+                        pending_ticks = 0;
+                    } else {
+                        // Log once per pending sync; give up after about a minute.
+                        if pending_ticks == 0 {
+                            tracing::debug!("Xwayland keymap synchronization pending");
+                        }
+                        pending_ticks = pending_ticks.saturating_add(1);
+                        if pending_ticks >= 600 {
+                            tracing::warn!("Xwayland keymap synchronization abandoned");
+                            given_up = Some(keymap.to_owned());
+                            pending_ticks = 0;
+                        }
+                    }
                 }
                 previous = now;
                 TimeoutAction::ToDuration(interval)

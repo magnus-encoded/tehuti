@@ -187,7 +187,10 @@ fn x11_keymap(keymap: &str) -> std::io::Result<String> {
         .count();
     let mut result = format!("{prefix}\nxkb_types{types}");
     // Unnamed levels make some X servers report uninitialised atoms to readers.
-    // X servers validate old type indexes before replacing symbols: never shrink the table.
+    // X servers validate old type indexes before replacing symbols, so an update whose type
+    // table is smaller than the one it replaces is rejected: never shrink the table. Padding every
+    // keymap to 255 (the protocol's type-index cap, a CARD8 count) keeps the size constant across
+    // layout changes. The padding types are harmless: no key's symbols reference them.
     // https://github.com/mirror/xserver/blob/master/xkb/xkb.c (_XkbSetMapChecks)
     for index in 0..255 {
         if count >= 255 {
