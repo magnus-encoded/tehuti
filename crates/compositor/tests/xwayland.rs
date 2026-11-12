@@ -269,7 +269,7 @@ mod xwayland {
         layout: &str,
     ) -> smithay::input::keyboard::xkb::Keymap {
         use core::time::Duration;
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let started = std::time::Instant::now();
         loop {
             satellite.poll(Duration::from_millis(20));
             satellite.sync_keymap(Duration::from_millis(20), compositor.keymap());
@@ -279,7 +279,7 @@ mod xwayland {
                 return keymap;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                started.elapsed() < Duration::from_secs(10),
                 "X11 did not receive {layout}"
             );
             std::thread::sleep(Duration::from_millis(20));
@@ -288,11 +288,11 @@ mod xwayland {
 
     #[test]
     fn isolated_keymap_probe() {
+        use smithay::{input::keyboard::xkb, reexports::wayland_server::Display};
+        use std::os::unix::fs::PermissionsExt as _;
         if std::env::var_os("TEHUTI_KEYMAP_PROBE").is_none() {
             return;
         }
-        use smithay::{input::keyboard::xkb, reexports::wayland_server::Display};
-        use std::os::unix::fs::PermissionsExt as _;
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("satellite");
         let pid_file = directory.path().join("pid");
@@ -317,9 +317,10 @@ mod xwayland {
             "AltGr+2 must reach X11 as @"
         );
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let us = xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
-            .unwrap();
-        compositor.set_keymap(&us).unwrap();
+        let american =
+            xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .unwrap();
+        compositor.set_keymap(&american).unwrap();
         let english = await_layout(&mut satellite, &compositor, &x_display, "English (US)");
         assert_eq!(
             english.key_get_syms_by_level(xkb::Keycode::new(11), 0, 1),
