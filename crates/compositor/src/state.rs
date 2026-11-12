@@ -233,6 +233,7 @@ pub struct Compositor {
     seat: Seat<Self>,
     shortcut_keycodes: Vec<(Keycode, u32)>,
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
+    keymap: String,
     pub(crate) text_input: crate::text_input::TextInput,
     keyboard_reserved: i32,
     /// Keyboard focus moved while smithay held the keyboard lock; its dispatch runs once the lock is released (#445).
@@ -265,6 +266,32 @@ fn default_keymap() -> Result<xkb::Keymap, SetupError> {
 }
 
 impl Compositor {
+    /// The compiled map shared by Wayland and X11 clients.
+    #[must_use]
+    pub fn keymap(&self) -> &str {
+        &self.keymap
+    }
+
+    /// Updates the client keymap and text-entry key lookup together.
+    ///
+    /// # Errors
+    /// Smithay could not install the compiled map.
+    pub fn set_keymap(&mut self, keymap: &xkb::Keymap) -> Result<(), smithay::input::keyboard::Error> {
+        let serialized = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+        self.keyboard
+            .clone()
+            .set_keymap_from_string(self, serialized.clone())?;
+        self.text_keys = text_keys(keymap);
+        self.shortcut_keycodes = (keymap.min_keycode().raw()..=keymap.max_keycode().raw())
+            .map(|code| {
+                let keycode = Keycode::new(code);
+                (keycode, keymap.num_layouts_for_key(keycode))
+            })
+            .collect();
+        self.keymap = serialized;
+        Ok(())
+    }
+
     /// Creates the Wayland globals and a seat with one keyboard.
     ///
     /// # Errors
@@ -379,6 +406,7 @@ impl Compositor {
             seat,
             shortcut_keycodes: Vec::new(),
             text_keys,
+            keymap: String::new(),
             text_input: crate::text_input::TextInput::new(display),
             keyboard_reserved: 0,
             focus_change_dispatch: None,
@@ -389,16 +417,7 @@ impl Compositor {
             virtual_pad_talk: Vec::new(),
             display: display.clone(),
         };
-        compositor
-            .keyboard
-            .clone()
-            .set_keymap_from_string(&mut compositor, keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))?;
-        compositor.shortcut_keycodes = (keymap.min_keycode().raw()..=keymap.max_keycode().raw())
-            .map(|code| {
-                let keycode = Keycode::new(code);
-                (keycode, keymap.num_layouts_for_key(keycode))
-            })
-            .collect();
+        compositor.set_keymap(&keymap)?;
         let (names, locked, current) = crate::wallpaper::choices();
         let _rejection = compositor.dispatch(DispatchInput::Wallpapers {
             names,

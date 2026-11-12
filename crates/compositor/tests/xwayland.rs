@@ -228,4 +228,119 @@ mod xwayland {
         }
         assert_eq!(std::fs::read_to_string(marker).unwrap(), "started");
     }
+
+    #[test]
+    fn x11_clients_receive_the_configured_keymap_and_layout_changes() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "xwayland::isolated_keymap_probe", "--nocapture"])
+            .env("TEHUTI_KEYMAP_PROBE", "1")
+            .env("XKB_DEFAULT_LAYOUT", "no")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn received_keymap(display: &str) -> Option<smithay::input::keyboard::xkb::Keymap> {
+        use smithay::input::keyboard::xkb;
+        let output = std::process::Command::new("xkbcomp")
+            .args(["-xkb", display, "-"])
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            return None;
+        }
+        xkb::Keymap::new_from_string(
+            &xkb::Context::new(xkb::CONTEXT_NO_FLAGS),
+            String::from_utf8(output.stdout).unwrap(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+    }
+
+    fn await_layout(
+        satellite: &mut tehuti::xwayland::Satellite,
+        compositor: &tehuti::state::Compositor,
+        display: &str,
+        layout: &str,
+    ) -> smithay::input::keyboard::xkb::Keymap {
+        use core::time::Duration;
+        let started = std::time::Instant::now();
+        loop {
+            satellite.poll(Duration::from_millis(20));
+            let applied = satellite.sync_keymap(Duration::from_millis(20), compositor.keymap());
+            if applied
+                && let Some(keymap) = received_keymap(display)
+                && keymap.layout_get_name(0) == layout
+            {
+                return keymap;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "X11 did not receive {layout}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn isolated_keymap_probe() {
+        use smithay::{input::keyboard::xkb, reexports::wayland_server::Display};
+        use std::os::unix::fs::PermissionsExt as _;
+        if std::env::var_os("TEHUTI_KEYMAP_PROBE").is_none() {
+            return;
+        }
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .try_init()
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("satellite");
+        let pid_file = directory.path().join("pid");
+        std::fs::write(&binary, format!(
+            "#!/bin/sh\necho $$ > '{}'\nsleep 0.3\nexec Xvfb \"$1\" -screen 0 640x480x24 -nolisten tcp -noreset\n",
+            pid_file.display()
+        )).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let number = tehuti::xwayland::choose_display(|number| {
+            std::path::Path::new(&format!("/tmp/.X{number}-lock")).exists()
+                || std::path::Path::new(&format!("/tmp/.X11-unix/X{number}")).exists()
+        })
+        .unwrap();
+        let x_display = format!(":{number}");
+        let mut satellite = tehuti::xwayland::Satellite::new(binary, x_display.clone(), "unused".into());
+        let display = Display::<tehuti::state::Compositor>::new().unwrap();
+        let mut compositor = tehuti::state::Compositor::new(&display.handle()).unwrap();
+        let norwegian = await_layout(&mut satellite, &compositor, &x_display, "Norwegian");
+        assert_eq!(
+            norwegian.key_get_syms_by_level(xkb::Keycode::new(11), 0, 2),
+            &[xkb::keysym_from_name("at", xkb::KEYSYM_NO_FLAGS)],
+            "AltGr+2 must reach X11 as @"
+        );
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let american =
+            xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .unwrap();
+        compositor.set_keymap(&american).unwrap();
+        let english = await_layout(&mut satellite, &compositor, &x_display, "English (US)");
+        assert_eq!(
+            english.key_get_syms_by_level(xkb::Keycode::new(11), 0, 1),
+            &[xkb::keysym_from_name("at", xkb::KEYSYM_NO_FLAGS)]
+        );
+        compositor.set_keymap(&norwegian).unwrap();
+        let _restored = await_layout(&mut satellite, &compositor, &x_display, "Norwegian");
+        let pid = std::fs::read_to_string(pid_file).unwrap().trim().parse().unwrap();
+        rustix::process::kill_process(
+            rustix::process::Pid::from_raw(pid).unwrap(),
+            rustix::process::Signal::KILL,
+        )
+        .unwrap();
+        std::thread::sleep(core::time::Duration::from_millis(100));
+        let restarted = await_layout(&mut satellite, &compositor, &x_display, "Norwegian");
+        assert_eq!(restarted.layout_get_name(0), "Norwegian");
+    }
 }

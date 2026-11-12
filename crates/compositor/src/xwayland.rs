@@ -51,6 +51,7 @@ pub struct Satellite {
     socket: std::ffi::OsString,
     child: Option<std::process::Child>,
     restart: crate::child_process::Restart,
+    keymap: KeymapSync,
 }
 
 impl Satellite {
@@ -62,7 +63,23 @@ impl Satellite {
             socket,
             child: None,
             restart: crate::child_process::Restart::default(),
+            keymap: KeymapSync::default(),
         }
+    }
+
+    /// Whether a satellite process is currently running.
+    #[must_use]
+    pub const fn is_running(&self) -> bool {
+        self.child.is_some()
+    }
+
+    /// Applies the compositor map and reports whether the upload has completed.
+    pub fn sync_keymap(&mut self, elapsed: core::time::Duration, keymap: &str) -> bool {
+        if self.child.is_none() {
+            return false;
+        }
+        self.keymap.poll(elapsed, &self.display, keymap);
+        self.keymap.pending.is_none() && self.keymap.applied == keymap
     }
 
     /// Polls child status and starts due attempts without waiting for child exit.
@@ -77,6 +94,7 @@ impl Satellite {
             if let Some(mut child) = self.child.take() {
                 crate::shutdown::terminate(&mut child, true);
             }
+            self.keymap = KeymapSync::default();
             self.restart.failed();
             return;
         }
@@ -106,6 +124,101 @@ impl Drop for Satellite {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
             crate::shutdown::terminate(&mut child, true);
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct KeymapSync {
+    applied: String,
+    pending: Option<(std::process::Child, String)>,
+    elapsed: core::time::Duration,
+    retry: core::time::Duration,
+}
+
+impl KeymapSync {
+    fn poll(&mut self, elapsed: core::time::Duration, display: &str, keymap: &str) {
+        self.retry = self.retry.saturating_sub(elapsed);
+        if let Some((child, submitted)) = self.pending.as_mut() {
+            self.elapsed = self.elapsed.saturating_add(elapsed);
+            match child.try_wait() {
+                Ok(None) if self.elapsed < core::time::Duration::from_secs(5) => return,
+                Ok(Some(status)) if status.success() => self.applied.clone_from(submitted),
+                result => {
+                    tracing::warn!(?result, "X11 keymap update failed; retrying");
+                    crate::shutdown::terminate(child, false);
+                    self.retry = core::time::Duration::from_secs(1);
+                }
+            }
+            self.pending = None;
+        }
+        if self.applied == keymap || !self.retry.is_zero() {
+            return;
+        }
+        match upload_keymap(display, keymap) {
+            Ok(child) => {
+                self.pending = Some((child, keymap.to_owned()));
+                self.elapsed = core::time::Duration::ZERO;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "X11 keymap upload unavailable; retrying");
+                self.retry = core::time::Duration::from_secs(5);
+            }
+        }
+    }
+}
+
+fn upload_keymap(display: &str, keymap: &str) -> std::io::Result<std::process::Child> {
+    use std::os::fd::AsFd as _;
+    let keymap = x11_keymap(keymap)?;
+    let file = smithay::utils::SealedFile::with_data(c"tehuti-x11-keymap", keymap.as_bytes())?;
+    crate::child_process::command("xkbcomp")
+        .args(["-w", "0", "-", display])
+        .stdin(std::process::Stdio::from(file.as_fd().try_clone_to_owned()?))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+}
+
+fn x11_keymap(keymap: &str) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind};
+    let (prefix, section) = keymap
+        .split_once("\nxkb_types")
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "keymap has no types"))?;
+    let (types, suffix) = section
+        .split_once("\n};")
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "keymap types are not closed"))?;
+    let mut count = types
+        .lines()
+        .filter(|line| line.trim_start().starts_with("type \""))
+        .count();
+    let mut result = format!("{prefix}\nxkb_types{types}");
+    // Unnamed levels make some X servers report uninitialised atoms to readers.
+    // X servers validate old type indexes before replacing symbols, so an update whose type
+    // table is smaller than the one it replaces is rejected: never shrink the table. Padding every
+    // keymap to 255 (the protocol's type-index cap, a CARD8 count) keeps the size constant across
+    // layout changes. The padding types are harmless: no key's symbols reference them.
+    // https://github.com/mirror/xserver/blob/master/xkb/xkb.c (_XkbSetMapChecks)
+    for index in 0..255 {
+        if count >= 255 {
+            break;
+        }
+        let name = format!("\"TEHUTI_UNUSED_{index}\"");
+        if !types.contains(&name) {
+            result.push_str("\n\ttype ");
+            result.push_str(&name);
+            result.push_str(" { modifiers = None; map[None] = Level1; level_name[Level1] = \"Any\"; };");
+            count = count.saturating_add(1);
+        }
+    }
+    result.push_str("\n};");
+    result.push_str(suffix);
+    Ok(result)
+}
+
+impl Drop for KeymapSync {
+    fn drop(&mut self) {
+        if let Some((mut child, _)) = self.pending.take() {
+            crate::shutdown::terminate(&mut child, false);
         }
     }
 }

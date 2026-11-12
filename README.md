@@ -35,6 +35,7 @@ breaking changes to contexts and plugins. Bug reports are welcome as
 - **Plugins.** Programs in any language speak JSON-RPC over stdio. See
   [the protocol](docs/protocol/README.md).
 - **X11 apps** run through `xwayland-satellite` when it is installed.
+  Install `xkbcomp` to keep their keyboard layout in sync with Tehuti.
 - **Rendering.** GPU (GLES) on the login session, with an automatic CPU
   fallback, or nested in a window on your current desktop.
 
