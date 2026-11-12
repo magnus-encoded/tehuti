@@ -413,7 +413,12 @@ impl Bar {
 
     /// Drops "Transcribing…" or "Resolving…" when the turn it waited on ended without a replacement.
     fn clear_waiting(&mut self) {
-        if self.feedback.as_ref().is_some_and(|f| f.tone == Tone::Live) && self.remaining.is_some() {
+        if self
+            .feedback
+            .as_ref()
+            .is_some_and(|segment| segment.tone == Tone::Live)
+            && self.remaining.is_some()
+        {
             self.feedback = None;
             self.remaining = None;
         }
@@ -484,7 +489,7 @@ mod tests {
             false,
         );
         assert_eq!(
-            bar.segments().last().map(|s| s.text.as_str()),
+            bar.segments().last().map(|segment| segment.text.as_str()),
             Some("Transcribing…")
         );
     }
