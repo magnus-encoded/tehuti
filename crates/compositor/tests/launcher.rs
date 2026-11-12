@@ -403,6 +403,8 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
             tap(&mut compositor, code);
         }
         assert_eq!(first_row(&compositor).as_deref(), Some("Kitty"));
+        let footer = compositor.choice_list().map(|list| list.footer().to_owned());
+        assert_eq!(footer.as_deref(), Some("Enter to open"));
         tap(&mut compositor, KEY_ENTER);
         assert_eq!(compositor.visible_notice_text().as_deref(), Some("Kitty opened"));
         Ok(())

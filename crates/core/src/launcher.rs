@@ -57,6 +57,7 @@ pub struct Launcher {
     enabled: bool,
     delay: Duration,
     invitation: bool,
+    typed: bool,
 }
 
 impl Launcher {
@@ -70,7 +71,10 @@ impl Launcher {
     #[must_use]
     pub fn typed(query: &str, destinations: Vec<Destination>) -> Self {
         let rows = typed_ranking(query, &destinations);
-        Self::ranked(query, destinations, None, rows)
+        let mut launcher = Self::ranked(query, destinations, None, rows);
+        launcher.typed = true;
+        launcher.decorate();
+        launcher
     }
 
     fn ranked(
@@ -123,6 +127,7 @@ impl Launcher {
             enabled: true,
             delay: Duration::from_secs(5),
             invitation: false,
+            typed: false,
         };
         launcher.decorate();
         launcher
@@ -304,6 +309,8 @@ impl Launcher {
             "Nothing is open yet"
         } else if self.indices.is_empty() {
             "Nothing found"
+        } else if self.typed {
+            "Enter to open"
         } else if !self.enabled {
             "Auto-pick is off"
         } else if !self.checks.heard {
