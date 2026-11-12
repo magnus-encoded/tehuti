@@ -279,10 +279,20 @@ mod xwayland {
             {
                 return keymap;
             }
-            assert!(
-                started.elapsed() < Duration::from_secs(10),
-                "X11 did not receive {layout}"
-            );
+            if started.elapsed() >= Duration::from_secs(10) {
+                eprintln!("[DEBUG-527] applied={applied}; Tehuti sent:\n{}", compositor.keymap());
+                let received = std::process::Command::new("xkbcomp")
+                    .args(["-xkb", display, "-"])
+                    .output()
+                    .unwrap();
+                eprintln!(
+                    "[DEBUG-527] X11 status={}; received:\n{}\nstderr:\n{}",
+                    received.status,
+                    String::from_utf8_lossy(&received.stdout),
+                    String::from_utf8_lossy(&received.stderr)
+                );
+                panic!("X11 did not receive {layout}");
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -294,6 +304,10 @@ mod xwayland {
         if std::env::var_os("TEHUTI_KEYMAP_PROBE").is_none() {
             return;
         }
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .try_init()
+            .unwrap();
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("satellite");
         let pid_file = directory.path().join("pid");
