@@ -107,4 +107,10 @@ if [ -d "$work/x/sidecars" ]; then
     [ ! -d "$lib/sidecars" ] || mv "$lib/sidecars" "$lib/sidecars.prev"
     mv "$lib/sidecars.new" "$lib/sidecars"
 fi
+if [ -f "$work/x/wallpapers.pak" ]; then
+    data=${XDG_DATA_HOME:-$HOME/.local/share}/tehuti
+    mkdir -p "$data"
+    cp "$work/x/wallpapers.pak" "$data/wallpapers.pak.new"
+    mv -f "$data/wallpapers.pak.new" "$data/wallpapers.pak"
+fi
 say "installed $latest; fallback is $(tag_of tehuti.prev). Restart Tehuti to use it."

@@ -25,13 +25,13 @@ Run from the repository:
 
 ```sh
 cargo run -p tehuti --bin pack-wallpapers -- \
-  "$HOME/.local/share/tehuti/wallpapers" \
+  assets/wallpapers \
   "$HOME/.local/share/tehuti/wallpapers.pak"
 ```
 
 The builder requires all 13 `<codename>.png` files. It validates every PNG before
 replacing the destination through a temporary file. Install the pack as
-`<data-dir>/tehuti/wallpapers.pak`. Images and packs stay outside git.
+`<data-dir>/tehuti/wallpapers.pak`. The repository commits the images as `assets/wallpapers/<codename>.png`; a test fails when a codename lacks one. The release build packs them into `wallpapers.pak` inside the release archive, and `tehuti-update` and `install-release` install it as `<data-dir>/tehuti/wallpapers.pak`, so every user receives all 13. Which wallpapers are locked is only a Settings matter: the lock is deliberately weak, and the phrase or `TEHUTI_ALL_WALLPAPERS=1` unlocks them.
 
 ## Pack format, version 1
 

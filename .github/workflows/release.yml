@@ -79,6 +79,7 @@ jobs:
           cp "target/$ARCH-unknown-linux-gnu/$profile/tehuti" package/
           cp -r sidecars dist package/
           find package -type d -name __pycache__ -prune -exec rm -rf {} +
+          cargo run --locked --release -p tehuti --bin pack-wallpapers -- assets/wallpapers package/wallpapers.pak
           git rev-parse HEAD > package/VERSION
           tar -czf "tehuti-${TAG#v}-$ARCH-linux.tar.gz" -C package .
       - uses: actions/upload-artifact@v4
@@ -110,7 +111,6 @@ jobs:
       - name: Capture release screens
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
-          TEHUTI_WALLPAPER_URL: ${{ vars.WALLPAPER_URL }}
         run: |
           tar -xzf candidate/tehuti-*.tar.gz -C candidate/bin
           chmod +x candidate/bin/tehuti-drive

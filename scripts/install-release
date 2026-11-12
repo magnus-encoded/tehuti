@@ -80,6 +80,12 @@ if [ "${TEHUTI_NO_SPEECH:-}" = '' ]; then
         cp "$work/unpacked/sidecars/speech/requirements.txt" "$stamp"
     fi
 fi
+if [ -f "$work/unpacked/wallpapers.pak" ]; then
+    data=${XDG_DATA_HOME:-$HOME/.local/share}/tehuti
+    mkdir -p "$data"
+    cp "$work/unpacked/wallpapers.pak" "$data/wallpapers.pak.new"
+    mv -f "$data/wallpapers.pak.new" "$data/wallpapers.pak"
+fi
 build=$root/builds/$(date -u +%Y%m%dT%H%M%S.%NZ)-$(printf %.12s "$sha")
 [ ! -e "$build" ] || { echo 'Build directory already exists; retry later' >&2; exit 1; }
 mv "$work/unpacked" "$build"

@@ -19,21 +19,17 @@ cleanup() {
     rm -rf "$work"
 }
 trap cleanup EXIT
-# Render on the wallpaper of the tag's major version (docs/wallpapers.md).
-# TEHUTI_WALLPAPER_URL is a base URL serving <codename>.png; unset skips it.
-if [ -n "${TEHUTI_WALLPAPER_URL:-}" ]; then
-    major=${TAG#v}
-    major=${major%%.*}
-    [[ "$major" =~ ^[0-9]+$ ]] || { echo "release-smoke: TAG must look like v1.2.3" >&2; exit 1; }
-    codename=$(sed -n '/^pub const CODENAMES/,/^];/p' "$(dirname "$0")/../crates/compositor/src/wallpaper.rs" | grep -oE '"[a-z]+"' | sed -n "$((major + 1))p" | tr -d '"')
-    [ -n "$codename" ] || { echo "release-smoke: no wallpaper for major $major" >&2; exit 1; }
-    mkdir -p "$work/data/tehuti/wallpapers" "$work/config/tehuti"
-    curl -fsSL "${TEHUTI_WALLPAPER_URL%/}/$codename.png" -o "$work/data/tehuti/wallpapers/$codename.png"
-    printf '%s' "$codename" > "$work/config/tehuti/wallpaper"
-    export XDG_DATA_HOME="$work/data" XDG_CONFIG_HOME="$work/config" TEHUTI_ALL_WALLPAPERS=1
-else
-    echo "release-smoke: TEHUTI_WALLPAPER_URL unset; screenshots have no wallpaper" >&2
-fi
+# Render on the wallpaper of the tag's major version, from the packed assets.
+major=${TAG#v}
+major=${major%%.*}
+[[ "$major" =~ ^[0-9]+$ ]] || { echo "release-smoke: TAG must look like v1.2.3" >&2; exit 1; }
+codename=$(sed -n '/^pub const CODENAMES/,/^];/p' "$(dirname "$0")/../crates/compositor/src/wallpaper.rs" | grep -oE '"[a-z]+"' | sed -n "$((major + 1))p" | tr -d '"')
+[ -n "$codename" ] || { echo "release-smoke: no wallpaper for major $major" >&2; exit 1; }
+[ -f "$binary/wallpapers.pak" ] || { echo "release-smoke: $binary/wallpapers.pak missing" >&2; exit 1; }
+mkdir -p "$work/data/tehuti" "$work/config/tehuti"
+cp "$binary/wallpapers.pak" "$work/data/tehuti/wallpapers.pak"
+printf '%s' "$codename" > "$work/config/tehuti/wallpaper"
+export XDG_DATA_HOME="$work/data" XDG_CONFIG_HOME="$work/config" TEHUTI_ALL_WALLPAPERS=1
 mkdir "$work/contexts"
 printf 'app_id = "*"\n' > "$work/contexts/context.toml"
 cat > "$work/contexts/destinations.toml" <<'TOML'
