@@ -9,7 +9,7 @@ mod speech_vocabulary {
         let contexts = vec![
             parse_context("app_id = '*'\n[buttons]\n[speech]\n'Global' = { key = 'enter' }").unwrap(),
             parse_context("app_id = 'game'\nlabel = 'Mimiron'\n[buttons]\n[speech]\n'Yell' = { text = '/y ' }\n'Chat with yell' = { text = '/y ' }").unwrap(),
-            parse_context("app_id = 'editor'\n[buttons]\n[speech]\n'Edit' = { key = 'esc' }").unwrap(),
+            parse_context("app_id = 'editor'\n[buttons]\n[speech]\n'Edit' = { key = 'escape' }").unwrap(),
         ];
         assert_eq!(
             speech_vocabulary::prompt(&contexts, Some("game"), ""),
@@ -71,11 +71,7 @@ mod speech_vocabulary {
         }
         assert_eq!(words.iter().filter(|word| *word == "Orchid").count(), 1);
         let empty = speech_vocabulary::read(&[], &root.join("missing"), &root.join("missing"), &[], &[]);
-        assert!(empty.iter().any(|word| word == "Tehuti"));
-        assert!(empty.iter().any(|word| word == "Mimiron"));
-        for channel in ["yell", "say", "general", "party", "guild"] {
-            assert!(empty.iter().any(|word| word == channel));
-        }
+        assert!(empty.is_empty());
     }
     #[test]
     fn generic_project_command_resolves_folder_names_and_quotes_the_path() {

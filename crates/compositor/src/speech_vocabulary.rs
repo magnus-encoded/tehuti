@@ -41,7 +41,6 @@ pub fn read(
         .filter(|line| !line.starts_with('#'))
         .map(str::to_owned)
         .collect();
-    words.extend(["Tehuti", "Mimiron", "yell", "say", "general", "party", "guild"].map(str::to_owned));
     words.extend(contexts.iter().filter_map(Context::label).map(str::to_owned));
     words.extend(directory_names(projects));
     for directory in skills {
