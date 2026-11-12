@@ -373,8 +373,6 @@ pub fn sync_mirrors<D: PadDevice>(
     sync
 }
 
-const VIRTUAL_PAD_NAME: &str = "Tehuti virtual pad";
-
 fn gamepad_key(code: u16) -> bool {
     (KeyCode::BTN_SOUTH.code()..=KeyCode::BTN_THUMBR.code()).contains(&code)
         || (KeyCode::BTN_DPAD_UP.code()..=KeyCode::BTN_DPAD_RIGHT.code()).contains(&code)
