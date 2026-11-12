@@ -620,7 +620,8 @@ mod tests {
             pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
                 .unwrap();
             route(&mut compositor, &mut pad).unwrap();
-            if index.saturating_add(1) < keys.len() {
+            // Share is not a virtual pad button, so only a gamepad key leaks from an incomplete chord.
+            if index.saturating_add(1) < keys.len() && *key != KeyCode::KEY_RECORD {
                 assert!(!never_sent(&log.borrow(), *key));
             } else {
                 assert!(never_sent(&log.borrow(), *key), "completing press is kept");
@@ -645,7 +646,7 @@ mod tests {
             .flat_map(|(_, frame)| frame.iter().copied())
             .filter(|(kind, _, _)| *kind == EventType::KEY.0)
             .collect();
-        let expected = if keys.len() == 1 {
+        let expected = if keys.len() == 1 || keys[0] == KeyCode::KEY_RECORD {
             Vec::new()
         } else {
             vec![
