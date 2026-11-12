@@ -31,10 +31,9 @@ mod tests {
         let pixels =
             tehuti::choice_list::raster(&list, PadFamily::Letters, (1920, 1080)).ok_or("missing artwork")?;
         assert_eq!(pixels.get(0..4), Some([0, 0, 0, 0].as_slice()));
-        let header_right_edge = (60_usize * 1920 + 1919) * 4;
         assert_eq!(
-            pixels.get(header_right_edge..header_right_edge + 4),
-            Some([98, 86, 72, 255].as_slice()),
+            pixel(&pixels, 1919, 60),
+            [98, 86, 72, 255],
             "the header preserves the thin panel outline",
         );
         let colours: std::collections::HashSet<_> = pixels.as_chunks::<4>().0.iter().copied().collect();
@@ -198,6 +197,14 @@ mod tests {
     }
 
     fn pixel(pixels: &[u8], x: usize, y: usize) -> [u8; 4] {
+        let top = (0_usize..1080)
+            .find(|&row| {
+                let start = row.saturating_mul(1920).saturating_add(640).saturating_mul(4);
+                pixels.get(start..start.saturating_add(4)) == Some([98, 86, 72, 255].as_slice())
+            })
+            .unwrap_or_default();
+        let x = x.saturating_sub(640);
+        let y = y.saturating_add(top);
         let start = y.saturating_mul(1920).saturating_add(x).saturating_mul(4);
         pixels
             .get(start..start.saturating_add(4))
@@ -268,20 +275,73 @@ mod tests {
     }
 
     #[test]
-    fn launcher_rows_keep_their_natural_height_above_empty_panel_space()
-    -> Result<(), Box<dyn core::error::Error>> {
+    fn launcher_sizes_to_content_and_centres_on_every_aspect_ratio() -> Result<(), Box<dyn core::error::Error>>
+    {
+        for size in [(3840, 1600), (1920, 1080), (800, 1200), (640, 360)] {
+            let mut previous = 0;
+            for rows in 0..=5 {
+                let launcher = launcher(rows);
+                let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, size)
+                    .ok_or("artwork")?;
+                let width = usize::try_from(size.0)?;
+                let edges: Vec<_> = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    // Scaled edges are antialiased, so find the opaque panel rather than its edge colour.
+                    .filter(|(_, pixel)| pixel[3] >= 200)
+                    .map(|(index, _)| (index % width, index / width))
+                    .collect();
+                let left = edges.iter().map(|edge| edge.0).min().ok_or("left")?;
+                let right = edges.iter().map(|edge| edge.0).max().ok_or("right")?;
+                let top = edges.iter().map(|edge| edge.1).min().ok_or("top")?;
+                let bottom = edges.iter().map(|edge| edge.1).max().ok_or("bottom")?;
+                assert!(
+                    left.abs_diff(width - right - 1) <= 1,
+                    "horizontal centre at {size:?}"
+                );
+                let available = usize::try_from(size.1 - tehuti_core::bar::HEIGHT)?;
+                assert!(
+                    top.abs_diff(available - bottom - 1) <= 1,
+                    "vertical centre at {size:?}"
+                );
+                let height = bottom - top + 1;
+                assert!(height <= available * 4 / 5, "height cap at {size:?}");
+                assert!(height >= previous, "more rows cannot shrink the panel");
+                previous = height;
+            }
+        }
+        Ok(())
+    }
+
+    /// The opaque panel's last row; scaled edges are antialiased, so opacity marks the panel.
+    fn opaque_bottom(pixels: &[u8]) -> Option<usize> {
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .rposition(|pixel| pixel[3] >= 200)
+            .map(|index| index / 1920)
+    }
+
+    #[test]
+    fn launcher_rows_keep_their_natural_height_above_the_bar() -> Result<(), Box<dyn core::error::Error>> {
+        let bar = usize::try_from(tehuti_core::bar::HEIGHT)?;
         for rows in 1..=5 {
             let launcher = launcher(rows);
             let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
                 .ok_or("artwork")?;
-            let edge = [98, 86, 72, 255];
-            let bottom = (0..1080)
-                .rev()
-                .find(|y| pixel(&pixels, 1280, *y) == edge)
-                .ok_or("edge")?;
+            let bottom = opaque_bottom(&pixels).ok_or("panel")?;
+            // Natural height is 188 + 72 per row, centred in the 1048 rows above the bar.
+            let natural = 188_usize.saturating_add(rows.saturating_mul(72));
+            let expected = (1080_usize.saturating_sub(bar).saturating_sub(natural) / 2)
+                .saturating_add(natural)
+                .saturating_sub(1);
+            assert_eq!(bottom, expected, "{rows} rows: panel bottom row");
             assert!(
-                (1032..=1048).contains(&bottom),
-                "{rows} rows: panel ends at {bottom}, leaving space above the bar"
+                bottom < 1080_usize.saturating_sub(bar),
+                "{rows} rows: above the bar"
             );
             let live = [119, 88, 36, 255];
             let selected = (0..1080).filter(|y| pixel(&pixels, 1700, *y) == live).count();
@@ -298,14 +358,27 @@ mod tests {
         let launcher = launcher(2);
         let pixels = tehuti::choice_list::raster_scaled(launcher.list(), PadFamily::Letters, (1920, 1080), 2)
             .ok_or("artwork")?;
-        let edge = [98, 86, 72, 255];
-        let bottom = (0..1080)
-            .rev()
-            .find(|y| pixel(&pixels, 1280, *y) == edge)
-            .ok_or("edge")?;
-        assert!(
-            (1000..1016).contains(&bottom),
-            "panel ends at {bottom}; the doubled bar starts at 1016"
+        let bottom = opaque_bottom(&pixels).ok_or("panel")?;
+        // 2 rows: natural 332, panel 1280 wide (640 at scale 2) and 664 tall, centred in the
+        // 1920 x (1080 - 2 * 32) area above the doubled bar: left 320, top 176.
+        assert_eq!(bottom, 839, "panel bottom row; the doubled bar starts at 1016");
+        let covered = |x: &usize| {
+            (0..1080_usize).any(|y| {
+                pixels
+                    .get(
+                        y.saturating_mul(1920)
+                            .saturating_add(*x)
+                            .saturating_mul(4)
+                            .saturating_add(3),
+                    )
+                    .is_some_and(|alpha| *alpha >= 200)
+            })
+        };
+        assert_eq!((0..1920_usize).find(covered), Some(320), "panel left column");
+        assert_eq!(
+            (0..1920_usize).rev().find(covered),
+            Some(1599),
+            "panel right column mirrors the left"
         );
         Ok(())
     }

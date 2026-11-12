@@ -12,33 +12,23 @@ pub fn destinations(
     let mut destinations = Vec::new();
     let mut routes = Vec::new();
     for entry in entries {
-        if kind == tehuti_core::unit_verbs::DestinationKind::Creation {
+        if kind == DestinationKind::Creation
+            || (kind == DestinationKind::Project && entry.source != Source::Project)
+        {
             continue;
         }
-        if kind == tehuti_core::unit_verbs::DestinationKind::Project && entry.source != Source::Project {
-            continue;
-        }
-        for route in &entry.routes {
+        for (index, route) in entry.routes.iter().enumerate() {
+            if entry.source == Source::Desktop && index > 0 {
+                continue;
+            }
+            if duplicates_desktop_route(route, entries) {
+                continue;
+            }
             let open = route
                 .steps
                 .iter()
                 .any(|step| matches!(step.target, Target::Window(_)));
-            let description = route
-                .steps
-                .iter()
-                .map(|step| match &step.target {
-                    Target::Desktop(value)
-                    | Target::Url(value)
-                    | Target::Application(value)
-                    | Target::Menu(value) => {
-                        format!("{}: {value}", step.icon)
-                    }
-                    Target::Workspace(_) => format!("{}: workspace", step.icon),
-                    Target::Window(_) => format!("{}: open window", step.icon),
-                    Target::Action(_) => format!("{}: {}", step.icon, entry.name),
-                })
-                .collect::<Vec<_>>()
-                .join(" → ");
+            let description = describe(route, &entry.name);
             destinations.push(tehuti_core::launcher::Destination {
                 name: entry.name.clone(),
                 extra_names: entry.extra_names.clone(),
@@ -64,4 +54,42 @@ pub fn destinations(
         }
     }
     (destinations, routes)
+}
+
+fn describe(route: &Route, name: &str) -> String {
+    use crate::destinations::Target;
+    route
+        .steps
+        .iter()
+        .map(|step| match &step.target {
+            Target::Desktop(value)
+            | Target::Url(value)
+            | Target::Application(value)
+            | Target::Menu(value) => format!("{}: {value}", step.icon),
+            Target::Workspace(_) => format!("{}: workspace", step.icon),
+            Target::Window(_) => format!("{}: open window", step.icon),
+            Target::Action(_) => format!("{}: {name}", step.icon),
+        })
+        .collect::<Vec<_>>()
+        .join(" → ")
+}
+
+fn duplicates_desktop_route(route: &Route, entries: &[Destination]) -> bool {
+    use crate::destinations::{Source, Target};
+    let [step] = route.steps.as_slice() else {
+        return false;
+    };
+    let Target::Application(application) = &step.target else {
+        return false;
+    };
+    entries.iter().any(|entry| {
+        entry.source == Source::Desktop
+            && entry.routes.iter().any(|desktop_route| {
+                desktop_route.steps.iter().any(|desktop_step| {
+                    matches!(&desktop_step.target,
+                        Target::Desktop(desktop_id)
+                            if desktop_id.strip_suffix(".desktop") == Some(application.as_str()))
+                })
+            })
+    })
 }
