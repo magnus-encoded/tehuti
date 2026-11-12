@@ -822,6 +822,8 @@ impl Layout {
         self.normalize();
         if self.must_center(output) {
             self.scroll(output, None, false);
+        } else {
+            self.clamp_view(output);
         }
         Ok(())
     }
@@ -1223,14 +1225,6 @@ impl Layout {
             focused.tiles[focused.focused].mode == TileMode::Fullscreen
         };
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
-        let last_end = {
-            let output = &self.outputs[output];
-            let count = output.workspaces[active].columns.len();
-            output.column_x(active, count)
-        };
-        // The furthest the view may scroll before a gap opens past the last column.
-        let furthest = last_end.sub(working.width).max(0.0_f64);
-        #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let view = &mut self.outputs[output].workspaces[active].view;
         if fullscreen {
             // The tile starts at the output edge, so neighbours are fully off screen.
@@ -1244,8 +1238,37 @@ impl Layout {
         } else if position.add(width).sub(*view) > working.width.sub(config.gaps) {
             *view = position.add(width).sub(working.width).add(config.gaps);
         }
-        if !fullscreen && !centered && width <= working.width.sub(2.0_f64.mul(config.gaps)) {
-            *view = view.min(furthest);
+        if !centered {
+            self.clamp_view(output);
+        }
+    }
+    /// Scrolls back any gap past the last column, so no column hides off the left
+    /// while the right edge shows the desktop.
+    fn clamp_view(&mut self, output: usize) {
+        let Some(output) = self.outputs.get_mut(output) else {
+            return;
+        };
+        let active = output.active;
+        let Some(workspace) = output.workspaces.get(active) else {
+            return;
+        };
+        let count = workspace.columns.len();
+        // A fullscreen or wider-than-output column keeps its own anchor.
+        let anchored = workspace
+            .focused
+            .and_then(|focused| workspace.columns.get(focused))
+            .is_some_and(|column| {
+                column.tiles.iter().any(|tile| tile.mode == TileMode::Fullscreen)
+                    || output.column_width(column)
+                        > output.working().width.sub(2.0_f64.mul(output.config.gaps))
+            });
+        if anchored {
+            return;
+        }
+        // The furthest the view may scroll before a gap opens past the last column.
+        let furthest = output.column_x(active, count).sub(output.working().width).max(0.0_f64);
+        if let Some(workspace) = output.workspaces.get_mut(active) {
+            workspace.view = workspace.view.min(furthest);
         }
     }
     /// A command without a focused target leaves the layout unchanged.
