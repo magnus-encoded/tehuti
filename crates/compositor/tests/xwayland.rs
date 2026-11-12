@@ -280,20 +280,6 @@ mod xwayland {
                 return keymap;
             }
             if started.elapsed() >= Duration::from_secs(10) {
-                tracing::warn!(
-                    "[DEBUG-527] applied={applied}; Tehuti sent:\n{}",
-                    compositor.keymap()
-                );
-                let received = std::process::Command::new("xkbcomp")
-                    .args(["-xkb", display, "-"])
-                    .output()
-                    .unwrap();
-                tracing::warn!(
-                    "[DEBUG-527] X11 status={}; received:\n{}\nstderr:\n{}",
-                    received.status,
-                    String::from_utf8_lossy(&received.stdout),
-                    String::from_utf8_lossy(&received.stderr)
-                );
                 panic!("X11 did not receive {layout}");
             }
             std::thread::sleep(Duration::from_millis(20));

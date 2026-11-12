@@ -186,6 +186,7 @@ fn x11_keymap(keymap: &str) -> std::io::Result<String> {
         .filter(|line| line.trim_start().starts_with("type \""))
         .count();
     let mut result = format!("{prefix}\nxkb_types{types}");
+    // Unnamed levels make some X servers report uninitialised atoms to readers.
     // X servers validate old type indexes before replacing symbols: never shrink the table.
     // https://github.com/mirror/xserver/blob/master/xkb/xkb.c (_XkbSetMapChecks)
     for index in 0..255 {
@@ -196,7 +197,9 @@ fn x11_keymap(keymap: &str) -> std::io::Result<String> {
         if !types.contains(&name) {
             result.push_str("\n\ttype ");
             result.push_str(&name);
-            result.push_str(" { modifiers = None; map[None] = Level1; };");
+            result.push_str(
+                " { modifiers = None; map[None] = Level1; level_name[Level1] = \"Any\"; };",
+            );
             count = count.saturating_add(1);
         }
     }
