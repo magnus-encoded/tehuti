@@ -532,6 +532,7 @@ mod tests {
         StaleTranscript,
         PluginSpeech,
         PluginReply,
+        PluginReplyNewest,
         EmptyTurnEnd,
         Focus,
         Tick(u64),
@@ -553,6 +554,7 @@ mod tests {
             Just(Turn::StaleTranscript),
             Just(Turn::PluginSpeech),
             Just(Turn::PluginReply),
+            Just(Turn::PluginReplyNewest),
             Just(Turn::EmptyTurnEnd),
             Just(Turn::Focus),
             (0u64..4000).prop_map(Turn::Tick),
@@ -604,7 +606,8 @@ mod tests {
             drive(&mut state, &mut speech, &mut awaited, SpeechInput::Available);
             let mut presses = 0u64;
             let mut age = Duration::ZERO;
-            let key = RequestKey { plugin: 0, request_id: 0 };
+            let mut next_request = 0u64;
+            let mut outstanding: Vec<u64> = Vec::new();
             let hello = || Text::new("hello".into()).unwrap();
             for turn in turns {
                 let was_waiting = waiting(&state);
@@ -629,16 +632,27 @@ mod tests {
                     ),
                     Turn::PluginSpeech => {
                         let event = Event::Speech { text: hello() };
+                        let key = RequestKey { plugin: 0, request_id: next_request };
+                        next_request = next_request.saturating_add(1);
                         let (next, _, routed) = step_with_plugin(state, &event, true);
                         let (next, _, _) = if routed {
+                            outstanding.push(key.request_id);
                             plugin::step(next, Input::Request { key, event, permissions: vec![Permission::Text] })
                         } else {
                             (next, Vec::new(), None)
                         };
                         state = next;
                     }
-                    Turn::PluginReply => {
-                        state = plugin::step(state, Input::Reply { key, result: Ok(Vec::new()) }).0;
+                    Turn::PluginReply | Turn::PluginReplyNewest => {
+                        if !outstanding.is_empty() {
+                            let request_id = if matches!(turn, Turn::PluginReply) {
+                                outstanding.remove(0)
+                            } else {
+                                outstanding.remove(outstanding.len().saturating_sub(1))
+                            };
+                            let key = RequestKey { plugin: 0, request_id };
+                            state = plugin::step(state, Input::Reply { key, result: Ok(Vec::new()) }).0;
+                        }
                     }
                     Turn::EmptyTurnEnd => {
                         state = step(state, &Event::Speech { text: Text::new(" ".into()).unwrap() }).0;
