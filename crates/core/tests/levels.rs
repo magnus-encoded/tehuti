@@ -47,8 +47,7 @@ mod levels {
             .bar()
             .segments()
             .last()
-            .map(|segment| segment.text.clone())
-            .unwrap_or_default()
+            .map_or_default(|segment| segment.text.clone())
     }
 
     #[test]

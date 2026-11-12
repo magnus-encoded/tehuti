@@ -9,7 +9,7 @@ use tehuti_protocol::Context;
 /// Reads local names using the session's XDG directories.
 #[must_use]
 pub fn load(contexts: &[Context]) -> Vec<String> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME").map_or_default(PathBuf::from);
     let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
     let data_home =
         std::env::var_os("XDG_DATA_HOME").map_or_else(|| home.join(".local/share"), PathBuf::from);

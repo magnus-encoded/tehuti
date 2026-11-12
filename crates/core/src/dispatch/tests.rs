@@ -2045,7 +2045,7 @@ fn east_and_the_global_phrase_cancel_mode_preview() {
         let state = world.run(state, Input::ModeApplied(Some(1)));
         world.trace.clear();
         let backs = matches!(event, Event::Button { .. });
-        let state = settings_event(&mut world, state, event.clone());
+        let state = settings_event(&mut world, state, event);
         assert!(world.trace.contains(&Effect::SettingsMode(0)));
         assert_eq!(state.settings().open, backs);
         assert_eq!(state.settings().page, Page::Categories);

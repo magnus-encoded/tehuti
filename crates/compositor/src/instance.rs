@@ -26,7 +26,7 @@ pub enum InstanceError {
     NoRuntimeDirectory,
     #[error(
         "another Tehuti is already running for this user{}; its lock is {}",
-        .pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default(),
+        .pid.map_or_default(|pid| format!(" (pid {pid})")),
         .path.display()
     )]
     AlreadyRunning { path: PathBuf, pid: Option<u32> },
