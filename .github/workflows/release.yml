@@ -63,6 +63,10 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: |
+          # The wallpaper pack is the same on every arch. Build the packer for the host
+          # before the i686 cross settings below, or it links against i386 libraries.
+          mkdir package
+          cargo run --locked --release -p tehuti --bin pack-wallpapers -- assets/wallpapers package/wallpapers.pak
           if [ "$ARCH" = i686 ]; then
             export PKG_CONFIG_ALLOW_CROSS=1
             export PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
@@ -75,11 +79,9 @@ jobs:
           export TEHUTI_VERSION="${TAG#v}"
           export SOURCE_DATE_EPOCH="$(date -u +%s)"
           cargo build --locked --bins --profile "$profile" -p tehuti --target "$ARCH-unknown-linux-gnu"
-          mkdir package
           cp "target/$ARCH-unknown-linux-gnu/$profile/tehuti" package/
           cp -r sidecars dist package/
           find package -type d -name __pycache__ -prune -exec rm -rf {} +
-          cargo run --locked --release -p tehuti --bin pack-wallpapers -- assets/wallpapers package/wallpapers.pak
           git rev-parse HEAD > package/VERSION
           tar -czf "tehuti-${TAG#v}-$ARCH-linux.tar.gz" -C package .
       - uses: actions/upload-artifact@v4

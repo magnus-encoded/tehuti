@@ -27,7 +27,8 @@ jobs:
       - name: Release smoke
         run: |
           cargo build --locked -p tehuti --bins
-          scripts/release-smoke target/debug smoke
+          target/debug/pack-wallpapers assets/wallpapers target/debug/wallpapers.pak
+          TAG=v0.0.0 scripts/release-smoke target/debug smoke
       - uses: actions/upload-artifact@v4
         if: always()
         with:
