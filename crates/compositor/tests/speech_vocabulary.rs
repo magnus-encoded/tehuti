@@ -71,7 +71,7 @@ mod speech_vocabulary {
         }
         assert_eq!(words.iter().filter(|word| *word == "Orchid").count(), 1);
         let empty = speech_vocabulary::read(&[], &root.join("missing"), &root.join("missing"), &[], &[]);
-        assert!(empty.is_empty());
+        assert_eq!(empty, Vec::<String>::new());
     }
     #[test]
     fn generic_project_command_resolves_folder_names_and_quotes_the_path() {
