@@ -1188,11 +1188,17 @@ impl Layout {
         self.scroll(output, previous, false);
     }
     fn scroll(&mut self, output: usize, previous: Option<usize>, center: bool) {
+        if !self.reveal(output, previous, center) {
+            self.clamp_view(output);
+        }
+    }
+    /// Scrolls the focused column into view; returns whether it was centred.
+    fn reveal(&mut self, output: usize, previous: Option<usize>, center: bool) -> bool {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let active = self.outputs[output].active;
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let Some(column) = self.outputs[output].workspaces[active].focused else {
-            return;
+            return true;
         };
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let config = self.outputs[output].config.clone();
@@ -1234,15 +1240,16 @@ impl Layout {
         } else if position.add(width).sub(*view) > working.width.sub(config.gaps) {
             *view = position.add(width).sub(working.width).add(config.gaps);
         }
-        if !centered {
-            self.clamp_view(output);
-        }
+        centered
     }
-    /// A restored view stays as saved; any other close scrolls back a right gap.
+    /// Any close other than a restore scrolls back a right gap.
     fn settle_view_after_close(&mut self, output: usize, restored: bool) {
         if self.must_center(output) {
             self.scroll(output, None, false);
-        } else if !restored {
+        } else if restored {
+            // A restored view stays as saved unless the focused column fell off the output.
+            self.reveal(output, None, false);
+        } else {
             self.clamp_view(output);
         }
     }
