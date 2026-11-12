@@ -36,7 +36,9 @@ fn layout_on(width: f64, height: f64) -> Layout {
 fn run(layout: &mut Layout, next: &mut u64, step: Step) {
     match step {
         Step::Open => {
-            layout.add_window(WindowId(*next), WindowRules::default()).unwrap();
+            layout
+                .add_window(WindowId(*next), WindowRules::default())
+                .unwrap();
             *next += 1;
         }
         Step::Close => {
@@ -76,7 +78,9 @@ fn broken_law(layout: &Layout) -> Option<String> {
     let gap = right - (last.x + last.width) > gaps + EPSILON;
     let content: f64 = tiles.iter().map(|tile| tile.width + gaps).sum::<f64>() + gaps;
     if off_left && gap && content <= working.width + EPSILON {
-        return Some(format!("gap past last column {last:?} while {first:?} is off the left"));
+        return Some(format!(
+            "gap past last column {last:?} while {first:?} is off the left"
+        ));
     }
     None
 }
