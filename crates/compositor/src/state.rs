@@ -1786,11 +1786,19 @@ impl Compositor {
     }
 
     fn open_launcher(&mut self, request: &tehuti_core::unit_verbs::LauncherRequest) {
+        self.show_launcher(request, false);
+    }
+
+    fn show_launcher(&mut self, request: &tehuti_core::unit_verbs::LauncherRequest, typed: bool) {
         let focused = self.speech_context.as_deref();
         let (destinations, routes) =
             crate::launcher::destinations(self.destinations.entries(), request.kind, focused);
         self.launcher_routes = routes;
-        let mut launcher = tehuti_core::launcher::Launcher::new(&request.query, destinations, None);
+        let mut launcher = if typed {
+            tehuti_core::launcher::Launcher::typed(&request.query, destinations)
+        } else {
+            tehuti_core::launcher::Launcher::new(&request.query, destinations, None)
+        };
         let contexts = self.dispatch.core().contexts();
         let active = focused
             .and_then(|app_id| tehuti_core::own_context(contexts, app_id, &self.speech_title))
@@ -2710,12 +2718,86 @@ impl Compositor {
         if self.host_key_as_pad(keycode, pressed) {
             return;
         }
+        if self.host_key_in_launcher(keycode, pressed) {
+            return;
+        }
         let state = if pressed {
             smithay::backend::input::KeyState::Pressed
         } else {
             smithay::backend::input::KeyState::Released
         };
         self.send_keycode(keycode, state);
+    }
+
+    /// While the launcher is open, typing filters it, Enter opens the selection and Escape closes it.
+    ///
+    /// This is the fallback when speech is down; the client never sees these keys.
+    fn host_key_in_launcher(&mut self, keycode: Keycode, pressed: bool) -> bool {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        const KEY_ESC: u32 = 1;
+        const KEY_BACKSPACE: u32 = 14;
+        const KEY_ENTER: u32 = 28;
+        const KEY_KPENTER: u32 = 96;
+        if !pressed {
+            let consumed = self.consumed_host_keys.contains(&keycode);
+            self.consumed_host_keys.retain(|held| *held != keycode);
+            return consumed;
+        }
+        let Some(launcher) = self
+            .dispatch
+            .launcher()
+            .filter(|launcher| launcher.list().is_open())
+        else {
+            return false;
+        };
+        let query = launcher.list().slots().heard.clone();
+        let family = self.pad_family();
+        let code = keycode.raw().saturating_sub(XKB_KEYCODE_OFFSET);
+        let press = |this: &mut Self, name: ButtonName| {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                this.handle(&Event::Button { name, state });
+            }
+        };
+        match code {
+            KEY_ENTER | KEY_KPENTER => press(self, family.button(tehuti_core::pad::Role::Confirm)),
+            KEY_ESC => press(self, family.button(tehuti_core::pad::Role::Back)),
+            KEY_BACKSPACE => {
+                let mut query = query;
+                let _removed = query.pop();
+                self.retype_launcher(query);
+            }
+            _ => {
+                let keyboard = self.keyboard.clone();
+                let text = keyboard.with_xkb_state(self, |context| {
+                    let xkb = context
+                        .xkb()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let layout = xkb.active_layout();
+                    xkb.raw_syms_for_key_in_layout(keycode, layout)
+                        .first()
+                        .and_then(|symbol| char::from_u32(xkb::keysym_to_utf32(*symbol)))
+                        .filter(|character| *character != '\0')
+                        .map_or_default(String::from)
+                });
+                let held = self.keyboard.modifier_state();
+                if held.ctrl || held.alt || held.logo || text.is_empty() || text.chars().any(char::is_control)
+                {
+                    return false;
+                }
+                self.retype_launcher(format!("{query}{text}"));
+            }
+        }
+        self.consumed_host_keys.push(keycode);
+        true
+    }
+
+    fn retype_launcher(&mut self, query: String) {
+        let request = tehuti_core::unit_verbs::LauncherRequest {
+            kind: tehuti_core::unit_verbs::DestinationKind::Application,
+            query,
+        };
+        self.show_launcher(&request, true);
     }
 
     fn host_key_as_pad(&mut self, keycode: Keycode, pressed: bool) -> bool {
