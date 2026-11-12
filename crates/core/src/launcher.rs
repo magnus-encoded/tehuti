@@ -246,16 +246,16 @@ impl Launcher {
 
     fn decorate(&mut self) {
         let fill = self.elapsed.map_or(0, |elapsed| {
-                u16::try_from(
-                    elapsed
-                        .as_millis()
-                        .saturating_mul(1000)
-                        .checked_div(self.delay.as_millis())
-                        .unwrap_or_default()
-                        .min(1000),
-                )
-                .unwrap_or_default()
-            });
+            u16::try_from(
+                elapsed
+                    .as_millis()
+                    .saturating_mul(1000)
+                    .checked_div(self.delay.as_millis())
+                    .unwrap_or_default()
+                    .min(1000),
+            )
+            .unwrap_or_default()
+        });
         let footer = self.footer().to_owned();
         self.list.decorate(footer, fill);
     }
