@@ -69,7 +69,7 @@ impl Satellite {
 
     /// Whether a satellite process is currently running.
     #[must_use]
-    pub fn is_running(&self) -> bool {
+    pub const fn is_running(&self) -> bool {
         self.child.is_some()
     }
 
