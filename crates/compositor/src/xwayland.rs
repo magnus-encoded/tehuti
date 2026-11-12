@@ -197,9 +197,7 @@ fn x11_keymap(keymap: &str) -> std::io::Result<String> {
         if !types.contains(&name) {
             result.push_str("\n\ttype ");
             result.push_str(&name);
-            result.push_str(
-                " { modifiers = None; map[None] = Level1; level_name[Level1] = \"Any\"; };",
-            );
+            result.push_str(" { modifiers = None; map[None] = Level1; level_name[Level1] = \"Any\"; };");
             count = count.saturating_add(1);
         }
     }
