@@ -324,3 +324,87 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
         );
     }
 }
+
+#[cfg(test)]
+mod hardware_keyboard {
+    use smithay::{input::keyboard::Keycode, reexports::wayland_server::Display};
+    use tehuti::{destinations::Paths, state::Compositor};
+    use tehuti_protocol::Text;
+
+    const KEY_ESC: u32 = 1;
+    const KEY_BACKSPACE: u32 = 14;
+    const KEY_ENTER: u32 = 28;
+    const KEY_K: u32 = 37;
+    const KEY_I: u32 = 23;
+    const KEY_T: u32 = 20;
+    const KEY_O: u32 = 24;
+
+    fn tap(compositor: &mut Compositor, code: u32) {
+        for pressed in [true, false] {
+            compositor.host_key(Keycode::new(code + 8), pressed);
+        }
+    }
+
+    fn session(root: &std::path::Path) -> Result<(Display<Compositor>, Compositor), Box<dyn core::error::Error>> {
+        std::fs::write(
+            root.join("destinations.toml"),
+            r#"
+[[destinations]]
+name = "Kitty"
+[[destinations.routes]]
+steps = [{ icon = "terminal", target = { kind = "action", value = { type = "notice", text = "Kitty opened" } } }]
+[[destinations]]
+name = "Orbit"
+[[destinations.routes]]
+steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice", text = "Orbit opened" } } }]
+"#,
+        )?;
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.configure_destinations(Paths {
+            config: root.into(),
+            projects: root.join("projects"),
+            data: Vec::new(),
+        });
+        // A pad is connected by default; speech opens the launcher on an unrelated query.
+        compositor.say(Text::new("open zzz".into())?);
+        Ok((display, compositor))
+    }
+
+    fn first_row(compositor: &Compositor) -> Option<String> {
+        compositor
+            .choice_list()
+            .filter(|list| list.is_open())
+            .and_then(|list| list.candidates().first().map(|row| row.candidate.name.clone()))
+    }
+
+    #[test]
+    fn typing_kit_and_enter_launches_kitty_with_a_pad_connected() -> Result<(), Box<dyn core::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session(root.path())?;
+        for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE] {
+            tap(&mut compositor, code);
+        }
+        for code in [KEY_K, KEY_I, KEY_T] {
+            tap(&mut compositor, code);
+        }
+        assert_eq!(first_row(&compositor).as_deref(), Some("Kitty"));
+        tap(&mut compositor, KEY_ENTER);
+        assert_eq!(compositor.visible_notice_text().as_deref(), Some("Kitty opened"));
+        Ok(())
+    }
+
+    #[test]
+    fn backspace_widens_the_filter_and_escape_closes_the_launcher() -> Result<(), Box<dyn core::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session(root.path())?;
+        for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE, KEY_O] {
+            tap(&mut compositor, code);
+        }
+        assert_eq!(first_row(&compositor).as_deref(), Some("Orbit"));
+        tap(&mut compositor, KEY_ESC);
+        assert_eq!(first_row(&compositor), None);
+        assert_eq!(compositor.visible_notice_text(), None);
+        Ok(())
+    }
+}
