@@ -1242,7 +1242,7 @@ impl Layout {
         }
         centered
     }
-    /// Any close other than a restore scrolls back a right gap.
+    /// Any close keeps the focused column on the output; one that restores no view also scrolls back a right gap.
     fn settle_view_after_close(&mut self, output: usize, restored: bool) {
         if self.must_center(output) {
             self.scroll(output, None, false);
@@ -1250,7 +1250,7 @@ impl Layout {
             // A restored view stays as saved unless the focused column fell off the output.
             let _centred = self.reveal(output, None, false);
         } else {
-            self.clamp_view(output);
+            self.scroll(output, None, false);
         }
     }
     /// When every column fits on the output, scrolls back so none hides off the left
