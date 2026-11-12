@@ -1266,7 +1266,10 @@ impl Layout {
             return;
         }
         // The furthest the view may scroll before a gap opens past the last column.
-        let furthest = output.column_x(active, count).sub(output.working().width).max(0.0_f64);
+        let furthest = output
+            .column_x(active, count)
+            .sub(output.working().width)
+            .max(0.0_f64);
         if let Some(workspace) = output.workspaces.get_mut(active) {
             workspace.view = workspace.view.min(furthest);
         }
