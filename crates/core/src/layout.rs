@@ -1248,7 +1248,7 @@ impl Layout {
             self.scroll(output, None, false);
         } else if restored {
             // A restored view stays as saved unless the focused column fell off the output.
-            self.reveal(output, None, false);
+            let _centred = self.reveal(output, None, false);
         } else {
             self.clamp_view(output);
         }
