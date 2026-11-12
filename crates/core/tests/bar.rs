@@ -567,6 +567,26 @@ mod tests {
             .any(|segment| segment.text == "Transcribing…" || segment.text == "Resolving…")
     }
 
+    /// Feeds one capture input, tracks whether a transcript is awaited, and delivers admitted speech.
+    fn drive(state: &mut State, speech: &mut SpeechState, awaited: &mut bool, input: SpeechInput) {
+        let cancel = input == SpeechInput::Cancel;
+        let effects = capture(state, speech, input);
+        if cancel {
+            *awaited = false;
+        }
+        for effect in effects {
+            match effect {
+                SpeechEffect::Stop { transcribe: true, .. } => *awaited = true,
+                SpeechEffect::Speech { text, .. } => {
+                    *awaited = false;
+                    *state = step(core::mem::take(state), &Event::Speech { text }).0;
+                }
+                SpeechEffect::Failed { .. } => *awaited = false,
+                SpeechEffect::Start { .. } | SpeechEffect::Interim { .. } | SpeechEffect::Stop { .. } => {}
+            }
+        }
+    }
+
     proptest! {
         #[test]
         fn no_waiting_segment_outlives_its_turn(
@@ -580,27 +600,33 @@ mod tests {
         ) {
             let mut state = State::new();
             let mut speech = SpeechState::default();
-            drop(capture(&mut state, &mut speech, SpeechInput::Available));
+            let mut awaited = false;
+            drive(&mut state, &mut speech, &mut awaited, SpeechInput::Available);
             let mut presses = 0u64;
+            let mut age = Duration::ZERO;
             let key = RequestKey { plugin: 0, request_id: 0 };
             let hello = || Text::new("hello".into()).unwrap();
             for turn in turns {
+                let was_waiting = waiting(&state);
+                let mut ticked = None;
                 match turn {
                     Turn::Press => {
                         presses = presses.saturating_add(1);
-                        drop(capture(&mut state, &mut speech, SpeechInput::Press));
+                        drive(&mut state, &mut speech, &mut awaited, SpeechInput::Press);
                     }
-                    Turn::Stop => drop(capture(&mut state, &mut speech, SpeechInput::Release)),
-                    Turn::FreshTranscript => drop(capture(
+                    Turn::Stop => drive(&mut state, &mut speech, &mut awaited, SpeechInput::Release),
+                    Turn::FreshTranscript => drive(
                         &mut state,
                         &mut speech,
+                        &mut awaited,
                         SpeechInput::Transcript { session: presses.saturating_sub(1), text: hello() },
-                    )),
-                    Turn::StaleTranscript => drop(capture(
+                    ),
+                    Turn::StaleTranscript => drive(
                         &mut state,
                         &mut speech,
+                        &mut awaited,
                         SpeechInput::Transcript { session: 9999, text: hello() },
-                    )),
+                    ),
                     Turn::PluginSpeech => {
                         let event = Event::Speech { text: hello() };
                         let (next, _, routed) = step_with_plugin(state, &event, true);
@@ -619,12 +645,24 @@ mod tests {
                     }
                     Turn::Focus => state = focus(state, None),
                     Turn::Tick(millis) => {
-                        state = step(state, &Event::Tick { elapsed: Duration::from_millis(millis) }).0;
+                        let elapsed = Duration::from_millis(millis);
+                        ticked = Some(elapsed);
+                        state = step(state, &Event::Tick { elapsed }).0;
                     }
+                }
+                match ticked {
+                    Some(elapsed) if was_waiting => age = age.saturating_add(elapsed),
+                    _ => age = Duration::ZERO,
+                }
+                if !awaited && state.pending_decisions() == 0 {
+                    prop_assert!(!waiting(&state), "no turn pending: {:?}", state.bar().segments());
+                }
+                if age >= tehuti_core::bar::WAIT_LIFETIME {
+                    prop_assert!(!waiting(&state), "waiting past its budget: {:?}", state.bar().segments());
                 }
             }
             match ending {
-                Ending::Cancel => drop(capture(&mut state, &mut speech, SpeechInput::Cancel)),
+                Ending::Cancel => drive(&mut state, &mut speech, &mut awaited, SpeechInput::Cancel),
                 Ending::Focus => state = focus(state, None),
                 Ending::Deliver => {
                     state = step(state, &Event::Speech { text: hello() }).0;
