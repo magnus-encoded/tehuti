@@ -384,9 +384,17 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
     fn typing_kit_and_enter_launches_kitty_with_a_pad_connected() -> Result<(), Box<dyn core::error::Error>> {
         let root = tempfile::tempdir()?;
         let (_display, mut compositor) = session(root.path())?;
+        assert!(
+            compositor.choice_list().is_some_and(|list| list.is_open()),
+            "open after speech"
+        );
         for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE] {
             tap(&mut compositor, code);
         }
+        assert!(
+            compositor.choice_list().is_some_and(|list| list.is_open()),
+            "open after erase"
+        );
         for code in [KEY_K, KEY_I, KEY_T] {
             tap(&mut compositor, code);
         }
