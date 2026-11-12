@@ -67,6 +67,12 @@ impl Satellite {
         }
     }
 
+    /// Whether a satellite process is currently running.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.child.is_some()
+    }
+
     /// Applies the compositor map and reports whether the upload has completed.
     pub fn sync_keymap(&mut self, elapsed: core::time::Duration, keymap: &str) -> bool {
         if self.child.is_none() {

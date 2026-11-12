@@ -477,6 +477,11 @@ fn install_xwayland(
                 let elapsed = now.duration_since(previous);
                 process.poll(elapsed);
                 let keymap = data.compositor.keymap();
+                if !process.is_running() {
+                    // A restarted satellite starts blank: always sync it afresh.
+                    pending_ticks = 0;
+                    given_up = None;
+                }
                 if given_up.as_deref() != Some(keymap) {
                     given_up = None;
                     if process.sync_keymap(elapsed, keymap) {
