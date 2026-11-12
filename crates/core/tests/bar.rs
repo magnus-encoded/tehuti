@@ -523,4 +523,117 @@ mod tests {
             })
         );
     }
+
+    #[derive(Clone, Debug)]
+    enum Turn {
+        Press,
+        Stop,
+        FreshTranscript,
+        StaleTranscript,
+        PluginSpeech,
+        PluginReply,
+        EmptyTurnEnd,
+        Focus,
+        Tick(u64),
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Ending {
+        Cancel,
+        Focus,
+        Deliver,
+        Clock,
+    }
+
+    fn turn() -> impl Strategy<Value = Turn> {
+        prop_oneof![
+            Just(Turn::Press),
+            Just(Turn::Stop),
+            Just(Turn::FreshTranscript),
+            Just(Turn::StaleTranscript),
+            Just(Turn::PluginSpeech),
+            Just(Turn::PluginReply),
+            Just(Turn::EmptyTurnEnd),
+            Just(Turn::Focus),
+            (0u64..4000).prop_map(Turn::Tick),
+        ]
+    }
+
+    fn waiting(state: &State) -> bool {
+        state
+            .bar()
+            .segments()
+            .iter()
+            .any(|segment| segment.text == "Transcribing…" || segment.text == "Resolving…")
+    }
+
+    proptest! {
+        #[test]
+        fn no_waiting_segment_outlives_its_turn(
+            turns in proptest::collection::vec(turn(), 0..24),
+            ending in prop_oneof![
+                Just(Ending::Cancel),
+                Just(Ending::Focus),
+                Just(Ending::Deliver),
+                Just(Ending::Clock),
+            ],
+        ) {
+            let mut state = State::new();
+            let mut speech = SpeechState::default();
+            drop(capture(&mut state, &mut speech, SpeechInput::Available));
+            let mut presses = 0u64;
+            let key = RequestKey { plugin: 0, request_id: 0 };
+            let hello = || Text::new("hello".into()).unwrap();
+            for turn in turns {
+                match turn {
+                    Turn::Press => {
+                        presses += 1;
+                        drop(capture(&mut state, &mut speech, SpeechInput::Press));
+                    }
+                    Turn::Stop => drop(capture(&mut state, &mut speech, SpeechInput::Release)),
+                    Turn::FreshTranscript => drop(capture(
+                        &mut state,
+                        &mut speech,
+                        SpeechInput::Transcript { session: presses.saturating_sub(1), text: hello() },
+                    )),
+                    Turn::StaleTranscript => drop(capture(
+                        &mut state,
+                        &mut speech,
+                        SpeechInput::Transcript { session: 9999, text: hello() },
+                    )),
+                    Turn::PluginSpeech => {
+                        let event = Event::Speech { text: hello() };
+                        let (next, _, routed) = step_with_plugin(state, &event, true);
+                        let (next, _, _) = if routed {
+                            plugin::step(next, Input::Request { key, event, permissions: vec![Permission::Text] })
+                        } else {
+                            (next, Vec::new(), None)
+                        };
+                        state = next;
+                    }
+                    Turn::PluginReply => {
+                        state = plugin::step(state, Input::Reply { key, result: Ok(Vec::new()) }).0;
+                    }
+                    Turn::EmptyTurnEnd => {
+                        state = step(state, &Event::Speech { text: Text::new(" ".into()).unwrap() }).0;
+                    }
+                    Turn::Focus => state = focus(state, None),
+                    Turn::Tick(millis) => {
+                        state = step(state, &Event::Tick { elapsed: Duration::from_millis(millis) }).0;
+                    }
+                }
+            }
+            match ending {
+                Ending::Cancel => drop(capture(&mut state, &mut speech, SpeechInput::Cancel)),
+                Ending::Focus => state = focus(state, None),
+                Ending::Deliver => {
+                    state = step(state, &Event::Speech { text: hello() }).0;
+                }
+                Ending::Clock => {
+                    state = step(state, &Event::Tick { elapsed: Duration::from_millis(10_001) }).0;
+                }
+            }
+            prop_assert!(!waiting(&state), "{:?}", state.bar().segments());
+        }
+    }
 }
