@@ -280,7 +280,7 @@ mod xwayland {
                 return keymap;
             }
             if started.elapsed() >= Duration::from_secs(10) {
-                eprintln!(
+                tracing::warn!(
                     "[DEBUG-527] applied={applied}; Tehuti sent:\n{}",
                     compositor.keymap()
                 );
@@ -288,7 +288,7 @@ mod xwayland {
                     .args(["-xkb", display, "-"])
                     .output()
                     .unwrap();
-                eprintln!(
+                tracing::warn!(
                     "[DEBUG-527] X11 status={}; received:\n{}\nstderr:\n{}",
                     received.status,
                     String::from_utf8_lossy(&received.stdout),
