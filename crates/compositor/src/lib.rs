@@ -77,6 +77,7 @@ pub mod speech_vocabulary;
 pub mod destinations;
 
 pub mod launcher;
+pub mod launcher_log;
 
 pub mod adjuster;
 pub mod applications_watch;
