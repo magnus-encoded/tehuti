@@ -500,6 +500,7 @@ pub struct Context {
     window: WindowConfig,
     log: LogConfig,
     pad: PadConfig,
+    pointer: PointerConfig,
     ticker: TickerConfig,
     ticker_names: Vec<TickerName>,
     ticker_buttons: TickerButtons,
@@ -529,6 +530,12 @@ struct SpeechEntryFile {
     icon: Option<Text>,
     #[serde(flatten)]
     action: MappingAction,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PointerConfig {
+    physical: bool,
 }
 
 /// Controller ownership options for an application.
@@ -594,6 +601,11 @@ struct LogConfig {
 }
 
 impl Context {
+    #[must_use]
+    pub const fn physical_pointer(&self) -> bool {
+        self.pointer.physical && !self.pad.passthrough
+    }
+
     #[must_use]
     pub const fn log_window_size(&self) -> bool {
         self.log.window_size
@@ -914,6 +926,8 @@ struct ContextFile {
     #[serde(default)]
     pad: PadConfig,
     #[serde(default)]
+    pointer: PointerConfig,
+    #[serde(default)]
     window: WindowConfig,
     #[serde(default)]
     log: LogConfig,
@@ -1101,6 +1115,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         dim: context.dim,
         push_to_talk: context.push_to_talk,
         pad: context.pad,
+        pointer: context.pointer,
         window: context.window,
         log: context.log,
         ticker_names: parse_ticker_names(&context.ticker.names)?,
