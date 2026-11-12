@@ -820,7 +820,7 @@ impl Layout {
             }
         }
         self.normalize();
-        self.settle_view_after_close(output);
+        self.settle_view_after_close(output, restored_view.is_some());
         Ok(())
     }
     /// Updates logical output geometry after a mode or scale change.
@@ -1238,10 +1238,11 @@ impl Layout {
             self.clamp_view(output);
         }
     }
-    fn settle_view_after_close(&mut self, output: usize) {
+    /// A restored view stays as saved; any other close scrolls back a right gap.
+    fn settle_view_after_close(&mut self, output: usize, restored: bool) {
         if self.must_center(output) {
             self.scroll(output, None, false);
-        } else {
+        } else if !restored {
             self.clamp_view(output);
         }
     }
