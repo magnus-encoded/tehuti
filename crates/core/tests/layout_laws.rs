@@ -1718,6 +1718,36 @@ mod layout_laws {
         Ok(())
     }
 
+    #[test]
+    fn fullscreen_and_maximized_windows_do_not_overlap_the_bar() -> Result<(), TestCaseError> {
+        let geometry = OutputGeometry {
+            area: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0,
+            },
+            usable: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0 - f64::from(tehuti_core::bar::HEIGHT),
+            },
+        };
+        for command in [Command::ToggleFullscreen, Command::ToggleMaximizeToEdges] {
+            let mut world = World::single(LayoutConfig::default(), geometry)?;
+            let window = world.open()?;
+            world.apply(command);
+            let snap = world.snap();
+            let tile = tile_of(&snap, window).ok_or_else(|| TestCaseError::fail("window lost"))?;
+            prop_assert!(near(tile.requested_client.width, 1280.0));
+            prop_assert!(near(tile.requested_client.height, geometry.usable.height));
+            prop_assert!(near(tile.tile.y, 0.0));
+            prop_assert!(tile.tile.y + tile.tile.height <= geometry.usable.height);
+        }
+        Ok(())
+    }
+
     proptest! {
         #[test]
         fn nm_12_a_fullscreen_tile_is_the_only_visible_tile_on_its_output(
@@ -1742,7 +1772,7 @@ mod layout_laws {
         }
 
         #[test]
-        fn nm_1_nm_2_fullscreen_fills_output_and_stays_in_the_strip(
+        fn nm_1_nm_2_fullscreen_fills_usable_area_and_stays_in_the_strip(
             config in config_strategy(),
             geometry in geometry_strategy(),
             ops in ops_strategy(),
@@ -1756,8 +1786,8 @@ mod layout_laws {
             let tile = tile_of(&snap, window).cloned().ok_or_else(|| TestCaseError::fail("window lost"))?;
             prop_assert_eq!(tile.mode, TileMode::Fullscreen);
             prop_assert!(tile.fullscreen_requested);
-            prop_assert!(near(tile.requested_client.width, geometry.area.width));
-            prop_assert!(near(tile.requested_client.height, geometry.area.height));
+            prop_assert!(near(tile.requested_client.width, geometry.usable.width));
+            prop_assert!(near(tile.requested_client.height, geometry.usable.height));
             prop_assert_eq!(focused_workspace(&snap).map(|workspace| workspace.columns.len()), columns);
         }
 
