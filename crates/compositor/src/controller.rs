@@ -136,7 +136,7 @@ fn key_in_capabilities(text: &str, bit: usize) -> Option<bool> {
     Some(word >> bit.checked_rem(word_bits)? & 1 == 1)
 }
 
-/// Whether discovery accepts a physical pad or an explicitly named virtual pad.
+/// Whether discovery accepts a physical pad or an explicitly named virtual pad, excluding our mirror.
 #[must_use]
 pub fn accepts_pad(
     bus: evdev::BusType,
@@ -144,10 +144,11 @@ pub fn accepts_pad(
     name: Option<&str>,
     virtual_pad: Option<&str>,
 ) -> bool {
-    is_physical(bus, sysfs)
-        || virtual_pad.is_some_and(|substring| {
-            !substring.is_empty() && name.is_some_and(|name| name.contains(substring))
-        })
+    name != Some(VIRTUAL_PAD_NAME)
+        && (is_physical(bus, sysfs)
+            || virtual_pad.is_some_and(|substring| {
+                !substring.is_empty() && name.is_some_and(|name| name.contains(substring))
+            }))
 }
 
 /// Whether a device is real hardware rather than a virtual one.
@@ -372,6 +373,19 @@ pub fn sync_mirrors<D: PadDevice>(
     sync
 }
 
+fn gamepad_key(code: u16) -> bool {
+    (KeyCode::BTN_SOUTH.code()..=KeyCode::BTN_THUMBR.code()).contains(&code)
+        || (KeyCode::BTN_DPAD_UP.code()..=KeyCode::BTN_DPAD_RIGHT.code()).contains(&code)
+}
+
+fn gamepad_event(event: &evdev::InputEvent) -> bool {
+    match event.event_type() {
+        evdev::EventType::KEY => gamepad_key(event.code()),
+        evdev::EventType::ABSOLUTE => true,
+        _ => false,
+    }
+}
+
 /// Which raw events reach the virtual controller, frame by frame.
 #[derive(Debug, Default)]
 struct MirrorCopy {
@@ -417,7 +431,7 @@ impl MirrorCopy {
             self.held.retain(|held| *held != key);
             self.frame.push(event);
         }
-        if !kept {
+        if !kept && gamepad_event(&event) {
             let held_type = event.event_type() == evdev::EventType::KEY
                 || (event.event_type() == evdev::EventType::ABSOLUTE
                     && (event.code() == AbsoluteAxisCode::ABS_HAT0X.0
@@ -443,7 +457,10 @@ impl MirrorCopy {
         consumed: &dyn Fn(ButtonName) -> bool,
     ) -> Option<Vec<evdev::InputEvent>> {
         let mut frame = Vec::new();
-        for event in state.into_iter().filter(|event| event.value() != 0) {
+        for event in state
+            .into_iter()
+            .filter(|event| event.value() != 0 && gamepad_event(event))
+        {
             let key = (event.event_type().0, event.code());
             let kept = translator
                 .translate(&event.destructure())

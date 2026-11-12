@@ -322,6 +322,89 @@ mod tests {
     }
 
     #[test]
+    fn discovery_never_accepts_tehutis_own_mirror() {
+        use evdev::BusType;
+        use tehuti::controller::accepts_pad;
+
+        for bus in [BusType::BUS_USB, BusType::BUS_VIRTUAL] {
+            for opt_in in [None, Some("Tehuti"), Some("pad"), Some("Tehuti virtual pad")] {
+                assert!(!accepts_pad(bus, None, Some("Tehuti virtual pad"), opt_in));
+            }
+        }
+    }
+
+    const GAMEPAD_BUTTONS: [KeyCode; 16] = [
+        KeyCode::BTN_EAST,
+        KeyCode::BTN_C,
+        KeyCode::BTN_Z,
+        KeyCode::BTN_TL,
+        KeyCode::BTN_TR,
+        KeyCode::BTN_TL2,
+        KeyCode::BTN_TR2,
+        KeyCode::BTN_SELECT,
+        KeyCode::BTN_START,
+        KeyCode::BTN_MODE,
+        KeyCode::BTN_THUMBL,
+        KeyCode::BTN_THUMBR,
+        KeyCode::BTN_DPAD_UP,
+        KeyCode::BTN_DPAD_DOWN,
+        KeyCode::BTN_DPAD_LEFT,
+        KeyCode::BTN_DPAD_RIGHT,
+    ];
+
+    #[test]
+    fn mirror_drops_non_gamepad_input_from_held_state_and_live_frames() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut controller, handles) = pad("pad", &log);
+        handles.held.borrow_mut().extend([
+            KeyCode::KEY_RECORD.code(),
+            KeyCode::BTN_LEFT.code(),
+            KeyCode::BTN_SOUTH.code(),
+        ]);
+        assert!(controller.set_mirror(true, &|_| false).unwrap());
+        for code in [KeyCode::KEY_RECORD, KeyCode::BTN_LEFT]
+            .into_iter()
+            .chain(GAMEPAD_BUTTONS)
+        {
+            queue(&handles, code, 1);
+            queue(&handles, code, 0);
+        }
+        handles.raw.borrow_mut().extend([
+            InputEvent::new(EventType::RELATIVE.0, 0, 3),
+            InputEvent::new(EventType::MISC.0, 4, 42),
+            InputEvent::new(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, 123),
+            InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+        ]);
+        controller.pump_mirror(&mut |_, _| false).unwrap();
+        let inputs = tehuti::input::InputSource::drain(&mut controller).unwrap();
+        assert!(inputs.contains(&tehuti_protocol::Event::Button {
+            name: tehuti_protocol::ButtonName::Record,
+            state: tehuti_protocol::ButtonState::Pressed,
+        }));
+        assert!(!controller.set_mirror(false, &|_| false).unwrap());
+        let log = log.borrow();
+        assert!(never_sent(&log, KeyCode::KEY_RECORD));
+        assert!(never_sent(&log, KeyCode::BTN_LEFT));
+        let events: Vec<_> = log.frames.iter().flat_map(|(_, frame)| frame).copied().collect();
+        assert!(events.contains(&(EventType::KEY.0, KeyCode::BTN_SOUTH.code(), 1)));
+        assert!(events.contains(&(EventType::KEY.0, KeyCode::BTN_SOUTH.code(), 0)));
+        for button in GAMEPAD_BUTTONS {
+            for value in [1, 0] {
+                assert!(events.contains(&(EventType::KEY.0, button.code(), value)));
+            }
+        }
+        assert!(events.contains(&(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, 123)));
+        assert!(events.iter().all(|(kind, _, _)| {
+            [
+                EventType::KEY.0,
+                EventType::ABSOLUTE.0,
+                EventType::SYNCHRONIZATION.0,
+            ]
+            .contains(kind)
+        }));
+    }
+
+    #[test]
     fn switching_releases_the_old_mirror_and_seeds_the_new_one() {
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut first, first_handles) = pad("first", &log);
@@ -537,7 +620,8 @@ mod tests {
             pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
                 .unwrap();
             route(&mut compositor, &mut pad).unwrap();
-            if index.saturating_add(1) < keys.len() {
+            // Share is not a virtual pad button, so only a gamepad key leaks from an incomplete chord.
+            if index.saturating_add(1) < keys.len() && *key != KeyCode::KEY_RECORD {
                 assert!(!never_sent(&log.borrow(), *key));
             } else {
                 assert!(never_sent(&log.borrow(), *key), "completing press is kept");
@@ -562,7 +646,7 @@ mod tests {
             .flat_map(|(_, frame)| frame.iter().copied())
             .filter(|(kind, _, _)| *kind == EventType::KEY.0)
             .collect();
-        let expected = if keys.len() == 1 {
+        let expected = if keys.len() == 1 || keys[0] == KeyCode::KEY_RECORD {
             Vec::new()
         } else {
             vec![
