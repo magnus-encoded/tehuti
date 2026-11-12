@@ -339,7 +339,10 @@ mod tests {
                 .saturating_add(natural)
                 .saturating_sub(1);
             assert_eq!(bottom, expected, "{rows} rows: panel bottom row");
-            assert!(bottom < 1080_usize.saturating_sub(bar), "{rows} rows: above the bar");
+            assert!(
+                bottom < 1080_usize.saturating_sub(bar),
+                "{rows} rows: above the bar"
+            );
             let live = [119, 88, 36, 255];
             let selected = (0..1080).filter(|y| pixel(&pixels, 1700, *y) == live).count();
             assert!(
