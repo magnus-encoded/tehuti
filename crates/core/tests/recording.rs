@@ -54,7 +54,7 @@ mod recording {
         ] {
             let mut state = step(
                 State::default(),
-                Input::Launcher(tehuti_core::launcher::Launcher::invitation(None)),
+                Input::Launcher(Box::new(tehuti_core::launcher::Launcher::invitation(None))),
             )
             .0;
             let mut input = Input::Event {

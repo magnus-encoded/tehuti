@@ -1,0 +1,38 @@
+#!/bin/sh
+# An update replaces the installed speech sidecar even when a local wrapper runs it.
+set -eu
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+export HOME=$work/home XDG_STATE_HOME=$work/state
+unset TEHUTI_SPEECH_SIDECAR TEHUTI_CHANNEL TEHUTI_LIB TEHUTI_ASSET
+lib=$HOME/.local/lib/tehuti
+mkdir -p "$HOME/.local/bin" "$lib/sidecars/speech" "$work/bin" "$work/pkg/sidecars/speech" "$work/web"
+echo old > "$lib/sidecars/speech/speech.py"
+echo v0 > "$lib/tehuti.version"
+printf '#!/bin/sh\nexec python3 "$HOME/.local/lib/tehuti/sidecars/speech/speech.py"\n' > "$HOME/.local/bin/tehuti-speech"
+cp "$HOME/.local/bin/tehuti-speech" "$work/wrapper.orig"
+cp /bin/sh "$work/pkg/tehuti"
+echo new > "$work/pkg/sidecars/speech/speech.py"
+tar -czf "$work/web/tehuti-x86_64-linux.tar.gz" -C "$work/pkg" .
+(cd "$work/web"; sha256sum tehuti-x86_64-linux.tar.gz > SHA256SUMS)
+cat > "$work/web/release.json" <<'J'
+{"tag_name":"v1","draft":false,"body":"","assets":[{"name":"tehuti-x86_64-linux.tar.gz","browser_download_url":"https://h/tehuti-x86_64-linux.tar.gz"},{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS"}]}
+J
+printf '#!/bin/sh\necho x86_64\n' > "$work/bin/uname"
+cat > "$work/bin/curl" <<'S'
+#!/bin/sh
+out=; for a; do [ "$prev" = -o ] && out=$a; prev=$a; done
+url=$prev
+case $url in
+    https://api.github.com/*) src=$WEB/release.json ;;
+    *) src=$WEB/${url##*/} ;;
+esac
+if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
+S
+chmod +x "$work/bin/"*
+WEB=$work/web PATH=$work/bin:$PATH "$repo/scripts/tehuti-update" > "$work/out" 2>&1 || { cat "$work/out"; exit 1; }
+[ "$(cat "$lib/sidecars/speech/speech.py")" = new ] || { echo 'sidecar left stale' >&2; exit 1; }
+[ "$(cat "$lib/sidecars.prev/speech/speech.py")" = old ] || { echo 'old sidecar not backed up' >&2; exit 1; }
+cmp "$HOME/.local/bin/tehuti-speech" "$work/wrapper.orig"
+echo 'tehuti-update tests passed'

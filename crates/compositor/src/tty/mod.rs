@@ -187,6 +187,62 @@ fn insert_wallpaper_redraw(
     Ok(wallpaper_token)
 }
 
+/// Scroll distance in pixels: touchpads report pixels, wheels report 120ths of a notch (15 px).
+fn axis_pixels<B: smithay::backend::input::InputBackend>(
+    event: &impl smithay::backend::input::PointerAxisEvent<B>,
+    axis: smithay::backend::input::Axis,
+) -> f64 {
+    scroll_pixels(event.amount(axis), event.amount_v120(axis))
+}
+
+/// Prefers the continuous amount; otherwise 120ths of a notch at 15 px per notch.
+#[expect(clippy::float_arithmetic, reason = "wheel notches convert to pixels")]
+fn scroll_pixels(amount: Option<f64>, v120: Option<f64>) -> f64 {
+    amount
+        .or_else(|| v120.map(|notches| notches / 8.0))
+        .unwrap_or(0.0)
+}
+
+/// The evdev button codes a physical mouse forwards: left (0x110) and right (0x111).
+const fn pointer_button(code: u32) -> Option<tehuti_core::dispatch::PointerButton> {
+    match code {
+        0x110 => Some(tehuti_core::dispatch::PointerButton::Left),
+        0x111 => Some(tehuti_core::dispatch::PointerButton::Right),
+        _ => None,
+    }
+}
+
+/// Routes a physical mouse event to the focused application's pointer.
+fn host_pointer_event(
+    data: &mut LoopData,
+    event: smithay::backend::input::InputEvent<smithay::backend::libinput::LibinputInputBackend>,
+) {
+    use smithay::backend::input::{
+        AbsolutePositionEvent, Axis, ButtonState, InputEvent, PointerButtonEvent, PointerMotionEvent,
+    };
+    if let InputEvent::PointerMotion { event } = event {
+        data.compositor
+            .host_pointer_motion(event.delta_x(), event.delta_y());
+    } else if let InputEvent::PointerMotionAbsolute { event } = event {
+        data.compositor
+            .host_pointer_absolute(event.x_transformed(1), event.y_transformed(1));
+    } else if let InputEvent::PointerButton { event } = event {
+        let Some(button) = pointer_button(event.button_code()) else {
+            return;
+        };
+        data.compositor
+            .host_pointer_button(button, event.state() == ButtonState::Pressed);
+    } else if let InputEvent::PointerAxis { event } = event {
+        data.compositor.host_pointer_scroll(
+            axis_pixels(&event, Axis::Horizontal),
+            axis_pixels(&event, Axis::Vertical),
+        );
+    } else {
+        return;
+    }
+    data.pacing.input_arrived = true;
+}
+
 fn insert_keyboard(
     event_loop: &EventLoop<LoopData>,
     tty: &Rc<RefCell<Tty>>,
@@ -226,6 +282,8 @@ fn insert_keyboard(
             } else if matches!(event, InputEvent::DeviceRemoved { .. }) {
                 keyboard_tty.borrow_mut().keyboard = tehuti::backend::EscapeKeyboard::default();
                 data.compositor.release_host_keys();
+            } else {
+                host_pointer_event(data, event);
             }
         })?;
     Ok(input_token)
@@ -886,5 +944,28 @@ fn plane(surface: &DrmSurface, framebuffer: framebuffer::Handle) -> PlaneState<'
             fb: framebuffer,
             fence: None,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pointer_button, scroll_pixels};
+    use tehuti_core::dispatch::PointerButton;
+
+    #[test]
+    fn left_and_right_mouse_buttons_map_and_others_are_dropped() {
+        assert_eq!(pointer_button(0x110), Some(PointerButton::Left));
+        assert_eq!(pointer_button(0x111), Some(PointerButton::Right));
+        for code in [0x112, 0x113, 0x10f, 0] {
+            assert_eq!(pointer_button(code), None);
+        }
+    }
+
+    #[test]
+    fn scroll_prefers_pixels_then_wheel_notches() {
+        assert_eq!(scroll_pixels(Some(4.5), Some(120.0)).to_bits(), 4.5_f64.to_bits());
+        assert_eq!(scroll_pixels(None, Some(120.0)).to_bits(), 15.0_f64.to_bits());
+        assert_eq!(scroll_pixels(None, Some(-60.0)).to_bits(), (-7.5_f64).to_bits());
+        assert_eq!(scroll_pixels(None, None).to_bits(), 0.0_f64.to_bits());
     }
 }

@@ -1,0 +1,110 @@
+#!/bin/sh
+# Install the newest Tehuti release from GitHub, keeping the build it replaces as tehuti.prev.
+#   tehuti-update             install the latest release if it is newer than the installed one
+#   tehuti-update --check     print installed, fallback and latest tags; change nothing
+#   tehuti-update --rollback  swap tehuti and tehuti.prev, and skip the release rolled back from
+# TEHUTI_CHANNEL picks the release: "latest" (default) installs only promoted releases;
+# "prerelease" installs the newest published build, so this machine tests candidates before promotion.
+# Only two binaries are kept: tehuti and tehuti.prev. Every other tehuti.* binary is deleted on install.
+# The release's sidecar files always replace $lib/sidecars (old ones kept in sidecars.prev), so a local wrapper never runs a stale sidecar. Wrappers themselves are never touched.
+# The new binary is never run here; it takes effect the next time Tehuti starts.
+set -eu
+repo=${TEHUTI_REPO:-magnus-encoded/tehuti}
+lib=${TEHUTI_LIB:-"$HOME/.local/lib/tehuti"}
+log=${XDG_STATE_HOME:-"$HOME/.local/state"}/tehuti/update.log
+case $(uname -m) in
+    x86_64) arch=x86_64; elf='x86-64' ;;
+    i?86) arch=i686; elf='80386' ;;
+    *) echo "unsupported architecture $(uname -m)" >&2; exit 2 ;;
+esac
+asset_pattern=${TEHUTI_ASSET:-"$arch.*linux|linux.*$arch"}
+channel=${TEHUTI_CHANNEL:-latest}
+case $channel in
+    latest | prerelease) ;;
+    *) echo "TEHUTI_CHANNEL must be latest or prerelease, not '$channel'" >&2; exit 2 ;;
+esac
+
+mkdir -p "$(dirname "$log")"
+say() { echo "$(date '+%F %T') $*" | tee -a "$log"; }
+tag_of() { cat "$lib/$1.version" 2>/dev/null || echo unknown; }
+
+if [ "${1:-}" = --rollback ]; then
+    [ -x "$lib/tehuti.prev" ] || { say "no tehuti.prev to roll back to"; exit 1; }
+    bad=$(tag_of tehuti); good=$(tag_of tehuti.prev)
+    mv "$lib/tehuti" "$lib/tehuti.rollback"
+    mv "$lib/tehuti.prev" "$lib/tehuti"
+    mv "$lib/tehuti.rollback" "$lib/tehuti.prev"
+    echo "$good" > "$lib/tehuti.version"; echo "$bad" > "$lib/tehuti.prev.version"
+    echo "$bad" > "$lib/tehuti.skip"
+    say "rolled back from $bad to $good; $bad will not be installed again. Restart Tehuti to use it."
+    exit 0
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+case $channel in
+    latest)
+        curl -fsSL -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$repo/releases/latest" > "$work/release.json" \
+            || { say "no release found for $repo"; exit 1; } ;;
+    prerelease)
+        # The newest published release, pre-release or not, once its binary and checksums are uploaded.
+        curl -fsSL -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$repo/releases?per_page=30" > "$work/releases.json" \
+            || { say "no release found for $repo"; exit 1; }
+        jq --arg p "$asset_pattern" '[.[] | select(.draft | not)
+            | select(any(.assets[]; .name | test($p; "i")) and any(.assets[]; .name | test("sha256|sums"; "i")))][0] // empty' \
+            "$work/releases.json" > "$work/release.json"
+        [ -s "$work/release.json" ] || { say "no release with a $arch build found for $repo"; exit 1; } ;;
+esac
+latest=$(jq -r .tag_name "$work/release.json")
+url=$(jq -r --arg p "$asset_pattern" \
+    '[.assets[] | select((.name | test($p; "i")) and (.name | test("sha256|sums|\\.sig$"; "i") | not))][0].browser_download_url // empty' \
+    "$work/release.json")
+
+if [ "${1:-}" = --check ]; then
+    echo "channel $channel: installed $(tag_of tehuti), fallback $(tag_of tehuti.prev), newest $latest${url:+ ($url)}"
+    exit 0
+fi
+
+installed=$(tag_of tehuti)
+[ "$latest" != "$installed" ] || exit 0
+[ "$latest" != "$(cat "$lib/tehuti.skip" 2>/dev/null)" ] || exit 0
+[ -n "$url" ] || { say "$latest has no asset matching '$asset_pattern'"; exit 1; }
+
+name=${url##*/}
+curl -fsSL -o "$work/$name" "$url"
+sums=$(jq -r '[.assets[] | select(.name | test("sha256|sums"; "i"))][0].browser_download_url // empty' "$work/release.json")
+if [ -n "$sums" ]; then
+    curl -fsSL -o "$work/sums" "$sums"
+    want=$(grep -F "$name" "$work/sums" | awk '{print $1}' | head -1)
+    [ -n "$want" ] || want=$(awk 'NR==1{print $1}' "$work/sums")
+    have=$(sha256sum "$work/$name" | awk '{print $1}')
+    [ "$want" = "$have" ] || { say "$name checksum mismatch; not installed"; exit 1; }
+fi
+case $name in
+    *.tar.gz | *.tgz | *.tar.zst | *.tar.xz)
+        mkdir "$work/x"; tar -xf "$work/$name" -C "$work/x"
+        bin="$work/x/tehuti"; [ -f "$bin" ] || bin=$(find "$work/x" -type f -name tehuti | head -1) ;;
+    *) bin="$work/$name" ;;
+esac
+[ -n "$bin" ] && file -b "$bin" | grep -q "ELF.*$elf" || { say "$name holds no $arch ELF tehuti; not installed"; exit 1; }
+
+chmod 755 "$bin"
+cp "$bin" "$lib/tehuti.new"
+for f in "$lib"/tehuti.*; do
+    case ${f##*/} in tehuti.new | tehuti.prev | *.version | tehuti.skip) ;; *) [ -f "$f" ] && rm -f "$f" ;; esac
+done
+if [ -x "$lib/tehuti" ]; then
+    tag_of tehuti > "$lib/tehuti.prev.version"
+    mv "$lib/tehuti" "$lib/tehuti.prev"
+fi
+mv "$lib/tehuti.new" "$lib/tehuti"
+echo "$latest" > "$lib/tehuti.version"
+if [ -d "$work/x/sidecars" ]; then
+    rm -rf "$lib/sidecars.new" "$lib/sidecars.prev"
+    cp -r "$work/x/sidecars" "$lib/sidecars.new"
+    [ ! -d "$lib/sidecars" ] || mv "$lib/sidecars" "$lib/sidecars.prev"
+    mv "$lib/sidecars.new" "$lib/sidecars"
+fi
+say "installed $latest; fallback is $(tag_of tehuti.prev). Restart Tehuti to use it."
