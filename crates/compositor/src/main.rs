@@ -470,9 +470,11 @@ fn install_xwayland(
         let mut previous = std::time::Instant::now();
         let _token = event_loop
             .handle()
-            .insert_source(Timer::from_duration(interval), move |_, (), _| {
+            .insert_source(Timer::from_duration(interval), move |_, (), data| {
                 let now = std::time::Instant::now();
-                process.poll(now.duration_since(previous));
+                let elapsed = now.duration_since(previous);
+                process.poll(elapsed);
+                process.sync_keymap(elapsed, data.compositor.keymap());
                 previous = now;
                 TimeoutAction::ToDuration(interval)
             })

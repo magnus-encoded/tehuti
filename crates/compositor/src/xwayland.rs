@@ -51,6 +51,7 @@ pub struct Satellite {
     socket: std::ffi::OsString,
     child: Option<std::process::Child>,
     restart: crate::child_process::Restart,
+    keymap: KeymapSync,
 }
 
 impl Satellite {
@@ -62,6 +63,14 @@ impl Satellite {
             socket,
             child: None,
             restart: crate::child_process::Restart::default(),
+            keymap: KeymapSync::default(),
+        }
+    }
+
+    /// Applies the compositor map once the X server is ready, and after changes.
+    pub fn sync_keymap(&mut self, elapsed: core::time::Duration, keymap: &str) {
+        if self.child.is_some() {
+            self.keymap.poll(elapsed, &self.display, keymap);
         }
     }
 
@@ -77,6 +86,7 @@ impl Satellite {
             if let Some(mut child) = self.child.take() {
                 crate::shutdown::terminate(&mut child, true);
             }
+            self.keymap = KeymapSync::default();
             self.restart.failed();
             return;
         }
@@ -106,6 +116,65 @@ impl Drop for Satellite {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
             crate::shutdown::terminate(&mut child, true);
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct KeymapSync {
+    applied: String,
+    pending: Option<(std::process::Child, String)>,
+    elapsed: core::time::Duration,
+    retry: core::time::Duration,
+}
+
+impl KeymapSync {
+    fn poll(&mut self, elapsed: core::time::Duration, display: &str, keymap: &str) {
+        self.retry = self.retry.saturating_sub(elapsed);
+        if let Some((child, submitted)) = self.pending.as_mut() {
+            self.elapsed = self.elapsed.saturating_add(elapsed);
+            match child.try_wait() {
+                Ok(None) if self.elapsed < core::time::Duration::from_secs(5) => return,
+                Ok(Some(status)) if status.success() => self.applied = submitted.clone(),
+                result => {
+                    tracing::warn!(?result, "X11 keymap update failed; retrying");
+                    crate::shutdown::terminate(child, false);
+                    self.retry = core::time::Duration::from_secs(1);
+                }
+            }
+            self.pending = None;
+        }
+        if self.applied == keymap || !self.retry.is_zero() {
+            return;
+        }
+        match upload_keymap(display, keymap) {
+            Ok(child) => {
+                self.pending = Some((child, keymap.to_owned()));
+                self.elapsed = core::time::Duration::ZERO;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "X11 keymap upload unavailable; retrying");
+                self.retry = core::time::Duration::from_secs(5);
+            }
+        }
+    }
+}
+
+fn upload_keymap(display: &str, keymap: &str) -> std::io::Result<std::process::Child> {
+    use std::os::fd::AsFd as _;
+    let content = std::ffi::CString::new(keymap)?;
+    let file = smithay::utils::SealedFile::with_content(c"tehuti-x11-keymap", &content)?;
+    crate::child_process::command("xkbcomp")
+        .args(["-w", "0", "-", display])
+        .stdin(std::process::Stdio::from(file.as_fd().try_clone_to_owned()?))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+}
+
+impl Drop for KeymapSync {
+    fn drop(&mut self) {
+        if let Some((mut child, _)) = self.pending.take() {
+            crate::shutdown::terminate(&mut child, false);
         }
     }
 }
