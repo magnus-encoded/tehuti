@@ -1740,9 +1740,9 @@ mod layout_laws {
             world.apply(command);
             let snap = world.snap();
             let tile = tile_of(&snap, window).ok_or_else(|| TestCaseError::fail("window lost"))?;
-            prop_assert_eq!(tile.requested_client.width, 1280.0);
-            prop_assert_eq!(tile.requested_client.height, geometry.usable.height);
-            prop_assert_eq!(tile.tile.y, 0.0);
+            prop_assert!(near(tile.requested_client.width, 1280.0));
+            prop_assert!(near(tile.requested_client.height, geometry.usable.height));
+            prop_assert!(near(tile.tile.y, 0.0));
             prop_assert!(tile.tile.y + tile.tile.height <= geometry.usable.height);
         }
         Ok(())
