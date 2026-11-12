@@ -820,9 +820,7 @@ impl Layout {
             }
         }
         self.normalize();
-        if self.must_center(output) {
-            self.scroll(output, None, false);
-        }
+        self.settle_view_after_close(output, restored_view.is_some());
         Ok(())
     }
     /// Updates logical output geometry after a mode or scale change.
@@ -1190,11 +1188,17 @@ impl Layout {
         self.scroll(output, previous, false);
     }
     fn scroll(&mut self, output: usize, previous: Option<usize>, center: bool) {
+        if !self.reveal(output, previous, center) {
+            self.clamp_view(output);
+        }
+    }
+    /// Scrolls the focused column into view; returns whether it was centred.
+    fn reveal(&mut self, output: usize, previous: Option<usize>, center: bool) -> bool {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let active = self.outputs[output].active;
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let Some(column) = self.outputs[output].workspaces[active].focused else {
-            return;
+            return true;
         };
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let config = self.outputs[output].config.clone();
@@ -1235,6 +1239,49 @@ impl Layout {
             *view = position.sub(config.gaps);
         } else if position.add(width).sub(*view) > working.width.sub(config.gaps) {
             *view = position.add(width).sub(working.width).add(config.gaps);
+        }
+        centered
+    }
+    /// Any close keeps the focused column on the output; one that restores no view also scrolls back a right gap.
+    fn settle_view_after_close(&mut self, output: usize, restored: bool) {
+        if self.must_center(output) {
+            self.scroll(output, None, false);
+        } else if restored {
+            // A restored view stays as saved unless the focused column fell off the output.
+            let _centred = self.reveal(output, None, false);
+        } else {
+            self.scroll(output, None, false);
+        }
+    }
+    /// When every column fits on the output, scrolls back so none hides off the left
+    /// while the right edge shows the desktop.
+    fn clamp_view(&mut self, output: usize) {
+        let Some(output) = self.outputs.get_mut(output) else {
+            return;
+        };
+        let active = output.active;
+        let Some(workspace) = output.workspaces.get(active) else {
+            return;
+        };
+        let count = workspace.columns.len();
+        // A fullscreen or wider-than-output column keeps its own anchor.
+        let anchored = workspace
+            .focused
+            .and_then(|focused| workspace.columns.get(focused))
+            .is_some_and(|column| {
+                column.tiles.iter().any(|tile| tile.mode == TileMode::Fullscreen)
+                    || output.column_width(column)
+                        > output.working().width.sub(2.0_f64.mul(output.config.gaps))
+            });
+        if anchored {
+            return;
+        }
+        // Only a strip that fits the output snaps back; a wider strip keeps its scroll.
+        if output.column_x(active, count) > output.working().width.add(1e-7) {
+            return;
+        }
+        if let Some(strip) = output.workspaces.get_mut(active) {
+            strip.view = strip.view.min(0.0_f64);
         }
     }
     /// A command without a focused target leaves the layout unchanged.
