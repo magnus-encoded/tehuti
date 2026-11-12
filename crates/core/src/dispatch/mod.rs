@@ -630,7 +630,6 @@ fn volume_read(mut state: State, value: Option<u8>) -> State {
     state
 }
 
-#[expect(clippy::too_many_lines, reason = "one arm per input group")]
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::Menu(command) => {
