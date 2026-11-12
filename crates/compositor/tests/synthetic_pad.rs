@@ -1012,7 +1012,73 @@ mod synthetic_pad {
             display.flush_clients().unwrap();
             thread::sleep(Duration::from_millis(1));
         }
-        let _app = client.join().unwrap();
+        let app = client.join().unwrap();
+        assert_eq!(app.axes.len(), 1, "one scroll reaches the client: {:?}", app.axes);
+        let (target, axis, value) = &app.axes[0];
+        assert_eq!(
+            Some(target),
+            app.pointer_focused.as_ref(),
+            "scroll goes under the pointer"
+        );
+        assert_eq!(*axis, wayland_client::protocol::wl_pointer::Axis::VerticalScroll);
+        assert_eq!(value.to_bits(), 7.5_f64.to_bits());
+    }
+
+    #[test]
+    fn host_absolute_motion_and_right_button_reach_the_surface_under_the_pointer() {
+        use tehuti_core::dispatch::PointerButton;
+        use wayland_client::protocol::wl_pointer::ButtonState as PointerState;
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        compositor.set_contexts(
+            ["pointer-test", "other-window"]
+                .map(|app_id| {
+                    tehuti_protocol::parse_context(&format!(
+                        "app_id = '{app_id}'\n[buttons]\n[pointer]\nphysical = true"
+                    ))
+                    .unwrap()
+                })
+                .to_vec(),
+        );
+        let mode = compositor.output.as_ref().unwrap().current_mode().unwrap();
+        let expected = (f64::from(mode.size.w) * 0.05, f64::from(mode.size.h) * 0.1);
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let client = thread::spawn(move || run_pointer_client(stream, &sender, None));
+        let began = Instant::now();
+        let mut sent = false;
+        while !client.is_finished() {
+            assert!(began.elapsed() < Duration::from_secs(5), "host pointer timed out");
+            let _events = display.dispatch_clients(&mut compositor).unwrap();
+            if !sent && receiver.try_recv().is_ok() {
+                compositor.apply_layout_command(tehuti_core::layout::Command::FocusColumnFirst);
+                compositor.host_pointer_absolute(0.05, 0.1);
+                assert_eq!(compositor.cursor_location(), Some(expected));
+                compositor.host_pointer_absolute(-3.0, f64::NAN);
+                assert_eq!(
+                    compositor.cursor_location(),
+                    Some(expected),
+                    "non-finite input is ignored"
+                );
+                compositor.host_pointer_button(PointerButton::Right, true);
+                compositor.host_pointer_button(PointerButton::Right, false);
+                sent = true;
+            }
+            display.flush_clients().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let app = client.join().unwrap();
+        assert!(!app.motions.is_empty(), "absolute motion reaches the client");
+        assert_eq!(
+            app.clicks,
+            vec![(0x111, PointerState::Pressed), (0x111, PointerState::Released)]
+        );
+        assert_eq!(app.pointer_focused, app.focused);
     }
 
     #[test]
