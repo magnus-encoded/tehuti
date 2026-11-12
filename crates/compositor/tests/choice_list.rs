@@ -284,7 +284,8 @@ mod tests {
                     .0
                     .iter()
                     .enumerate()
-                    .filter(|(_, pixel)| **pixel == [98, 86, 72, 255])
+                    // Scaled edges are antialiased, so find the opaque panel rather than its edge colour.
+                    .filter(|(_, pixel)| pixel[3] >= 200)
                     .map(|(index, _)| (index % width, index / width))
                     .collect();
                 let left = edges.iter().map(|edge| edge.0).min().ok_or("left")?;
