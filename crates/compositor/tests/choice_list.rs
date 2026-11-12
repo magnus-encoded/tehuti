@@ -362,15 +362,16 @@ mod tests {
         let covered = |x: &usize| {
             (0..1080_usize).any(|y| {
                 pixels
-                    .get(y.saturating_mul(1920).saturating_add(*x).saturating_mul(4).saturating_add(3))
+                    .get(
+                        y.saturating_mul(1920)
+                            .saturating_add(*x)
+                            .saturating_mul(4)
+                            .saturating_add(3),
+                    )
                     .is_some_and(|alpha| *alpha >= 200)
             })
         };
-        assert_eq!(
-            (0..1920_usize).find(covered),
-            Some(320),
-            "panel left column"
-        );
+        assert_eq!((0..1920_usize).find(covered), Some(320), "panel left column");
         assert_eq!(
             (0..1920_usize).rev().find(covered),
             Some(1599),
