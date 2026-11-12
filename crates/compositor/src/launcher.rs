@@ -28,22 +28,7 @@ pub fn destinations(
                 .steps
                 .iter()
                 .any(|step| matches!(step.target, Target::Window(_)));
-            let description = route
-                .steps
-                .iter()
-                .map(|step| match &step.target {
-                    Target::Desktop(value)
-                    | Target::Url(value)
-                    | Target::Application(value)
-                    | Target::Menu(value) => {
-                        format!("{}: {value}", step.icon)
-                    }
-                    Target::Workspace(_) => format!("{}: workspace", step.icon),
-                    Target::Window(_) => format!("{}: open window", step.icon),
-                    Target::Action(_) => format!("{}: {}", step.icon, entry.name),
-                })
-                .collect::<Vec<_>>()
-                .join(" → ");
+            let description = describe(route, &entry.name);
             destinations.push(tehuti_core::launcher::Destination {
                 name: entry.name.clone(),
                 extra_names: entry.extra_names.clone(),
@@ -69,6 +54,24 @@ pub fn destinations(
         }
     }
     (destinations, routes)
+}
+
+fn describe(route: &Route, name: &str) -> String {
+    use crate::destinations::Target;
+    route
+        .steps
+        .iter()
+        .map(|step| match &step.target {
+            Target::Desktop(value)
+            | Target::Url(value)
+            | Target::Application(value)
+            | Target::Menu(value) => format!("{}: {value}", step.icon),
+            Target::Workspace(_) => format!("{}: workspace", step.icon),
+            Target::Window(_) => format!("{}: open window", step.icon),
+            Target::Action(_) => format!("{}: {name}", step.icon),
+        })
+        .collect::<Vec<_>>()
+        .join(" → ")
 }
 
 fn duplicates_desktop_route(route: &Route, entries: &[Destination]) -> bool {
