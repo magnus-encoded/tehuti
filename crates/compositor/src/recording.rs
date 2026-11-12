@@ -2,7 +2,7 @@
 use crate::state::Compositor;
 use core::{
     cell::{Cell, RefCell},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 use image::RgbaImage;
@@ -13,17 +13,29 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     },
     time::Instant,
 };
 
+type Frames = Arc<Mutex<crate::recording_encoder::Latest<RgbaImage>>>;
+type Saved = Result<(PathBuf, crate::recording_encoder::Freshness), String>;
+
+/// The capture slot; a panic while it was held leaves a whole frame or none, so it is reused.
+fn slot(frames: &Frames) -> std::sync::MutexGuard<'_, crate::recording_encoder::Latest<RgbaImage>> {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    frames.lock().unwrap_or_else(|poisoned| {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!("recording capture slot poisoned by a panic; reusing it");
+        }
+        poisoned.into_inner()
+    })
+}
+
 const INTERVAL: Duration = Duration::from_nanos(33_333_334);
 
-/// Video writing trails the clock by one frame. `write_due` writes slot `s` once
-/// `now - lag >= (s + 1) / 30`, and a frame for slot `s` is captured by `s / 30 + 17 ms`, so render
-/// and queue get about 50 ms. A frame later than that is shown one slot late, not lost.
+/// Gives capture one interval to arrive before writing the next video slot.
 const CAPTURE_LAG: Duration = INTERVAL;
 
 /// Timeline events the encoder loop writes before it turns back to video.
@@ -40,9 +52,9 @@ const fn video_due(elapsed: Duration, stopped_ms: u64) -> Duration {
 
 #[derive(Debug)]
 pub(super) struct Session {
-    frames: SyncSender<(Duration, RgbaImage)>,
+    frames: Frames,
     events: SyncSender<Value>,
-    result: Receiver<Result<PathBuf, String>>,
+    result: Receiver<Saved>,
     stop: Arc<AtomicU64>,
     started: Instant,
     /// `started` on the wall clock `PulseAudio` stamps audio with, since the Unix epoch.
@@ -55,8 +67,6 @@ pub(super) struct Session {
     injected: Option<Injected>,
     /// Events dropped since the timeline queue last accepted one.
     dropped_events: Cell<u64>,
-    /// Frames repeated since the capture queue last accepted one.
-    repeated_frames: Cell<u64>,
     /// Continuous samples (sticks, pointer motion, scroll), written at most once per video frame.
     samples: RefCell<Vec<Sample>>,
 }
@@ -66,14 +76,12 @@ struct Injected {
     runtime: std::rc::Rc<dyn crate::recording_encoder::Runtime>,
     began: Duration,
     sink: Box<dyn crate::recording_encoder::Sink>,
-    encoder: crate::recording_encoder::FrameEncoder,
-    schedule: crate::recording_encoder::FrameSchedule<RgbaImage>,
-    pixels: RgbaImage,
+    writer: crate::recording_encoder::FrameWriter,
     timeline: Timeline<Box<dyn Write>>,
     events: Receiver<Value>,
-    frames: Receiver<(Duration, RgbaImage)>,
+    frames: Frames,
     size: (u32, u32),
-    result: SyncSender<Result<PathBuf, String>>,
+    result: SyncSender<Saved>,
     path: PathBuf,
 }
 
@@ -225,7 +233,7 @@ impl Compositor {
         if let Some(result) = result {
             self.recording = None;
             match result {
-                Ok(path) => self.show_notice(&format!("RECORDING SAVED: {}", path.display())),
+                Ok((path, freshness)) => self.show_notice(&saved_notice(&path, freshness)),
                 Err(error) => self.show_recording_failure(&error),
             }
             return;
@@ -255,16 +263,8 @@ impl Compositor {
         match crate::driver_shot::frame(self, &chrono::Local::now().format("%H:%M").to_string()) {
             Ok(frame) => {
                 if let Some(session) = &self.recording {
-                    match session.frames.try_send((captured, frame)) {
-                        Ok(()) => {
-                            recovered(&session.repeated_frames, "capture queue drained; frames repeated");
-                        }
-                        Err(TrySendError::Full(_)) => dropping(
-                            &session.repeated_frames,
-                            "recording capture queue full; repeating the previous frame",
-                        ),
-                        Err(TrySendError::Disconnected(_)) => {}
-                    }
+                    let replaced = slot(&session.frames).offer(captured, frame);
+                    drop(replaced);
                 }
             }
             Err(error) => {
@@ -272,6 +272,39 @@ impl Compositor {
             }
         }
     }
+}
+
+fn saved_notice(path: &std::path::Path, freshness: crate::recording_encoder::Freshness) -> String {
+    let log = std::fs::read_to_string(path.join("ffmpeg.log")).unwrap_or_default();
+    let mut notice = format!("RECORDING SAVED: {}", path.display());
+    for warning in silent_tracks(&log) {
+        notice.push_str("\nWARNING: ");
+        notice.push_str(warning);
+    }
+    if freshness.fell_behind() {
+        notice.push_str("\nWARNING: VIDEO FELL BEHIND; FRAMES WERE WRITTEN LATE");
+    }
+    notice
+}
+
+/// Tracks whose `astats` peak was digital silence; the desktop track is mapped last.
+fn silent_tracks(log: &str) -> Vec<&'static str> {
+    let peaks: Vec<bool> = log
+        .lines()
+        .filter_map(|line| line.split_once("Peak level dB: "))
+        .map(|(_, level)| level.trim() == "-inf")
+        .collect();
+    let Some((desktop, microphones)) = peaks.split_last() else {
+        return Vec::new();
+    };
+    let mut silent = Vec::new();
+    if microphones.iter().any(|track| *track) {
+        silent.push("MIC TRACK SILENT");
+    }
+    if *desktop {
+        silent.push("DESKTOP TRACK SILENT");
+    }
+    silent
 }
 
 /// The newest value of one continuous input and the last one written.
@@ -387,18 +420,17 @@ fn spawn_timeline(
         })
 }
 
-/// Takes at most one captured frame per encoder pass.
+/// Takes the newest waiting capture, scaled to the video size, when the writer starts a frame.
 ///
-/// Draining until empty never ends when scaling a frame takes longer than the capture
-/// interval: a new frame is always waiting, and video and timeline stall until stop.
-fn take_frame(
-    mut next: impl FnMut() -> Option<(Duration, RgbaImage)>,
-    schedule: &mut crate::recording_encoder::FrameSchedule<RgbaImage>,
-    size: (u32, u32),
-) {
-    if let Some((captured, frame)) = next() {
-        schedule.push(captured, fit(&frame, size));
-    }
+/// Only the frame the writer uses is scaled; captures it skipped cost nothing here.
+fn take_frame(frames: &Frames, size: (u32, u32)) -> Option<(Duration, Vec<u8>)> {
+    let (captured, frame) = slot(frames).take()?;
+    let frame = if frame.dimensions() == size {
+        frame
+    } else {
+        fit(&frame, size)
+    };
+    Some((captured, frame.into_raw()))
 }
 
 fn start(compositor: &Compositor) -> io::Result<Session> {
@@ -409,7 +441,8 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
     let path = PathBuf::from(home)
         .join("Videos/Recordings")
         .join(chrono::Local::now().format("%Y-%m-%d_%H-%M-%S-%f").to_string());
-    let (frames, receive_frames) = mpsc::sync_channel(1);
+    let frames = Arc::new(Mutex::new(crate::recording_encoder::Latest::default()));
+    let receive_frames = Arc::clone(&frames);
     let (events, receive_events) = mpsc::sync_channel(256);
     let (send_result, status_receiver) = mpsc::sync_channel(1);
     let stop = Arc::new(AtomicU64::new(u64::MAX));
@@ -430,7 +463,6 @@ fn start(compositor: &Compositor) -> io::Result<Session> {
         timeline: None,
         injected: None,
         dropped_events: Cell::new(0),
-        repeated_frames: Cell::new(0),
         samples: RefCell::new(Vec::new()),
     };
     if let Some(runtime) = &compositor.recording_runtime {
@@ -468,8 +500,8 @@ fn start_worker(
     path: PathBuf,
     frame: RgbaImage,
     microphone: tehuti_core::dispatch::MicrophoneChoice,
-    receive_frames: Receiver<(Duration, RgbaImage)>,
-    send_result: SyncSender<Result<PathBuf, String>>,
+    receive_frames: Frames,
+    send_result: SyncSender<Saved>,
 ) -> io::Result<std::thread::JoinHandle<()>> {
     let worker_stop = Arc::clone(&session.stop);
     let started = session.started;
@@ -489,7 +521,7 @@ fn start_worker(
                     started,
                 )
             })()
-            .map(|()| path)
+            .map(|freshness| (path, freshness))
             .map_err(|error: io::Error| error.to_string());
             let _sent = send_result.send(result);
         })
@@ -513,9 +545,9 @@ fn injected(
     microphone: &tehuti_core::dispatch::MicrophoneChoice,
     (path, wall_start): (PathBuf, Duration),
     frame: &RgbaImage,
-    frames: Receiver<(Duration, RgbaImage)>,
+    frames: Frames,
     events: Receiver<Value>,
-    result: SyncSender<Result<PathBuf, String>>,
+    result: SyncSender<Saved>,
 ) -> io::Result<Injected> {
     let size = dimensions(frame.width(), frame.height());
     std::fs::create_dir_all(&path)?;
@@ -526,9 +558,7 @@ fn injected(
         runtime: std::rc::Rc::clone(runtime),
         began: runtime.now(),
         sink,
-        encoder: crate::recording_encoder::FrameEncoder::default(),
-        schedule: crate::recording_encoder::FrameSchedule::default(),
-        pixels: fit(frame, size),
+        writer: crate::recording_encoder::FrameWriter::new(fit(frame, size).into_raw()),
         timeline,
         events,
         frames,
@@ -593,8 +623,9 @@ fn spawn_encoder(
 
 /// Builds the encoder command.
 ///
-/// Video arrives as a constant 30 fps grid starting at recording start (see
-/// `FrameSchedule`). `PulseAudio` stamps audio with the wall clock (`-wallclock 1`); `-copyts`
+/// Video uses the newest complete capture on a constant 30 fps grid from recording start.
+/// Backpressure replaces waiting captures without adding video slots.
+/// `PulseAudio` stamps audio with the wall clock (`-wallclock 1`); `-copyts`
 /// keeps those stamps and `asetpts` subtracts `wall_start`, the wall-clock recording start, so
 /// both streams share the timeline's zero.
 fn encoder_command(
@@ -648,7 +679,7 @@ fn encoder_command(
         .args([
             "-af",
             &format!(
-                "asetpts=PTS-{}.{:06}/TB,aresample=async=1:first_pts=0",
+                "asetpts=PTS-{}.{:06}/TB,aresample=async=1:first_pts=0,astats=measure_perchannel=none:measure_overall=Peak_level",
                 wall_start.as_secs(),
                 wall_start.subsec_micros()
             ),
@@ -716,6 +747,9 @@ fn dimensions(width: u32, height: u32) -> (u32, u32) {
 }
 
 fn fit(frame: &RgbaImage, size: (u32, u32)) -> RgbaImage {
+    if frame.dimensions() == size {
+        return frame.clone();
+    }
     let thumbnail = image::imageops::thumbnail(frame, size.0, size.1);
     let mut canvas = RgbaImage::from_pixel(size.0, size.1, image::Rgba([0, 0, 0, 255]));
     image::imageops::overlay(
@@ -731,10 +765,10 @@ fn encode(
     mut child: Encoder,
     output_path: &std::path::Path,
     frame: &RgbaImage,
-    frames: &Receiver<(Duration, RgbaImage)>,
+    frames: &Frames,
     stop: &AtomicU64,
     started: Instant,
-) -> io::Result<()> {
+) -> io::Result<crate::recording_encoder::Freshness> {
     let result = (|| {
         let mut pipe = child
             .0
@@ -742,10 +776,8 @@ fn encode(
             .take()
             .ok_or_else(|| io::Error::other("ffmpeg stdin unavailable"))?;
         rustix::fs::fcntl_setfl(&pipe, rustix::fs::OFlags::NONBLOCK)?;
-        let mut encoder = crate::recording_encoder::FrameEncoder::default();
-        let mut schedule = crate::recording_encoder::FrameSchedule::default();
         let size = dimensions(frame.width(), frame.height());
-        let mut pixels = fit(frame, size);
+        let mut writer = crate::recording_encoder::FrameWriter::new(fit(frame, size).into_raw());
         let mut drain_watch = crate::recording_encoder::DrainWatch::new(started.elapsed());
         loop {
             if child.0.try_wait()?.is_some() {
@@ -754,19 +786,9 @@ fn encode(
                 ));
             }
             let stopped_ms = stop.load(Ordering::Relaxed);
-            take_frame(|| frames.try_recv().ok(), &mut schedule, size);
-            if encoder.at_frame_boundary()
-                && let Some(next) = schedule.advance(encoder.progress().0)
-            {
-                pixels = next;
-            }
             let elapsed = video_due(started.elapsed(), stopped_ms);
-            let caught_up = encoder.write_due(&mut pipe, pixels.as_raw(), || elapsed)?;
-            let (written_frames, partial_bytes) = encoder.progress();
-            let progress = u64::try_from(written_frames)
-                .unwrap_or(u64::MAX)
-                .saturating_mul(u64::try_from(pixels.len()).unwrap_or(u64::MAX))
-                .saturating_add(u64::try_from(partial_bytes).unwrap_or(u64::MAX));
+            let caught_up = writer.write_due(&mut pipe, || take_frame(frames, size), elapsed)?;
+            let progress = writer.progress();
             if stopped_ms != u64::MAX && drain_watch.stalled(started.elapsed(), progress) {
                 return Err(io::Error::other("ffmpeg stopped accepting video frames"));
             } else if stopped_ms == u64::MAX {
@@ -781,9 +803,13 @@ fn encode(
                 std::thread::yield_now();
             }
         }
-        Ok(())
+        Ok(writer.freshness())
     })();
-    finish_encoder(&mut child, output_path, result)
+    let freshness = result.as_ref().map_or_else(
+        |_| crate::recording_encoder::Freshness::default(),
+        |freshness| *freshness,
+    );
+    finish_encoder(&mut child, output_path, result.map(|_| ())).map(|()| freshness)
 }
 
 fn finish_encoder(
@@ -820,20 +846,11 @@ impl Session {
                 injected.timeline.write(&event);
             }
             injected.timeline.flush();
-            take_frame(
-                || injected.frames.try_recv().ok(),
-                &mut injected.schedule,
-                injected.size,
-            );
-            if injected.encoder.at_frame_boundary()
-                && let Some(next) = injected.schedule.advance(injected.encoder.progress().0)
-            {
-                injected.pixels = next;
-            }
             let elapsed = video_due(elapsed, stopped);
+            let (frames, size) = (&injected.frames, injected.size);
             if injected
-                .encoder
-                .write_due(&mut injected.sink, injected.pixels.as_raw(), || elapsed)?
+                .writer
+                .write_due(&mut injected.sink, || take_frame(frames, size), elapsed)?
                 && stopped != u64::MAX
             {
                 for event in injected.events.try_iter() {
@@ -848,7 +865,9 @@ impl Session {
         match result {
             Ok(false) => {}
             Ok(true) => {
-                let _sent = injected.result.send(Ok(injected.path.clone()));
+                let _sent = injected
+                    .result
+                    .send(Ok((injected.path.clone(), injected.writer.freshness())));
             }
             Err(error) => {
                 let _sent = injected.result.send(Err(error.to_string()));
@@ -857,7 +876,6 @@ impl Session {
     }
     fn request_stop(&self) {
         recovered(&self.dropped_events, "timeline queue drained; events dropped");
-        recovered(&self.repeated_frames, "capture queue drained; frames repeated");
         let elapsed = u64::try_from(self.elapsed().as_millis()).unwrap_or(u64::MAX.saturating_sub(1));
         let _stopped = self
             .stop
@@ -890,6 +908,24 @@ impl Drop for Encoder {
 #[cfg(test)]
 mod tests {
     use core::time::Duration;
+
+    #[test]
+    fn silent_tracks_are_named_by_position_with_the_desktop_last() {
+        let peak = |level: &str| format!("[Parsed_astats_2 @ 0x1] Peak level dB: {level}\n");
+        for (levels, silent) in [
+            (vec![], vec![]),
+            (vec!["-30.8", "-4.5"], vec![]),
+            (vec!["-inf", "-4.5"], vec!["MIC TRACK SILENT"]),
+            (vec!["-30.8", "-inf"], vec!["DESKTOP TRACK SILENT"]),
+            (
+                vec!["-30.8", "-inf", "-inf"],
+                vec!["MIC TRACK SILENT", "DESKTOP TRACK SILENT"],
+            ),
+        ] {
+            let log: String = levels.iter().map(|level| peak(level)).collect();
+            assert_eq!(super::silent_tracks(&log), silent, "{log}");
+        }
+    }
 
     fn args(sources: &[String]) -> Vec<String> {
         let start = Duration::new(1_700_000_000, 250_000_000);
@@ -932,7 +968,9 @@ mod tests {
         );
         assert_eq!(
             after(&args, "-af"),
-            ["asetpts=PTS-1700000000.250000/TB,aresample=async=1:first_pts=0"]
+            [
+                "asetpts=PTS-1700000000.250000/TB,aresample=async=1:first_pts=0,astats=measure_perchannel=none:measure_overall=Peak_level"
+            ]
         );
     }
 
@@ -1009,22 +1047,6 @@ mod tests {
             start.abs_diff(Duration::from_millis(500)) <= Duration::from_millis(50),
             "tone captured 500 ms after recording start begins at {start:?}"
         );
-    }
-
-    #[test]
-    fn a_frame_source_faster_than_the_encoder_is_polled_once_per_pass() {
-        let mut polls = 0_u32;
-        let mut schedule = crate::recording_encoder::FrameSchedule::default();
-        super::take_frame(
-            || {
-                polls = polls.saturating_add(1);
-                assert!(polls < 100, "the pass never ends while frames keep arriving");
-                Some((Duration::ZERO, image::RgbaImage::new(4, 4)))
-            },
-            &mut schedule,
-            (4, 4),
-        );
-        assert_eq!(polls, 1);
     }
 
     #[derive(Clone, Default)]
