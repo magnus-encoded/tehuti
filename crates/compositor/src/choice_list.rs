@@ -215,7 +215,7 @@ fn raster_with_icons(
 }
 
 fn content_height(list: &List) -> usize {
-    let mut height = 132usize.saturating_add(list.slots().scopes.len().saturating_mul(24));
+    let mut height = ROWS_TOP.saturating_add(list.slots().scopes.len().saturating_mul(24));
     if list.slots().create.is_some() {
         height = height.saturating_add(128);
     }
@@ -226,6 +226,10 @@ fn content_height(list: &List) -> usize {
             section = Some(row.close);
         }
         height = height.saturating_add(72);
+    }
+    if list.candidates().is_empty() && list.slots().create.is_none() {
+        // The empty-state message sits 18 below the last row, is 31 tall and keeps 24 of padding.
+        return height.saturating_add(EMPTY_MESSAGE);
     }
     height.saturating_add(FOOTER)
 }
@@ -302,6 +306,9 @@ fn border(canvas: &mut Canvas, y: usize, height: usize, colour: [u8; 4], dashed:
 
 const PANEL_TOP: usize = 0;
 const FOOTER: usize = 56;
+const EMPTY_MESSAGE: usize = 73;
+/// Where the first row starts when there are no scope lines: just below the 36..92 header.
+const ROWS_TOP: usize = 104;
 
 fn paint(
     canvas: &mut Canvas,
@@ -312,7 +319,7 @@ fn paint(
 ) -> serde_json::Value {
     let mut row_bounds = Vec::new();
     let scopes = list.slots().scopes.len();
-    let header = 84usize.saturating_add(scopes.saturating_mul(24));
+    let header = 56usize.saturating_add(scopes.saturating_mul(24));
     let create_height: usize = if list.slots().create.is_some() { 128 } else { 0 };
     let height = bottom.saturating_sub(PANEL_TOP);
     panel(canvas, height);
@@ -467,13 +474,13 @@ fn paint_create(canvas: &mut Canvas, list: &List, family: PadFamily, y: usize) {
     let selected = list.selected() == Some(Choice::Create);
     if selected {
         canvas.rectangle(
-            LEFT.saturating_add(12),
+            LEFT.saturating_add(24),
             y,
-            WIDTH.saturating_sub(24),
+            WIDTH.saturating_sub(48),
             112,
             [48, 58, 29, 255],
         );
-        canvas.rectangle(LEFT.saturating_add(12), y, 8, 112, RESULT);
+        canvas.rectangle(LEFT.saturating_add(24), y, 8, 112, RESULT);
     }
     border(canvas, y, 112, if selected { RESULT } else { GREEN }, !selected);
     label(
@@ -522,7 +529,7 @@ fn paint_candidate(
     let y = top.saturating_add(height.saturating_sub(72) / 2);
     let selected = list.selected() == Some(row.choice);
     canvas.rounded_rectangle(
-        (LEFT.saturating_add(12), top, WIDTH.saturating_sub(24), height),
+        (LEFT.saturating_add(24), top, WIDTH.saturating_sub(48), height),
         CORNER_RADIUS,
         if selected { LIVE } else { [43, 36, 30, 255] },
     );
@@ -534,10 +541,10 @@ fn paint_candidate(
         && list.fill() > 0
     {
         canvas.rectangle(
-            LEFT.saturating_add(12),
+            LEFT.saturating_add(24),
             top.saturating_add(height).saturating_sub(3),
             WIDTH
-                .saturating_sub(24)
+                .saturating_sub(48)
                 .saturating_mul(usize::from(list.fill()))
                 .checked_div(1000)
                 .unwrap_or_default(),

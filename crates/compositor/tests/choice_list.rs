@@ -71,8 +71,8 @@ mod tests {
             long == truncated,
             "each line reserves room for a complete ellipsis"
         );
-        for y in 144..192 {
-            for x in 1888..1908 {
+        for y in 112..168 {
+            for x in 1889..1895 {
                 assert_eq!(
                     pixel(&long, x, y),
                     [119, 88, 36, 255],
@@ -333,8 +333,8 @@ mod tests {
             let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
                 .ok_or("artwork")?;
             let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-            // Natural height is 188 + 72 per row, centred in the 1048 rows above the bar.
-            let natural = 188_usize.saturating_add(rows.saturating_mul(72));
+            // Natural height is 160 + 72 per row, centred in the 1048 rows above the bar.
+            let natural = 160_usize.saturating_add(rows.saturating_mul(72));
             let expected = (1080_usize.saturating_sub(bar).saturating_sub(natural) / 2)
                 .saturating_add(natural)
                 .saturating_sub(1);
@@ -359,9 +359,9 @@ mod tests {
         let pixels = tehuti::choice_list::raster_scaled(launcher.list(), PadFamily::Letters, (1920, 1080), 2)
             .ok_or("artwork")?;
         let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-        // 2 rows: natural 332, panel 1280 wide (640 at scale 2) and 664 tall, centred in the
-        // 1920 x (1080 - 2 * 32) area above the doubled bar: left 320, top 176.
-        assert_eq!(bottom, 839, "panel bottom row; the doubled bar starts at 1016");
+        // 2 rows: natural 304, panel 1280 wide (640 at scale 2) and 608 tall, centred in the
+        // 1920 x (1080 - 2 * 32) area above the doubled bar: left 320, top 204.
+        assert_eq!(bottom, 811, "panel bottom row; the doubled bar starts at 1016");
         let covered = |x: &usize| {
             (0..1080_usize).any(|y| {
                 pixels
@@ -380,6 +380,36 @@ mod tests {
             Some(1599),
             "panel right column mirrors the left"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn the_empty_launcher_keeps_every_line_inside_its_panel() -> Result<(), Box<dyn core::error::Error>> {
+        let launcher = tehuti_core::launcher::Launcher::invitation(None);
+        let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
+            .ok_or("artwork")?;
+        let bottom = opaque_bottom(&pixels).ok_or("panel")?;
+        let pixel_at = |x: usize, y: usize| {
+            let start = y.saturating_mul(1920).saturating_add(x).saturating_mul(4);
+            pixels
+                .get(start..start.saturating_add(4))
+                .unwrap_or_default()
+                .to_vec()
+        };
+        let left = (0..1920_usize)
+            .find(|&x| pixel_at(x, bottom.saturating_sub(40))[3] >= 200)
+            .ok_or("panel left")?;
+        let background = pixel_at(left.saturating_add(4), bottom.saturating_sub(1));
+        // The last 16 rows above the bottom border are padding; text there means the panel cut it off.
+        for y in bottom.saturating_sub(16)..bottom {
+            for x in left.saturating_add(2)..left.saturating_add(636) {
+                assert_eq!(
+                    pixel_at(x, y),
+                    background,
+                    "text touches the bottom edge at {x},{y}"
+                );
+            }
+        }
         Ok(())
     }
 }
