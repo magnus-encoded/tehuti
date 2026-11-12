@@ -272,8 +272,9 @@ mod xwayland {
         let started = std::time::Instant::now();
         loop {
             satellite.poll(Duration::from_millis(20));
-            satellite.sync_keymap(Duration::from_millis(20), compositor.keymap());
-            if let Some(keymap) = received_keymap(display)
+            let applied = satellite.sync_keymap(Duration::from_millis(20), compositor.keymap());
+            if applied
+                && let Some(keymap) = received_keymap(display)
                 && keymap.layout_get_name(0) == layout
             {
                 return keymap;

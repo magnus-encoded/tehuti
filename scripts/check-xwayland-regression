@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Run the X11 readback test with the base satellite's unsynchronized keyboard.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+base=${1:?usage: check-xwayland-regression BASE_COMMIT}
+source=crates/compositor/src/xwayland.rs
+scratch=$(mktemp -d "$PWD/.xwayland-regression.XXXXXX")
+trap 'cp "$scratch/fixed.rs" "$source"; rm -rf "$scratch"' EXIT
+cp "$source" "$scratch/fixed.rs"
+git show "$base:$source" > "$scratch/base.rs"
+if grep -q 'pub fn sync_keymap' "$scratch/base.rs"; then
+    echo 'Base already synchronizes X11 keymaps; skipping pre-fix regression.'
+    exit 0
+fi
+cp "$scratch/base.rs" "$source"
+# The base has no upload operation; this adapter lets the readback test compile.
+cat >> "$source" <<'RUST'
+impl Satellite {
+    pub fn sync_keymap(&mut self, _: core::time::Duration, _: &str) -> bool {
+        true
+    }
+}
+RUST
+if XDG_RUNTIME_DIR="$scratch" XKB_DEFAULT_LAYOUT=us cargo test --locked -p tehuti --test xwayland \
+    xwayland::x11_clients_receive_the_configured_keymap_and_layout_changes -- --exact --nocapture \
+    > "$scratch/baseline.log" 2>&1; then
+    cat "$scratch/baseline.log"
+    echo 'Regression unexpectedly passed with the base satellite.' >&2
+    exit 1
+fi
+cat "$scratch/baseline.log"
+grep -q 'X11 did not receive Norwegian' "$scratch/baseline.log"
+echo "Confirmed: X11 readback fails against base $base with X11 did not receive Norwegian."

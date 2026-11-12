@@ -16,6 +16,13 @@ jobs:
           targets: i686-unknown-linux-gnu
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev python3 python3-pil foot ffmpeg xvfb x11-xkb-utils
       - uses: Swatinem/rust-cache@v2
+      - name: Verify X11 regression fails on the base satellite
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch origin "$BASE_SHA"
+          scripts/check-xwayland-regression "$BASE_SHA"
       - run: XDG_RUNTIME_DIR=/tmp scripts/check
       - name: Release smoke
         run: |

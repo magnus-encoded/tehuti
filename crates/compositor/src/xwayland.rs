@@ -67,11 +67,13 @@ impl Satellite {
         }
     }
 
-    /// Applies the compositor map once the X server is ready, and after changes.
-    pub fn sync_keymap(&mut self, elapsed: core::time::Duration, keymap: &str) {
-        if self.child.is_some() {
-            self.keymap.poll(elapsed, &self.display, keymap);
+    /// Applies the compositor map and reports whether the upload has completed.
+    pub fn sync_keymap(&mut self, elapsed: core::time::Duration, keymap: &str) -> bool {
+        if self.child.is_none() {
+            return false;
         }
+        self.keymap.poll(elapsed, &self.display, keymap);
+        self.keymap.pending.is_none() && self.keymap.applied == keymap
     }
 
     /// Polls child status and starts due attempts without waiting for child exit.
