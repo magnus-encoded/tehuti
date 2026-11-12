@@ -474,7 +474,9 @@ fn install_xwayland(
                 let now = std::time::Instant::now();
                 let elapsed = now.duration_since(previous);
                 process.poll(elapsed);
-                process.sync_keymap(elapsed, data.compositor.keymap());
+                if !process.sync_keymap(elapsed, data.compositor.keymap()) {
+                    tracing::debug!("Xwayland keymap synchronization pending; will retry");
+                }
                 previous = now;
                 TimeoutAction::ToDuration(interval)
             })
