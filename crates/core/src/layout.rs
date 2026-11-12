@@ -1246,7 +1246,7 @@ impl Layout {
             self.clamp_view(output);
         }
     }
-    /// Scrolls back any gap past the last column, so no column hides off the left
+    /// When every column fits on the output, scrolls back so none hides off the left
     /// while the right edge shows the desktop.
     fn clamp_view(&mut self, output: usize) {
         let Some(output) = self.outputs.get_mut(output) else {
@@ -1269,13 +1269,12 @@ impl Layout {
         if anchored {
             return;
         }
-        // The furthest the view may scroll before a gap opens past the last column.
-        let furthest = output
-            .column_x(active, count)
-            .sub(output.working().width)
-            .max(0.0_f64);
+        // Only a strip that fits the output snaps back; a wider strip keeps its scroll.
+        if output.column_x(active, count) > output.working().width.add(1e-7) {
+            return;
+        }
         if let Some(strip) = output.workspaces.get_mut(active) {
-            strip.view = strip.view.min(furthest);
+            strip.view = strip.view.min(0.0_f64);
         }
     }
     /// A command without a focused target leaves the layout unchanged.
