@@ -316,7 +316,7 @@ impl Launcher {
             "Nothing is open yet"
         } else if self.indices.is_empty() {
             "Nothing found"
-        } else if self.origin == Origin::Typed {
+        } else if matches!(self.origin, Origin::Typed) {
             "Enter to open"
         } else if !self.enabled {
             "Auto-pick is off"
