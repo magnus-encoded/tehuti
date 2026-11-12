@@ -162,8 +162,7 @@ impl KeymapSync {
 
 fn upload_keymap(display: &str, keymap: &str) -> std::io::Result<std::process::Child> {
     use std::os::fd::AsFd as _;
-    let content = std::ffi::CString::new(keymap)?;
-    let file = smithay::utils::SealedFile::with_content(c"tehuti-x11-keymap", &content)?;
+    let file = smithay::utils::SealedFile::with_data(c"tehuti-x11-keymap", keymap.as_bytes())?;
     crate::child_process::command("xkbcomp")
         .args(["-w", "0", "-", display])
         .stdin(std::process::Stdio::from(file.as_fd().try_clone_to_owned()?))
