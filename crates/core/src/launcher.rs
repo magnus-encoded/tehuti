@@ -57,7 +57,14 @@ pub struct Launcher {
     enabled: bool,
     delay: Duration,
     invitation: bool,
-    typed: bool,
+    origin: Origin,
+}
+
+/// How the query arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Spoken,
+    Typed,
 }
 
 impl Launcher {
@@ -72,7 +79,7 @@ impl Launcher {
     pub fn typed(query: &str, destinations: Vec<Destination>) -> Self {
         let rows = typed_ranking(query, &destinations);
         let mut launcher = Self::ranked(query, destinations, None, rows);
-        launcher.typed = true;
+        launcher.origin = Origin::Typed;
         launcher.decorate();
         launcher
     }
@@ -127,7 +134,7 @@ impl Launcher {
             enabled: true,
             delay: Duration::from_secs(5),
             invitation: false,
-            typed: false,
+            origin: Origin::Spoken,
         };
         launcher.decorate();
         launcher
@@ -309,7 +316,7 @@ impl Launcher {
             "Nothing is open yet"
         } else if self.indices.is_empty() {
             "Nothing found"
-        } else if self.typed {
+        } else if self.origin == Origin::Typed {
             "Enter to open"
         } else if !self.enabled {
             "Auto-pick is off"
