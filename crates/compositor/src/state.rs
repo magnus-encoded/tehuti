@@ -1738,11 +1738,19 @@ impl Compositor {
     }
 
     fn open_launcher(&mut self, request: &tehuti_core::unit_verbs::LauncherRequest) {
+        self.show_launcher(request, false);
+    }
+
+    fn show_launcher(&mut self, request: &tehuti_core::unit_verbs::LauncherRequest, typed: bool) {
         let focused = self.speech_context.as_deref();
         let (destinations, routes) =
             crate::launcher::destinations(self.destinations.entries(), request.kind, focused);
         self.launcher_routes = routes;
-        let mut launcher = tehuti_core::launcher::Launcher::new(&request.query, destinations, None);
+        let mut launcher = if typed {
+            tehuti_core::launcher::Launcher::typed(&request.query, destinations)
+        } else {
+            tehuti_core::launcher::Launcher::new(&request.query, destinations, None)
+        };
         let contexts = self.dispatch.core().contexts();
         let active = focused
             .and_then(|app_id| tehuti_core::own_context(contexts, app_id, &self.speech_title))
@@ -2720,10 +2728,11 @@ impl Compositor {
     }
 
     fn retype_launcher(&mut self, query: String) {
-        self.open_launcher(&tehuti_core::unit_verbs::LauncherRequest {
+        let request = tehuti_core::unit_verbs::LauncherRequest {
             kind: tehuti_core::unit_verbs::DestinationKind::Application,
             query,
-        });
+        };
+        self.show_launcher(&request, true);
     }
 
     fn host_key_as_pad(&mut self, keycode: Keycode, pressed: bool) -> bool {

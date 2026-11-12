@@ -62,7 +62,23 @@ pub struct Launcher {
 impl Launcher {
     #[must_use]
     pub fn new(query: &str, destinations: Vec<Destination>, heard: Option<u16>) -> Self {
-        let mut rows = local_ranking(query, &destinations);
+        let rows = local_ranking(query, &destinations);
+        Self::ranked(query, destinations, heard, rows)
+    }
+
+    /// A launcher filtered by what was typed so far: names that start with or contain the text, prefix matches first.
+    #[must_use]
+    pub fn typed(query: &str, destinations: Vec<Destination>) -> Self {
+        let rows = typed_ranking(query, &destinations);
+        Self::ranked(query, destinations, None, rows)
+    }
+
+    fn ranked(
+        query: &str,
+        destinations: Vec<Destination>,
+        heard: Option<u16>,
+        mut rows: Vec<(usize, u16)>,
+    ) -> Self {
         rows.truncate(5);
         let matched = rows.first().is_some_and(|first| {
             destinations.get(first.0).is_some_and(|destination| {
@@ -350,6 +366,41 @@ pub struct JevRequest {
     pub level: String,
     pub focused_app: Option<String>,
     pub candidates: Vec<Candidate>,
+}
+
+fn typed_ranking(query: &str, destinations: &[Destination]) -> Vec<(usize, u16)> {
+    let folded = tehuti_protocol::fold_phrase(query);
+    if folded.is_empty() {
+        return Vec::new();
+    }
+    let mut rows: Vec<_> = destinations
+        .iter()
+        .enumerate()
+        .filter_map(|(index, destination)| {
+            let score = destination
+                .names()
+                .map(|name| {
+                    let name = tehuti_protocol::fold_phrase(name);
+                    if name.starts_with(&folded) {
+                        1000_u16
+                    } else if name.contains(&folded) {
+                        700
+                    } else {
+                        0
+                    }
+                })
+                .max()
+                .unwrap_or_default();
+            (score > 0).then_some((
+                index,
+                score
+                    .saturating_add(if destination.open { 80 } else { 0 })
+                    .saturating_add(if destination.focused { 80 } else { 0 }),
+            ))
+        })
+        .collect();
+    rows.sort_by_key(|row| core::cmp::Reverse(row.1));
+    rows
 }
 
 fn local_ranking(query: &str, destinations: &[Destination]) -> Vec<(usize, u16)> {
