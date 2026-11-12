@@ -894,6 +894,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
+    let mut event_controllers = Vec::new();
     let active = &mut data.active_pad;
     let spare = &mut data.spare_virtual_pad;
     let (events, removed) = input::drain_pads_handing_over(
@@ -901,6 +902,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         |path, controller, event| {
             let admitted = gate.admit(path, compositor.controller_chosen(controller.pad.name()), event);
             if admitted {
+                event_controllers.push(controller.pad.name().to_owned());
                 identity = Some(controller.pad.identity());
                 *active = Some(path.to_path_buf());
             }
@@ -925,7 +927,8 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     data.pacing.input_arrived = true;
     sync_pad_grab(data);
     advance_time(data);
-    for event in events {
+    for (event, name) in events.into_iter().zip(event_controllers) {
+        data.compositor.activate_controller(name);
         data.compositor
             .controller_input(tehuti_core::controller::Input::Event(event));
         if data.compositor.quit_requested() {

@@ -485,3 +485,15 @@ Sources are `compositor configure`, `client commit`, and `client request`
 (xdg window geometry, including X11 windows through xwayland-satellite).
 Layout configures cover column widths, window heights and fullscreen.
 The log contains no window titles or content.
+
+## Per-controller push-to-talk
+
+Pop the hood → Input lists Controller, Push to talk and Microphone. Left and
+right browse controllers; Confirm applies the selection. Back cancels browsing.
+Push to talk edits the selected controller, or the last pad used when Controller
+is Auto. Choose Share, Menu or Context default. The binding follows input from
+that controller in every context, including passthrough. Guide+Menu still escapes.
+
+`controller-talk.json` in the Tehuti config directory stores an object mapping
+kernel controller names to `"record"` (Share) or `"start"` (Menu). Missing entries
+use the context settings. Pads with the same kernel name share a binding.

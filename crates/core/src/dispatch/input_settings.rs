@@ -60,6 +60,7 @@ pub struct Microphone {
 pub enum InputRow {
     #[default]
     Controller,
+    PushToTalk,
     Microphone,
 }
 
@@ -71,9 +72,31 @@ pub struct InputSettings {
     pub controller: ControllerChoice,
     pub microphones: Vec<Microphone>,
     pub microphone: MicrophoneChoice,
+    pub active_controller: Option<String>,
+    pub controller_bindings: std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
 }
 
 impl InputSettings {
+    #[must_use]
+    pub fn binding_controller(&self) -> Option<&str> {
+        match &self.controller {
+            ControllerChoice::Named(name) => Some(name),
+            ControllerChoice::Auto => self.active_controller.as_deref(),
+        }
+    }
+
+    #[must_use]
+    pub fn push_to_talk_label(&self) -> String {
+        let Some(name) = self.binding_controller() else {
+            return "USE A CONTROLLER FIRST".into();
+        };
+        match self.controller_bindings.get(name) {
+            Some(tehuti_protocol::ButtonName::Start) => "MENU".into(),
+            Some(tehuti_protocol::ButtonName::Record) => "SHARE".into(),
+            _ => "CONTEXT DEFAULT".into(),
+        }
+    }
+
     /// Auto, then each connected pad name once, then a saved pad that is not connected.
     #[must_use]
     pub fn controller_options(&self) -> Vec<ControllerChoice> {
