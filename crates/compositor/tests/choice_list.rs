@@ -389,7 +389,7 @@ mod tests {
         let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
             .ok_or("artwork")?;
         let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-        let at = |x: usize, y: usize| {
+        let pixel_at = |x: usize, y: usize| {
             let start = y.saturating_mul(1920).saturating_add(x).saturating_mul(4);
             pixels
                 .get(start..start.saturating_add(4))
@@ -397,13 +397,13 @@ mod tests {
                 .to_vec()
         };
         let left = (0..1920_usize)
-            .find(|&x| at(x, bottom.saturating_sub(40))[3] >= 200)
+            .find(|&x| pixel_at(x, bottom.saturating_sub(40))[3] >= 200)
             .ok_or("panel left")?;
-        let background = at(left.saturating_add(4), bottom.saturating_sub(1));
+        let background = pixel_at(left.saturating_add(4), bottom.saturating_sub(1));
         // The last 16 rows above the bottom border are padding; text there means the panel cut it off.
         for y in bottom.saturating_sub(16)..bottom {
             for x in left.saturating_add(2)..left.saturating_add(636) {
-                assert_eq!(at(x, y), background, "text touches the bottom edge at {x},{y}");
+                assert_eq!(pixel_at(x, y), background, "text touches the bottom edge at {x},{y}");
             }
         }
         Ok(())
