@@ -164,12 +164,45 @@ impl KeymapSync {
 
 fn upload_keymap(display: &str, keymap: &str) -> std::io::Result<std::process::Child> {
     use std::os::fd::AsFd as _;
+    let keymap = x11_keymap(keymap)?;
     let file = smithay::utils::SealedFile::with_data(c"tehuti-x11-keymap", keymap.as_bytes())?;
     crate::child_process::command("xkbcomp")
         .args(["-w", "0", "-", display])
         .stdin(std::process::Stdio::from(file.as_fd().try_clone_to_owned()?))
         .stdout(std::process::Stdio::null())
         .spawn()
+}
+
+fn x11_keymap(keymap: &str) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind};
+    let (prefix, section) = keymap
+        .split_once("\nxkb_types")
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "keymap has no types"))?;
+    let (types, suffix) = section
+        .split_once("\n};")
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "keymap types are not closed"))?;
+    let mut count = types
+        .lines()
+        .filter(|line| line.trim_start().starts_with("type \""))
+        .count();
+    let mut result = format!("{prefix}\nxkb_types{types}");
+    // X servers validate old type indexes before replacing symbols: never shrink the table.
+    // https://github.com/mirror/xserver/blob/master/xkb/xkb.c (_XkbSetMapChecks)
+    for index in 0..255 {
+        if count >= 255 {
+            break;
+        }
+        let name = format!("\"TEHUTI_UNUSED_{index}\"");
+        if !types.contains(&name) {
+            result.push_str("\n\ttype ");
+            result.push_str(&name);
+            result.push_str(" { modifiers = None; map[None] = Level1; };");
+            count = count.saturating_add(1);
+        }
+    }
+    result.push_str("\n};");
+    result.push_str(suffix);
+    Ok(result)
 }
 
 impl Drop for KeymapSync {
