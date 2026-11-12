@@ -587,7 +587,7 @@ mod tests {
             for turn in turns {
                 match turn {
                     Turn::Press => {
-                        presses += 1;
+                        presses = presses.saturating_add(1);
                         drop(capture(&mut state, &mut speech, SpeechInput::Press));
                     }
                     Turn::Stop => drop(capture(&mut state, &mut speech, SpeechInput::Release)),
