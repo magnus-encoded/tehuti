@@ -71,7 +71,7 @@ mod tests {
             long == truncated,
             "each line reserves room for a complete ellipsis"
         );
-        for y in 144..192 {
+        for y in 112..168 {
             for x in 1888..1908 {
                 assert_eq!(
                     pixel(&long, x, y),
@@ -333,8 +333,8 @@ mod tests {
             let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
                 .ok_or("artwork")?;
             let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-            // Natural height is 188 + 72 per row, centred in the 1048 rows above the bar.
-            let natural = 188_usize.saturating_add(rows.saturating_mul(72));
+            // Natural height is 160 + 72 per row, centred in the 1048 rows above the bar.
+            let natural = 160_usize.saturating_add(rows.saturating_mul(72));
             let expected = (1080_usize.saturating_sub(bar).saturating_sub(natural) / 2)
                 .saturating_add(natural)
                 .saturating_sub(1);
@@ -359,9 +359,9 @@ mod tests {
         let pixels = tehuti::choice_list::raster_scaled(launcher.list(), PadFamily::Letters, (1920, 1080), 2)
             .ok_or("artwork")?;
         let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-        // 2 rows: natural 332, panel 1280 wide (640 at scale 2) and 664 tall, centred in the
-        // 1920 x (1080 - 2 * 32) area above the doubled bar: left 320, top 176.
-        assert_eq!(bottom, 839, "panel bottom row; the doubled bar starts at 1016");
+        // 2 rows: natural 304, panel 1280 wide (640 at scale 2) and 608 tall, centred in the
+        // 1920 x (1080 - 2 * 32) area above the doubled bar: left 320, top 204.
+        assert_eq!(bottom, 811, "panel bottom row; the doubled bar starts at 1016");
         let covered = |x: &usize| {
             (0..1080_usize).any(|y| {
                 pixels
