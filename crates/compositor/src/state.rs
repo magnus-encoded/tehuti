@@ -4049,6 +4049,7 @@ impl SeatHandler for Compositor {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        tracing::debug!(target: "pad_latency", stage = "window_focus", at_us = crate::controller::timestamp_us(std::time::SystemTime::now()));
         set_data_device_focus(
             &self.display,
             seat,

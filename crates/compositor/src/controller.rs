@@ -214,6 +214,12 @@ pub fn watch_input_directory(path: &std::path::Path) -> io::Result<std::os::fd::
     Ok(watcher)
 }
 
+pub(crate) fn timestamp_us(time: std::time::SystemTime) -> u128 {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros()
+}
+
 /// An open kernel evdev controller with context-controlled exclusive ownership.
 #[derive(Debug)]
 pub struct EvdevPad<D = Device> {
@@ -226,6 +232,7 @@ pub struct EvdevPad<D = Device> {
     mirror_failed: bool,
     /// The physical pad failed a read; it feeds nothing until the event loop drops it.
     lost: bool,
+    first_emit_after_focus: Option<std::time::Instant>,
     plugin_held: Vec<ButtonName>,
     buffered: Vec<Event>,
 }
@@ -655,7 +662,7 @@ pub trait PadDevice {
     fn virtual_pad(&self) -> io::Result<Box<dyn MirrorSink>> {
         Err(io::ErrorKind::Unsupported.into())
     }
-    /// Reads pending raw events without translating them.
+    /// Reads one pending raw batch without translating it; an empty batch means drained.
     /// # Errors
     /// The client could not read events.
     fn fetch_raw(&mut self) -> io::Result<Vec<evdev::InputEvent>> {
@@ -770,6 +777,10 @@ impl<D: PadDevice> EvdevPad<D> {
     /// # Errors
     /// The kernel refused to create the uinput device.
     pub fn set_mirror(&mut self, present: bool, consumed: &dyn Fn(ButtonName) -> bool) -> io::Result<bool> {
+        if present != self.mirror.is_some() {
+            tracing::debug!(target: "pad_latency", stage = "focus", at_us = timestamp_us(std::time::SystemTime::now()), present);
+            self.first_emit_after_focus = present.then(std::time::Instant::now);
+        }
         if !present {
             if let Some(mut mirror) = self.mirror.take() {
                 // Outside passthrough the virtual pad shows rest: nothing held, sticks centred.
@@ -932,35 +943,44 @@ impl<D: PadDevice> EvdevPad<D> {
         if self.mirror.is_none() && self.plugin_held.is_empty() {
             return Ok(());
         }
-        let raw = self.handles.events().fetch_raw()?;
-        for event in raw {
-            if let Some(mirror) = &mut self.mirror {
-                let plugin_held = &mut self.plugin_held;
-                let mut track = |button, state| {
-                    let kept = consume(button, state);
-                    plugin_held.retain(|held| *held != button);
-                    if kept && state == ButtonState::Pressed {
-                        plugin_held.push(button);
+        loop {
+            let raw = self.handles.events().fetch_raw()?;
+            if raw.is_empty() {
+                break;
+            }
+            let read_at = std::time::SystemTime::now();
+            for event in raw {
+                tracing::debug!(target: "pad_latency", stage = "read", at_us = timestamp_us(read_at), physical_us = timestamp_us(event.timestamp()));
+                if let Some(mirror) = &mut self.mirror {
+                    let plugin_held = &mut self.plugin_held;
+                    let mut track = |button, state| {
+                        let kept = consume(button, state);
+                        plugin_held.retain(|held| *held != button);
+                        if kept && state == ButtonState::Pressed {
+                            plugin_held.push(button);
+                        }
+                        kept
+                    };
+                    if let Some(frame) = mirror.copy.take(event, &mut self.translator, &mut track) {
+                        mirror.device.emit(&frame)?;
+                        let first_after_focus = self.first_emit_after_focus.take();
+                        tracing::debug!(target: "pad_latency", stage = "emit", at_us = timestamp_us(std::time::SystemTime::now()), read_us = timestamp_us(read_at), physical_us = timestamp_us(event.timestamp()), first_after_focus = first_after_focus.is_some(), since_focus_us = first_after_focus.map_or(0, |focus| focus.elapsed().as_micros()));
                     }
-                    kept
-                };
-                if let Some(frame) = mirror.copy.take(event, &mut self.translator, &mut track) {
-                    mirror.device.emit(&frame)?;
-                }
-            } else {
-                let translated = self.translator.translate(&event.destructure());
-                for input in &translated {
-                    if let Event::Button {
-                        name,
-                        state: ButtonState::Released,
-                    } = input
-                        && self.plugin_held.contains(name)
-                    {
-                        let _kept = consume(*name, ButtonState::Released);
-                        self.plugin_held.retain(|held| held != name);
+                } else {
+                    let translated = self.translator.translate(&event.destructure());
+                    for input in &translated {
+                        if let Event::Button {
+                            name,
+                            state: ButtonState::Released,
+                        } = input
+                            && self.plugin_held.contains(name)
+                        {
+                            let _kept = consume(*name, ButtonState::Released);
+                            self.plugin_held.retain(|held| held != name);
+                        }
                     }
+                    self.buffered.extend(translated);
                 }
-                self.buffered.extend(translated);
             }
         }
         Ok(())
@@ -993,6 +1013,7 @@ impl<D: PadDevice> EvdevPad<D> {
             parked: None,
             mirror_failed: false,
             lost: false,
+            first_emit_after_focus: None,
             plugin_held: Vec::new(),
             buffered: Vec::new(),
         }
