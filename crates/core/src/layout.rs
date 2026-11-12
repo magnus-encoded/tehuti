@@ -820,11 +820,7 @@ impl Layout {
             }
         }
         self.normalize();
-        if self.must_center(output) {
-            self.scroll(output, None, false);
-        } else {
-            self.clamp_view(output);
-        }
+        self.settle_view_after_close(output);
         Ok(())
     }
     /// Updates logical output geometry after a mode or scale change.
@@ -1242,6 +1238,13 @@ impl Layout {
             self.clamp_view(output);
         }
     }
+    fn settle_view_after_close(&mut self, output: usize) {
+        if self.must_center(output) {
+            self.scroll(output, None, false);
+        } else {
+            self.clamp_view(output);
+        }
+    }
     /// Scrolls back any gap past the last column, so no column hides off the left
     /// while the right edge shows the desktop.
     fn clamp_view(&mut self, output: usize) {
@@ -1270,8 +1273,8 @@ impl Layout {
             .column_x(active, count)
             .sub(output.working().width)
             .max(0.0_f64);
-        if let Some(workspace) = output.workspaces.get_mut(active) {
-            workspace.view = workspace.view.min(furthest);
+        if let Some(strip) = output.workspaces.get_mut(active) {
+            strip.view = strip.view.min(furthest);
         }
     }
     /// A command without a focused target leaves the layout unchanged.
