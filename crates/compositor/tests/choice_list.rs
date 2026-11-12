@@ -31,6 +31,11 @@ mod tests {
         let pixels =
             tehuti::choice_list::raster(&list, PadFamily::Letters, (1920, 1080)).ok_or("missing artwork")?;
         assert_eq!(pixels.get(0..4), Some([0, 0, 0, 0].as_slice()));
+        assert_eq!(
+            pixel(&pixels, 1919, 60),
+            [98, 86, 72, 255],
+            "the header preserves the thin panel outline",
+        );
         let colours: std::collections::HashSet<_> = pixels.as_chunks::<4>().0.iter().copied().collect();
         assert!(colours.len() > 40, "fontdue gives smooth text coverage");
         assert!(
@@ -307,6 +312,53 @@ mod tests {
                 previous = height;
             }
         }
+        Ok(())
+    }
+
+    /// The opaque panel's last row; scaled edges are antialiased, so opacity marks the panel.
+    fn opaque_bottom(pixels: &[u8]) -> Option<usize> {
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .rposition(|pixel| pixel[3] >= 200)
+            .map(|index| index / 1920)
+    }
+
+    #[test]
+    fn launcher_rows_keep_their_natural_height_above_the_bar() -> Result<(), Box<dyn core::error::Error>> {
+        let bar = usize::try_from(tehuti_core::bar::HEIGHT)?;
+        for rows in 1..=5 {
+            let launcher = launcher(rows);
+            let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
+                .ok_or("artwork")?;
+            let bottom = opaque_bottom(&pixels).ok_or("panel")?;
+            assert!(
+                bottom < 1080_usize.saturating_sub(bar),
+                "{rows} rows: panel ends at {bottom}, above the bar"
+            );
+            let live = [119, 88, 36, 255];
+            let selected = (0..1080).filter(|y| pixel(&pixels, 1700, *y) == live).count();
+            assert!(
+                selected == 72,
+                "{rows} rows: selected row is {selected}px, row must keep its natural height"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_panel_stops_above_a_scaled_bar() -> Result<(), Box<dyn core::error::Error>> {
+        let launcher = launcher(2);
+        let pixels = tehuti::choice_list::raster_scaled(launcher.list(), PadFamily::Letters, (1920, 1080), 2)
+            .ok_or("artwork")?;
+        let bottom = opaque_bottom(&pixels).ok_or("panel")?;
+        let bar = usize::try_from(tehuti_core::bar::HEIGHT.saturating_mul(2))?;
+        assert!(
+            bottom < 1080_usize.saturating_sub(bar),
+            "panel ends at {bottom}; the doubled bar starts at {}",
+            1080_usize.saturating_sub(bar)
+        );
         Ok(())
     }
 }
