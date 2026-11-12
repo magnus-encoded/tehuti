@@ -341,7 +341,7 @@ mod hardware_keyboard {
 
     fn tap(compositor: &mut Compositor, code: u32) {
         for pressed in [true, false] {
-            compositor.host_key(Keycode::new(code + 8), pressed);
+            compositor.host_key(Keycode::new(code.saturating_add(8)), pressed);
         }
     }
 
