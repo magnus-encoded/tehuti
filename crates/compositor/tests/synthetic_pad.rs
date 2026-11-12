@@ -1010,6 +1010,127 @@ mod synthetic_pad {
         assert!(!compositor.pad_passthrough());
     }
 
+    #[derive(Clone, Default)]
+    struct ApplicationPad {
+        pending: std::rc::Rc<core::cell::RefCell<Vec<evdev::InputEvent>>>,
+        delivered: std::rc::Rc<core::cell::RefCell<Vec<evdev::InputEvent>>>,
+    }
+
+    impl ApplicationPad {
+        fn north(&self) -> Vec<i32> {
+            self.delivered
+                .borrow()
+                .iter()
+                .filter(|event| {
+                    event.event_type() == evdev::EventType::KEY
+                        && event.code() == evdev::KeyCode::BTN_NORTH.code()
+                })
+                .map(evdev::InputEvent::value)
+                .collect()
+        }
+    }
+
+    impl tehuti::controller::MirrorSink for ApplicationPad {
+        fn emit(&mut self, frame: &[evdev::InputEvent]) -> std::io::Result<()> {
+            self.delivered.borrow_mut().extend_from_slice(frame);
+            Ok(())
+        }
+    }
+
+    impl tehuti::controller::PadDevice for ApplicationPad {
+        fn grab(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn ungrab(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn get_key_state(&self) -> std::io::Result<Vec<u16>> {
+            Ok(Vec::new())
+        }
+
+        fn get_absinfo(&self) -> std::io::Result<Vec<(evdev::AbsoluteAxisCode, evdev::AbsInfo)>> {
+            Ok(Vec::new())
+        }
+
+        fn drain(&mut self, hat: &mut tehuti::controller::DpadHat) -> std::io::Result<Vec<Event>> {
+            Ok(self
+                .pending
+                .borrow_mut()
+                .drain(..)
+                .flat_map(|event| hat.translate(&event.destructure()))
+                .collect())
+        }
+
+        fn virtual_pad(&self) -> std::io::Result<Box<dyn tehuti::controller::MirrorSink>> {
+            Ok(Box::new(self.clone()))
+        }
+
+        fn fetch_raw(&mut self) -> std::io::Result<Vec<evdev::InputEvent>> {
+            Ok(self.pending.borrow_mut().drain(..).collect())
+        }
+    }
+
+    #[test]
+    fn passthrough_y_reaches_the_application_at_app_level_and_opens_keyboard_only_at_column_level() {
+        use evdev::{EventType, InputEvent, KeyCode, SynchronizationCode};
+        use tehuti::controller::{DpadHat, EvdevPad};
+
+        for keyboard in ["", "[keyboard]\non_text_field = 'off'\nbutton = 'west'\n"] {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = Compositor::new(&display.handle()).unwrap();
+            compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!(
+                "app_id = 'org.example.Game'\nbuttons = {{}}\n{keyboard}[pad]\npassthrough = true\nvirtual = true"
+            )).unwrap()]);
+            let mut synthetic = SyntheticPad::default();
+            synthetic.push(Event::Focus {
+                app_id: Some("org.example.Game".into()),
+                title: String::new(),
+            });
+            route(&mut compositor, &mut synthetic).unwrap();
+            let application = ApplicationPad::default();
+            let mut pad = EvdevPad::new(application.clone(), application.clone(), DpadHat::default());
+            assert!(compositor.virtual_pad());
+            assert!(
+                pad.set_mirror(compositor.virtual_pad(), &|button| {
+                    compositor.virtual_pad_consumed(button)
+                })
+                .unwrap()
+            );
+            for columns in [false, true] {
+                if columns {
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        synthetic.push(Event::Button {
+                            name: ButtonName::Guide,
+                            state,
+                        });
+                    }
+                    route(&mut compositor, &mut synthetic).unwrap();
+                    assert!(!compositor.pad_passthrough());
+                    assert!(
+                        !pad.set_mirror(compositor.virtual_pad(), &|button| {
+                            compositor.virtual_pad_consumed(button)
+                        })
+                        .unwrap()
+                    );
+                }
+                application.delivered.borrow_mut().clear();
+                for value in [1, 0] {
+                    application.pending.borrow_mut().extend([
+                        InputEvent::new(EventType::KEY.0, KeyCode::BTN_NORTH.code(), value),
+                        InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
+                    ]);
+                    pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                        .unwrap();
+                    route(&mut compositor, &mut pad).unwrap();
+                    assert_eq!(compositor.on_screen_keyboard().is_open(), columns);
+                }
+                assert_eq!(application.north(), if columns { vec![] } else { vec![1, 0] });
+            }
+        }
+    }
+
     #[test]
     fn right_stick_scrolls_only_outside_passthrough_and_targets_the_mode_focus() {
         for mouse_mode in [false, true] {
