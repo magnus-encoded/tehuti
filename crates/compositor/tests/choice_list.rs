@@ -333,10 +333,13 @@ mod tests {
             let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
                 .ok_or("artwork")?;
             let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-            assert!(
-                bottom < 1080_usize.saturating_sub(bar),
-                "{rows} rows: panel ends at {bottom}, above the bar"
-            );
+            // Natural height is 188 + 72 per row, centred in the 1048 rows above the bar.
+            let natural = 188_usize.saturating_add(rows.saturating_mul(72));
+            let expected = (1080_usize.saturating_sub(bar).saturating_sub(natural) / 2)
+                .saturating_add(natural)
+                .saturating_sub(1);
+            assert_eq!(bottom, expected, "{rows} rows: panel bottom row");
+            assert!(bottom < 1080_usize.saturating_sub(bar), "{rows} rows: above the bar");
             let live = [119, 88, 36, 255];
             let selected = (0..1080).filter(|y| pixel(&pixels, 1700, *y) == live).count();
             assert!(
@@ -353,11 +356,25 @@ mod tests {
         let pixels = tehuti::choice_list::raster_scaled(launcher.list(), PadFamily::Letters, (1920, 1080), 2)
             .ok_or("artwork")?;
         let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-        let bar = usize::try_from(tehuti_core::bar::HEIGHT.saturating_mul(2))?;
-        assert!(
-            bottom < 1080_usize.saturating_sub(bar),
-            "panel ends at {bottom}; the doubled bar starts at {}",
-            1080_usize.saturating_sub(bar)
+        // 2 rows: natural 332, panel 1280 wide (640 at scale 2) and 664 tall, centred in the
+        // 1920 x (1080 - 2 * 32) area above the doubled bar: left 320, top 176.
+        assert_eq!(bottom, 839, "panel bottom row; the doubled bar starts at 1016");
+        let covered = |x: &usize| {
+            (0..1080_usize).any(|y| {
+                pixels
+                    .get(y.saturating_mul(1920).saturating_add(*x).saturating_mul(4).saturating_add(3))
+                    .is_some_and(|alpha| *alpha >= 200)
+            })
+        };
+        assert_eq!(
+            (0..1920_usize).find(covered),
+            Some(320),
+            "panel left column"
+        );
+        assert_eq!(
+            (0..1920_usize).rev().find(covered),
+            Some(1599),
+            "panel right column mirrors the left"
         );
         Ok(())
     }
