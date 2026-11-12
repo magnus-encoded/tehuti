@@ -422,4 +422,24 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         assert_eq!(compositor.visible_notice_text(), None);
         Ok(())
     }
+
+    /// Renders the filtered list to the path in `TEHUTI_SHOT_COPY`; a no-op otherwise.
+    #[test]
+    fn typed_filter_renders_for_review() -> Result<(), Box<dyn core::error::Error>> {
+        let Ok(copy) = std::env::var("TEHUTI_SHOT_COPY") else {
+            return Ok(());
+        };
+        let root = tempfile::tempdir()?;
+        let (display, mut compositor) = session(root.path())?;
+        tehuti::driver::headless_output(&display.handle(), &mut compositor)?;
+        for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE, KEY_K, KEY_I] {
+            tap(&mut compositor, code);
+        }
+        let mut driver = tehuti::driver::Driver::bind(root.path(), tehuti::backend::Backend::Nested)?;
+        let _scene = driver.execute(
+            &mut compositor,
+            tehuti::driver::Request::Shot { path: copy.into() },
+        )?;
+        Ok(())
+    }
 }
