@@ -385,14 +385,18 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         let root = tempfile::tempdir()?;
         let (_display, mut compositor) = session(root.path())?;
         assert!(
-            compositor.choice_list().is_some_and(|list| list.is_open()),
+            compositor
+                .choice_list()
+                .is_some_and(tehuti_core::choice_list::List::is_open),
             "open after speech"
         );
         for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE] {
             tap(&mut compositor, code);
         }
         assert!(
-            compositor.choice_list().is_some_and(|list| list.is_open()),
+            compositor
+                .choice_list()
+                .is_some_and(tehuti_core::choice_list::List::is_open),
             "open after erase"
         );
         for code in [KEY_K, KEY_I, KEY_T] {
