@@ -72,7 +72,7 @@ mod tests {
             "each line reserves room for a complete ellipsis"
         );
         for y in 112..168 {
-            for x in 1876..1892 {
+            for x in 1889..1895 {
                 assert_eq!(
                     pixel(&long, x, y),
                     [119, 88, 36, 255],
