@@ -135,7 +135,7 @@ impl KeymapSync {
             self.elapsed = self.elapsed.saturating_add(elapsed);
             match child.try_wait() {
                 Ok(None) if self.elapsed < core::time::Duration::from_secs(5) => return,
-                Ok(Some(status)) if status.success() => self.applied = submitted.clone(),
+                Ok(Some(status)) if status.success() => self.applied.clone_from(submitted),
                 result => {
                     tracing::warn!(?result, "X11 keymap update failed; retrying");
                     crate::shutdown::terminate(child, false);
