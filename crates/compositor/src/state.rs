@@ -2705,8 +2705,7 @@ impl Compositor {
                         .first()
                         .and_then(|symbol| char::from_u32(xkb::keysym_to_utf32(*symbol)))
                         .filter(|character| *character != '\0')
-                        .map(String::from)
-                        .unwrap_or_default()
+                        .map_or_default(String::from)
                 });
                 let held = self.keyboard.modifier_state();
                 if held.ctrl || held.alt || held.logo || text.is_empty() || text.chars().any(char::is_control)
