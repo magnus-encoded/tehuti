@@ -5,6 +5,35 @@ mod speech_vocabulary {
     use tehuti_protocol::parse_context;
 
     #[test]
+    fn prompt_uses_focused_actions_then_global_without_aliases_or_other_contexts() {
+        let contexts = vec![
+            parse_context("app_id = '*'\n[buttons]\n[speech]\n'Global' = { key = 'enter' }").unwrap(),
+            parse_context("app_id = 'game'\nlabel = 'Mimiron'\n[buttons]\n[speech]\n'Yell' = { text = '/y ' }\n'Chat with yell' = { text = '/y ' }").unwrap(),
+            parse_context("app_id = 'editor'\n[buttons]\n[speech]\n'Edit' = { key = 'escape' }").unwrap(),
+        ];
+        assert_eq!(
+            speech_vocabulary::prompt(&contexts, Some("game"), ""),
+            "Chat with yell Global"
+        );
+        assert_eq!(speech_vocabulary::prompt(&contexts, None, ""), "Global");
+        assert_eq!(
+            speech_vocabulary::prompt(&contexts, Some("editor"), ""),
+            "Edit Global"
+        );
+        let phrase = vec!["word"; 110].join(" ");
+        let long = parse_context(&format!(
+            "app_id = '*'\n[buttons]\n[speech]\n'{phrase}' = {{ key = 'enter' }}"
+        ))
+        .unwrap();
+        assert_eq!(
+            speech_vocabulary::prompt(&[long], None, "")
+                .split_whitespace()
+                .count(),
+            100
+        );
+    }
+
+    #[test]
     fn vocabulary_contains_phrases_user_words_projects_skills_and_desktop_names() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();

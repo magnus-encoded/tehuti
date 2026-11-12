@@ -41,6 +41,7 @@ pub fn read(
         .filter(|line| !line.starts_with('#'))
         .map(str::to_owned)
         .collect();
+    words.extend(contexts.iter().filter_map(Context::label).map(str::to_owned));
     words.extend(directory_names(projects));
     for directory in skills {
         words.extend(directory_names(directory));
@@ -166,4 +167,27 @@ pub fn configure_session_projects(contexts: &mut [Context]) {
     if let Some(home) = std::env::var_os("HOME") {
         configure_projects(contexts, &PathBuf::from(home).join("Projects"));
     }
+}
+
+/// The first alphabetic phrase per action, focused context before global, capped at 100 words.
+#[must_use]
+pub fn prompt(contexts: &[Context], app_id: Option<&str>, title: &str) -> String {
+    let own = app_id.and_then(|application_id| tehuti_core::own_context(contexts, application_id, title));
+    let mut actions = Vec::new();
+    let mut words = Vec::new();
+    for context in own
+        .into_iter()
+        .chain(contexts.iter().filter(|context| context.app_id() == "*"))
+    {
+        let mut mappings: Vec<_> = context.speech_mappings().collect();
+        mappings.sort_by(|left, right| left.phrase.cmp(right.phrase));
+        for mapping in mappings {
+            if actions.contains(&mapping.action) {
+                continue;
+            }
+            actions.push(mapping.action);
+            words.extend(mapping.phrase.split_whitespace());
+        }
+    }
+    words.into_iter().take(100).collect::<Vec<_>>().join(" ")
 }

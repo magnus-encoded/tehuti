@@ -1346,9 +1346,14 @@ impl Compositor {
             | tehuti_core::speech::SpeechEffect::Interim { .. }
             | tehuti_core::speech::SpeechEffect::Failed { .. } => {}
         }
+        let prompt = crate::speech_vocabulary::prompt(
+            self.contexts(),
+            self.speech_context.as_deref(),
+            &self.speech_title,
+        );
         self.speech_process.as_mut().is_none_or(|process| {
             process
-                .send(command)
+                .send_with_prompt(command, &prompt)
                 .inspect_err(|error| tracing::warn!(%error, "speech command failed"))
                 .is_ok()
         })

@@ -107,12 +107,16 @@ ignored. Editing this file triggers the context reload watcher. Folder and
 application changes are picked up on the next successful reload.
 
 The sidecar deduplicates candidates and admits whole entries while they fit
-within 64 Whisper tokens, in order: personal names, projects, skills, phrases,
+within 64 Whisper tokens, in order: personal names, Tehuti, context labels, projects, skills, phrases,
 applications. The candidate message is capped at 30 KiB. Every application is a
 candidate, including applications without a context. Oversized entries are
 skipped. Transcription, live preview and the VAD retry use the same hotwords.
-`initial_prompt` is omitted: the measured combined priming exceeded Whisper's
-decoder position limit. The short hotword budget bounds decoder prompt work.
+Capture starts optionally include `prompt`: the first alphabetic phrase for each
+distinct action in the focused context, followed by global actions, capped at
+100 words. With no focused context, only global actions contribute. The sidecar
+snapshots this prompt per capture and passes it as `initial_prompt` for live
+preview, final transcription and the VAD retry. Starts without a prompt remain
+valid. Hotwords retain their separate 64-token budget.
 
 Contexts can map a prefix followed by a free tail:
 

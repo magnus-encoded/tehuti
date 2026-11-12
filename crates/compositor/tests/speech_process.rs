@@ -21,6 +21,24 @@ mod speech_process {
     }
 
     #[test]
+    fn capture_start_carries_the_context_prompt_to_the_sidecar() {
+        let mut process = child(
+            "import sys,json,time\nprint('{\"ready\":true}', flush=True)\nc=json.loads(sys.stdin.readline())\nprint(json.dumps({'session':c['start'],'text':c['prompt']}), flush=True)\ntime.sleep(60)",
+        );
+        wait_for(&mut process, &SpeechInput::Available);
+        process
+            .send_with_prompt(&SpeechEffect::Start { session: 7 }, "Chat with yell")
+            .unwrap();
+        wait_for(
+            &mut process,
+            &SpeechInput::Transcript {
+                session: 7,
+                text: Text::new("Chat with yell".into()).unwrap(),
+            },
+        );
+    }
+
+    #[test]
     fn stale_typed_speech_fifo_is_replaced_and_accepts_lines() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(FIFO_NAME);

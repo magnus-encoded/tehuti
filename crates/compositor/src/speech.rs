@@ -135,7 +135,18 @@ impl SpeechProcess {
     /// # Errors
     /// The child is absent or its bounded output queue is full.
     pub fn send(&mut self, effect: &SpeechEffect) -> io::Result<()> {
+        self.send_with_prompt(effect, "")
+    }
+
+    /// Queues a capture command with the focused context prompt.
+    ///
+    /// # Errors
+    /// The child is absent or its bounded output queue is full.
+    pub fn send_with_prompt(&mut self, effect: &SpeechEffect, prompt: &str) -> io::Result<()> {
         let value = match effect {
+            SpeechEffect::Start { session } if !prompt.is_empty() => {
+                serde_json::json!({"start": session, "prompt": prompt})
+            }
             SpeechEffect::Start { session } => serde_json::json!({"start": session}),
             SpeechEffect::Stop { session, transcribe } => {
                 serde_json::json!({"stop": session, "transcribe": transcribe})
