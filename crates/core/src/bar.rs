@@ -477,10 +477,16 @@ mod tests {
     fn waiting(bar: &mut Bar) {
         bar.capture(
             &SpeechInput::Release,
-            &[SpeechEffect::Stop { session: 0, transcribe: true }],
+            &[SpeechEffect::Stop {
+                session: 0,
+                transcribe: true,
+            }],
             false,
         );
-        assert_eq!(bar.segments().last().map(|s| s.text.as_str()), Some("Transcribing…"));
+        assert_eq!(
+            bar.segments().last().map(|s| s.text.as_str()),
+            Some("Transcribing…")
+        );
     }
 
     #[test]
@@ -488,7 +494,10 @@ mod tests {
         let mut bar = Bar::new();
         waiting(&mut bar);
         bar.capture(
-            &SpeechInput::Transcript { session: 0, text: tehuti_protocol::Text::new("x".into()).unwrap() },
+            &SpeechInput::Transcript {
+                session: 0,
+                text: tehuti_protocol::Text::new("x".into()).unwrap(),
+            },
             &[],
             false,
         );
@@ -498,7 +507,9 @@ mod tests {
     #[test]
     fn resolving_to_nothing_clears_the_live_segment() {
         let mut bar = Bar::new();
-        bar.event(&Event::Speech { text: tehuti_protocol::Text::new("x".into()).unwrap() });
+        bar.event(&Event::Speech {
+            text: tehuti_protocol::Text::new("x".into()).unwrap(),
+        });
         bar.resolve(&[Action::KeyUp { key: KeyName::Enter }]);
         assert_eq!(bar.segments().len(), 1);
     }
@@ -507,7 +518,9 @@ mod tests {
     fn a_waiting_segment_never_outlives_its_budget() {
         let mut bar = Bar::new();
         waiting(&mut bar);
-        bar.event(&Event::Tick { elapsed: WAIT_LIFETIME + Duration::from_millis(1) });
+        bar.event(&Event::Tick {
+            elapsed: WAIT_LIFETIME + Duration::from_millis(1),
+        });
         assert_eq!(bar.segments().len(), 1);
     }
 
