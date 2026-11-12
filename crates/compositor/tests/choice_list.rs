@@ -192,10 +192,10 @@ mod tests {
     }
 
     fn pixel(pixels: &[u8], x: usize, y: usize) -> [u8; 4] {
-        let top = (0..1080)
-            .find(|row| {
-                let start = (row * 1920 + 640) * 4;
-                pixels.get(start..start + 4) == Some([98, 86, 72, 255].as_slice())
+        let top = (0_usize..1080)
+            .find(|&row| {
+                let start = row.saturating_mul(1920).saturating_add(640).saturating_mul(4);
+                pixels.get(start..start.saturating_add(4)) == Some([98, 86, 72, 255].as_slice())
             })
             .unwrap_or_default();
         let x = x.saturating_sub(640);
