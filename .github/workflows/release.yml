@@ -108,6 +108,9 @@ jobs:
       - name: Smoke dependencies
         run: sudo apt-get update && sudo apt-get install -y python3-pil foot libxkbcommon0 libwayland-client0 libwayland-server0 libegl1 libudev1 libseat1 libinput10 libgbm1 libdrm2 libpixman-1-0
       - name: Capture release screens
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          TEHUTI_WALLPAPER_URL: ${{ vars.WALLPAPER_URL }}
         run: |
           tar -xzf candidate/tehuti-*.tar.gz -C candidate/bin
           chmod +x candidate/bin/tehuti-drive

@@ -25,6 +25,12 @@ status and explicitly marks the release latest. The dispatch records who chose
 to promote it. Asset presence checks support the human review; they do not judge
 visual quality.
 
+Screenshots render on the wallpaper of the tag's major version (v0 is
+`apteribis`, v1 `bostrychia`, in codename order). Wallpaper images stay outside
+git, so the repository variable `WALLPAPER_URL` must name a base URL serving
+`<codename>.png`; the smoke script downloads the one it needs. The README hero
+links `releases/latest/download/start-screen.png`, which follows each promotion.
+
 For a local smoke run, build both binaries with `cargo build --locked -p tehuti
 --bins`, install `foot` and Python Pillow, then run `scripts/release-smoke target/debug smoke`.
 For a custom Cargo target directory, pass its binary directory instead.

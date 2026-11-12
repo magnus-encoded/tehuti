@@ -9,7 +9,7 @@ columns. A controller moves between them, opens apps and types on an on-screen
 keyboard. Hold a button and speak to launch an app, run a command or dictate
 text. Speech is transcribed on your machine.
 
-![The launcher open beside a terminal window](https://github.com/magnus-encoded/tehuti/releases/download/v0.114.0/launcher.png)
+![The Tehuti start screen on the release wallpaper](https://github.com/magnus-encoded/tehuti/releases/latest/download/start-screen.png)
 
 ## Status
 
