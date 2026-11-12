@@ -71,6 +71,8 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::BarFont(_)
         | DispatchInput::DisplayScale(_)
         | DispatchInput::ModeApplied(_)
+        | DispatchInput::ControllerBindings(_)
+        | DispatchInput::ActiveController(_)
         | DispatchInput::Controllers(_)
         | DispatchInput::Microphones(_)
         | DispatchInput::InputChoices { .. }
@@ -1454,6 +1456,11 @@ impl Compositor {
             tracing::warn!(%error, "saved microphone unreadable; using every microphone");
             tehuti_core::dispatch::MicrophoneChoice::All
         });
+        let bindings = store.controller_bindings().unwrap_or_else(|error| {
+            tracing::warn!(%error, "controller bindings unreadable; using context defaults");
+            std::collections::BTreeMap::new()
+        });
+        let _bindings_rejection = self.dispatch(DispatchInput::ControllerBindings(bindings));
         self.controller_choice = controller.clone();
         self.input_choices = Some(store);
         let _rejection = self.dispatch(DispatchInput::InputChoices {
@@ -1479,6 +1486,10 @@ impl Compositor {
     #[must_use]
     pub fn controller_chosen(&self, name: &str) -> bool {
         crate::input::chosen(&self.controller_choice, &self.controller_names, name)
+    }
+
+    pub fn activate_controller(&mut self, name: String) {
+        let _rejection = self.dispatch(DispatchInput::ActiveController(name));
     }
 
     fn choose_controller(&mut self, choice: tehuti_core::dispatch::ControllerChoice, persist: bool) {
@@ -1625,6 +1636,7 @@ impl Compositor {
             | DispatchEffect::WallpaperPreview(_)
             | DispatchEffect::WallpaperSave(_)
             | DispatchEffect::SettingsController(_)
+            | DispatchEffect::PersistControllerTalk(_, _)
             | DispatchEffect::PersistController(_)
             | DispatchEffect::SettingsMicrophone(_)
             | DispatchEffect::ListMicrophones
@@ -1912,6 +1924,18 @@ impl Compositor {
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
             DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
+            DispatchEffect::PersistControllerTalk(controller_name, button) => {
+                let mut bindings = self.settings().input.controller_bindings.clone();
+                if let Some(button) = button {
+                    let _previous = bindings.insert(controller_name, button);
+                } else {
+                    let _previous = bindings.remove(&controller_name);
+                }
+                self.save_input_choice(|store| store.set_controller_bindings(&bindings));
+                if let Some(name) = self.settings().input.active_controller.clone() {
+                    self.activate_controller(name);
+                }
+            }
             DispatchEffect::PersistController(choice) => self.choose_controller(choice, true),
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
             DispatchEffect::ListMicrophones => {

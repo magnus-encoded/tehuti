@@ -55,6 +55,7 @@ pub struct State {
     bar: bar::Bar,
     held_keys: Vec<(ButtonName, KeyName)>,
     pad_family: pad::PadFamily,
+    controller_talk: Option<ButtonName>,
     app_names: Vec<(String, String)>,
 }
 
@@ -77,6 +78,9 @@ impl State {
 
     #[must_use]
     pub fn passthrough_push_to_talk(&self) -> &[ButtonName] {
+        if let Some(button) = &self.controller_talk {
+            return core::slice::from_ref(button);
+        }
         focused_context(self).map_or(&[ButtonName::Record], Context::passthrough_push_to_talk)
     }
 
@@ -144,6 +148,7 @@ impl State {
             bar: bar::Bar::new(),
             held_keys: Vec::new(),
             pad_family: pad::PadFamily::Letters,
+            controller_talk: None,
             app_names: Vec::new(),
         };
         state.refresh_ticker();
@@ -352,8 +357,15 @@ impl State {
         self.menu.as_ref()
     }
 
+    pub const fn set_controller_push_to_talk(&mut self, button: Option<ButtonName>) {
+        self.controller_talk = button;
+    }
+
     #[must_use]
     pub fn push_to_talk(&self, button: ButtonName) -> bool {
+        if let Some(binding) = self.controller_talk {
+            return binding == button;
+        }
         global_context(self).map_or(button == ButtonName::Record, |context| {
             context.push_to_talk(button)
         })

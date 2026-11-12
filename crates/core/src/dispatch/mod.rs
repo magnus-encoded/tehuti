@@ -52,6 +52,8 @@ pub enum Input {
     },
     /// The connected pads and their labels, in device path order.
     Controllers(Vec<ControllerInfo>),
+    ControllerBindings(std::collections::BTreeMap<String, ButtonName>),
+    ActiveController(String),
     /// Reply to [`Effect::ListMicrophones`]: the capture sources found.
     Microphones(Vec<Microphone>),
     /// The saved input choices, read at startup.
@@ -135,6 +137,7 @@ pub enum Effect {
     /// Routes pad input from the chosen controller only, until confirmed or reverted.
     SettingsController(ControllerChoice),
     PersistController(ControllerChoice),
+    PersistControllerTalk(String, Option<ButtonName>),
     /// Saves the capture sources the speech sidecar records from.
     SettingsMicrophone(MicrophoneChoice),
     /// Lists capture sources; the compositor answers later with [`Input::Microphones`].
@@ -636,13 +639,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             state.core.menu = Some(state.core.new_menu().selecting(command));
             (state, effects)
         }
-        Input::Launcher(launcher) => {
-            state.choice_list = None;
-            state.launcher = Some(launcher);
-            let mut effects = Vec::new();
-            release_pad(&mut state, Handoff::Open(Overlay::ChoiceList), &mut effects);
-            (state, effects)
-        }
+        Input::Launcher(launcher) => open_launcher(state, launcher),
         Input::CloseInvitation => {
             state.launcher = state.launcher.filter(|launcher| !launcher.is_invitation());
             (state, Vec::new())
@@ -663,6 +660,8 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::Wallpapers { .. }
         | Input::WallpaperSaved(_)
         | Input::ModeApplied(_)
+        | Input::ControllerBindings(_)
+        | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
         | Input::InputChoices { .. }) => settings_input(state, input),
@@ -692,6 +691,14 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     }
 }
 
+fn open_launcher(mut state: State, launcher: crate::launcher::Launcher) -> (State, Vec<Effect>) {
+    state.choice_list = None;
+    state.launcher = Some(launcher);
+    let mut effects = Vec::new();
+    release_pad(&mut state, Handoff::Open(Overlay::ChoiceList), &mut effects);
+    (state, effects)
+}
+
 fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
     let tasks = match input {
         Input::Tick { elapsed } => tick_tasks(elapsed).into(),
@@ -715,6 +722,8 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::BarFont(_)
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
+        | Input::ControllerBindings(_)
+        | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
         | Input::InputChoices { .. }
@@ -774,6 +783,8 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::BarFont(_)
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
+        | Input::ControllerBindings(_)
+        | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
         | Input::InputChoices { .. }
@@ -817,6 +828,12 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         } => state.settings.configure_wallpapers(names, locked, current),
         Input::WallpaperSaved(index) => state.settings.wallpaper_saved(index),
         Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
+        Input::ControllerBindings(bindings) => state.settings.input.controller_bindings = bindings,
+        Input::ActiveController(name) => {
+            let binding = state.settings.input.controller_bindings.get(&name).copied();
+            state.core.set_controller_push_to_talk(binding);
+            state.settings.input.active_controller = Some(name);
+        }
         Input::Controllers(names) => state.settings.configure_controllers(names),
         Input::Microphones(microphones) => state.settings.configure_microphones(microphones),
         Input::InputChoices {
