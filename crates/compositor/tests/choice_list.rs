@@ -403,7 +403,11 @@ mod tests {
         // The last 16 rows above the bottom border are padding; text there means the panel cut it off.
         for y in bottom.saturating_sub(16)..bottom {
             for x in left.saturating_add(2)..left.saturating_add(636) {
-                assert_eq!(pixel_at(x, y), background, "text touches the bottom edge at {x},{y}");
+                assert_eq!(
+                    pixel_at(x, y),
+                    background,
+                    "text touches the bottom edge at {x},{y}"
+                );
             }
         }
         Ok(())
