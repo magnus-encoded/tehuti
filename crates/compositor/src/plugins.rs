@@ -994,13 +994,13 @@ fn insert_reader<Data: 'static>(
             ),
             move |_, source, data| {
                 let action = read_ready(&reader, source, data, compositor, &timer_handle);
-                let session = reader.borrow();
-                if !session.output.is_empty()
-                    && session.writer_disabled.get()
+                let reader_session = reader.borrow();
+                if !reader_session.output.is_empty()
+                    && reader_session.writer_disabled.get()
                     && let Some(writer_handle) = writer_handle.upgrade()
                 {
                     match writer_handle.enable(&writer_token) {
-                        Ok(()) => session.writer_disabled.set(false),
+                        Ok(()) => reader_session.writer_disabled.set(false),
                         Err(error) => tracing::warn!(%error, "plugin writer unavailable"),
                     }
                 }
