@@ -363,7 +363,11 @@ mod client_state_requests {
     fn fullscreen_before_first_commit_configures_output_once_and_restores_tile() {
         let report = run(true, false);
         assert_eq!(report.first_count, 1, "{report:?}");
-        assert_eq!(report.first_size, (OUTPUT_WIDTH, OUTPUT_HEIGHT), "{report:?}");
+        assert_eq!(
+            report.first_size,
+            (OUTPUT_WIDTH, OUTPUT_HEIGHT - tehuti_core::bar::HEIGHT),
+            "fullscreen leaves the bar exclusive zone clear: {report:?}"
+        );
         assert!(report.first.contains(&u32::from(xdg_toplevel::State::Fullscreen)));
         let tile_size = report.unfullscreen_size.unwrap();
         assert!(
