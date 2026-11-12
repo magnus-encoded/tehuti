@@ -1346,8 +1346,7 @@ impl Compositor {
                     .candidate_destination(index)
                     .and_then(|index| self.launcher_routes.get(index))
                     .and_then(|route| route.steps.first())
-                    .map(|step| step.icon.clone())
-                    .unwrap_or_default()
+                    .map_or_default(|step| step.icon.clone())
             })
             .collect()
     }

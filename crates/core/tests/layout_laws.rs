@@ -1075,8 +1075,8 @@ mod layout_laws {
             let mut world = World::single(config, geometry)?;
             let target = interior_column(&mut world, count, pick).ok_or_else(|| TestCaseError::fail("setup"))?;
             let before = world.snap();
-            let order = |snap: &Snapshot| focused_workspace(snap).map(|workspace| workspace.columns.iter()
-                .filter_map(|column| column.tiles.first().map(|tile| tile.window)).collect::<Vec<_>>()).unwrap_or_default();
+            let order = |snap: &Snapshot| focused_workspace(snap).map_or_default(|workspace| workspace.columns.iter()
+                .filter_map(|column| column.tiles.first().map(|tile| tile.window)).collect::<Vec<_>>());
             world.apply(if rightward { Command::MoveColumnRight } else { Command::MoveColumnLeft });
             let after = world.snap();
             let neighbour = if rightward { target + 1 } else { target - 1 };
@@ -1145,7 +1145,7 @@ mod layout_laws {
             world.stack(count)?;
             prop_assume!(focused_column(&world.snap()).is_some_and(|column| column.tiles.len() >= 2));
             world.apply(Command::FocusWindowTop);
-            let order = |snap: &Snapshot| focused_column(snap).map(|column| column.tiles.iter().map(|tile| tile.window).collect::<Vec<_>>()).unwrap_or_default();
+            let order = |snap: &Snapshot| focused_column(snap).map_or_default(|column| column.tiles.iter().map(|tile| tile.window).collect::<Vec<_>>());
             let before = world.snap();
             world.apply(Command::MoveWindowDown);
             let after = world.snap();
@@ -1272,7 +1272,7 @@ mod layout_laws {
         ) {
             let mut world = World::single(config, geometry)?;
             world.fill_workspaces(count)?;
-            let before = focused_output(&world.snap()).map(|output| output.workspaces.len()).unwrap_or_default();
+            let before = focused_output(&world.snap()).map_or_default(|output| output.workspaces.len());
             let window = world.open()?;
             let snap = world.snap();
             let output = focused_output(&snap).ok_or_else(|| TestCaseError::fail("no output"))?;
@@ -1305,7 +1305,7 @@ mod layout_laws {
         ) {
             let mut world = World::single(config, geometry)?;
             world.fill_workspaces(count)?;
-            let ids = focused_output(&world.snap()).map(workspace_ids).unwrap_or_default();
+            let ids = focused_output(&world.snap()).map_or_default(workspace_ids);
             let start = 1 + pick.index(count - 1);
             world.apply(Command::FocusWorkspaceAt(start));
             world.apply(if downward { Command::FocusWorkspaceDown } else { Command::FocusWorkspaceUp });
@@ -1324,7 +1324,7 @@ mod layout_laws {
         ) {
             let mut world = World::single(config, geometry)?;
             world.fill_workspaces(count)?;
-            let ids = focused_output(&world.snap()).map(workspace_ids).unwrap_or_default();
+            let ids = focused_output(&world.snap()).map_or_default(workspace_ids);
             let (start, target) = (pick.index(count), target.index(count + 1));
             prop_assume!(start != target);
             world.apply(Command::FocusWorkspaceAt(start));
@@ -1334,7 +1334,7 @@ mod layout_laws {
             world.open_many(extra)?;
             world.focus_column(0);
             world.apply_times(Command::ConsumeWindowIntoColumn, extra);
-            let members: Vec<WindowId> = focused_column(&world.snap()).map(|column| column.tiles.iter().map(|tile| tile.window).collect()).unwrap_or_default();
+            let members: Vec<WindowId> = focused_column(&world.snap()).map_or_default(|column| column.tiles.iter().map(|tile| tile.window).collect());
             prop_assert_eq!(members.len(), extra + 1);
             world.apply(Command::MoveColumnToWorkspaceAt(target));
             let snap = world.snap();
@@ -1343,11 +1343,10 @@ mod layout_laws {
             }
             // The column moves whole: one column, members in the same order.
             let moved: Vec<Vec<WindowId>> = members.first().and_then(|first| workspace_of(&snap, *first))
-                .map(|workspace| workspace.columns.iter()
+                .map_or_default(|workspace| workspace.columns.iter()
                     .map(|column| column.tiles.iter().map(|tile| tile.window).collect::<Vec<_>>())
                     .filter(|column| column.iter().any(|window| members.contains(window)))
-                    .collect())
-                .unwrap_or_default();
+                    .collect());
             prop_assert_eq!(moved, vec![members]);
         }
 
@@ -1360,7 +1359,7 @@ mod layout_laws {
         ) {
             let mut world = World::single(config, geometry)?;
             world.fill_workspaces(count)?;
-            let ids = focused_output(&world.snap()).map(workspace_ids).unwrap_or_default();
+            let ids = focused_output(&world.snap()).map_or_default(workspace_ids);
             let start = 1 + pick.index(count - 1);
             world.apply(Command::FocusWorkspaceAt(start));
             let window = world.snap().focused_window.ok_or_else(|| TestCaseError::fail("nothing focused"))?;
@@ -1385,7 +1384,7 @@ mod layout_laws {
             let config = LayoutConfig { empty_workspace_above_first: false, ..config };
             let mut world = World::single(config, geometry)?;
             world.fill_workspaces(count)?;
-            let ids = focused_output(&world.snap()).map(workspace_ids).unwrap_or_default();
+            let ids = focused_output(&world.snap()).map_or_default(workspace_ids);
             let start = pick.index(count - 1);
             world.apply(Command::FocusWorkspaceAt(start));
             world.apply(Command::MoveWorkspaceDown);
@@ -1407,7 +1406,7 @@ mod layout_laws {
             let back = config.workspace_auto_back_and_forth;
             let mut world = World::single(config, geometry)?;
             world.fill_workspaces(count)?;
-            let ids = focused_output(&world.snap()).map(workspace_ids).unwrap_or_default();
+            let ids = focused_output(&world.snap()).map_or_default(workspace_ids);
             let (origin, destination) = (first.index(count), second.index(count));
             prop_assume!(origin != destination);
             world.apply(Command::FocusWorkspaceAt(origin));
