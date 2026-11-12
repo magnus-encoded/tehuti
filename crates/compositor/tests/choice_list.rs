@@ -391,7 +391,10 @@ mod tests {
         let bottom = opaque_bottom(&pixels).ok_or("panel")?;
         let at = |x: usize, y: usize| {
             let start = y.saturating_mul(1920).saturating_add(x).saturating_mul(4);
-            pixels.get(start..start.saturating_add(4)).unwrap_or_default().to_vec()
+            pixels
+                .get(start..start.saturating_add(4))
+                .unwrap_or_default()
+                .to_vec()
         };
         let left = (0..1920_usize)
             .find(|&x| at(x, bottom.saturating_sub(40))[3] >= 200)
