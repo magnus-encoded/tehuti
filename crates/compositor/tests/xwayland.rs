@@ -279,9 +279,10 @@ mod xwayland {
             {
                 return keymap;
             }
-            if started.elapsed() >= Duration::from_secs(10) {
-                panic!("X11 did not receive {layout}");
-            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "X11 did not receive {layout}"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
