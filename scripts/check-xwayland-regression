@@ -16,6 +16,9 @@ cp "$scratch/base.rs" "$source"
 # The base has no upload operation; this adapter lets the readback test compile.
 cat >> "$source" <<'RUST'
 impl Satellite {
+    pub fn is_running(&self) -> bool {
+        true
+    }
     pub fn sync_keymap(&mut self, _: core::time::Duration, _: &str) -> bool {
         true
     }
