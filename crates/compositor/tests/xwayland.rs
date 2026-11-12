@@ -280,7 +280,10 @@ mod xwayland {
                 return keymap;
             }
             if started.elapsed() >= Duration::from_secs(10) {
-                eprintln!("[DEBUG-527] applied={applied}; Tehuti sent:\n{}", compositor.keymap());
+                eprintln!(
+                    "[DEBUG-527] applied={applied}; Tehuti sent:\n{}",
+                    compositor.keymap()
+                );
                 let received = std::process::Command::new("xkbcomp")
                     .args(["-xkb", display, "-"])
                     .output()
