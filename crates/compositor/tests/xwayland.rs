@@ -245,8 +245,8 @@ mod xwayland {
         );
     }
 
-    fn received_keymap(display: &str) -> Option<smithay::reexports::xkbcommon::xkb::Keymap> {
-        use smithay::reexports::xkbcommon::xkb;
+    fn received_keymap(display: &str) -> Option<smithay::input::keyboard::xkb::Keymap> {
+        use smithay::input::keyboard::xkb;
         let output = std::process::Command::new("xkbcomp")
             .args(["-xkb", display, "-"])
             .output()
@@ -267,7 +267,7 @@ mod xwayland {
         compositor: &tehuti::state::Compositor,
         display: &str,
         layout: &str,
-    ) -> smithay::reexports::xkbcommon::xkb::Keymap {
+    ) -> smithay::input::keyboard::xkb::Keymap {
         use core::time::Duration;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -291,7 +291,7 @@ mod xwayland {
         if std::env::var_os("TEHUTI_KEYMAP_PROBE").is_none() {
             return;
         }
-        use smithay::reexports::{wayland_server::Display, xkbcommon::xkb};
+        use smithay::{input::keyboard::xkb, reexports::wayland_server::Display};
         use std::os::unix::fs::PermissionsExt as _;
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("satellite");
