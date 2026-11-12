@@ -345,7 +345,9 @@ mod hardware_keyboard {
         }
     }
 
-    fn session(root: &std::path::Path) -> Result<(Display<Compositor>, Compositor), Box<dyn core::error::Error>> {
+    fn session(
+        root: &std::path::Path,
+    ) -> Result<(Display<Compositor>, Compositor), Box<dyn core::error::Error>> {
         std::fs::write(
             root.join("destinations.toml"),
             r#"
@@ -395,7 +397,8 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
     }
 
     #[test]
-    fn backspace_widens_the_filter_and_escape_closes_the_launcher() -> Result<(), Box<dyn core::error::Error>> {
+    fn backspace_widens_the_filter_and_escape_closes_the_launcher() -> Result<(), Box<dyn core::error::Error>>
+    {
         let root = tempfile::tempdir()?;
         let (_display, mut compositor) = session(root.path())?;
         for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE, KEY_O] {

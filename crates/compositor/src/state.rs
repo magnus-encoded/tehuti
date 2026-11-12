@@ -2703,11 +2703,7 @@ impl Compositor {
                         .key_get_utf8(keycode)
                 });
                 let held = self.keyboard.modifier_state();
-                if held.ctrl
-                    || held.alt
-                    || held.logo
-                    || text.is_empty()
-                    || text.chars().any(char::is_control)
+                if held.ctrl || held.alt || held.logo || text.is_empty() || text.chars().any(char::is_control)
                 {
                     return false;
                 }
