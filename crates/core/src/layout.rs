@@ -1223,6 +1223,14 @@ impl Layout {
             focused.tiles[focused.focused].mode == TileMode::Fullscreen
         };
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+        let last_end = {
+            let output = &self.outputs[output];
+            let count = output.workspaces[active].columns.len();
+            output.column_x(active, count)
+        };
+        // The furthest the view may scroll before a gap opens past the last column.
+        let furthest = last_end.sub(working.width).max(0.0_f64);
+        #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let view = &mut self.outputs[output].workspaces[active].view;
         if fullscreen {
             // The tile starts at the output edge, so neighbours are fully off screen.
@@ -1235,6 +1243,9 @@ impl Layout {
             *view = position.sub(config.gaps);
         } else if position.add(width).sub(*view) > working.width.sub(config.gaps) {
             *view = position.add(width).sub(working.width).add(config.gaps);
+        }
+        if !fullscreen && !centered && width <= working.width.sub(2.0_f64.mul(config.gaps)) {
+            *view = view.min(furthest);
         }
     }
     /// A command without a focused target leaves the layout unchanged.

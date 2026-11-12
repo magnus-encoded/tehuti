@@ -3094,7 +3094,7 @@ impl Compositor {
                 .and_then(toplevel_app_id)
         });
         if let Some(change) = change {
-            tracing::debug!(
+            tracing::info!(
                 before = change.before.as_deref().unwrap_or("none"),
                 after = %change.after,
                 "layout changed"
