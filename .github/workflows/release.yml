@@ -79,6 +79,7 @@ jobs:
           cp "target/$ARCH-unknown-linux-gnu/$profile/tehuti" package/
           cp -r sidecars dist package/
           find package -type d -name __pycache__ -prune -exec rm -rf {} +
+          cargo run --locked --release -p tehuti --bin pack-wallpapers -- assets/wallpapers package/wallpapers.pak
           git rev-parse HEAD > package/VERSION
           tar -czf "tehuti-${TAG#v}-$ARCH-linux.tar.gz" -C package .
       - uses: actions/upload-artifact@v4
@@ -108,6 +109,8 @@ jobs:
       - name: Smoke dependencies
         run: sudo apt-get update && sudo apt-get install -y python3-pil foot libxkbcommon0 libwayland-client0 libwayland-server0 libegl1 libudev1 libseat1 libinput10 libgbm1 libdrm2 libpixman-1-0
       - name: Capture release screens
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           tar -xzf candidate/tehuti-*.tar.gz -C candidate/bin
           chmod +x candidate/bin/tehuti-drive

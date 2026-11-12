@@ -25,8 +25,13 @@ status and explicitly marks the release latest. The dispatch records who chose
 to promote it. Asset presence checks support the human review; they do not judge
 visual quality.
 
+Screenshots render on the wallpaper of the tag's major version (v0 is
+`apteribis`, v1 `bostrychia`, in codename order), taken from the packed
+`wallpapers.pak` in the release archive. The README hero links
+`releases/latest/download/start-screen.png`, which follows each promotion.
+
 For a local smoke run, build both binaries with `cargo build --locked -p tehuti
---bins`, install `foot` and Python Pillow, then run `scripts/release-smoke target/debug smoke`.
+--bins`, install `foot` and Python Pillow, then copy a `wallpapers.pak` (see docs/wallpapers.md) into that directory and run `TAG=v0.1.0 scripts/release-smoke target/debug smoke`.
 For a custom Cargo target directory, pass its binary directory instead.
 Promotion can also run as `scripts/promote-release v1.2.0` with an authenticated
 GitHub CLI and the release repository selected.
