@@ -523,4 +523,169 @@ mod tests {
             })
         );
     }
+
+    #[derive(Clone, Debug)]
+    enum Turn {
+        Press,
+        Stop,
+        FreshTranscript,
+        StaleTranscript,
+        PluginSpeech,
+        PluginReply,
+        PluginReplyNewest,
+        EmptyTurnEnd,
+        Focus,
+        Tick(u64),
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Ending {
+        Cancel,
+        Focus,
+        Deliver,
+        Clock,
+    }
+
+    fn turn() -> impl Strategy<Value = Turn> {
+        prop_oneof![
+            Just(Turn::Press),
+            Just(Turn::Stop),
+            Just(Turn::FreshTranscript),
+            Just(Turn::StaleTranscript),
+            Just(Turn::PluginSpeech),
+            Just(Turn::PluginReply),
+            Just(Turn::PluginReplyNewest),
+            Just(Turn::EmptyTurnEnd),
+            Just(Turn::Focus),
+            (0u64..4000).prop_map(Turn::Tick),
+        ]
+    }
+
+    fn waiting(state: &State) -> bool {
+        state
+            .bar()
+            .segments()
+            .iter()
+            .any(|segment| segment.text == "Transcribing…" || segment.text == "Resolving…")
+    }
+
+    /// Feeds one capture input, tracks whether a transcript is awaited, and delivers admitted speech.
+    fn drive(state: &mut State, speech: &mut SpeechState, awaited: &mut bool, input: SpeechInput) {
+        let cancel = input == SpeechInput::Cancel;
+        let effects = capture(state, speech, input);
+        if cancel {
+            *awaited = false;
+        }
+        for effect in effects {
+            match effect {
+                SpeechEffect::Stop { transcribe: true, .. } => *awaited = true,
+                SpeechEffect::Speech { text, .. } => {
+                    *awaited = false;
+                    *state = step(core::mem::take(state), &Event::Speech { text }).0;
+                }
+                SpeechEffect::Failed { .. } => *awaited = false,
+                SpeechEffect::Start { .. } | SpeechEffect::Interim { .. } | SpeechEffect::Stop { .. } => {}
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn no_waiting_segment_outlives_its_turn(
+            turns in proptest::collection::vec(turn(), 0..24),
+            ending in prop_oneof![
+                Just(Ending::Cancel),
+                Just(Ending::Focus),
+                Just(Ending::Deliver),
+                Just(Ending::Clock),
+            ],
+        ) {
+            let mut state = State::new();
+            let mut speech = SpeechState::default();
+            let mut awaited = false;
+            drive(&mut state, &mut speech, &mut awaited, SpeechInput::Available);
+            let mut presses = 0u64;
+            let mut age = Duration::ZERO;
+            let mut next_request = 0u64;
+            let mut outstanding: Vec<u64> = Vec::new();
+            let hello = || Text::new("hello".into()).unwrap();
+            for turn in turns {
+                let was_waiting = waiting(&state);
+                let mut ticked = None;
+                match turn {
+                    Turn::Press => {
+                        presses = presses.saturating_add(1);
+                        drive(&mut state, &mut speech, &mut awaited, SpeechInput::Press);
+                    }
+                    Turn::Stop => drive(&mut state, &mut speech, &mut awaited, SpeechInput::Release),
+                    Turn::FreshTranscript => drive(
+                        &mut state,
+                        &mut speech,
+                        &mut awaited,
+                        SpeechInput::Transcript { session: presses.saturating_sub(1), text: hello() },
+                    ),
+                    Turn::StaleTranscript => drive(
+                        &mut state,
+                        &mut speech,
+                        &mut awaited,
+                        SpeechInput::Transcript { session: 9999, text: hello() },
+                    ),
+                    Turn::PluginSpeech => {
+                        let event = Event::Speech { text: hello() };
+                        let key = RequestKey { plugin: 0, request_id: next_request };
+                        next_request = next_request.saturating_add(1);
+                        let (next, _, routed) = step_with_plugin(state, &event, true);
+                        let (next, _, _) = if routed {
+                            outstanding.push(key.request_id);
+                            plugin::step(next, Input::Request { key, event, permissions: vec![Permission::Text] })
+                        } else {
+                            (next, Vec::new(), None)
+                        };
+                        state = next;
+                    }
+                    Turn::PluginReply | Turn::PluginReplyNewest => {
+                        if !outstanding.is_empty() {
+                            let request_id = if matches!(turn, Turn::PluginReply) {
+                                outstanding.remove(0)
+                            } else {
+                                outstanding.remove(outstanding.len().saturating_sub(1))
+                            };
+                            let key = RequestKey { plugin: 0, request_id };
+                            state = plugin::step(state, Input::Reply { key, result: Ok(Vec::new()) }).0;
+                        }
+                    }
+                    Turn::EmptyTurnEnd => {
+                        state = step(state, &Event::Speech { text: Text::new(" ".into()).unwrap() }).0;
+                    }
+                    Turn::Focus => state = focus(state, None),
+                    Turn::Tick(millis) => {
+                        let elapsed = Duration::from_millis(millis);
+                        ticked = Some(elapsed);
+                        state = step(state, &Event::Tick { elapsed }).0;
+                    }
+                }
+                match ticked {
+                    Some(elapsed) if was_waiting => age = age.saturating_add(elapsed),
+                    _ => age = Duration::ZERO,
+                }
+                if !awaited && state.pending_decisions() == 0 {
+                    prop_assert!(!waiting(&state), "no turn pending: {:?}", state.bar().segments());
+                }
+                if age >= tehuti_core::bar::WAIT_LIFETIME {
+                    prop_assert!(!waiting(&state), "waiting past its budget: {:?}", state.bar().segments());
+                }
+            }
+            match ending {
+                Ending::Cancel => drive(&mut state, &mut speech, &mut awaited, SpeechInput::Cancel),
+                Ending::Focus => state = focus(state, None),
+                Ending::Deliver => {
+                    state = step(state, &Event::Speech { text: hello() }).0;
+                }
+                Ending::Clock => {
+                    state = step(state, &Event::Tick { elapsed: Duration::from_millis(10_001) }).0;
+                }
+            }
+            prop_assert!(!waiting(&state), "{:?}", state.bar().segments());
+        }
+    }
 }

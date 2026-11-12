@@ -7,6 +7,8 @@ use crate::speech::{SpeechEffect, SpeechFailure, SpeechInput};
 
 pub const HEIGHT: i32 = 32;
 pub const RESULT_LIFETIME: Duration = Duration::from_secs(3);
+/// How long "Transcribing…" or "Resolving…" may wait for its turn before the bar drops it.
+pub const WAIT_LIFETIME: Duration = Duration::from_secs(10);
 
 /// The fixed-cell font used by the powerline and mapping ticker.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -344,7 +346,7 @@ impl Bar {
                 if text.as_str().trim().is_empty() {
                     self.result("No speech", Tone::Error);
                 } else {
-                    self.live("Resolving…");
+                    self.wait("Resolving…");
                 }
             }
             Event::Button { .. } => {}
@@ -364,6 +366,9 @@ impl Bar {
             SpeechInput::Press if fresh_press && effects.is_empty() => {
                 self.result("Speech unavailable", Tone::Error);
             }
+            SpeechInput::Transcript { .. } | SpeechInput::Failed { .. } if effects.is_empty() => {
+                self.clear_waiting();
+            }
             SpeechInput::Press
             | SpeechInput::Release
             | SpeechInput::Available
@@ -378,7 +383,7 @@ impl Bar {
                     self.live("Listening…");
                 }
                 SpeechEffect::Interim { text, .. } => self.live(text.as_str()),
-                SpeechEffect::Stop { transcribe: true, .. } => self.live("Transcribing…"),
+                SpeechEffect::Stop { transcribe: true, .. } => self.wait("Transcribing…"),
                 SpeechEffect::Stop {
                     transcribe: false, ..
                 } => {
@@ -397,6 +402,25 @@ impl Bar {
         }
         if *input == SpeechInput::Unavailable {
             self.result("Speech unavailable", Tone::Error);
+        }
+    }
+
+    /// A live segment that waits on the rest of its turn, so it also expires.
+    fn wait(&mut self, text: &str) {
+        self.live(text);
+        self.remaining = Some(WAIT_LIFETIME);
+    }
+
+    /// Drops "Transcribing…" or "Resolving…" when the turn it waited on ended without a replacement.
+    fn clear_waiting(&mut self) {
+        if self
+            .feedback
+            .as_ref()
+            .is_some_and(|segment| segment.tone == Tone::Live)
+            && self.remaining.is_some()
+        {
+            self.feedback = None;
+            self.remaining = None;
         }
     }
 
@@ -444,12 +468,66 @@ impl Bar {
             };
             self.result(&text, tone);
         }
+        self.clear_waiting();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Bar, Segment, Tone};
+    use super::{Bar, Segment, Tone, WAIT_LIFETIME};
+    use crate::speech::{SpeechEffect, SpeechInput};
+    use core::time::Duration;
+    use tehuti_protocol::{Action, Event, KeyName};
+
+    fn waiting(bar: &mut Bar) {
+        bar.capture(
+            &SpeechInput::Release,
+            &[SpeechEffect::Stop {
+                session: 0,
+                transcribe: true,
+            }],
+            false,
+        );
+        assert_eq!(
+            bar.segments().last().map(|segment| segment.text.as_str()),
+            Some("Transcribing…")
+        );
+    }
+
+    #[test]
+    fn a_dropped_transcript_clears_transcribing() {
+        let mut bar = Bar::new();
+        waiting(&mut bar);
+        bar.capture(
+            &SpeechInput::Transcript {
+                session: 0,
+                text: tehuti_protocol::Text::new("x".into()).unwrap(),
+            },
+            &[],
+            false,
+        );
+        assert_eq!(bar.segments().len(), 1);
+    }
+
+    #[test]
+    fn resolving_to_nothing_clears_the_live_segment() {
+        let mut bar = Bar::new();
+        bar.event(&Event::Speech {
+            text: tehuti_protocol::Text::new("x".into()).unwrap(),
+        });
+        bar.resolve(&[Action::KeyUp { key: KeyName::Enter }]);
+        assert_eq!(bar.segments().len(), 1);
+    }
+
+    #[test]
+    fn a_waiting_segment_never_outlives_its_budget() {
+        let mut bar = Bar::new();
+        waiting(&mut bar);
+        bar.event(&Event::Tick {
+            elapsed: WAIT_LIFETIME + Duration::from_millis(1),
+        });
+        assert_eq!(bar.segments().len(), 1);
+    }
 
     #[test]
     fn navigation_follows_speech_feedback() {
