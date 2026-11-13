@@ -52,18 +52,18 @@ proptest! {
                     }
                 }
             }
-            let placed = placement.placed(|_| 0.0);
-            let keys: Vec<_> = placed.iter().map(|placed| *placed.key).collect();
+            let placements = placement.placed(|_| 0.0);
+            let keys: Vec<_> = placements.iter().map(|placed| *placed.key).collect();
             prop_assert_eq!(&keys, &mapped);
             prop_assert_eq!(placement.is_empty(), mapped.is_empty());
-            for placed in placed {
+            for placed in placements {
                 prop_assert_eq!(placed.key, placed.window);
                 let (tile, _) = placed.tile.unwrap();
                 prop_assert_eq!(tile.fullscreen_requested, fullscreen.contains(placed.key));
                 prop_assert!(tile.tile.width.is_finite() && tile.tile.width > 0.0);
                 prop_assert!(tile.tile.height.is_finite() && tile.tile.height > 0.0);
             }
-            prop_assert!(placement.focused().is_none_or(|key| mapped.contains(key)));
+            prop_assert!(placement.focused().is_none_or(|focused| mapped.contains(focused)));
         }
     }
 }
