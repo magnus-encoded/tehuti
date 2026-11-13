@@ -22,6 +22,7 @@ mod tests {
         refuse: bool,
         /// The physical pad is unplugged: reads fail with ENODEV.
         gone: bool,
+        unsigned_axes: bool,
         grabs: usize,
         ungrabs: usize,
     }
@@ -65,6 +66,19 @@ mod tests {
             Ok(self.held.borrow().clone())
         }
         fn get_absinfo(&self) -> io::Result<Vec<(AbsoluteAxisCode, evdev::AbsInfo)>> {
+            if self.log.borrow().unsigned_axes {
+                return Ok([
+                    AbsoluteAxisCode::ABS_X,
+                    AbsoluteAxisCode::ABS_Y,
+                    AbsoluteAxisCode::ABS_Z,
+                    AbsoluteAxisCode::ABS_RX,
+                    AbsoluteAxisCode::ABS_RY,
+                    AbsoluteAxisCode::ABS_RZ,
+                ]
+                .into_iter()
+                .map(|axis| (axis, evdev::AbsInfo::new(32767, 0, 65535, 0, 0, 0)))
+                .collect());
+            }
             Ok(vec![
                 (
                     AbsoluteAxisCode::ABS_HAT0X,
@@ -762,6 +776,54 @@ mod tests {
     }
 
     #[test]
+    fn unsigned_source_axes_rest_in_virtual_ranges() {
+        for transition in ["park", "mirror off", "detach"] {
+            let log = Rc::new(RefCell::new(Log {
+                unsigned_axes: true,
+                ..Log::default()
+            }));
+            let (mut controller, handles) = pad("pad", &log);
+            if transition == "park" {
+                assert!(controller.park_virtual_pad().unwrap());
+            } else {
+                assert!(controller.set_mirror(true, &|_| false).unwrap());
+                for code in [
+                    AbsoluteAxisCode::ABS_X,
+                    AbsoluteAxisCode::ABS_Y,
+                    AbsoluteAxisCode::ABS_Z,
+                    AbsoluteAxisCode::ABS_RX,
+                    AbsoluteAxisCode::ABS_RY,
+                    AbsoluteAxisCode::ABS_RZ,
+                ] {
+                    handles.raw.borrow_mut().extend(axis(code, 65535));
+                }
+                controller.pump_mirror(&mut |_, _| false).unwrap();
+                log.borrow_mut().frames.clear();
+                if transition == "mirror off" {
+                    assert!(!controller.set_mirror(false, &|_| false).unwrap());
+                } else {
+                    assert!(controller.detach_virtual_pad().is_some());
+                }
+            }
+            let state = shown(&log.borrow());
+            for code in [
+                AbsoluteAxisCode::ABS_X,
+                AbsoluteAxisCode::ABS_Y,
+                AbsoluteAxisCode::ABS_Z,
+                AbsoluteAxisCode::ABS_RX,
+                AbsoluteAxisCode::ABS_RY,
+                AbsoluteAxisCode::ABS_RZ,
+            ] {
+                assert_eq!(
+                    state.get(&(EventType::ABSOLUTE.0, code.0)),
+                    Some(&0),
+                    "{transition}: {code:?} must rest in the advertised virtual range"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn unplug_releases_buttons_centres_sticks_and_rests_triggers() {
         let log = Rc::new(RefCell::new(Log::default()));
         let spare = unplugged(&log);
@@ -775,7 +837,11 @@ mod tests {
                 vec![
                     (EventType::KEY.0, KeyCode::BTN_SOUTH.code(), 0),
                     (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Y.0, 0),
                     (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Z.0, 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RX.0, 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RY.0, 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RZ.0, 0),
                     (EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
                 ]
             )),
