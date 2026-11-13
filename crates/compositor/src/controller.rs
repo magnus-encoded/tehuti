@@ -868,7 +868,9 @@ impl<D: PadDevice> EvdevPad<D> {
     fn centres() -> Vec<(u16, i32)> {
         XBOX_AXES
             .iter()
-            .filter(|(axis, _, _)| *axis != AbsoluteAxisCode::ABS_HAT0X && *axis != AbsoluteAxisCode::ABS_HAT0Y)
+            .filter(|(axis, _, _)| {
+                *axis != AbsoluteAxisCode::ABS_HAT0X && *axis != AbsoluteAxisCode::ABS_HAT0Y
+            })
             .map(|(axis, minimum, maximum)| (axis.0, resting_value(*axis, *minimum, *maximum)))
             .collect()
     }
