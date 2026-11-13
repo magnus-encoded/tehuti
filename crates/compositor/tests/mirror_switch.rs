@@ -837,7 +837,11 @@ mod tests {
                 vec![
                     (EventType::KEY.0, KeyCode::BTN_SOUTH.code(), 0),
                     (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Y.0, 0),
                     (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Z.0, 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RX.0, 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RY.0, 0),
+                    (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RZ.0, 0),
                     (EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
                 ]
             )),

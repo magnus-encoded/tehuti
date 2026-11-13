@@ -242,7 +242,7 @@ pub struct EvdevPad<D = Device> {
 struct Mirror {
     device: Box<dyn MirrorSink>,
     copy: MirrorCopy,
-    /// Stick and trigger axes with their resting values, from the pad the device was made for.
+    /// Stick and trigger axes with their resting values in the virtual pad range.
     centres: Vec<(u16, i32)>,
 }
 
@@ -814,7 +814,7 @@ impl<D: PadDevice> EvdevPad<D> {
         let (device, centres) = if let Some(parked) = self.parked.take() {
             (parked.device, parked.centres)
         } else {
-            (self.handles.events.virtual_pad()?, self.centres()?)
+            (self.handles.events.virtual_pad()?, Self::centres())
         };
         let mut mirror = Mirror {
             device,
@@ -855,7 +855,7 @@ impl<D: PadDevice> EvdevPad<D> {
         let mut mirror = Mirror {
             device: self.handles.events.virtual_pad()?,
             copy: MirrorCopy::default(),
-            centres: self.centres()?,
+            centres: Self::centres(),
         };
         if let Some(frame) = mirror.rest() {
             mirror.device.emit(&frame)?;
@@ -864,16 +864,13 @@ impl<D: PadDevice> EvdevPad<D> {
         Ok(true)
     }
 
-    /// Stick and trigger axes of the physical pad with their resting values.
-    fn centres(&self) -> io::Result<Vec<(u16, i32)>> {
-        Ok(self
-            .handles
-            .probe()
-            .get_absinfo()?
-            .into_iter()
-            .filter(|(axis, _)| *axis != AbsoluteAxisCode::ABS_HAT0X && *axis != AbsoluteAxisCode::ABS_HAT0Y)
-            .map(|(axis, info)| (axis.0, resting_value(axis, info.minimum(), info.maximum())))
-            .collect())
+    /// Stick and trigger axes of the virtual pad with their resting values.
+    fn centres() -> Vec<(u16, i32)> {
+        XBOX_AXES
+            .iter()
+            .filter(|(axis, _, _)| *axis != AbsoluteAxisCode::ABS_HAT0X && *axis != AbsoluteAxisCode::ABS_HAT0Y)
+            .map(|(axis, minimum, maximum)| (axis.0, resting_value(*axis, *minimum, *maximum)))
+            .collect()
     }
 
     /// Removes the hidden virtual controller, so the application sees it unplugged.
