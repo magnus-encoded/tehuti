@@ -187,7 +187,7 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
             .map(|entry| &entry.key)
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
@@ -203,7 +203,7 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
         self.entries
             .iter()
             .map(|entry| {
-                let helper = snapshot
+                let is_helper = snapshot
                     .outputs
                     .iter()
                     .flat_map(|output| &output.workspaces)
@@ -235,7 +235,7 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
                     window: &entry.window,
                     identity: entry.identity.0,
                     focused: snapshot.focused_window == Some(entry.identity),
-                    helper,
+                    helper: is_helper,
                     helper_position,
                     tile: visible_tile(&snapshot, entry.identity)
                         .map(|(tile, border)| (tile.clone(), border)),
@@ -282,3 +282,6 @@ fn visible_tile(snapshot: &Snapshot, identity: WindowId) -> Option<(&TileView, f
             })
     })
 }
+
+#[cfg(test)]
+mod tests;
