@@ -79,16 +79,16 @@ impl<S: PartialEq> SecretConfirmation<S> {
         }
     }
 
-    pub fn confirm_pressed(&mut self, pressed: bool) {
+    pub const fn confirm_pressed(&mut self, pressed: bool) {
         self.confirmation.confirm_pressed = pressed;
     }
 
-    pub fn frame_submitted(&mut self) {
+    pub const fn frame_submitted(&mut self) {
         self.confirmation.frame_submitted = true;
         self.confirmation.armed = !self.confirmation.confirm_pressed;
     }
 
-    pub fn delivery_unavailable(&mut self, now: Duration) {
+    pub const fn delivery_unavailable(&mut self, now: Duration) {
         self.notice_until = now.checked_add(Duration::from_secs(3));
     }
 
@@ -221,9 +221,7 @@ impl<S: PartialEq> SecretConfirmation<S> {
                 return None;
             }
         };
-        let Some(lookup) = lookup_result else {
-            return None;
-        };
+        let lookup = lookup_result?;
         self.lookup = None;
         self.provider = Some(lookup.provider);
         let Some(secret) = lookup.value.ok() else {
