@@ -37,6 +37,7 @@ pub mod dim;
 mod focus_outline;
 pub mod import_placeholder;
 mod layout_window;
+mod window_placement;
 
 pub mod shutdown;
 

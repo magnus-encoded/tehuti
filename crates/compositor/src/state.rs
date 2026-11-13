@@ -207,13 +207,7 @@ pub struct Compositor {
     speech_context: Option<String>,
     speech_title: String,
     launch_socket: Option<std::ffi::OsString>,
-    layout: tehuti_core::layout::Layout,
-    layout_windows: Vec<(tehuti_core::layout::WindowId, LayoutWindow)>,
-    early_fullscreen: std::collections::HashSet<WlSurface>,
-    /// The last layout written to the session log.
-    layout_trace: tehuti_core::layout_trace::LayoutTrace,
-    next_window: u64,
-    windows: tehuti_core::windows::Windows<WlSurface>,
+    placement: crate::window_placement::Placement<WlSurface, LayoutWindow>,
     surfaces: CompositorState,
     xdg_shell_state: XdgShellState,
     decoration_state: Option<XdgDecorationState>,
@@ -377,7 +371,7 @@ impl Compositor {
             launchers: Vec::new(),
             desktop_entries: crate::desktop::EntryCache::new()?,
             launch_socket: None,
-            layout: tehuti_core::layout::Layout::new(tehuti_core::layout::LayoutConfig::default()),
+            placement: crate::window_placement::Placement::new(),
             destination_paths: crate::destinations::Paths::default(),
             destinations: crate::destinations::Table::default(),
             launcher_routes: Vec::new(),
@@ -385,11 +379,6 @@ impl Compositor {
             destination_windows: Vec::new(),
             speech_context: None,
             speech_title: String::new(),
-            layout_windows: Vec::new(),
-            early_fullscreen: std::collections::HashSet::new(),
-            layout_trace: tehuti_core::layout_trace::LayoutTrace::default(),
-            next_window: 0,
-            windows: tehuti_core::windows::Windows::new(),
             surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             decoration_state: None,
@@ -486,15 +475,16 @@ impl Compositor {
 
     pub(crate) fn driver_scene(&self) -> serde_json::Value {
         use serde_json::json;
-        let focused = self.layout.snapshot().focused_window;
-        let windows: Vec<_> = self.layout_windows.iter().map(|(identity, window)| {
+        let focused = self.placement.focused_destination();
+        let windows: Vec<_> = self.placement.placed(|_| 0.0).iter().map(|placed| {
+            let window = placed.window;
             let (app_id, title) = window.toplevel().and_then(|surface| self.focus_event(surface)).and_then(|event| {
                 if let Event::Focus { app_id, title } = event { Some((app_id, title)) } else { None }
             }).unwrap_or_default();
             let location = self.space.element_location(window).unwrap_or_default();
             let size = window.layout_size();
-            json!({"id": identity.0, "app_id": app_id, "title": title, "mapped": window.mapped(),
-                "focused": focused == Some(*identity), "geometry": {"x": location.x, "y": location.y, "width": size.w, "height": size.h}})
+            json!({"id": placed.identity, "app_id": app_id, "title": title, "mapped": window.mapped(),
+                "focused": placed.focused, "geometry": {"x": location.x, "y": location.y, "width": size.w, "height": size.h}})
         }).collect();
         let launcher = self.choice_list().filter(|list| list.is_open()).map(|list| {
             let rows: Vec<_> = list
@@ -515,7 +505,7 @@ impl Compositor {
             .iter()
             .map(|segment| segment.text.clone())
             .collect();
-        json!({"version": 1, "clock_ms": self.driver_elapsed.as_millis(), "windows": windows, "focus": focused.map(|identity| identity.0),
+        json!({"version": 1, "clock_ms": self.driver_elapsed.as_millis(), "windows": windows, "focus": focused,
             "level": format!("{:?}", self.dispatch.core().level()), "launcher": launcher,
             "overlays": {"keyboard": self.on_screen_keyboard().is_open(), "settings": self.settings().open, "menu": self.dispatch.core().menu().is_some()},
             "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar,
@@ -664,7 +654,7 @@ impl Compositor {
         ) {
             Ok(mut table) => {
                 table.add_menu(&self.menu_config.hidden());
-                table.update_workspaces(&self.layout.snapshot());
+                table.update_workspaces(&self.placement.snapshot());
                 self.destinations = table;
                 let app_names = self.destinations.app_names();
                 self.dispatch.core_mut().set_app_names(app_names);
@@ -991,13 +981,11 @@ impl Compositor {
         );
         self.move_pointer();
         if pressed && let Some((window, _)) = self.space.element_under(self.pointer_location) {
-            let identity = self
-                .layout_windows
-                .iter()
-                .find(|(_, candidate)| candidate == window)
-                .map(|(identity, _)| *identity);
-            if let Some(identity) = identity {
-                if let Err(error) = self.layout.focus_window(identity) {
+            let key = window.toplevel().map(|toplevel| toplevel.wl_surface().clone());
+            if let Some(key) = key
+                && self.placement.window(&key).is_some()
+            {
+                if let Err(error) = self.placement.focus(&key) {
                     tracing::warn!(%error, "pointer focus failed");
                 }
                 self.place_layout();
@@ -1191,7 +1179,7 @@ impl Compositor {
         if self.invitation == Invitation::Off {
             return;
         }
-        if !self.layout_windows.is_empty() || self.speech_context.is_some() {
+        if !self.placement.is_empty() || self.speech_context.is_some() {
             self.invitation = Invitation::Ready;
             let _rejection = self.dispatch(DispatchInput::CloseInvitation);
             return;
@@ -1326,7 +1314,6 @@ impl Compositor {
     )]
     fn update_window_dimming(&self) {
         let (enabled, strength, duration) = self.dispatch.core().dim_config();
-        let snapshot = self.layout.snapshot();
         for output in self.space.outputs() {
             let Some(area) = self.space.output_geometry(output) else {
                 continue;
@@ -1348,9 +1335,9 @@ impl Compositor {
                 (self.dim_elapsed.as_secs_f32() / duration.as_secs_f32()).min(1.0)
             };
             for window in &visible {
-                let focused = self.layout_windows.iter().any(|(identity, candidate)| {
-                    candidate == *window && snapshot.focused_window == Some(*identity)
-                });
+                let focused = window
+                    .toplevel()
+                    .is_some_and(|toplevel| self.placement.focused() == Some(toplevel.wl_surface()));
                 let brightness = if enabled
                     && self.dispatch.core().level() == tehuti_core::Level::App
                     && visible.len() > 1
@@ -1845,7 +1832,7 @@ impl Compositor {
             match step.target {
                 Target::Workspace(identity) => {
                     if let Err(error) = self
-                        .layout
+                        .placement
                         .focus_workspace_id(tehuti_core::layout::WorkspaceId(identity))
                     {
                         tracing::warn!(%error, "launcher workspace focus failed");
@@ -1869,7 +1856,7 @@ impl Compositor {
                     self.apply(&action);
                 }
                 Target::Window(identity) => {
-                    if let Err(error) = self.layout.focus_window(tehuti_core::layout::WindowId(identity)) {
+                    if let Err(error) = self.placement.focus_destination(identity) {
                         tracing::warn!(%error, "launcher focus failed");
                     }
                     self.place_layout();
@@ -1881,8 +1868,7 @@ impl Compositor {
                         .find(|window| window.app_id == app_id)
                     {
                         let identity = window.identity;
-                        if let Err(error) = self.layout.focus_window(tehuti_core::layout::WindowId(identity))
-                        {
+                        if let Err(error) = self.placement.focus_destination(identity) {
                             tracing::warn!(%error, "launcher focus failed");
                         }
                         self.place_layout();
@@ -1930,7 +1916,7 @@ impl Compositor {
             }
             DispatchEffect::ChooseLauncher(index) => {
                 if let Some(route) = self.launcher_routes.get(index).cloned() {
-                    if self.invitation != Invitation::Off && self.layout_windows.is_empty() {
+                    if self.invitation != Invitation::Off && self.placement.is_empty() {
                         self.invitation = Invitation::Launching(Instant::now());
                     }
                     self.follow_launcher_route(route);
@@ -2380,8 +2366,8 @@ impl Compositor {
             }
             Action::Launch { desktop_entry } => self.launch_application(desktop_entry),
             Action::Close => {
-                if let Some(identity) = self.layout.snapshot().focused_window {
-                    self.remove_layout_window(identity, true);
+                if let Some(key) = self.placement.focused().cloned() {
+                    self.remove_layout_window(&key, true);
                 }
             }
             Action::Layout { action } => self.apply_layout(*action),
@@ -2418,7 +2404,7 @@ impl Compositor {
     }
 
     fn show_notice(&mut self, text: &str) {
-        let _effect = self.windows.step(tehuti_core::windows::Input::Notify);
+        let _effect = self.placement.window_action(tehuti_core::windows::Input::Notify);
         self.notice_text = Some(text.into());
         self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
     }
@@ -2857,24 +2843,9 @@ impl Compositor {
     }
 
     /// Switches to the workspace holding `window`, so a moved column keeps the focus.
-    fn follow_window(&mut self, window: Option<tehuti_core::layout::WindowId>) {
-        let Some(window) = window else {
-            return;
-        };
-        let snapshot = self.layout.snapshot();
-        let workspace = snapshot
-            .outputs
-            .iter()
-            .flat_map(|output| &output.workspaces)
-            .find(|workspace| {
-                workspace
-                    .columns
-                    .iter()
-                    .any(|column| column.tiles.iter().any(|tile| tile.window == window))
-            })
-            .map(|workspace| workspace.workspace);
-        if let Some(workspace) = workspace
-            && self.layout.focus_workspace_id(workspace).is_ok()
+    fn follow_window(&mut self, window: Option<WlSurface>) {
+        if let Some(window) = window
+            && self.placement.follow(&window)
         {
             self.place_layout();
         }
@@ -2968,8 +2939,8 @@ impl Compositor {
     /// Moving a column to another workspace takes the focus along with it.
     pub fn apply_layout_command(&mut self, command: tehuti_core::layout::Command) {
         use tehuti_core::layout::Command;
-        let moved = self.layout.snapshot().focused_window;
-        self.layout.apply(command);
+        let moved = self.placement.focused().cloned();
+        self.placement.apply(command);
         self.place_layout();
         if matches!(
             command,
@@ -2983,14 +2954,13 @@ impl Compositor {
     #[must_use]
     pub fn launcher_slot(&self) -> Option<tehuti_core::layout::Rect> {
         let _launcher = self.dispatch.launcher()?;
-        self.layout
-            .preview_window(tehuti_core::layout::WindowRules::default())
+        self.placement.preview()
     }
 
     /// The tiling layout every mapped window is placed by.
     #[must_use]
     pub fn layout_snapshot(&self) -> tehuti_core::layout::Snapshot {
-        self.layout.snapshot()
+        self.placement.snapshot()
     }
 
     #[must_use]
@@ -2999,27 +2969,18 @@ impl Compositor {
         output: &Output,
     ) -> Vec<smithay::backend::renderer::element::solid::SolidColorRenderElement> {
         use smithay::utils::Rectangle;
-        let snapshot = self.layout.snapshot();
-        let fullscreen = snapshot
-            .outputs
-            .iter()
-            .flat_map(|snapshot_output| &snapshot_output.workspaces)
-            .flat_map(|workspace| &workspace.columns)
-            .flat_map(|column| &column.tiles)
-            .any(|tile| {
-                Some(tile.window) == snapshot.focused_window
-                    && tile.mode == tehuti_core::layout::TileMode::Fullscreen
-            });
-        if fullscreen {
-            return Vec::new();
-        }
-        let Some((_, window)) = self
-            .layout_windows
-            .iter()
-            .find(|(identity, _)| Some(*identity) == snapshot.focused_window)
-        else {
+        let placed = self.placement.placed(|_| 0.0);
+        let Some(focused) = placed.iter().find(|placed| placed.focused) else {
             return Vec::new();
         };
+        if focused
+            .tile
+            .as_ref()
+            .is_some_and(|(tile, _)| tile.mode == tehuti_core::layout::TileMode::Fullscreen)
+        {
+            return Vec::new();
+        }
+        let window = focused.window;
         let (Some(location), Some(area)) = (
             self.space.element_location(window),
             self.space.output_geometry(output),
@@ -3043,18 +3004,12 @@ impl Compositor {
 
     #[must_use]
     pub fn voice_bar(&self) -> tehuti_core::bar::Bar {
-        let snapshot = self.layout.snapshot();
-        let windows = snapshot
-            .outputs
-            .iter()
-            .filter_map(|output| output.workspaces.get(output.active_workspace))
-            .flat_map(|workspace| &workspace.columns)
-            .flat_map(|column| &column.tiles)
-            .filter_map(|tile| {
-                let (_, window) = self
-                    .layout_windows
-                    .iter()
-                    .find(|(identity, _)| *identity == tile.window)?;
+        let snapshot = self.placement.snapshot();
+        let windows = self
+            .placement
+            .active_tiles()
+            .into_iter()
+            .filter_map(|(window, focused)| {
                 let toplevel = window.toplevel()?;
                 let title = smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
                     let attributes = states
@@ -3069,14 +3024,14 @@ impl Compositor {
                         attributes.app_id.as_deref(),
                     ))
                 })?;
-                Some((title, snapshot.focused_window == Some(tile.window)))
+                Some((title, focused))
             })
             .collect();
         let mut bar = self.dispatch.core().bar().clone().with_windows(windows);
-        if let Some(identity) = snapshot.focused_window
+        if let Some(identity) = self.placement.focused_destination()
             && let Some(name) = self
                 .destinations
-                .name_for(&crate::destinations::Target::Window(identity.0))
+                .name_for(&crate::destinations::Target::Window(identity))
         {
             bar = bar.with_destination(name.into());
         }
@@ -3116,7 +3071,7 @@ impl Compositor {
         reason = "reserve the bar in logical output coordinates"
     )]
     pub fn fill_output(&mut self) {
-        use tehuti_core::layout::{OutputGeometry, OutputId, Rect};
+        use tehuti_core::layout::{OutputGeometry, Rect};
         if let Some(output) = self.output.as_ref()
             && let Some(scale) =
                 core::num::NonZeroU32::new(output.current_scale().integer_scale().unsigned_abs())
@@ -3154,11 +3109,7 @@ impl Compositor {
                 ..area
             },
         };
-        let result = if self.layout.snapshot().outputs.is_empty() {
-            self.layout.add_output(OutputId(0), geometry, None)
-        } else {
-            self.layout.update_output(OutputId(0), geometry)
-        };
+        let result = self.placement.resize(geometry);
         if let Err(error) = result {
             tracing::warn!(%error, "output layout failed");
         }
@@ -3166,15 +3117,10 @@ impl Compositor {
     }
 
     /// Writes the layout before and after a change to the session log.
-    fn log_layout(&mut self, snapshot: &tehuti_core::layout::Snapshot) {
-        let windows = &self.layout_windows;
-        let change = self.layout_trace.observe(snapshot, |identity| {
-            windows
-                .iter()
-                .find(|(candidate, _)| *candidate == identity)
-                .and_then(|(_, window)| window.toplevel())
-                .and_then(toplevel_app_id)
-        });
+    fn log_layout(&mut self) {
+        let change = self
+            .placement
+            .observe(|window| window.toplevel().and_then(toplevel_app_id));
         if let Some(change) = change {
             tracing::info!(
                 before = change.before.as_deref().unwrap_or("none"),
@@ -3182,28 +3128,6 @@ impl Compositor {
                 "layout changed"
             );
         }
-    }
-
-    /// The visible tile of a window and its output's border width.
-    fn visible_tile(
-        snapshot: &tehuti_core::layout::Snapshot,
-        identity: tehuti_core::layout::WindowId,
-    ) -> Option<(&tehuti_core::layout::TileView, f64)> {
-        snapshot.outputs.iter().find_map(|output| {
-            output
-                .workspaces
-                .get(output.active_workspace)
-                .and_then(|workspace| {
-                    workspace.columns.iter().find_map(|column| {
-                        column.tiles.iter().enumerate().find_map(|(index, tile)| {
-                            (tile.window == identity
-                                && (column.display == tehuti_core::layout::ColumnDisplay::Normal
-                                    || index == column.focused_tile))
-                                .then_some((tile, output.border))
-                        })
-                    })
-                })
-        })
     }
 
     fn log_window_size(
@@ -3257,32 +3181,31 @@ impl Compositor {
     /// A commit only repositions: a client that picks its own size must not be
     /// answered with a fresh configure on every frame.
     fn place_windows(&mut self, configure: bool) {
-        let snapshot = self.layout.snapshot();
+        let snapshot = self.placement.snapshot();
         self.workspace_feedback.update(&snapshot, self.clock_elapsed());
-        self.log_layout(&snapshot);
-        for (identity, window) in &self.layout_windows {
-            let helper_position = self.helper_position(&snapshot, *identity);
-            if let Some(position) = helper_position {
+        self.log_layout();
+        for placed in self
+            .placement
+            .placed(|window| f64::from(window.client_geometry().size.w))
+        {
+            let window = placed.window;
+            if let Some(position) = placed.helper_position {
                 Self::place_helper(
                     &mut self.space,
                     self.output.as_ref(),
                     window,
                     position,
-                    snapshot.focused_window == Some(*identity),
+                    placed.focused,
                     configure,
                 );
                 continue;
             }
-            let Some((tile, border)) = Self::visible_tile(&snapshot, *identity) else {
+            let Some((tile, border)) = placed.tile.as_ref() else {
                 self.space.unmap_elem(window);
                 continue;
             };
-            let location = self.size_layout_window(window, tile, border, configure);
-            self.space.map_element(
-                window.clone(),
-                location,
-                snapshot.focused_window == Some(*identity),
-            );
+            let location = self.size_layout_window(window, tile, *border, configure);
+            self.space.map_element(window.clone(), location, placed.focused);
             // Space only reports output entry once a buffer gives the window a
             // view. Clients such as mpv size their first buffer from the output
             // scale they learn on entry, so announce it before the first
@@ -3292,7 +3215,7 @@ impl Compositor {
                 Self::announce_scale(output, toplevel.wl_surface());
             }
             if configure && let Some(toplevel) = window.toplevel() {
-                Self::configure_layout_window(toplevel, tile, snapshot.focused_window == Some(*identity));
+                Self::configure_layout_window(toplevel, tile, placed.focused);
             }
         }
         self.sync_window_focus();
@@ -3337,32 +3260,6 @@ impl Compositor {
             border,
         );
         smithay::utils::Point::<f64, smithay::utils::Logical>::from((placement.x, placement.y)).to_i32_round()
-    }
-
-    fn helper_position(
-        &self,
-        snapshot: &tehuti_core::layout::Snapshot,
-        identity: tehuti_core::layout::WindowId,
-    ) -> Option<(f64, f64)> {
-        snapshot.outputs.iter().find_map(|output| {
-            let workspace = output.workspaces.get(output.active_workspace)?;
-            let index = workspace.helpers.iter().position(|helper| *helper == identity)?;
-            let width = workspace
-                .helpers
-                .iter()
-                .take(index)
-                .filter_map(|helper| {
-                    self.layout_windows
-                        .iter()
-                        .find(|(candidate, _)| candidate == helper)
-                        .map(|(_, window)| f64::from(window.client_geometry().size.w))
-                })
-                .sum::<f64>();
-            Some((
-                core::ops::Add::add(workspace.helper_position.0, width),
-                workspace.helper_position.1,
-            ))
-        })
     }
 
     fn place_helper(
@@ -3444,30 +3341,23 @@ impl Compositor {
     /// Fullscreen requests go through the layout; maximize requests keep the
     /// tile and only hear its current size and states.
     fn answer_state_request(&mut self, surface: &ToplevelSurface, fullscreen: Option<bool>) {
-        let identity = self.layout_windows.iter().find_map(|(identity, window)| {
-            window
-                .toplevel()
-                .filter(|toplevel| toplevel.wl_surface() == surface.wl_surface())
-                .map(|_| *identity)
-        });
-        let Some(identity) = identity else {
-            if let Some(fullscreen) = fullscreen {
-                if fullscreen {
-                    let _inserted = self.early_fullscreen.insert(surface.wl_surface().clone());
-                } else {
-                    let _removed = self.early_fullscreen.remove(surface.wl_surface());
-                }
-            }
-            return;
-        };
+        let mapped = self.placement.window(surface.wl_surface()).is_some();
         if let Some(fullscreen) = fullscreen
-            && let Err(error) = self.layout.set_fullscreen(identity, fullscreen)
+            && let Err(error) = self.placement.fullscreen(surface.wl_surface(), fullscreen)
         {
             tracing::warn!(%error, "fullscreen request failed");
         }
-        let snapshot = self.layout.snapshot();
-        if let Some((tile, _)) = Self::visible_tile(&snapshot, identity) {
-            Self::set_layout_state(surface, tile, snapshot.focused_window == Some(identity));
+        if !mapped {
+            return;
+        }
+        if let Some(placed) = self
+            .placement
+            .placed(|_| 0.0)
+            .iter()
+            .find(|placed| placed.key == surface.wl_surface())
+            && let Some((tile, _)) = &placed.tile
+        {
+            Self::set_layout_state(surface, tile, placed.focused);
         }
         if surface.has_pending_changes() || Self::awaits_answer(surface) {
             let _serial = surface.send_configure();
@@ -3493,32 +3383,19 @@ impl Compositor {
             })
     }
 
-    fn remove_layout_window(&mut self, identity: tehuti_core::layout::WindowId, close: bool) {
-        if let Some(index) = self
-            .layout_windows
-            .iter()
-            .position(|(window_id, _)| *window_id == identity)
-        {
-            let (_, window) = self.layout_windows.remove(index);
-            if let Some(toplevel) = window.toplevel() {
-                if close {
-                    toplevel.send_close();
-                }
-                let _effect = self
-                    .windows
-                    .step(tehuti_core::windows::Input::Unmap(toplevel.wl_surface().clone()));
+    fn remove_layout_window(&mut self, key: &WlSurface, close: bool) {
+        if let Some(window) = self.placement.unmap(key) {
+            if close && let Some(toplevel) = window.toplevel() {
+                toplevel.send_close();
             }
             self.space.unmap_elem(&window);
-            if let Err(error) = self.layout.remove_window(identity) {
-                tracing::warn!(%error, "window removal failed");
-            }
             self.place_layout();
         }
     }
 
     fn launch_application(&mut self, desktop_entry: &tehuti_protocol::Text) {
         let installed = self.desktop_entries.entries().to_vec();
-        let decision = self.windows.step(tehuti_core::windows::Input::Launch {
+        let decision = self.placement.window_action(tehuti_core::windows::Input::Launch {
             desktop_entry: desktop_entry.as_str().into(),
             installed,
         });
@@ -3603,21 +3480,17 @@ impl Compositor {
     }
 
     fn sync_destination_windows(&mut self) {
-        let snapshot = self.layout.snapshot();
+        let snapshot = self.placement.snapshot();
         self.destinations.update_workspaces(&snapshot);
-        let helpers: Vec<_> = snapshot
-            .outputs
-            .iter()
-            .flat_map(|output| &output.workspaces)
-            .flat_map(|workspace| &workspace.helpers)
-            .collect();
         let windows: Vec<_> = self
-            .layout_windows
+            .placement
+            .placed(|_| 0.0)
             .iter()
-            .filter_map(|(identity, window)| {
-                if helpers.contains(&identity) {
+            .filter_map(|placed| {
+                if placed.helper {
                     return None;
                 }
+                let window = placed.window;
                 let toplevel = window.toplevel()?;
                 smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
                     let attributes = states
@@ -3632,7 +3505,7 @@ impl Compositor {
                         attributes.app_id.as_deref(),
                     );
                     Some(crate::destinations::Window {
-                        identity: identity.0,
+                        identity: placed.identity,
                         app_id: attributes.app_id.clone().unwrap_or_default(),
                         title: attributes.title.clone().unwrap_or_default(),
                         chip,
@@ -3649,12 +3522,7 @@ impl Compositor {
 
     fn sync_window_focus(&mut self) {
         self.sync_destination_windows();
-        let identity = self.layout.snapshot().focused_window;
-        let focus = self
-            .layout_windows
-            .iter()
-            .find(|(window_id, _)| Some(*window_id) == identity)
-            .and_then(|(_, window)| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()));
+        let focus = self.placement.focused().cloned();
         self.keyboard
             .clone()
             .set_focus(self, focus.clone(), SERIAL_COUNTER.next_serial());
@@ -3694,9 +3562,9 @@ impl Compositor {
                 self.window_focus = Some(focus);
                 self.unfocused_window = None;
                 let windows = self
-                    .layout_windows
-                    .iter()
-                    .filter_map(|(_, window)| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()))
+                    .placement
+                    .windows()
+                    .filter_map(|window| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()))
                     .collect::<Vec<_>>();
                 let ancestors =
                     crate::window_context::ancestors(surface.wl_surface(), &windows, &self.display);
@@ -3729,14 +3597,7 @@ impl Compositor {
     }
 
     fn window_for_root(&self, root: &WlSurface) -> Option<&LayoutWindow> {
-        self.layout_windows
-            .iter()
-            .map(|(_, window)| window)
-            .find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == root)
-            })
+        self.placement.window(root)
     }
 }
 
@@ -3968,30 +3829,20 @@ impl Compositor {
     }
 
     fn update_helper(&mut self, surface: &ToplevelSurface) -> bool {
-        let identity = self.layout_windows.iter().find_map(|(identity, window)| {
-            window
-                .toplevel()
-                .filter(|toplevel| toplevel.wl_surface() == surface.wl_surface())
-                .map(|_| *identity)
-        });
-        identity.is_some_and(
-            |identity| match self.layout.set_helper(identity, Self::is_helper(surface)) {
-                Ok(changed) => changed,
-                Err(error) => {
-                    tracing::warn!(%error, "helper membership failed");
-                    false
-                }
-            },
-        )
+        match self
+            .placement
+            .set_helper(surface.wl_surface(), Self::is_helper(surface))
+        {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::warn!(%error, "helper membership failed");
+                false
+            }
+        }
     }
 
     fn map_toplevel(&mut self, surface: ToplevelSurface) {
-        let _effect = self
-            .windows
-            .step(tehuti_core::windows::Input::Map(surface.wl_surface().clone()));
         self.fill_output();
-        let identity = tehuti_core::layout::WindowId(self.next_window);
-        self.next_window = self.next_window.saturating_add(1);
         let app_id = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
@@ -3999,9 +3850,9 @@ impl Compositor {
                 .and_then(|attributes| attributes.lock().ok()?.app_id.clone())
         });
         let windows = self
-            .layout_windows
-            .iter()
-            .filter_map(|(_, window)| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()))
+            .placement
+            .windows()
+            .filter_map(|window| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()))
             .collect::<Vec<_>>();
         let ancestors = crate::window_context::ancestors(surface.wl_surface(), &windows, &self.display);
         let title = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
@@ -4011,7 +3862,6 @@ impl Compositor {
                 .and_then(|attributes| attributes.lock().ok()?.title.clone())
         })
         .unwrap_or_default();
-        let client_fullscreen = self.early_fullscreen.remove(surface.wl_surface());
         let context = app_id
             .as_deref()
             .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &title))
@@ -4023,15 +3873,10 @@ impl Compositor {
                 })
             });
         let rules = Self::window_rules(&surface, context);
-        match self.layout.add_window(identity, rules) {
-            Ok(()) => {
-                if client_fullscreen && let Err(error) = self.layout.set_fullscreen(identity, true) {
-                    tracing::warn!(%error, "initial fullscreen request failed");
-                }
-                self.layout_windows
-                    .push((identity, LayoutWindow::new(Window::new_wayland_window(surface))));
-                self.place_layout();
-            }
+        let key = surface.wl_surface().clone();
+        let window = LayoutWindow::new(Window::new_wayland_window(surface));
+        match self.placement.map(key, window, rules) {
+            Ok(()) => self.place_layout(),
             Err(error) => tracing::warn!(%error, "window layout failed"),
         }
     }
@@ -4110,16 +3955,7 @@ impl XdgShellHandler for Compositor {
             self.unfocused_window = None;
             let _rejection = self.dispatch(DispatchInput::FocusedWindowClosed);
         }
-        let _removed = self.early_fullscreen.remove(surface.wl_surface());
-        let identity = self.layout_windows.iter().find_map(|(identity, window)| {
-            window
-                .toplevel()
-                .filter(|toplevel| toplevel.wl_surface() == surface.wl_surface())
-                .map(|_| *identity)
-        });
-        if let Some(identity) = identity {
-            self.remove_layout_window(identity, false);
-        }
+        self.remove_layout_window(surface.wl_surface(), false);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
