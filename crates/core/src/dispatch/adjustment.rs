@@ -86,10 +86,12 @@ pub(super) fn adjuster_input(state: &mut State, event: &Event, effects: &mut Vec
     if let Event::Button { name, state: button } = event {
         if *button == ButtonState::Pressed {
             state.adjuster_buttons.push(*name);
-            let delta = match name {
-                ButtonName::DpadRight | ButtonName::DpadUp => 1,
-                ButtonName::DpadLeft | ButtonName::DpadDown => -1,
-                _ => 0,
+            let delta = if matches!(name, ButtonName::DpadRight | ButtonName::DpadUp) {
+                1
+            } else if matches!(name, ButtonName::DpadLeft | ButtonName::DpadDown) {
+                -1
+            } else {
+                0
             };
             if delta != 0 {
                 if gauge.step(delta) {
