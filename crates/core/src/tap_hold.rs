@@ -194,8 +194,10 @@ mod tests {
 
     #[test]
     fn focus_flush_survives_epoch_wraparound() {
-        let mut taps = TapHold::<i32>::default();
-        taps.focus_epoch = u32::MAX;
+        let mut taps = TapHold::<i32> {
+            focus_epoch: u32::MAX,
+            ..TapHold::default()
+        };
         assert_eq!(taps.tap(Duration::ZERO, 1, &[]), [(1, true)]);
         taps.focus_changed();
         assert_eq!(taps.flush_focus(), [(1, false)]);
