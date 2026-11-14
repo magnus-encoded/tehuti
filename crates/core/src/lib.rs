@@ -316,16 +316,15 @@ impl State {
     fn refresh_ticker(&mut self) {
         let focused = focused_context(self);
         let global = global_context(self);
-        let entries = ticker::enabled_for(focused, global)
-            .then(|| {
-                ticker::entries_for(
-                    focused,
-                    global,
-                    self.pad_family,
-                    self.level,
-                    self.sticks.active_modifier(),
-                )
-            });
+        let entries = ticker::enabled_for(focused, global).then(|| {
+            ticker::entries_for(
+                focused,
+                global,
+                self.pad_family,
+                self.level,
+                self.sticks.active_modifier(),
+            )
+        });
         self.bar.set_ticker(entries);
     }
 
@@ -985,5 +984,5 @@ mod spoken_keys;
 pub mod adjuster;
 pub mod launcher;
 
-pub mod tap_hold;
 pub mod stick_actions;
+pub mod tap_hold;

@@ -65,7 +65,11 @@ pub fn deflection(x: i16, y: i16) -> u32 {
 /// The repeat interval for a deflection: faster the deeper the push.
 #[must_use]
 pub fn repeat_interval(deflection: u32) -> Duration {
-    let depth = u64::from(deflection.clamp(FIRE_DEFLECTION, 1000).saturating_sub(FIRE_DEFLECTION));
+    let depth = u64::from(
+        deflection
+            .clamp(FIRE_DEFLECTION, 1000)
+            .saturating_sub(FIRE_DEFLECTION),
+    );
     let span = u64::from(1000_u32.saturating_sub(FIRE_DEFLECTION)).max(1);
     let slowest = u64::try_from(SLOWEST_REPEAT.as_millis()).unwrap_or(u64::MAX);
     let fastest = u64::try_from(FASTEST_REPEAT.as_millis()).unwrap_or(0);
@@ -166,7 +170,9 @@ impl StickActions {
             }
             let depth = deflection(sample.0, sample.1);
             moved |= depth >= FIRE_DEFLECTION;
-            actions.extend(step_stick(context, stick, sample, depth, with, elapsed, deflected));
+            actions.extend(step_stick(
+                context, stick, sample, depth, with, elapsed, deflected,
+            ));
         }
         if moved {
             for held in &mut self.modifiers {

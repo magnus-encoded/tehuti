@@ -189,7 +189,8 @@ mod tests {
 
     #[test]
     fn a_modifier_without_its_own_layer_entry_blocks_the_plain_entry() {
-        let context = context("left.up = { text = 'plain' }\nleft.down = { text = 'down', with = 'north' }\n");
+        let context =
+            context("left.up = { text = 'plain' }\nleft.down = { text = 'down', with = 'north' }\n");
         let mut sticks = StickActions::default();
         sticks.press_modifier(ButtonName::North);
         assert!(
@@ -203,19 +204,26 @@ mod tests {
         let context = all_eight("left", "");
         let mut sticks = StickActions::default();
         assert_eq!(sticks.tick(&context, FRAME, (0, -900), (0, 0)), vec![text("up")]);
-        assert_eq!(sticks.tick(&context, FRAME, (900, 0), (0, 0)), vec![text("right")]);
+        assert_eq!(
+            sticks.tick(&context, FRAME, (900, 0), (0, 0)),
+            vec![text("right")]
+        );
     }
 
     #[test]
     fn the_right_stick_maps_independently() {
         let context = all_eight("right", "");
         let mut sticks = StickActions::default();
-        assert!(sticks.tick(&context, FRAME, (0, -900), (0, 0)).is_empty(), "left is unmapped");
+        assert!(
+            sticks.tick(&context, FRAME, (0, -900), (0, 0)).is_empty(),
+            "left is unmapped"
+        );
         assert_eq!(sticks.tick(&context, FRAME, (0, 0), (0, 900)), vec![text("down")]);
     }
 
     fn player() -> State {
-        let context = context("left.up = { text = 'plain' }\nleft.down = { text = 'zoom', with = 'north' }\n");
+        let context =
+            context("left.up = { text = 'plain' }\nleft.down = { text = 'zoom', with = 'north' }\n");
         step(
             State::with_contexts(vec![context]),
             &Event::Focus {
@@ -269,10 +277,12 @@ mod tests {
             pressed.iter().all(|action| *action != text("north")),
             "west is not a modifier"
         );
-        let state = State::with_contexts(vec![parse_context(&format!(
-            "app_id = '{APP}'\n[buttons]\nnorth = {{ text = 'north' }}\n"
-        ))
-        .unwrap()]);
+        let state = State::with_contexts(vec![
+            parse_context(&format!(
+                "app_id = '{APP}'\n[buttons]\nnorth = {{ text = 'north' }}\n"
+            ))
+            .unwrap(),
+        ]);
         let state = step(
             state,
             &Event::Focus {
@@ -286,9 +296,9 @@ mod tests {
 
     #[test]
     fn the_ticker_lists_the_layer_of_the_held_modifier() {
-        let contexts = vec![
-            context("left.up = { text = 'plain' }\nleft.down = { text = 'zoom', with = 'north' }\n"),
-        ];
+        let contexts = vec![context(
+            "left.up = { text = 'plain' }\nleft.down = { text = 'zoom', with = 'north' }\n",
+        )];
         let texts = |modifier| -> Vec<String> {
             ticker::entries_with_modifier(&contexts, Some(APP), PadFamily::Letters, Level::App, modifier)
                 .iter()
@@ -296,10 +306,19 @@ mod tests {
                 .collect()
         };
         let plain = texts(None);
-        assert!(plain.iter().any(|entry| entry.starts_with("L\u{2191} ->")), "{plain:?}");
-        assert!(!plain.iter().any(|entry| entry.contains("L\u{2193}")), "{plain:?}");
+        assert!(
+            plain.iter().any(|entry| entry.starts_with("L\u{2191} ->")),
+            "{plain:?}"
+        );
+        assert!(
+            !plain.iter().any(|entry| entry.contains("L\u{2193}")),
+            "{plain:?}"
+        );
         let held = texts(Some(ButtonName::North));
-        assert!(held.iter().any(|entry| entry.starts_with("Y + L\u{2193} ->")), "{held:?}");
+        assert!(
+            held.iter().any(|entry| entry.starts_with("Y + L\u{2193} ->")),
+            "{held:?}"
+        );
         assert!(!held.iter().any(|entry| entry.contains("L\u{2191}")), "{held:?}");
     }
 }

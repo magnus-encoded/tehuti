@@ -1377,7 +1377,10 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
                     .map(Effect::Apply),
             );
         }
-        if state.mouse.tick(elapsed, !state.keyboard.is_open(), mapped, effects) {
+        if state
+            .mouse
+            .tick(elapsed, !state.keyboard.is_open(), mapped, effects)
+        {
             for button in [ButtonState::Released, ButtonState::Pressed] {
                 route_frame.tasks.push_front(Task::Route(Event::Button {
                     name: ButtonName::Select,

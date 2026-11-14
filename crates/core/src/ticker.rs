@@ -505,7 +505,8 @@ fn stick_entries(active: Option<&Context>, pad: PadFamily, modifier: Option<Butt
         .flat_map(|(stick, side)| {
             StickDirection::ALL.into_iter().filter_map(move |direction| {
                 let mapping = context.stick_mapping(stick, direction, modifier)?;
-                let mut trigger = modifier.map_or_else(Vec::new, |held| vec![pad.piece(held), Piece::Text("+".into())]);
+                let mut trigger =
+                    modifier.map_or_else(Vec::new, |held| vec![pad.piece(held), Piece::Text("+".into())]);
                 trigger.push(Piece::Chip(format!("{side}{}", direction.arrow())));
                 let mut entry = Entry::new(trigger, &mapping.action, None);
                 if let Some(name) = key_name(context, &mapping.action) {
