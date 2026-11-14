@@ -182,7 +182,7 @@ impl Session {
     }
 
     /// Builds the launcher view. It rewrites the routes through `rows`, so
-    /// indices from an earlier view no longer apply.
+    /// indices from an earlier view are stale.
     pub(crate) fn show(
         &mut self,
         request: &tehuti_core::unit_verbs::LauncherRequest,
