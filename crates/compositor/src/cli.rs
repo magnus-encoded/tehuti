@@ -34,7 +34,12 @@ pub enum UsageError {
     MissingContextDirectory,
     #[error("unknown option {}", .0.to_string_lossy())]
     UnknownOption(OsString),
+    #[error("{} is an option: write --{}", .0.to_string_lossy(), .0.to_string_lossy())]
+    MissingDashes(OsString),
 }
+
+/// Option names that read as a context directory when typed without their dashes.
+const OPTION_WORDS: &[&str] = &["help", "version", "check-config", "install-skill", "test-driver"];
 
 /// Parses the arguments after the program name.
 ///
@@ -42,7 +47,8 @@ pub enum UsageError {
 /// context directory belongs to the application.
 ///
 /// # Errors
-/// Returns an error when the context directory is missing or the first argument is an unknown option.
+/// Returns an error when the context directory is missing, the first argument is an unknown option,
+/// or it is an option name written without its dashes.
 pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation, UsageError> {
     let mut arguments = arguments.into_iter();
     let first = arguments.next().ok_or(UsageError::MissingContextDirectory)?;
@@ -52,6 +58,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
         Some("--check-config") => Ok(Invocation::CheckConfig(arguments.collect())),
         Some("--install-skill") => Ok(Invocation::InstallSkill(arguments.next())),
         _ if first.as_encoded_bytes().starts_with(b"-") => Err(UsageError::UnknownOption(first)),
+        Some(word) if OPTION_WORDS.contains(&word) => Err(UsageError::MissingDashes(first)),
         _ => Ok(Invocation::Session {
             context_directory: first,
             application: arguments.next(),

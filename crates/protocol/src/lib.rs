@@ -912,6 +912,7 @@ struct ContextFile {
     label: Option<Text>,
     #[serde(default)]
     favourites: Vec<String>,
+    #[serde(default)]
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
     speech: toml::Table,
