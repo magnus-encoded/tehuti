@@ -20,11 +20,7 @@ use smithay::{
         },
         wayland_server::{
             Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
-            protocol::{
-                wl_buffer::WlBuffer,
-                wl_output::{Transform, WlOutput},
-                wl_shm::Format,
-            },
+            protocol::{wl_buffer::WlBuffer, wl_output::Transform, wl_shm::Format},
         },
     },
 };
@@ -63,11 +59,10 @@ pub fn encode(
     if size != image.dimensions() {
         return Err(BufferMismatch::Size);
     }
-    let swap = match format {
-        Format::Argb8888 | Format::Xrgb8888 => true,
-        Format::Abgr8888 | Format::Xbgr8888 => false,
-        _ => return Err(BufferMismatch::Format),
-    };
+    if !FORMATS.contains(&format) {
+        return Err(BufferMismatch::Format);
+    }
+    let swap = matches!(format, Format::Argb8888 | Format::Xrgb8888);
     let row = usize::try_from(size.0)
         .map_err(|_| BufferMismatch::Size)?
         .saturating_mul(4);
@@ -75,7 +70,7 @@ pub fn encode(
         return Err(BufferMismatch::Stride);
     }
     let rows = usize::try_from(size.1).map_err(|_| BufferMismatch::Size)?;
-    if rows > 0 && destination.len() < stride.saturating_mul(rows - 1).saturating_add(row) {
+    if rows > 0 && destination.len() < stride.saturating_mul(rows.saturating_sub(1)).saturating_add(row) {
         return Err(BufferMismatch::Length);
     }
     for (source, target) in image
@@ -83,13 +78,15 @@ pub fn encode(
         .chunks_exact(row.max(1))
         .zip(destination.chunks_mut(stride.max(1)))
     {
-        for (pixel, out) in source.chunks_exact(4).zip(target.chunks_exact_mut(4)) {
-            if let ([red, green, blue, alpha], [first, second, third, fourth]) = (pixel, out) {
-                // wl_shm formats are little-endian: Argb8888 stores B, G, R, A in memory.
-                (*first, *third) = if swap { (*blue, *red) } else { (*red, *blue) };
-                *second = *green;
-                *fourth = *alpha;
-            }
+        for (pixel, out) in source
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(target.as_chunks_mut::<4>().0)
+        {
+            let [red, green, blue, alpha] = *pixel;
+            // wl_shm formats are little-endian: Argb8888 stores B, G, R, A in memory.
+            *out = if swap { [blue, green, red, alpha] } else { *pixel };
         }
     }
     Ok(())
