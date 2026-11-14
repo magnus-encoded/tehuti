@@ -363,7 +363,10 @@ pub(crate) struct Failure {
 impl Failure {
     /// The bar notice for an early exit.
     pub(crate) fn notice(&self) -> String {
-        let exit = self.code.map(|code| format!(" (exit {code})")).unwrap_or_default();
+        let exit = self
+            .code
+            .map(|code| format!(" (exit {code})"))
+            .unwrap_or_default();
         format!("{} closed right away{exit}", self.label)
     }
 }
