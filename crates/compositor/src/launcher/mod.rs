@@ -302,7 +302,8 @@ impl Session {
             });
         match result {
             Ok(child) => {
-                self.children.track(child, entry, Instant::now());
+                let label = self.display_name(entry);
+                self.children.track(child, &label, Instant::now());
                 true
             }
             Err(error) => {
@@ -310,6 +311,26 @@ impl Session {
                 false
             }
         }
+    }
+
+    /// The name the launcher shows for a desktop entry id, else the id without its suffix.
+    fn display_name(&self, entry: &str) -> String {
+        use crate::destinations::Target;
+        self.table
+            .entries()
+            .iter()
+            .find(|candidate| {
+                candidate.routes.iter().any(|route| {
+                    route
+                        .steps
+                        .iter()
+                        .any(|step| matches!(&step.target, Target::Desktop(id) if id == entry))
+                })
+            })
+            .map_or_else(
+                || entry.strip_suffix(".desktop").unwrap_or(entry).to_owned(),
+                |candidate| candidate.name.clone(),
+            )
     }
 
     pub(crate) fn launch_url(&mut self, url: &str, socket: Option<&std::ffi::OsStr>) -> bool {
