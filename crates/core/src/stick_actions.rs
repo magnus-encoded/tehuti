@@ -113,6 +113,8 @@ pub struct StickActions {
     left: Deflected,
     right: Deflected,
     modifiers: Vec<HeldModifier>,
+    /// True while a tapped modifier replays its own button action.
+    replaying: bool,
 }
 
 impl StickActions {
@@ -125,6 +127,15 @@ impl StickActions {
     #[must_use]
     pub fn holds(&self, button: ButtonName) -> bool {
         self.modifiers.iter().any(|held| held.button == button)
+    }
+
+    #[must_use]
+    pub const fn replaying(&self) -> bool {
+        self.replaying
+    }
+
+    pub const fn set_replaying(&mut self, replaying: bool) {
+        self.replaying = replaying;
     }
 
     pub fn press_modifier(&mut self, button: ButtonName) {

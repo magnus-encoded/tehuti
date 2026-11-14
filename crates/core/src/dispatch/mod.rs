@@ -1363,20 +1363,13 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         if state.keyboard.tick(elapsed) {
             route_frame.tasks.push_front(Task::Speech(SpeechInput::Press));
         }
-        let mapped = [
-            state.core.maps_stick(tehuti_protocol::Stick::Left),
-            state.core.maps_stick(tehuti_protocol::Stick::Right),
-        ];
-        if !state.keyboard.is_open() {
-            let sticks = state.mouse.sticks;
-            effects.extend(
-                state
-                    .core
-                    .stick_actions(elapsed, sticks.left, sticks.right)
-                    .into_iter()
-                    .map(Effect::Apply),
-            );
-        }
+        let mapped = stick_tick(
+            &mut state.core,
+            state.mouse.sticks,
+            state.keyboard.is_open(),
+            elapsed,
+            effects,
+        );
         if state
             .mouse
             .tick(elapsed, !state.keyboard.is_open(), mapped, effects)
@@ -1391,6 +1384,27 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     }
     effects.push(Effect::QueryPlugin(event.clone()));
     route_frame.awaiting = Some(Await::PluginActive(event));
+}
+
+/// Fires the focused context's `[sticks]` actions; returns which sticks they take from mouse mode.
+fn stick_tick(
+    core: &mut crate::State,
+    sticks: Sticks,
+    keyboard_open: bool,
+    elapsed: Duration,
+    effects: &mut Vec<Effect>,
+) -> [bool; 2] {
+    if !keyboard_open {
+        effects.extend(
+            core.stick_actions(elapsed, sticks.left, sticks.right)
+                .into_iter()
+                .map(Effect::Apply),
+        );
+    }
+    [
+        core.maps_stick(tehuti_protocol::Stick::Left),
+        core.maps_stick(tehuti_protocol::Stick::Right),
+    ]
 }
 
 fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {

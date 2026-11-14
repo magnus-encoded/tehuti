@@ -58,8 +58,6 @@ pub struct State {
     controller_talk: Option<ButtonName>,
     app_names: Vec<(String, String)>,
     sticks: stick_actions::StickActions,
-    /// True while a tapped stick modifier replays its own button action.
-    replaying_modifier: bool,
 }
 
 impl State {
@@ -154,7 +152,6 @@ impl State {
             controller_talk: None,
             app_names: Vec::new(),
             sticks: stick_actions::StickActions::default(),
-            replaying_modifier: false,
         };
         state.refresh_ticker();
         state.refresh_labels();
@@ -342,9 +339,8 @@ impl State {
         right: (i16, i16),
     ) -> Vec<Action> {
         let mut sticks = core::mem::take(&mut self.sticks);
-        let actions = focused_context(self)
-            .map(|context| sticks.tick(context, elapsed, left, right))
-            .unwrap_or_default();
+        let actions =
+            focused_context(self).map_or_else(Vec::new, |context| sticks.tick(context, elapsed, left, right));
         self.sticks = sticks;
         actions
     }
@@ -450,6 +446,9 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     };
     let level = state.level;
     let (mut next, mut actions, routed) = route(state, event, plugin_active);
+    if matches!(event, Event::Focus { .. }) {
+        next.sticks.reset();
+    }
     if matches!(event, Event::Focus { .. }) || next.level != level {
         next.refresh_ticker();
     }
@@ -477,7 +476,6 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         let actions = plugin::expire(&mut state, core::time::Duration::MAX);
         state.focused_app_id.clone_from(app_id);
         state.focused_title.clone_from(title);
-        state.sticks.reset();
         return (state, actions, false);
     }
     if menu_button_release(&mut state, event) {
@@ -585,7 +583,7 @@ fn stick_modifier(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     let Event::Button { name, state: button } = event else {
         return None;
     };
-    if state.replaying_modifier {
+    if state.sticks.replaying() {
         return None;
     }
     match button {
@@ -606,13 +604,13 @@ fn stick_modifier(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             if !tapped {
                 return Some(Vec::new());
             }
-            state.replaying_modifier = true;
+            state.sticks.set_replaying(true);
             let press = Event::Button {
                 name: *name,
                 state: ButtonState::Pressed,
             };
             let (mut next, mut actions, _) = route(core::mem::take(state), &press, false);
-            next.replaying_modifier = false;
+            next.sticks.set_replaying(false);
             actions.extend(next.release_held_button(*name));
             *state = next;
             Some(actions)
