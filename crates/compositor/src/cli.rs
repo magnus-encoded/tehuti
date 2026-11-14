@@ -70,6 +70,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_option_name_without_dashes_is_rejected_not_read_as_a_context_directory() {
+        for word in ["check-config", "help", "version", "install-skill", "test-driver"] {
+            assert_eq!(
+                parse([word, "--help"].map(OsString::from)),
+                Err(UsageError::MissingDashes(OsString::from(word))),
+                "{word}"
+            );
+        }
+        assert!(matches!(
+            parse([OsString::from("contexts")]),
+            Ok(Invocation::Session { .. })
+        ));
+    }
+
+    #[test]
     fn install_skill_without_a_path_uses_the_default() {
         assert_eq!(
             parse([OsString::from("--install-skill")]),

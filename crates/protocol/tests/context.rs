@@ -95,6 +95,28 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn a_speech_only_context_needs_no_buttons_table() {
+        let context = parse_context("app_id = '*'\n[speech]\n'next tab' = { key = 'tab', mods = ['ctrl'] }").unwrap();
+        assert_eq!(context.mapped_buttons().count(), 0);
+        assert!(context.speech_action("next tab").is_some());
+    }
+
+    #[test]
+    fn capitalised_key_names_mean_the_same_key_in_contexts_and_plugin_actions() {
+        for (spelled, key) in [("Tab", KeyName::Tab), ("Escape", KeyName::Escape), ("Left", KeyName::Left)] {
+            let context = parse_context(&format!("app_id = '*'\n[buttons]\neast = {{ key = '{spelled}' }}")).unwrap();
+            assert_eq!(
+                context.key_for(tehuti_protocol::ButtonName::East),
+                Some(key)
+            );
+            let action: tehuti_protocol::Action =
+                serde_json::from_str(&format!(r#"{{"type":"key","key":"{spelled}"}}"#)).unwrap();
+            assert_eq!(action, tehuti_protocol::Action::Key { key, mods: vec![] });
+        }
+        assert!(parse_context("app_id = '*'\n[buttons]\neast = { key = 'TAB' }").is_err());
+    }
+
+    #[test]
     fn favourites_preserve_order_and_default_to_empty() {
         let plain = parse_context("app_id = '*'\n[buttons]").unwrap();
         assert_eq!(plain.favourites(), Vec::<String>::new());
