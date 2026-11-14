@@ -659,13 +659,12 @@ impl Compositor {
         }
         let mut ordered = hotwords;
         ordered.append(&mut words);
-        let mut words = ordered;
-        words.extend(
+        ordered.extend(
             crate::speech_vocabulary::load(&contexts)
                 .into_iter()
                 .filter(|word| !project_names.contains(word)),
         );
-        crate::speech_vocabulary::bounded(words)
+        crate::speech_vocabulary::bounded(ordered)
     }
 
     pub(crate) fn refresh_speech_vocabulary(&mut self) {

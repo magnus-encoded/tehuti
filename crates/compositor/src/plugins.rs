@@ -1505,6 +1505,7 @@ mod tests {
                 read_bytes: 0,
                 status_text: None,
                 verbs: manifest.verbs.clone(),
+                hints: Vec::new(),
             })))
         }
 
