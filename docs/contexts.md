@@ -105,6 +105,25 @@ desktop icons to draw or select with the D-pad. Speech launch mappings still lau
 their configured applications. `tehuti --check-config` warns when the key
 is present.
 
+## Invoke verb
+
+Speech that begins with "invoke" types a slash command in any window: "invoke
+usage report" types `/usage-report`. A top-level `invoke` list names the
+slash-command words a context knows, as lowercase letters and digits joined by
+hyphens:
+
+```toml
+app_id = "global"
+invoke = ["usage", "chief-of-staff"]
+```
+
+The words after the verb snap to the closest word in the focused and global
+contexts' lists, so "invoke chief of stuff" still types `/chief-of-staff`; with
+no close word they are typed as heard, lowercased and joined by hyphens. The
+verb comes after Tehuti's own phrases and before plugin verbs and context
+phrases, so a context no longer needs one speech entry per slash command. A
+lone "invoke" with nothing after it reaches context phrases as usual.
+
 ## Checking a config
 
 `tehuti --check-config [directory]` parses every `context.toml` and the

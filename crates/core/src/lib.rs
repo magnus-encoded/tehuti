@@ -520,6 +520,9 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     ) {
         return (state, Vec::new(), false);
     }
+    if let Some(action) = invoke_verb(&state, event) {
+        return (state, vec![action], false);
+    }
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
         return (state, Vec::new(), true);
     }
@@ -531,6 +534,20 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         .into_iter()
         .collect();
     (state, actions, false)
+}
+
+/// The built-in `invoke` verb, ahead of plugin verbs and context phrases; its
+/// words snap to the focused and global contexts' invoke words.
+fn invoke_verb(state: &State, event: &Event) -> Option<Action> {
+    let Event::Speech { text } = event else {
+        return None;
+    };
+    let known = [focused_context(state), global_context(state)]
+        .into_iter()
+        .flatten()
+        .flat_map(|context| context.invoke_words().iter().map(String::as_str));
+    let typed = invoke::slash_command(text.as_str(), known)?;
+    tehuti_protocol::Text::new(typed).ok().map(|text| Action::Text { text })
 }
 
 /// Every exact match in chain order, then the built-in close, then folded
@@ -959,6 +976,7 @@ pub mod secret;
 pub mod shadowing;
 pub mod speech;
 pub mod tool_words;
+pub mod invoke;
 pub mod unit_verbs;
 pub mod verbs;
 
