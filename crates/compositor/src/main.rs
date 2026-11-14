@@ -44,8 +44,6 @@ pub(crate) struct LoopData {
     discovery_epoch: std::time::Instant,
     seat_active: bool,
     log_out: bool,
-    /// Every DRM frame failed for a minute; the session exits with an error.
-    frames_failed: bool,
     redraw: Option<Redraw>,
     pacing: LoopPacing,
     context_watch: Option<tehuti::contexts::ContextWatch>,
@@ -58,6 +56,8 @@ pub(crate) struct LoopData {
 enum Frames {
     Backend,
     Headless,
+    /// Every DRM frame failed for a minute; the session exits with an error.
+    Failed,
 }
 
 /// Draws a frame when something on the output changed; the DRM backend installs it.
@@ -111,7 +111,7 @@ impl input::InputSource for AttachedController {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
-        if self.frames_failed {
+        if matches!(self.frames, Frames::Failed) {
             return ExitCode::FAILURE;
         }
         exit_code(
@@ -436,7 +436,6 @@ fn start_session(
         discovery_epoch: std::time::Instant::now(),
         seat_active: true,
         log_out: false,
-        frames_failed: false,
         redraw,
         pacing: LoopPacing {
             work: tehuti::pacing::Interval::new(tehuti::pacing::LOOP_WORK_PERIOD),

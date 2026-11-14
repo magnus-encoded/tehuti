@@ -845,7 +845,7 @@ impl Scanout {
         let retry = self
             .recovery
             .finish(std::time::Instant::now(), result, || fall_back = true)
-            .inspect_err(|_| data.frames_failed = true)?;
+            .inspect_err(|_| data.frames = crate::Frames::Failed)?;
         if fall_back {
             self.restore_mode(device, self.confirmed_mode, data);
             self.modeset = true;
