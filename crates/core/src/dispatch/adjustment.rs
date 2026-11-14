@@ -2,6 +2,7 @@
 
 use super::update_sticks;
 use super::{ButtonName, ButtonState, Effect, Event, State, Sticks};
+use crate::adjuster::SizeAxis;
 
 pub(super) fn adjuster_phrase(
     state: &mut State,
@@ -34,6 +35,16 @@ pub(super) fn adjuster_phrase(
                 effects.push(Effect::ReadVolume);
             }
             return true;
+        }
+        for axis in [SizeAxis::Width, SizeAxis::Height] {
+            if phrase == axis.phrase() {
+                if state.adjuster.is_none() && state.volume_pending == crate::adjuster::VolumeRead::Idle {
+                    state.volume_pending = crate::adjuster::VolumeRead::Pending;
+                    state.size_pending = Some(axis);
+                    effects.push(Effect::ReadWindowSize(axis));
+                }
+                return true;
+            }
         }
         let mut matches = state.adjusters.iter().filter(|(_, spec)| spec.name() == phrase);
         if let Some((plugin, spec)) = matches.next()
@@ -75,7 +86,18 @@ pub(super) fn adjuster_input(state: &mut State, event: &Event, effects: &mut Vec
     if let Event::Button { name, state: button } = event {
         if *button == ButtonState::Pressed {
             state.adjuster_buttons.push(*name);
-            if *name == ButtonName::East {
+            let delta = if matches!(name, ButtonName::DpadRight | ButtonName::DpadUp) {
+                1
+            } else if matches!(name, ButtonName::DpadLeft | ButtonName::DpadDown) {
+                -1
+            } else {
+                0
+            };
+            if delta != 0 {
+                if gauge.step(delta) {
+                    effects.push(adjuster_effect(gauge, false));
+                }
+            } else if *name == ButtonName::East {
                 gauge.revert();
                 effects.push(adjuster_effect(gauge, true));
                 state.adjuster = None;
@@ -91,6 +113,9 @@ pub(super) fn adjuster_input(state: &mut State, event: &Event, effects: &mut Vec
 }
 
 pub(super) fn adjuster_effect(gauge: &crate::adjuster::Gauge, finished: bool) -> Effect {
+    if let Some((axis, millionths)) = gauge.fraction() {
+        return Effect::SetWindowSize { axis, millionths };
+    }
     gauge.plugin.map_or_else(
         || Effect::SetVolume(u8::try_from(gauge.value()).unwrap_or_default()),
         |plugin| Effect::AdjusterValue {
@@ -116,7 +141,10 @@ pub(super) fn remember_adjuster(state: &mut State) {
 /// True when `text` names the built-in volume adjuster or a registered one.
 pub(super) fn is_adjuster_phrase(state: &State, text: &str) -> bool {
     let phrase = tehuti_protocol::normalize_phrase(text);
-    phrase == "volume" || state.adjusters.iter().any(|(_, spec)| spec.name() == phrase)
+    phrase == "volume"
+        || phrase == SizeAxis::Width.phrase()
+        || phrase == SizeAxis::Height.phrase()
+        || state.adjusters.iter().any(|(_, spec)| spec.name() == phrase)
 }
 
 /// Starts a freshly opened gauge from the stick already held.
