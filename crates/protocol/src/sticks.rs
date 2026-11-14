@@ -15,6 +15,7 @@ pub enum Stick {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 #[serde(rename_all = "kebab-case")]
+#[expect(clippy::min_ident_chars, reason = "Up is the direction's name")]
 pub enum StickDirection {
     Up,
     UpRight,
@@ -85,7 +86,11 @@ enum StickEntries {
     Many(Vec<StickEntryFile>),
 }
 
-pub(super) type SticksFile =
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private helpers also satisfy unreachable_pub"
+)]
+pub(crate) type SticksFile =
     std::collections::HashMap<Stick, std::collections::HashMap<StickDirection, toml::Value>>;
 
 /// A validated stick mapping.
@@ -107,7 +112,11 @@ const FACE_BUTTONS: [ButtonName; 4] = [
 ];
 
 /// Validates `[sticks]`: face-button modifiers, no held keys, one entry per modifier and direction.
-pub(super) fn parse_sticks(file: SticksFile) -> Result<Vec<StickMapping>, String> {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private helpers also satisfy unreachable_pub"
+)]
+pub(crate) fn parse_sticks(file: SticksFile) -> Result<Vec<StickMapping>, String> {
     let mut mappings: Vec<StickMapping> = Vec::new();
     for (stick, directions) in file {
         for (direction, value) in directions {
