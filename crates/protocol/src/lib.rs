@@ -492,6 +492,7 @@ pub struct Context {
     speech_variants: std::collections::HashMap<String, Option<String>>,
     /// Problems that did not stop the load, for the edge to log.
     warnings: Vec<String>,
+    skipped_phrases: Vec<String>,
     unmatched_speech: Option<UnmatchedSpeech>,
     launch_phrases: Vec<(String, String)>,
     favourites: Vec<String>,
@@ -839,6 +840,12 @@ impl Context {
         &self.warnings
     }
 
+    /// Speech phrases dropped while loading, each message naming the phrase.
+    #[must_use]
+    pub fn skipped_phrases(&self) -> &[String] {
+        &self.skipped_phrases
+    }
+
     /// The action of a phrase the transcript matches once digits and hyphens
     /// fold; callers try it only once no exact phrase matched anywhere.
     #[must_use]
@@ -953,6 +960,7 @@ struct ContextFile {
     favourites: Vec<String>,
     #[serde(default)]
     invoke: Vec<String>,
+    #[serde(default)]
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
     sticks: sticks::SticksFile,
@@ -1114,8 +1122,9 @@ fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
 ///
 /// # Errors
 /// The TOML, button names, key names or application id are invalid, a speech
-/// phrase normalizes to nothing or to the same phrase as another mapping, or a
-/// held key has mods or belongs to a phrase.
+/// phrase or a held key has mods or belongs to a phrase. A phrase that
+/// normalizes to nothing or to the same text as an earlier phrase is dropped
+/// with a warning instead; the rest of the context loads.
 pub fn parse_context(source: &str) -> Result<Context, String> {
     let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
@@ -1123,19 +1132,23 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_keyboard_button(context.keyboard.button)?;
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
-    let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
+    let mut speech: std::collections::HashMap<String, SpeechEntry> =
+        std::collections::HashMap::with_capacity(context.speech.len());
     let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
     let mut warnings = Vec::new();
+    let mut skipped_phrases = Vec::new();
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
         let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
-        let normalized = normalized_speech_phrase(&mapped)?;
+        let normalized = match accept_phrase(&speech, &mapped) {
+            Ok(normalized) => normalized,
+            Err(message) => {
+                skipped_phrases.push(message);
+                continue;
+            }
+        };
         let template = entry.is_template();
-        if speech.insert(normalized.clone(), entry).is_some() {
-            return Err(format!(
-                "speech phrase {mapped:?} duplicates another phrase that also normalizes to {normalized:?}"
-            ));
-        }
+        drop(speech.insert(normalized.clone(), entry));
         warnings.extend(insert_speech_variant(
             &mut speech_variants,
             &mapped,
@@ -1152,6 +1165,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         speech,
         speech_variants,
         warnings,
+        skipped_phrases,
         launch_phrases,
         favourites: context.favourites,
         invoke: validate_invoke_words(context.invoke)?,
@@ -1189,6 +1203,23 @@ fn validate_invoke_words(words: Vec<String>) -> Result<Vec<String>, String> {
         }
     }
     Ok(words)
+}
+
+/// The normalized phrase, or why the phrase is dropped: it has no words or
+/// clashes with an earlier phrase.
+fn accept_phrase(
+    speech: &std::collections::HashMap<String, SpeechEntry>,
+    mapped: &str,
+) -> Result<String, String> {
+    let normalized =
+        normalized_speech_phrase(mapped).map_err(|message| format!("speech phrase skipped: {message}"))?;
+    match speech.get(&normalized) {
+        Some(earlier) => Err(format!(
+            "speech phrase {mapped:?} skipped: clashes with earlier phrase {:?}, both normalize to {normalized:?}",
+            earlier.phrase
+        )),
+        None => Ok(normalized),
+    }
 }
 
 fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {

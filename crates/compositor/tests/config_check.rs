@@ -291,6 +291,18 @@ order = 1
     }
 
     #[test]
+    fn a_speech_only_context_checks_clean() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "notes/context.toml",
+            "app_id = 'org.example.Notes'\n[speech]\n'save it' = { key = 's', mods = ['ctrl'] }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+    }
+
+    #[test]
     fn a_missing_directory_is_an_error() {
         let directory = tempfile::tempdir().unwrap();
         let report = check(&directory.path().join("absent"));

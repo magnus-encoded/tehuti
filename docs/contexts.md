@@ -31,9 +31,14 @@ key = "up"
 Button names use snake case, such as `south`, `left_bumper` and `dpad_left`.
 The analogue triggers are `left_trigger` and `right_trigger`; each presses at 40 percent of its travel and releases below 20 percent.
 Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, `home`, `end`, `page_up` and `page_down`. A mapping sends a complete key tap on button press. Releases send
-nothing. Unknown fields, buttons and keys are rejected. Application ids must
-contain a non-whitespace character.
+`right`, `home`, `end`, `page_up` and `page_down`. A mapping sends a complete
+key tap on button press. Releases send
+nothing. Key names are lowercase; the CamelCase spelling (`Tab`, `PageUp`)
+is accepted too, in contexts and plugin actions alike, and single letters may
+be `a` or `A`. Other casings such as `TAB` are rejected. Unknown fields,
+buttons and keys are rejected. The `[buttons]` table is optional: a context
+may hold only `[speech]`. Application ids must contain a non-whitespace
+character.
 
 An optional top-level `title = "World of Warcraft"` narrows a context to
 windows whose title equals it exactly. Among contexts for the focused
@@ -187,8 +192,10 @@ Tehuti watches the context directory and its child directories. Saving any
 `context.toml` reloads every context once edits pause for 300 ms; no restart is
 needed. A successful reload shows “Contexts reloaded”. If any file fails to read
 or parse, Tehuti shows a notice naming the file and the start of the error, and the
-context from that file stops working until the file is fixed (the previous good
-version is dropped; see issue #625); the full error goes to the log. A reload leaves held
+last good version of that file stays active until the file is fixed; the full
+error goes to the log. A speech phrase that normalizes to nothing or to the same
+text as an earlier phrase is dropped alone, with a notice naming the file and
+phrase; the rest of the file loads. A reload leaves held
 buttons and a speech session in progress untouched. Plugins are not reloaded;
 they restart as processes.
 

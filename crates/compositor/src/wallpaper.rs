@@ -526,6 +526,25 @@ impl WallpaperCache {
     }
 }
 
+/// Waits until the shared wallpaper is prepared for `output`, so a capture taken before any
+/// frame was drawn still shows it. Gives up after a few seconds and the capture stays black.
+pub fn settle(output: &Output) {
+    let Some(mode) = output.current_mode() else {
+        return;
+    };
+    let size = output.current_transform().transform_size(mode.size);
+    for _ in 0..1000 {
+        if let Ok(mut cache) = wallpaper().lock() {
+            let _buffer = cache.buffer(size);
+            if cache.fresh.contains(&(size.w, size.h)) {
+                return;
+            }
+        }
+        std::thread::sleep(core::time::Duration::from_millis(10));
+    }
+    tracing::warn!("wallpaper not ready for capture; using black");
+}
+
 /// # Errors
 /// Returns an error when the wallpaper cache is poisoned.
 pub fn set_redraw_ping(ping: Ping) -> Result<(), Box<dyn Error>> {
