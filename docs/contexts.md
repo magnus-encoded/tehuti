@@ -121,7 +121,8 @@ The words after the verb snap to the closest word in the focused and global
 contexts' lists, so "invoke chief of stuff" still types `/chief-of-staff`; with
 no close word they are typed as heard, lowercased and joined by hyphens. The
 verb comes after Tehuti's own phrases and before plugin verbs and context
-phrases, so a context no longer needs one speech entry per slash command. A
+phrases, so one list replaces a speech entry per slash command, and it
+shadows an `Invoke <name>` template. A
 lone "invoke" with nothing after it reaches context phrases as usual.
 
 ## Checking a config
