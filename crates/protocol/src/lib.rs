@@ -1088,7 +1088,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_keyboard_button(context.keyboard.button)?;
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
-    let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
+    let mut speech: std::collections::HashMap<String, SpeechEntry> =
+        std::collections::HashMap::with_capacity(context.speech.len());
     let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
     let mut warnings = Vec::new();
     let mut skipped_phrases = Vec::new();
