@@ -1085,18 +1085,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             },
             Input::PluginRequest(request),
         ) => {
-            if let Some((key, permissions)) = request {
-                let (next, mut routed, _) = crate::plugin::step(
-                    core::mem::take(&mut state.core),
-                    crate::plugin::Input::Request {
-                        key,
-                        event: press,
-                        permissions,
-                    },
-                );
-                state.core = next;
-                actions.append(&mut routed);
-            }
+            replay_press(state, press, request, &mut actions);
             effects.push(Effect::DispatchPlugin {
                 event: event.clone(),
                 route,
@@ -1127,6 +1116,28 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             effects.push(Effect::InvalidReply);
         }
     }
+}
+
+/// Hands a replayed press to the plugin's request, if it made one.
+fn replay_press(
+    state: &mut State,
+    press: Event,
+    request: Option<(RequestKey, Vec<Permission>)>,
+    actions: &mut Vec<Action>,
+) {
+    let Some((key, permissions)) = request else {
+        return;
+    };
+    let (next, mut routed, _) = crate::plugin::step(
+        core::mem::take(&mut state.core),
+        crate::plugin::Input::Request {
+            key,
+            event: press,
+            permissions,
+        },
+    );
+    state.core = next;
+    actions.append(&mut routed);
 }
 
 fn queue_reply(frame: &mut Frame, pair: (Await, Input)) {
