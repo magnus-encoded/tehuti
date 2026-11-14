@@ -1085,7 +1085,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             },
             Input::PluginRequest(request),
         ) => {
-            replay_press(state, press, request, &mut actions);
+            replay_press(&mut state.core, press, request, &mut actions);
             effects.push(Effect::DispatchPlugin {
                 event: event.clone(),
                 route,
@@ -1120,7 +1120,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
 
 /// Hands a replayed press to the plugin's request, if it made one.
 fn replay_press(
-    state: &mut State,
+    core_state: &mut crate::State,
     press: Event,
     request: Option<(RequestKey, Vec<Permission>)>,
     actions: &mut Vec<Action>,
@@ -1129,14 +1129,14 @@ fn replay_press(
         return;
     };
     let (next, mut routed, _) = crate::plugin::step(
-        core::mem::take(&mut state.core),
+        core::mem::take(core_state),
         crate::plugin::Input::Request {
             key,
             event: press,
             permissions,
         },
     );
-    state.core = next;
+    *core_state = next;
     actions.append(&mut routed);
 }
 
