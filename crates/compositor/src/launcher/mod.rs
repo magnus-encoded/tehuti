@@ -376,7 +376,11 @@ impl Failure {
             [only] => Some(only.notice()),
             many => {
                 let names: Vec<&str> = many.iter().map(|failure| failure.label.as_str()).collect();
-                Some(format!("{} apps closed right away: {}", many.len(), names.join(", ")))
+                Some(format!(
+                    "{} apps closed right away: {}",
+                    many.len(),
+                    names.join(", ")
+                ))
             }
         }
     }
