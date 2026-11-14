@@ -83,11 +83,11 @@ mod tests {
 
     #[test]
     fn screenshot_uses_the_current_output_capture_source() {
+        use core::cell::RefCell;
+        use std::rc::Rc;
         if !clean_environment("tests::screenshot_uses_the_current_output_capture_source", None) {
             return;
         }
-        use core::cell::RefCell;
-        use std::rc::Rc;
         let directory = tempfile::tempdir().unwrap();
         let display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
