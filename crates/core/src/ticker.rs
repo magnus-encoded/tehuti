@@ -2,7 +2,8 @@
 
 use core::time::Duration;
 use tehuti_protocol::{
-    Action, ButtonName, Context, KeyName, LayoutAction, Modifier, TickerSpeech, normalize_phrase,
+    Action, ButtonName, Context, KeyName, LayoutAction, Modifier, Stick, StickDirection, TickerSpeech,
+    normalize_phrase,
 };
 
 /// How long the ticker holds one scroll position. A few steps a second keep redraws rare.
@@ -389,7 +390,20 @@ pub fn entries(
     level: crate::Level,
 ) -> Vec<Entry> {
     let (active, global) = active_and_global(contexts, focused);
-    entries_for(active, global, pad, level)
+    entries_for(active, global, pad, level, None)
+}
+
+/// [`entries`] while `modifier` is held: the stick entries are that modifier's layer.
+#[must_use]
+pub fn entries_with_modifier(
+    contexts: &[Context],
+    focused: Option<&str>,
+    pad: PadFamily,
+    level: crate::Level,
+    modifier: Option<ButtonName>,
+) -> Vec<Entry> {
+    let (active, global) = active_and_global(contexts, focused);
+    entries_for(active, global, pad, level, modifier)
 }
 
 pub(crate) fn entries_for(
@@ -397,8 +411,12 @@ pub(crate) fn entries_for(
     global: Option<&Context>,
     pad: PadFamily,
     level: crate::Level,
+    modifier: Option<ButtonName>,
 ) -> Vec<Entry> {
     let mut entries = button_entries(active, global, pad, level);
+    if !(level == crate::Level::App && active.is_some_and(Context::passthrough)) {
+        entries.extend(stick_entries(active, pad, modifier));
+    }
     let speech = active
         .and_then(|context| context.ticker().speech)
         .or_else(|| global.and_then(|context| context.ticker().speech))
@@ -473,6 +491,28 @@ fn button_entries(
                     )
                 })?;
             Some(mapped_entry(trigger, context, *button, &action))
+        })
+        .collect()
+}
+
+/// The focused context's stick mappings for the held modifier, or the unmodified ones.
+fn stick_entries(active: Option<&Context>, pad: PadFamily, modifier: Option<ButtonName>) -> Vec<Entry> {
+    let Some(context) = active else {
+        return Vec::new();
+    };
+    [(Stick::Left, "L"), (Stick::Right, "R")]
+        .into_iter()
+        .flat_map(|(stick, side)| {
+            StickDirection::ALL.into_iter().filter_map(move |direction| {
+                let mapping = context.stick_mapping(stick, direction, modifier)?;
+                let mut trigger = modifier.map_or_else(Vec::new, |held| vec![pad.piece(held), Piece::Text("+".into())]);
+                trigger.push(Piece::Chip(format!("{side}{}", direction.arrow())));
+                let mut entry = Entry::new(trigger, &mapping.action, None);
+                if let Some(name) = key_name(context, &mapping.action) {
+                    entry.result = vec![Piece::Text(name.into())];
+                }
+                Some(entry)
+            })
         })
         .collect()
 }

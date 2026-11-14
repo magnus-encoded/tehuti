@@ -485,6 +485,7 @@ pub struct Context {
     title: Option<String>,
     label: Option<String>,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
+    sticks: Vec<StickMapping>,
     speech: std::collections::HashMap<String, SpeechEntry>,
     /// Each non-template phrase's [`speech_variant_key`] to its `speech` key, or
     /// `None` once two distinct phrases share the folded form.
@@ -643,6 +644,37 @@ impl Context {
     /// The buttons this context's `[buttons]` table maps, in no particular order.
     pub fn mapped_buttons(&self) -> impl Iterator<Item = ButtonName> + '_ {
         self.buttons.keys().copied()
+    }
+
+    /// Every `[sticks]` mapping, in no particular order.
+    #[must_use]
+    pub fn stick_mappings(&self) -> &[StickMapping] {
+        &self.sticks
+    }
+
+    /// Whether `[sticks]` maps any direction of `stick`, which then leaves mouse mode.
+    #[must_use]
+    pub fn maps_stick(&self, stick: Stick) -> bool {
+        self.sticks.iter().any(|mapping| mapping.stick == stick)
+    }
+
+    /// Whether a `[sticks]` entry names `button` in `with`.
+    #[must_use]
+    pub fn stick_modifier(&self, button: ButtonName) -> bool {
+        self.sticks.iter().any(|mapping| mapping.with == Some(button))
+    }
+
+    /// The mapping for `stick` pointing at `direction` with `with` held.
+    #[must_use]
+    pub fn stick_mapping(
+        &self,
+        stick: Stick,
+        direction: StickDirection,
+        with: Option<ButtonName>,
+    ) -> Option<&StickMapping> {
+        self.sticks
+            .iter()
+            .find(|mapping| mapping.stick == stick && mapping.direction == direction && mapping.with == with)
     }
 
     #[must_use]
@@ -914,6 +946,8 @@ struct ContextFile {
     favourites: Vec<String>,
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
+    sticks: sticks::SticksFile,
+    #[serde(default)]
     speech: toml::Table,
     #[serde(default)]
     unmatched_speech: Option<UnmatchedSpeech>,
@@ -1105,6 +1139,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         title: context.title,
         label: parse_label(context.label)?,
         buttons: context.buttons,
+        sticks: sticks::parse_sticks(context.sticks)?,
         speech,
         speech_variants,
         warnings,
@@ -1366,3 +1401,5 @@ fn validate_app_id(app_id: &str) -> Result<(), String> {
 
 mod adjuster;
 pub use adjuster::Adjuster;
+mod sticks;
+pub use sticks::{Stick, StickDirection, StickMapping};

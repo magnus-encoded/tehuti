@@ -1363,7 +1363,21 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         if state.keyboard.tick(elapsed) {
             route_frame.tasks.push_front(Task::Speech(SpeechInput::Press));
         }
-        if state.mouse.tick(elapsed, !state.keyboard.is_open(), effects) {
+        let mapped = [
+            state.core.maps_stick(tehuti_protocol::Stick::Left),
+            state.core.maps_stick(tehuti_protocol::Stick::Right),
+        ];
+        if !state.keyboard.is_open() {
+            let sticks = state.mouse.sticks;
+            effects.extend(
+                state
+                    .core
+                    .stick_actions(elapsed, sticks.left, sticks.right)
+                    .into_iter()
+                    .map(Effect::Apply),
+            );
+        }
+        if state.mouse.tick(elapsed, !state.keyboard.is_open(), mapped, effects) {
             for button in [ButtonState::Released, ButtonState::Pressed] {
                 route_frame.tasks.push_front(Task::Route(Event::Button {
                     name: ButtonName::Select,
