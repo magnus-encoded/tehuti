@@ -1103,7 +1103,11 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
 }
 
 /// Steps core for an event; a routed stick-modifier tap also returns its held-back press.
-fn step_routed(core_state: &mut crate::State, event: &Event, active: bool) -> (Vec<Action>, bool, Option<Event>) {
+fn step_routed(
+    core_state: &mut crate::State,
+    event: &Event,
+    active: bool,
+) -> (Vec<Action>, bool, Option<Event>) {
     let held = matches!(
         event,
         Event::Button { name, state: tehuti_protocol::ButtonState::Released } if core_state.sticks.holds(*name)
