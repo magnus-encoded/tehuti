@@ -356,7 +356,7 @@ mod tests {
                 fired_at.push(FRAME * frame);
             }
         }
-        let first_repeat = fired_at[1] - fired_at[0];
+        let first_repeat = fired_at[1].checked_sub(fired_at[0]).unwrap();
         assert!(
             first_repeat >= REPEAT_DELAY && first_repeat <= REPEAT_DELAY + FRAME,
             "{first_repeat:?}"
@@ -420,7 +420,10 @@ mod tests {
     #[test]
     fn a_stick_move_below_the_threshold_still_counts_as_a_tap() {
         let (mut state, _) = button(player(), ButtonName::North, true);
-        assert!(state.stick_actions(FRAME, (0, 450), (0, 0)).is_empty());
+        assert!(
+            state.stick_actions(FRAME, (0, 450), (0, 0)).is_empty(),
+            "below the threshold nothing fires"
+        );
         let (_, released) = button(state, ButtonName::North, false);
         assert_eq!(released, vec![text("north")]);
     }
