@@ -533,20 +533,16 @@ pub fn settle(output: &Output) {
         return;
     };
     let size = output.current_transform().transform_size(mode.size);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
+    for _ in 0..1000 {
         if let Ok(mut cache) = wallpaper().lock() {
             let _buffer = cache.buffer(size);
             if cache.fresh.contains(&(size.w, size.h)) {
                 return;
             }
         }
-        if std::time::Instant::now() >= deadline {
-            tracing::warn!("wallpaper not ready for capture; using black");
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(core::time::Duration::from_millis(10));
     }
+    tracing::warn!("wallpaper not ready for capture; using black");
 }
 
 /// # Errors
