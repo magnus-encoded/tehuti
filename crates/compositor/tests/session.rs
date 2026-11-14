@@ -59,7 +59,10 @@ mod tests {
             .env("TEHUTI_BINARY", fake)
             .status()?;
         assert_eq!(status.code(), Some(0));
-        assert_eq!(fs::read_to_string(state.join("session.log.1"))?, "earlier login\n");
+        assert_eq!(
+            fs::read_to_string(state.join("session.log.1"))?,
+            "earlier login\n"
+        );
         assert!(!fs::read_to_string(state.join("session.log"))?.contains("earlier"));
         Ok(())
     }

@@ -1377,9 +1377,15 @@ mod tests {
             app_id: app_id.map(Into::into),
             title: "private title".into(),
         };
-        assert!(session.call_for_event(&focus(Some("other")), true).is_none(), "another app");
+        assert!(
+            session.call_for_event(&focus(Some("other")), true).is_none(),
+            "another app"
+        );
         assert!(session.call_for_event(&focus(None), true).is_none(), "no app");
-        assert!(session.call_for_event(&focus(Some("fuzz")), true).is_some(), "its own app");
+        assert!(
+            session.call_for_event(&focus(Some("fuzz")), true).is_some(),
+            "its own app"
+        );
     }
 
     fn text(value: &str) -> Action {
