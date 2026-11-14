@@ -543,10 +543,10 @@ fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
         .into_iter()
         .flatten()
         .flat_map(|context| context.invoke_words().iter().map(String::as_str));
-    let typed = invoke::slash_command(text.as_str(), known)?;
+    let typed = invoke::slash_command(transcript.as_str(), known)?;
     tehuti_protocol::Text::new(typed)
         .ok()
-        .map(|text| Action::Text { text })
+        .map(|slash| vec![Action::Text { text: slash }])
 }
 
 /// Every exact match in chain order, then the built-in close, then folded
