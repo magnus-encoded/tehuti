@@ -35,6 +35,8 @@ pub enum Input {
     /// Closes the session-start invitation once a window exists.
     CloseInvitation,
     Volume(Option<u8>),
+    /// Reply to [`Effect::ReadWindowSize`]: the focused window's size in millionths of the screen.
+    WindowSize(Option<u32>),
     Adjusters(Vec<(usize, tehuti_protocol::Adjuster)>),
     ChoiceList(crate::choice_list::Slots),
     DisplayModes {
@@ -126,6 +128,13 @@ pub enum Effect {
         finished: bool,
     },
     ReadVolume,
+    /// Query: read the focused window's size. Reply [`Input::WindowSize`].
+    ReadWindowSize(crate::adjuster::SizeAxis),
+    /// Sets the focused window's size to a fraction of the screen, in millionths.
+    SetWindowSize {
+        axis: crate::adjuster::SizeAxis,
+        millionths: u32,
+    },
     SetVolume(u8),
     PasswordSpeechIgnored,
     RunMenuCommand(crate::menu::Command),
@@ -287,6 +296,8 @@ pub struct State {
     secret_prompt: SecretPrompt,
     adjuster: Option<crate::adjuster::Gauge>,
     volume_pending: crate::adjuster::VolumeRead,
+    /// The axis whose size read is pending; set together with `volume_pending`.
+    size_pending: Option<crate::adjuster::SizeAxis>,
     adjusters: Vec<(usize, tehuti_protocol::Adjuster)>,
     adjuster_buttons: Vec<ButtonName>,
     /// The left stick's last vertical sample, so a gauge opens already moving.
@@ -319,6 +330,7 @@ impl State {
             secret_prompt: SecretPrompt::Hidden,
             adjuster: None,
             volume_pending: crate::adjuster::VolumeRead::Idle,
+            size_pending: None,
             adjusters: Vec::new(),
             adjuster_buttons: Vec::new(),
             adjuster_stick: 0,
@@ -634,6 +646,17 @@ fn volume_read(mut state: State, value: Option<u8>) -> State {
     state
 }
 
+/// Opens a size stepper once the pending read arrives.
+fn size_read(mut state: State, value: Option<u32>) -> State {
+    let axis = state.size_pending.take();
+    if core::mem::take(&mut state.volume_pending) == crate::adjuster::VolumeRead::Pending {
+        state.adjuster = axis
+            .zip(value)
+            .map(|(axis, current)| crate::adjuster::Gauge::size(axis, current));
+    }
+    state
+}
+
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::Menu(command) => {
@@ -652,6 +675,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             (state, Vec::new())
         }
         Input::Volume(value) => (volume_read(state, value), Vec::new()),
+        Input::WindowSize(value) => (size_read(state, value), Vec::new()),
         Input::ChoiceList(slots) => {
             state.launcher = None;
             state.choice_list = Some(crate::choice_list::List::new(slots));
@@ -718,6 +742,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -779,6 +804,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -848,6 +874,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::Tick { .. }
         | Input::Event { .. }

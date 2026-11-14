@@ -259,6 +259,8 @@ for line in sys.stdin:
             | Effect::LauncherUsed(_)
             | Effect::OpenLauncher(_)
             | Effect::ReadVolume
+            | Effect::ReadWindowSize(_)
+            | Effect::SetWindowSize { .. }
             | Effect::SetVolume(_)
             | Effect::AdjusterValue { .. }
             | Effect::RunMenuCommand(_)
