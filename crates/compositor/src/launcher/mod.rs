@@ -1,4 +1,4 @@
-//! Converts discovered routes into launcher rows.
+//! Destination discovery, launcher views, invitation state and launched children.
 use crate::destinations::{Destination, Route};
 use std::time::Instant;
 use tehuti_core::unit_verbs::DestinationKind;
@@ -112,6 +112,7 @@ pub(crate) enum InvitationView {
     Show,
 }
 
+#[derive(Debug)]
 pub(crate) struct Session {
     children: Children,
     desktop_entries: crate::desktop::EntryCache,
@@ -343,7 +344,7 @@ impl Session {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Children(Vec<std::process::Child>);
 
 impl Children {
@@ -381,11 +382,11 @@ impl Children {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 impl Drop for Children {
     fn drop(&mut self) {
         self.terminate();
     }
 }
+
+#[cfg(test)]
+mod tests;
