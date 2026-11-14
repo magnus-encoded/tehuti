@@ -44,6 +44,8 @@ pub(crate) struct LoopData {
     discovery_epoch: std::time::Instant,
     seat_active: bool,
     log_out: bool,
+    /// Every DRM frame failed for a minute; the session exits with an error.
+    frames_failed: bool,
     redraw: Option<Redraw>,
     pacing: LoopPacing,
     context_watch: Option<tehuti::contexts::ContextWatch>,
@@ -109,6 +111,9 @@ impl input::InputSource for AttachedController {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
+        if self.frames_failed {
+            return ExitCode::FAILURE;
+        }
         exit_code(
             self.log_out || self.compositor.log_out_requested(),
             self.compositor.quit_requested(),
@@ -431,6 +436,7 @@ fn start_session(
         discovery_epoch: std::time::Instant::now(),
         seat_active: true,
         log_out: false,
+        frames_failed: false,
         redraw,
         pacing: LoopPacing {
             work: tehuti::pacing::Interval::new(tehuti::pacing::LOOP_WORK_PERIOD),

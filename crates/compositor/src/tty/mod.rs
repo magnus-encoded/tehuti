@@ -125,7 +125,7 @@ pub(crate) fn insert(
     let seat_token = insert_seat(event_loop, notifier, &tty)?;
     let keyboard_token = insert_keyboard(event_loop, &tty)?;
     let frames_handle = Rc::new(event_loop.handle());
-    let frames = tehuti::frame_recovery::Driver::new(&frames_handle, &tty);
+    let frames = tehuti::frame_recovery::Driver::new(&frames_handle, &tty, event_loop.get_signal());
     let flip_tty = tty.clone();
     let flip_frames = frames.clone();
     let drm_token = event_loop
@@ -582,7 +582,7 @@ impl tehuti::frame_recovery::Frames<LoopData> for Tty {
             self.rescan(data);
         }
         match &mut self.scanout {
-            Some(scanout) => Ok(scanout.render(&self.device, data, tick)),
+            Some(scanout) => scanout.render(&self.device, data, tick),
             None => Ok(None),
         }
     }
@@ -806,16 +806,21 @@ impl Scanout {
 
     /// Draws a frame if the output changed. `tick` first advances time, for callers
     /// the loop's periodic work has not just run for.
-    fn render(&mut self, device: &DrmDevice, data: &mut LoopData, tick: bool) -> Option<std::time::Instant> {
+    fn render(
+        &mut self,
+        device: &DrmDevice,
+        data: &mut LoopData,
+        tick: bool,
+    ) -> Result<Option<std::time::Instant>, Box<dyn Error>> {
         if self.recovery.waiting(std::time::Instant::now()) {
-            return None;
+            return Ok(None);
         }
         if tick {
             crate::advance_time(data);
         }
         self.settings_request(device, data);
         if self.pending {
-            return None;
+            return Ok(None);
         }
         if self.recovery.retrying() {
             // The failed frame consumed its damage; redraw it whole.
@@ -839,13 +844,14 @@ impl Scanout {
         let mut fall_back = false;
         let retry = self
             .recovery
-            .finish(std::time::Instant::now(), result, || fall_back = true);
+            .finish(std::time::Instant::now(), result, || fall_back = true)
+            .inspect_err(|_| data.frames_failed = true)?;
         if fall_back {
             self.restore_mode(device, self.confirmed_mode, data);
             self.modeset = true;
             data.compositor.display_mode_applied(None);
         }
-        retry
+        Ok(retry)
     }
 
     fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {

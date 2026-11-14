@@ -11,8 +11,8 @@ mod tests {
         timer::{TimeoutAction, Timer},
     };
     use tehuti::frame_recovery::{
-        Driver, FAILURES_BEFORE_BACKOFF, FAILURES_BEFORE_FALLBACK, Frames, RETRY_INTERVAL, Recovery,
-        STALLED_RETRY_INTERVAL,
+        Driver, FAILING_FRAMES_EXIT_AFTER, FAILURES_BEFORE_BACKOFF, FAILURES_BEFORE_FALLBACK, Frames,
+        RETRY_INTERVAL, Recovery, STALLED_RETRY_INTERVAL,
     };
 
     /// An output whose submit fails a set number of times. Like the DRM output it
@@ -52,7 +52,7 @@ mod tests {
             let fallbacks = &mut self.fallbacks;
             Ok(self
                 .recovery
-                .finish(now, submitted, || *fallbacks = fallbacks.saturating_add(1)))
+                .finish(now, submitted, || *fallbacks = fallbacks.saturating_add(1))?)
         }
     }
 
@@ -73,7 +73,7 @@ mod tests {
         let mut event_loop: EventLoop<'static, ()> = EventLoop::try_new().unwrap();
         let output = Rc::new(RefCell::new(output));
         let handle = Rc::new(event_loop.handle());
-        let driver = Driver::new(&handle, &output);
+        let driver = Driver::new(&handle, &output, event_loop.get_signal());
         let timed_out = Rc::new(RefCell::new(false));
         let flag = timed_out.clone();
         let stop = event_loop.get_signal();
@@ -118,18 +118,45 @@ mod tests {
     }
 
     #[test]
-    fn a_render_error_outside_the_recovery_is_retried_and_does_not_stop_the_loop() {
-        let limit = STALLED_RETRY_INTERVAL.saturating_mul(3);
+    fn a_frame_error_the_recovery_gave_up_on_stops_the_loop() {
         let (output, _, timed_out) = run_output(
             Output {
                 damaged: true,
-                errors_left: 2,
+                errors_left: 1,
                 ..Output::default()
             },
-            limit,
+            STALLED_RETRY_INTERVAL.saturating_mul(3),
         );
-        assert!(timed_out, "a render error must not end the session");
-        assert_eq!((output.attempts, output.presented), (3, 1));
+        assert!(!timed_out, "the session must exit so its launcher can recover");
+        assert_eq!((output.attempts, output.presented), (1, 0));
+    }
+
+    proptest! {
+        #[test]
+        fn only_a_full_minute_of_failed_frames_ends_the_session(
+            gaps_ms in prop::collection::vec(0_u64..5_000, 1..80),
+            recovered_at in prop::option::of(0_usize..80),
+        ) {
+            let mut recovery = Recovery::default();
+            let start = Instant::now();
+            let mut now = start;
+            let mut since: Option<Instant> = None;
+            for (index, gap) in gaps_ms.into_iter().enumerate() {
+                now = now.checked_add(core::time::Duration::from_millis(gap)).unwrap();
+                if recovered_at == Some(index) {
+                    prop_assert_eq!(recovery.finish(now, Ok::<(), &str>(()), || {}), Ok(None));
+                    since = None;
+                    continue;
+                }
+                let failing_since = *since.get_or_insert(now);
+                let finished = recovery.finish(now, Err("busy"), || {});
+                let expired = now.duration_since(failing_since) >= FAILING_FRAMES_EXIT_AFTER;
+                prop_assert_eq!(finished.is_err(), expired);
+                if expired {
+                    break;
+                }
+            }
+        }
     }
 
     #[test]
@@ -141,7 +168,7 @@ mod tests {
             ..Output::default()
         }));
         let handle = Rc::new(event_loop.handle());
-        let driver = Driver::new(&handle, &output);
+        let driver = Driver::new(&handle, &output, event_loop.get_signal());
         driver.render(&mut (), false);
         let weak_output = Rc::downgrade(&output);
         let weak_handle = Rc::downgrade(&handle);
@@ -186,7 +213,7 @@ mod tests {
                 prop_assert_eq!(fell_back, streak == FAILURES_BEFORE_FALLBACK);
                 prop_assert_eq!(recovery.fallback_attempted(), streak >= FAILURES_BEFORE_FALLBACK);
                 let deadline = if streak >= FAILURES_BEFORE_BACKOFF { stalled } else { retry };
-                prop_assert_eq!(finished, failed.then_some(deadline));
+                prop_assert_eq!(finished, Ok(failed.then_some(deadline)));
                 prop_assert_eq!(recovery.waiting(now), failed);
                 prop_assert!(!recovery.waiting(deadline));
             }
