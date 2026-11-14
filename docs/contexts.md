@@ -83,6 +83,9 @@ confirm = { key = "enter" }
 "insert greeting" = { text = "Hello" }
 ```
 
+`hotwords = ["..."]` in `[speech]` lists words that prime recognition while the context is focused,
+together with the `*` context's. It is not a phrase.
+
 Phrase matching ignores case, surrounding whitespace and trailing punctuation.
 When no phrase matches exactly, numbers 0 to 20 match their words and hyphens and
 word breaks are ignored ("bay-3" and "bay3" match "Bay three"); then a plain plural

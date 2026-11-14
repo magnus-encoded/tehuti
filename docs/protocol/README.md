@@ -205,6 +205,20 @@ subscriber, with a two-second deadline and the same action reply shape:
 Speech text is NUL-free. The speech sidecar replies only after release.
 Cancelled sessions and replies from failed sidecars never reach plugins.
 
+### Speech hints
+
+An application plugin primes speech recognition with a notice. It replaces
+the plugin's list, can be sent at any time, and applies while a window of the
+plugin's applications is focused. A restart clears it:
+
+```json
+{"jsonrpc":"2.0","method":"speech.hints","params":{"hotwords":["chat with guild"]}}
+```
+
+Context `[speech] hotwords` and plugin hints share a cap of 64 entries, context
+words first. Over the cap the plugin's last entries are dropped and a warning
+is logged once.
+
 ### Verbs
 
 A verb plugin (`"kind": "verb"`) extends Tehuti itself. It hears, in any
