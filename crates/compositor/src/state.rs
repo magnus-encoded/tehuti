@@ -136,6 +136,8 @@ pub struct Compositor {
     recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
     launcher: crate::launcher::Session,
+    /// Each installed context with its file, so a broken edit keeps the last good version.
+    context_files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>,
     speech_context: Option<String>,
     speech_title: String,
     launch_socket: Option<std::ffi::OsString>,
@@ -288,6 +290,7 @@ impl Compositor {
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
             launcher: crate::launcher::Session::new()?,
+            context_files: Vec::new(),
             placement: crate::window_placement::Placement::new(),
             launch_socket: None,
             speech_context: None,
@@ -442,6 +445,12 @@ impl Compositor {
         self.rebuild_destinations();
     }
 
+    /// Installs contexts with their files before accepting clients.
+    pub fn set_context_files(&mut self, files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>) {
+        self.set_contexts(files.iter().map(|(_, context)| context.clone()).collect());
+        self.context_files = files;
+    }
+
     /// Names ticker buttons after the pad that sent the latest input.
     pub fn set_pad_family(&mut self, family: tehuti_core::pad::PadFamily) {
         self.dispatch.core_mut().set_pad_family(family);
@@ -475,17 +484,36 @@ impl Compositor {
         }
     }
 
-    /// Applies a reload; each skipped file is logged and the last one is named in a notice.
+    /// Applies a reload. A skipped file keeps its last good version; each skipped file
+    /// and dropped phrase is logged, and the last of them is named in a notice.
     pub fn apply_reload(&mut self, reload: Result<crate::contexts::Reloaded, crate::contexts::LoadError>) {
         match reload {
             Ok(reloaded) => {
-                let crate::contexts::Reloaded { contexts, skipped } = reloaded;
-                self.reload_contexts(Ok(contexts));
+                let crate::contexts::Reloaded {
+                    contexts,
+                    paths,
+                    skipped,
+                    phrase_warnings,
+                } = reloaded;
+                let mut files: Vec<_> = paths.into_iter().zip(contexts).collect();
                 for error in &skipped {
-                    tracing::warn!(%error, "context skipped on reload");
+                    if let Some(kept) = self.context_files.iter().find(|(path, _)| *path == error.path) {
+                        files.push(kept.clone());
+                    }
+                }
+                files.sort_by(|left, right| left.0.cmp(&right.0));
+                self.reload_contexts(Ok(files.iter().map(|(_, context)| context.clone()).collect()));
+                self.context_files = files;
+                for error in &skipped {
+                    tracing::warn!(%error, "context skipped on reload; keeping its last good version");
+                }
+                for warning in &phrase_warnings {
+                    tracing::warn!(%warning, "speech phrase skipped on reload");
                 }
                 if let Some(error) = skipped.last() {
                     self.show_notice(&error.notice());
+                } else if let Some(warning) = phrase_warnings.last() {
+                    self.show_notice(&warning.phrase_notice());
                 }
             }
             Err(error) => self.reload_contexts(Err(error)),

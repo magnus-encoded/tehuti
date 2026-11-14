@@ -21,27 +21,40 @@ use tehuti_protocol::{Context, parse_context};
 /// A broken file is skipped with a warning so startup always gets the valid contexts.
 #[must_use]
 pub fn load(directory: &Path) -> Vec<Context> {
+    load_files(directory)
+        .into_iter()
+        .map(|(_, context)| context)
+        .collect()
+}
+
+/// Like [`load`], keeping each context's file so a later broken edit can fall back to it.
+#[must_use]
+pub fn load_files(directory: &Path) -> Vec<(PathBuf, Context)> {
     let paths = context_paths(directory, false).unwrap_or_else(|error| {
         tracing::warn!(%error, "context directory unavailable");
         Vec::new()
     });
-    let mut contexts = Vec::new();
+    let mut files = Vec::new();
     for path in paths {
         match load_one(&path) {
-            Ok(Some(context)) => contexts.push(context),
+            Ok(Some(context)) => files.push((path, context)),
             Ok(None) => {}
             Err(error) => tracing::warn!(%error, "context skipped"),
         }
     }
-    contexts
+    files
 }
 
 /// A reload's valid contexts and the files it skipped.
 #[derive(Debug, Clone, Default)]
 pub struct Reloaded {
     pub contexts: Vec<Context>,
+    /// The file of each entry in `contexts`.
+    pub paths: Vec<PathBuf>,
     /// Files that could not be read or parsed, in load order.
     pub skipped: Vec<LoadError>,
+    /// Speech phrases dropped from files that otherwise loaded, one entry per phrase.
+    pub phrase_warnings: Vec<LoadError>,
 }
 
 /// Loads every valid context, skipping broken files the way startup does.
@@ -53,7 +66,16 @@ pub fn reload(directory: &Path) -> Result<Reloaded, LoadError> {
     let mut reloaded = Reloaded::default();
     for path in context_paths(directory, true)? {
         match load_one(&path) {
-            Ok(Some(context)) => reloaded.contexts.push(context),
+            Ok(Some(context)) => {
+                reloaded
+                    .phrase_warnings
+                    .extend(context.warnings().iter().map(|message| LoadError {
+                        path: path.clone(),
+                        message: message.clone(),
+                    }));
+                reloaded.contexts.push(context);
+                reloaded.paths.push(path);
+            }
             Ok(None) => {}
             Err(error) => reloaded.skipped.push(error),
         }
@@ -100,13 +122,23 @@ pub struct LoadError {
 }
 
 impl LoadError {
+    /// Two short notice lines: the file, then the phrase that was dropped.
+    #[must_use]
+    pub fn phrase_notice(&self) -> String {
+        format!("PHRASE SKIPPED {}\n{}", self.file_label(), short_error(&self.message))
+    }
+
+    fn file_label(&self) -> String {
+        self.path.parent().and_then(Path::file_name).map_or_else(
+            || self.path.display().to_string(),
+            |name| format!("{}/context.toml", name.display()),
+        )
+    }
+
     /// Two short notice lines: the file, then the error location and message.
     #[must_use]
     pub fn notice(&self) -> String {
-        let file = self.path.parent().and_then(Path::file_name).map_or_else(
-            || self.path.display().to_string(),
-            |name| format!("{}/context.toml", name.display()),
-        );
+        let file = self.file_label();
         format!("CONTEXT ERROR {file}\n{}", short_error(&self.message))
     }
 }

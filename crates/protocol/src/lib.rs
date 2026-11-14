@@ -1071,8 +1071,9 @@ fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
 ///
 /// # Errors
 /// The TOML, button names, key names or application id are invalid, a speech
-/// phrase normalizes to nothing or to the same phrase as another mapping, or a
-/// held key has mods or belongs to a phrase.
+/// phrase or a held key has mods or belongs to a phrase. A phrase that
+/// normalizes to nothing or to the same text as an earlier phrase is dropped
+/// with a warning instead; the rest of the context loads.
 pub fn parse_context(source: &str) -> Result<Context, String> {
     let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
@@ -1086,13 +1087,21 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
         let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
-        let normalized = normalized_speech_phrase(&mapped)?;
+        let normalized = match normalized_speech_phrase(&mapped) {
+            Ok(normalized) => normalized,
+            Err(message) => {
+                warnings.push(format!("speech phrase skipped: {message}"));
+                continue;
+            }
+        };
         let template = entry.is_template();
-        if speech.insert(normalized.clone(), entry).is_some() {
-            return Err(format!(
-                "speech phrase {mapped:?} duplicates another phrase that also normalizes to {normalized:?}"
+        if speech.contains_key(&normalized) {
+            warnings.push(format!(
+                "speech phrase {mapped:?} skipped: duplicates another phrase that also normalizes to {normalized:?}"
             ));
+            continue;
         }
+        speech.insert(normalized.clone(), entry);
         warnings.extend(insert_speech_variant(
             &mut speech_variants,
             &mapped,

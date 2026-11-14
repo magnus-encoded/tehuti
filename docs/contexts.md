@@ -166,8 +166,10 @@ Tehuti watches the context directory and its child directories. Saving any
 `context.toml` reloads every context once edits pause for 300 ms; no restart is
 needed. A successful reload shows “Contexts reloaded”. If any file fails to read
 or parse, Tehuti shows a notice naming the file and the start of the error, and the
-context from that file stops working until the file is fixed (the previous good
-version is dropped; see issue #625); the full error goes to the log. A reload leaves held
+last good version of that file stays active until the file is fixed; the full
+error goes to the log. A speech phrase that normalizes to nothing or to the same
+text as an earlier phrase is dropped alone, with a notice naming the file and
+phrase; the rest of the file loads. A reload leaves held
 buttons and a speech session in progress untouched. Plugins are not reloaded;
 they restart as processes.
 

@@ -70,6 +70,72 @@ mod context_reload {
     }
 
     #[test]
+    fn a_broken_file_keeps_its_last_good_version() {
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "one", "app_id = 'one'\n[buttons]");
+        write(directory.path(), "two", "app_id = 'two'\n[buttons]");
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_context_files(contexts::load_files(directory.path()));
+        write(directory.path(), "one", "app_id = ");
+        compositor.apply_reload(contexts::reload(directory.path()));
+        assert_eq!(app_ids(&compositor), ["one", "two"]);
+        let notice = compositor.visible_notice_text().unwrap();
+        assert!(notice.starts_with("CONTEXT ERROR one/"), "{notice}");
+        write(directory.path(), "one", "app_id = 'uno'\n[buttons]");
+        compositor.apply_reload(contexts::reload(directory.path()));
+        assert_eq!(app_ids(&compositor), ["uno", "two"], "the fix is picked up");
+    }
+
+    #[test]
+    fn a_file_broken_twice_still_keeps_the_last_good_version() {
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "one", "app_id = 'one'\n[buttons]");
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_context_files(contexts::load_files(directory.path()));
+        for broken in ["app_id = ", "app_id = 'x'\n[buttons.nope]"] {
+            write(directory.path(), "one", broken);
+            compositor.apply_reload(contexts::reload(directory.path()));
+            assert_eq!(app_ids(&compositor), ["one"]);
+        }
+    }
+
+    #[test]
+    fn a_deleted_file_is_dropped_on_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "one", "app_id = 'one'\n[buttons]");
+        write(directory.path(), "two", "app_id = 'two'\n[buttons]");
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_context_files(contexts::load_files(directory.path()));
+        std::fs::remove_dir_all(directory.path().join("one")).unwrap();
+        compositor.apply_reload(contexts::reload(directory.path()));
+        assert_eq!(app_ids(&compositor), ["two"]);
+    }
+
+    #[test]
+    fn a_skipped_phrase_is_reported_by_file_and_phrase_while_the_rest_loads() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "one",
+            "app_id = 'one'\n[buttons]\n[speech]\n'Open Ibis.' = { key = 'enter' }\n'Open IBIS.' = { key = 'tab' }\n'Go' = { key = 'space' }",
+        );
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let reloaded = contexts::reload(directory.path()).unwrap();
+        assert_eq!(reloaded.phrase_warnings.len(), 1);
+        assert_eq!(reloaded.phrase_warnings[0].path, directory.path().join("one/context.toml"));
+        compositor.apply_reload(Ok(reloaded));
+        assert!(compositor.contexts()[0].speech_action("Go").is_some());
+        let notice = compositor.visible_notice_text().unwrap();
+        assert!(notice.contains("one/context.toml"), "{notice}");
+        assert!(notice.contains("Open IBIS"), "{notice}");
+        assert!(notice.lines().all(|line| line.chars().count() <= 40), "{notice}");
+    }
+
+    #[test]
     fn startup_load_still_skips_broken_files() {
         let directory = tempfile::tempdir().unwrap();
         write(directory.path(), "broken", "app_id = ");

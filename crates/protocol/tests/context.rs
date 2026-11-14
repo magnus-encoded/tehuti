@@ -460,20 +460,29 @@ restart = { restart = false }"
     }
 
     #[test]
-    fn speech_phrases_that_normalize_alike_are_rejected() {
-        let error = parse_context(
-            "app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }\n\"hello.\" = { key = 'tab' }",
+    fn speech_phrases_that_normalize_alike_drop_the_later_one_and_warn() {
+        let context = parse_context(
+            "app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }\n\"hello.\" = { key = 'tab' }\n\"Other\" = { key = 'space' }",
         )
-        .unwrap_err();
-        assert!(error.contains("normalizes to \"hello\""), "{error}");
+        .unwrap();
+        assert_eq!(context.warnings().len(), 1, "{:?}", context.warnings());
+        assert!(context.warnings()[0].contains("\"hello.\""), "{:?}", context.warnings());
+        assert!(context.warnings()[0].contains("normalizes to \"hello\""), "{:?}", context.warnings());
+        assert!(context.speech_action("Other").is_some());
+        let first = parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }").unwrap();
+        assert_eq!(context.speech_action("hello"), first.speech_action("hello"));
     }
 
     #[test]
-    fn speech_phrases_that_normalize_to_nothing_are_rejected() {
+    fn speech_phrases_that_normalize_to_nothing_are_dropped_with_a_warning() {
         for phrase in ["", "...", " ' ", "\u{2014}\u{ff01}"] {
-            let source = format!("app_id = 'foot'\n[buttons]\n[speech]\n{phrase:?} = {{ key = 'enter' }}");
-            let error = parse_context(&source).unwrap_err();
-            assert!(error.contains("no words"), "{phrase:?}: {error}");
+            let source = format!(
+                "app_id = 'foot'\n[buttons]\n[speech]\n{phrase:?} = {{ key = 'enter' }}\n'Go' = {{ key = 'tab' }}"
+            );
+            let context = parse_context(&source).unwrap();
+            assert_eq!(context.warnings().len(), 1, "{phrase:?}: {:?}", context.warnings());
+            assert!(context.warnings()[0].contains("no words"), "{phrase:?}");
+            assert!(context.speech_action("Go").is_some());
         }
     }
 
@@ -521,11 +530,11 @@ restart = { restart = false }"
         let context =
             parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }").unwrap();
         assert!(context.speech_action("J\u{30c}").is_some());
-        let error = parse_context(
+        let context = parse_context(
             "app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }\n\"J\u{30c}\" = { key = 'tab' }",
         )
-        .unwrap_err();
-        assert!(error.contains("normalizes to"), "{error}");
+        .unwrap();
+        assert!(context.warnings()[0].contains("normalizes to"), "{:?}", context.warnings());
     }
 
     #[test]
