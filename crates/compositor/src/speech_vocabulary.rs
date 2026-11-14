@@ -191,3 +191,16 @@ pub fn prompt(contexts: &[Context], app_id: Option<&str>, title: &str) -> String
     }
     words.into_iter().take(100).collect::<Vec<_>>().join(" ")
 }
+
+/// Most hotwords a context and its plugins may offer together.
+pub const MAX_HOTWORDS: usize = 64;
+
+/// Merges context hotwords with plugin hints under [`MAX_HOTWORDS`]; the plugin's
+/// entries are dropped last-in first. The count is how many were dropped.
+#[must_use]
+pub fn hotwords(context: Vec<String>, plugin: Vec<String>) -> (Vec<String>, usize) {
+    let mut merged = bounded(context.into_iter().chain(plugin).collect());
+    let dropped = merged.len().saturating_sub(MAX_HOTWORDS);
+    merged.truncate(MAX_HOTWORDS);
+    (merged, dropped)
+}

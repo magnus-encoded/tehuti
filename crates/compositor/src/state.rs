@@ -140,6 +140,7 @@ pub struct Compositor {
     context_files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>,
     speech_context: Option<String>,
     speech_title: String,
+    dropped_hotwords: usize,
     launch_socket: Option<std::ffi::OsString>,
     placement: crate::window_placement::Placement<WlSurface, LayoutWindow>,
     surfaces: CompositorState,
@@ -295,6 +296,7 @@ impl Compositor {
             launch_socket: None,
             speech_context: None,
             speech_title: String::new(),
+            dropped_hotwords: 0,
             surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             decoration_state: None,
@@ -618,7 +620,7 @@ impl Compositor {
         self.refresh_speech_vocabulary();
     }
 
-    fn destination_vocabulary(&self) -> Vec<String> {
+    fn destination_vocabulary(&mut self) -> Vec<String> {
         let mut words = self
             .launcher
             .table()
@@ -634,15 +636,38 @@ impl Compositor {
             .cloned()
             .collect();
         let project_names = crate::speech_vocabulary::directory_names(&self.launcher.paths().projects);
-        words.extend(
+        let context_hotwords = own
+            .into_iter()
+            .chain(self.contexts().iter().filter(|context| context.app_id() == "*"))
+            .flat_map(|context| context.hotwords().iter().cloned())
+            .collect();
+        let plugin_hints = self
+            .speech_context
+            .as_deref()
+            .zip(self.plugins.as_ref())
+            .map_or_default(|(app_id, plugins)| plugins.speech_hints(app_id));
+        let (hotwords, dropped) = crate::speech_vocabulary::hotwords(context_hotwords, plugin_hints);
+        if dropped != self.dropped_hotwords {
+            if self.dropped_hotwords == 0 {
+                tracing::warn!(
+                    cap = crate::speech_vocabulary::MAX_HOTWORDS,
+                    dropped,
+                    "speech hotwords over the cap; dropped the latest"
+                );
+            }
+            self.dropped_hotwords = dropped;
+        }
+        let mut ordered = hotwords;
+        ordered.append(&mut words);
+        ordered.extend(
             crate::speech_vocabulary::load(&contexts)
                 .into_iter()
                 .filter(|word| !project_names.contains(word)),
         );
-        crate::speech_vocabulary::bounded(words)
+        crate::speech_vocabulary::bounded(ordered)
     }
 
-    fn refresh_speech_vocabulary(&mut self) {
+    pub(crate) fn refresh_speech_vocabulary(&mut self) {
         if self.speech_process.is_some() {
             let words = self.destination_vocabulary();
             if let Some(process) = &mut self.speech_process

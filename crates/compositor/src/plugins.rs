@@ -38,6 +38,8 @@ enum Delivery {
     },
     Notice(Vec<Action>),
     PadOverrides(Vec<tehuti_protocol::PadOverride>),
+    /// The plugin replaced its speech hotwords.
+    SpeechHints,
 }
 
 #[derive(Debug)]
@@ -77,6 +79,8 @@ struct Session {
     status_text: Option<String>,
     /// A verb plugin's current verbs; empty for application plugins.
     verbs: Vec<String>,
+    /// The hotwords the plugin last sent; a restart starts empty.
+    hints: Vec<String>,
 }
 
 impl Drop for Process {
@@ -418,6 +422,10 @@ impl Session {
                 self.set_verbs(verbs);
                 Vec::new()
             }
+            Method::SpeechHints { hotwords } => {
+                self.hints = hotwords;
+                vec![Delivery::SpeechHints]
+            }
             Method::Adjuster { .. }
             | Method::Initialize(_)
             | Method::Button { .. }
@@ -567,6 +575,20 @@ impl Plugins {
     pub(crate) fn status(&self) -> Option<String> {
         self.focused_ready()
             .find_map(|entry| entry.session.as_ref()?.borrow().status_text.clone())
+    }
+
+    /// Hotwords of the initialized application plugins that cover `app_id`, in manifest order.
+    pub(crate) fn speech_hints(&self, app_id: &str) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.manifest.kind == PluginKind::Application
+                    && entry.manifest.app_ids.iter().any(|name| name == app_id)
+            })
+            .filter_map(|entry| entry.session.as_ref())
+            .filter(|session| session.borrow().status == Status::Ready)
+            .flat_map(|session| session.borrow().hints.clone())
+            .collect()
     }
 
     pub(crate) fn set_pad_overrides(&mut self, plugin: usize, overrides: Vec<tehuti_protocol::PadOverride>) {
@@ -1019,6 +1041,7 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
         read_bytes: 0,
         status_text: None,
         verbs: manifest.verbs.clone(),
+        hints: Vec::new(),
     }));
     session.borrow_mut().queue_initialize()?;
     Ok((session, stdout))
@@ -1250,6 +1273,7 @@ fn deliver(
                 let plugin = reader.borrow().plugin;
                 compositor.set_pad_overrides(plugin, overrides);
             }
+            Delivery::SpeechHints => compositor.refresh_speech_vocabulary(),
             Delivery::Notice(actions) => apply_notice(compositor, actions, later),
         }
     }
@@ -1305,6 +1329,7 @@ fn fuzz_session() -> io::Result<Session> {
         read_bytes: 0,
         status_text: None,
         verbs: Vec::new(),
+        hints: Vec::new(),
     })
 }
 
@@ -1480,6 +1505,7 @@ mod tests {
                 read_bytes: 0,
                 status_text: None,
                 verbs: manifest.verbs.clone(),
+                hints: Vec::new(),
             })))
         }
 
