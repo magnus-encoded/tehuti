@@ -58,6 +58,9 @@ import sys
 
 directory = Path(sys.argv[1])
 with Image.open(directory / "bar.png") as bar, Image.open(directory / "launcher.png") as launcher:
+    with Image.open(directory / "start-screen.png") as start:
+        if start.convert("RGB").getpixel((40, 50)) == (0, 0, 0):
+            raise SystemExit("release-smoke: start screen background is black; the wallpaper did not render")
     pixel = bar.getpixel((100, 100))
     if pixel[:3] == (0, 0, 0) or launcher.getpixel((100, 100)) != pixel:
         raise SystemExit("Launcher must leave the terminal visible")
