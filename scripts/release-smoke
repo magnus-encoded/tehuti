@@ -26,10 +26,11 @@ major=${major%%.*}
 codename=$(sed -n '/^pub const CODENAMES/,/^];/p' "$(dirname "$0")/../crates/compositor/src/wallpaper.rs" | grep -oE '"[a-z]+"' | sed -n "$((major + 1))p" | tr -d '"')
 [ -n "$codename" ] || { echo "release-smoke: no wallpaper for major $major" >&2; exit 1; }
 [ -f "$binary/wallpapers.pak" ] || { echo "release-smoke: $binary/wallpapers.pak missing" >&2; exit 1; }
-mkdir -p "$work/data/tehuti" "$work/config/tehuti"
-cp "$binary/wallpapers.pak" "$work/data/tehuti/wallpapers.pak"
-printf '%s' "$codename" > "$work/config/tehuti/wallpaper"
-export XDG_DATA_HOME="$work/data" XDG_CONFIG_HOME="$work/config" TEHUTI_ALL_WALLPAPERS=1
+# tehuti-drive isolates the session's XDG directories, so hand it the wallpaper to copy in.
+mkdir -p "$work/wallpaper-seed"
+cp "$binary/wallpapers.pak" "$work/wallpaper-seed/wallpapers.pak"
+printf '%s' "$codename" > "$work/wallpaper-seed/wallpaper"
+export TEHUTI_DRIVE_WALLPAPER_SEED="$work/wallpaper-seed" TEHUTI_ALL_WALLPAPERS=1
 mkdir "$work/contexts"
 printf 'app_id = "*"\n' > "$work/contexts/context.toml"
 cat > "$work/contexts/destinations.toml" <<'TOML'
