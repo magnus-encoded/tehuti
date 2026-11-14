@@ -94,6 +94,8 @@ impl World {
                     | Effect::OpenLauncher(_)
                     | Effect::AdjusterValue { .. }
                     | Effect::ReadVolume
+                    | Effect::ReadWindowSize(_)
+                    | Effect::SetWindowSize { .. }
                     | Effect::SetVolume(_)
                     | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
@@ -4626,6 +4628,70 @@ proptest! {
         let state = tap_button(&mut world, state, ButtonName::East);
         prop_assert!(state.adjuster().is_none());
         prop_assert!(world.trace.contains(&Effect::SetVolume(value)));
+    }
+}
+
+fn last_window_size(world: &World) -> Option<(crate::adjuster::SizeAxis, u32)> {
+    world.trace.iter().rev().find_map(|effect| {
+        if let Effect::SetWindowSize { axis, millionths } = effect {
+            Some((*axis, *millionths))
+        } else {
+            None
+        }
+    })
+}
+
+#[test]
+fn width_then_two_steps_right_then_south_sets_two_thirds() {
+    use crate::adjuster::SizeAxis;
+    for (phrase, axis) in [("width", SizeAxis::Width), ("height", SizeAxis::Height)] {
+        let mut world = World::default();
+        let state = world.run(State::default(), speech_event(phrase));
+        assert!(world.trace.contains(&Effect::ReadWindowSize(axis)));
+        let state = world.run(state, Input::WindowSize(Some(333_333)));
+        assert!(state.adjuster().is_some_and(crate::adjuster::Gauge::is_stepper));
+        let state = tap_button(&mut world, state, ButtonName::DpadRight);
+        assert_eq!(last_window_size(&world), Some((axis, 500_000)), "{phrase}");
+        let state = tap_button(&mut world, state, ButtonName::DpadRight);
+        assert_eq!(last_window_size(&world), Some((axis, 666_667)), "{phrase}");
+        let state = tap_button(&mut world, state, ButtonName::South);
+        assert!(state.adjuster().is_none());
+        assert_eq!(last_window_size(&world), Some((axis, 666_667)), "{phrase}");
+    }
+}
+
+#[test]
+fn east_restores_the_exact_original_window_size() {
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("width"));
+    let state = world.run(state, Input::WindowSize(Some(400_000)));
+    let state = tap_button(&mut world, state, ButtonName::DpadRight);
+    let state = tap_button(&mut world, state, ButtonName::DpadRight);
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(state.adjuster().is_none());
+    assert_eq!(
+        last_window_size(&world),
+        Some((crate::adjuster::SizeAxis::Width, 400_000))
+    );
+}
+
+proptest! {
+    #[test]
+    fn the_size_stepper_stays_on_its_list_and_east_restores_the_start(
+        start in 1_u32..=1_000_000,
+        presses in prop::collection::vec(prop::bool::ANY, 0..12),
+    ) {
+        let mut world = World::default();
+        let state = world.run(State::default(), speech_event("height"));
+        let mut state = world.run(state, Input::WindowSize(Some(start)));
+        for right in presses {
+            state = tap_button(&mut world, state, if right { ButtonName::DpadRight } else { ButtonName::DpadLeft });
+            let (_, now) = last_window_size(&world).unwrap_or((crate::adjuster::SizeAxis::Height, start));
+            prop_assert!(now == start || crate::adjuster::SIZE_STEPS.contains(&now));
+        }
+        let state = tap_button(&mut world, state, ButtonName::East);
+        prop_assert!(state.adjuster().is_none());
+        prop_assert_eq!(last_window_size(&world).map(|(_, size)| size), Some(start));
     }
 }
 

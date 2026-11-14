@@ -62,6 +62,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::ClockRead(elapsed) => *elapsed,
         DispatchInput::Menu(_)
         | DispatchInput::Volume(_)
+        | DispatchInput::WindowSize(_)
         | DispatchInput::Adjusters(_)
         | DispatchInput::Launcher(_)
         | DispatchInput::CloseInvitation
@@ -1589,6 +1590,11 @@ impl Compositor {
             DispatchEffect::PollSpeech(elapsed) => {
                 Some(DispatchInput::SpeechPolled(self.poll_speech(elapsed)))
             }
+            DispatchEffect::ReadWindowSize(axis) => {
+                let size = axis.read(&self.placement.snapshot());
+                let _rejection = self.dispatch(DispatchInput::WindowSize(size));
+                None
+            }
             DispatchEffect::UnlockWallpapers => {
                 match crate::wallpaper::unlock() {
                     Ok(_) => self.show_notice("WALLPAPERS UNLOCKED"),
@@ -1610,6 +1616,7 @@ impl Compositor {
             | DispatchEffect::OpenLauncher(_)
             | DispatchEffect::ReadVolume
             | DispatchEffect::SetVolume(_)
+            | DispatchEffect::SetWindowSize { .. }
             | DispatchEffect::AdjusterValue { .. }
             | DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
@@ -1817,6 +1824,9 @@ impl Compositor {
             }
             DispatchEffect::ReadVolume => self.volume_request(crate::volume::Request::Read),
             DispatchEffect::SetVolume(value) => self.volume_request(crate::volume::Request::Set(value)),
+            DispatchEffect::SetWindowSize { axis, millionths } => {
+                self.apply_layout_command(axis.command(millionths));
+            }
             DispatchEffect::AdjusterValue {
                 plugin,
                 name,
