@@ -5,6 +5,8 @@ unset WAYLAND_DISPLAY DISPLAY
 state_dir=${XDG_STATE_HOME:-"$HOME/.local/state"}/tehuti
 umask 077
 mkdir -p "$state_dir"
+# Keep one earlier log, so the file never spans more than two logins.
+[ ! -e "$state_dir/session.log" ] || mv -f "$state_dir/session.log" "$state_dir/session.log.1"
 exec >>"$state_dir/session.log" 2>&1
 binary=${TEHUTI_BINARY:-"$HOME/.local/bin/tehuti"}
 contexts=${TEHUTI_CONTEXT_DIRECTORY:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/tehuti"}

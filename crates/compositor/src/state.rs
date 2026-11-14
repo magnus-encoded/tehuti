@@ -714,7 +714,7 @@ impl Compositor {
 
     /// Routes a typed phrase through the same event path as an admitted transcript.
     pub fn say(&mut self, text: tehuti_protocol::Text) {
-        tracing::info!(text = text.as_str(), "speech transcript received");
+        tracing::info!(bytes = text.as_str().len(), "speech transcript received");
         self.handle(&Event::Speech { text });
     }
 
@@ -3692,14 +3692,30 @@ delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
 delegate_output!(Compositor);
 
+/// An action for the log, with typed and noticed text reduced to its length.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "every other action carries no free text"
+)]
+fn redacted_action(action: &Action) -> String {
+    match action {
+        Action::Text { text } => format!("Text({} bytes)", text.as_str().len()),
+        Action::Notice { text } => format!("Notice({} bytes)", text.as_str().len()),
+        other => format!("{other:?}"),
+    }
+}
+
 fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin: bool) {
     match first {
         Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
-            tracing::info!(text = text.as_str(), "speech has no mapping");
+            tracing::info!(bytes = text.as_str().len(), "speech has no mapping");
         }
-        Some(action) => tracing::info!(text = text.as_str(), ?action, "speech mapped"),
-        None if plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
-        None => tracing::info!(text = text.as_str(), "speech produced no action"),
+        Some(action) => {
+            let shown = redacted_action(action);
+            tracing::info!(bytes = text.as_str().len(), action = shown, "speech mapped");
+        }
+        None if plugin => tracing::info!(bytes = text.as_str().len(), "speech routed to a plugin"),
+        None => tracing::info!(bytes = text.as_str().len(), "speech produced no action"),
     }
 }
 
@@ -3713,7 +3729,7 @@ fn thousandths(score: u16) -> String {
 }
 
 fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
-    tracing::info!(session, text = text.as_str(), "speech transcript received");
+    tracing::info!(session, bytes = text.as_str().len(), "speech transcript received");
     if !admitted {
         tracing::info!("speech transcript dropped for a stale session");
     }
@@ -3792,6 +3808,47 @@ mod tests {
     use core::time::Duration;
     use smithay::reexports::wayland_server::Display;
     use tehuti_protocol::Event;
+
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn info_logs_carry_the_transcript_length_not_the_text() {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer({
+                let capture = capture.clone();
+                move || capture.clone()
+            })
+            .finish();
+        let secret = tehuti_protocol::Text::new("zebra password hunter2".into()).unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_transcript(1, &secret, true);
+            super::log_speech_route(&secret, None, false);
+            super::log_speech_route(&secret, None, true);
+            let action = tehuti_protocol::Action::Text { text: secret.clone() };
+            super::log_speech_route(&secret, Some(&action), false);
+        });
+        let logged = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(!logged.contains("hunter2"), "{logged}");
+        assert!(logged.contains("bytes=22"), "{logged}");
+    }
 
     #[test]
     fn polling_speech_shows_the_process_outage_notice() {
