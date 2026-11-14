@@ -905,3 +905,5 @@ mod spoken_keys;
 
 pub mod adjuster;
 pub mod launcher;
+
+pub mod tap_hold;

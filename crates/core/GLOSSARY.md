@@ -7,6 +7,7 @@
 | Effect | Work dispatch asks the compositor to carry out. A query effect waits for its reply input before dispatch continues. |
 | Layer | One stage of input routing. The escape chord runs first, then the columns level for LB and RB, the global layer, held keys, the active context and the fallback; consumption stops routing. |
 | Global layer | The fixed mapping that applies in every application. Confirm sends an Enter tap by default; an active context mapping of that button replaces it. |
+| Tap hold | Timed synthetic key synthesis with caller-supplied monotonic time, shared modifier deadlines, re-tap gaps and focus generations. |
 | Held key | A key a `hold = true` button mapping keeps down from the button's press to its release, or until focus, a disconnect or an overlay releases it. |
 | Consumed | An event handled by a layer, with or without an action. Later layers never see it. |
 | Context | A set of input mappings for one application id, optionally narrowed to one exact window title. |
