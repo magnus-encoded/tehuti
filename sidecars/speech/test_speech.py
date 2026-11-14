@@ -47,7 +47,7 @@ class SpeechTests(unittest.TestCase):
         speech = module.Speech(model)
         with tempfile.TemporaryDirectory() as directory, patch.dict(
                 os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
-            speech.transcribe_audio(b"\x00\x10" * 160, "chat with yell")
+            speech.transcribe_audio(b"\x00\x10" * 24000, "chat with yell")
         self.assertEqual([call["initial_prompt"] for call in model.calls],
                          ["chat with yell", "chat with yell"])
 
@@ -224,6 +224,50 @@ time.sleep(60)
                 finally:
                     speech.close()
 
+    def test_empty_interim_never_retries_even_with_long_loud_audio(self):
+        class Model:
+            def __init__(self):
+                self.calls = []
+
+            def transcribe(self, path, **options):
+                self.calls.append(options)
+                text = "" if options["vad_filter"] else "unwanted retry"
+                return iter([types.SimpleNamespace(
+                    text=text, no_speech_prob=0, avg_logprob=0,
+                )]), None
+
+        model = Model()
+        speech = module.Speech(model)
+        take = module.Take(7)
+        speech.capture = take
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            speech.interim(7, b"\x00\x10" * 32000, take)
+            self.assertTrue(speech.interims.acquire(timeout=3))
+            speech.interims.release()
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(len(model.calls), 1)
+
+    def test_quiet_or_short_final_clip_skips_retry(self):
+        class Model:
+            def __init__(self):
+                self.calls = []
+
+            def transcribe(self, path, **options):
+                self.calls.append(options)
+                return iter([]), None
+
+        for sample, frames in [(b"\x00\x01", 24000),
+                               (b"\x00\xff", 24000),
+                               (b"\x00\x10", 23999)]:
+            with self.subTest(sample=sample, frames=frames), \
+                    tempfile.TemporaryDirectory() as directory, patch.dict(
+                        os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+                model = Model()
+                self.assertEqual(module.Speech(model).transcribe_audio(sample * frames), "")
+                self.assertEqual(len(model.calls), 1)
+
     def test_empty_vad_transcript_retries_once_without_vad(self):
         for retry_text in ["confirm", ""]:
             with self.subTest(retry_text=retry_text), tempfile.TemporaryDirectory() as directory:
@@ -242,16 +286,17 @@ time.sleep(60)
                 log_path = Path(directory) / "speech.log"
                 with patch.dict(os.environ, {"TEHUTI_LOG_FILE": str(log_path)}):
                     with contextlib.redirect_stderr(io.StringIO()):
-                        text = module.Speech(model).transcribe_audio(b"\x00\x10" * 16000)
+                        text = module.Speech(model).transcribe_audio(b"\x00\x10" * 24000)
                 self.assertEqual(text, retry_text)
                 self.assertEqual(model.calls, [
                     {"beam_size": 5, "language": "en", "vad_filter": True,
                      "vad_parameters": {"threshold": 0.3, "min_speech_duration_ms": 80,
                                         "speech_pad_ms": 300}},
-                    {"beam_size": 5, "language": "en", "vad_filter": False},
+                    {"beam_size": 5, "language": "en", "vad_filter": False,
+                     "temperature": 0, "condition_on_previous_text": False},
                 ])
                 self.assertEqual(log_path.read_text().splitlines(), [
-                    "INFO speech: VAD returned empty text for clip (32000 bytes)",
+                    "INFO speech: VAD returned empty text for clip (48000 bytes)",
                     "INFO speech: retrying clip without VAD",
                 ])
 
@@ -500,7 +545,7 @@ time.sleep(60)
                 with wave.open(path) as clip:
                     self.samples = clip.readframes(clip.getnframes())
                 self.calls = getattr(self, "calls", []) + [(self.samples, options["vad_filter"])]
-                text = "" if options["vad_filter"] else "hi"
+                text = "hi"
                 return iter([types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)]), None
 
         with tempfile.TemporaryDirectory() as directory:
@@ -523,12 +568,9 @@ time.sleep(60)
                         time.sleep(0.01)
                 self.assertEqual(json.loads(output.getvalue()), {"session": 5, "text": "hi"})
                 self.assertEqual(model.samples, b"\x00\x30" * 320)
-                self.assertEqual(model.calls, [(b"\x00\x30" * 320, True),
-                                               (b"\x00\x30" * 320, False)])
+                self.assertEqual(model.calls, [(b"\x00\x30" * 320, True)])
                 self.assertEqual(log_path.read_text().splitlines(), [
                     "INFO speech: session 5: source front, 640 bytes, peak 12288",
-                    "INFO speech: VAD returned empty text for clip (640 bytes)",
-                    "INFO speech: retrying clip without VAD",
                 ])
                 self.assertNotIn("front", log.getvalue())
                 self.assertNotIn("quiet", log.getvalue())

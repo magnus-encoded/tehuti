@@ -236,7 +236,7 @@ class Speech:
         if remaining == 0 and capture.poll() is None:
             capture.send_signal(signal.SIGINT)
 
-    def transcribe_audio(self, audio, prompt=""):
+    def transcribe_audio(self, audio, prompt="", *, retry=True):
         priming = {"hotwords": self.hotwords} if self.hotwords else {}
         if prompt:
             priming["initial_prompt"] = prompt
@@ -255,9 +255,12 @@ class Speech:
             if text:
                 return text
             log(f"VAD returned empty text for clip ({len(audio)} bytes)")
+            if not retry or len(audio) < 16000 * 2 * 1.5 or peak(audio) <= SILENCE_PEAK * 4:
+                return ""
             log("retrying clip without VAD")
             segments, _ = self.model.transcribe(
-                recording.name, beam_size=5, language="en", vad_filter=False, **priming,
+                recording.name, beam_size=5, language="en", vad_filter=False,
+                temperature=0, condition_on_previous_text=False, **priming,
             )
             return transcript(segments)
 
@@ -272,7 +275,7 @@ class Speech:
                 if not self.model_lock.acquire(blocking=False):
                     return
                 try:
-                    text = self.transcribe_audio(audio, capture.prompt)
+                    text = self.transcribe_audio(audio, capture.prompt, retry=False)
                 finally:
                     self.model_lock.release()
                 if self.capture is capture and text:
