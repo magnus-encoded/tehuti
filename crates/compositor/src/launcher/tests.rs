@@ -86,7 +86,7 @@ fn completed_children_are_reaped_and_failure_is_reported_once() {
     assert_eq!(failures.len(), 1);
     assert!(failures[0].early);
     assert_eq!(failures[0].notice(), "Broken closed right away (exit 7)");
-    assert!(children.poll(now).is_empty());
+    assert_eq!(children.poll(now).len(), 0);
 }
 
 #[test]
