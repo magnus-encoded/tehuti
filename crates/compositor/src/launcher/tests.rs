@@ -60,7 +60,7 @@ fn invitation_waits_ten_seconds_after_selection_and_failure_releases_it() {
         InvitationView::Show
     );
     assert!(launcher.route(0).is_none());
-    let _rows = launcher.rows(DestinationKind::Application, None);
+    let _refreshed_rows = launcher.rows(DestinationKind::Application, None);
     assert!(launcher.choose(0, true, now).is_some());
     launcher.launch_failed();
     assert_eq!(launcher.invitation(false, false, now), InvitationView::Show);
