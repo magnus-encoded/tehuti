@@ -1223,7 +1223,12 @@ fn take_hotwords(speech: &mut toml::Table) -> Result<Vec<String>, String> {
         .into_iter()
         .map(|value| match value {
             toml::Value::String(word) => Ok(word),
-            _ => Err("speech hotwords must be strings".to_owned()),
+            toml::Value::Integer(_)
+            | toml::Value::Float(_)
+            | toml::Value::Boolean(_)
+            | toml::Value::Datetime(_)
+            | toml::Value::Array(_)
+            | toml::Value::Table(_) => Err("speech hotwords must be strings".to_owned()),
         })
         .collect()
 }
