@@ -3041,13 +3041,14 @@ impl Compositor {
 
     fn poll_launchers(&mut self) {
         let now = Instant::now();
-        for failure in self.launcher.poll(now) {
-            if failure.early {
-                self.launcher.launch_failed();
-                self.show_notice(&failure.notice());
-            } else {
-                self.show_launch_failure();
-            }
+        let failures = self.launcher.poll(now);
+        let summary = crate::launcher::Failure::summary(&failures);
+        if failures.iter().any(|failure| !failure.early) {
+            self.show_launch_failure();
+        }
+        if let Some(text) = summary {
+            self.launcher.launch_failed();
+            self.show_notice(&text);
         }
     }
 

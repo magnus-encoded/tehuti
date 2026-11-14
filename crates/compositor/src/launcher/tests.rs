@@ -1,4 +1,4 @@
-use super::{Children, InvitationView, Session};
+use super::{Children, Failure, InvitationView, Session};
 use crate::destinations::{Target, Window};
 use core::time::Duration;
 use std::{process::Command, time::Instant};
@@ -119,4 +119,19 @@ fn close_resets_launching_during_the_grace() {
         launcher.invitation(false, false, now + Duration::from_secs(3)),
         InvitationView::Show
     );
+}
+
+#[test]
+fn several_early_exits_in_one_poll_make_one_notice() {
+    let mut children = Children::default();
+    let now = Instant::now();
+    children.track(exited("1"), "First", now);
+    children.track(exited("2"), "Second", now);
+    children.track(exited("3"), "Slow", now - Duration::from_secs(60));
+    let failures = children.poll(now);
+    assert_eq!(
+        Failure::summary(&failures).as_deref(),
+        Some("2 apps closed right away: First, Second")
+    );
+    assert_eq!(Failure::summary(&[]), None);
 }

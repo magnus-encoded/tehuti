@@ -366,6 +366,20 @@ impl Failure {
         let exit = self.code.map_or_default(|code| format!(" (exit {code})"));
         format!("{} closed right away{exit}", self.label)
     }
+
+    /// One notice for every early exit seen in a poll: the single notice for
+    /// one, otherwise the count and the names. `None` when none exited early.
+    pub(crate) fn summary(failures: &[Self]) -> Option<String> {
+        let early: Vec<&Self> = failures.iter().filter(|failure| failure.early).collect();
+        match early.as_slice() {
+            [] => None,
+            [only] => Some(only.notice()),
+            many => {
+                let names: Vec<&str> = many.iter().map(|failure| failure.label.as_str()).collect();
+                Some(format!("{} apps closed right away: {}", many.len(), names.join(", ")))
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
