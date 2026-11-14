@@ -24,7 +24,10 @@ use smithay::{
         },
     },
 };
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::state::Compositor;
 
@@ -108,17 +111,75 @@ struct SessionState {
     frame: Option<ExtImageCopyCaptureFrameV1>,
 }
 
-/// The output a session captures; `None` for sessions that can only stop.
+/// The output a session captures and the mode size it announced; `None` for sessions that can only stop.
 #[derive(Debug)]
 pub struct SessionData {
     output: Option<Output>,
+    size: Option<(i32, i32)>,
+    stopped: AtomicBool,
     state: Mutex<SessionState>,
+}
+
+impl SessionData {
+    fn new(output: Option<Output>) -> Self {
+        let size = output
+            .as_ref()
+            .and_then(Output::current_mode)
+            .map(|mode| (mode.size.w, mode.size.h));
+        Self {
+            output,
+            size,
+            stopped: AtomicBool::new(false),
+            state: Mutex::default(),
+        }
+    }
+
+    /// Whether the session's output is still Tehuti's output at the size the client was told.
+    fn current(&self, compositor: &Compositor) -> bool {
+        !self.stopped.load(Ordering::Relaxed)
+            && self.output.is_some()
+            && compositor.output.as_ref() == self.output.as_ref()
+            && self
+                .output
+                .as_ref()
+                .and_then(Output::current_mode)
+                .map(|mode| (mode.size.w, mode.size.h))
+                == self.size
+    }
 }
 
 #[derive(Debug)]
 pub struct FrameData {
-    output: Option<Output>,
+    session: ExtImageCopyCaptureSessionV1,
     state: Mutex<FrameState>,
+}
+
+/// Live capture sessions, told `stopped` once their output goes away or changes mode.
+#[derive(Debug, Default)]
+#[expect(clippy::redundant_pub_crate, reason = "stored in compositor state")]
+pub(crate) struct Sessions(Vec<ExtImageCopyCaptureSessionV1>);
+
+impl Compositor {
+    pub(crate) fn stop_stale_captures(&mut self) {
+        let sessions = core::mem::take(&mut self.capture_sessions.0);
+        self.capture_sessions.0 = sessions
+            .into_iter()
+            .filter(|session| {
+                let Some(data) = session.data::<SessionData>() else {
+                    return false;
+                };
+                if !session.is_alive() || data.stopped.load(Ordering::Relaxed) {
+                    return false;
+                }
+                if data.current(self) {
+                    return true;
+                }
+                data.stopped.store(true, Ordering::Relaxed);
+                session.stopped();
+                false
+            })
+            .collect();
+    }
 }
 
 impl GlobalDispatch<ExtOutputImageCaptureSourceManagerV1, ()> for Compositor {
@@ -198,7 +259,7 @@ fn announce(session: &ExtImageCopyCaptureSessionV1, output: Option<&Output>) {
 
 impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Compositor {
     fn request(
-        _: &mut Self,
+        state: &mut Self,
         _: &Client,
         manager: &ExtImageCopyCaptureManagerV1,
         request: ext_image_copy_capture_manager_v1::Request,
@@ -220,14 +281,9 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Compositor {
                     return;
                 }
                 let output = source_output(&source);
-                let session = data_init.init(
-                    session,
-                    SessionData {
-                        output: output.clone(),
-                        state: Mutex::default(),
-                    },
-                );
+                let session = data_init.init(session, SessionData::new(output.clone()));
                 announce(&session, output.as_ref());
+                state.capture_sessions.0.push(session);
             }
             ext_image_copy_capture_manager_v1::Request::CreatePointerCursorSession { session, .. } => {
                 let _session = data_init.init(session, Mutex::new(false));
@@ -258,13 +314,7 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, Mutex<bool>> for Compositor {
                 return;
             }
             // Cursor images are not offered yet: the session stops at once.
-            let session = data_init.init(
-                session,
-                SessionData {
-                    output: None,
-                    state: Mutex::default(),
-                },
-            );
+            let session = data_init.init(session, SessionData::new(None));
             session.stopped();
         }
     }
@@ -292,7 +342,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, SessionData> for Compositor {
             state.frame = Some(data_init.init(
                 frame,
                 FrameData {
-                    output: data.output.clone(),
+                    session: session.clone(),
                     state: Mutex::default(),
                 },
             ));
@@ -334,8 +384,12 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Compositor {
                 };
                 frame_state.captured = true;
                 drop(frame_state);
-                match capture(state, data.output.as_ref(), &buffer) {
-                    Ok(()) => ready(frame, data.output.as_ref()),
+                let Some(session) = data.session.data::<SessionData>() else {
+                    frame.failed(FailureReason::Stopped);
+                    return;
+                };
+                match capture(state, session, &buffer) {
+                    Ok(()) => ready(frame, session.output.as_ref()),
                     Err(reason) => frame.failed(reason),
                 }
             }
@@ -346,10 +400,11 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Compositor {
     }
 }
 
-fn capture(compositor: &Compositor, output: Option<&Output>, buffer: &WlBuffer) -> Result<(), FailureReason> {
-    if output.is_none() || compositor.output.as_ref() != output {
+fn capture(compositor: &Compositor, session: &SessionData, buffer: &WlBuffer) -> Result<(), FailureReason> {
+    if !session.current(compositor) {
         return Err(FailureReason::Stopped);
     }
+    // The refusal reads as `unknown` on purpose: the client must not learn a secret prompt is open.
     if compositor.secret_confirmation_text().is_some() {
         tracing::info!("screen capture refused while a secret confirmation is on screen");
         return Err(FailureReason::Unknown);
