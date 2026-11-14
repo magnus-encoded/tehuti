@@ -1617,9 +1617,9 @@ mod tests {
             let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
             let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
             let mut plugins = plugins(&succeed, &starts);
-            let entry = &mut plugins.entries[0];
-            entry.manifest.kind = PluginKind::Verb;
-            entry.manifest.verbs = verbs.iter().map(|verb| (*verb).to_owned()).collect();
+            let first = &mut plugins.entries[0];
+            first.manifest.kind = PluginKind::Verb;
+            first.manifest.verbs = verbs.iter().map(|verb| (*verb).to_owned()).collect();
             let _exited = plugins.supervise_at(Instant::now());
             for entry in &plugins.entries {
                 entry.session.as_ref().unwrap().borrow_mut().events = vec![Subscription::Speech];
