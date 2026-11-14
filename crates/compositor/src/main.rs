@@ -542,7 +542,11 @@ fn run(
         .redraw
         .is_some()
         .then(|| tehuti::watchdog::spawn(tehuti::watchdog::FROZEN_AFTER, tehuti::watchdog::abort_frozen))
-        .and_then(|spawned| spawned.inspect_err(|error| warn!(%error, "watchdog failed to start")).ok());
+        .and_then(|spawned| {
+            spawned
+                .inspect_err(|error| warn!(%error, "watchdog failed to start"))
+                .ok()
+        });
     let result = event_loop.run(Some(tehuti::pacing::LOOP_TIMEOUT), data, |data| {
         if let Some(heartbeat) = heartbeat.as_ref() {
             heartbeat.beat();

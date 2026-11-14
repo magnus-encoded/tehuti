@@ -806,12 +806,7 @@ impl Scanout {
 
     /// Draws a frame if the output changed. `tick` first advances time, for callers
     /// the loop's periodic work has not just run for.
-    fn render(
-        &mut self,
-        device: &DrmDevice,
-        data: &mut LoopData,
-        tick: bool,
-    ) -> Option<std::time::Instant> {
+    fn render(&mut self, device: &DrmDevice, data: &mut LoopData, tick: bool) -> Option<std::time::Instant> {
         if self.recovery.waiting(std::time::Instant::now()) {
             return None;
         }

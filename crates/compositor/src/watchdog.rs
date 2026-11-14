@@ -30,7 +30,8 @@ pub struct Heartbeat {
 
 impl Heartbeat {
     pub fn beat(&self) {
-        self.last_beat_ms.store(millis(self.start.elapsed()), Ordering::Relaxed);
+        self.last_beat_ms
+            .store(millis(self.start.elapsed()), Ordering::Relaxed);
     }
 }
 
@@ -46,7 +47,10 @@ pub fn spawn(timeout: Duration, on_freeze: impl FnOnce() + Send + 'static) -> st
     let start = Instant::now();
     let last_beat_ms = Arc::new(AtomicU64::new(0));
     let watched: Weak<AtomicU64> = Arc::downgrade(&last_beat_ms);
-    let poll = timeout.checked_div(4).unwrap_or(timeout).max(Duration::from_millis(1));
+    let poll = timeout
+        .checked_div(4)
+        .unwrap_or(timeout)
+        .max(Duration::from_millis(1));
     std::thread::Builder::new()
         .name("tehuti-watchdog".into())
         .spawn(move || {
