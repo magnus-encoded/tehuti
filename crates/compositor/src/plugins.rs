@@ -583,7 +583,7 @@ impl Plugins {
             .iter()
             .filter(|entry| {
                 entry.manifest.kind == PluginKind::Application
-                    && entry.manifest.app_ids.iter().any(|id| id == app_id)
+                    && entry.manifest.app_ids.iter().any(|name| name == app_id)
             })
             .filter_map(|entry| entry.session.as_ref())
             .filter(|session| session.borrow().status == Status::Ready)

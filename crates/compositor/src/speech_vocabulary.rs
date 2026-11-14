@@ -196,11 +196,11 @@ pub fn prompt(contexts: &[Context], app_id: Option<&str>, title: &str) -> String
 pub const MAX_HOTWORDS: usize = 64;
 
 /// Merges context hotwords with plugin hints under [`MAX_HOTWORDS`]; the plugin's
-/// entries are dropped last-in first. The flag says whether anything was dropped.
+/// entries are dropped last-in first. The count is how many were dropped.
 #[must_use]
-pub fn hotwords(context: Vec<String>, plugin: Vec<String>) -> (Vec<String>, bool) {
+pub fn hotwords(context: Vec<String>, plugin: Vec<String>) -> (Vec<String>, usize) {
     let mut merged = bounded(context.into_iter().chain(plugin).collect());
-    let dropped = merged.len() > MAX_HOTWORDS;
+    let dropped = merged.len().saturating_sub(MAX_HOTWORDS);
     merged.truncate(MAX_HOTWORDS);
     (merged, dropped)
 }
