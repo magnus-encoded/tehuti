@@ -1316,7 +1316,10 @@ fn recording_event(event: &Event, effects: &mut Vec<Effect>) -> bool {
     true
 }
 
-#[expect(clippy::too_many_lines, reason = "one ordered list of routing layers reads best whole")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered list of routing layers reads best whole"
+)]
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if matches!(event, Event::Focus { .. }) {
         state.tool_pad = ToolPad::Idle;
