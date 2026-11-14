@@ -969,7 +969,7 @@ for line in sys.stdin:
                 .unwrap(),
             ]);
             let typed = text_actions(|| {
-                harness.send([speech("ada hello there")]);
+                harness.send([focus("test"), speech("ada hello there")]);
                 harness.pump_until(|harness| !verb_requests(harness).is_empty());
                 settle(&mut harness);
             });
