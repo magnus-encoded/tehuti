@@ -348,7 +348,7 @@ impl Session {
 struct Children(Vec<std::process::Child>);
 
 impl Children {
-    fn is_full(&self) -> bool {
+    const fn is_full(&self) -> bool {
         self.0.len() >= 16
     }
     fn track(&mut self, child: std::process::Child) {

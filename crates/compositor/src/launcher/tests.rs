@@ -1,9 +1,7 @@
 use super::{Children, InvitationView, Session};
 use crate::destinations::{Target, Window};
-use std::{
-    process::Command,
-    time::{Duration, Instant},
-};
+use core::time::Duration;
+use std::{process::Command, time::Instant};
 use tehuti_core::unit_verbs::DestinationKind;
 
 fn session() -> Session {
@@ -31,7 +29,7 @@ fn rows_select_the_corresponding_live_window_route() {
     assert_eq!(route.steps[0].target, Target::Window(42));
     assert!(launcher.choose(1, true, Instant::now()).is_none());
     assert!(launcher.update_windows(Vec::new()));
-    assert!(launcher.rows(DestinationKind::Application, None).is_empty());
+    assert_eq!(launcher.rows(DestinationKind::Application, None).len(), 0);
 }
 
 #[test]
@@ -50,8 +48,8 @@ fn invitation_waits_ten_seconds_after_selection_and_failure_releases_it() {
     let mut launcher = session();
     let now = Instant::now();
     launcher.enable_invitation();
-    launcher.update_windows(vec![window(1)]);
-    launcher.rows(DestinationKind::Application, None);
+    assert!(launcher.update_windows(vec![window(1)]));
+    let _rows = launcher.rows(DestinationKind::Application, None);
     assert!(launcher.choose(0, true, now).is_some());
     assert_eq!(
         launcher.invitation(false, false, now + Duration::from_secs(9)),
@@ -62,7 +60,7 @@ fn invitation_waits_ten_seconds_after_selection_and_failure_releases_it() {
         InvitationView::Show
     );
     assert!(launcher.route(0).is_none());
-    launcher.rows(DestinationKind::Application, None);
+    let _rows = launcher.rows(DestinationKind::Application, None);
     assert!(launcher.choose(0, true, now).is_some());
     launcher.launch_failed();
     assert_eq!(launcher.invitation(false, false, now), InvitationView::Show);
