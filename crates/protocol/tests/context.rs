@@ -466,10 +466,19 @@ restart = { restart = false }"
         )
         .unwrap();
         assert_eq!(context.warnings().len(), 1, "{:?}", context.warnings());
-        assert!(context.warnings()[0].contains("\"hello.\""), "{:?}", context.warnings());
-        assert!(context.warnings()[0].contains("normalizes to \"hello\""), "{:?}", context.warnings());
+        assert!(
+            context.warnings()[0].contains("\"hello.\""),
+            "{:?}",
+            context.warnings()
+        );
+        assert!(
+            context.warnings()[0].contains("normalizes to \"hello\""),
+            "{:?}",
+            context.warnings()
+        );
         assert!(context.speech_action("Other").is_some());
-        let first = parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }").unwrap();
+        let first =
+            parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }").unwrap();
         assert_eq!(context.speech_action("hello"), first.speech_action("hello"));
     }
 
@@ -480,7 +489,12 @@ restart = { restart = false }"
                 "app_id = 'foot'\n[buttons]\n[speech]\n{phrase:?} = {{ key = 'enter' }}\n'Go' = {{ key = 'tab' }}"
             );
             let context = parse_context(&source).unwrap();
-            assert_eq!(context.warnings().len(), 1, "{phrase:?}: {:?}", context.warnings());
+            assert_eq!(
+                context.warnings().len(),
+                1,
+                "{phrase:?}: {:?}",
+                context.warnings()
+            );
             assert!(context.warnings()[0].contains("no words"), "{phrase:?}");
             assert!(context.speech_action("Go").is_some());
         }
@@ -534,7 +548,11 @@ restart = { restart = false }"
             "app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }\n\"J\u{30c}\" = { key = 'tab' }",
         )
         .unwrap();
-        assert!(context.warnings()[0].contains("normalizes to"), "{:?}", context.warnings());
+        assert!(
+            context.warnings()[0].contains("normalizes to"),
+            "{:?}",
+            context.warnings()
+        );
     }
 
     #[test]

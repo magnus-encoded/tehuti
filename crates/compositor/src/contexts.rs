@@ -125,7 +125,11 @@ impl LoadError {
     /// Two short notice lines: the file, then the phrase that was dropped.
     #[must_use]
     pub fn phrase_notice(&self) -> String {
-        format!("PHRASE SKIPPED {}\n{}", self.file_label(), short_error(&self.message))
+        format!(
+            "PHRASE SKIPPED {}\n{}",
+            self.file_label(),
+            short_error(&self.message)
+        )
     }
 
     fn file_label(&self) -> String {

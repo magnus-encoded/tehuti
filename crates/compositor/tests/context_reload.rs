@@ -126,7 +126,10 @@ mod context_reload {
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         let reloaded = contexts::reload(directory.path()).unwrap();
         assert_eq!(reloaded.phrase_warnings.len(), 1);
-        assert_eq!(reloaded.phrase_warnings[0].path, directory.path().join("one/context.toml"));
+        assert_eq!(
+            reloaded.phrase_warnings[0].path,
+            directory.path().join("one/context.toml")
+        );
         compositor.apply_reload(Ok(reloaded));
         assert!(compositor.contexts()[0].speech_action("Go").is_some());
         let notice = compositor.visible_notice_text().unwrap();
