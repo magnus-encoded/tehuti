@@ -3040,8 +3040,14 @@ impl Compositor {
     }
 
     fn poll_launchers(&mut self) {
-        if self.launcher.poll() {
-            self.show_launch_failure();
+        let now = Instant::now();
+        for failure in self.launcher.poll(now) {
+            if failure.early {
+                self.launcher.launch_failed();
+                self.show_notice(&failure.notice());
+            } else {
+                self.show_launch_failure();
+            }
         }
     }
 

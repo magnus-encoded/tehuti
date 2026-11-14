@@ -181,6 +181,8 @@ impl Session {
         true
     }
 
+    /// Builds the launcher view. It rewrites the routes through `rows`, so
+    /// indices from an earlier view no longer apply.
     pub(crate) fn show(
         &mut self,
         request: &tehuti_core::unit_verbs::LauncherRequest,
@@ -235,6 +237,8 @@ impl Session {
         launcher
     }
 
+    /// Rewrites the routes that `choose` and `route` index into; call it
+    /// whenever the rows shown change.
     pub(crate) fn rows(
         &mut self,
         kind: DestinationKind,
@@ -298,7 +302,7 @@ impl Session {
             });
         match result {
             Ok(child) => {
-                self.children.track(child);
+                self.children.track(child, entry, Instant::now());
                 true
             }
             Err(error) => {
@@ -323,7 +327,7 @@ impl Session {
             .spawn()
         {
             Ok(child) => {
-                self.children.track(child);
+                self.children.track(child, "Link", Instant::now());
                 true
             }
             Err(error) => {
@@ -334,57 +338,94 @@ impl Session {
     }
 
     pub(crate) fn shutdown(&mut self) {
-        self.children.terminate();
+        self.children = Children::default();
     }
 
-    pub(crate) fn poll(&mut self) -> bool {
-        let failed = self.children.poll();
+    pub(crate) fn poll(&mut self, now: Instant) -> Vec<Failure> {
+        let failed = self.children.poll(now);
         self.desktop_entries.poll();
         failed
     }
 }
 
+/// How long after launch a non-zero exit counts as "closed right away".
+const EARLY_EXIT: core::time::Duration = core::time::Duration::from_secs(5);
+
+/// A launched child that has exited unsuccessfully.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Failure {
+    pub(crate) label: String,
+    pub(crate) code: Option<i32>,
+    /// Exited within a few seconds of the launch.
+    pub(crate) early: bool,
+}
+
+impl Failure {
+    /// The bar notice for an early exit.
+    pub(crate) fn notice(&self) -> String {
+        match self.code {
+            Some(code) => format!("{} closed right away (exit {code})", self.label),
+            None => format!("{} closed right away", self.label),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Child {
+    process: std::process::Child,
+    label: String,
+    started: Instant,
+}
+
 #[derive(Debug, Default)]
-struct Children(Vec<std::process::Child>);
+struct Children(Vec<Child>);
 
 impl Children {
     const fn is_full(&self) -> bool {
         self.0.len() >= 16
     }
-    fn track(&mut self, child: std::process::Child) {
-        self.0.push(child);
+    fn track(&mut self, process: std::process::Child, label: &str, now: Instant) {
+        self.0.push(Child {
+            process,
+            label: label.to_owned(),
+            started: now,
+        });
     }
-    fn poll(&mut self) -> bool {
-        let mut failed = false;
-        self.0.retain_mut(|child| match child.try_wait() {
+    fn poll(&mut self, now: Instant) -> Vec<Failure> {
+        let mut failures = Vec::new();
+        self.0.retain_mut(|child| match child.process.try_wait() {
             Ok(None) => true,
             Ok(Some(status)) => {
-                failed |= !status.success();
+                if !status.success() {
+                    failures.push(Failure {
+                        label: child.label.clone(),
+                        code: status.code(),
+                        early: now.saturating_duration_since(child.started) < EARLY_EXIT,
+                    });
+                }
                 false
             }
             Err(error) => {
                 tracing::warn!(%error, "desktop launcher wait failed");
-                failed = true;
-                let _killed = child.kill();
-                let _reaped = child.wait();
+                failures.push(Failure {
+                    label: child.label.clone(),
+                    code: None,
+                    early: false,
+                });
+                let _killed = child.process.kill();
+                let _reaped = child.process.wait();
                 false
             }
         });
-        failed
-    }
-}
-
-impl Children {
-    fn terminate(&mut self) {
-        for mut child in self.0.drain(..) {
-            crate::shutdown::terminate(&mut child, false);
-        }
+        failures
     }
 }
 
 impl Drop for Children {
     fn drop(&mut self) {
-        self.terminate();
+        for mut child in self.0.drain(..) {
+            crate::shutdown::terminate(&mut child.process, false);
+        }
     }
 }
 
