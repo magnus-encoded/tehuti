@@ -135,13 +135,7 @@ pub struct Compositor {
     notice_text: Option<String>,
     recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
-    launchers: Vec<std::process::Child>,
-    desktop_entries: crate::desktop::EntryCache,
-    destination_paths: crate::destinations::Paths,
-    destinations: crate::destinations::Table,
-    launcher_routes: Vec<crate::destinations::Route>,
-    invitation: Invitation,
-    destination_windows: Vec<crate::destinations::Window>,
+    launcher: crate::launcher::Session,
     speech_context: Option<String>,
     speech_title: String,
     launch_socket: Option<std::ffi::OsString>,
@@ -293,15 +287,9 @@ impl Compositor {
             notice_text: None,
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
-            launchers: Vec::new(),
-            desktop_entries: crate::desktop::EntryCache::new()?,
-            launch_socket: None,
+            launcher: crate::launcher::Session::new()?,
             placement: crate::window_placement::Placement::new(),
-            destination_paths: crate::destinations::Paths::default(),
-            destinations: crate::destinations::Table::default(),
-            launcher_routes: Vec::new(),
-            invitation: Invitation::Off,
-            destination_windows: Vec::new(),
+            launch_socket: None,
             speech_context: None,
             speech_title: String::new(),
             surfaces: CompositorState::new_v6::<Self>(display),
@@ -441,7 +429,7 @@ impl Compositor {
 
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {
-        crate::speech_vocabulary::configure_projects(&mut contexts, &self.destination_paths.projects);
+        crate::speech_vocabulary::configure_projects(&mut contexts, &self.launcher.paths().projects);
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
         self.dispatch
             .core_mut()
@@ -472,7 +460,7 @@ impl Compositor {
     ) {
         match reload {
             Ok(mut contexts) => {
-                crate::speech_vocabulary::configure_projects(&mut contexts, &self.destination_paths.projects);
+                crate::speech_vocabulary::configure_projects(&mut contexts, &self.launcher.paths().projects);
                 tracing::info!(count = contexts.len(), "contexts reloaded");
                 self.dispatch.core_mut().replace_contexts(contexts);
                 self.sync_destination_windows();
@@ -548,7 +536,7 @@ impl Compositor {
 
     /// Configures the shell's discovery directories and rebuilds its table.
     pub fn configure_destinations(&mut self, paths: crate::destinations::Paths) {
-        self.destination_paths = paths;
+        self.launcher.configure(paths);
         self.rebuild_destinations();
     }
 
@@ -560,28 +548,21 @@ impl Compositor {
     /// The discovery directories the destination table reads.
     #[must_use]
     pub const fn destination_paths(&self) -> &crate::destinations::Paths {
-        &self.destination_paths
+        self.launcher.paths()
     }
 
     #[must_use]
     pub const fn destinations(&self) -> &crate::destinations::Table {
-        &self.destinations
+        self.launcher.table()
     }
 
     fn rebuild_destinations(&mut self) {
-        let paths = &self.destination_paths;
-        match crate::destinations::Table::read(
-            &paths.config,
-            &paths.projects,
-            &paths.data,
-            self.contexts(),
-            &self.destination_windows,
+        match self.launcher.rebuild(
+            self.dispatch.core().contexts(),
+            &self.menu_config.hidden(),
+            &self.placement.snapshot(),
         ) {
-            Ok(mut table) => {
-                table.add_menu(&self.menu_config.hidden());
-                table.update_workspaces(&self.placement.snapshot());
-                self.destinations = table;
-                let app_names = self.destinations.app_names();
+            Ok(app_names) => {
                 self.dispatch.core_mut().set_app_names(app_names);
             }
             Err(error) => {
@@ -593,7 +574,10 @@ impl Compositor {
     }
 
     fn destination_vocabulary(&self) -> Vec<String> {
-        let mut words = self.destinations.vocabulary_for(self.speech_context.as_deref());
+        let mut words = self
+            .launcher
+            .table()
+            .vocabulary_for(self.speech_context.as_deref());
         let own = self
             .speech_context
             .as_deref()
@@ -604,7 +588,7 @@ impl Compositor {
             .filter(|context| context.app_id() == "*" || own.is_some_and(|own| core::ptr::eq(own, *context)))
             .cloned()
             .collect();
-        let project_names = crate::speech_vocabulary::directory_names(&self.destination_paths.projects);
+        let project_names = crate::speech_vocabulary::directory_names(&self.launcher.paths().projects);
         words.extend(
             crate::speech_vocabulary::load(&contexts)
                 .into_iter()
@@ -1096,29 +1080,24 @@ impl Compositor {
 
     /// Shows the session-start invitation whenever nothing is open; the session enables it.
     pub const fn enable_invitation(&mut self) {
-        self.invitation = Invitation::Ready;
+        self.launcher.enable_invitation();
     }
 
     /// With nothing open, the invitation is the first thing on screen; a window closes it.
     fn keep_invitation(&mut self) {
-        if self.invitation == Invitation::Off {
-            return;
-        }
-        if !self.placement.is_empty() || self.speech_context.is_some() {
-            self.invitation = Invitation::Ready;
-            let _rejection = self.dispatch(DispatchInput::CloseInvitation);
-            return;
-        }
-        let waiting = matches!(
-            self.invitation,
-            Invitation::Launching(since) if since.elapsed() < core::time::Duration::from_secs(10)
-        );
-        if waiting
-            || self.choice_list().is_some()
-            || self.dispatch.keyboard().is_open()
-            || self.dispatch.overlay_owns_pad()
-        {
-            return;
+        match self.launcher.invitation(
+            !self.placement.is_empty() || self.speech_context.is_some(),
+            self.choice_list().is_some()
+                || self.dispatch.keyboard().is_open()
+                || self.dispatch.overlay_owns_pad(),
+            Instant::now(),
+        ) {
+            crate::launcher::InvitationView::Hidden => return,
+            crate::launcher::InvitationView::Close => {
+                let _rejection = self.dispatch(DispatchInput::CloseInvitation);
+                return;
+            }
+            crate::launcher::InvitationView::Show => {}
         }
         let button = (!self.controller_names.is_empty()).then(|| match self.pad_family() {
             tehuti_core::pad::PadFamily::Letters => "Share",
@@ -1126,7 +1105,6 @@ impl Compositor {
             tehuti_core::pad::PadFamily::Nintendo => "Capture",
         });
         let invitation = tehuti_core::launcher::Launcher::invitation(button);
-        self.launcher_routes.clear();
         let _rejection = self.dispatch(DispatchInput::Launcher(Box::new(invitation)));
     }
 
@@ -1305,7 +1283,7 @@ impl Compositor {
             .map(|index| {
                 launcher
                     .candidate_destination(index)
-                    .and_then(|index| self.launcher_routes.get(index))
+                    .and_then(|index| self.launcher.route(index))
                     .and_then(|route| route.steps.first())
                     .map_or_default(|step| step.icon.clone())
             })
@@ -1702,52 +1680,14 @@ impl Compositor {
     }
 
     fn show_launcher(&mut self, request: &tehuti_core::unit_verbs::LauncherRequest, typed: bool) {
-        let focused = self.speech_context.as_deref();
-        let (destinations, routes) =
-            crate::launcher::destinations(self.destinations.entries(), request.kind, focused);
-        self.launcher_routes = routes;
-        let mut launcher = if typed {
-            tehuti_core::launcher::Launcher::typed(&request.query, destinations)
-        } else {
-            tehuti_core::launcher::Launcher::new(&request.query, destinations, None)
-        };
-        let contexts = self.dispatch.core().contexts();
-        let active = focused
-            .and_then(|app_id| tehuti_core::own_context(contexts, app_id, &self.speech_title))
-            .map(tehuti_protocol::Context::launcher);
-        let global = contexts
-            .iter()
-            .find(|context| context.app_id() == "*")
-            .map(tehuti_protocol::Context::launcher);
-        let enabled = active
-            .and_then(|settings| settings.auto_pick)
-            .or_else(|| global.and_then(|settings| settings.auto_pick))
-            .unwrap_or(true);
-        let delay = active
-            .and_then(|settings| settings.delay_ms)
-            .or_else(|| global.and_then(|settings| settings.delay_ms))
-            .map_or(5000, core::num::NonZeroU32::get);
-        launcher.configure(enabled, core::time::Duration::from_millis(u64::from(delay)));
-        let verb = match request.kind {
-            tehuti_core::unit_verbs::DestinationKind::Application => "Open",
-            tehuti_core::unit_verbs::DestinationKind::Project => "Work on",
-            tehuti_core::unit_verbs::DestinationKind::Creation => "New",
-        };
-        let level = match self.dispatch.core().level() {
-            tehuti_core::Level::App => "App",
-            tehuti_core::Level::Columns => "Columns",
-        };
-        launcher.set_scope(verb, level, focused);
-        tracing::info!(query = request.query, rows = ?launcher.list().candidates(), "launcher local ranking");
-        let jev = active
-            .and_then(|settings| settings.jev)
-            .or_else(|| global.and_then(|settings| settings.jev))
-            .unwrap_or(false);
-        let key_present = std::env::var_os("TYPESAFE_API_KEY").is_some_and(|key| !key.is_empty());
-        if let Some(jev_request) = launcher.jev_request(jev, key_present, level, focused) {
-            // The network client is not wired yet; the local ranking stands.
-            tracing::info!(?jev_request, "launcher Jev request skipped: no client");
-        }
+        let launcher = self.launcher.show(
+            request,
+            typed,
+            self.speech_context.as_deref(),
+            &self.speech_title,
+            self.dispatch.core().contexts(),
+            self.dispatch.core().level(),
+        );
         let _rejection = self.dispatch(DispatchInput::Launcher(Box::new(launcher)));
     }
 
@@ -1788,7 +1728,8 @@ impl Compositor {
                 }
                 Target::Application(app_id) => {
                     if let Some(window) = self
-                        .destination_windows
+                        .launcher
+                        .windows()
                         .iter()
                         .find(|window| window.app_id == app_id)
                     {
@@ -1805,26 +1746,8 @@ impl Compositor {
     }
 
     fn launch_url(&mut self, url: &str) {
-        let Some(socket) = self.launch_socket.as_deref() else {
+        if !self.launcher.launch_url(url, self.launch_socket.as_deref()) {
             self.show_launch_failure();
-            return;
-        };
-        if self.launchers.len() >= 16 {
-            self.show_launch_failure();
-            return;
-        }
-        match crate::client_env::command(std::ffi::OsStr::new("xdg-open"), socket)
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(child) => self.launchers.push(child),
-            Err(error) => {
-                tracing::warn!(%error, "launcher URL failed");
-                self.show_launch_failure();
-            }
         }
     }
 
@@ -1840,10 +1763,10 @@ impl Compositor {
                 tracing::info!("{}", crate::launcher_log::line(&usage));
             }
             DispatchEffect::ChooseLauncher(index) => {
-                if let Some(route) = self.launcher_routes.get(index).cloned() {
-                    if self.invitation != Invitation::Off && self.placement.is_empty() {
-                        self.invitation = Invitation::Launching(Instant::now());
-                    }
+                if let Some(route) = self
+                    .launcher
+                    .choose(index, self.placement.is_empty(), Instant::now())
+                {
                     self.follow_launcher_route(route);
                 }
             }
@@ -1940,7 +1863,6 @@ impl Compositor {
                 self.sync_secret_prompt();
                 self.poll_secret_lookup();
                 self.poll_launchers();
-                self.desktop_entries.poll();
                 self.poll_microphones();
                 self.poll_menu_failures();
                 self.poll_volume();
@@ -1966,7 +1888,7 @@ impl Compositor {
                 self.handle(&event);
             }
             DispatchEffect::FocusGapExpired => tracing::info!(
-                windows = ?self.destination_windows,
+                windows = ?self.launcher.windows(),
                 "focus stayed on no window past the grace; the desktop takes the pad"
             ),
             DispatchEffect::SpeechFailed { session, reason } => {
@@ -2724,7 +2646,8 @@ impl Compositor {
         let mut bar = self.dispatch.core().bar().clone().with_windows(windows);
         if let Some(identity) = self.placement.focused_destination()
             && let Some(name) = self
-                .destinations
+                .launcher
+                .table()
                 .name_for(&crate::destinations::Target::Window(identity))
         {
             bar = bar.with_destination(name.into());
@@ -2736,7 +2659,8 @@ impl Compositor {
                 .find(|output| Some(output.output) == snapshot.focused_output)
             && let Some(workspace) = output.workspaces.get(output.active_workspace)
             && let Some(name) = self
-                .destinations
+                .launcher
+                .table()
                 .name_for(&crate::destinations::Target::Workspace(workspace.workspace.0))
         {
             bar = bar.with_destination(name.into());
@@ -2746,7 +2670,7 @@ impl Compositor {
         }
         if let Some(text) = self
             .workspace_feedback
-            .text(self.clock_elapsed(), &self.destinations)
+            .text(self.clock_elapsed(), self.launcher.table())
         {
             bar = bar.with_navigation(text);
         }
@@ -3088,7 +3012,7 @@ impl Compositor {
     }
 
     fn launch_application(&mut self, desktop_entry: &tehuti_protocol::Text) {
-        let installed = self.desktop_entries.entries().to_vec();
+        let installed = self.launcher.installed();
         let decision = self.placement.window_action(tehuti_core::windows::Input::Launch {
             desktop_entry: desktop_entry.as_str().into(),
             installed,
@@ -3097,22 +3021,11 @@ impl Compositor {
             self.show_launch_failure();
             return;
         }
-        let result = self
-            .launch_socket
-            .as_ref()
-            .ok_or_else(|| "no compositor socket".to_owned())
-            .and_then(|socket| {
-                if self.launchers.len() >= 16 {
-                    return Err("too many pending launches".into());
-                }
-                crate::desktop::launch(desktop_entry.as_str(), socket)
-            });
-        match result {
-            Ok(child) => self.launchers.push(child),
-            Err(error) => {
-                tracing::warn!(%error, "desktop launch failed");
-                self.show_launch_failure();
-            }
+        if !self
+            .launcher
+            .launch_application(desktop_entry.as_str(), self.launch_socket.as_deref())
+        {
+            self.show_launch_failure();
         }
     }
 
@@ -3121,30 +3034,13 @@ impl Compositor {
     }
 
     fn show_launch_failure(&mut self) {
-        if self.invitation != Invitation::Off {
-            self.invitation = Invitation::Ready;
-        }
+        self.launcher.launch_failed();
         self.notice_text = Some("APPLICATION UNAVAILABLE".into());
         self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
     }
 
     fn poll_launchers(&mut self) {
-        let mut failed = false;
-        self.launchers.retain_mut(|child| match child.try_wait() {
-            Ok(None) => true,
-            Ok(Some(status)) => {
-                failed |= !status.success();
-                false
-            }
-            Err(error) => {
-                tracing::warn!(%error, "desktop launcher wait failed");
-                failed = true;
-                let _killed = child.kill();
-                let _reaped = child.wait();
-                false
-            }
-        });
-        if failed {
+        if self.launcher.poll() {
             self.show_launch_failure();
         }
     }
@@ -3161,7 +3057,7 @@ impl Compositor {
             title: title.unwrap_or_default(),
             chip: String::new(),
         };
-        match crate::destinations::save(&self.destination_paths.config, name, &window) {
+        match crate::destinations::save(&self.launcher.paths().config, name, &window) {
             Ok(()) => {
                 self.rebuild_destinations();
                 self.show_notice("DESTINATION SAVED");
@@ -3175,7 +3071,7 @@ impl Compositor {
 
     fn sync_destination_windows(&mut self) {
         let snapshot = self.placement.snapshot();
-        self.destinations.update_workspaces(&snapshot);
+        self.launcher.update_workspaces(&snapshot);
         let windows: Vec<_> = self
             .placement
             .placed(|_| 0.0)
@@ -3207,9 +3103,7 @@ impl Compositor {
                 })
             })
             .collect();
-        if windows != self.destination_windows {
-            self.destinations.update_windows(&windows);
-            self.destination_windows = windows;
+        if self.launcher.update_windows(windows) {
             self.refresh_speech_vocabulary();
         }
     }
@@ -3232,7 +3126,7 @@ impl Compositor {
         } else if let Some((surface, app_id)) = self.window_focus.take() {
             tracing::debug!(
                 ?app_id,
-                windows = ?self.destination_windows,
+                windows = ?self.launcher.windows(),
                 "focus left every window"
             );
             if !self.pad_passthrough() {
@@ -3297,9 +3191,7 @@ impl Compositor {
 
 impl Drop for Compositor {
     fn drop(&mut self) {
-        for child in &mut self.launchers {
-            crate::shutdown::terminate(child, false);
-        }
+        self.launcher.shutdown();
     }
 }
 
@@ -3773,16 +3665,6 @@ fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
     if !admitted {
         tracing::info!("speech transcript dropped for a stale session");
     }
-}
-
-/// The session-start invitation's state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Invitation {
-    /// Embedders and tests that never asked for it.
-    Off,
-    Ready,
-    /// A pick from the invitation is starting; its window has a grace period to appear.
-    Launching(Instant),
 }
 
 impl Compositor {

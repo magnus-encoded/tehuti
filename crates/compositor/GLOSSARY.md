@@ -2,6 +2,7 @@
 
 | Term | Meaning |
 | --- | --- |
+| Launcher session | Owns discovered destinations, selected routes, the empty-desktop invitation and pending launch children; returns launcher views and routes for the compositor. |
 | Window placement | The surface-keyed table that owns layout identities, membership, early fullscreen requests and the layout trace, and returns tiles, helper positions and focus. |
 | Nested | Running as a window inside the current desktop through Smithay's winit backend. |
 | Input source | Anything that yields protocol events for the core step. The evdev pad and the synthetic pad are the two input sources. |
