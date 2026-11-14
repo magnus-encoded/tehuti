@@ -5400,11 +5400,11 @@ fn an_active_plugin_gets_a_tapped_stick_modifier_as_press_then_release() {
                 event:
                     Event::Button {
                         name: ButtonName::North,
-                        state,
+                        state: pressed,
                     },
                 route: true,
-            } => Some(*state),
-            _ => None,
+            } => Some(*pressed),
+            Effect::ChooseLauncher(_) | Effect::LauncherUsed(_) | Effect::OpenLauncher(_) | Effect::AdjusterValue { .. } | Effect::ReadVolume | Effect::SetVolume(_) | Effect::PasswordSpeechIgnored | Effect::RunMenuCommand(_) | Effect::SettingsMode(_) | Effect::PersistMode(_) | Effect::SettingsScale(_) | Effect::SettingsBarFont(_) | Effect::WallpaperPreview(_) | Effect::WallpaperSave(_) | Effect::UnlockWallpapers | Effect::SettingsController(_) | Effect::PersistController(_) | Effect::PersistControllerTalk(..) | Effect::SettingsMicrophone(_) | Effect::ListMicrophones | Effect::MovePointer { .. } | Effect::Scroll { .. } | Effect::Click { .. } | Effect::MouseMode(_) | Effect::ReadClock | Effect::InvalidReply | Effect::QueryPlugin(_) | Effect::DispatchPlugin { .. } | Effect::Supervise | Effect::ConfirmSecret(_) | Effect::SpeechCommand(_) | Effect::PollSpeech(_) | Effect::PollSources | Effect::Chord(_) | Effect::ConfirmPressed(_) | Effect::ResetSecretFocus | Effect::FocusGapExpired | Effect::Apply(_) | Effect::PluginAction(_) | Effect::PluginRejected(_) | Effect::Handle(_) | Effect::SpeechFailed { .. } | Effect::TranscriptReceived { .. } | Effect::SpeechRouted { .. } => None,
         })
         .collect();
     assert_eq!(routed, vec![ButtonState::Pressed, ButtonState::Released]);

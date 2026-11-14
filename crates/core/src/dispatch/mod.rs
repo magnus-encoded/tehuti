@@ -1061,7 +1061,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                     name: *name,
                     state: tehuti_protocol::ButtonState::Pressed,
                 }),
-                _ => None,
+                Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => None,
             };
             effects.push(Effect::DispatchPlugin {
                 event: press.clone().unwrap_or_else(|| event.clone()),
