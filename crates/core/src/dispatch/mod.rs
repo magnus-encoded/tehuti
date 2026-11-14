@@ -1048,23 +1048,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
     };
     match (awaiting, reply) {
         (Await::PluginActive(event), Input::PluginActive(active)) => {
-            let held = matches!(
-                event,
-                Event::Button { name, state: tehuti_protocol::ButtonState::Released } if state.core.sticks.holds(name)
-            );
-            let (next, actions, route) =
-                crate::step_with_plugin(core::mem::take(&mut state.core), &event, active);
-            state.core = next;
-            // A tapped stick modifier held back its press: the plugin gets both halves.
-            let press = match &event {
-                Event::Button { name, .. } if held && route => Some(Event::Button {
-                    name: *name,
-                    state: tehuti_protocol::ButtonState::Pressed,
-                }),
-                Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
-                    None
-                }
-            };
+            let (actions, route, press) = step_routed(&mut state.core, &event, active);
             effects.push(Effect::DispatchPlugin {
                 event: press.clone().unwrap_or_else(|| event.clone()),
                 route,
@@ -1116,6 +1100,24 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             effects.push(Effect::InvalidReply);
         }
     }
+}
+
+/// Steps core for an event; a routed stick-modifier tap also returns its held-back press.
+fn step_routed(core_state: &mut crate::State, event: &Event, active: bool) -> (Vec<Action>, bool, Option<Event>) {
+    let held = matches!(
+        event,
+        Event::Button { name, state: tehuti_protocol::ButtonState::Released } if core_state.sticks.holds(*name)
+    );
+    let (next, actions, route) = crate::step_with_plugin(core::mem::take(core_state), event, active);
+    *core_state = next;
+    let press = match event {
+        Event::Button { name, .. } if held && route => Some(Event::Button {
+            name: *name,
+            state: tehuti_protocol::ButtonState::Pressed,
+        }),
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => None,
+    };
+    (actions, route, press)
 }
 
 /// Hands a replayed press to the plugin's request, if it made one.
