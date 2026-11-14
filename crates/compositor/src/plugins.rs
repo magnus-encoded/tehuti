@@ -581,7 +581,10 @@ impl Plugins {
     pub(crate) fn speech_hints(&self, app_id: &str) -> Vec<String> {
         self.entries
             .iter()
-            .filter(|entry| entry.manifest.kind == PluginKind::Application && entry.manifest.app_ids.iter().any(|id| id == app_id))
+            .filter(|entry| {
+                entry.manifest.kind == PluginKind::Application
+                    && entry.manifest.app_ids.iter().any(|id| id == app_id)
+            })
             .filter_map(|entry| entry.session.as_ref())
             .filter(|session| session.borrow().status == Status::Ready)
             .flat_map(|session| session.borrow().hints.clone())

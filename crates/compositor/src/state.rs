@@ -650,7 +650,10 @@ impl Compositor {
         if dropped != self.hotwords_over_cap {
             self.hotwords_over_cap = dropped;
             if dropped {
-                tracing::warn!(cap = crate::speech_vocabulary::MAX_HOTWORDS, "speech hotwords over the cap; dropped the latest");
+                tracing::warn!(
+                    cap = crate::speech_vocabulary::MAX_HOTWORDS,
+                    "speech hotwords over the cap; dropped the latest"
+                );
             }
         }
         words.splice(0..0, hotwords);
