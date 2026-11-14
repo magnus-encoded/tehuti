@@ -113,7 +113,7 @@ slash-command words a context knows, as lowercase letters and digits joined by
 hyphens:
 
 ```toml
-app_id = "global"
+app_id = "*"
 invoke = ["usage", "chief-of-staff"]
 ```
 

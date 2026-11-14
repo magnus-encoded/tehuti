@@ -21,9 +21,9 @@ mod invoke_verb {
     }
 
     fn focused(source: &str) -> State {
-        let global = parse_context(source).unwrap();
+        let context = parse_context(source).unwrap();
         let (state, _) = step(
-            State::with_contexts(vec![global]),
+            State::with_contexts(vec![context]),
             &Event::Focus {
                 app_id: Some("editor".into()),
                 title: String::new(),
@@ -80,7 +80,7 @@ mod invoke_verb {
         ) {
             let spoken = format!("invoke {}", parts.join(" "));
             let state = focused(&format!(
-                "app_id = 'global'\n[buttons]\n[speech]\n'{spoken}' = {{ text = 'shadowed' }}"
+                "app_id = 'editor'\n[buttons]\n[speech]\n'{spoken}' = {{ text = 'shadowed' }}"
             ));
             let (_, actions, routed) = step_with_plugin(state, &speech(&spoken), plugin_active);
             prop_assert_eq!(actions, typed(&format!("/{}", parts.join("-"))), "the verb types the slash command");
@@ -90,7 +90,7 @@ mod invoke_verb {
 
     #[test]
     fn a_misheard_long_word_snaps_to_the_closest_known_word() {
-        let state = focused("app_id = 'global'\ninvoke = ['usage', 'chief-of-staff']\n[buttons]");
+        let state = focused("app_id = 'editor'\ninvoke = ['usage', 'chief-of-staff']\n[buttons]");
         let (state, snapped) = step(state, &speech("Invoke chief of stuff."));
         assert_eq!(snapped, typed("/chief-of-staff"), "a near miss snaps");
         let (_, exact) = step(state, &speech("invoke usage"));
@@ -113,7 +113,7 @@ mod invoke_verb {
 
     #[test]
     fn a_lone_verb_falls_through_to_context_phrases() {
-        let state = focused("app_id = 'global'\n[buttons]\n[speech]\ninvoke = { text = 'plain' }");
+        let state = focused("app_id = 'editor'\n[buttons]\n[speech]\ninvoke = { text = 'plain' }");
         let (_, actions) = step(state, &speech("invoke"));
         assert_eq!(actions, typed("plain"), "the verb needs words after it");
     }
@@ -122,11 +122,11 @@ mod invoke_verb {
     fn invoke_words_must_be_slash_command_names() {
         for bad in ["Usage", "usage report", "-usage", "usage--report", ""] {
             assert!(
-                parse_context(&format!("app_id = 'global'\ninvoke = ['{bad}']\n[buttons]")).is_err(),
+                parse_context(&format!("app_id = 'editor'\ninvoke = ['{bad}']\n[buttons]")).is_err(),
                 "{bad:?} is rejected"
             );
         }
-        let context = parse_context("app_id = 'global'\ninvoke = ['usage-report', 'v2']\n[buttons]").unwrap();
+        let context = parse_context("app_id = 'editor'\ninvoke = ['usage-report', 'v2']\n[buttons]").unwrap();
         assert_eq!(
             context.invoke_words(),
             ["usage-report", "v2"],
