@@ -401,29 +401,31 @@ impl Session {
                 result: Ok(actions),
                 submission_id: Some(submission_id),
             }],
-            Message::Call(Call {
-                method: Method::Actions { actions },
-                ..
-            }) => self.notice_actions(actions),
-            Message::Call(Call {
-                method: Method::PadOverrides { overrides },
-                ..
-            }) => vec![Delivery::PadOverrides(overrides)],
-            Message::Call(Call {
-                method: Method::Status { text },
-                ..
-            }) => {
+            Message::Call(call) => self.notice(call.method),
+        }
+    }
+
+    /// Handles a plugin notice that needs no reply.
+    fn notice(&mut self, method: Method) -> Vec<Delivery> {
+        match method {
+            Method::Actions { actions } => self.notice_actions(actions),
+            Method::PadOverrides { overrides } => vec![Delivery::PadOverrides(overrides)],
+            Method::Status { text } => {
                 self.status_text = text;
                 Vec::new()
             }
-            Message::Call(Call {
-                method: Method::Verbs { verbs },
-                ..
-            }) => {
+            Method::Verbs { verbs } => {
                 self.set_verbs(verbs);
                 Vec::new()
             }
-            Message::Call(_) => Vec::new(),
+            Method::Adjuster { .. }
+            | Method::Initialize(_)
+            | Method::Button { .. }
+            | Method::Speech { .. }
+            | Method::Verb { .. }
+            | Method::Focus { .. }
+            | Method::SubmitActions { .. }
+            | Method::PadInput { .. } => Vec::new(),
         }
     }
 

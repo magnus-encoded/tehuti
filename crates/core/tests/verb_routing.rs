@@ -50,7 +50,7 @@ mod verb_routing {
 
         #[test]
         fn the_earlier_owner_wins_a_shared_verb(shared in verb(), rest in remainder(), first in 0_usize..4) {
-            let table = [(first, vec![shared.clone()]), (first + 10, vec![shared.clone()])];
+            let table = [(first, vec![shared.clone()]), (9, vec![shared.clone()])];
             let matched = route(owners(&table), &format!("{shared} {rest}")).expect("shared verb routes");
             prop_assert_eq!(matched.plugin, first, "manifest order breaks ties");
         }
