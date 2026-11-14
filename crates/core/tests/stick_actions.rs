@@ -105,7 +105,7 @@ mod tests {
             let context = context(
                 "left.up = { text = 'up' }\nleft.down = { text = 'down' }\nleft.left = { text = 'left' }\nleft.right = { text = 'right' }\n",
             );
-            let minor = major * ratio / 100;
+            let minor = i16::try_from(i32::from(major) * i32::from(ratio) / 100).unwrap();
             let (sign_x, sign_y) = [(1, -1), (1, 1), (-1, 1), (-1, -1)][quadrant];
             let (x, y) = if horizontal_major { (major, minor) } else { (minor, major) };
             let sample = (x * sign_x, y * sign_y);
