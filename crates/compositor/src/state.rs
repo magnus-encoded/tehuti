@@ -2693,8 +2693,8 @@ impl Compositor {
         reason = "reserve the bar in logical output coordinates"
     )]
     pub fn fill_output(&mut self) {
-        self.stop_stale_captures();
         use tehuti_core::layout::{OutputGeometry, Rect};
+        self.stop_stale_captures();
         if let Some(output) = self.output.as_ref()
             && let Some(scale) =
                 core::num::NonZeroU32::new(output.current_scale().integer_scale().unsigned_abs())

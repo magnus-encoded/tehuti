@@ -24,10 +24,8 @@ use smithay::{
         },
     },
 };
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use crate::state::Compositor;
 
@@ -156,7 +154,6 @@ pub struct FrameData {
 
 /// Live capture sessions, told `stopped` once their output goes away or changes mode.
 #[derive(Debug, Default)]
-#[expect(clippy::redundant_pub_crate, reason = "stored in compositor state")]
 pub(crate) struct Sessions(Vec<ExtImageCopyCaptureSessionV1>);
 
 impl Compositor {
