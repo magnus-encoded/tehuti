@@ -7,7 +7,7 @@
 use tehuti_protocol::{MIN_FUZZY_LETTERS, Text, fold_phrase, similarity};
 
 /// The least similarity, in thousandths, a heard first word needs to a verb.
-pub const VERB_SCORE: u16 = 800;
+pub const VERB_SCORE: u16 = 850;
 
 /// A transcript that began with a plugin's verb.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +25,8 @@ fn key(word: &str) -> String {
 }
 
 /// How well a heard first word matches a verb, if it does: equal sound keys always
-/// match; keys of five letters or more also match fuzzily at [`VERB_SCORE`].
+/// match; keys of five letters or more also match fuzzily at [`VERB_SCORE`]. A word
+/// that extends the verb, such as "literally" for "literal", is a different word.
 fn score(heard: &str, verb: &str) -> Option<u16> {
     let verb = key(verb);
     if verb.is_empty() {
@@ -33,6 +34,9 @@ fn score(heard: &str, verb: &str) -> Option<u16> {
     }
     if heard == verb {
         return Some(1000);
+    }
+    if heard.starts_with(&verb) {
+        return None;
     }
     let long = heard.chars().count() >= MIN_FUZZY_LETTERS && verb.chars().count() >= MIN_FUZZY_LETTERS;
     let score = similarity(heard, &verb);

@@ -210,10 +210,12 @@ Cancelled sessions and replies from failed sidecars never reach plugins.
 A verb plugin (`"kind": "verb"`) extends Tehuti itself. It hears, in any
 window and with no focused window, the speech that begins with one of its own
 verbs, and nothing else: no buttons, no focus notices, no application speech.
-Verbs are checked after Tehuti's own phrases and before application plugins and
-context phrases. The first word of the transcript is folded with the same sound
-key as fuzzy phrase matching; equal keys match, and keys of five letters or more
-also match at a similarity of 0.8. The best score wins; on a tie the earlier
+Tehuti's own phrases (such as `open ...` and the escape) come first, then verbs,
+then application plugins and context phrases. The first word of the transcript
+is folded with the same sound key as fuzzy phrase matching; equal keys match,
+and keys of five letters or more also match at a similarity of 0.85, unless the
+heard word extends the verb ("literally" never matches "literal"). The verb
+route is found once per utterance. The best score wins; on a tie the earlier
 manifest wins. A verb with no words after it matches nothing. The verb is
 stripped, with a following `,` `.` `:` `;` `!` or `?`, and the request carries
 the verb as the plugin spelled it:

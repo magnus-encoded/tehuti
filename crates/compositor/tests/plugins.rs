@@ -934,16 +934,76 @@ for line in sys.stdin:
         }
     }
 
-    #[test]
-    fn a_verb_plugin_hears_only_speech_after_its_current_verbs() {
+    fn verb_harness(verbs: &[&str], accept: bool) -> Harness {
         let mut configuration = manifest();
         configuration.kind = tehuti_protocol::PluginKind::Verb;
-        configuration.verbs = vec!["ada".into()];
+        configuration.verbs = verbs.iter().map(|verb| (*verb).to_owned()).collect();
         configuration.app_ids.clear();
         configuration.events = vec![Subscription::Speech];
         configuration.permissions = vec![Permission::Text];
         let mut harness = Harness::with_script(&configuration, include_str!("fixtures/plugins/verb.py"));
+        if accept {
+            std::fs::write(harness.directory.path().join("accept"), "yes").unwrap();
+        }
         harness.ready();
+        harness
+    }
+
+    fn verb_requests(harness: &Harness) -> Vec<String> {
+        harness
+            .received()
+            .iter()
+            .filter(|message| message["method"] == "verb")
+            .map(|message| message["params"]["verb"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_verb_beats_a_context_phrase_and_an_empty_reply_routes_the_phrase() {
+        for accept in [false, true] {
+            let mut harness = verb_harness(&["ada"], accept);
+            harness.compositor.set_contexts(vec![
+                tehuti_protocol::parse_context(
+                    "app_id = 'test'\n[buttons]\n[speech]\n'ada hello there' = { text = 'context' }",
+                )
+                .unwrap(),
+            ]);
+            let typed = text_actions(|| {
+                harness.send([speech("ada hello there")]);
+                harness.pump_until(|harness| !verb_requests(harness).is_empty());
+                settle(&mut harness);
+            });
+            assert_eq!(
+                verb_requests(&harness),
+                ["ada"],
+                "the verb plugin hears the phrase first"
+            );
+            assert_eq!(
+                typed,
+                if accept { 2 } else { 1 },
+                "an accepted verb replaces the context phrase; a declined one routes it"
+            );
+        }
+    }
+
+    #[test]
+    fn tehuti_phrases_beat_verbs() {
+        let mut harness = verb_harness(&["open", "ada"], false);
+        harness.send([speech("ada done")]);
+        harness.pump_until(|harness| !verb_requests(harness).is_empty());
+        harness.send([speech("open the terminal")]);
+        settle(&mut harness);
+        assert_eq!(
+            verb_requests(&harness),
+            ["ada"],
+            "the launcher phrase stays Tehuti's"
+        );
+    }
+
+    #[test]
+    fn a_verb_plugin_hears_only_speech_after_its_current_verbs() {
+        let mut harness = verb_harness(&["ada"], false);
+        std::fs::write(harness.directory.path().join("swap"), "yes").unwrap();
         harness.send([
             button(ButtonName::East),
             speech("hello there"),

@@ -66,6 +66,30 @@ mod verb_routing {
     }
 
     #[test]
+    fn dictation_that_starts_near_a_verb_stays_dictation() {
+        let verbs = ["invoke", "literal", "orion", "ada", "verbatim"].map(String::from);
+        let table = [(0, verbs.to_vec())];
+        for dictation in [
+            "Literally nothing changed today",
+            "Invoked functions return early",
+            "Invited everyone to the meeting",
+            "Orions belt is bright tonight",
+            "Oriental food for dinner",
+            "Adam was here",
+            "Adding two numbers",
+            "Verbally they agreed",
+            "Little by little",
+        ] {
+            assert_eq!(route(owners(&table), dictation), None, "{dictation} is dictation");
+        }
+        assert_eq!(
+            route(owners(&table), "Literel says hi").map(|found| found.verb),
+            Some("literal".to_owned()),
+            "a one-letter mishearing of a long verb still routes"
+        );
+    }
+
+    #[test]
     fn sound_folding_catches_misheard_verbs_but_not_other_words() {
         let table = [(0, vec!["invoke".to_owned()]), (1, vec!["ada".to_owned()])];
         let heard = |text: &str| route(owners(&table), text);

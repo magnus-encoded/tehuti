@@ -531,6 +531,8 @@ pub struct Plugins {
     focus: Option<String>,
     pad: tehuti_core::vpad::Filter,
     cleanup_timer: Box<dyn Fn()>,
+    /// The verb route `active` found for the utterance `dispatch` sends next.
+    routed_verb: Option<(Event, tehuti_core::verbs::VerbMatch)>,
 }
 impl Drop for Plugins {
     fn drop(&mut self) {
@@ -771,7 +773,8 @@ impl Plugins {
                 session.borrow_mut().expire_initialize();
             }
         }
-        self.verb_route(event).is_some() || self.entries.iter().any(|entry| self.matches(entry, event))
+        self.routed_verb = self.verb_route(event).map(|matched| (event.clone(), matched));
+        self.routed_verb.is_some() || self.entries.iter().any(|entry| self.matches(entry, event))
     }
 
     /// The ready verb plugin whose verb begins this speech, checked before application plugins.
@@ -855,7 +858,12 @@ impl Plugins {
         event: &Event,
         route_button: bool,
     ) -> Option<(tehuti_core::plugin::RequestKey, Vec<Permission>)> {
-        if route_button && let Some(matched) = self.verb_route(event) {
+        let routed = self
+            .routed_verb
+            .take()
+            .filter(|(seen, _)| seen == event)
+            .map(|(_, matched)| matched);
+        if route_button && let Some(matched) = routed {
             return self.dispatch_verb(matched);
         }
         let mut request = None;
@@ -949,6 +957,7 @@ pub fn install<Data: 'static>(
         focus: None,
         pad: tehuti_core::vpad::Filter::default(),
         cleanup_timer: Box::new(move || handle.remove(timer_token)),
+        routed_verb: None,
     })
 }
 
@@ -1505,6 +1514,7 @@ mod tests {
                 focus: None,
                 pad: tehuti_core::vpad::Filter::default(),
                 cleanup_timer: Box::new(|| {}),
+                routed_verb: None,
             }
         }
 
@@ -1601,6 +1611,80 @@ mod tests {
                     session.fail("simulated crash");
                 }
             }
+        }
+
+        fn verb_plugins(verbs: &[&str]) -> Plugins {
+            let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
+            let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+            let mut plugins = plugins(&succeed, &starts);
+            let entry = &mut plugins.entries[0];
+            entry.manifest.kind = PluginKind::Verb;
+            entry.manifest.verbs = verbs.iter().map(|verb| (*verb).to_owned()).collect();
+            let _exited = plugins.supervise_at(Instant::now());
+            for entry in &plugins.entries {
+                entry.session.as_ref().unwrap().borrow_mut().events = vec![Subscription::Speech];
+            }
+            plugins
+        }
+
+        fn speech(text: &str) -> Event {
+            Event::Speech {
+                text: tehuti_protocol::Text::new(text.into()).unwrap(),
+            }
+        }
+
+        #[test]
+        fn a_verbs_notice_between_query_and_dispatch_cannot_split_the_route() {
+            let mut plugins = verb_plugins(&["ada"]);
+            let heard = speech("ada sum up");
+            assert!(plugins.active(&heard), "the verb makes a plugin active");
+            plugins.entries[0]
+                .session
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .set_verbs(vec!["orion".into()]);
+            let request = plugins.dispatch(&heard, true);
+            assert_eq!(
+                request.map(|(key, _)| key.plugin),
+                Some(0),
+                "dispatch uses the route the query found"
+            );
+            assert!(!plugins.active(&heard), "later utterances see the new verbs");
+            assert_eq!(
+                plugins.dispatch(&heard, true),
+                None,
+                "nothing routes the old verb"
+            );
+        }
+
+        #[test]
+        fn an_application_plugin_cannot_take_verbs_at_runtime() {
+            let mut plugins = verb_plugins(&[]);
+            let session = plugins.entries[1].session.clone().unwrap();
+            let deliveries = session.borrow_mut().message(Message::Call(Call {
+                jsonrpc: RpcVersion::Two,
+                request_id: None,
+                method: Method::Verbs {
+                    verbs: vec!["ada".into()],
+                },
+            }));
+            assert!(deliveries.is_empty(), "the notice delivers nothing");
+            assert!(session.borrow().verbs.is_empty(), "the verbs are refused");
+            assert_eq!(
+                session.borrow().invalid_messages,
+                1,
+                "the refusal counts as invalid"
+            );
+            let output: Vec<u8> = session.borrow().output.iter().copied().collect();
+            assert!(
+                String::from_utf8(output).unwrap().contains("action_rejected"),
+                "the plugin is told why"
+            );
+            assert!(
+                !plugins.active(&speech("ada sum up")),
+                "the refused verb never routes"
+            );
         }
 
         #[test]

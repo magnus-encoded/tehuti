@@ -14,11 +14,12 @@ for line in sys.stdin:
     if method == 'initialize':
         result = {'protocol_version': 0, 'encoding': 'json', 'events': ['speech']}
     elif method == 'verb':
-        result = []
+        accept = (root / 'accept').exists()
+        result = [{'type': 'text', 'text': 'a'}, {'type': 'text', 'text': 'b'}] if accept else []
     else:
         continue
     print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}), flush=True)
-    if method == 'verb' and not swapped:
+    if method == 'verb' and not swapped and (root / 'swap').exists():
         swapped = True
         print(json.dumps({'jsonrpc': '2.0', 'method': 'verbs', 'params': {'verbs': ['orion']}}), flush=True)
         (root / 'swapped').write_text('yes')
