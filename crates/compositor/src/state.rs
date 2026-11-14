@@ -248,6 +248,7 @@ impl Compositor {
         )?;
         let text_keys = text_keys(&keymap);
         let pointer = seat.add_pointer();
+        crate::image_capture::register(display);
         let mut compositor = Self {
             menu_config: crate::system_menu::Config::default(),
             menu_failures: std::sync::mpsc::channel(),
