@@ -29,6 +29,20 @@
         "null"
       ]
     },
+    "kind": {
+      "enum": [
+        "application",
+        "verb"
+      ]
+    },
+    "verbs": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "pattern": "^\\p{L}{1,32}$"
+      }
+    },
     "executable": {
       "type": "string",
       "pattern": "\\S"

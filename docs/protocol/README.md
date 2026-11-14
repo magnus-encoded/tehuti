@@ -205,6 +205,38 @@ subscriber, with a two-second deadline and the same action reply shape:
 Speech text is NUL-free. The speech sidecar replies only after release.
 Cancelled sessions and replies from failed sidecars never reach plugins.
 
+### Verbs
+
+A verb plugin (`"kind": "verb"`) extends Tehuti itself. It hears, in any
+window and with no focused window, the speech that begins with one of its own
+verbs, and nothing else: no buttons, no focus notices, no application speech.
+Verbs are checked after Tehuti's own phrases and before application plugins and
+context phrases. The first word of the transcript is folded with the same sound
+key as fuzzy phrase matching; equal keys match, and keys of five letters or more
+also match at a similarity of 0.8. The best score wins; on a tie the earlier
+manifest wins. A verb with no words after it matches nothing. The verb is
+stripped, with a following `,` `.` `:` `;` `!` or `?`, and the request carries
+the verb as the plugin spelled it:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"verb","params":{"verb":"ada","text":"sum up the reviews"}}
+```
+
+Replies use the speech deadline and action shape. An empty reply declines, and
+the whole transcript then routes as if no verb had matched.
+
+The manifest's `verbs` list is the starting set. The plugin replaces it at any
+time with a notice; the new verbs route only to that plugin, and a restart
+returns to the manifest list:
+
+```json
+{"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada","orion"]}}
+```
+
+A plugin holds at most 16 verbs, each one word of letters of at most 32
+characters. An application plugin that sends `verbs` is rejected like an
+invalid action.
+
 Focus is a notice, with no reply:
 
 ```json
@@ -399,6 +431,18 @@ Unknown fields are rejected. Manifests have the same 65,536-byte limit.
 Executable and application ids must not be blank; whitespace is not trimmed.
 Empty lists and duplicate entries are allowed. Events are `button`, `focus` and `speech`;
 permissions are `key`, `text` and `quit`.
+
+`kind` is `application` (the default) or `verb`, and sets which permissions a
+plugin may request. An application plugin serves its `app_ids` while one has
+focus and declares no `verbs`. A verb plugin lists its starting `verbs`, has
+empty `app_ids`, no adjusters, only the `speech` event, only the `text`
+permission and `start` set to `always`:
+
+```json
+{"kind":"verb","verbs":["ada"],"executable":"./chief.py","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]}
+```
+
+A plugin that needs both behaviours ships as two plugins.
 
 Only direct entries with the case-sensitive extension `.json` are read;
 there is no recursive search or glob expansion. Manifest symlinks and
