@@ -5389,22 +5389,26 @@ fn an_active_plugin_gets_a_tapped_stick_modifier_as_press_then_release() {
         plugin_active: true,
         ..World::default()
     };
-    let state = stick_modifier_player(&mut world);
+    let player = stick_modifier_player(&mut world);
     world.trace.clear();
-    let _tapped: State = tap_button(&mut world, state, ButtonName::North);
+    let _tapped: State = tap_button(&mut world, player, ButtonName::North);
     let routed: Vec<ButtonState> = world
         .trace
         .iter()
-        .filter_map(|effect| match effect {
-            Effect::DispatchPlugin {
+        .filter_map(|effect| {
+            if let Effect::DispatchPlugin {
                 event:
                     Event::Button {
                         name: ButtonName::North,
-                        state: pressed,
+                        state: half,
                     },
                 route: true,
-            } => Some(*pressed),
-            Effect::ChooseLauncher(_) | Effect::LauncherUsed(_) | Effect::OpenLauncher(_) | Effect::AdjusterValue { .. } | Effect::ReadVolume | Effect::SetVolume(_) | Effect::PasswordSpeechIgnored | Effect::RunMenuCommand(_) | Effect::SettingsMode(_) | Effect::PersistMode(_) | Effect::SettingsScale(_) | Effect::SettingsBarFont(_) | Effect::WallpaperPreview(_) | Effect::WallpaperSave(_) | Effect::UnlockWallpapers | Effect::SettingsController(_) | Effect::PersistController(_) | Effect::PersistControllerTalk(..) | Effect::SettingsMicrophone(_) | Effect::ListMicrophones | Effect::MovePointer { .. } | Effect::Scroll { .. } | Effect::Click { .. } | Effect::MouseMode(_) | Effect::ReadClock | Effect::InvalidReply | Effect::QueryPlugin(_) | Effect::DispatchPlugin { .. } | Effect::Supervise | Effect::ConfirmSecret(_) | Effect::SpeechCommand(_) | Effect::PollSpeech(_) | Effect::PollSources | Effect::Chord(_) | Effect::ConfirmPressed(_) | Effect::ResetSecretFocus | Effect::FocusGapExpired | Effect::Apply(_) | Effect::PluginAction(_) | Effect::PluginRejected(_) | Effect::Handle(_) | Effect::SpeechFailed { .. } | Effect::TranscriptReceived { .. } | Effect::SpeechRouted { .. } => None,
+            } = effect
+            {
+                Some(*half)
+            } else {
+                None
+            }
         })
         .collect();
     assert_eq!(routed, vec![ButtonState::Pressed, ButtonState::Released]);
