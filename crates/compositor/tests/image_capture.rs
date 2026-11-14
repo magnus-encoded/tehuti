@@ -130,8 +130,7 @@ mod image_capture {
         formats: Vec<wl_shm::Format>,
         done: bool,
         stopped: bool,
-        ready: bool,
-        failed: Option<u32>,
+        outcome: Option<Result<(), u32>>,
         configured: bool,
     }
 
@@ -181,9 +180,9 @@ mod image_capture {
         ) {
             use ext_image_copy_capture_frame_v1::Event;
             if matches!(event, Event::Ready) {
-                app.ready = true;
+                app.outcome = Some(Ok(()));
             } else if let Event::Failed { reason } = event {
-                app.failed = Some(reason.into());
+                app.outcome = Some(Err(reason.into()));
             }
         }
     }
@@ -298,7 +297,7 @@ mod image_capture {
         frame.attach_buffer(&buffer);
         frame.damage_buffer(0, 0, width, height);
         frame.capture();
-        while !app.ready && app.failed.is_none() {
+        while app.outcome.is_none() {
             let _dispatched = queue.roundtrip(app).unwrap();
         }
         let mut first_pixel = [0; 4];
@@ -307,7 +306,12 @@ mod image_capture {
         first_pixel
     }
 
-    fn client(stream: UnixStream, plan: Plan, signal: &mpsc::Sender<()>, go: &mpsc::Receiver<()>) -> Report {
+    fn client(
+        stream: UnixStream,
+        plan: Plan,
+        signal: &mpsc::Sender<()>,
+        resume: &mpsc::Receiver<()>,
+    ) -> Report {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -326,7 +330,7 @@ mod image_capture {
         }
         if !matches!(plan, Plan::Capture { .. }) {
             signal.send(()).unwrap();
-            go.recv().unwrap();
+            resume.recv().unwrap();
         }
         if plan == Plan::AwaitStop {
             while !app.stopped {
@@ -343,8 +347,8 @@ mod image_capture {
             size: app.size,
             formats: app.formats,
             stopped: app.stopped,
-            ready: app.ready,
-            failed: app.failed,
+            ready: app.outcome == Some(Ok(())),
+            failed: app.outcome.and_then(Result::err),
             first_pixel,
         }
     }
@@ -373,8 +377,8 @@ mod image_capture {
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
         let (signal, signalled) = mpsc::channel();
-        let (go, gone) = mpsc::channel();
-        let thread = thread::spawn(move || client(stream, plan, &signal, &gone));
+        let (resume, resumed) = mpsc::channel();
+        let thread = thread::spawn(move || client(stream, plan, &signal, &resumed));
         let mut between = Some(between);
         let started = Instant::now();
         while !thread.is_finished() {
@@ -385,7 +389,7 @@ mod image_capture {
                 if let Some(between) = between.take() {
                     between(&mut compositor);
                 }
-                go.send(()).unwrap();
+                resume.send(()).unwrap();
             }
             display.flush_clients().unwrap();
             thread::sleep(Duration::from_millis(1));
@@ -407,7 +411,7 @@ mod image_capture {
         );
     }
 
-    /// Format and stride errors never reach the capture: wl_shm refuses those buffers first,
+    /// Format and stride errors never reach the capture: `wl_shm` refuses those buffers first,
     /// and the properties above cover them in `encode`.
     #[test]
     fn a_buffer_of_another_size_fails_with_buffer_constraints() {
