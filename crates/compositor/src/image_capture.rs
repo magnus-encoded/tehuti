@@ -3,6 +3,7 @@
 //! Trust rule: every client on Tehuti's socket may capture, since the socket is the user's own.
 //! No frame is copied while a secret confirmation is on screen.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use smithay::{
     output::Output,
     reexports::{
@@ -24,7 +25,6 @@ use smithay::{
         },
     },
 };
-use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crate::state::Compositor;
