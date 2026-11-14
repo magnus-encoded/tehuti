@@ -98,4 +98,17 @@ mod tests {
         );
         assert_eq!(taps.take_release_request(millis(0)), None);
     }
+
+    #[test]
+    fn a_deferred_retap_after_a_focus_change_presses_into_the_new_focus() {
+        let mut taps = TapHold::default();
+        assert_eq!(taps.tap(millis(0), 1, &[]), [(1, true)]);
+        assert_eq!(taps.tap(millis(5), 1, &[]), [(1, false)]);
+        taps.focus_changed();
+        // The gap passes before the focus flush: the press belongs to the new focus
+        // and the flush must not release it.
+        assert_eq!(taps.tick(millis(30)), [(1, true)]);
+        assert_eq!(taps.flush_focus(), Vec::<(i32, bool)>::new());
+        assert_eq!(taps.tick(millis(70)), [(1, false)]);
+    }
 }

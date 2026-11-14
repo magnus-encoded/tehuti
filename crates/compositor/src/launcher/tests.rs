@@ -1,4 +1,4 @@
-use super::{Children, InvitationView, Session};
+use super::{Children, Failure, InvitationView, Session};
 use crate::destinations::{Target, Window};
 use core::time::Duration;
 use std::{process::Command, time::Instant};
@@ -66,18 +66,73 @@ fn invitation_waits_ten_seconds_after_selection_and_failure_releases_it() {
     assert_eq!(launcher.invitation(false, false, now), InvitationView::Show);
 }
 
+fn exited(code: &str) -> std::process::Child {
+    let mut child = Command::new("sh")
+        .args(["-c", &format!("exit {code}")])
+        .spawn()
+        .expect("child starts");
+    let _status = child.wait().expect("child exits");
+    child
+}
+
 #[test]
 fn completed_children_are_reaped_and_failure_is_reported_once() {
     let mut children = Children::default();
-    for code in ["0", "7"] {
-        let mut child = Command::new("sh")
-            .args(["-c", &format!("exit {code}")])
-            .spawn()
-            .expect("child starts");
-        let _status = child.wait().expect("child exits");
-        children.track(child);
-    }
+    let now = Instant::now();
+    children.track(exited("0"), "Fine", now);
+    children.track(exited("7"), "Broken", now);
     assert!(!children.is_full());
-    assert!(children.poll());
-    assert!(!children.poll());
+    let failures = children.poll(now);
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].early);
+    assert_eq!(failures[0].notice(), "Broken closed right away (exit 7)");
+    assert_eq!(children.poll(now).len(), 0);
+}
+
+#[test]
+fn a_late_failure_is_not_an_early_exit() {
+    let mut children = Children::default();
+    let now = Instant::now();
+    children.track(exited("1"), "Slow", now);
+    let failures = children.poll(now + Duration::from_secs(6));
+    assert_eq!(failures.len(), 1);
+    assert!(!failures[0].early);
+}
+
+#[test]
+fn close_resets_launching_during_the_grace() {
+    let mut launcher = session();
+    let now = Instant::now();
+    launcher.enable_invitation();
+    assert!(launcher.update_windows(vec![window(1)]));
+    let _rows = launcher.rows(DestinationKind::Application, None);
+    assert!(launcher.choose(0, true, now).is_some());
+    assert_eq!(
+        launcher.invitation(false, false, now + Duration::from_secs(1)),
+        InvitationView::Hidden
+    );
+    assert_eq!(
+        launcher.invitation(true, false, now + Duration::from_secs(2)),
+        InvitationView::Close
+    );
+    assert_eq!(
+        launcher.invitation(false, false, now + Duration::from_secs(3)),
+        InvitationView::Show
+    );
+}
+
+#[test]
+fn several_early_exits_in_one_poll_make_one_notice() {
+    let mut children = Children::default();
+    let now = Instant::now();
+    let later = now + Duration::from_secs(60);
+    children.track(exited("3"), "Slow", now);
+    children.track(exited("1"), "First", now + Duration::from_secs(59));
+    children.track(exited("2"), "Second", now + Duration::from_secs(58));
+    let failures = children.poll(later);
+    assert_eq!(
+        Failure::summary(&failures).as_deref(),
+        Some("2 apps closed right away: First, Second")
+    );
+    assert_eq!(Failure::summary(&[]), None);
 }
