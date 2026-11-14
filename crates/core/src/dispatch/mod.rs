@@ -1363,17 +1363,13 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         if state.keyboard.tick(elapsed) {
             route_frame.tasks.push_front(Task::Speech(SpeechInput::Press));
         }
-        let mapped = stick_tick(
+        if stick_tick(
             &mut state.core,
-            state.mouse.sticks,
+            &mut state.mouse,
             state.keyboard.is_open(),
             elapsed,
             effects,
-        );
-        if state
-            .mouse
-            .tick(elapsed, !state.keyboard.is_open(), mapped, effects)
-        {
+        ) {
             for button in [ButtonState::Released, ButtonState::Pressed] {
                 route_frame.tasks.push_front(Task::Route(Event::Button {
                     name: ButtonName::Select,
@@ -1386,25 +1382,27 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     route_frame.awaiting = Some(Await::PluginActive(event));
 }
 
-/// Fires the focused context's `[sticks]` actions; returns which sticks they take from mouse mode.
+/// Fires the focused context's `[sticks]` actions and moves the pointer with the sticks they leave
+/// to mouse mode; true on a single View tap.
 fn stick_tick(
     core: &mut crate::State,
-    sticks: Sticks,
+    mouse: &mut mouse::State,
     keyboard_open: bool,
     elapsed: Duration,
     effects: &mut Vec<Effect>,
-) -> [bool; 2] {
+) -> bool {
     if !keyboard_open {
         effects.extend(
-            core.stick_actions(elapsed, sticks.left, sticks.right)
+            core.stick_actions(elapsed, mouse.sticks.left, mouse.sticks.right)
                 .into_iter()
                 .map(Effect::Apply),
         );
     }
-    [
+    let mapped = [
         core.maps_stick(tehuti_protocol::Stick::Left),
         core.maps_stick(tehuti_protocol::Stick::Right),
-    ]
+    ];
+    mouse.tick(elapsed, !keyboard_open, mapped, effects)
 }
 
 fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
