@@ -127,8 +127,8 @@ fn several_early_exits_in_one_poll_make_one_notice() {
     let now = Instant::now();
     let later = now + Duration::from_secs(60);
     children.track(exited("3"), "Slow", now);
-    children.track(exited("1"), "First", later - Duration::from_secs(1));
-    children.track(exited("2"), "Second", later - Duration::from_secs(2));
+    children.track(exited("1"), "First", now + Duration::from_secs(59));
+    children.track(exited("2"), "Second", now + Duration::from_secs(58));
     let failures = children.poll(later);
     assert_eq!(
         Failure::summary(&failures).as_deref(),
