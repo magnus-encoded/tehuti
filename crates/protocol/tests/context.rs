@@ -544,14 +544,14 @@ restart = { restart = false }"
         let context =
             parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }").unwrap();
         assert!(context.speech_action("J\u{30c}").is_some());
-        let context = parse_context(
+        let doubled = parse_context(
             "app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }\n\"J\u{30c}\" = { key = 'tab' }",
         )
         .unwrap();
         assert!(
-            context.warnings()[0].contains("normalizes to"),
+            doubled.warnings()[0].contains("normalizes to"),
             "{:?}",
-            context.warnings()
+            doubled.warnings()
         );
     }
 
