@@ -150,6 +150,11 @@ impl Session {
         }
     }
 
+    /// Whether the manifest lists this application; focus notices go to no other plugin.
+    fn owns_app(&self, app_id: Option<&String>) -> bool {
+        app_id.is_some_and(|app_id| self.manifest.app_ids.contains(app_id))
+    }
+
     fn observe(&mut self, event: &Event) {
         if let Event::Focus { app_id, title } = event {
             self.latest_focus = Some((app_id.clone(), title.clone()));
@@ -313,6 +318,7 @@ impl Session {
                 self.healthy_since = Some(Instant::now());
                 if self.events.contains(&Subscription::Focus)
                     && let Some((app_id, title)) = self.latest_focus.clone()
+                    && self.owns_app(app_id.as_ref())
                     && let Err(error) = self.queue(&Call {
                         jsonrpc: RpcVersion::Two,
                         request_id: None,
@@ -459,13 +465,17 @@ impl Session {
                 let request_id = self.request()?;
                 (Some(request_id), Method::Speech { text: text.clone() })
             }
-            Event::Focus { app_id, title } if self.events.contains(&Subscription::Focus) => (
-                None,
-                Method::Focus {
-                    app_id: app_id.clone(),
-                    title: title.clone(),
-                },
-            ),
+            Event::Focus { app_id, title }
+                if self.events.contains(&Subscription::Focus) && self.owns_app(app_id.as_ref()) =>
+            {
+                (
+                    None,
+                    Method::Focus {
+                        app_id: app_id.clone(),
+                        title: title.clone(),
+                    },
+                )
+            }
             Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
                 return None;
             }

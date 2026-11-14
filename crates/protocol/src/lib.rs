@@ -1,9 +1,16 @@
 //! Protocol v0 types shared by the core and plugins.
 
 /// Text that can cross a Wayland string boundary.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Text(String);
+
+/// Debug output shows the length only, so dictated text never reaches a log.
+impl core::fmt::Debug for Text {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "Text({} bytes)", self.0.len())
+    }
+}
 
 impl Text {
     /// Validates text before it becomes an action.

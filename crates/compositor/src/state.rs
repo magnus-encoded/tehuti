@@ -669,7 +669,7 @@ impl Compositor {
 
     /// Routes a typed phrase through the same event path as an admitted transcript.
     pub fn say(&mut self, text: tehuti_protocol::Text) {
-        tracing::info!(text = text.as_str(), "speech transcript received");
+        tracing::info!(bytes = text.as_str().len(), "speech transcript received");
         self.handle(&Event::Speech { text });
     }
 
@@ -3650,11 +3650,11 @@ delegate_output!(Compositor);
 fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin: bool) {
     match first {
         Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
-            tracing::info!(text = text.as_str(), "speech has no mapping");
+            tracing::info!(bytes = text.as_str().len(), "speech has no mapping");
         }
-        Some(action) => tracing::info!(text = text.as_str(), ?action, "speech mapped"),
-        None if plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
-        None => tracing::info!(text = text.as_str(), "speech produced no action"),
+        Some(action) => tracing::info!(bytes = text.as_str().len(), ?action, "speech mapped"),
+        None if plugin => tracing::info!(bytes = text.as_str().len(), "speech routed to a plugin"),
+        None => tracing::info!(bytes = text.as_str().len(), "speech produced no action"),
     }
 }
 
@@ -3668,7 +3668,7 @@ fn thousandths(score: u16) -> String {
 }
 
 fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
-    tracing::info!(session, text = text.as_str(), "speech transcript received");
+    tracing::info!(session, bytes = text.as_str().len(), "speech transcript received");
     if !admitted {
         tracing::info!("speech transcript dropped for a stale session");
     }
