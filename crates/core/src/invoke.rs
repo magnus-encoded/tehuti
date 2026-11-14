@@ -1,4 +1,5 @@
-//! The built-in `invoke` verb: "invoke usage report" types `/usage-report`.
+//! The built-in `invoke` verb: "invoke usage report" types `/usage-report ` with a
+//! trailing space, since arguments usually follow.
 //!
 //! The words after the verb snap to the closest slash-command word a context
 //! knows; with no close word they are slugified as heard.
@@ -56,7 +57,7 @@ pub fn snap<'known>(words: &str, known: impl IntoIterator<Item = &'known str>) -
     best.map(|(_, word)| word)
 }
 
-/// The text the invoke verb types for a transcript, if it begins with the verb
+/// The text the invoke verb types, a slash command and a space, for a transcript, if it begins with the verb
 /// and has words after it.
 #[must_use]
 pub fn slash_command<'known>(
@@ -67,5 +68,5 @@ pub fn slash_command<'known>(
     let matched = crate::verbs::route([(0, verbs.as_slice())], transcript)?;
     let remainder = matched.text.as_str();
     let name = snap(remainder, known).map_or_else(|| slugify(remainder), str::to_owned);
-    (!name.is_empty()).then(|| format!("/{name}"))
+    (!name.is_empty()).then(|| format!("/{name} "))
 }

@@ -37,7 +37,7 @@ mod speech_templates {
         assert_eq!(
             actions,
             vec![Action::Text {
-                text: Text::new("/review".into()).unwrap(),
+                text: Text::new("/review ".into()).unwrap(),
             }],
             "the built-in invoke verb types in any window"
         );

@@ -49,7 +49,7 @@ mod invoke_verb {
             let spoken = format!("{casing}{punctuation} {}.", parts.join(" "));
             prop_assert_eq!(
                 slash_command(&spoken, [known.as_str()]),
-                Some(format!("/{known}")),
+                Some(format!("/{known} ")),
                 "the spoken words snap to the known word"
             );
         }
@@ -59,7 +59,7 @@ mod invoke_verb {
             let spoken = format!("invoke {}", parts.join(" "));
             prop_assert_eq!(
                 slash_command(&spoken, []),
-                Some(format!("/{}", parts.join("-"))),
+                Some(format!("/{} ", parts.join("-"))),
                 "unknown words become a hyphenated slug"
             );
         }
@@ -83,7 +83,7 @@ mod invoke_verb {
                 "app_id = 'editor'\n[buttons]\n[speech]\n'{spoken}' = {{ text = 'shadowed' }}"
             ));
             let (_, actions, routed) = step_with_plugin(state, &speech(&spoken), plugin_active);
-            prop_assert_eq!(actions, typed(&format!("/{}", parts.join("-"))), "the verb types the slash command");
+            prop_assert_eq!(actions, typed(&format!("/{} ", parts.join("-"))), "the verb types the slash command");
             prop_assert!(!routed, "no plugin hears an invoked command");
         }
     }
@@ -92,16 +92,16 @@ mod invoke_verb {
     fn a_misheard_long_word_snaps_to_the_closest_known_word() {
         let state = focused("app_id = 'editor'\ninvoke = ['usage', 'chief-of-staff']\n[buttons]");
         let (state, snapped) = step(state, &speech("Invoke chief of stuff."));
-        assert_eq!(snapped, typed("/chief-of-staff"), "a near miss snaps");
+        assert_eq!(snapped, typed("/chief-of-staff "), "a near miss snaps");
         let (_, exact) = step(state, &speech("invoke usage"));
-        assert_eq!(exact, typed("/usage"), "an exact word types itself");
+        assert_eq!(exact, typed("/usage "), "an exact word types itself");
     }
 
     #[test]
     fn short_words_snap_only_on_an_equal_sound() {
         assert_eq!(
             slash_command("invoke used", ["usage"]),
-            Some("/used".into()),
+            Some("/used ".into()),
             "no fuzzy snap under five letters"
         );
         assert_eq!(
