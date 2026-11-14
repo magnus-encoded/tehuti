@@ -1316,6 +1316,10 @@ fn recording_event(event: &Event, effects: &mut Vec<Effect>) -> bool {
     true
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered list of routing layers reads best whole"
+)]
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if matches!(event, Event::Focus { .. }) {
         state.tool_pad = ToolPad::Idle;
@@ -1363,7 +1367,13 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         if state.keyboard.tick(elapsed) {
             route_frame.tasks.push_front(Task::Speech(SpeechInput::Press));
         }
-        if state.mouse.tick(elapsed, !state.keyboard.is_open(), effects) {
+        if stick_tick(
+            &mut state.core,
+            &mut state.mouse,
+            state.keyboard.is_open(),
+            elapsed,
+            effects,
+        ) {
             for button in [ButtonState::Released, ButtonState::Pressed] {
                 route_frame.tasks.push_front(Task::Route(Event::Button {
                     name: ButtonName::Select,
@@ -1374,6 +1384,29 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     }
     effects.push(Effect::QueryPlugin(event.clone()));
     route_frame.awaiting = Some(Await::PluginActive(event));
+}
+
+/// Fires the focused context's `[sticks]` actions and moves the pointer with the sticks they leave
+/// to mouse mode; true on a single View tap.
+fn stick_tick(
+    core: &mut crate::State,
+    mouse: &mut mouse::State,
+    keyboard_open: bool,
+    elapsed: Duration,
+    effects: &mut Vec<Effect>,
+) -> bool {
+    if !keyboard_open {
+        effects.extend(
+            core.stick_actions(elapsed, mouse.sticks.left, mouse.sticks.right)
+                .into_iter()
+                .map(Effect::Apply),
+        );
+    }
+    let mapped = [
+        core.maps_stick(tehuti_protocol::Stick::Left),
+        core.maps_stick(tehuti_protocol::Stick::Right),
+    ];
+    mouse.tick(elapsed, !keyboard_open, mapped, effects)
 }
 
 fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {

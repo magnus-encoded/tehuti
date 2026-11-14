@@ -57,6 +57,7 @@ pub struct State {
     pad_family: pad::PadFamily,
     controller_talk: Option<ButtonName>,
     app_names: Vec<(String, String)>,
+    sticks: stick_actions::StickActions,
 }
 
 impl State {
@@ -150,6 +151,7 @@ impl State {
             pad_family: pad::PadFamily::Letters,
             controller_talk: None,
             app_names: Vec::new(),
+            sticks: stick_actions::StickActions::default(),
         };
         state.refresh_ticker();
         state.refresh_labels();
@@ -311,9 +313,42 @@ impl State {
     fn refresh_ticker(&mut self) {
         let focused = focused_context(self);
         let global = global_context(self);
-        let entries = ticker::enabled_for(focused, global)
-            .then(|| ticker::entries_for(focused, global, self.pad_family, self.level));
+        let entries = ticker::enabled_for(focused, global).then(|| {
+            ticker::entries_for(
+                focused,
+                global,
+                self.pad_family,
+                self.level,
+                self.sticks.active_modifier(),
+            )
+        });
         self.bar.set_ticker(entries);
+    }
+
+    /// Whether the focused context's `[sticks]` maps `stick`, which then leaves mouse mode.
+    #[must_use]
+    pub fn maps_stick(&self, stick: tehuti_protocol::Stick) -> bool {
+        focused_context(self).is_some_and(|context| context.maps_stick(stick))
+    }
+
+    /// The actions the focused context's `[sticks]` fire for one tick of stick samples.
+    pub fn stick_actions(
+        &mut self,
+        elapsed: core::time::Duration,
+        left: (i16, i16),
+        right: (i16, i16),
+    ) -> Vec<Action> {
+        let mut sticks = core::mem::take(&mut self.sticks);
+        let actions =
+            focused_context(self).map_or_else(Vec::new, |context| sticks.tick(context, elapsed, left, right));
+        self.sticks = sticks;
+        actions
+    }
+
+    /// The face button whose `[sticks]` layer applies, if one is held.
+    #[must_use]
+    pub fn held_stick_modifier(&self) -> Option<ButtonName> {
+        self.sticks.active_modifier()
     }
 
     /// The installed contexts, in priority order.
@@ -417,6 +452,9 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     };
     let level = state.level;
     let (mut next, mut actions, routed) = route(state, event, plugin_active);
+    if matches!(event, Event::Focus { .. }) {
+        next.sticks.reset();
+    }
     if matches!(event, Event::Focus { .. }) || next.level != level {
         next.refresh_ticker();
     }
@@ -469,6 +507,9 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
             vec![action]
         };
         return (state, actions, false);
+    }
+    if let Some((actions, routed)) = stick_modifier(&mut state, event, plugin_active) {
+        return (state, actions, routed);
     }
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
@@ -540,6 +581,47 @@ fn focused_maps(state: &State, event: &Event) -> bool {
         return false;
     };
     focused_context(state).is_some_and(|context| context.action_for(*name).is_some())
+}
+
+/// A face button named by `[sticks]` `with` gates stick mappings while held; a tap
+/// without a stick move fires its own action on release, as press and release.
+fn stick_modifier(state: &mut State, event: &Event, plugin_active: bool) -> Option<(Vec<Action>, bool)> {
+    let Event::Button { name, state: button } = event else {
+        return None;
+    };
+    if state.sticks.replaying() {
+        return None;
+    }
+    match button {
+        ButtonState::Pressed => {
+            if !focused_context(state).is_some_and(|context| context.stick_modifier(*name)) {
+                return None;
+            }
+            state.sticks.press_modifier(*name);
+            state.refresh_ticker();
+            Some((Vec::new(), false))
+        }
+        ButtonState::Released => {
+            if !state.sticks.holds(*name) {
+                return None;
+            }
+            let tapped = state.sticks.release_modifier(*name);
+            state.refresh_ticker();
+            if !tapped {
+                return Some((Vec::new(), false));
+            }
+            state.sticks.set_replaying(true);
+            let press = Event::Button {
+                name: *name,
+                state: ButtonState::Pressed,
+            };
+            let (mut next, mut actions, routed) = route(core::mem::take(state), &press, plugin_active);
+            next.sticks.set_replaying(false);
+            actions.extend(next.release_held_button(*name));
+            *state = next;
+            Some((actions, routed))
+        }
+    }
 }
 
 /// A `hold = true` mapping presses its key until the button's release.
@@ -907,4 +989,5 @@ mod spoken_keys;
 pub mod adjuster;
 pub mod launcher;
 
+pub mod stick_actions;
 pub mod tap_hold;

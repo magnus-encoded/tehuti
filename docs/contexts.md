@@ -276,6 +276,39 @@ redraws only the bar. Text that fits stays still. While
 it is off or hidden, time causes no redraws. Focus changes and context
 reloads rebuild the entries and start the scroll from the beginning.
 
+## Stick actions
+
+`[sticks]` maps stick directions to actions, written like `[buttons]`. Keys
+are `<stick>.<direction>`: the stick is `left` or `right`, the direction one
+of `up`, `down`, `left`, `right`, or a diagonal `up-right`, `down-right`,
+`down-left` or `up-left`. Each direction covers 45°. An unmapped diagonal
+falls back to the nearer of its two cardinal directions, so most contexts map
+only the four cardinals.
+
+A direction fires once the stick passes half its travel. With `repeat = true`
+(the default) it repeats while held, after 400 ms, faster the deeper the
+push; `repeat = false` fires once per push. Held keys (`hold = true`) are not
+allowed.
+
+`with = "north"` gates an entry on a held face button (`south`, `east`,
+`west` or `north`). While a modifier is held only its entries apply; with
+none held only entries without `with` apply. A face button named in `with`
+fires its own action on release, and only when no stick moved while it was
+held. To map one direction in several layers, give a list:
+
+```toml
+[sticks]
+left.left = { key = "left" }
+left.up = [{ key = "up" }, { key = "page_up", with = "north" }]
+right.up = { key = "0", with = "east" }
+```
+
+Contexts without `[sticks]` keep mouse mode. A stick with any mapping leaves
+mouse mode, pointer and scrolling, while its context is focused; only the
+focused context's `[sticks]` apply. The mapping ticker lists the stick
+entries of the held modifier, such as `Y + L↓ → [Pg↑]`, or the unmodified
+ones when none is held.
+
 ## Keyboard intent
 
 The keyboard opens only from Y or the spoken word "keyboard". Entering app

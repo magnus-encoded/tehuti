@@ -5334,3 +5334,51 @@ fn the_invitation_logs_no_use() {
     drop(state);
     assert_eq!(launcher_uses(&world.trace), Vec::<&crate::launcher::Usage>::new());
 }
+
+fn stick_modifier_player(world: &mut World) -> State {
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'org.example.Player'\n[buttons]\nnorth = { text = 'north' }\n[sticks]\nleft.up = { text = 'zoom', with = 'north' }\n",
+    )
+    .unwrap();
+    let state = State::new(crate::State::with_contexts(vec![context]));
+    world.event(state, focus("org.example.Player"))
+}
+
+#[test]
+fn a_tapped_stick_modifier_replays_through_an_active_plugin() {
+    for plugin_active in [false, true] {
+        let mut world = World {
+            plugin_active,
+            ..World::default()
+        };
+        let state = stick_modifier_player(&mut world);
+        world.trace.clear();
+        let _tapped: State = tap_button(&mut world, state, ButtonName::North);
+        let north = Effect::Apply(Action::Text {
+            text: Text::new("north".into()).unwrap(),
+        });
+        assert_eq!(
+            world.trace.contains(&north),
+            !plugin_active,
+            "the context fires only without a plugin"
+        );
+        assert_eq!(
+            world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::DispatchPlugin { route: true, .. })),
+            plugin_active,
+            "an active plugin routes the tap"
+        );
+    }
+}
+
+#[test]
+fn the_open_keyboard_takes_a_face_button_before_stick_modifier_capture() {
+    let mut world = World::default();
+    let state = stick_modifier_player(&mut world);
+    let state = world.run(state, Input::Speech(SpeechInput::Available));
+    let state = with_open_keyboard(&mut world, state);
+    let state = world.run(state, pad_button(ButtonName::North, ButtonState::Pressed));
+    assert_eq!(state.core().held_stick_modifier(), None);
+}
