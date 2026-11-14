@@ -56,6 +56,8 @@ pub(crate) struct LoopData {
 enum Frames {
     Backend,
     Headless,
+    /// Every DRM frame failed for a minute; the session exits with an error.
+    Failed,
 }
 
 /// Draws a frame when something on the output changed; the DRM backend installs it.
@@ -109,6 +111,9 @@ impl input::InputSource for AttachedController {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
+        if matches!(self.frames, Frames::Failed) {
+            return ExitCode::FAILURE;
+        }
         exit_code(
             self.log_out || self.compositor.log_out_requested(),
             self.compositor.quit_requested(),
@@ -531,6 +536,16 @@ fn shut_down(mut event_loop: EventLoop<LoopData>, data: LoopData) {
     drop(display);
 }
 
+/// Only the DRM session is watched: a frozen nested window can just be closed.
+/// The heartbeat ends with `run`, so shutdown is not watched: an abort there
+/// would turn a log-out into a failure.
+fn start_watchdog(data: &LoopData) -> Option<tehuti::watchdog::Heartbeat> {
+    let _drm = data.redraw.as_ref()?;
+    tehuti::watchdog::spawn(tehuti::watchdog::FROZEN_AFTER, tehuti::watchdog::abort_frozen)
+        .inspect_err(|error| warn!(%error, "watchdog failed to start"))
+        .ok()
+}
+
 fn run(
     event_loop: &mut EventLoop<LoopData>,
     data: &mut LoopData,
@@ -539,7 +554,9 @@ fn run(
     let termination = tehuti::shutdown::Termination::register()?;
     let signal = event_loop.get_signal();
     let handle = event_loop.handle();
+    let heartbeat = start_watchdog(data);
     let result = event_loop.run(Some(tehuti::pacing::LOOP_TIMEOUT), data, |data| {
+        heartbeat.iter().for_each(tehuti::watchdog::Heartbeat::beat);
         termination.stop_if_requested(&signal);
         if let Some(driver) = data.driver.as_mut() {
             driver.poll(&mut data.compositor);

@@ -1,4 +1,4 @@
-//! A failed frame is retried before persistent failure ends the session.
+//! A failed frame is retried; only a minute of nothing but failed frames ends the session.
 
 use core::{cell::RefCell, error::Error, fmt::Display, time::Duration};
 use std::{
@@ -13,13 +13,20 @@ use smithay::reexports::calloop::{
 
 pub const FAILURES_BEFORE_FALLBACK: u32 = 20;
 pub const FAILURES_AFTER_FALLBACK: u32 = 20;
-pub const MAX_CONSECUTIVE_FAILURES: u32 = FAILURES_BEFORE_FALLBACK + FAILURES_AFTER_FALLBACK;
+/// Failures after which the output retries at [`STALLED_RETRY_INTERVAL`].
+pub const FAILURES_BEFORE_BACKOFF: u32 = FAILURES_BEFORE_FALLBACK + FAILURES_AFTER_FALLBACK;
 pub const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+/// The retry pace of an output that keeps failing.
+pub const STALLED_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+/// How long every frame may fail before the session exits, so its launcher
+/// restarts Tehuti or falls back; a black screen with no way out is worse.
+pub const FAILING_FRAMES_EXIT_AFTER: Duration = Duration::from_secs(60);
 
 /// The failure streak of one output and the deadline of its next attempt.
 #[derive(Debug, Default)]
 pub struct Recovery {
     failures: u32,
+    failing_since: Option<Instant>,
     fallback_attempted: bool,
     retry_at: Option<Instant>,
 }
@@ -49,10 +56,11 @@ impl Recovery {
     /// Records a frame outcome and returns the deadline of the retry it needs.
     ///
     /// `fall_back` runs once per streak, at the first failure at or past
-    /// `FAILURES_BEFORE_FALLBACK`.
+    /// `FAILURES_BEFORE_FALLBACK`. From `FAILURES_BEFORE_BACKOFF` on, retries
+    /// wait [`STALLED_RETRY_INTERVAL`].
     ///
     /// # Errors
-    /// Returns the last error after `MAX_CONSECUTIVE_FAILURES` failed frames.
+    /// Returns the error once every frame has failed for [`FAILING_FRAMES_EXIT_AFTER`].
     pub fn finish<E: Display>(
         &mut self,
         now: Instant,
@@ -63,18 +71,27 @@ impl Recovery {
             self.reset();
             return Ok(None);
         };
-        self.failures = self.failures.saturating_add(1);
-        if self.failures >= MAX_CONSECUTIVE_FAILURES {
+        let since = *self.failing_since.get_or_insert(now);
+        if now.saturating_duration_since(since) >= FAILING_FRAMES_EXIT_AFTER {
             return Err(error);
         }
+        self.failures = self.failures.saturating_add(1);
         if self.failures == 1 {
             tracing::warn!(%error, "DRM frame failed; retrying");
+        }
+        if self.failures == FAILURES_BEFORE_BACKOFF {
+            tracing::error!(%error, "DRM frames keep failing; retrying every second");
         }
         if self.failures >= FAILURES_BEFORE_FALLBACK && !self.fallback_attempted {
             self.fallback_attempted = true;
             fall_back();
         }
-        let deadline = now.checked_add(RETRY_INTERVAL).unwrap_or(now);
+        let interval = if self.failures >= FAILURES_BEFORE_BACKOFF {
+            STALLED_RETRY_INTERVAL
+        } else {
+            RETRY_INTERVAL
+        };
+        let deadline = now.checked_add(interval).unwrap_or(now);
         self.retry_at = Some(deadline);
         Ok(Some(deadline))
     }
@@ -129,25 +146,25 @@ impl<'l, Data: 'l, F: Frames<Data> + 'l> Driver<'l, Data, F> {
             return;
         };
         let result = frames.borrow_mut().render(data, tick);
-        match result {
-            Ok(None) => {}
-            Ok(Some(deadline)) => {
-                let driver = self.clone();
-                let armed = self.handle.upgrade().map(|handle| {
-                    handle.insert_source(Timer::from_deadline(deadline), move |_, (), loop_data| {
-                        driver.render(loop_data, true);
-                        TimeoutAction::Drop
-                    })
-                });
-                if !matches!(armed, Some(Ok(_))) {
-                    tracing::warn!("DRM frame retry timer failed; ending session");
-                    self.stop.stop();
-                }
-            }
+        let deadline = match result {
+            Ok(None) => return,
+            Ok(Some(deadline)) => deadline,
             Err(error) => {
-                tracing::warn!(%error, "DRM frame failed; ending session");
+                tracing::error!(%error, "DRM frames failed for a minute; ending session");
                 self.stop.stop();
+                return;
             }
+        };
+        let driver = self.clone();
+        let armed = self.handle.upgrade().map(|handle| {
+            handle.insert_source(Timer::from_deadline(deadline), move |_, (), loop_data| {
+                driver.render(loop_data, true);
+                TimeoutAction::Drop
+            })
+        });
+        if matches!(armed, Some(Err(_))) {
+            // The loop's periodic redraw retries the frame instead.
+            tracing::warn!("DRM frame retry timer failed");
         }
     }
 }
