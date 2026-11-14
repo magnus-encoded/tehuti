@@ -38,7 +38,10 @@ impl SizeAxis {
     pub fn read(self, snapshot: &crate::layout::Snapshot) -> Option<u32> {
         use crate::layout::{PresetSize, WindowHeight};
         let window = snapshot.focused_window?;
-        let output = snapshot.outputs.iter().find(|output| Some(output.output) == snapshot.focused_output)?;
+        let output = snapshot
+            .outputs
+            .iter()
+            .find(|output| Some(output.output) == snapshot.focused_output)?;
         let workspace = output.workspaces.get(output.active_workspace)?;
         let column = workspace
             .columns
@@ -154,10 +157,7 @@ impl Gauge {
         let Some(size) = &mut self.size else {
             return false;
         };
-        let next = self
-            .value
-            .saturating_add(delta)
-            .clamp(self.minimum, self.maximum);
+        let next = self.value.saturating_add(delta).clamp(self.minimum, self.maximum);
         if next == self.value {
             return false;
         }
