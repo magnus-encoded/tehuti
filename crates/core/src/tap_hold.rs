@@ -7,7 +7,7 @@ pub const TAP_HOLD: core::time::Duration = core::time::Duration::from_millis(40)
 /// The gap between releasing a held key and pressing it again for a re-tap: one 60 Hz frame.
 pub const RETAP_GAP: core::time::Duration = core::time::Duration::from_millis(17);
 
-/// Whether a calloop timer is waiting to release held taps.
+/// Whether the caller has an outstanding release timer.
 #[derive(Debug, PartialEq, Eq)]
 enum ReleaseTimer {
     Idle,
@@ -27,11 +27,12 @@ struct HeldKey<Key> {
 }
 
 #[derive(Debug)]
+/// Synthetic holds independent of the key representation and clock source.
 pub struct TapHold<Key> {
     held_taps: Vec<HeldKey<Key>>,
     release_timer: ReleaseTimer,
     focus_epoch: u32,
-    tap_hold: Duration,
+    hold_duration: Duration,
 }
 
 impl<Key: Copy + Eq> Default for TapHold<Key> {
@@ -40,17 +41,18 @@ impl<Key: Copy + Eq> Default for TapHold<Key> {
             held_taps: Vec::new(),
             release_timer: ReleaseTimer::Idle,
             focus_epoch: 0,
-            tap_hold: TAP_HOLD,
+            hold_duration: TAP_HOLD,
         }
     }
 }
 
 impl<Key: Copy + Eq> TapHold<Key> {
     pub const fn instant_taps(&mut self) {
-        self.tap_hold = Duration::ZERO;
+        self.hold_duration = Duration::ZERO;
     }
+    /// Extends shared modifiers and restarts repeated keys after a release gap.
     pub fn tap(&mut self, now: Duration, keycode: Key, modifiers: &[Key]) -> Vec<(Key, bool)> {
-        let duration = self.tap_hold;
+        let duration = self.hold_duration;
         let due = if duration.is_zero() {
             None
         } else {
@@ -107,6 +109,7 @@ impl<Key: Copy + Eq> TapHold<Key> {
         events
     }
 
+    /// Advances deferred presses and releases due holds, keys before modifiers.
     pub fn tick(&mut self, now: Duration) -> Vec<(Key, bool)> {
         let mut events = Vec::new();
         for held in &mut self.held_taps {
@@ -114,7 +117,7 @@ impl<Key: Copy + Eq> TapHold<Key> {
                 events.push((held.code, true));
                 held.pressed = true;
                 held.epoch = self.focus_epoch;
-                held.due = now.checked_add(self.tap_hold).unwrap_or(now);
+                held.due = now.checked_add(self.hold_duration).unwrap_or(now);
             }
         }
         events.extend(self.release(|held| held.due <= now));
@@ -125,10 +128,12 @@ impl<Key: Copy + Eq> TapHold<Key> {
         self.release(|_| true)
     }
 
+    /// Records focus while the caller cannot yet deliver key releases.
     pub const fn focus_changed(&mut self) {
         self.focus_epoch = self.focus_epoch.wrapping_add(1);
     }
 
+    /// Releases holds from earlier focus generations.
     pub fn flush_focus(&mut self) -> Vec<(Key, bool)> {
         let epoch = self.focus_epoch;
         self.release(|held| held.epoch < epoch)
