@@ -78,7 +78,11 @@ mod verb_routing {
             }),
             "a folded spelling matches"
         );
-        assert_eq!(heard("Ada, summarise the reviews").map(|found| found.text), Some(Text::new("summarise the reviews".into()).unwrap()), "comma is stripped");
+        assert_eq!(
+            heard("Ada, summarise the reviews").map(|found| found.text),
+            Some(Text::new("summarise the reviews".into()).unwrap()),
+            "comma is stripped"
+        );
         assert_eq!(heard("Adam was here"), None, "short verbs need equal sound keys");
         assert_eq!(heard("open the file"), None, "other first words fall through");
         assert_eq!(heard("please invoke usage"), None, "only the first word counts");

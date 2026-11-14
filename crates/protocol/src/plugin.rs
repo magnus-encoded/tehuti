@@ -137,7 +137,11 @@ fn validate_kind(manifest: &Manifest) -> Result<(), String> {
             if manifest.events.iter().any(|event| *event != Subscription::Speech) {
                 return Err("a verb plugin subscribes only to speech".into());
             }
-            if manifest.permissions.iter().any(|permission| *permission != Permission::Text) {
+            if manifest
+                .permissions
+                .iter()
+                .any(|permission| *permission != Permission::Text)
+            {
                 return Err("a verb plugin may request only the text permission".into());
             }
             if manifest.start != StartPolicy::Always {

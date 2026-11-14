@@ -944,7 +944,11 @@ for line in sys.stdin:
         configuration.permissions = vec![Permission::Text];
         let mut harness = Harness::with_script(&configuration, include_str!("fixtures/plugins/verb.py"));
         harness.ready();
-        harness.send([button(ButtonName::East), speech("hello there"), speech("Ada, sum up the reviews")]);
+        harness.send([
+            button(ButtonName::East),
+            speech("hello there"),
+            speech("Ada, sum up the reviews"),
+        ]);
         harness.pump_until(|harness| harness.directory.path().join("swapped").exists());
         settle(&mut harness);
         harness.send([speech("ada still there"), speech("Orion open the notes")]);
@@ -981,15 +985,22 @@ for line in sys.stdin:
 
     #[test]
     fn manifests_keep_each_kind_to_its_own_permissions() {
-        let parse = |manifest: &Manifest| tehuti_protocol::parse_manifest(&serde_json::to_vec(manifest).unwrap());
+        let parse =
+            |manifest: &Manifest| tehuti_protocol::parse_manifest(&serde_json::to_vec(manifest).unwrap());
         let mut application = manifest();
         assert!(parse(&application).is_ok(), "application is the default kind");
         application.verbs = vec!["ada".into()];
-        assert!(parse(&application).is_err(), "an application plugin declares no verbs");
+        assert!(
+            parse(&application).is_err(),
+            "an application plugin declares no verbs"
+        );
         let mut verb = manifest();
         verb.kind = tehuti_protocol::PluginKind::Verb;
         verb.verbs = vec!["ada".into()];
-        assert!(parse(&verb).is_err(), "a verb plugin names no applications or buttons");
+        assert!(
+            parse(&verb).is_err(),
+            "a verb plugin names no applications or buttons"
+        );
         verb.app_ids.clear();
         verb.events = vec![Subscription::Speech];
         verb.permissions = vec![Permission::Text];
