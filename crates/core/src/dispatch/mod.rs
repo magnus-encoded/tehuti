@@ -238,6 +238,8 @@ enum Await {
         event: Event,
         actions: Vec<Action>,
         route: bool,
+        /// A stick-modifier tap's press, dispatched ahead of the release in `event`.
+        press: Option<Event>,
     },
     Supervised,
     SecretConfirmation(Event),
@@ -1046,9 +1048,53 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
     };
     match (awaiting, reply) {
         (Await::PluginActive(event), Input::PluginActive(active)) => {
+            let held = matches!(
+                event,
+                Event::Button { name, state: tehuti_protocol::ButtonState::Released } if state.core.sticks.holds(name)
+            );
             let (next, actions, route) =
                 crate::step_with_plugin(core::mem::take(&mut state.core), &event, active);
             state.core = next;
+            // A tapped stick modifier held back its press: the plugin gets both halves.
+            let press = match &event {
+                Event::Button { name, .. } if held && route => Some(Event::Button {
+                    name: *name,
+                    state: tehuti_protocol::ButtonState::Pressed,
+                }),
+                _ => None,
+            };
+            effects.push(Effect::DispatchPlugin {
+                event: press.clone().unwrap_or_else(|| event.clone()),
+                route,
+            });
+            frame.awaiting = Some(Await::PluginRequest {
+                event,
+                actions,
+                route,
+                press,
+            });
+        }
+        (
+            Await::PluginRequest {
+                event,
+                mut actions,
+                route,
+                press: Some(press),
+            },
+            Input::PluginRequest(request),
+        ) => {
+            if let Some((key, permissions)) = request {
+                let (next, mut routed, _) = crate::plugin::step(
+                    core::mem::take(&mut state.core),
+                    crate::plugin::Input::Request {
+                        key,
+                        event: press,
+                        permissions,
+                    },
+                );
+                state.core = next;
+                actions.append(&mut routed);
+            }
             effects.push(Effect::DispatchPlugin {
                 event: event.clone(),
                 route,
@@ -1057,6 +1103,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 event,
                 actions,
                 route,
+                press: None,
             });
         }
         (
@@ -1064,6 +1111,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 event,
                 actions,
                 route,
+                press: None,
             },
             Input::PluginRequest(request),
         ) => finish_route(state, event, actions, route, request, effects),
