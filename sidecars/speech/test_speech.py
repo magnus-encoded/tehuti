@@ -412,6 +412,53 @@ time.sleep(60)
             speech.interims.release()
         self.assertEqual(output.getvalue(), "", "cancelled capture cannot publish a preview")
 
+    def test_final_is_not_queued_behind_a_running_interim(self):
+        interim_started = threading.Event()
+        segment = types.SimpleNamespace(text="w", no_speech_prob=0, avg_logprob=0)
+
+        class Model:
+            def transcribe(self, path, **options):
+                if options.get("vad_filter") and not interim_started.is_set():
+                    interim_started.set()
+
+                    def slow():
+                        for _ in range(100):
+                            time.sleep(0.05)
+                            yield segment
+                    return slow(), None
+                return iter([segment]), None
+
+        class Process:
+            stdout = io.BytesIO()
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        speech = module.Speech(Model(), sources=lambda: [None])
+        take = module.Take(4)
+        recording = module.Recording("default", Process())
+        recording.extend(b"\x00\x10" * 32000)
+        recording.reader = threading.Thread(target=lambda: None)
+        recording.reader.start()
+        take.recordings.append(recording)
+        speech.capture, speech.session = take, 4
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            speech.interim(4, bytes(recording.audio), take)
+            self.assertTrue(interim_started.wait(3))
+            began = time.monotonic()
+            speech.stop(4, True)
+            speech.releasing.worker.join(3)
+            while not output.getvalue() and time.monotonic() - began < 3:
+                time.sleep(0.01)
+            elapsed = time.monotonic() - began
+        self.assertLess(elapsed, 2.0, "interim would hold the model for 5 s")
+        self.assertEqual([json.loads(l) for l in output.getvalue().splitlines()],
+                         [{"session": 4, "text": "w"}])
+
     def test_hallucinated_whole_transcripts_are_empty(self):
         for text in [
             ' "THANK YOU VERY MUCH FOR WATCHING AND BYE BYE!" ',

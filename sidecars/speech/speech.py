@@ -38,6 +38,14 @@ def transcript(segments):
     return "" if HALLUCINATION.fullmatch(normalized) else text
 
 
+def until(segments, abort):
+    """Segments, ending early once abort is set (the decode is lazy)."""
+    for segment in segments:
+        if abort is not None and abort.is_set():
+            return
+        yield segment
+
+
 def peak(audio):
     samples = memoryview(audio[:len(audio) - len(audio) % 2]).cast("h")
     return max((abs(sample) for sample in samples), default=0)
@@ -147,6 +155,7 @@ class Take:
         self.prompt = prompt
         self.recordings = []
         self.cancelled = threading.Event()
+        self.interim_abort = threading.Event()
         self.worker = None
 
     def poll(self):
@@ -236,7 +245,7 @@ class Speech:
         if remaining == 0 and capture.poll() is None:
             capture.send_signal(signal.SIGINT)
 
-    def transcribe_audio(self, audio, prompt="", *, retry=True):
+    def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None):
         priming = {"hotwords": self.hotwords} if self.hotwords else {}
         if prompt:
             priming["initial_prompt"] = prompt
@@ -251,8 +260,8 @@ class Speech:
                 vad_parameters={"threshold": 0.3, "min_speech_duration_ms": 80,
                                 "speech_pad_ms": 300},
             )
-            text = transcript(segments)
-            if text:
+            text = transcript(until(segments, abort))
+            if text or (abort is not None and abort.is_set()):
                 return text
             log(f"VAD returned empty text for clip ({len(audio)} bytes)")
             if not retry or len(audio) < 16000 * 2 * 1.5 or peak(audio) <= SILENCE_PEAK * 4:
@@ -275,7 +284,8 @@ class Speech:
                 if not self.model_lock.acquire(blocking=False):
                     return
                 try:
-                    text = self.transcribe_audio(audio, capture.prompt, retry=False)
+                    text = self.transcribe_audio(audio, capture.prompt, retry=False,
+                                                abort=capture.interim_abort)
                 finally:
                     self.model_lock.release()
                 if self.capture is capture and text:
@@ -295,6 +305,7 @@ class Speech:
             return
         take = self.capture
         self.capture = self.session = None
+        take.interim_abort.set()
         if transcribe:
             self.cancel_tail()
             self.releasing = take
