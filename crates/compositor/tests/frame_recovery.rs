@@ -11,7 +11,8 @@ mod tests {
         timer::{TimeoutAction, Timer},
     };
     use tehuti::frame_recovery::{
-        Driver, FAILURES_BEFORE_FALLBACK, Frames, MAX_CONSECUTIVE_FAILURES, RETRY_INTERVAL, Recovery,
+        Driver, FAILURES_BEFORE_BACKOFF, FAILURES_BEFORE_FALLBACK, Frames, RETRY_INTERVAL, Recovery,
+        STALLED_RETRY_INTERVAL,
     };
 
     /// An output whose submit fails a set number of times. Like the DRM output it
@@ -24,10 +25,17 @@ mod tests {
         attempts: u32,
         presented: u32,
         fallbacks: u32,
+        /// Renders that fail outside the recovery, like a lost flip event.
+        errors_left: u32,
     }
 
     impl Frames<()> for Output {
         fn render(&mut self, _data: &mut (), _tick: bool) -> Result<Option<Instant>, Box<dyn Error>> {
+            if self.errors_left > 0 {
+                self.errors_left = self.errors_left.saturating_sub(1);
+                self.attempts = self.attempts.saturating_add(1);
+                return Err("draw failed".into());
+            }
             let now = Instant::now();
             if self.recovery.waiting(now) || !(self.damaged || self.recovery.retrying()) {
                 return Ok(None);
@@ -44,21 +52,28 @@ mod tests {
             let fallbacks = &mut self.fallbacks;
             Ok(self
                 .recovery
-                .finish(now, submitted, || *fallbacks = fallbacks.saturating_add(1))?)
+                .finish(now, submitted, || *fallbacks = fallbacks.saturating_add(1)))
         }
     }
 
     /// Damages the output once, then runs the loop with no other source until it
     /// stops or `limit` passes.
     fn run(failures: u32, limit: Duration) -> (Output, Duration, bool) {
+        run_output(
+            Output {
+                damaged: true,
+                failures_left: failures,
+                ..Output::default()
+            },
+            limit,
+        )
+    }
+
+    fn run_output(output: Output, limit: Duration) -> (Output, Duration, bool) {
         let mut event_loop: EventLoop<'static, ()> = EventLoop::try_new().unwrap();
-        let output = Rc::new(RefCell::new(Output {
-            damaged: true,
-            failures_left: failures,
-            ..Output::default()
-        }));
+        let output = Rc::new(RefCell::new(output));
         let handle = Rc::new(event_loop.handle());
-        let driver = Driver::new(&handle, &output, event_loop.get_signal());
+        let driver = Driver::new(&handle, &output);
         let timed_out = Rc::new(RefCell::new(false));
         let flag = timed_out.clone();
         let stop = event_loop.get_signal();
@@ -84,13 +99,37 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_failure_retries_on_its_own_timer_until_the_bound() {
-        let (output, elapsed, timed_out) = run(u32::MAX, Duration::from_secs(20));
-        assert!(!timed_out, "retries stalled without an outside wakeup");
-        assert_eq!(output.attempts, MAX_CONSECUTIVE_FAILURES);
+    fn a_persistent_failure_keeps_retrying_slower_and_never_stops_the_loop() {
+        let fast = RETRY_INTERVAL.saturating_mul(FAILURES_BEFORE_BACKOFF);
+        let limit = fast.saturating_add(STALLED_RETRY_INTERVAL.saturating_mul(2));
+        let (output, _, timed_out) = run(u32::MAX, limit);
+        assert!(timed_out, "a failing output must not end the session");
         assert_eq!(output.fallbacks, 1);
-        assert!(elapsed >= RETRY_INTERVAL.saturating_mul(MAX_CONSECUTIVE_FAILURES.saturating_sub(1)));
-        assert!(elapsed < RETRY_INTERVAL.saturating_mul(MAX_CONSECUTIVE_FAILURES.saturating_mul(4)));
+        assert!(
+            output.attempts > FAILURES_BEFORE_BACKOFF,
+            "retries stalled without an outside wakeup: {}",
+            output.attempts
+        );
+        assert!(
+            output.attempts <= FAILURES_BEFORE_BACKOFF.saturating_add(3),
+            "past the backoff threshold retries slow down: {}",
+            output.attempts
+        );
+    }
+
+    #[test]
+    fn a_render_error_outside_the_recovery_is_retried_and_does_not_stop_the_loop() {
+        let limit = STALLED_RETRY_INTERVAL.saturating_mul(3);
+        let (output, _, timed_out) = run_output(
+            Output {
+                damaged: true,
+                errors_left: 2,
+                ..Output::default()
+            },
+            limit,
+        );
+        assert!(timed_out, "a render error must not end the session");
+        assert_eq!((output.attempts, output.presented), (3, 1));
     }
 
     #[test]
@@ -102,7 +141,7 @@ mod tests {
             ..Output::default()
         }));
         let handle = Rc::new(event_loop.handle());
-        let driver = Driver::new(&handle, &output, event_loop.get_signal());
+        let driver = Driver::new(&handle, &output);
         driver.render(&mut (), false);
         let weak_output = Rc::downgrade(&output);
         let weak_handle = Rc::downgrade(&handle);
@@ -132,12 +171,13 @@ mod tests {
     proptest! {
         #[test]
         fn the_fallback_runs_once_at_the_first_failure_past_its_threshold(
-            outcomes in prop::collection::vec(any::<bool>(), 0..120),
+            outcomes in prop::collection::vec(any::<bool>(), 0..200),
         ) {
             let mut recovery = Recovery::default();
             let mut streak = 0_u32;
             let now = Instant::now();
             let retry = now.checked_add(RETRY_INTERVAL).unwrap();
+            let stalled = now.checked_add(STALLED_RETRY_INTERVAL).unwrap();
             for failed in outcomes {
                 let result = if failed { Err("busy") } else { Ok(()) };
                 let mut fell_back = false;
@@ -145,13 +185,10 @@ mod tests {
                 streak = if failed { streak.saturating_add(1) } else { 0 };
                 prop_assert_eq!(fell_back, streak == FAILURES_BEFORE_FALLBACK);
                 prop_assert_eq!(recovery.fallback_attempted(), streak >= FAILURES_BEFORE_FALLBACK);
-                if streak >= MAX_CONSECUTIVE_FAILURES {
-                    prop_assert_eq!(finished, Err("busy"));
-                    break;
-                }
-                prop_assert_eq!(finished, Ok(failed.then_some(retry)));
+                let deadline = if streak >= FAILURES_BEFORE_BACKOFF { stalled } else { retry };
+                prop_assert_eq!(finished, failed.then_some(deadline));
                 prop_assert_eq!(recovery.waiting(now), failed);
-                prop_assert!(!recovery.waiting(retry));
+                prop_assert!(!recovery.waiting(deadline));
             }
         }
     }

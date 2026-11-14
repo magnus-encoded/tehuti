@@ -33,6 +33,7 @@ pub mod backend;
 
 pub mod drm_hotplug;
 pub mod frame_recovery;
+pub mod watchdog;
 
 pub mod dim;
 mod focus_outline;

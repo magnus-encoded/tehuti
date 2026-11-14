@@ -1,4 +1,4 @@
-//! A failed frame is retried before persistent failure ends the session.
+//! A failed frame is retried; persistent failure slows the retries but never ends the session.
 
 use core::{cell::RefCell, error::Error, fmt::Display, time::Duration};
 use std::{
@@ -7,14 +7,17 @@ use std::{
 };
 
 use smithay::reexports::calloop::{
-    LoopHandle, LoopSignal,
+    LoopHandle,
     timer::{TimeoutAction, Timer},
 };
 
 pub const FAILURES_BEFORE_FALLBACK: u32 = 20;
 pub const FAILURES_AFTER_FALLBACK: u32 = 20;
-pub const MAX_CONSECUTIVE_FAILURES: u32 = FAILURES_BEFORE_FALLBACK + FAILURES_AFTER_FALLBACK;
+/// Failures after which the output retries at [`STALLED_RETRY_INTERVAL`].
+pub const FAILURES_BEFORE_BACKOFF: u32 = FAILURES_BEFORE_FALLBACK + FAILURES_AFTER_FALLBACK;
 pub const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+/// The retry pace of an output that keeps failing; it is retried for good.
+pub const STALLED_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The failure streak of one output and the deadline of its next attempt.
 #[derive(Debug, Default)]
@@ -49,34 +52,37 @@ impl Recovery {
     /// Records a frame outcome and returns the deadline of the retry it needs.
     ///
     /// `fall_back` runs once per streak, at the first failure at or past
-    /// `FAILURES_BEFORE_FALLBACK`.
-    ///
-    /// # Errors
-    /// Returns the last error after `MAX_CONSECUTIVE_FAILURES` failed frames.
+    /// `FAILURES_BEFORE_FALLBACK`. From `FAILURES_BEFORE_BACKOFF` on, retries
+    /// wait [`STALLED_RETRY_INTERVAL`]; a failure never ends the session.
     pub fn finish<E: Display>(
         &mut self,
         now: Instant,
         result: Result<(), E>,
         fall_back: impl FnOnce(),
-    ) -> Result<Option<Instant>, E> {
+    ) -> Option<Instant> {
         let Err(error) = result else {
             self.reset();
-            return Ok(None);
+            return None;
         };
         self.failures = self.failures.saturating_add(1);
-        if self.failures >= MAX_CONSECUTIVE_FAILURES {
-            return Err(error);
-        }
         if self.failures == 1 {
             tracing::warn!(%error, "DRM frame failed; retrying");
+        }
+        if self.failures == FAILURES_BEFORE_BACKOFF {
+            tracing::error!(%error, "DRM frames keep failing; retrying every second");
         }
         if self.failures >= FAILURES_BEFORE_FALLBACK && !self.fallback_attempted {
             self.fallback_attempted = true;
             fall_back();
         }
-        let deadline = now.checked_add(RETRY_INTERVAL).unwrap_or(now);
+        let interval = if self.failures >= FAILURES_BEFORE_BACKOFF {
+            STALLED_RETRY_INTERVAL
+        } else {
+            RETRY_INTERVAL
+        };
+        let deadline = now.checked_add(interval).unwrap_or(now);
         self.retry_at = Some(deadline);
-        Ok(Some(deadline))
+        Some(deadline)
     }
 }
 
@@ -85,7 +91,7 @@ pub trait Frames<Data> {
     /// Draws a frame if one is due.
     ///
     /// # Errors
-    /// Returns an error the session cannot continue after.
+    /// Returns an error the driver logs and retries after [`STALLED_RETRY_INTERVAL`].
     fn render(&mut self, data: &mut Data, tick: bool) -> Result<Option<Instant>, Box<dyn Error>>;
 }
 
@@ -94,7 +100,6 @@ pub struct Driver<'l, Data, F> {
     /// Weak, so a pending retry timer does not keep its own loop alive.
     handle: Weak<LoopHandle<'l, Data>>,
     frames: Weak<RefCell<F>>,
-    stop: LoopSignal,
 }
 
 impl<Data, F> core::fmt::Debug for Driver<'_, Data, F> {
@@ -108,18 +113,16 @@ impl<Data, F> Clone for Driver<'_, Data, F> {
         Self {
             handle: self.handle.clone(),
             frames: self.frames.clone(),
-            stop: self.stop.clone(),
         }
     }
 }
 
 impl<'l, Data: 'l, F: Frames<Data> + 'l> Driver<'l, Data, F> {
     #[must_use]
-    pub fn new(handle: &Rc<LoopHandle<'l, Data>>, frames: &Rc<RefCell<F>>, stop: LoopSignal) -> Self {
+    pub fn new(handle: &Rc<LoopHandle<'l, Data>>, frames: &Rc<RefCell<F>>) -> Self {
         Self {
             handle: Rc::downgrade(handle),
             frames: Rc::downgrade(frames),
-            stop,
         }
     }
 
@@ -129,25 +132,25 @@ impl<'l, Data: 'l, F: Frames<Data> + 'l> Driver<'l, Data, F> {
             return;
         };
         let result = frames.borrow_mut().render(data, tick);
-        match result {
-            Ok(None) => {}
-            Ok(Some(deadline)) => {
-                let driver = self.clone();
-                let armed = self.handle.upgrade().map(|handle| {
-                    handle.insert_source(Timer::from_deadline(deadline), move |_, (), loop_data| {
-                        driver.render(loop_data, true);
-                        TimeoutAction::Drop
-                    })
-                });
-                if !matches!(armed, Some(Ok(_))) {
-                    tracing::warn!("DRM frame retry timer failed; ending session");
-                    self.stop.stop();
-                }
-            }
+        let deadline = match result {
+            Ok(None) => return,
+            Ok(Some(deadline)) => deadline,
             Err(error) => {
-                tracing::warn!(%error, "DRM frame failed; ending session");
-                self.stop.stop();
+                tracing::warn!(%error, "DRM frame failed; retrying");
+                let now = Instant::now();
+                now.checked_add(STALLED_RETRY_INTERVAL).unwrap_or(now)
             }
+        };
+        let driver = self.clone();
+        let armed = self.handle.upgrade().map(|handle| {
+            handle.insert_source(Timer::from_deadline(deadline), move |_, (), loop_data| {
+                driver.render(loop_data, true);
+                TimeoutAction::Drop
+            })
+        });
+        if matches!(armed, Some(Err(_))) {
+            // The loop's periodic redraw retries the frame instead.
+            tracing::warn!("DRM frame retry timer failed");
         }
     }
 }

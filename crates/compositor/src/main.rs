@@ -537,7 +537,16 @@ fn run(
     let termination = tehuti::shutdown::Termination::register()?;
     let signal = event_loop.get_signal();
     let handle = event_loop.handle();
+    // Only the DRM session needs it: a frozen nested window can just be closed.
+    let heartbeat = data
+        .redraw
+        .is_some()
+        .then(|| tehuti::watchdog::spawn(tehuti::watchdog::FROZEN_AFTER, tehuti::watchdog::abort_frozen))
+        .and_then(|spawned| spawned.inspect_err(|error| warn!(%error, "watchdog failed to start")).ok());
     let result = event_loop.run(Some(tehuti::pacing::LOOP_TIMEOUT), data, |data| {
+        if let Some(heartbeat) = heartbeat.as_ref() {
+            heartbeat.beat();
+        }
         termination.stop_if_requested(&signal);
         if let Some(driver) = data.driver.as_mut() {
             driver.poll(&mut data.compositor);
@@ -587,6 +596,8 @@ fn run(
             signal.stop();
         }
     });
+    // Shutdown is not watched: an abort would turn a log-out into a failure.
+    drop(heartbeat);
     if let Some(child) = child.as_mut() {
         tehuti::shutdown::terminate(child, false);
     }
