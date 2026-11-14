@@ -514,14 +514,8 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
     }
-    if matches!(
-        event,
-        Event::Button { name, .. } if state.push_to_talk(*name)
-    ) {
-        return (state, Vec::new(), false);
-    }
-    if let Some(action) = invoke_verb(&state, event) {
-        return (state, vec![action], false);
+    if let Some(actions) = talk_or_invoke(&state, event) {
+        return (state, actions, false);
     }
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
         return (state, Vec::new(), true);
@@ -536,11 +530,14 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     (state, actions, false)
 }
 
-/// The built-in `invoke` verb, ahead of plugin verbs and context phrases; its
-/// words snap to the focused and global contexts' invoke words.
-fn invoke_verb(state: &State, event: &Event) -> Option<Action> {
-    let Event::Speech { text } = event else {
-        return None;
+/// A push-to-talk press does nothing more. Speech meets the built-in `invoke` verb
+/// ahead of plugin verbs and context phrases; its words snap to the focused and
+/// global contexts' invoke words.
+fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
+    let transcript = match event {
+        Event::Button { name, .. } if state.push_to_talk(*name) => return Some(Vec::new()),
+        Event::Speech { text } => text,
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => return None,
     };
     let known = [focused_context(state), global_context(state)]
         .into_iter()
