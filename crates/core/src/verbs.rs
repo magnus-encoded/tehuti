@@ -49,14 +49,14 @@ pub fn route<'verbs>(
     transcript: &str,
 ) -> Option<VerbMatch> {
     let trimmed = transcript.trim_start();
-    let (head, rest) = trimmed.split_once(char::is_whitespace)?;
+    let (first, rest) = trimmed.split_once(char::is_whitespace)?;
     let remainder = rest.trim_start_matches(|character: char| {
         character.is_whitespace() || matches!(character, ',' | '.' | ':' | ';' | '!' | '?')
     });
     if remainder.trim().is_empty() {
         return None;
     }
-    let heard = key(head);
+    let heard = key(first);
     if heard.is_empty() {
         return None;
     }
