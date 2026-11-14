@@ -1101,7 +1101,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
             ));
             continue;
         }
-        speech.insert(normalized.clone(), entry);
+        drop(speech.insert(normalized.clone(), entry));
         warnings.extend(insert_speech_variant(
             &mut speech_variants,
             &mapped,
