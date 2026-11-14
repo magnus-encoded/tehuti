@@ -3652,6 +3652,10 @@ fn redacted_action(action: &Action) -> String {
     match action {
         Action::Text { text } => format!("Text({} bytes)", text.as_str().len()),
         Action::Notice { text } => format!("Notice({} bytes)", text.as_str().len()),
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "every other action carries no free text"
+        )]
         other => format!("{other:?}"),
     }
 }
