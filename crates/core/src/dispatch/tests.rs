@@ -5397,7 +5397,11 @@ fn an_active_plugin_gets_a_tapped_stick_modifier_as_press_then_release() {
         .iter()
         .filter_map(|effect| match effect {
             Effect::DispatchPlugin {
-                event: Event::Button { name: ButtonName::North, state },
+                event:
+                    Event::Button {
+                        name: ButtonName::North,
+                        state,
+                    },
                 route: true,
             } => Some(*state),
             _ => None,
