@@ -1,6 +1,11 @@
 //! `[sticks]`: directions fire their actions, repeat while held and respect face-button modifiers.
 
 #[cfg(test)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::format_collect,
+    reason = "fixtures build small bounded samples and config lines"
+)]
 mod tests {
     use core::time::Duration;
     use proptest::prelude::*;
