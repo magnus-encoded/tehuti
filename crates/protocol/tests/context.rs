@@ -108,6 +108,8 @@ restart = { restart = false }"
             ("Tab", KeyName::Tab),
             ("Escape", KeyName::Escape),
             ("Left", KeyName::Left),
+            ("PageUp", KeyName::PageUp),
+            ("Home", KeyName::Home),
         ] {
             let context = parse_context(&format!(
                 "app_id = '*'\n[buttons]\neast = {{ key = '{spelled}' }}"
