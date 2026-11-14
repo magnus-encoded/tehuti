@@ -346,6 +346,21 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn fold_warnings_are_not_skipped_phrases() {
+        let context = speech_context(&[("Ab part", "enter"), ("Abpart", "tab")]);
+        assert_eq!(context.warnings().len(), 1);
+        let empty: &[String] = &[];
+        assert_eq!(context.skipped_phrases(), empty);
+    }
+
+    #[test]
+    fn a_malformed_entry_still_fails_the_whole_file() {
+        let source =
+            "app_id = 'foot'\n[buttons]\n[speech]\n'Go' = { key = 'enter' }\n'Bad' = { key = 'nope' }";
+        assert!(parse_context(source).is_err());
+    }
+
+    #[test]
     fn a_context_that_loaded_before_folding_still_loads() {
         let context = speech_context(&[("Ab part", "enter"), ("Abpart", "tab"), ("Bay 12", "space")]);
         assert_eq!(context.warnings().len(), 1, "{:?}", context.warnings());
@@ -465,16 +480,22 @@ restart = { restart = false }"
             "app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }\n\"hello.\" = { key = 'tab' }\n\"Other\" = { key = 'space' }",
         )
         .unwrap();
-        assert_eq!(context.warnings().len(), 1, "{:?}", context.warnings());
-        assert!(
-            context.warnings()[0].contains("\"hello.\""),
+        assert_eq!(
+            context.skipped_phrases().len(),
+            1,
             "{:?}",
-            context.warnings()
+            context.skipped_phrases()
         );
         assert!(
-            context.warnings()[0].contains("normalizes to \"hello\""),
+            context.skipped_phrases()[0].contains("\"hello.\"")
+                && context.skipped_phrases()[0].contains("\"Hello\""),
             "{:?}",
-            context.warnings()
+            context.skipped_phrases()
+        );
+        assert!(
+            context.skipped_phrases()[0].contains("normalize to \"hello\""),
+            "{:?}",
+            context.skipped_phrases()
         );
         assert!(context.speech_action("Other").is_some());
         let first =
@@ -490,12 +511,12 @@ restart = { restart = false }"
             );
             let context = parse_context(&source).unwrap();
             assert_eq!(
-                context.warnings().len(),
+                context.skipped_phrases().len(),
                 1,
                 "{phrase:?}: {:?}",
-                context.warnings()
+                context.skipped_phrases()
             );
-            assert!(context.warnings()[0].contains("no words"), "{phrase:?}");
+            assert!(context.skipped_phrases()[0].contains("no words"), "{phrase:?}");
             assert!(context.speech_action("Go").is_some());
         }
     }
@@ -549,9 +570,9 @@ restart = { restart = false }"
         )
         .unwrap();
         assert!(
-            doubled.warnings()[0].contains("normalizes to"),
+            doubled.skipped_phrases()[0].contains("normalize to"),
             "{:?}",
-            doubled.warnings()
+            doubled.skipped_phrases()
         );
     }
 

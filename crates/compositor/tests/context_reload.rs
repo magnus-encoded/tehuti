@@ -215,6 +215,64 @@ mod context_reload {
     }
 
     #[test]
+    fn startup_raises_the_phrase_skip_notice_and_folds_do_not() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "one",
+            "app_id = 'one'\n[buttons]\n[speech]\n'Ab part' = { key = 'enter' }\n'Abpart' = { key = 'tab' }",
+        );
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_context_files(contexts::load_files(directory.path()));
+        assert_eq!(
+            compositor.visible_notice_text(),
+            None,
+            "a fold warning is not a skip"
+        );
+        write(
+            directory.path(),
+            "one",
+            "app_id = 'one'\n[buttons]\n[speech]\n'Go' = { key = 'enter' }\n'go.' = { key = 'tab' }",
+        );
+        compositor.set_context_files(contexts::load_files(directory.path()));
+        let notice = compositor.visible_notice_text().unwrap();
+        assert!(notice.starts_with("PHRASE SKIPPED one/"), "{notice}");
+    }
+
+    #[test]
+    fn a_fix_saved_after_a_skipped_load_is_picked_up_by_the_watcher() {
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "one", "app_id = 'one'\n[buttons]");
+        let mut event_loop: calloop::EventLoop<'static, Looped> = calloop::EventLoop::try_new().unwrap();
+        let watch =
+            contexts::ContextWatch::insert(&event_loop.handle(), directory.path(), |looped: &mut Looped| {
+                looped.watch.as_mut()
+            })
+            .unwrap();
+        let mut looped = Looped { watch: Some(watch) };
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_context_files(contexts::load_files(directory.path()));
+        let far = || Instant::now().checked_add(DEBOUNCE).unwrap();
+        for (source, expected) in [("app_id = ", "one"), ("app_id = 'fixed'\n[buttons]", "fixed")] {
+            write(directory.path(), "one", source);
+            let mut reloaded = None;
+            assert!(dispatch_until(
+                &mut event_loop,
+                &mut looped,
+                Duration::from_secs(5),
+                |looped| {
+                    reloaded = looped.watch.as_mut().unwrap().poll(far());
+                    reloaded.is_some()
+                }
+            ));
+            compositor.apply_reload(reloaded.unwrap());
+            assert_eq!(app_ids(&compositor), [expected]);
+        }
+    }
+
+    #[test]
     fn a_file_write_reloads_through_the_event_loop() {
         let directory = tempfile::tempdir().unwrap();
         write(directory.path(), "one", "app_id = 'one'\n[buttons]");

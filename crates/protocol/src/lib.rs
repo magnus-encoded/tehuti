@@ -491,6 +491,7 @@ pub struct Context {
     speech_variants: std::collections::HashMap<String, Option<String>>,
     /// Problems that did not stop the load, for the edge to log.
     warnings: Vec<String>,
+    skipped_phrases: Vec<String>,
     unmatched_speech: Option<UnmatchedSpeech>,
     launch_phrases: Vec<(String, String)>,
     favourites: Vec<String>,
@@ -800,6 +801,12 @@ impl Context {
         &self.warnings
     }
 
+    /// Speech phrases dropped while loading, each message naming the phrase.
+    #[must_use]
+    pub fn skipped_phrases(&self) -> &[String] {
+        &self.skipped_phrases
+    }
+
     /// The action of a phrase the transcript matches once digits and hyphens
     /// fold; callers try it only once no exact phrase matched anywhere.
     #[must_use]
@@ -1084,20 +1091,22 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
     let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
     let mut warnings = Vec::new();
+    let mut skipped_phrases = Vec::new();
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
         let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
         let normalized = match normalized_speech_phrase(&mapped) {
             Ok(normalized) => normalized,
             Err(message) => {
-                warnings.push(format!("speech phrase skipped: {message}"));
+                skipped_phrases.push(format!("speech phrase skipped: {message}"));
                 continue;
             }
         };
         let template = entry.is_template();
-        if speech.contains_key(&normalized) {
-            warnings.push(format!(
-                "speech phrase {mapped:?} skipped: duplicates another phrase that also normalizes to {normalized:?}"
+        if let Some(earlier) = speech.get(&normalized) {
+            skipped_phrases.push(format!(
+                "speech phrase {mapped:?} skipped: clashes with earlier phrase {:?}, both normalize to {normalized:?}",
+                earlier.phrase
             ));
             continue;
         }
@@ -1117,6 +1126,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         speech,
         speech_variants,
         warnings,
+        skipped_phrases,
         launch_phrases,
         favourites: context.favourites,
         unmatched_speech: context.unmatched_speech,

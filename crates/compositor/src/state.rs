@@ -448,6 +448,23 @@ impl Compositor {
     /// Installs contexts with their files before accepting clients.
     pub fn set_context_files(&mut self, files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>) {
         self.set_contexts(files.iter().map(|(_, context)| context.clone()).collect());
+        let skipped = files.iter().flat_map(|(path, context)| {
+            context
+                .skipped_phrases()
+                .iter()
+                .map(|message| crate::contexts::LoadError {
+                    path: path.clone(),
+                    message: message.clone(),
+                })
+        });
+        let mut last = None;
+        for warning in skipped {
+            tracing::warn!(%warning, "speech phrase skipped");
+            last = Some(warning);
+        }
+        if let Some(warning) = last {
+            self.show_notice(&warning.phrase_notice());
+        }
         self.context_files = files;
     }
 

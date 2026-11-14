@@ -69,7 +69,7 @@ pub fn reload(directory: &Path) -> Result<Reloaded, LoadError> {
             Ok(Some(context)) => {
                 reloaded
                     .phrase_warnings
-                    .extend(context.warnings().iter().map(|message| LoadError {
+                    .extend(context.skipped_phrases().iter().map(|message| LoadError {
                         path: path.clone(),
                         message: message.clone(),
                     }));
