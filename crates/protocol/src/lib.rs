@@ -1176,9 +1176,12 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 fn validate_invoke_words(words: Vec<String>) -> Result<Vec<String>, String> {
     for word in &words {
         let valid = !word.is_empty()
-            && word
-                .split('-')
-                .all(|part| !part.is_empty() && part.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit()));
+            && word.split('-').all(|part| {
+                !part.is_empty()
+                    && part
+                        .chars()
+                        .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+            });
         if !valid {
             return Err(format!(
                 "invoke word {word:?} must be lowercase letters and digits joined by single hyphens"

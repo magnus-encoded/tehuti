@@ -547,7 +547,9 @@ fn invoke_verb(state: &State, event: &Event) -> Option<Action> {
         .flatten()
         .flat_map(|context| context.invoke_words().iter().map(String::as_str));
     let typed = invoke::slash_command(text.as_str(), known)?;
-    tehuti_protocol::Text::new(typed).ok().map(|text| Action::Text { text })
+    tehuti_protocol::Text::new(typed)
+        .ok()
+        .map(|text| Action::Text { text })
 }
 
 /// Every exact match in chain order, then the built-in close, then folded
@@ -972,11 +974,11 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     }
 }
 
+pub mod invoke;
 pub mod secret;
 pub mod shadowing;
 pub mod speech;
 pub mod tool_words;
-pub mod invoke;
 pub mod unit_verbs;
 pub mod verbs;
 

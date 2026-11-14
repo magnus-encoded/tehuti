@@ -43,7 +43,8 @@ pub fn snap<'known>(words: &str, known: impl IntoIterator<Item = &'known str>) -
         }
         let score = if candidate == heard {
             1000
-        } else if heard.chars().count() >= MIN_FUZZY_LETTERS && candidate.chars().count() >= MIN_FUZZY_LETTERS {
+        } else if heard.chars().count() >= MIN_FUZZY_LETTERS && candidate.chars().count() >= MIN_FUZZY_LETTERS
+        {
             similarity(&heard, &candidate)
         } else {
             0
@@ -58,7 +59,10 @@ pub fn snap<'known>(words: &str, known: impl IntoIterator<Item = &'known str>) -
 /// The text the invoke verb types for a transcript, if it begins with the verb
 /// and has words after it.
 #[must_use]
-pub fn slash_command<'known>(transcript: &str, known: impl IntoIterator<Item = &'known str>) -> Option<String> {
+pub fn slash_command<'known>(
+    transcript: &str,
+    known: impl IntoIterator<Item = &'known str>,
+) -> Option<String> {
     let verbs = [VERB.to_owned()];
     let matched = crate::verbs::route([(0, verbs.as_slice())], transcript)?;
     let remainder = matched.text.as_str();

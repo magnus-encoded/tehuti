@@ -99,8 +99,16 @@ mod invoke_verb {
 
     #[test]
     fn short_words_snap_only_on_an_equal_sound() {
-        assert_eq!(slash_command("invoke used", ["usage"]), Some("/used".into()), "no fuzzy snap under five letters");
-        assert_eq!(slugify("Usage, Report!"), "usage-report", "punctuation splits words");
+        assert_eq!(
+            slash_command("invoke used", ["usage"]),
+            Some("/used".into()),
+            "no fuzzy snap under five letters"
+        );
+        assert_eq!(
+            slugify("Usage, Report!"),
+            "usage-report",
+            "punctuation splits words"
+        );
     }
 
     #[test]
@@ -119,6 +127,10 @@ mod invoke_verb {
             );
         }
         let context = parse_context("app_id = 'global'\ninvoke = ['usage-report', 'v2']\n[buttons]").unwrap();
-        assert_eq!(context.invoke_words(), ["usage-report", "v2"], "valid words load in order");
+        assert_eq!(
+            context.invoke_words(),
+            ["usage-report", "v2"],
+            "valid words load in order"
+        );
     }
 }
