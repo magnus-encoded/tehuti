@@ -52,9 +52,11 @@ mod image_capture {
 
     fn generated_image() -> impl Strategy<Value = image::RgbaImage> {
         (1_u32..12, 1_u32..12).prop_flat_map(|(width, height)| {
-            proptest::collection::vec(any::<u8>(), usize::try_from(width.saturating_mul(height).saturating_mul(4)).unwrap_or(0)).prop_map(
-                move |bytes| image::RgbaImage::from_raw(width, height, bytes).unwrap_or_default(),
+            proptest::collection::vec(
+                any::<u8>(),
+                usize::try_from(width.saturating_mul(height).saturating_mul(4)).unwrap_or(0),
             )
+            .prop_map(move |bytes| image::RgbaImage::from_raw(width, height, bytes).unwrap_or_default())
         })
     }
 
@@ -212,7 +214,12 @@ mod image_capture {
         );
         let frame = session.create_frame(&handle, ());
         frame.attach_buffer(&buffer);
-        frame.damage_buffer(0, 0, i32::try_from(width).unwrap(), i32::try_from(height).unwrap());
+        frame.damage_buffer(
+            0,
+            0,
+            i32::try_from(width).unwrap(),
+            i32::try_from(height).unwrap(),
+        );
         frame.capture();
         while !app.ready && app.failed.is_none() {
             let _dispatched = queue.roundtrip(&mut app).unwrap();
@@ -256,6 +263,10 @@ mod image_capture {
         assert!(report.formats.contains(&wl_shm::Format::Argb8888), "{report:?}");
         assert!(report.ready, "frame was not ready: {report:?}");
         assert_eq!(report.failed, None, "frame failed");
-        assert_eq!(report.first_pixel, [30, 20, 10, 255], "Argb8888 stores blue first");
+        assert_eq!(
+            report.first_pixel,
+            [30, 20, 10, 255],
+            "Argb8888 stores blue first"
+        );
     }
 }

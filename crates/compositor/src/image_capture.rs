@@ -33,7 +33,12 @@ use std::sync::Mutex;
 use crate::state::Compositor;
 
 /// The shm formats a capture can fill, in the order clients hear them.
-pub const FORMATS: [Format; 4] = [Format::Argb8888, Format::Xrgb8888, Format::Abgr8888, Format::Xbgr8888];
+pub const FORMATS: [Format; 4] = [
+    Format::Argb8888,
+    Format::Xrgb8888,
+    Format::Abgr8888,
+    Format::Xbgr8888,
+];
 
 /// Why a frame could not be written into a client buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +68,9 @@ pub fn encode(
         Format::Abgr8888 | Format::Xbgr8888 => false,
         _ => return Err(BufferMismatch::Format),
     };
-    let row = usize::try_from(size.0).map_err(|_| BufferMismatch::Size)?.saturating_mul(4);
+    let row = usize::try_from(size.0)
+        .map_err(|_| BufferMismatch::Size)?
+        .saturating_mul(4);
     if stride < row {
         return Err(BufferMismatch::Stride);
     }
@@ -71,7 +78,11 @@ pub fn encode(
     if rows > 0 && destination.len() < stride.saturating_mul(rows - 1).saturating_add(row) {
         return Err(BufferMismatch::Length);
     }
-    for (source, target) in image.as_raw().chunks_exact(row.max(1)).zip(destination.chunks_mut(stride.max(1))) {
+    for (source, target) in image
+        .as_raw()
+        .chunks_exact(row.max(1))
+        .zip(destination.chunks_mut(stride.max(1)))
+    {
         for (pixel, out) in source.chunks_exact(4).zip(target.chunks_exact_mut(4)) {
             if let ([red, green, blue, alpha], [first, second, third, fourth]) = (pixel, out) {
                 // wl_shm formats are little-endian: Argb8888 stores B, G, R, A in memory.
@@ -136,7 +147,8 @@ impl Dispatch<ExtOutputImageCaptureSourceManagerV1, ()> for Compositor {
         _: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        if let ext_output_image_capture_source_manager_v1::Request::CreateSource { source, output } = request {
+        if let ext_output_image_capture_source_manager_v1::Request::CreateSource { source, output } = request
+        {
             let _source = data_init.init(source, Output::from_resource(&output));
         }
     }
@@ -301,7 +313,9 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Compositor {
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
-        let Ok(mut frame_state) = data.state.lock() else { return };
+        let Ok(mut frame_state) = data.state.lock() else {
+            return;
+        };
         if frame_state.captured && !matches!(request, ext_image_copy_capture_frame_v1::Request::Destroy) {
             frame.post_error(
                 ext_image_copy_capture_frame_v1::Error::AlreadyCaptured,
@@ -315,7 +329,10 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Compositor {
             }
             ext_image_copy_capture_frame_v1::Request::Capture => {
                 let Some(buffer) = frame_state.buffer.clone() else {
-                    frame.post_error(ext_image_copy_capture_frame_v1::Error::NoBuffer, "no buffer attached");
+                    frame.post_error(
+                        ext_image_copy_capture_frame_v1::Error::NoBuffer,
+                        "no buffer attached",
+                    );
                     return;
                 };
                 frame_state.captured = true;
@@ -374,7 +391,9 @@ const fn pool_bytes<'pool>(pointer: *mut u8, length: usize) -> &'pool mut [u8] {
 }
 
 fn ready(frame: &ExtImageCopyCaptureFrameV1, output: Option<&Output>) {
-    let size = output.and_then(Output::current_mode).map_or((0, 0), |mode| (mode.size.w, mode.size.h));
+    let size = output
+        .and_then(Output::current_mode)
+        .map_or((0, 0), |mode| (mode.size.w, mode.size.h));
     frame.transform(Transform::Normal);
     frame.damage(0, 0, size.0, size.1);
     let now = core::time::Duration::from(smithay::utils::Clock::<smithay::utils::Monotonic>::new().now());
