@@ -31,6 +31,7 @@ mod json {
             let events: Vec<_> = subscriptions.into_iter().map(|focus| if focus { Subscription::Focus } else { Subscription::Button }).collect();
             let manifest = Manifest {
                 adjusters: Vec::new(),
+                kind: tehuti_protocol::PluginKind::Application, verbs: Vec::new(),
                 plugin_id, author, security_contact, executable, app_ids, events: events.clone(),
                 start: if always { StartPolicy::Always } else { StartPolicy::OnFocus },
                 permissions: permissions.into_iter().map(|permission| match permission { 0 => Permission::Key, 1 => Permission::Text, _ => Permission::Quit }).collect(),

@@ -16,8 +16,8 @@ use std::{
     time::Instant,
 };
 use tehuti_protocol::{
-    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, Permission, ResultValue,
-    RpcVersion, StartPolicy, Subscription,
+    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, Permission, PluginKind,
+    ResultValue, RpcVersion, StartPolicy, Subscription,
 };
 
 const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
@@ -75,6 +75,8 @@ struct Session {
     read_window: Instant,
     read_bytes: usize,
     status_text: Option<String>,
+    /// A verb plugin's current verbs; empty for application plugins.
+    verbs: Vec<String>,
 }
 
 impl Drop for Process {
@@ -399,22 +401,45 @@ impl Session {
                 result: Ok(actions),
                 submission_id: Some(submission_id),
             }],
-            Message::Call(Call {
-                method: Method::Actions { actions },
-                ..
-            }) => self.notice_actions(actions),
-            Message::Call(Call {
-                method: Method::PadOverrides { overrides },
-                ..
-            }) => vec![Delivery::PadOverrides(overrides)],
-            Message::Call(Call {
-                method: Method::Status { text },
-                ..
-            }) => {
+            Message::Call(call) => self.notice(call.method),
+        }
+    }
+
+    /// Handles a plugin notice that needs no reply.
+    fn notice(&mut self, method: Method) -> Vec<Delivery> {
+        match method {
+            Method::Actions { actions } => self.notice_actions(actions),
+            Method::PadOverrides { overrides } => vec![Delivery::PadOverrides(overrides)],
+            Method::Status { text } => {
                 self.status_text = text;
                 Vec::new()
             }
-            Message::Call(_) => Vec::new(),
+            Method::Verbs { verbs } => {
+                self.set_verbs(verbs);
+                Vec::new()
+            }
+            Method::Adjuster { .. }
+            | Method::Initialize(_)
+            | Method::Button { .. }
+            | Method::Speech { .. }
+            | Method::Verb { .. }
+            | Method::Focus { .. }
+            | Method::SubmitActions { .. }
+            | Method::PadInput { .. } => Vec::new(),
+        }
+    }
+
+    /// Replaces a verb plugin's verbs; an application plugin may not declare any.
+    fn set_verbs(&mut self, verbs: Vec<String>) {
+        if self.manifest.kind == PluginKind::Verb {
+            self.verbs = verbs;
+            return;
+        }
+        let reason = "an application plugin declares no verbs";
+        self.invalid();
+        tracing::warn!(reason, "plugin verbs rejected");
+        if let Err(error) = self.reject(None, reason) {
+            tracing::warn!(%error, "plugin rejection dropped");
         }
     }
 
@@ -506,6 +531,8 @@ pub struct Plugins {
     focus: Option<String>,
     pad: tehuti_core::vpad::Filter,
     cleanup_timer: Box<dyn Fn()>,
+    /// The verb route `active` found for the utterance `dispatch` sends next.
+    routed_verb: Option<(Event, tehuti_core::verbs::VerbMatch)>,
 }
 impl Drop for Plugins {
     fn drop(&mut self) {
@@ -746,13 +773,74 @@ impl Plugins {
                 session.borrow_mut().expire_initialize();
             }
         }
-        self.entries.iter().any(|entry| self.matches(entry, event))
+        self.routed_verb = self.verb_route(event).map(|matched| (event.clone(), matched));
+        self.routed_verb.is_some() || self.entries.iter().any(|entry| self.matches(entry, event))
     }
 
+    /// The ready verb plugin whose verb begins this speech, checked before application plugins.
+    fn verb_route(&self, event: &Event) -> Option<tehuti_core::verbs::VerbMatch> {
+        let Event::Speech { text } = event else {
+            return None;
+        };
+        let owners: Vec<(usize, Vec<String>)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.manifest.kind == PluginKind::Verb)
+            .filter_map(|(index, entry)| {
+                let session = entry.session.as_ref()?.borrow();
+                (session.status == Status::Ready && session.events.contains(&Subscription::Speech))
+                    .then(|| (index, session.verbs.clone()))
+            })
+            .collect();
+        tehuti_core::verbs::route(
+            owners.iter().map(|(index, verbs)| (*index, verbs.as_slice())),
+            text.as_str(),
+        )
+    }
+
+    /// Sends a verb request to its owner alone.
+    fn dispatch_verb(
+        &self,
+        matched: tehuti_core::verbs::VerbMatch,
+    ) -> Option<(tehuti_core::plugin::RequestKey, Vec<Permission>)> {
+        let entry = self.entries.get(matched.plugin)?;
+        let mut session = entry.session.as_ref()?.borrow_mut();
+        session.plugin = matched.plugin;
+        let request_id = session.request()?;
+        let call = Call {
+            jsonrpc: RpcVersion::Two,
+            request_id: Some(request_id),
+            method: Method::Verb {
+                verb: matched.verb,
+                text: matched.text,
+            },
+        };
+        if let Err(error) = session.queue_event(&call) {
+            tracing::warn!(%error, "plugin verb dropped");
+            return None;
+        }
+        let permissions = session.manifest.permissions.clone();
+        drop(session);
+        if let Some(wake) = &entry.wake {
+            wake();
+        }
+        Some((
+            tehuti_core::plugin::RequestKey {
+                plugin: matched.plugin,
+                request_id,
+            },
+            permissions,
+        ))
+    }
+
+    /// Whether an application plugin serves the focused application for this event.
     fn matches(&self, entry: &Entry, event: &Event) -> bool {
-        self.focus
-            .as_ref()
-            .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id))
+        entry.manifest.kind == PluginKind::Application
+            && self
+                .focus
+                .as_ref()
+                .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id))
             && entry.session.as_ref().is_some_and(|session| {
                 let session = session.borrow();
                 session.status == Status::Ready
@@ -770,6 +858,14 @@ impl Plugins {
         event: &Event,
         route_button: bool,
     ) -> Option<(tehuti_core::plugin::RequestKey, Vec<Permission>)> {
+        let routed = self
+            .routed_verb
+            .take()
+            .filter(|(seen, _)| seen == event)
+            .map(|(_, matched)| matched);
+        if route_button && let Some(matched) = routed {
+            return self.dispatch_verb(matched);
+        }
         let mut request = None;
         let selected = self.entries.iter().position(|entry| self.matches(entry, event));
         for (index, entry) in self.entries.iter_mut().enumerate() {
@@ -861,6 +957,7 @@ pub fn install<Data: 'static>(
         focus: None,
         pad: tehuti_core::vpad::Filter::default(),
         cleanup_timer: Box::new(move || handle.remove(timer_token)),
+        routed_verb: None,
     })
 }
 
@@ -921,6 +1018,7 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
         read_window: Instant::now(),
         read_bytes: 0,
         status_text: None,
+        verbs: manifest.verbs.clone(),
     }));
     session.borrow_mut().queue_initialize()?;
     Ok((session, stdout))
@@ -1167,6 +1265,8 @@ fn fuzz_session() -> io::Result<Session> {
         plugin_id: None,
         author: None,
         security_contact: None,
+        kind: tehuti_protocol::PluginKind::Application,
+        verbs: Vec::new(),
         executable: "sleep".into(),
         app_ids: vec!["fuzz".into()],
         events: vec![Subscription::Button, Subscription::Speech, Subscription::Focus],
@@ -1204,6 +1304,7 @@ fn fuzz_session() -> io::Result<Session> {
         read_window: now,
         read_bytes: 0,
         status_text: None,
+        verbs: Vec::new(),
     })
 }
 
@@ -1303,6 +1404,8 @@ mod tests {
             plugin_id: None,
             author: None,
             security_contact: None,
+            kind: tehuti_protocol::PluginKind::Application,
+            verbs: Vec::new(),
             executable: "plugin".into(),
             app_ids: vec!["test".into()],
             events: Vec::new(),
@@ -1329,6 +1432,8 @@ mod tests {
                 plugin_id: None,
                 author: None,
                 security_contact: None,
+                kind: tehuti_protocol::PluginKind::Application,
+                verbs: Vec::new(),
                 executable: format!("plugin-{index}"),
                 app_ids: vec!["test".into()],
                 events: Vec::new(),
@@ -1374,6 +1479,7 @@ mod tests {
                 read_window: now,
                 read_bytes: 0,
                 status_text: None,
+                verbs: manifest.verbs.clone(),
             })))
         }
 
@@ -1408,6 +1514,7 @@ mod tests {
                 focus: None,
                 pad: tehuti_core::vpad::Filter::default(),
                 cleanup_timer: Box::new(|| {}),
+                routed_verb: None,
             }
         }
 
@@ -1504,6 +1611,80 @@ mod tests {
                     session.fail("simulated crash");
                 }
             }
+        }
+
+        fn verb_plugins(verbs: &[&str]) -> Plugins {
+            let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
+            let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+            let mut plugins = plugins(&succeed, &starts);
+            let first = &mut plugins.entries[0];
+            first.manifest.kind = PluginKind::Verb;
+            first.manifest.verbs = verbs.iter().map(|verb| (*verb).to_owned()).collect();
+            let _exited = plugins.supervise_at(Instant::now());
+            for entry in &plugins.entries {
+                entry.session.as_ref().unwrap().borrow_mut().events = vec![Subscription::Speech];
+            }
+            plugins
+        }
+
+        fn speech(text: &str) -> Event {
+            Event::Speech {
+                text: tehuti_protocol::Text::new(text.into()).unwrap(),
+            }
+        }
+
+        #[test]
+        fn a_verbs_notice_between_query_and_dispatch_cannot_split_the_route() {
+            let mut plugins = verb_plugins(&["ada"]);
+            let heard = speech("ada sum up");
+            assert!(plugins.active(&heard), "the verb makes a plugin active");
+            plugins.entries[0]
+                .session
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .set_verbs(vec!["orion".into()]);
+            let request = plugins.dispatch(&heard, true);
+            assert_eq!(
+                request.map(|(key, _)| key.plugin),
+                Some(0),
+                "dispatch uses the route the query found"
+            );
+            assert!(!plugins.active(&heard), "later utterances see the new verbs");
+            assert_eq!(
+                plugins.dispatch(&heard, true),
+                None,
+                "nothing routes the old verb"
+            );
+        }
+
+        #[test]
+        fn an_application_plugin_cannot_take_verbs_at_runtime() {
+            let mut plugins = verb_plugins(&[]);
+            let session = plugins.entries[1].session.clone().unwrap();
+            let deliveries = session.borrow_mut().message(Message::Call(Call {
+                jsonrpc: RpcVersion::Two,
+                request_id: None,
+                method: Method::Verbs {
+                    verbs: vec!["ada".into()],
+                },
+            }));
+            assert!(deliveries.is_empty(), "the notice delivers nothing");
+            assert!(session.borrow().verbs.is_empty(), "the verbs are refused");
+            assert_eq!(
+                session.borrow().invalid_messages,
+                1,
+                "the refusal counts as invalid"
+            );
+            let output: Vec<u8> = session.borrow().output.iter().copied().collect();
+            assert!(
+                String::from_utf8(output).unwrap().contains("action_rejected"),
+                "the plugin is told why"
+            );
+            assert!(
+                !plugins.active(&speech("ada sum up")),
+                "the refused verb never routes"
+            );
         }
 
         #[test]

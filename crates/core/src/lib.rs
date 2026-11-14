@@ -878,6 +878,7 @@ pub mod shadowing;
 pub mod speech;
 pub mod tool_words;
 pub mod unit_verbs;
+pub mod verbs;
 
 pub mod plugin;
 
