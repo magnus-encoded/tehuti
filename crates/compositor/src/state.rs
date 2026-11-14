@@ -3647,12 +3647,24 @@ delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
 delegate_output!(Compositor);
 
+/// An action for the log, with typed and noticed text reduced to its length.
+fn redacted_action(action: &Action) -> String {
+    match action {
+        Action::Text { text } => format!("Text({} bytes)", text.as_str().len()),
+        Action::Notice { text } => format!("Notice({} bytes)", text.as_str().len()),
+        other => format!("{other:?}"),
+    }
+}
+
 fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin: bool) {
     match first {
         Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
             tracing::info!(bytes = text.as_str().len(), "speech has no mapping");
         }
-        Some(action) => tracing::info!(bytes = text.as_str().len(), ?action, "speech mapped"),
+        Some(action) => {
+            let shown = redacted_action(action);
+            tracing::info!(bytes = text.as_str().len(), action = shown, "speech mapped");
+        }
         None if plugin => tracing::info!(bytes = text.as_str().len(), "speech routed to a plugin"),
         None => tracing::info!(bytes = text.as_str().len(), "speech produced no action"),
     }
