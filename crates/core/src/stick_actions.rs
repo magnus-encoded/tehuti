@@ -97,7 +97,8 @@ pub fn resolve(
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Deflected {
-    pointing: Option<StickDirection>,
+    /// The direction and modifier layer that last fired; either changing fires again.
+    pointing: Option<(StickDirection, Option<ButtonName>)>,
     until_repeat: Duration,
 }
 
@@ -216,9 +217,9 @@ fn step_stick(
         *deflected = Deflected::default();
         return None;
     };
-    if deflected.pointing != Some(mapping.direction) {
+    if deflected.pointing != Some((mapping.direction, with)) {
         *deflected = Deflected {
-            pointing: Some(mapping.direction),
+            pointing: Some((mapping.direction, with)),
             until_repeat: REPEAT_DELAY,
         };
         return Some(mapping.action.clone());

@@ -11,10 +11,15 @@ mod tests {
     use proptest::prelude::*;
     use tehuti_core::{
         Level, State, step,
-        stick_actions::{FIRE_DEFLECTION, StickActions},
+        stick_actions::{
+            FASTEST_REPEAT, FIRE_DEFLECTION, REPEAT_DELAY, SLOWEST_REPEAT, StickActions, repeat_interval,
+            sector,
+        },
         ticker::{self, PadFamily},
     };
-    use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, Text, parse_context};
+    use tehuti_protocol::{
+        Action, ButtonName, ButtonState, Context, Event, StickDirection, Text, parse_context,
+    };
 
     const APP: &str = "org.example.Player";
     const FRAME: Duration = Duration::from_millis(16);
@@ -76,6 +81,10 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn repeat_interval_never_slows_as_the_push_deepens(shallow in 0..=1200_u32, extra in 0..=500_u32) {
+            prop_assert!(repeat_interval(shallow + extra) <= repeat_interval(shallow));
+        }
         #[test]
         fn each_of_eight_sectors_fires_its_own_direction(
             index in 0..8_usize,
@@ -158,7 +167,7 @@ mod tests {
             let direction = index - index % 2;
             let shallow_count = hold(&mut StickActions::default(), &context, scaled(VECTORS[direction], shallow), frames).len();
             let deep_count = hold(&mut StickActions::default(), &context, scaled(VECTORS[direction], shallow + extra), frames).len();
-            prop_assert!(shallow_count >= 2, "a held stick repeats after half a second");
+            prop_assert!(shallow_count >= 2, "a held stick repeats once its repeat delay passes");
             prop_assert!(deep_count >= shallow_count);
         }
 
@@ -325,5 +334,131 @@ mod tests {
             "{held:?}"
         );
         assert!(!held.iter().any(|entry| entry.contains("L\u{2191}")), "{held:?}");
+    }
+
+    #[test]
+    fn repeat_interval_spans_slowest_to_fastest() {
+        assert_eq!(
+            repeat_interval(FIRE_DEFLECTION),
+            SLOWEST_REPEAT,
+            "just past the threshold"
+        );
+        assert_eq!(repeat_interval(1000), FASTEST_REPEAT, "at full travel");
+    }
+
+    #[test]
+    fn the_first_repeat_comes_after_the_repeat_delay() {
+        let context = all_eight("left", "");
+        let mut sticks = StickActions::default();
+        let mut fired_at = Vec::new();
+        for frame in 0..40_u32 {
+            if !sticks.tick(&context, FRAME, (0, -900), (0, 0)).is_empty() {
+                fired_at.push(FRAME * frame);
+            }
+        }
+        let first_repeat = fired_at[1] - fired_at[0];
+        assert!(
+            first_repeat >= REPEAT_DELAY && first_repeat <= REPEAT_DELAY + FRAME,
+            "{first_repeat:?}"
+        );
+    }
+
+    #[test]
+    fn sectors_split_at_22_and_a_half_degrees_and_ties_go_horizontal() {
+        assert_eq!(sector(1000, -413).0, StickDirection::Right, "just inside right");
+        assert_eq!(
+            sector(1000, -415).0,
+            StickDirection::UpRight,
+            "just inside up-right"
+        );
+        assert_eq!(sector(-413, 1000).0, StickDirection::Down, "just inside down");
+        assert_eq!(
+            sector(-415, 1000).0,
+            StickDirection::DownLeft,
+            "just inside down-left"
+        );
+        assert_eq!(
+            sector(707, -707),
+            (StickDirection::UpRight, StickDirection::Right),
+            "the exact 45° tie is diagonal, its fallback horizontal"
+        );
+    }
+
+    #[test]
+    fn pressing_or_releasing_a_modifier_mid_hold_fires_the_new_layer() {
+        let context = context("left.up = [{ text = 'plain' }, { text = 'modified', with = 'north' }]\n");
+        let mut sticks = StickActions::default();
+        assert_eq!(
+            sticks.tick(&context, FRAME, (0, -900), (0, 0)),
+            vec![text("plain")]
+        );
+        sticks.press_modifier(ButtonName::North);
+        assert_eq!(
+            sticks.tick(&context, FRAME, (0, -900), (0, 0)),
+            vec![text("modified")]
+        );
+        assert!(!sticks.release_modifier(ButtonName::North), "the stick moved");
+        assert_eq!(
+            sticks.tick(&context, FRAME, (0, -900), (0, 0)),
+            vec![text("plain")]
+        );
+    }
+
+    #[test]
+    fn the_last_pressed_of_two_held_modifiers_wins() {
+        let context =
+            context("left.up = [{ text = 'north', with = 'north' }, { text = 'west', with = 'west' }]\n");
+        let mut sticks = StickActions::default();
+        sticks.press_modifier(ButtonName::North);
+        sticks.press_modifier(ButtonName::West);
+        assert_eq!(
+            sticks.tick(&context, FRAME, (0, -900), (0, 0)),
+            vec![text("west")]
+        );
+    }
+
+    #[test]
+    fn a_stick_move_below_the_threshold_still_counts_as_a_tap() {
+        let (mut state, _) = button(player(), ButtonName::North, true);
+        assert!(state.stick_actions(FRAME, (0, 450), (0, 0)).is_empty());
+        let (_, released) = button(state, ButtonName::North, false);
+        assert_eq!(released, vec![text("north")]);
+    }
+
+    #[test]
+    fn a_focus_change_forgets_a_held_modifier() {
+        let (state, _) = button(player(), ButtonName::North, true);
+        let mut state = step(
+            state,
+            &Event::Focus {
+                app_id: Some(APP.into()),
+                title: String::new(),
+            },
+        )
+        .0;
+        assert_eq!(state.held_stick_modifier(), None);
+        assert_eq!(
+            state.stick_actions(FRAME, (0, -900), (0, 0)),
+            vec![text("plain")],
+            "the plain layer applies"
+        );
+        let (_, released) = button(state, ButtonName::North, false);
+        assert!(released.is_empty(), "the release after focus fires nothing");
+    }
+
+    #[test]
+    fn the_global_confirm_binding_comes_before_modifier_capture() {
+        let context = context("left.up = { text = 'plain', with = 'south' }\n");
+        let state = step(
+            State::with_contexts(vec![context]),
+            &Event::Focus {
+                app_id: Some(APP.into()),
+                title: String::new(),
+            },
+        )
+        .0;
+        let (state, pressed) = button(state, ButtonName::South, true);
+        assert!(!pressed.is_empty(), "confirm fires on press as before");
+        assert_eq!(state.held_stick_modifier(), None);
     }
 }

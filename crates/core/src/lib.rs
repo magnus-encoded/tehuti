@@ -345,6 +345,12 @@ impl State {
         actions
     }
 
+    /// The face button whose `[sticks]` layer applies, if one is held.
+    #[must_use]
+    pub fn held_stick_modifier(&self) -> Option<ButtonName> {
+        self.sticks.active_modifier()
+    }
+
     /// The installed contexts, in priority order.
     #[must_use]
     pub fn contexts(&self) -> &[Context] {
@@ -494,9 +500,6 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if state.passthrough() && matches!(event, Event::Button { .. }) {
         return (state, Vec::new(), false);
     }
-    if let Some(actions) = stick_modifier(&mut state, event) {
-        return (state, actions, false);
-    }
     if let Some(action) = global_layer(&state, event) {
         let actions = if focused_maps(&state, event) {
             hold_key(&mut state, event).unwrap_or_else(|| active_context(&state, event).into_iter().collect())
@@ -504,6 +507,9 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
             vec![action]
         };
         return (state, actions, false);
+    }
+    if let Some((actions, routed)) = stick_modifier(&mut state, event, plugin_active) {
+        return (state, actions, routed);
     }
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
@@ -579,7 +585,7 @@ fn focused_maps(state: &State, event: &Event) -> bool {
 
 /// A face button named by `[sticks]` `with` gates stick mappings while held; a tap
 /// without a stick move fires its own action on release, as press and release.
-fn stick_modifier(state: &mut State, event: &Event) -> Option<Vec<Action>> {
+fn stick_modifier(state: &mut State, event: &Event, plugin_active: bool) -> Option<(Vec<Action>, bool)> {
     let Event::Button { name, state: button } = event else {
         return None;
     };
@@ -593,7 +599,7 @@ fn stick_modifier(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             }
             state.sticks.press_modifier(*name);
             state.refresh_ticker();
-            Some(Vec::new())
+            Some((Vec::new(), false))
         }
         ButtonState::Released => {
             if !state.sticks.holds(*name) {
@@ -602,18 +608,18 @@ fn stick_modifier(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             let tapped = state.sticks.release_modifier(*name);
             state.refresh_ticker();
             if !tapped {
-                return Some(Vec::new());
+                return Some((Vec::new(), false));
             }
             state.sticks.set_replaying(true);
             let press = Event::Button {
                 name: *name,
                 state: ButtonState::Pressed,
             };
-            let (mut next, mut actions, _) = route(core::mem::take(state), &press, false);
+            let (mut next, mut actions, routed) = route(core::mem::take(state), &press, plugin_active);
             next.sticks.set_replaying(false);
             actions.extend(next.release_held_button(*name));
             *state = next;
-            Some(actions)
+            Some((actions, routed))
         }
     }
 }
