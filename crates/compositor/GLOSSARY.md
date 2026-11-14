@@ -8,6 +8,7 @@
 | Evdev pad | A kernel controller, grabbed exclusively so applications only receive what the core forwards. |
 | Synthetic pad | An input source driven by code, for tests that run without devices. |
 | Apply | Carry out an action from the core step, such as sending a key tap to the focused client. |
+| Secret confirmation | The flow that binds a secret request to one focus lifetime, waits for a displayed notice and a fresh controller press, then checks provider results before delivery. |
 | Secret confirmation notice | An overlay naming one secret reference and the focused application before a controller press can authorize lookup. |
 | On-screen keyboard | The compositor's own keyboard overlay, docked low. One highlight moves over the keys with the D-pad, the way console keyboards work. |
 | Draft | The one-row text buffer the keyboard edits, local or mirroring the application. Closing the keyboard discards the local draft unless its context keeps it between openings. |
