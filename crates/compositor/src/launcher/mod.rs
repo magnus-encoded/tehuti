@@ -324,7 +324,7 @@ impl Session {
                     route
                         .steps
                         .iter()
-                        .any(|step| matches!(&step.target, Target::Desktop(id) if id == entry))
+                        .any(|step| matches!(&step.target, Target::Desktop(value) if value == entry))
                 })
             })
             .map_or_else(
