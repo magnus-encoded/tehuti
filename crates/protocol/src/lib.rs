@@ -1403,3 +1403,18 @@ mod adjuster;
 pub use adjuster::Adjuster;
 mod sticks;
 pub use sticks::{Stick, StickDirection, StickMapping};
+
+#[cfg(test)]
+mod text_debug_tests {
+    use super::Text;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn debug_output_never_contains_the_text(text in "[a-z]{8,40}") {
+            let shown = format!("{:?}", Text::new(text.clone()).unwrap());
+            prop_assert!(!shown.contains(&text), "{shown}");
+            prop_assert!(shown.contains(&text.len().to_string()), "{shown}");
+        }
+    }
+}

@@ -3748,6 +3748,44 @@ mod tests {
     use smithay::reexports::wayland_server::Display;
     use tehuti_protocol::Event;
 
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn info_logs_carry_the_transcript_length_not_the_text() {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer({
+                let capture = capture.clone();
+                move || capture.clone()
+            })
+            .finish();
+        let secret = tehuti_protocol::Text::new("zebra password hunter2".into()).unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_transcript(1, &secret, true);
+            super::log_speech_route(&secret, None, false);
+            super::log_speech_route(&secret, None, true);
+            let action = tehuti_protocol::Action::Text { text: secret.clone() };
+            super::log_speech_route(&secret, Some(&action), false);
+        });
+        let logged = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(!logged.contains("hunter2"), "{logged}");
+        assert!(logged.contains("bytes=22"), "{logged}");
+    }
+
     #[test]
     fn polling_speech_shows_the_process_outage_notice() {
         let display: Display<Compositor> = Display::new().unwrap();

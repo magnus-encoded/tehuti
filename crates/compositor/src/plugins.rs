@@ -1369,6 +1369,19 @@ mod tests {
         serde_json::from_value(serde_json::json!({"type":"key","key":name})).unwrap()
     }
 
+    #[test]
+    fn focus_notices_reach_only_plugins_that_list_the_app() {
+        let mut session = fuzz_session().unwrap();
+        session.events = vec![Subscription::Focus];
+        let focus = |app_id: Option<&str>| Event::Focus {
+            app_id: app_id.map(Into::into),
+            title: "private title".into(),
+        };
+        assert!(session.call_for_event(&focus(Some("other")), true).is_none(), "another app");
+        assert!(session.call_for_event(&focus(None), true).is_none(), "no app");
+        assert!(session.call_for_event(&focus(Some("fuzz")), true).is_some(), "its own app");
+    }
+
     fn text(value: &str) -> Action {
         serde_json::from_value(serde_json::json!({"type":"text","text":value})).unwrap()
     }

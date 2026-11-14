@@ -35,6 +35,36 @@ mod tests {
     }
 
     #[test]
+    fn launcher_keeps_only_the_previous_log() -> Result<(), Box<dyn core::error::Error>> {
+        let home = tempfile::tempdir()?;
+        for tool in ["mkdir", "mv"] {
+            let found = ["/bin", "/usr/bin"]
+                .iter()
+                .map(|dir| Path::new(dir).join(tool))
+                .find(|path| path.exists());
+            std::os::unix::fs::symlink(found.ok_or("tool missing")?, home.path().join(tool))?;
+        }
+        let state = home.path().join(".local/state/tehuti");
+        fs::create_dir_all(&state)?;
+        fs::write(state.join("session.log"), "earlier login\n")?;
+        fs::write(state.join("session.log.1"), "older login\n")?;
+        let fake = home.path().join("fake");
+        fs::write(&fake, "#!/bin/sh\nexit 21\n")?;
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))?;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let status = Command::new(root.join("dist/tehuti-session"))
+            .env_clear()
+            .env("PATH", home.path())
+            .env("HOME", home.path())
+            .env("TEHUTI_BINARY", fake)
+            .status()?;
+        assert_eq!(status.code(), Some(0));
+        assert_eq!(fs::read_to_string(state.join("session.log.1"))?, "earlier login\n");
+        assert!(!fs::read_to_string(state.join("session.log"))?.contains("earlier"));
+        Ok(())
+    }
+
+    #[test]
     fn launcher_respects_user_config_and_state_directories() -> Result<(), Box<dyn core::error::Error>> {
         let home = tempfile::tempdir()?;
         std::os::unix::fs::symlink("/bin/mkdir", home.path().join("mkdir"))?;
