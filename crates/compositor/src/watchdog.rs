@@ -51,7 +51,7 @@ pub fn spawn(timeout: Duration, on_freeze: impl FnOnce() + Send + 'static) -> st
         .checked_div(4)
         .unwrap_or(timeout)
         .max(Duration::from_millis(1));
-    std::thread::Builder::new()
+    let _watcher = std::thread::Builder::new()
         .name("tehuti-watchdog".into())
         .spawn(move || {
             loop {
