@@ -1096,21 +1096,14 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
         let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
-        let normalized = match normalized_speech_phrase(&mapped) {
+        let normalized = match accept_phrase(&speech, &mapped) {
             Ok(normalized) => normalized,
             Err(message) => {
-                skipped_phrases.push(format!("speech phrase skipped: {message}"));
+                skipped_phrases.push(message);
                 continue;
             }
         };
         let template = entry.is_template();
-        if let Some(earlier) = speech.get(&normalized) {
-            skipped_phrases.push(format!(
-                "speech phrase {mapped:?} skipped: clashes with earlier phrase {:?}, both normalize to {normalized:?}",
-                earlier.phrase
-            ));
-            continue;
-        }
         drop(speech.insert(normalized.clone(), entry));
         warnings.extend(insert_speech_variant(
             &mut speech_variants,
@@ -1145,6 +1138,23 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         launcher: context.launcher,
         projects: Vec::new(),
     })
+}
+
+/// The normalized phrase, or why the phrase is dropped: it has no words or
+/// clashes with an earlier phrase.
+fn accept_phrase(
+    speech: &std::collections::HashMap<String, SpeechEntry>,
+    mapped: &str,
+) -> Result<String, String> {
+    let normalized =
+        normalized_speech_phrase(mapped).map_err(|message| format!("speech phrase skipped: {message}"))?;
+    match speech.get(&normalized) {
+        Some(earlier) => Err(format!(
+            "speech phrase {mapped:?} skipped: clashes with earlier phrase {:?}, both normalize to {normalized:?}",
+            earlier.phrase
+        )),
+        None => Ok(normalized),
+    }
 }
 
 fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
