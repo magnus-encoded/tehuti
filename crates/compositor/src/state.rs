@@ -124,6 +124,7 @@ pub struct Compositor {
     driver_elapsed: core::time::Duration,
     dim_elapsed: core::time::Duration,
     focus_outline_ids: [smithay::backend::renderer::element::Id; 4],
+    step_mark_ids: [smithay::backend::renderer::element::Id; 4],
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
@@ -276,6 +277,7 @@ impl Compositor {
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
             focus_outline_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
+            step_mark_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
@@ -2666,11 +2668,20 @@ impl Compositor {
             location.y.saturating_sub(area.loc.y),
         );
         let bounds = Rectangle::new(location.into(), window.client_geometry().size);
-        crate::focus_outline::elements(
-            bounds,
-            output.current_scale().fractional_scale(),
-            &self.focus_outline_ids,
-        )
+        let scale = output.current_scale().fractional_scale();
+        let mut elements = crate::focus_outline::elements(bounds, scale, &self.focus_outline_ids);
+        if let Some(gauge) = self.adjuster()
+            && let Some((axis, _)) = gauge.fraction()
+        {
+            elements.extend(crate::focus_outline::step_marks(
+                bounds,
+                scale,
+                axis,
+                usize::try_from(gauge.value()).unwrap_or_default(),
+                &self.step_mark_ids,
+            ));
+        }
+        elements
     }
 
     #[must_use]

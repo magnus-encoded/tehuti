@@ -98,7 +98,11 @@ impl Overlays {
             return self.notice_element(renderer);
         }
         match layer {
-            Overlay::Adjuster => self.adjuster.element(renderer, output, compositor.adjuster()),
+            Overlay::Adjuster => self.adjuster.element(
+                renderer,
+                output,
+                compositor.adjuster().filter(|gauge| !gauge.is_stepper()),
+            ),
             Overlay::Cursor => self.cursor_element(renderer, output, compositor),
             Overlay::ChoiceList => self.choices.element(renderer, compositor, output),
             Overlay::Settings => crate::settings::element(renderer, compositor, output),
