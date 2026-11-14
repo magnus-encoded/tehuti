@@ -76,9 +76,9 @@ mod image_capture {
             for (y, line) in buffer.chunks(stride).enumerate() {
                 let (pixels, pad) = line.split_at(row);
                 prop_assert!(pad.iter().all(|byte| *byte == filler), "row padding was overwritten");
-                for (x, bytes) in pixels.chunks_exact(4).enumerate() {
+                for (x, bytes) in pixels.as_chunks::<4>().0.iter().enumerate() {
                     let expected = image.get_pixel(u32::try_from(x).unwrap_or(0), u32::try_from(y).unwrap_or(0)).0;
-                    prop_assert_eq!(pixel(format, [bytes[0], bytes[1], bytes[2], bytes[3]]), expected);
+                    prop_assert_eq!(pixel(format, *bytes), expected);
                 }
             }
         }
@@ -137,15 +137,16 @@ mod image_capture {
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
-            match event {
-                ext_image_copy_capture_session_v1::Event::BufferSize { width, height } => {
-                    app.size = Some((width, height));
-                }
-                ext_image_copy_capture_session_v1::Event::ShmFormat {
-                    format: wayland_client::WEnum::Value(format),
-                } => app.formats.push(format),
-                ext_image_copy_capture_session_v1::Event::Done => app.done = true,
-                _ => {}
+            use ext_image_copy_capture_session_v1::Event;
+            if let Event::BufferSize { width, height } = event {
+                app.size = Some((width, height));
+            } else if let Event::ShmFormat {
+                format: wayland_client::WEnum::Value(format),
+            } = event
+            {
+                app.formats.push(format);
+            } else if matches!(event, Event::Done) {
+                app.done = true;
             }
         }
     }
@@ -158,10 +159,11 @@ mod image_capture {
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
-            match event {
-                ext_image_copy_capture_frame_v1::Event::Ready => app.ready = true,
-                ext_image_copy_capture_frame_v1::Event::Failed { reason } => app.failed = Some(reason.into()),
-                _ => {}
+            use ext_image_copy_capture_frame_v1::Event;
+            if matches!(event, Event::Ready) {
+                app.ready = true;
+            } else if let Event::Failed { reason } = event {
+                app.failed = Some(reason.into());
             }
         }
     }
