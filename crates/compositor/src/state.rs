@@ -163,6 +163,7 @@ pub struct Compositor {
     text_keys: std::collections::HashMap<char, (Keycode, ModifiersState)>,
     keymap: String,
     pub(crate) text_input: crate::text_input::TextInput,
+    pub(crate) capture_sessions: crate::image_capture::Sessions,
     keyboard_reserved: i32,
     /// Keyboard focus moved while smithay held the keyboard lock; its dispatch runs once the lock is released (#445).
     focus_change_dispatch: Option<DispatchInput>,
@@ -248,6 +249,7 @@ impl Compositor {
         )?;
         let text_keys = text_keys(&keymap);
         let pointer = seat.add_pointer();
+        crate::image_capture::register(display);
         let mut compositor = Self {
             menu_config: crate::system_menu::Config::default(),
             menu_failures: std::sync::mpsc::channel(),
@@ -312,6 +314,7 @@ impl Compositor {
             text_keys,
             keymap: String::new(),
             text_input: crate::text_input::TextInput::new(display),
+            capture_sessions: crate::image_capture::Sessions::default(),
             keyboard_reserved: 0,
             focus_change_dispatch: None,
             held_pad_keys: Vec::new(),
@@ -766,6 +769,7 @@ impl Compositor {
         self.release_due_keys();
         self.keep_invitation();
         self.poll_recording();
+        self.stop_stale_captures();
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
@@ -2690,6 +2694,7 @@ impl Compositor {
     )]
     pub fn fill_output(&mut self) {
         use tehuti_core::layout::{OutputGeometry, Rect};
+        self.stop_stale_captures();
         if let Some(output) = self.output.as_ref()
             && let Some(scale) =
                 core::num::NonZeroU32::new(output.current_scale().integer_scale().unsigned_abs())
