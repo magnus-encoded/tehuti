@@ -657,7 +657,9 @@ impl Compositor {
             }
             self.dropped_hotwords = dropped;
         }
-        let _removed = words.splice(0..0, hotwords);
+        let mut ordered = hotwords;
+        ordered.append(&mut words);
+        let mut words = ordered;
         words.extend(
             crate::speech_vocabulary::load(&contexts)
                 .into_iter()
