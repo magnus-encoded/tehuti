@@ -487,6 +487,8 @@ pub struct Context {
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     sticks: Vec<StickMapping>,
     speech: std::collections::HashMap<String, SpeechEntry>,
+    /// Words that prime speech recognition while this context is focused.
+    hotwords: Vec<String>,
     /// Each non-template phrase's [`speech_variant_key`] to its `speech` key, or
     /// `None` once two distinct phrases share the folded form.
     speech_variants: std::collections::HashMap<String, Option<String>>,
@@ -791,6 +793,12 @@ impl Context {
     #[must_use]
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// The `[speech] hotwords` that prime recognition while this context is focused.
+    #[must_use]
+    pub fn hotwords(&self) -> &[String] {
+        &self.hotwords
     }
 
     /// The short name the voice bar shows for this application's windows.
@@ -1122,6 +1130,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_keyboard_button(context.keyboard.button)?;
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
+    let mut context = context;
+    let hotwords = take_hotwords(&mut context.speech)?;
     let mut speech: std::collections::HashMap<String, SpeechEntry> =
         std::collections::HashMap::with_capacity(context.speech.len());
     let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
@@ -1153,6 +1163,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         buttons: context.buttons,
         sticks: sticks::parse_sticks(context.sticks)?,
         speech,
+        hotwords,
         speech_variants,
         warnings,
         skipped_phrases,
@@ -1197,6 +1208,24 @@ fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
         return Err("keyboard button cannot reserve Guide or Record".into());
     }
     Ok(())
+}
+
+/// Removes the `hotwords` array from the `[speech]` table; a `hotwords` phrase
+/// mapped to a table stays a phrase.
+fn take_hotwords(speech: &mut toml::Table) -> Result<Vec<String>, String> {
+    if !speech.get("hotwords").is_some_and(toml::Value::is_array) {
+        return Ok(Vec::new());
+    }
+    let Some(toml::Value::Array(values)) = speech.remove("hotwords") else {
+        return Ok(Vec::new());
+    };
+    values
+        .into_iter()
+        .map(|value| match value {
+            toml::Value::String(word) => Ok(word),
+            _ => Err("speech hotwords must be strings".to_owned()),
+        })
+        .collect()
 }
 
 fn speech_entry(

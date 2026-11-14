@@ -200,6 +200,11 @@ pub enum Method {
     Verbs {
         verbs: Vec<String>,
     },
+    /// Replaces the sending plugin's speech hotwords.
+    #[serde(rename = "speech.hints")]
+    SpeechHints {
+        hotwords: Vec<String>,
+    },
     Focus {
         app_id: Option<String>,
         title: String,
@@ -258,6 +263,7 @@ fn validate_notice(method: &Method) -> Result<(), String> {
         | Method::Button { .. }
         | Method::Speech { .. }
         | Method::Verb { .. }
+        | Method::SpeechHints { .. }
         | Method::Focus { .. }
         | Method::Actions { .. }
         | Method::SubmitActions { .. }
