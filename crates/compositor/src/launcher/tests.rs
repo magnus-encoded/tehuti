@@ -125,10 +125,11 @@ fn close_resets_launching_during_the_grace() {
 fn several_early_exits_in_one_poll_make_one_notice() {
     let mut children = Children::default();
     let now = Instant::now();
-    children.track(exited("1"), "First", now);
-    children.track(exited("2"), "Second", now);
-    children.track(exited("3"), "Slow", now - Duration::from_secs(60));
-    let failures = children.poll(now);
+    let later = now + Duration::from_secs(60);
+    children.track(exited("3"), "Slow", now);
+    children.track(exited("1"), "First", later - Duration::from_secs(1));
+    children.track(exited("2"), "Second", later - Duration::from_secs(2));
+    let failures = children.poll(later);
     assert_eq!(
         Failure::summary(&failures).as_deref(),
         Some("2 apps closed right away: First, Second")
