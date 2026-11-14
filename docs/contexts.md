@@ -108,8 +108,8 @@ is present.
 ## Invoke verb
 
 Speech that begins with "invoke" types a slash command in any window: "invoke
-usage report" types `/usage-report ` with a trailing space for arguments. A top-level `invoke` list names the
-slash-command words a context knows, as lowercase letters and digits joined by
+usage report" types `/usage-report ` with a trailing space for arguments. A
+top-level `invoke` list names the slash-command words a context knows, as lowercase letters and digits joined by
 hyphens:
 
 ```toml
@@ -121,9 +121,10 @@ The words after the verb snap to the closest word in the focused and global
 contexts' lists, so "invoke chief of stuff" still types `/chief-of-staff `; with
 no close word they are typed as heard, lowercased and joined by hyphens. The
 verb comes after Tehuti's own phrases and before plugin verbs and context
-phrases, so one list replaces a speech entry per slash command, and it
-shadows an `Invoke <name>` template. A
-lone "invoke" with nothing after it reaches context phrases as usual.
+phrases. It overrides every context phrase that starts with "invoke", fixed
+phrases such as `Invoke help` and templates such as `Invoke <name>` alike, so
+there is one way to invoke; `tehuti --check-config` warns about each such
+phrase. A lone "invoke" with nothing after it reaches context phrases as usual.
 
 ## Checking a config
 

@@ -119,6 +119,21 @@ mod invoke_verb {
     }
 
     #[test]
+    fn the_verb_overrides_fixed_phrases_and_templates_that_start_with_invoke() {
+        let state = focused(
+            "app_id = 'editor'\n[buttons]\n[speech]\n'Invoke help' = { key = 'enter' }\n'Invoke <name>' = { text = 'template {name}' }",
+        );
+        let (state, fixed) = step(state, &speech("Invoke help."));
+        assert_eq!(fixed, typed("/help "), "a fixed invoke phrase is overridden");
+        let (_, template) = step(state, &speech("Invoke code review."));
+        assert_eq!(
+            template,
+            typed("/code-review "),
+            "an invoke template is overridden"
+        );
+    }
+
+    #[test]
     fn invoke_words_must_be_slash_command_names() {
         for bad in ["Usage", "usage report", "-usage", "usage--report", ""] {
             assert!(

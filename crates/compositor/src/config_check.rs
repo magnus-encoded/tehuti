@@ -211,6 +211,21 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
                 ),
             );
         }
+        let mut invoked: Vec<_> = context
+            .speech_mappings()
+            .filter(|mapping| tehuti_core::invoke::slash_command(mapping.phrase, []).is_some())
+            .collect();
+        invoked.sort_by_key(|mapping| mapping.phrase);
+        for mapping in invoked {
+            report.push(
+                path,
+                Severity::Warning,
+                format!(
+                    "[speech] {:?} never fires: the built-in invoke verb types it as a slash command",
+                    mapping.phrase
+                ),
+            );
+        }
     }
     for shadowing in shadowed(&contexts) {
         match shadowing {
