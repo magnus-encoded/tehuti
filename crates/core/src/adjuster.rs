@@ -51,11 +51,13 @@ impl SizeAxis {
         let fraction = match self {
             Self::Width => match column.width {
                 Some(PresetSize::Proportion(proportion)) => proportion,
-                _ => tile.tile.width.div(output.working_area.width),
+                Some(PresetSize::Fixed(_)) | None => tile.tile.width.div(output.working_area.width),
             },
             Self::Height => match tile.height {
                 WindowHeight::Proportion(proportion) => proportion,
-                _ => tile.tile.height.div(output.working_area.height),
+                WindowHeight::Auto | WindowHeight::Fixed(_) => {
+                    tile.tile.height.div(output.working_area.height)
+                }
             },
         };
         fraction.is_finite().then(|| millionths(fraction))
