@@ -280,6 +280,7 @@ mod tests {
     {
         for size in [(3840, 1600), (1920, 1080), (800, 1200), (640, 360)] {
             let mut previous = 0;
+            let mut anchored_top = None;
             for rows in 0..=5 {
                 let launcher = launcher(rows);
                 let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, size)
@@ -303,10 +304,15 @@ mod tests {
                     "horizontal centre at {size:?}"
                 );
                 let available = usize::try_from(size.1 - tehuti_core::bar::HEIGHT)?;
-                assert!(
-                    top.abs_diff(available - bottom - 1) <= 1,
-                    "vertical centre at {size:?}"
-                );
+                // The top edge is anchored by the full five-row panel, which is the one centred.
+                let anchor = *anchored_top.get_or_insert(top);
+                assert_eq!(top, anchor, "top edge moved with {rows} rows at {size:?}");
+                if rows == 5 {
+                    assert!(
+                        top.abs_diff(available - bottom - 1) <= 1,
+                        "vertical centre at {size:?}"
+                    );
+                }
                 let height = bottom - top + 1;
                 assert!(height <= available * 4 / 5, "height cap at {size:?}");
                 assert!(height >= previous, "more rows cannot shrink the panel");
@@ -334,9 +340,10 @@ mod tests {
             let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
                 .ok_or("artwork")?;
             let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-            // Natural height is 160 + 72 per row, centred in the 1048 rows above the bar.
+            // Natural height is 160 + 72 per row; the top edge is fixed by the full 648-tall panel centred
+            // in the 1048 rows above the bar.
             let natural = 160_usize.saturating_add(rows.saturating_mul(72));
-            let expected = (1080_usize.saturating_sub(bar).saturating_sub(natural) / 2)
+            let expected = (1080_usize.saturating_sub(bar).saturating_sub(648) / 2)
                 .saturating_add(natural)
                 .saturating_sub(1);
             assert_eq!(bottom, expected, "{rows} rows: panel bottom row");
@@ -360,9 +367,9 @@ mod tests {
         let pixels = tehuti::choice_list::raster_scaled(launcher.list(), PadFamily::Letters, (1920, 1080), 2)
             .ok_or("artwork")?;
         let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-        // 2 rows: natural 304, panel 1280 wide (640 at scale 2) and 608 tall, centred in the
-        // 1920 x (1080 - 2 * 32) area above the doubled bar: left 320, top 204.
-        assert_eq!(bottom, 811, "panel bottom row; the doubled bar starts at 1016");
+        // The full 648-tall panel must fit 80% of the 1016 rows above the doubled bar, so it is 802 wide; 2 rows
+        // (natural 304) make it 380 tall, hanging from the fixed top 102.
+        assert_eq!(bottom, 481, "panel bottom row; the doubled bar starts at 1016");
         let covered = |x: &usize| {
             (0..1080_usize).any(|y| {
                 pixels
@@ -375,10 +382,10 @@ mod tests {
                     .is_some_and(|alpha| *alpha >= 200)
             })
         };
-        assert_eq!((0..1920_usize).find(covered), Some(320), "panel left column");
+        assert_eq!((0..1920_usize).find(covered), Some(559), "panel left column");
         assert_eq!(
             (0..1920_usize).rev().find(covered),
-            Some(1599),
+            Some(1360),
             "panel right column mirrors the left"
         );
         Ok(())
