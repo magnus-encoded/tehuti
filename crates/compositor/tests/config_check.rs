@@ -207,6 +207,30 @@ order = 1
     }
 
     #[test]
+    fn invoke_phrases_warn_but_a_lone_invoke_remains_reachable() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Invoke help' = { key = 'enter' }\n'Invoke <name>' = { text = '/{name} ' }\n'Invoke' = { key = 'enter' }\n'Inventory help' = { key = 'enter' }",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+        let invoked: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.message.contains("built-in invoke verb"))
+            .collect();
+        assert_eq!(invoked.len(), 2, "{report}");
+        assert!(
+            invoked
+                .iter()
+                .all(|finding| finding.severity == Severity::Warning),
+            "{report}"
+        );
+    }
+
+    #[test]
     fn reserved_unit_verbs_warn_but_unrelated_phrases_remain_reachable() {
         let directory = tempfile::tempdir().unwrap();
         write(

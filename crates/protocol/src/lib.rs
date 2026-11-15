@@ -496,6 +496,7 @@ pub struct Context {
     unmatched_speech: Option<UnmatchedSpeech>,
     launch_phrases: Vec<(String, String)>,
     favourites: Vec<String>,
+    invoke: Vec<String>,
     keyboard: KeyboardConfig,
     dim: DimConfig,
     push_to_talk: Vec<ButtonName>,
@@ -634,6 +635,12 @@ impl Context {
     #[must_use]
     pub fn favourites(&self) -> &[String] {
         &self.favourites
+    }
+
+    /// Slash-command words the built-in `invoke` verb snaps to, such as `usage`.
+    #[must_use]
+    pub fn invoke_words(&self) -> &[String] {
+        &self.invoke
     }
 
     /// First configured launch phrase for each desktop entry, in file order.
@@ -952,6 +959,8 @@ struct ContextFile {
     #[serde(default)]
     favourites: Vec<String>,
     #[serde(default)]
+    invoke: Vec<String>,
+    #[serde(default)]
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
     sticks: sticks::SticksFile,
@@ -1159,6 +1168,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         skipped_phrases,
         launch_phrases,
         favourites: context.favourites,
+        invoke: validate_invoke_words(context.invoke)?,
         unmatched_speech: context.unmatched_speech,
         keyboard: context.keyboard,
         dim: context.dim,
@@ -1174,6 +1184,25 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         launcher: context.launcher,
         projects: Vec::new(),
     })
+}
+
+/// An invoke word is a slash-command name: lowercase letters and digits joined by single hyphens.
+fn validate_invoke_words(words: Vec<String>) -> Result<Vec<String>, String> {
+    for word in &words {
+        let valid = !word.is_empty()
+            && word.split('-').all(|part| {
+                !part.is_empty()
+                    && part
+                        .chars()
+                        .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+            });
+        if !valid {
+            return Err(format!(
+                "invoke word {word:?} must be lowercase letters and digits joined by single hyphens"
+            ));
+        }
+    }
+    Ok(words)
 }
 
 /// The normalized phrase, or why the phrase is dropped: it has no words or
