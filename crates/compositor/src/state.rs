@@ -2379,6 +2379,7 @@ impl Compositor {
     /// While the launcher is open, typing filters it, Enter opens the selection and Escape closes it.
     ///
     /// This is the fallback when speech is down; the client never sees these keys.
+    #[expect(clippy::too_many_lines, reason = "one flat table of launcher keys")]
     fn host_key_in_launcher(&mut self, keycode: Keycode, pressed: bool) -> bool {
         use tehuti_protocol::{ButtonName, ButtonState};
         const KEY_ESC: u32 = 1;
