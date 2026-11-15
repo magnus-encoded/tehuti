@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn a_guide_tap_in_a_passthrough_context_changes_the_level_and_never_reaches_the_game() {
+    fn guide_taps_in_a_passthrough_context_follow_the_four_step_level_cycle() {
         use smithay::reexports::wayland_server::Display;
         use tehuti::{input::route, state::Compositor};
 
@@ -681,23 +681,27 @@ mod tests {
         let mut compositor = talk_compositor(&display.handle(), "['record']");
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut pad, handles) = pad("game", &log);
-        assert!(
-            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
-                .unwrap()
-        );
-        for expect_passthrough in [false, true] {
+        assert!(pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button)).unwrap());
+        // (forwarded to the stream, local level afterwards): local starts at the app level.
+        let steps = [(true, false), (false, true), (true, false), (false, true)];
+        for (step, (forwarded, app_level)) in steps.into_iter().enumerate() {
+            let guide_frames = |log: &Log| {
+                log.frames
+                    .iter()
+                    .filter(|(_, frame)| frame.iter().any(|(_, code, _)| *code == KeyCode::BTN_MODE.code()))
+                    .count()
+            };
+            let before = guide_frames(&log.borrow());
             for value in [1, 0] {
                 queue(&handles, KeyCode::BTN_MODE, value);
                 pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
                     .unwrap();
                 route(&mut compositor, &mut pad).unwrap();
             }
-            assert_eq!(compositor.pad_passthrough(), expect_passthrough);
+            let sent = guide_frames(&log.borrow()) > before;
+            assert_eq!(sent, forwarded, "step {step}: forwarding");
+            assert_eq!(compositor.pad_passthrough(), app_level, "step {step}: local level");
         }
-        assert!(
-            never_sent(&log.borrow(), KeyCode::BTN_MODE),
-            "Guide stays with Tehuti"
-        );
     }
 
     fn talk_compositor(
