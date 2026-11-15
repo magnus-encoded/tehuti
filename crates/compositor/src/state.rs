@@ -771,7 +771,8 @@ impl Compositor {
     /// Whether Tehuti holds `button` from the virtual pad; reads only, so a new mirror can ask.
     #[must_use]
     pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
-        (button == tehuti_protocol::ButtonName::Guide && self.dispatch.core().level() == tehuti_core::Level::Columns)
+        (button == tehuti_protocol::ButtonName::Guide
+            && self.dispatch.core().level() == tehuti_core::Level::Columns)
             || self.virtual_pad_talk.contains(&button)
             || self
                 .plugins

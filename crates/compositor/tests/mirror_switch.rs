@@ -681,7 +681,10 @@ mod tests {
         let mut compositor = talk_compositor(&display.handle(), "['record']");
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut pad, handles) = pad("game", &log);
-        assert!(pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button)).unwrap());
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
         // (forwarded to the stream, local level afterwards): local starts at the app level.
         let steps = [(true, false), (false, true), (true, false), (false, true)];
         for (step, (forwarded, app_level)) in steps.into_iter().enumerate() {
@@ -700,7 +703,11 @@ mod tests {
             }
             let sent = guide_frames(&log.borrow()) > before;
             assert_eq!(sent, forwarded, "step {step}: forwarding");
-            assert_eq!(compositor.pad_passthrough(), app_level, "step {step}: local level");
+            assert_eq!(
+                compositor.pad_passthrough(),
+                app_level,
+                "step {step}: local level"
+            );
         }
     }
 
