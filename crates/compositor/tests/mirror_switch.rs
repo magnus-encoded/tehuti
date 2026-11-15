@@ -711,6 +711,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_long_guide_hold_at_the_app_level_reaches_the_game_as_a_held_press() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor(&display.handle(), "['record']");
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
+        let guide_values = |sent: &Log| -> Vec<i32> {
+            sent.frames
+                .iter()
+                .flat_map(|(_, frame)| frame.iter())
+                .filter(|(_, code, _)| *code == KeyCode::BTN_MODE.code())
+                .map(|(_, _, value)| *value)
+                .collect()
+        };
+        queue(&handles, KeyCode::BTN_MODE, 1);
+        pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+            .unwrap();
+        route(&mut compositor, &mut pad).unwrap();
+        // Tehuti's own hold handling runs while the press stays down; the stream sees only the press.
+        for _ in 0..3 {
+            compositor.advance_time();
+        }
+        assert_eq!(
+            guide_values(&log.borrow()),
+            vec![1],
+            "press forwarded at once, held"
+        );
+        queue(&handles, KeyCode::BTN_MODE, 0);
+        pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+            .unwrap();
+        route(&mut compositor, &mut pad).unwrap();
+        assert_eq!(
+            guide_values(&log.borrow()),
+            vec![1, 0],
+            "release forwarded on release"
+        );
+    }
+
     fn talk_compositor(
         display: &smithay::reexports::wayland_server::DisplayHandle,
         chord: &str,
