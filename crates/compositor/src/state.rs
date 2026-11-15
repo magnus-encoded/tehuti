@@ -3555,7 +3555,7 @@ impl Compositor {
 
     /// The opening width fraction of a context. A pixel or decimal setting is
     /// converted against the output in front of it and rewritten in the file.
-    fn opening_width(&mut self,context: &tehuti_protocol::Context) -> Option<f64> {
+    fn opening_width(&mut self, context: &tehuti_protocol::Context) -> Option<f64> {
         use core::ops::Div;
         use tehuti_protocol::WindowWidth;
         let (raw, screen) = match context.window_width()? {

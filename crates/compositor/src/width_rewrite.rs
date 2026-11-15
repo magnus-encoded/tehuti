@@ -23,7 +23,10 @@ pub fn replace_file(path: &Path, contents: &str) -> io::Result<()> {
     temporary_name.push(format!(".tehuti-{}.tmp", std::process::id()));
     let temporary = directory.join(temporary_name);
     let written = (|| {
-        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
         if let Ok(metadata) = fs::metadata(path) {
             file.set_permissions(metadata.permissions())?;
         }

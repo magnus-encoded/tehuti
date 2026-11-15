@@ -187,12 +187,18 @@ mod window_width {
         format!("app_id = '{APP_ID}'\nbuttons = {{}}\n[window]\nwidth = {width}\n")
     }
 
-    #[expect(clippy::float_arithmetic, reason = "compare a tile width with a share of the output")]
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "compare a tile width with a share of the output"
+    )]
     fn opened_share(compositor: &Compositor) -> (Option<tehuti_core::layout::PresetSize>, f64) {
         let snapshot = compositor.layout_snapshot();
         let output = &snapshot.outputs[0];
         let column = &output.workspaces[output.active_workspace].columns[0];
-        (column.width, column.tiles[0].tile.width / output.geometry.area.width)
+        (
+            column.width,
+            column.tiles[0].tile.width / output.geometry.area.width,
+        )
     }
 
     #[test]
@@ -202,9 +208,15 @@ mod window_width {
         let source = context("\"2/3\"");
         let compositor = open_window(&source, directory.path());
         let (width, share) = opened_share(&compositor);
-        assert_eq!(width, Some(tehuti_core::layout::PresetSize::Proportion(2.0 / 3.0)));
+        assert_eq!(
+            width,
+            Some(tehuti_core::layout::PresetSize::Proportion(2.0 / 3.0))
+        );
         assert!((share - 2.0 / 3.0).abs() < 0.05, "{share}");
-        assert_eq!(std::fs::read_to_string(directory.path().join("context.toml")).unwrap(), source);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("context.toml")).unwrap(),
+            source
+        );
     }
 
     #[test]
@@ -212,9 +224,15 @@ mod window_width {
         let directory = tempfile::tempdir().unwrap();
         let compositor = open_window(&context("2560"), directory.path());
         let (width, _) = opened_share(&compositor);
-        assert_eq!(width, Some(tehuti_core::layout::PresetSize::Proportion(2.0 / 3.0)));
+        assert_eq!(
+            width,
+            Some(tehuti_core::layout::PresetSize::Proportion(2.0 / 3.0))
+        );
         let written = std::fs::read_to_string(directory.path().join("context.toml")).unwrap();
-        assert!(written.contains("width = \"2/3\"  # was 2560 px on 3840 px\n"), "{written}");
+        assert!(
+            written.contains("width = \"2/3\"  # was 2560 px on 3840 px\n"),
+            "{written}"
+        );
         assert!(written.starts_with(&format!("app_id = '{APP_ID}'\nbuttons = {{}}\n[window]\n")));
     }
 
@@ -229,7 +247,10 @@ mod window_width {
             compositor.visible_notice_text().as_deref(),
             Some("WINDOW WIDTH IS WIDER THAN THE SCREEN")
         );
-        assert_eq!(std::fs::read_to_string(directory.path().join("context.toml")).unwrap(), source);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("context.toml")).unwrap(),
+            source
+        );
     }
 
     #[test]
@@ -253,7 +274,10 @@ mod window_width {
         let path = directory.path().join("context.toml");
         std::fs::write(&path, "[window]\nheight = 0.5\n").unwrap();
         assert!(!width_rewrite::rewrite_file(&path, (2, 3), None).unwrap());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[window]\nheight = 0.5\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[window]\nheight = 0.5\n"
+        );
     }
 
     #[test]
