@@ -497,6 +497,10 @@ Tehuti acts on it too, so both sides change level. At the columns level Guide
 stays with Tehuti and is never forwarded. Four taps therefore walk the
 (local, remote) levels: (app, app), (columns, columns), (app, columns),
 (columns, app), then (app, app) again.
+While a Guide press is forwarded, it reaches the stream with its real timing:
+a 3 s hold opens the stream's own system menu. Tehuti's own hold action waits
+for 6 s then, whatever the stream did; a hold of 6 s or more always reaches it.
+At the columns level nothing is forwarded and the local hold works as usual.
 Guide stays reserved for Tehuti: hold it for 500 ms to open the system menu;
 Guide+Start held for three seconds quits.
 
