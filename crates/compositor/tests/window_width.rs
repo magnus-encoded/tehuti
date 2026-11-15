@@ -202,7 +202,6 @@ mod window_width {
     }
 
     #[test]
-    #[expect(clippy::float_arithmetic, reason = "compare a share of the output with 2/3")]
     fn a_fraction_opens_at_that_share_of_the_output_width() {
         let directory = tempfile::tempdir().unwrap();
         let source = context("\"2/3\"");
