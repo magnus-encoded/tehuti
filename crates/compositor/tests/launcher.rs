@@ -632,10 +632,19 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         let root = tempfile::tempdir()?;
         let (display, mut compositor) = session(root.path())?;
         tehuti::driver::headless_output(&display.handle(), &mut compositor)?;
-        for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE, KEY_K, KEY_I] {
+        let mut driver = tehuti::driver::Driver::bind(root.path(), tehuti::backend::Backend::Nested)?;
+        for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE] {
             tap(&mut compositor, code);
         }
-        let mut driver = tehuti::driver::Driver::bind(root.path(), tehuti::backend::Backend::Nested)?;
+        let _scene = driver.execute(
+            &mut compositor,
+            tehuti::driver::Request::Shot {
+                path: format!("{copy}.before.png").into(),
+            },
+        )?;
+        for code in [KEY_K, KEY_I] {
+            tap(&mut compositor, code);
+        }
         let _scene = driver.execute(
             &mut compositor,
             tehuti::driver::Request::Shot { path: copy.into() },
