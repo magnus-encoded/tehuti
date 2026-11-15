@@ -86,7 +86,16 @@ mod tests {
             })
             .unwrap();
         let started = Instant::now();
-        driver.render(&mut (), false);
+        // The first render runs inside the loop, as the DRM sources do: a stop
+        // signalled before `run` would be lost.
+        let first = driver.clone();
+        let _first = event_loop
+            .handle()
+            .insert_source(Timer::immediate(), move |_, (), ()| {
+                first.render(&mut (), false);
+                TimeoutAction::Drop
+            })
+            .unwrap();
         event_loop.run(None, &mut (), |()| {}).unwrap();
         let elapsed = started.elapsed();
         drop(driver);
