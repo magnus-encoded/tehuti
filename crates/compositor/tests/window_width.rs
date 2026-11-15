@@ -115,6 +115,7 @@ mod window_width {
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
         toplevel.set_app_id(APP_ID.into());
+        toplevel.set_title("window".into());
         surface.commit();
         let mut app = App;
         let _first = queue.roundtrip(&mut app).unwrap();
@@ -125,6 +126,7 @@ mod window_width {
         file.set_len(64 * 64 * 4).unwrap();
         let pool = shm.create_pool(file.as_fd(), 64 * 64 * 4, &handle, ());
         let buffer = pool.create_buffer(0, 64, 64, 256, wl_shm::Format::Argb8888, &handle, ());
+        xdg_surface.set_window_geometry(8, 12, 40, 32);
         surface.attach(Some(&buffer), 0, 0);
         surface.commit();
         let _third = queue.roundtrip(&mut app).unwrap();
