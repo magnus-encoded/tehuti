@@ -688,8 +688,8 @@ mod tests {
         // (forwarded to the stream, local level afterwards): local starts at the app level.
         let steps = [(true, false), (false, true), (true, false), (false, true)];
         for (step, (forwarded, app_level)) in steps.into_iter().enumerate() {
-            let guide_frames = |log: &Log| {
-                log.frames
+            let guide_frames = |sent: &Log| {
+                sent.frames
                     .iter()
                     .filter(|(_, frame)| frame.iter().any(|(_, code, _)| *code == KeyCode::BTN_MODE.code()))
                     .count()
