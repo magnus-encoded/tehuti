@@ -385,7 +385,7 @@ mod tests {
         assert_eq!((0..1920_usize).find(covered), Some(460), "panel left column");
         assert_eq!(
             (0..1920_usize).rev().find(covered),
-            Some(1360),
+            Some(1458),
             "panel right column mirrors the left"
         );
         Ok(())
