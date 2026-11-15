@@ -66,7 +66,11 @@ impl Destination {
             .max()
             .unwrap_or_default();
         let score = by_name.max(by_extra);
-        if self.settings { score.saturating_sub(50) } else { score }
+        if self.settings {
+            score.saturating_sub(50)
+        } else {
+            score
+        }
     }
 
     fn exactly_matches(&self, normalized: &str) -> bool {
