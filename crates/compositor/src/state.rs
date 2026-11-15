@@ -3541,7 +3541,10 @@ impl Compositor {
                     })
                 })
             });
-        let rules = Self::window_rules(&surface, context);
+        let context = context.cloned();
+        let width = context.as_ref().and_then(|context| self.opening_width(context));
+        let context = context.as_ref();
+        let rules = Self::window_rules(&surface, context, width);
         let key = surface.wl_surface().clone();
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
@@ -3550,9 +3553,50 @@ impl Compositor {
         }
     }
 
+    /// The opening width fraction of a context. A pixel or decimal setting is
+    /// converted against the output in front of it and rewritten in the file.
+    fn opening_width(&mut self, context: &tehuti_protocol::Context) -> Option<f64> {
+        use core::ops::Div;
+        use tehuti_protocol::WindowWidth;
+        let (raw, screen) = match context.window_width()? {
+            WindowWidth::Fraction(value) => return Some(value),
+            WindowWidth::Decimal(value) => (value, None),
+            WindowWidth::Pixels(pixels) => {
+                let screen = self
+                    .placement
+                    .snapshot()
+                    .outputs
+                    .first()
+                    .map(|output| output.geometry.area.width)
+                    .filter(|width| *width >= 1.0)?;
+                let screen = tehuti_protocol::whole_pixels(screen);
+                (f64::from(pixels).div(f64::from(screen)), Some(screen))
+            }
+        };
+        if raw > 1.0 {
+            tracing::error!(
+                width = raw,
+                "context window width exceeds the screen and is ignored"
+            );
+            self.show_notice("WINDOW WIDTH IS WIDER THAN THE SCREEN");
+            return None;
+        }
+        let fraction = tehuti_protocol::nearest_fraction(raw);
+        if let Some((path, _)) = self
+            .context_files
+            .iter()
+            .find(|(_, file)| file.app_id() == context.app_id() && file.title() == context.title())
+            && let Err(error) = crate::width_rewrite::rewrite_file(path, fraction, screen)
+        {
+            tracing::warn!(%error, path = %path.display(), "window width not rewritten");
+        }
+        Some(tehuti_protocol::fraction_value(fraction))
+    }
+
     fn window_rules(
         surface: &ToplevelSurface,
         context: Option<&tehuti_protocol::Context>,
+        width: Option<f64>,
     ) -> tehuti_core::layout::WindowRules {
         tehuti_core::layout::WindowRules {
             kind: if Self::is_helper(surface) {
@@ -3561,9 +3605,7 @@ impl Compositor {
                 tehuti_core::layout::WindowKind::Ordinary
             },
             open_fullscreen: context.is_some_and(tehuti_protocol::Context::open_fullscreen),
-            default_column_width: context
-                .and_then(tehuti_protocol::Context::window_column_width)
-                .map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
+            default_column_width: width.map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
             default_window_height: context
                 .and_then(tehuti_protocol::Context::window_height)
                 .map(tehuti_core::layout::PresetSize::Proportion),

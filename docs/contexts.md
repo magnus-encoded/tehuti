@@ -410,22 +410,43 @@ the full available area. Context reloads affect newly opened windows.
 
 ## Opening window sizes
 
-A matching context can set the opening column width and window height:
+A matching context can set the opening width and window height:
 
 ```toml
 app_id = "org.example.Reader"
 buttons = {}
 
 [window]
-column_width = "one-half"
+width = "2/3"
 height = 0.75
 ```
 
-Both values accept a fraction greater than 0 and at most 1, or a named preset:
-`"one-third"`, `"one-half"`, `"two-thirds"` or `"full"`. Fractions refer to the
-available working area, with layout gaps and borders applied. Omit `height`
-to fill the column vertically; omit `column_width` to use the layout default.
-Fullscreen takes precedence over these sizes.
+`width` is a fraction of the screen, written as an exact string: `"1/2"`,
+`"2/3"`, `"1"`. Fractions are the canonical form because screen sizes change
+and people judge what they see as parts of the screen. `column_width` is the
+older name of the same key. A named preset (`"one-third"`, `"one-half"`,
+`"two-thirds"`, `"full"`) is also accepted.
+
+Pixels (`width = 1280`) and decimals (`width = 0.667`) are accepted as input.
+When a window first opens with one, Tehuti converts it against the screen in
+front of it and rewrites the line to the nearest simple fraction (denominator
+1 to 6), keeping the original as a comment:
+
+```toml
+width = "2/3"  # was 1280 px on 1920 px
+```
+
+The rest of the file is kept byte for byte. If the file is not writable the
+converted value is still used. A value that does not parse, a zero
+denominator, or a value outside 0 to 1 after conversion is a config error:
+`tehuti --check-config` reports it. `height` takes a fraction greater than 0
+and at most 1 or a preset. Fractions refer to the available working area, with
+layout gaps and borders applied. Omit `height` to fill the column vertically;
+omit `width` to use the layout default. Fullscreen takes precedence.
+
+Saying "width" or "height" opens a stepper for the focused window over 1/3,
+1/2, 2/3 and 1 of the screen: the pad steps, South keeps and East restores.
+The focus border marks the steps.
 
 The first exact application-id match supplies the opening rules. Without one,
 the nearest matching launcher context supplies them, through XDG parents then

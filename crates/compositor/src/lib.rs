@@ -13,6 +13,7 @@ pub mod skill_install;
 pub mod state;
 
 pub mod contexts;
+pub mod width_rewrite;
 
 pub(crate) mod text_input;
 
