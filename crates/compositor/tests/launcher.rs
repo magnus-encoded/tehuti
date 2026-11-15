@@ -141,6 +141,7 @@ routes = [{{steps = [{{icon = 'missing-icon-for-547', target = {{kind = 'action'
                 }],
             }],
             source,
+            settings: false,
         };
         let entries = [
             entry(Target::Application("kitty".into()), Source::Custom),
@@ -339,12 +340,14 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
                 extra_names: Vec::new(),
                 routes: vec![route(Target::Desktop("kitty.desktop".into()))],
                 source: Source::Desktop,
+                settings: false,
             },
             Destination {
                 name: "~: fish".into(),
                 extra_names: vec!["Terminal".into(), "kitty".into()],
                 routes: vec![route(Target::Window(3))],
                 source: Source::Window,
+                settings: false,
             },
         ];
         let (rows, routes) = tehuti::launcher::destinations(
@@ -374,6 +377,8 @@ mod hardware_keyboard {
     const KEY_I: u32 = 23;
     const KEY_T: u32 = 20;
     const KEY_O: u32 = 24;
+    const KEY_UP: u32 = 103;
+    const KEY_DOWN: u32 = 108;
 
     fn tap(compositor: &mut Compositor, code: u32) {
         for pressed in [true, false] {
@@ -459,6 +464,41 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         assert_eq!(first_row(&compositor), None);
         assert_eq!(compositor.visible_notice_text(), None);
         Ok(())
+    }
+
+    #[test]
+    fn down_arrow_moves_the_selection_and_enter_opens_the_third_hit() -> Result<(), Box<dyn core::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session_with_three(root.path())?;
+        for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE, KEY_O] {
+            tap(&mut compositor, code);
+        }
+        for code in [KEY_DOWN, KEY_DOWN, KEY_UP, KEY_DOWN, KEY_ENTER] {
+            tap(&mut compositor, code);
+        }
+        assert_eq!(compositor.visible_notice_text().as_deref(), Some("Orchid opened"));
+        Ok(())
+    }
+
+    fn session_with_three(
+        root: &std::path::Path,
+    ) -> Result<(Display<Compositor>, Compositor), Box<dyn core::error::Error>> {
+        let mut text = String::new();
+        for name in ["Orbit", "Orchard", "Orchid"] {
+            text.push_str(&format!(
+                "[[destinations]]\nname = \"{name}\"\n[[destinations.routes]]\nsteps = [{{ icon = \"globe\", target = {{ kind = \"action\", value = {{ type = \"notice\", text = \"{name} opened\" }} }} }}]\n"
+            ));
+        }
+        std::fs::write(root.join("destinations.toml"), text)?;
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.configure_destinations(Paths {
+            config: root.into(),
+            projects: root.join("projects"),
+            data: Vec::new(),
+        });
+        compositor.say(Text::new("open zzz".into())?);
+        Ok((display, compositor))
     }
 
     /// Renders the filtered list to the path in `TEHUTI_SHOT_COPY`; a no-op otherwise.
