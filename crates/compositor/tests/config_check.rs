@@ -245,7 +245,10 @@ order = 1
             );
             let report = check(directory.path());
             assert!(report.has_errors(), "{bad}: {report}");
-            assert!(report.to_string().contains("game/context.toml: error:"), "{bad}: {report}");
+            assert!(
+                report.to_string().contains("game/context.toml: error:"),
+                "{bad}: {report}"
+            );
             let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
                 .args(["--check-config".as_ref(), directory.path().as_os_str()])
                 .env_clear()
