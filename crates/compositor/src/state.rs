@@ -140,7 +140,7 @@ pub struct Compositor {
     context_files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>,
     speech_context: Option<String>,
     speech_title: String,
-    dropped_hotwords: usize,
+    warned_hotwords: crate::speech_vocabulary::OverCapWarned,
     launch_socket: Option<std::ffi::OsString>,
     placement: crate::window_placement::Placement<WlSurface, LayoutWindow>,
     surfaces: CompositorState,
@@ -296,7 +296,7 @@ impl Compositor {
             launch_socket: None,
             speech_context: None,
             speech_title: String::new(),
-            dropped_hotwords: 0,
+            warned_hotwords: crate::speech_vocabulary::OverCapWarned::default(),
             surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             decoration_state: None,
@@ -647,15 +647,16 @@ impl Compositor {
             .zip(self.plugins.as_ref())
             .map_or_default(|(app_id, plugins)| plugins.speech_hints(app_id));
         let (hotwords, dropped) = crate::speech_vocabulary::hotwords(context_hotwords, plugin_hints);
-        if dropped != self.dropped_hotwords {
-            if self.dropped_hotwords == 0 {
-                tracing::warn!(
-                    cap = crate::speech_vocabulary::MAX_HOTWORDS,
-                    dropped,
-                    "speech hotwords over the cap; dropped the latest"
-                );
-            }
-            self.dropped_hotwords = dropped;
+        if dropped > 0
+            && let Some(app_id) = self.speech_context.as_deref()
+            && self.warned_hotwords.first_time(app_id)
+        {
+            tracing::warn!(
+                cap = crate::speech_vocabulary::MAX_HOTWORDS,
+                dropped,
+                app_id,
+                "speech hotwords over the cap; dropped the latest plugin hints"
+            );
         }
         let mut ordered = hotwords;
         ordered.append(&mut words);
