@@ -467,7 +467,8 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
     }
 
     #[test]
-    fn down_arrow_moves_the_selection_and_enter_opens_the_third_hit() -> Result<(), Box<dyn core::error::Error>> {
+    fn down_arrow_moves_the_selection_and_enter_opens_the_third_hit()
+    -> Result<(), Box<dyn core::error::Error>> {
         let root = tempfile::tempdir()?;
         let (_display, mut compositor) = session_with_three(root.path())?;
         for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE, KEY_O] {
