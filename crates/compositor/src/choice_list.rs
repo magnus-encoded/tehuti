@@ -240,6 +240,7 @@ fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32
         .1
         .checked_sub(tehuti_core::bar::HEIGHT.saturating_mul(scale))?;
     let natural = i32::try_from(content_height(list)).ok()?;
+    let anchor = i32::try_from(anchor_height(list)).ok()?;
     let width = 640i32
         .saturating_mul(scale)
         .min(size.0.saturating_mul(9).checked_div(10)?)
@@ -248,7 +249,7 @@ fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32
                 .saturating_mul(4)
                 .checked_div(5)?
                 .saturating_mul(640)
-                .checked_div(natural)?,
+                .checked_div(anchor)?,
         );
     let height = width.checked_mul(natural)?.checked_div(640)?;
     if width <= 0 || height <= 0 {
@@ -258,8 +259,20 @@ fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32
         width,
         height,
         size.0.checked_sub(width)?.checked_div(2)?,
-        available.checked_sub(height)?.checked_div(2)?,
+        // The top edge is fixed by the full-height panel, so filtering shrinks the list downward.
+        available
+            .checked_sub(width.checked_mul(anchor)?.checked_div(640)?)?
+            .checked_div(2)?,
     ))
+}
+
+/// Height of the panel with every row slot filled; it fixes the panel's top edge.
+const fn anchor_height(list: &List) -> usize {
+    ROWS_TOP
+        .saturating_add(list.slots().scopes.len().saturating_mul(24))
+        .saturating_add(if list.slots().create.is_some() { 128 } else { 0 })
+        .saturating_add(72usize.saturating_mul(5))
+        .saturating_add(FOOTER)
 }
 
 fn label(canvas: &mut Canvas, x: usize, y: usize, width: usize, text: &str, size: usize, colour: [u8; 4]) {
