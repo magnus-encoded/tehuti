@@ -5,10 +5,6 @@ use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, KeyName, 
 /// The longest Guide press that still counts as a tap.
 pub const GUIDE_TAP_WINDOW: core::time::Duration = core::time::Duration::from_millis(500);
 
-/// How long Guide must stay down before Tehuti's own hold action while the press is forwarded to the stream.
-/// The stream's own 3 s hold comes first.
-pub const GUIDE_FORWARDED_HOLD: core::time::Duration = core::time::Duration::from_secs(6);
-
 /// What LB and RB drive; a Guide tap switches between the two.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Level {
@@ -967,12 +963,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             if let Some(tap) = &mut state.guide_tap {
                 *tap = tap.saturating_add(*elapsed);
             }
-            let hold = if state.virtual_pad() {
-                GUIDE_FORWARDED_HOLD
-            } else {
-                GUIDE_TAP_WINDOW
-            };
-            if !state.start_held && state.guide_tap.is_some_and(|held| held >= hold) {
+            if !state.start_held && state.guide_tap.is_some_and(|held| held >= GUIDE_TAP_WINDOW) {
                 state.guide_tap = None;
                 state.menu = Some(state.new_menu());
             }
