@@ -508,6 +508,7 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
     /// Four desktop entries as an Xfce session lists them; typing "Termin" must put Terminal Emulator first.
     /// Renders the list to the path in `TEHUTI_SHOT_COPY` when it is set.
     #[test]
+    #[expect(clippy::too_many_lines, reason = "four desktop entries and an optional render")]
     fn typing_termin_ranks_terminal_emulator_first_and_settings_last()
     -> Result<(), Box<dyn core::error::Error>> {
         let root = tempfile::tempdir()?;
@@ -572,13 +573,12 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         }
         let names: Vec<_> = compositor
             .choice_list()
-            .map(|list| {
+            .map_or_default(|list| {
                 list.candidates()
                     .iter()
                     .map(|row| row.candidate.name.clone())
                     .collect()
             })
-            .unwrap_or_default();
         assert_eq!(
             names,
             [
