@@ -267,11 +267,11 @@ fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32
 }
 
 /// Height of the panel with every row slot and the create card filled; it fixes the panel's top edge.
-fn anchor_height(list: &List) -> usize {
+const fn anchor_height(list: &List) -> usize {
     ROWS_TOP
         .saturating_add(list.slots().scopes.len().saturating_mul(24))
         .saturating_add(128)
-        .saturating_add(72 * 5)
+        .saturating_add(72usize.saturating_mul(5))
         .saturating_add(FOOTER)
 }
 
