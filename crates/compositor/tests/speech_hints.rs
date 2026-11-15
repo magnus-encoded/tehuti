@@ -12,7 +12,7 @@ mod speech_hints {
 import json, select, sys, os
 root = os.path.dirname(os.path.abspath(__file__))
 json.loads(sys.stdin.readline())
-print(json.dumps({'jsonrpc': '2.0', 'id': 1, 'result': {'protocol_version': 0, 'encoding': 'json', 'events': ['focus']}}), flush=True)
+print(json.dumps({'jsonrpc': '2.0', 'id': 0, 'result': {'protocol_version': 0, 'encoding': 'json', 'events': ['focus']}}), flush=True)
 last = None
 while True:
     if select.select([sys.stdin], [], [], 0.02)[0] and not sys.stdin.readline():
