@@ -3551,7 +3551,10 @@ impl Compositor {
             return None;
         }
         let fraction = tehuti_protocol::nearest_fraction(raw);
-        if let Some((path, _)) = self.context_files.iter().find(|(_, file)| file == context)
+        if let Some((path, _)) = self
+            .context_files
+            .iter()
+            .find(|(_, file)| file.app_id() == context.app_id() && file.title() == context.title())
             && let Err(error) = crate::width_rewrite::rewrite_file(path, fraction, screen)
         {
             tracing::warn!(%error, path = %path.display(), "window width not rewritten");

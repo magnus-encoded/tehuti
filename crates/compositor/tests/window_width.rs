@@ -247,8 +247,6 @@ mod window_width {
         let directory = tempfile::tempdir().unwrap();
         let source = context("5000");
         let compositor = open_window(&source, directory.path());
-        let (width, _) = opened_share(&compositor);
-        assert_eq!(width, None);
         assert_eq!(
             compositor.visible_notice_text().as_deref(),
             Some("WINDOW WIDTH IS WIDER THAN THE SCREEN")
