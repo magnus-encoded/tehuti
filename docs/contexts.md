@@ -31,9 +31,14 @@ key = "up"
 Button names use snake case, such as `south`, `left_bumper` and `dpad_left`.
 The analogue triggers are `left_trigger` and `right_trigger`; each presses at 40 percent of its travel and releases below 20 percent.
 Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, `home`, `end`, `page_up` and `page_down`. A mapping sends a complete key tap on button press. Releases send
-nothing. Unknown fields, buttons and keys are rejected. Application ids must
-contain a non-whitespace character.
+`right`, `home`, `end`, `page_up` and `page_down`. A mapping sends a complete
+key tap on button press. Releases send
+nothing. Key names are lowercase; the CamelCase spelling (`Tab`, `PageUp`)
+is accepted too, in contexts and plugin actions alike, and single letters may
+be `a` or `A`. Other casings such as `TAB` are rejected. Unknown fields,
+buttons and keys are rejected. The `[buttons]` table is optional: a context
+may hold only `[speech]`. Application ids must contain a non-whitespace
+character.
 
 An optional top-level `title = "World of Warcraft"` narrows a context to
 windows whose title equals it exactly. Among contexts for the focused
@@ -107,6 +112,27 @@ accepts the key so existing config files load, and ignores it: there are no
 desktop icons to draw or select with the D-pad. Speech launch mappings still launch
 their configured applications. `tehuti --check-config` warns when the key
 is present.
+
+## Invoke verb
+
+Speech that begins with "invoke" types a slash command in any window: "invoke
+usage report" types `/usage-report ` with a trailing space for arguments. A
+top-level `invoke` list names the slash-command words a context knows, as lowercase letters and digits joined by
+hyphens:
+
+```toml
+app_id = "*"
+invoke = ["usage", "chief-of-staff"]
+```
+
+The words after the verb snap to the closest word in the focused and global
+contexts' lists, so "invoke chief of stuff" still types `/chief-of-staff `; with
+no close word they are typed as heard, lowercased and joined by hyphens. The
+verb comes after Tehuti's own phrases and before plugin verbs and context
+phrases. It overrides every context phrase that starts with "invoke", fixed
+phrases such as `Invoke help` and templates such as `Invoke <name>` alike, so
+there is one way to invoke; `tehuti --check-config` warns about each such
+phrase. A lone "invoke" with nothing after it reaches context phrases as usual.
 
 ## Checking a config
 

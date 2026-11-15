@@ -179,6 +179,7 @@ fn start(socket: &Path, mut arguments: impl Iterator<Item = String>) -> Result<V
     if let Some(size) = size {
         let _command = command.env("TEHUTI_TEST_SIZE", size);
     }
+    seed_wallpaper(&runtime)?;
     let log = std::fs::File::create(runtime.join("session.log"))?;
     let mut child = command
         .arg(config)
@@ -194,6 +195,20 @@ fn start(socket: &Path, mut arguments: impl Iterator<Item = String>) -> Result<V
         .stderr(log)
         .spawn()?;
     await_start(&mut child, &selected_socket)
+}
+
+/// Copies the wallpaper pack and selection from `TEHUTI_DRIVE_WALLPAPER_SEED` into the isolated
+/// session's data and config directories, so a capture can show a real wallpaper.
+fn seed_wallpaper(runtime: &Path) -> Result<(), Box<dyn Error>> {
+    let Some(seed) = std::env::var_os("TEHUTI_DRIVE_WALLPAPER_SEED").map(PathBuf::from) else {
+        return Ok(());
+    };
+    for (name, directory) in [("wallpapers.pak", "data"), ("wallpaper", "config")] {
+        let target = runtime.join(directory).join("tehuti");
+        std::fs::create_dir_all(&target)?;
+        let _bytes = std::fs::copy(seed.join(name), target.join(name))?;
+    }
+    Ok(())
 }
 
 fn await_start(child: &mut std::process::Child, socket: &Path) -> Result<Value, Box<dyn Error>> {

@@ -7,8 +7,64 @@ mod tests {
     };
     use tehuti_protocol::ButtonName;
 
+    /// Runs `test` again in a child whose home, config and data directories are empty, so the
+    /// process-wide wallpaper cache cannot pick up an installed wallpaper. True in the child.
+    fn clean_environment(test: &str, wallpapers: Option<&[u8]>) -> bool {
+        if std::env::var_os("SCREENSHOT_CLEAN").is_some() {
+            return true;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("data");
+        if let Some(png) = wallpapers {
+            std::fs::create_dir_all(data.join("tehuti/wallpapers")).unwrap();
+            std::fs::write(data.join("tehuti/wallpapers/apteribis.png"), png).unwrap();
+        }
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test])
+            .env("SCREENSHOT_CLEAN", "1")
+            .env("HOME", directory.path())
+            .env("XDG_CONFIG_HOME", directory.path().join("config"))
+            .env("XDG_DATA_HOME", data)
+            .env("XDG_DATA_DIRS", directory.path().join("none"))
+            .env_remove("TEHUTI_ALL_WALLPAPERS")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{test}: {}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        false
+    }
+
+    #[test]
+    fn first_shot_shows_the_wallpaper() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(64, 36, image::Rgba([10, 120, 200, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        if !clean_environment("tests::first_shot_shows_the_wallpaper", Some(png.get_ref())) {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let path = directory.path().join("first.png");
+        let _shot = driver
+            .execute(&mut compositor, Request::Shot { path: path.clone() })
+            .unwrap();
+        let shot = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(*shot.get_pixel(40, 50), image::Rgba([10, 120, 200, 255]));
+    }
+
     #[test]
     fn empty_nested_desktop_shot_has_no_favourite_icons() {
+        if !clean_environment("tests::empty_nested_desktop_shot_has_no_favourite_icons", None) {
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
@@ -29,6 +85,9 @@ mod tests {
     fn screenshot_uses_the_current_output_capture_source() {
         use core::cell::RefCell;
         use std::rc::Rc;
+        if !clean_environment("tests::screenshot_uses_the_current_output_capture_source", None) {
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let display = Display::<Compositor>::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
@@ -181,6 +240,8 @@ mod tests {
             .env("SCREENSHOT_PROBE", mode)
             .env("HOME", directory.path())
             .env("XDG_CONFIG_HOME", config)
+            .env("XDG_DATA_HOME", directory.path().join("data"))
+            .env("XDG_DATA_DIRS", directory.path().join("none"))
             .env("TEHUTI_TEST_SIZE", "1280x720")
             .env_remove("XDG_PICTURES_DIR");
         if matches!(mode, "explicit" | "failure") {

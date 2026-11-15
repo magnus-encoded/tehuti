@@ -193,25 +193,43 @@ fn report_unknown_ticker_buttons(report: &mut Report, loaded: &[(PathBuf, tehuti
     }
 }
 
-fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
-    let contexts: Vec<_> = loaded.iter().map(|(_, context)| context.clone()).collect();
+/// Warns, in phrase order, about each speech phrase core claims before contexts.
+fn report_unreachable_speech(
+    report: &mut Report,
+    loaded: &[(PathBuf, tehuti_protocol::Context)],
+    claimed: impl Fn(&str) -> bool,
+    reason: &str,
+) {
     for (path, context) in loaded {
-        let mut reserved: Vec<_> = context
+        let mut unreachable: Vec<_> = context
             .speech_mappings()
-            .filter(|mapping| tehuti_core::unit_verbs::launcher_request(mapping.phrase).is_some())
+            .filter(|mapping| claimed(mapping.phrase))
             .collect();
-        reserved.sort_by_key(|mapping| mapping.phrase);
-        for mapping in reserved {
+        unreachable.sort_by_key(|mapping| mapping.phrase);
+        for mapping in unreachable {
             report.push(
                 path,
                 Severity::Warning,
-                format!(
-                    "[speech] {:?} never fires: core owns this reserved unit verb",
-                    mapping.phrase
-                ),
+                format!("[speech] {:?} never fires: {reason}", mapping.phrase),
             );
         }
     }
+}
+
+fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
+    let contexts: Vec<_> = loaded.iter().map(|(_, context)| context.clone()).collect();
+    report_unreachable_speech(
+        report,
+        loaded,
+        |phrase| tehuti_core::unit_verbs::launcher_request(phrase).is_some(),
+        "core owns this reserved unit verb",
+    );
+    report_unreachable_speech(
+        report,
+        loaded,
+        |phrase| tehuti_core::invoke::slash_command(phrase, []).is_some(),
+        "the built-in invoke verb types it as a slash command",
+    );
     for shadowing in shadowed(&contexts) {
         match shadowing {
             Shadowing::Context { context, earlier } => {
