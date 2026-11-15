@@ -1398,6 +1398,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_handshake_replays_focus_only_for_a_listed_app() {
+        for (app, replayed) in [("other", false), ("fuzz", true)] {
+            let mut session = fuzz_session().unwrap();
+            session.initialize_deadline = Instant::now() + Duration::from_secs(60);
+            session.latest_focus = Some((Some(app.into()), "private title".into()));
+            let reply = "{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocol_version\":0,\"encoding\":\"json\",\"events\":[\"focus\"]}}\n";
+            drop(session.receive(reply.as_bytes()));
+            assert_eq!(session.status, Status::Ready);
+            let sent = String::from_utf8(session.output.iter().copied().collect()).unwrap();
+            assert_eq!(sent.contains("private title"), replayed, "{app}: {sent}");
+        }
+    }
+
     fn text(value: &str) -> Action {
         serde_json::from_value(serde_json::json!({"type":"text","text":value})).unwrap()
     }

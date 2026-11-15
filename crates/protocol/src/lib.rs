@@ -1,11 +1,35 @@
 //! Protocol v0 types shared by the core and plugins.
 
 /// Text that can cross a Wayland string boundary.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Text(String);
 
+thread_local! {
+    static REVEAL: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Debug output shows the length only, so dictated text never reaches a log by accident.
+/// [`Text::reveal_in`] lifts that for the user's own opt-in recording.
+impl core::fmt::Debug for Text {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if REVEAL.with(core::cell::Cell::get) {
+            formatter.debug_tuple("Text").field(&self.0).finish()
+        } else {
+            write!(formatter, "Text({} bytes)", self.0.len())
+        }
+    }
+}
+
 impl Text {
+    /// Runs `f` with `Debug` showing the full text on this thread.
+    pub fn reveal_in<R>(f: impl FnOnce() -> R) -> R {
+        let before = REVEAL.with(|flag| flag.replace(true));
+        let result = f();
+        REVEAL.with(|flag| flag.set(before));
+        result
+    }
+
     /// Validates text before it becomes an action.
     ///
     /// # Errors
@@ -1463,3 +1487,24 @@ mod adjuster;
 pub use adjuster::Adjuster;
 mod sticks;
 pub use sticks::{Stick, StickDirection, StickMapping};
+
+#[cfg(test)]
+mod text_debug_tests {
+    use super::{Action, Text};
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn debug_output_never_contains_the_text(text in "[a-z]{8,40}") {
+            let value = Text::new(text.clone()).unwrap();
+            let shown = format!("{value:?}");
+            prop_assert!(!shown.contains(&text), "{shown}");
+            prop_assert!(shown.contains(&text.len().to_string()), "{shown}");
+            let nested = format!("{:?}", Action::Text { text: value.clone() });
+            prop_assert!(!nested.contains(&text), "{nested}");
+            let revealed = Text::reveal_in(|| format!("{value:?}"));
+            prop_assert!(revealed.contains(&text), "{revealed}");
+            prop_assert!(!format!("{value:?}").contains(&text), "reveal ends with its scope");
+        }
+    }
+}
