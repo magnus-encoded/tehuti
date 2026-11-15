@@ -492,7 +492,7 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
                 )
             })
             .collect::<Vec<_>>()
-            .join("");
+            .concat();
         std::fs::write(root.join("destinations.toml"), text)?;
         let display = Display::<Compositor>::new()?;
         let mut compositor = Compositor::new(&display.handle())?;
