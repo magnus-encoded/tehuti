@@ -240,9 +240,7 @@ fn full_height(list: &List) -> usize {
     if list.slots().create.is_some() {
         height = height.saturating_add(128);
     }
-    height
-        .saturating_add(72 * 5)
-        .saturating_add(FOOTER)
+    height.saturating_add(72 * 5).saturating_add(FOOTER)
 }
 
 fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32, i32, i32)> {
@@ -251,7 +249,12 @@ fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32
         .1
         .checked_sub(tehuti_core::bar::HEIGHT.saturating_mul(scale))?;
     let own = content_height(list);
-    let natural = i32::try_from(if list.is_anchored() { own.max(full_height(list)) } else { own }).ok()?;
+    let natural = i32::try_from(if list.is_anchored() {
+        own.max(full_height(list))
+    } else {
+        own
+    })
+    .ok()?;
     let width = 640i32
         .saturating_mul(scale)
         .min(size.0.saturating_mul(9).checked_div(10)?)

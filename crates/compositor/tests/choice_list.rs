@@ -358,7 +358,10 @@ mod tests {
                         / width,
                 );
             }
-            assert!(tops.windows(2).all(|pair| pair[0] == pair[1]), "tops {tops:?} at {size:?}");
+            assert!(
+                tops.windows(2).all(|pair| pair[0] == pair[1]),
+                "tops {tops:?} at {size:?}"
+            );
             assert!(bottoms[0] < bottoms[5], "list still shrinks downward at {size:?}");
         }
         Ok(())
