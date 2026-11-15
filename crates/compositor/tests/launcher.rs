@@ -484,14 +484,15 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
     fn session_with_three(
         root: &std::path::Path,
     ) -> Result<(Display<Compositor>, Compositor), Box<dyn core::error::Error>> {
-        let text: String = ["Orbit", "Orchard", "Orchid"]
+        let text = ["Orbit", "Orchard", "Orchid"]
             .into_iter()
             .map(|name| {
                 format!(
                     "[[destinations]]\nname = \"{name}\"\n[[destinations.routes]]\nsteps = [{{ icon = \"globe\", target = {{ kind = \"action\", value = {{ type = \"notice\", text = \"{name} opened\" }} }} }}]\n"
                 )
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .join("");
         std::fs::write(root.join("destinations.toml"), text)?;
         let display = Display::<Compositor>::new()?;
         let mut compositor = Compositor::new(&display.handle())?;
