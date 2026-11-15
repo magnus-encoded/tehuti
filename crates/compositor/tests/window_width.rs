@@ -27,6 +27,7 @@ mod window_width {
         protocol::{
             wl_buffer::WlBuffer,
             wl_compositor::WlCompositor,
+            wl_output::WlOutput,
             wl_registry::WlRegistry,
             wl_shm::{self, WlShm},
             wl_shm_pool::WlShmPool,
@@ -97,6 +98,7 @@ mod window_width {
     }
     delegate_noop!(App: ignore WlSurface);
     delegate_noop!(App: ignore WlCompositor);
+    delegate_noop!(App: ignore WlOutput);
     delegate_noop!(App: ignore WlShm);
     delegate_noop!(App: ignore WlShmPool);
     delegate_noop!(App: ignore WlBuffer);
@@ -108,6 +110,7 @@ mod window_width {
         let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
         let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
         let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+        let _output: WlOutput = globals.bind(&handle, 1..=4, ()).unwrap();
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
@@ -116,6 +119,8 @@ mod window_width {
         let mut app = App;
         let _first = queue.roundtrip(&mut app).unwrap();
         let _second = queue.roundtrip(&mut app).unwrap();
+        surface.commit();
+        let _unmapped = queue.roundtrip(&mut app).unwrap();
         let file = tempfile::tempfile().unwrap();
         file.set_len(64 * 64 * 4).unwrap();
         let pool = shm.create_pool(file.as_fd(), 64 * 64 * 4, &handle, ());
