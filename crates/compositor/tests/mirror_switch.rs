@@ -835,7 +835,7 @@ mod tests {
             (KeyCode::BTN_SELECT, 1),
             (KeyCode::BTN_SELECT, 0),
         ]);
-        assert_eq!(values(&log.borrow(), KeyCode::BTN_MODE), vec![1, 0]);
+        assert_eq!(values(&released.borrow(), KeyCode::BTN_MODE), vec![1, 0]);
     }
 
     #[test]
