@@ -16,7 +16,7 @@ pub enum WindowWidth {
 impl Eq for WindowWidth {}
 
 /// The value of a `"2/3"` string, if the denominator is not zero.
-pub(crate) fn parse_fraction(text: &str) -> Option<f64> {
+fn parse_fraction(text: &str) -> Option<f64> {
     let (numerator, denominator) = text.split_once('/').unwrap_or((text, "1"));
     let numerator: u32 = numerator.trim().parse().ok()?;
     let denominator: u32 = denominator.trim().parse().ok()?;
@@ -24,7 +24,7 @@ pub(crate) fn parse_fraction(text: &str) -> Option<f64> {
 }
 
 /// A fraction in (0, 1], or an error message.
-pub(crate) fn check_fraction(value: f64) -> Result<f64, &'static str> {
+fn check_fraction(value: f64) -> Result<f64, &'static str> {
     if value.is_finite() && value > 0.0_f64 && value <= 1.0_f64 {
         Ok(value)
     } else {
@@ -113,19 +113,15 @@ pub fn rewrite_window_width(source: &str, fraction: (u32, u32), screen: Option<u
             Some((key, value))
         });
         if let (true, false, Some((key, value))) = (in_window, done, found) {
-            let (value, comment) = value
-                .split_once('#')
-                .map_or((value.trim(), None), |(value, comment)| {
-                    (value.trim(), Some(comment))
-                });
+            let (value, comment) = value.split_once('#').map_or_else(
+                || (value.trim(), None),
+                |(value, comment)| (value.trim(), Some(comment)),
+            );
             let was = screen.map_or_else(|| value.to_owned(), |screen| format!("{value} px on {screen} px"));
             let (numerator, denominator) = fraction;
-            output.push_str(&format!(
-                "{indent}{key} = \"{numerator}/{denominator}\"  # was {was}"
-            ));
-            if let Some(comment) = comment {
-                output.push_str(&format!(" #{comment}"));
-            }
+            let comment = comment.map_or_else(String::new, |comment| format!(" #{comment}"));
+            let rewritten = format!("{indent}{key} = \"{numerator}/{denominator}\"  # was {was}{comment}");
+            output.push_str(&rewritten);
             output.push_str(eol);
             done = true;
         } else {
