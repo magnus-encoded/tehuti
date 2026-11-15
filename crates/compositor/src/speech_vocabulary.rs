@@ -191,3 +191,53 @@ pub fn prompt(contexts: &[Context], app_id: Option<&str>, title: &str) -> String
     }
     words.into_iter().take(100).collect::<Vec<_>>().join(" ")
 }
+
+/// Most hotwords a context and its plugins may offer together.
+pub const MAX_HOTWORDS: usize = 64;
+
+/// Merges context hotwords with plugin hints under [`MAX_HOTWORDS`]. Only the
+/// plugin's entries are dropped, last-in first, so context hotwords always stay.
+/// The count is how many were dropped.
+#[must_use]
+pub fn hotwords(context: Vec<String>, plugin: Vec<String>) -> (Vec<String>, usize) {
+    let room = MAX_HOTWORDS.saturating_sub(context.len());
+    let dropped = plugin.len().saturating_sub(room);
+    let mut merged = context;
+    merged.extend(plugin.into_iter().take(room));
+    (bounded(merged), dropped)
+}
+
+/// Remembers which plugins or contexts already had their over-cap warning.
+#[derive(Debug, Default)]
+pub struct OverCapWarned(std::collections::HashSet<String>);
+
+impl OverCapWarned {
+    /// True the first time `source` goes over the cap; false on every later call.
+    pub fn first_time(&mut self, source: &str) -> bool {
+        self.0.insert(source.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(count: usize) -> Vec<String> {
+        (0..count).map(|index| format!("w{index}")).collect()
+    }
+
+    #[test]
+    fn over_the_cap_only_the_plugin_loses_entries() {
+        let (merged, dropped) = hotwords(words(70), vec!["plug a".into(), "plug b".into()]);
+        assert_eq!(merged, words(70));
+        assert_eq!(dropped, 2);
+    }
+
+    #[test]
+    fn the_over_cap_warning_fires_once_per_source() {
+        let mut warned = OverCapWarned::default();
+        assert!(warned.first_time("chatty"));
+        assert!(!warned.first_time("chatty"));
+        assert!(warned.first_time("other"));
+    }
+}
