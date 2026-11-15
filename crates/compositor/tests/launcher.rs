@@ -505,6 +505,99 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         Ok((display, compositor))
     }
 
+    /// Four desktop entries as an Xfce session lists them; typing "Termin" must put Terminal Emulator first.
+    /// Renders the list to the path in `TEHUTI_SHOT_COPY` when it is set.
+    #[test]
+    fn typing_termin_ranks_terminal_emulator_first_and_settings_last()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let applications = root.path().join("data/applications");
+        std::fs::create_dir_all(&applications)?;
+        for (file, name, generic, extra) in [
+            (
+                "default.desktop",
+                "Default Applications",
+                "Preferred Applications",
+                "Keywords=terminal;\nCategories=Settings;\n",
+            ),
+            (
+                "emulator.desktop",
+                "Terminal Emulator",
+                "Terminal",
+                "Categories=System;\n",
+            ),
+            (
+                "xterm.desktop",
+                "Xfce Terminal",
+                "Terminal Emulator",
+                "Categories=System;\n",
+            ),
+            (
+                "xterm-settings.desktop",
+                "Xfce Terminal settings",
+                "Terminal Emulator",
+                "Categories=Settings;\n",
+            ),
+        ] {
+            std::fs::write(
+                applications.join(file),
+                format!(
+                    "[Desktop Entry]\nType=Application\nName={name}\nGenericName={generic}\nExec=true\n{extra}"
+                ),
+            )?;
+        }
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.configure_destinations(Paths {
+            config: root.path().into(),
+            projects: root.path().join("projects"),
+            data: vec![root.path().join("data")],
+        });
+        if std::env::var("TEHUTI_SHOT_COPY").is_ok() {
+            tehuti::driver::headless_output(&display.handle(), &mut compositor)?;
+        }
+        compositor.say(Text::new("open zzz".into())?);
+        for code in [
+            KEY_BACKSPACE,
+            KEY_BACKSPACE,
+            KEY_BACKSPACE,
+            20,
+            18,
+            19,
+            50,
+            23,
+            49,
+        ] {
+            tap(&mut compositor, code);
+        }
+        let names: Vec<_> = compositor
+            .choice_list()
+            .map(|list| {
+                list.candidates()
+                    .iter()
+                    .map(|row| row.candidate.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            names,
+            [
+                "Terminal Emulator",
+                "Xfce Terminal",
+                "Xfce Terminal settings",
+                "Default Applications"
+            ]
+        );
+        if let Ok(copy) = std::env::var("TEHUTI_SHOT_COPY") {
+            let mut driver = tehuti::driver::Driver::bind(root.path(), tehuti::backend::Backend::Nested)?;
+            let _scene = driver.execute(
+                &mut compositor,
+                tehuti::driver::Request::Shot { path: copy.into() },
+            )?;
+        }
+        Ok(())
+    }
+
     /// Renders the filtered list to the path in `TEHUTI_SHOT_COPY`; a no-op otherwise.
     #[test]
     fn typed_filter_renders_for_review() -> Result<(), Box<dyn core::error::Error>> {
