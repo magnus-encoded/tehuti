@@ -395,7 +395,8 @@ struct MirrorCopy {
     /// Keys and hat axes the virtual controller currently shows as held.
     held: Vec<(u16, u16)>,
     /// Menu and View as the physical pad holds them, for the Guide chord.
-    chord_down: [bool; 2],
+    menu_down: bool,
+    view_down: bool,
     /// The key whose press completed the chord and went to the stream as Guide instead.
     chord_key: Option<(u16, u16)>,
     chord_live: bool,
@@ -405,17 +406,20 @@ impl MirrorCopy {
     /// Menu + View together reach the stream as Guide, held as long as the chord is; the completing button stays out.
     /// Returns whether `key`'s own event is kept from the stream.
     fn chord(&mut self, name: ButtonName, state: ButtonState, key: (u16, u16)) -> bool {
-        let slot = match name {
-            ButtonName::Start => 0,
-            ButtonName::Select => 1,
-            _ => return false,
-        };
+        if name != ButtonName::Start && name != ButtonName::Select {
+            return false;
+        }
+        let menu = name == ButtonName::Start;
         let guide = (evdev::EventType::KEY.0, KeyCode::BTN_MODE.code());
         let mut kept = self.chord_key == Some(key);
         match state {
             ButtonState::Pressed => {
-                self.chord_down[slot] = true;
-                if self.chord_down == [true, true] && self.chord_key.is_none() {
+                if menu {
+                    self.menu_down = true;
+                } else {
+                    self.view_down = true;
+                }
+                if self.menu_down && self.view_down && self.chord_key.is_none() {
                     self.chord_key = Some(key);
                     self.chord_live = true;
                     self.held.retain(|held| *held != guide);
@@ -425,7 +429,11 @@ impl MirrorCopy {
                 }
             }
             ButtonState::Released => {
-                self.chord_down[slot] = false;
+                if menu {
+                    self.menu_down = false;
+                } else {
+                    self.view_down = false;
+                }
                 if self.chord_live {
                     self.chord_live = false;
                     self.held.retain(|held| *held != guide);
