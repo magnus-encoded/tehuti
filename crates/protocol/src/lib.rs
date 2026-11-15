@@ -22,10 +22,10 @@ impl core::fmt::Debug for Text {
 }
 
 impl Text {
-    /// Runs `f` with `Debug` showing the full text on this thread.
-    pub fn reveal_in<R>(f: impl FnOnce() -> R) -> R {
+    /// Runs `action` with `Debug` showing the full text on this thread.
+    pub fn reveal_in<R>(action: impl FnOnce() -> R) -> R {
         let before = REVEAL.with(|flag| flag.replace(true));
-        let result = f();
+        let result = action();
         REVEAL.with(|flag| flag.set(before));
         result
     }
