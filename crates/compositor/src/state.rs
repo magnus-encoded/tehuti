@@ -3510,7 +3510,9 @@ impl Compositor {
                     })
                 })
             });
-        let width = context.and_then(|context| self.opening_width(context));
+        let context = context.cloned();
+        let width = context.as_ref().and_then(|context| self.opening_width(context));
+        let context = context.as_ref();
         let rules = Self::window_rules(&surface, context, width);
         let key = surface.wl_surface().clone();
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
@@ -3522,7 +3524,7 @@ impl Compositor {
 
     /// The opening width fraction of a context. A pixel or decimal setting is
     /// converted against the output in front of it and rewritten in the file.
-    fn opening_width(&self, context: &tehuti_protocol::Context) -> Option<f64> {
+    fn opening_width(&mut self,context: &tehuti_protocol::Context) -> Option<f64> {
         use core::ops::Div;
         use tehuti_protocol::WindowWidth;
         let (raw, screen) = match context.window_width()? {
@@ -3541,22 +3543,18 @@ impl Compositor {
             }
         };
         if raw > 1.0 {
-            tracing::warn!(
+            tracing::error!(
                 width = raw,
                 "context window width exceeds the screen and is ignored"
             );
+            self.show_notice("WINDOW WIDTH IS WIDER THAN THE SCREEN");
             return None;
         }
         let fraction = tehuti_protocol::nearest_fraction(raw);
-        if let Some((path, _)) = self.context_files.iter().find(|(_, file)| file == context) {
-            let rewritten = std::fs::read_to_string(path)
-                .ok()
-                .and_then(|source| tehuti_protocol::rewrite_window_width(&source, fraction, screen));
-            if let Some(rewritten) = rewritten
-                && let Err(error) = std::fs::write(path, rewritten)
-            {
-                tracing::warn!(%error, path = %path.display(), "window width not rewritten");
-            }
+        if let Some((path, _)) = self.context_files.iter().find(|(_, file)| file == context)
+            && let Err(error) = crate::width_rewrite::rewrite_file(path, fraction, screen)
+        {
+            tracing::warn!(%error, path = %path.display(), "window width not rewritten");
         }
         Some(tehuti_protocol::fraction_value(fraction))
     }
