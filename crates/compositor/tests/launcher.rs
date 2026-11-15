@@ -578,7 +578,7 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
                     .iter()
                     .map(|row| row.candidate.name.clone())
                     .collect()
-            })
+            });
         assert_eq!(
             names,
             [
