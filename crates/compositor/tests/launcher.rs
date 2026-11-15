@@ -645,7 +645,7 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         for code in [KEY_K, KEY_I] {
             tap(&mut compositor, code);
         }
-        let _scene = driver.execute(
+        let _filtered = driver.execute(
             &mut compositor,
             tehuti::driver::Request::Shot { path: copy.into() },
         )?;
