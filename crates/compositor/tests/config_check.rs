@@ -259,6 +259,37 @@ order = 1
     }
 
     #[test]
+    fn invalid_window_widths_are_errors_and_valid_ones_are_not() {
+        for bad in ["\"3/2\"", "\"0/3\"", "\"two\"", "1.5", "0.0", "-5", "0"] {
+            let directory = tempfile::tempdir().unwrap();
+            write(
+                directory.path(),
+                "game/context.toml",
+                &format!("app_id = 'org.example.Game'\nbuttons = {{}}\n[window]\nwidth = {bad}\n"),
+            );
+            let report = check(directory.path());
+            assert!(report.has_errors(), "{bad}: {report}");
+            assert!(report.to_string().contains("game/context.toml: error:"), "{bad}: {report}");
+            let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
+                .args(["--check-config".as_ref(), directory.path().as_os_str()])
+                .env_clear()
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{bad}: {output:?}");
+        }
+        for good in ["\"2/3\"", "1280", "0.667", "1"] {
+            let directory = tempfile::tempdir().unwrap();
+            write(
+                directory.path(),
+                "game/context.toml",
+                &format!("app_id = 'org.example.Game'\nbuttons = {{}}\n[window]\nwidth = {good}\n"),
+            );
+            let report = check(directory.path());
+            assert!(!report.has_errors(), "{good}: {report}");
+        }
+    }
+
+    #[test]
     fn a_clean_directory_has_no_findings() {
         let directory = tempfile::tempdir().unwrap();
         write(
