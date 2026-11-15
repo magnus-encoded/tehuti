@@ -95,6 +95,35 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn a_speech_only_context_needs_no_buttons_table() {
+        let context =
+            parse_context("app_id = '*'\n[speech]\n'next tab' = { key = 'tab', mods = ['ctrl'] }").unwrap();
+        assert_eq!(context.mapped_buttons().count(), 0);
+        assert!(context.speech_action("next tab").is_some());
+    }
+
+    #[test]
+    fn capitalised_key_names_mean_the_same_key_in_contexts_and_plugin_actions() {
+        for (spelled, key) in [
+            ("Tab", KeyName::Tab),
+            ("Escape", KeyName::Escape),
+            ("Left", KeyName::Left),
+            ("PageUp", KeyName::PageUp),
+            ("Home", KeyName::Home),
+        ] {
+            let context = parse_context(&format!(
+                "app_id = '*'\n[buttons]\neast = {{ key = '{spelled}' }}"
+            ))
+            .unwrap();
+            assert_eq!(context.key_for(tehuti_protocol::ButtonName::East), Some(key));
+            let action: tehuti_protocol::Action =
+                serde_json::from_str(&format!(r#"{{"type":"key","key":"{spelled}"}}"#)).unwrap();
+            assert_eq!(action, tehuti_protocol::Action::Key { key, mods: vec![] });
+        }
+        assert!(parse_context("app_id = '*'\n[buttons]\neast = { key = 'TAB' }").is_err());
+    }
+
+    #[test]
     fn favourites_preserve_order_and_default_to_empty() {
         let plain = parse_context("app_id = '*'\n[buttons]").unwrap();
         assert_eq!(plain.favourites(), Vec::<String>::new());
@@ -346,6 +375,21 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn fold_warnings_are_not_skipped_phrases() {
+        let context = speech_context(&[("Ab part", "enter"), ("Abpart", "tab")]);
+        assert_eq!(context.warnings().len(), 1);
+        let empty: &[String] = &[];
+        assert_eq!(context.skipped_phrases(), empty);
+    }
+
+    #[test]
+    fn a_malformed_entry_still_fails_the_whole_file() {
+        let source =
+            "app_id = 'foot'\n[buttons]\n[speech]\n'Go' = { key = 'enter' }\n'Bad' = { key = 'nope' }";
+        assert!(parse_context(source).is_err());
+    }
+
+    #[test]
     fn a_context_that_loaded_before_folding_still_loads() {
         let context = speech_context(&[("Ab part", "enter"), ("Abpart", "tab"), ("Bay 12", "space")]);
         assert_eq!(context.warnings().len(), 1, "{:?}", context.warnings());
@@ -460,20 +504,49 @@ restart = { restart = false }"
     }
 
     #[test]
-    fn speech_phrases_that_normalize_alike_are_rejected() {
-        let error = parse_context(
-            "app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }\n\"hello.\" = { key = 'tab' }",
+    fn speech_phrases_that_normalize_alike_drop_the_later_one_and_warn() {
+        let context = parse_context(
+            "app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }\n\"hello.\" = { key = 'tab' }\n\"Other\" = { key = 'space' }",
         )
-        .unwrap_err();
-        assert!(error.contains("normalizes to \"hello\""), "{error}");
+        .unwrap();
+        assert_eq!(
+            context.skipped_phrases().len(),
+            1,
+            "{:?}",
+            context.skipped_phrases()
+        );
+        assert!(
+            context.skipped_phrases()[0].contains("\"hello.\"")
+                && context.skipped_phrases()[0].contains("\"Hello\""),
+            "{:?}",
+            context.skipped_phrases()
+        );
+        assert!(
+            context.skipped_phrases()[0].contains("normalize to \"hello\""),
+            "{:?}",
+            context.skipped_phrases()
+        );
+        assert!(context.speech_action("Other").is_some());
+        let first =
+            parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }").unwrap();
+        assert_eq!(context.speech_action("hello"), first.speech_action("hello"));
     }
 
     #[test]
-    fn speech_phrases_that_normalize_to_nothing_are_rejected() {
+    fn speech_phrases_that_normalize_to_nothing_are_dropped_with_a_warning() {
         for phrase in ["", "...", " ' ", "\u{2014}\u{ff01}"] {
-            let source = format!("app_id = 'foot'\n[buttons]\n[speech]\n{phrase:?} = {{ key = 'enter' }}");
-            let error = parse_context(&source).unwrap_err();
-            assert!(error.contains("no words"), "{phrase:?}: {error}");
+            let source = format!(
+                "app_id = 'foot'\n[buttons]\n[speech]\n{phrase:?} = {{ key = 'enter' }}\n'Go' = {{ key = 'tab' }}"
+            );
+            let context = parse_context(&source).unwrap();
+            assert_eq!(
+                context.skipped_phrases().len(),
+                1,
+                "{phrase:?}: {:?}",
+                context.skipped_phrases()
+            );
+            assert!(context.skipped_phrases()[0].contains("no words"), "{phrase:?}");
+            assert!(context.speech_action("Go").is_some());
         }
     }
 
@@ -521,11 +594,15 @@ restart = { restart = false }"
         let context =
             parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }").unwrap();
         assert!(context.speech_action("J\u{30c}").is_some());
-        let error = parse_context(
+        let doubled = parse_context(
             "app_id = 'foot'\n[buttons]\n[speech]\n\"\u{1f0}\" = { key = 'enter' }\n\"J\u{30c}\" = { key = 'tab' }",
         )
-        .unwrap_err();
-        assert!(error.contains("normalizes to"), "{error}");
+        .unwrap();
+        assert!(
+            doubled.skipped_phrases()[0].contains("normalize to"),
+            "{:?}",
+            doubled.skipped_phrases()
+        );
     }
 
     #[test]

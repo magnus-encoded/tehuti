@@ -352,7 +352,9 @@ fn start_session(
         config: std::path::PathBuf::from(context_directory),
         ..tehuti::destinations::Paths::default()
     });
-    compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(context_directory)));
+    compositor.set_context_files(tehuti::contexts::load_files(std::path::Path::new(
+        context_directory,
+    )));
     match tehuti::input_choice_store::Store::from_env() {
         Ok(store) => compositor.load_input_choices(store),
         Err(error) => warn!(%error, "input choices will not be saved"),

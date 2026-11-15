@@ -5382,3 +5382,34 @@ fn the_open_keyboard_takes_a_face_button_before_stick_modifier_capture() {
     let state = world.run(state, pad_button(ButtonName::North, ButtonState::Pressed));
     assert_eq!(state.core().held_stick_modifier(), None);
 }
+
+#[test]
+fn an_active_plugin_gets_a_tapped_stick_modifier_as_press_then_release() {
+    let mut world = World {
+        plugin_active: true,
+        ..World::default()
+    };
+    let player = stick_modifier_player(&mut world);
+    world.trace.clear();
+    let _tapped: State = tap_button(&mut world, player, ButtonName::North);
+    let routed: Vec<ButtonState> = world
+        .trace
+        .iter()
+        .filter_map(|effect| {
+            if let Effect::DispatchPlugin {
+                event:
+                    Event::Button {
+                        name: ButtonName::North,
+                        state: half,
+                    },
+                route: true,
+            } = effect
+            {
+                Some(*half)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(routed, vec![ButtonState::Pressed, ButtonState::Released]);
+}
