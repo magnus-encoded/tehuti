@@ -824,13 +824,13 @@ mod tests {
 
     #[test]
     fn menu_and_view_held_keep_guide_pressed_until_the_chord_ends() {
-        let log = play(&[(KeyCode::BTN_START, 1), (KeyCode::BTN_SELECT, 1)]);
+        let held = play(&[(KeyCode::BTN_START, 1), (KeyCode::BTN_SELECT, 1)]);
         assert_eq!(
-            values(&log.borrow(), KeyCode::BTN_MODE),
+            values(&held.borrow(), KeyCode::BTN_MODE),
             vec![1],
             "held as long as the chord"
         );
-        let log = play(&[
+        let released = play(&[
             (KeyCode::BTN_START, 1),
             (KeyCode::BTN_SELECT, 1),
             (KeyCode::BTN_SELECT, 0),
