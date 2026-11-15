@@ -128,7 +128,6 @@ pub(crate) fn insert(
     let frames = tehuti::frame_recovery::Driver::new(&frames_handle, &tty, event_loop.get_signal());
     let flip_tty = tty.clone();
     let flip_frames = frames.clone();
-    let flip_stop = event_loop.get_signal();
     let drm_token = event_loop
         .handle()
         .insert_source(drm_notifier, move |event, _, data| match event {
@@ -140,8 +139,12 @@ pub(crate) fn insert(
                 flip_frames.render(data, true);
             }
             DrmEvent::Error(error) => {
-                warn!(%error, "DRM event failed");
-                flip_stop.stop();
+                // A lost flip event must not wedge scanout; the next frame retries it.
+                warn!(%error, "DRM event failed; continuing");
+                if let Some(scanout) = &mut flip_tty.borrow_mut().scanout {
+                    scanout.pending = false;
+                }
+                flip_frames.render(data, true);
             }
         })?;
     let udev_token = insert_device_watch(event_loop, udev, &tty)?;
@@ -324,6 +327,8 @@ fn insert_seat(
                     tty.device.pause();
                     if let Some(scanout) = &mut tty.scanout {
                         scanout.pending = false;
+                        // Time away from the seat must not count as failed frames.
+                        scanout.recovery.reset();
                     }
                 }
                 Event::ActivateSession => match tty.device.activate(true) {
@@ -841,7 +846,8 @@ impl Scanout {
         let mut fall_back = false;
         let retry = self
             .recovery
-            .finish(std::time::Instant::now(), result, || fall_back = true)?;
+            .finish(std::time::Instant::now(), result, || fall_back = true)
+            .inspect_err(|_| data.frames = crate::Frames::Failed)?;
         if fall_back {
             self.restore_mode(device, self.confirmed_mode, data);
             self.modeset = true;
