@@ -51,8 +51,7 @@ pub fn replace_file(path: &Path, contents: &str) -> io::Result<()> {
 /// Returns the I/O error that stopped the read or the replacement.
 pub fn rewrite_file(path: &Path, fraction: (u32, u32), screen: Option<u32>) -> io::Result<bool> {
     let source = fs::read_to_string(path)?;
-    match tehuti_protocol::rewrite_window_width(&source, fraction, screen) {
-        Some(rewritten) => replace_file(path, &rewritten).map(|()| true),
-        None => Ok(false),
-    }
+    tehuti_protocol::rewrite_window_width(&source, fraction, screen).map_or(Ok(false), |rewritten| {
+        replace_file(path, &rewritten).map(|()| true)
+    })
 }
