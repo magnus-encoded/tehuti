@@ -2410,8 +2410,7 @@ impl Compositor {
         match code {
             KEY_ENTER | KEY_KPENTER => press(self, family.button(tehuti_core::pad::Role::Confirm)),
             KEY_ESC => press(self, family.button(tehuti_core::pad::Role::Back)),
-            KEY_UP => press(self, ButtonName::DpadUp),
-            KEY_DOWN => press(self, ButtonName::DpadDown),
+            KEY_UP | KEY_DOWN => press(self, if code == KEY_UP { ButtonName::DpadUp } else { ButtonName::DpadDown }),
             KEY_BACKSPACE => {
                 let mut query = query;
                 let _removed = query.pop();
