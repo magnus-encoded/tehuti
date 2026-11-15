@@ -340,10 +340,10 @@ mod tests {
             let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, (1920, 1080))
                 .ok_or("artwork")?;
             let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-            // Natural height is 160 + 72 per row; the top edge is fixed by the full 648-tall panel centred
+            // Natural height is 160 + 72 per row; the top edge is fixed by the full 520-tall panel centred
             // in the 1048 rows above the bar.
             let natural = 160_usize.saturating_add(rows.saturating_mul(72));
-            let expected = (1080_usize.saturating_sub(bar).saturating_sub(648) / 2)
+            let expected = (1080_usize.saturating_sub(bar).saturating_sub(520) / 2)
                 .saturating_add(natural)
                 .saturating_sub(1);
             assert_eq!(bottom, expected, "{rows} rows: panel bottom row");
@@ -367,9 +367,9 @@ mod tests {
         let pixels = tehuti::choice_list::raster_scaled(launcher.list(), PadFamily::Letters, (1920, 1080), 2)
             .ok_or("artwork")?;
         let bottom = opaque_bottom(&pixels).ok_or("panel")?;
-        // The full 648-tall panel must fit 80% of the 1016 rows above the doubled bar, so it is 802 wide; 2 rows
-        // (natural 304) make it 380 tall, hanging from the fixed top 102.
-        assert_eq!(bottom, 481, "panel bottom row; the doubled bar starts at 1016");
+        // The full 520-tall panel must fit 80% of the 1016 rows above the doubled bar, so it is 999 wide; 2 rows
+        // (natural 304) make it 474 tall, hanging from the fixed top 102.
+        assert_eq!(bottom, 575, "panel bottom row; the doubled bar starts at 1016");
         let covered = |x: &usize| {
             (0..1080_usize).any(|y| {
                 pixels
@@ -382,7 +382,7 @@ mod tests {
                     .is_some_and(|alpha| *alpha >= 200)
             })
         };
-        assert_eq!((0..1920_usize).find(covered), Some(559), "panel left column");
+        assert_eq!((0..1920_usize).find(covered), Some(460), "panel left column");
         assert_eq!(
             (0..1920_usize).rev().find(covered),
             Some(1360),
