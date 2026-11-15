@@ -79,13 +79,15 @@ pub(crate) fn step_marks(
             let geometry = match axis {
                 tehuti_core::adjuster::SizeAxis::Width => {
                     let span = width.saturating_sub(wide);
-                    let x = left.saturating_add(span.saturating_mul(step).saturating_div(last));
+                    let x =
+                        left.saturating_add(span.saturating_mul(step).checked_div(last).unwrap_or_default());
                     let y = top.saturating_add(height).saturating_sub(length);
                     Rectangle::new((x, y).into(), (wide, length).into())
                 }
                 tehuti_core::adjuster::SizeAxis::Height => {
                     let span = height.saturating_sub(wide);
-                    let y = top.saturating_add(span.saturating_mul(step).saturating_div(last));
+                    let y =
+                        top.saturating_add(span.saturating_mul(step).checked_div(last).unwrap_or_default());
                     Rectangle::new((left, y).into(), (length, wide).into())
                 }
             };
