@@ -50,6 +50,8 @@ pub struct Destination {
     pub extra_names: Vec<String>,
     pub routes: Vec<Route>,
     pub source: Source,
+    /// A settings page (Categories has Settings): ranks below applications on ties.
+    pub settings: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +103,7 @@ impl Table {
                     extra_names: Vec::new(),
                     routes,
                     source: Source::Project,
+                    settings: false,
                 });
             }
         }
@@ -115,6 +118,7 @@ impl Table {
                 extra_names: custom.extra_names,
                 routes: custom.routes,
                 source: Source::Custom,
+                settings: false,
             });
         }
         Ok(table)
@@ -164,6 +168,7 @@ impl Table {
                 extra_names: Vec::new(),
                 routes: vec![route("desktop", Target::Workspace(workspace.workspace.0))],
                 source: Source::Workspace,
+                settings: false,
             });
         }
     }
@@ -191,6 +196,7 @@ impl Table {
                 extra_names: Vec::new(),
                 routes: vec![route("system", Target::Menu(command.key().into()))],
                 source: Source::Menu,
+                settings: false,
             });
         }
     }
@@ -247,6 +253,7 @@ impl Table {
                     .collect(),
                 routes: vec![route("application-x-executable", Target::Window(window.identity))],
                 source: Source::Window,
+                settings: false,
             });
         }
     }
@@ -336,6 +343,9 @@ fn desktop_destination(path: &Path, entry_id: String) -> Option<Destination> {
             Target::Desktop(entry_id),
         )],
         source: Source::Desktop,
+        settings: fields
+            .get("Categories")
+            .is_some_and(|list| list.split(';').any(|category| category.trim() == "Settings")),
     })
 }
 

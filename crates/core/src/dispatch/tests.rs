@@ -4344,6 +4344,7 @@ fn launcher_controller_confirmation_becomes_a_route_effect() {
             open: false,
             focused: false,
             safety: crate::launcher::Safety::Launch,
+            settings: false,
         }],
         None,
     );
@@ -4375,6 +4376,7 @@ fn launcher_allows_push_to_talk_and_replaces_its_query() {
             open: false,
             focused: false,
             safety: crate::launcher::Safety::Launch,
+            settings: false,
         }],
         None,
     );
@@ -5231,6 +5233,7 @@ fn launcher_row(name: &str) -> crate::launcher::Destination {
         open: false,
         focused: false,
         safety: crate::launcher::Safety::Launch,
+        settings: false,
     }
 }
 

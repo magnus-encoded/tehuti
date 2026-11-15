@@ -191,6 +191,7 @@ mod tests {
                 open: false,
                 focused: false,
                 safety: tehuti_core::launcher::Safety::Launch,
+                settings: false,
             })
             .collect();
         tehuti_core::launcher::Launcher::new("browser", destinations, None)
