@@ -1134,13 +1134,12 @@ fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
 /// normalizes to nothing or to the same text as an earlier phrase is dropped
 /// with a warning instead; the rest of the context loads.
 pub fn parse_context(source: &str) -> Result<Context, String> {
-    let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
+    let mut context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
     validate_holds(&context)?;
     validate_keyboard_button(context.keyboard.button)?;
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
-    let mut context = context;
     let hotwords = take_hotwords(&mut context.speech)?;
     let mut speech: std::collections::HashMap<String, SpeechEntry> =
         std::collections::HashMap::with_capacity(context.speech.len());
