@@ -3541,7 +3541,10 @@ impl Compositor {
             }
         };
         if raw > 1.0 {
-            tracing::warn!(width = raw, "context window width exceeds the screen and is ignored");
+            tracing::warn!(
+                width = raw,
+                "context window width exceeds the screen and is ignored"
+            );
             return None;
         }
         let fraction = tehuti_protocol::nearest_fraction(raw);
@@ -3570,8 +3573,7 @@ impl Compositor {
                 tehuti_core::layout::WindowKind::Ordinary
             },
             open_fullscreen: context.is_some_and(tehuti_protocol::Context::open_fullscreen),
-            default_column_width: width
-                .map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
+            default_column_width: width.map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
             default_window_height: context
                 .and_then(tehuti_protocol::Context::window_height)
                 .map(tehuti_core::layout::PresetSize::Proportion),
