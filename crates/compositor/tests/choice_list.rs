@@ -414,3 +414,36 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod anchored_top {
+    use tehuti_core::{
+        choice_list::{Candidate, List, Slots},
+        pad::PadFamily,
+    };
+
+    fn panel_top(rows: usize) -> Option<i64> {
+        let list = List::ordered(Slots {
+            title: "Open".into(),
+            candidates: (0..rows)
+                .map(|index| Candidate {
+                    name: format!("Entry {index}"),
+                    meta: None,
+                })
+                .collect(),
+            action: "Open".into(),
+            ..Slots::default()
+        });
+        tehuti::choice_list::scene(&list, PadFamily::Letters, (1920, 1080))?
+            .get("panel")?
+            .get("y")?
+            .as_i64()
+    }
+
+    #[test]
+    fn the_panel_top_stays_put_while_the_list_shrinks() {
+        let tops: Vec<_> = (1..=5).map(panel_top).collect();
+        assert!(tops.iter().all(Option::is_some));
+        assert!(tops.windows(2).all(|pair| pair[0] == pair[1]), "tops differ: {tops:?}");
+    }
+}

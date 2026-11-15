@@ -2391,6 +2391,9 @@ impl Compositor {
         if self.host_key_as_pad(keycode, pressed) {
             return;
         }
+        if self.host_key_opens_launcher(keycode, pressed) {
+            return;
+        }
         if self.host_key_in_launcher(keycode, pressed) {
             return;
         }
@@ -2400,6 +2403,28 @@ impl Compositor {
             smithay::backend::input::KeyState::Released
         };
         self.send_keycode(keycode, state);
+    }
+
+    /// Meta+Space opens the launcher, as the spoken route does; the client never sees the Space.
+    fn host_key_opens_launcher(&mut self, keycode: Keycode, pressed: bool) -> bool {
+        const KEY_SPACE: u32 = 57;
+        if keycode.raw().saturating_sub(XKB_KEYCODE_OFFSET) != KEY_SPACE {
+            return false;
+        }
+        if !pressed {
+            // Release consumes a Space that opened the launcher; other releases fall through.
+            let consumed = self.consumed_host_keys.contains(&keycode);
+            self.consumed_host_keys.retain(|held| *held != keycode);
+            return consumed;
+        }
+        if self.meta_held.is_empty() {
+            return false;
+        }
+        if !self.consumed_host_keys.contains(&keycode) {
+            self.consumed_host_keys.push(keycode);
+        }
+        self.retype_launcher(String::new());
+        true
     }
 
     /// While the launcher is open, typing filters it, Enter opens the selection and Escape closes it.

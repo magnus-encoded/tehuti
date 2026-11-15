@@ -452,6 +452,30 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
     }
 
     #[test]
+    fn meta_space_opens_the_launcher_and_typing_then_filters() -> Result<(), Box<dyn core::error::Error>> {
+        const KEY_LEFTMETA: u32 = 125;
+        const KEY_SPACE: u32 = 57;
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session(root.path())?;
+        tap(&mut compositor, KEY_ESC);
+        assert_eq!(first_row(&compositor), None, "closed before the chord");
+        compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), true);
+        tap(&mut compositor, KEY_SPACE);
+        compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), false);
+        assert!(
+            compositor
+                .choice_list()
+                .is_some_and(tehuti_core::choice_list::List::is_open),
+            "Meta+Space shows the launcher"
+        );
+        for code in [KEY_K, KEY_I, KEY_T] {
+            tap(&mut compositor, code);
+        }
+        assert_eq!(first_row(&compositor).as_deref(), Some("Kitty"));
+        Ok(())
+    }
+
+    #[test]
     fn backspace_widens_the_filter_and_escape_closes_the_launcher() -> Result<(), Box<dyn core::error::Error>>
     {
         let root = tempfile::tempdir()?;
