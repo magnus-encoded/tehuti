@@ -756,6 +756,98 @@ mod tests {
         );
     }
 
+    fn values(log: &Log, key: KeyCode) -> Vec<i32> {
+        log.frames
+            .iter()
+            .flat_map(|(_, frame)| frame.iter())
+            .filter(|(kind, code, _)| *kind == EventType::KEY.0 && *code == key.code())
+            .map(|(_, _, value)| *value)
+            .collect()
+    }
+
+    /// Plays `steps` (key, value) through a mirrored pad in a passthrough context and returns what the game saw.
+    fn play(steps: &[(KeyCode, i32)]) -> Rc<RefCell<Log>> {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor(&display.handle(), "['record']");
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
+        for (key, value) in steps {
+            queue(&handles, *key, *value);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(&mut compositor, &mut pad).unwrap();
+        }
+        log
+    }
+
+    #[test]
+    fn menu_and_view_together_tap_guide_on_the_stream() {
+        for order in [
+            [
+                (KeyCode::BTN_START, 1),
+                (KeyCode::BTN_SELECT, 1),
+                (KeyCode::BTN_SELECT, 0),
+                (KeyCode::BTN_START, 0),
+            ],
+            [
+                (KeyCode::BTN_SELECT, 1),
+                (KeyCode::BTN_START, 1),
+                (KeyCode::BTN_START, 0),
+                (KeyCode::BTN_SELECT, 0),
+            ],
+            [
+                (KeyCode::BTN_START, 1),
+                (KeyCode::BTN_SELECT, 1),
+                (KeyCode::BTN_START, 0),
+                (KeyCode::BTN_SELECT, 0),
+            ],
+        ] {
+            let log = play(&order);
+            let log = log.borrow();
+            assert_eq!(values(&log, KeyCode::BTN_MODE), vec![1, 0]);
+            let (first, second) = (order[0].0, order[1].0);
+            assert_eq!(
+                values(&log, first),
+                vec![1, 0],
+                "the first button is forwarded as normal"
+            );
+            assert!(never_sent(&log, second), "the completing button stays out");
+        }
+    }
+
+    #[test]
+    fn menu_and_view_held_keep_guide_pressed_until_the_chord_ends() {
+        let log = play(&[(KeyCode::BTN_START, 1), (KeyCode::BTN_SELECT, 1)]);
+        assert_eq!(
+            values(&log.borrow(), KeyCode::BTN_MODE),
+            vec![1],
+            "held as long as the chord"
+        );
+        let log = play(&[
+            (KeyCode::BTN_START, 1),
+            (KeyCode::BTN_SELECT, 1),
+            (KeyCode::BTN_SELECT, 0),
+        ]);
+        assert_eq!(values(&log.borrow(), KeyCode::BTN_MODE), vec![1, 0]);
+    }
+
+    #[test]
+    fn menu_or_view_alone_is_forwarded_as_normal() {
+        for key in [KeyCode::BTN_START, KeyCode::BTN_SELECT] {
+            let log = play(&[(key, 1), (key, 0)]);
+            let log = log.borrow();
+            assert_eq!(values(&log, key), vec![1, 0]);
+            assert!(never_sent(&log, KeyCode::BTN_MODE));
+        }
+    }
+
     fn talk_compositor(
         display: &smithay::reexports::wayland_server::DisplayHandle,
         chord: &str,

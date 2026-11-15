@@ -394,9 +394,51 @@ struct MirrorCopy {
     buffered: Vec<Event>,
     /// Keys and hat axes the virtual controller currently shows as held.
     held: Vec<(u16, u16)>,
+    /// Menu and View as the physical pad holds them, for the Guide chord.
+    chord_down: [bool; 2],
+    /// The key whose press completed the chord and went to the stream as Guide instead.
+    chord_key: Option<(u16, u16)>,
+    chord_live: bool,
 }
 
 impl MirrorCopy {
+    /// Menu + View together reach the stream as Guide, held as long as the chord is; the completing button stays out.
+    /// Returns whether `key`'s own event is kept from the stream.
+    fn chord(&mut self, name: ButtonName, state: ButtonState, key: (u16, u16)) -> bool {
+        let slot = match name {
+            ButtonName::Start => 0,
+            ButtonName::Select => 1,
+            _ => return false,
+        };
+        let guide = (evdev::EventType::KEY.0, KeyCode::BTN_MODE.code());
+        let mut kept = self.chord_key == Some(key);
+        match state {
+            ButtonState::Pressed => {
+                self.chord_down[slot] = true;
+                if self.chord_down == [true, true] && self.chord_key.is_none() {
+                    self.chord_key = Some(key);
+                    self.chord_live = true;
+                    self.held.retain(|held| *held != guide);
+                    self.held.push(guide);
+                    self.frame.push(evdev::InputEvent::new(guide.0, guide.1, 1));
+                    kept = true;
+                }
+            }
+            ButtonState::Released => {
+                self.chord_down[slot] = false;
+                if self.chord_live {
+                    self.chord_live = false;
+                    self.held.retain(|held| *held != guide);
+                    self.frame.push(evdev::InputEvent::new(guide.0, guide.1, 0));
+                }
+                if self.chord_key == Some(key) {
+                    self.chord_key = None;
+                }
+            }
+        }
+        kept
+    }
+
     /// Hands over every translated event taken so far, for [`InputSource::drain`].
     fn drain(&mut self) -> Vec<Event> {
         core::mem::take(&mut self.buffered)
@@ -418,6 +460,10 @@ impl MirrorCopy {
         let mut kept = self.blocked.contains(&key);
         for input in &translated {
             if let Event::Button { name, state } = input
+                && self.chord(*name, *state, key)
+            {
+                kept = true;
+            } else if let Event::Button { name, state } = input
                 && consume(*name, *state)
             {
                 kept = true;
