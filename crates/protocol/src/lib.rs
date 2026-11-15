@@ -556,7 +556,8 @@ struct PadConfig {
 #[serde(default, deny_unknown_fields)]
 struct WindowConfig {
     open_fullscreen: bool,
-    column_width: Option<WindowFraction>,
+    #[serde(alias = "width")]
+    column_width: Option<WindowWidth>,
     height: Option<WindowFraction>,
 }
 
@@ -621,7 +622,16 @@ impl Context {
     /// Opening column width as a fraction of the working area.
     #[must_use]
     pub fn window_column_width(&self) -> Option<f64> {
-        self.window.column_width.map(|value| value.0)
+        match self.window.column_width? {
+            WindowWidth::Fraction(value) | WindowWidth::Decimal(value) => Some(value),
+            WindowWidth::Pixels(_) => None,
+        }
+    }
+
+    /// The opening width as written, before any conversion to a fraction.
+    #[must_use]
+    pub const fn window_width(&self) -> Option<WindowWidth> {
+        self.window.column_width
     }
 
     /// Opening window height as a fraction of the working area.
@@ -1432,5 +1442,7 @@ fn validate_app_id(app_id: &str) -> Result<(), String> {
 
 mod adjuster;
 pub use adjuster::Adjuster;
+mod window_width;
+pub use window_width::{WindowWidth, fraction_value, nearest_fraction, rewrite_window_width, whole_pixels};
 mod sticks;
 pub use sticks::{Stick, StickDirection, StickMapping};

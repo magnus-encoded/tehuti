@@ -81,6 +81,67 @@ restart = { restart = false }"
         }
     }
 
+    const WIDTH_BASE: &str = "app_id = 'org.example.Game'\nbuttons = {}\n[window]\n";
+
+    #[test]
+    fn window_width_accepts_exact_fraction_strings() {
+        use tehuti_protocol::WindowWidth;
+        let context = parse_context(&format!("{WIDTH_BASE}width = \"2/3\"")).unwrap();
+        assert_eq!(context.window_width(), Some(WindowWidth::Fraction(2.0 / 3.0)));
+        assert_eq!(context.window_column_width(), Some(2.0 / 3.0));
+        let one = parse_context(&format!("{WIDTH_BASE}width = \"1\"")).unwrap();
+        assert_eq!(one.window_width(), Some(WindowWidth::Fraction(1.0)));
+        for bad in [
+            "\"1/0\"", "\"3/2\"", "\"0/3\"", "\"a/b\"", "0.0", "1.5", "-1", "0",
+        ] {
+            assert!(
+                parse_context(&format!("{WIDTH_BASE}width = {bad}")).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn window_width_keeps_pixels_and_decimals_apart_from_fractions() {
+        use tehuti_protocol::WindowWidth;
+        let pixels = parse_context(&format!("{WIDTH_BASE}width = 1280")).unwrap();
+        assert_eq!(pixels.window_width(), Some(WindowWidth::Pixels(1280)));
+        let decimal = parse_context(&format!("{WIDTH_BASE}width = 0.667")).unwrap();
+        assert_eq!(decimal.window_width(), Some(WindowWidth::Decimal(0.667)));
+        let whole = parse_context(&format!("{WIDTH_BASE}width = 1")).unwrap();
+        assert_eq!(whole.window_width(), Some(WindowWidth::Fraction(1.0)));
+    }
+
+    #[test]
+    fn nearest_fraction_picks_simple_fractions() {
+        use tehuti_protocol::nearest_fraction;
+        assert_eq!(nearest_fraction(1280.0 / 1920.0), (2, 3));
+        assert_eq!(nearest_fraction(0.667), (2, 3));
+        assert_eq!(nearest_fraction(0.5), (1, 2));
+        assert_eq!(nearest_fraction(1.0), (1, 1));
+    }
+
+    #[test]
+    fn rewriting_a_width_changes_only_that_line_and_keeps_the_original() {
+        use tehuti_protocol::rewrite_window_width;
+        let source = "# game\r\napp_id = 'org.example.Game'\nbuttons = {}\n\n[window]\nopen_fullscreen = false\n  width = 1280 # wide\nheight = 0.5\n[other]\nwidth = 5\n";
+        let pixels = rewrite_window_width(source, (2, 3), Some(1920)).unwrap();
+        assert_eq!(
+            pixels,
+            source.replace(
+                "  width = 1280 # wide",
+                "  width = \"2/3\"  # was 1280 px on 1920 px # wide"
+            )
+        );
+        let decimal = rewrite_window_width("[window]\nwidth = 0.667\n", (2, 3), None).unwrap();
+        assert_eq!(decimal, "[window]\nwidth = \"2/3\"  # was 0.667\n");
+        assert_eq!(
+            rewrite_window_width("[window]\nheight = 0.5\n", (2, 3), None),
+            None
+        );
+        assert_eq!(rewrite_window_width("[other]\nwidth = 5\n", (2, 3), None), None);
+    }
+
     #[test]
     fn window_fullscreen_is_optional_and_boolean() {
         let base = "app_id = 'org.example.Game'\nbuttons = {}\n";
