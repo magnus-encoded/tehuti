@@ -14,6 +14,7 @@ mod tests {
                     open: false,
                     focused: false,
                     safety: Safety::Launch,
+                    settings: false,
                 },
                 Destination {
                     name: "Pokémon".into(),
@@ -22,6 +23,7 @@ mod tests {
                     open: false,
                     focused: false,
                     safety: Safety::Launch,
+                    settings: false,
                 },
             ],
             None,
@@ -80,6 +82,7 @@ mod tests {
             open: false,
             focused: false,
             safety,
+            settings: false,
         }
     }
 
@@ -250,6 +253,7 @@ mod tests {
                     open: false,
                     focused: false,
                     safety: Safety::Launch,
+                    settings: false,
                 },
                 Destination {
                     name: "~/notes: shell".into(),
@@ -258,6 +262,7 @@ mod tests {
                     open: true,
                     focused: false,
                     safety: Safety::Focus,
+                    settings: false,
                 },
             ],
             None,

@@ -1805,7 +1805,7 @@ impl Compositor {
                 self.open_launcher(&request);
             }
             DispatchEffect::LauncherUsed(usage) => {
-                tracing::info!("{}", crate::launcher_log::line(&usage));
+                tracing::debug!("{}", crate::launcher_log::line(&usage));
             }
             DispatchEffect::ChooseLauncher(index) => {
                 if let Some(route) = self
@@ -2385,6 +2385,8 @@ impl Compositor {
         const KEY_BACKSPACE: u32 = 14;
         const KEY_ENTER: u32 = 28;
         const KEY_KPENTER: u32 = 96;
+        const KEY_UP: u32 = 103;
+        const KEY_DOWN: u32 = 108;
         if !pressed {
             let consumed = self.consumed_host_keys.contains(&keycode);
             self.consumed_host_keys.retain(|held| *held != keycode);
@@ -2408,6 +2410,8 @@ impl Compositor {
         match code {
             KEY_ENTER | KEY_KPENTER => press(self, family.button(tehuti_core::pad::Role::Confirm)),
             KEY_ESC => press(self, family.button(tehuti_core::pad::Role::Back)),
+            KEY_UP => press(self, ButtonName::DpadUp),
+            KEY_DOWN => press(self, ButtonName::DpadDown),
             KEY_BACKSPACE => {
                 let mut query = query;
                 let _removed = query.pop();

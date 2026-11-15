@@ -18,6 +18,8 @@ pub struct Destination {
     pub open: bool,
     pub focused: bool,
     pub safety: Safety,
+    /// A settings page: ranks below applications when the match is otherwise equal.
+    pub settings: bool,
 }
 
 impl Destination {
@@ -30,6 +32,41 @@ impl Destination {
             .map(|name| tehuti_protocol::similarity(folded, &tehuti_protocol::fold_phrase(name)))
             .max()
             .unwrap_or_default()
+    }
+
+    /// How well typed text matches: the name itself beats its words, which beat generic names and keywords.
+    fn typed_score(&self, folded: &str) -> u16 {
+        let name = tehuti_protocol::fold_phrase(&self.name);
+        let by_name = if name == folded {
+            1200_u16
+        } else if name.starts_with(folded) {
+            1000
+        } else if name.split_whitespace().any(|word| word.starts_with(folded))
+            || name.contains(&format!(" {folded}"))
+        {
+            900
+        } else if name.contains(folded) {
+            700
+        } else {
+            0
+        };
+        let by_extra = self
+            .extra_names
+            .iter()
+            .map(|extra| {
+                let extra = tehuti_protocol::fold_phrase(extra);
+                if extra.starts_with(folded) {
+                    500_u16
+                } else if extra.contains(folded) {
+                    400
+                } else {
+                    0
+                }
+            })
+            .max()
+            .unwrap_or_default();
+        let score = by_name.max(by_extra);
+        if self.settings { score.saturating_sub(50) } else { score }
     }
 
     fn exactly_matches(&self, normalized: &str) -> bool {
@@ -498,20 +535,7 @@ fn typed_ranking(query: &str, destinations: &[Destination]) -> Vec<(usize, u16)>
         .iter()
         .enumerate()
         .filter_map(|(index, destination)| {
-            let score = destination
-                .names()
-                .map(|name| {
-                    let name = tehuti_protocol::fold_phrase(name);
-                    if name.starts_with(&folded) {
-                        1000_u16
-                    } else if name.contains(&folded) {
-                        700
-                    } else {
-                        0
-                    }
-                })
-                .max()
-                .unwrap_or_default();
+            let score = destination.typed_score(&folded);
             (score > 0).then_some((
                 index,
                 score
