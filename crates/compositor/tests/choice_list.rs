@@ -444,6 +444,9 @@ mod anchored_top {
     fn the_panel_top_stays_put_while_the_list_shrinks() {
         let tops: Vec<_> = (1..=5).map(panel_top).collect();
         assert!(tops.iter().all(Option::is_some));
-        assert!(tops.windows(2).all(|pair| pair[0] == pair[1]), "tops differ: {tops:?}");
+        assert!(
+            tops.windows(2).all(|pair| pair[0] == pair[1]),
+            "tops differ: {tops:?}"
+        );
     }
 }
