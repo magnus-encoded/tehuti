@@ -681,7 +681,10 @@ mod tests {
         let mut compositor = talk_compositor(&display.handle(), "['record']");
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut pad, handles) = pad("game", &log);
-        assert!(pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button)).unwrap());
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
         for expect_passthrough in [false, true] {
             for value in [1, 0] {
                 queue(&handles, KeyCode::BTN_MODE, value);
@@ -691,7 +694,10 @@ mod tests {
             }
             assert_eq!(compositor.pad_passthrough(), expect_passthrough);
         }
-        assert!(never_sent(&log.borrow(), KeyCode::BTN_MODE), "Guide stays with Tehuti");
+        assert!(
+            never_sent(&log.borrow(), KeyCode::BTN_MODE),
+            "Guide stays with Tehuti"
+        );
     }
 
     fn talk_compositor(
