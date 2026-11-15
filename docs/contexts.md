@@ -47,7 +47,7 @@ untitled context stays the fallback for the application's other windows. A
 titled context never matches other titles and is not inherited by child
 windows. Title changes re-select the context while the window has focus.
 Titles must contain a non-whitespace character; the `*` context cannot have
-one. Labels come from the untitled context. Two contexts with the same
+one. Two contexts with the same
 application id and title make `--check-config` warn.
 
 An optional top-level `label = "Emulator"` names the application's windows on
@@ -57,6 +57,10 @@ or project name on the focus chip. Labels are trimmed and must contain a
 non-whitespace character; NUL is rejected. The first context
 for an application id decides its label. The `*` context's label is ignored.
 Reloading contexts updates the label without another focus change.
+A titled context with its own `label` names its window on the bar while that
+window has focus, so a launcher and a game sharing one application id can read
+differently. A titled context without a `label` falls back to the application's
+untitled label, then to the desktop entry name, then to the application id.
 
 The global layer consumes South presses and sends Enter, unless the active
 context maps South; then its mapping, tap or hold, replaces Enter. A South

@@ -284,7 +284,18 @@ impl State {
             .chain(self.app_names.iter().map(|(app_id, _)| app_id.as_str()))
             .filter_map(|app_id| Some((app_id.to_owned(), self.label(Some(app_id))?.to_owned())))
             .collect();
-        self.bar.set_labels(labels);
+        let titled = self
+            .contexts
+            .iter()
+            .filter(|context| context.app_id() != GLOBAL_APP_ID)
+            .filter_map(|context| {
+                Some((
+                    (context.app_id().to_owned(), context.title()?.to_owned()),
+                    context.label()?.to_owned(),
+                ))
+            })
+            .collect();
+        self.bar.set_labels(labels, titled);
     }
 
     /// Names buttons on the ticker as the pad in use prints them.
