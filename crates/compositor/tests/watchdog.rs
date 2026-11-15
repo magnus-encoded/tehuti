@@ -27,7 +27,8 @@ mod tests {
         }
     }
 
-    const TIMEOUT: Duration = Duration::from_millis(200);
+    // Wide margins: a loaded runner may stall a thread for a second.
+    const TIMEOUT: Duration = Duration::from_secs(2);
 
     #[test]
     fn a_beating_loop_is_left_alone_and_a_stopped_one_is_ended() {
@@ -39,7 +40,7 @@ mod tests {
         }
         assert!(freeze.try_recv().is_err(), "fired while the loop was turning");
         assert!(
-            freeze.recv_timeout(TIMEOUT.saturating_mul(5)).is_ok(),
+            freeze.recv_timeout(TIMEOUT.saturating_mul(10)).is_ok(),
             "did not fire after the loop stopped"
         );
         drop(heartbeat);

@@ -127,6 +127,28 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_after_a_long_seat_pause_starts_a_new_minute() {
+        let mut recovery = Recovery::default();
+        let start = Instant::now();
+        assert!(recovery.finish(start, Err("busy"), || {}).is_ok());
+        // The seat pauses: the DRM backend resets the recovery.
+        recovery.reset();
+        let back = start
+            .checked_add(FAILING_FRAMES_EXIT_AFTER.saturating_mul(2))
+            .unwrap();
+        assert!(
+            recovery.finish(back, Err("busy"), || {}).is_ok(),
+            "the first failure after a VT switch must not end the session"
+        );
+        let unreset = {
+            let mut stale = Recovery::default();
+            let _first = stale.finish(start, Err("busy"), || {});
+            stale.finish(back, Err("busy"), || {})
+        };
+        assert!(unreset.is_err(), "without the reset the pause would count");
+    }
+
+    #[test]
     fn a_frame_error_the_recovery_gave_up_on_stops_the_loop() {
         let (output, _, timed_out) = run_output(
             Output {

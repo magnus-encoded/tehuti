@@ -327,6 +327,8 @@ fn insert_seat(
                     tty.device.pause();
                     if let Some(scanout) = &mut tty.scanout {
                         scanout.pending = false;
+                        // Time away from the seat must not count as failed frames.
+                        scanout.recovery.reset();
                     }
                 }
                 Event::ActivateSession => match tty.device.activate(true) {
