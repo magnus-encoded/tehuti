@@ -235,7 +235,7 @@ fn content_height(list: &List) -> usize {
 }
 
 /// The height of a list showing every row it can, which a typed launcher keeps its top for.
-fn full_height(list: &List) -> usize {
+const fn full_height(list: &List) -> usize {
     let mut height = ROWS_TOP.saturating_add(list.slots().scopes.len().saturating_mul(24));
     if list.slots().create.is_some() {
         height = height.saturating_add(128);
