@@ -481,6 +481,36 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         Ok(())
     }
 
+    #[test]
+    fn meta_space_opens_the_launcher_and_typing_then_filters() -> Result<(), Box<dyn core::error::Error>> {
+        const KEY_LEFTMETA: u32 = 125;
+        const KEY_SPACE: u32 = 57;
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session_with_three(root.path())?;
+        tap(&mut compositor, KEY_ESC);
+        assert_eq!(first_row(&compositor), None, "closed before the chord");
+        compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), true);
+        tap(&mut compositor, KEY_SPACE);
+        compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), false);
+        assert!(first_row(&compositor).is_some(), "Meta+Space shows the launcher");
+        tap(&mut compositor, KEY_I);
+        assert_eq!(first_row(&compositor), None, "no name holds an i");
+        tap(&mut compositor, KEY_BACKSPACE);
+        tap(&mut compositor, KEY_O);
+        assert_eq!(first_row(&compositor).as_deref(), Some("Orbit"));
+        Ok(())
+    }
+
+    #[test]
+    fn space_without_meta_does_not_open_the_launcher() -> Result<(), Box<dyn core::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session_with_three(root.path())?;
+        tap(&mut compositor, KEY_ESC);
+        tap(&mut compositor, 57);
+        assert_eq!(first_row(&compositor), None);
+        Ok(())
+    }
+
     fn session_with_three(
         root: &std::path::Path,
     ) -> Result<(Display<Compositor>, Compositor), Box<dyn core::error::Error>> {

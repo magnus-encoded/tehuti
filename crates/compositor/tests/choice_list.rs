@@ -316,6 +316,54 @@ mod tests {
         Ok(())
     }
 
+    fn typed(rows: usize) -> tehuti_core::launcher::Launcher {
+        let destinations = (0..rows)
+            .map(|index| tehuti_core::launcher::Destination {
+                name: format!("browser {index}"),
+                extra_names: Vec::new(),
+                route: "Browser (app)".into(),
+                open: false,
+                focused: false,
+                safety: tehuti_core::launcher::Safety::Launch,
+                settings: false,
+            })
+            .collect();
+        tehuti_core::launcher::Launcher::typed("browser", destinations)
+    }
+
+    #[test]
+    fn typed_launcher_top_stays_put_while_the_list_shrinks() -> Result<(), Box<dyn core::error::Error>> {
+        for size in [(1920, 1080), (800, 1200), (640, 360)] {
+            let mut tops = Vec::new();
+            let mut bottoms = Vec::new();
+            for rows in 0..=5 {
+                let launcher = typed(rows);
+                let pixels = tehuti::choice_list::raster(launcher.list(), PadFamily::Letters, size)
+                    .ok_or("artwork")?;
+                let width = usize::try_from(size.0)?;
+                let first = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .position(|pixel| pixel[3] >= 200)
+                    .ok_or("top")?;
+                tops.push(first / width);
+                bottoms.push(
+                    pixels
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .rposition(|pixel| pixel[3] >= 200)
+                        .ok_or("bottom")?
+                        / width,
+                );
+            }
+            assert!(tops.windows(2).all(|pair| pair[0] == pair[1]), "tops {tops:?} at {size:?}");
+            assert!(bottoms[0] < bottoms[5], "list still shrinks downward at {size:?}");
+        }
+        Ok(())
+    }
+
     /// The opaque panel's last row; scaled edges are antialiased, so opacity marks the panel.
     fn opaque_bottom(pixels: &[u8]) -> Option<usize> {
         pixels

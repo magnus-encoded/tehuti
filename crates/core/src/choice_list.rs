@@ -70,6 +70,7 @@ pub struct List {
     selected: Option<usize>,
     first: usize,
     outcome: Outcome,
+    anchored: bool,
 }
 
 impl List {
@@ -132,6 +133,7 @@ impl List {
             selected,
             first: 0,
             outcome: Outcome::Pending,
+            anchored: false,
         }
     }
 
@@ -155,6 +157,7 @@ impl List {
             selected,
             first: 0,
             outcome: Outcome::Pending,
+            anchored: false,
             footer: String::new(),
             fill: 0,
         }
@@ -163,6 +166,16 @@ impl List {
     pub fn set_scope(&mut self, title: String, scopes: Vec<String>) {
         self.slots.title = title;
         self.slots.scopes = scopes;
+    }
+
+    /// Keeps the panel's top where a full list would put it, so filtering shrinks the list downward.
+    pub const fn anchor_top(&mut self) {
+        self.anchored = true;
+    }
+
+    #[must_use]
+    pub const fn is_anchored(&self) -> bool {
+        self.anchored
     }
 
     pub fn decorate(&mut self, footer: String, fill: u16) {

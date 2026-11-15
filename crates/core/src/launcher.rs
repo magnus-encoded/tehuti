@@ -185,6 +185,7 @@ impl Launcher {
         let rows = typed_ranking(query, &destinations);
         let mut launcher = Self::ranked(query, destinations, None, rows);
         launcher.origin = Origin::Typed;
+        launcher.list.anchor_top();
         launcher.decorate();
         launcher
     }

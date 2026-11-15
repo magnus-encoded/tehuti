@@ -234,12 +234,24 @@ fn content_height(list: &List) -> usize {
     height.saturating_add(FOOTER)
 }
 
+/// The height of a list showing every row it can, which a typed launcher keeps its top for.
+fn full_height(list: &List) -> usize {
+    let mut height = ROWS_TOP.saturating_add(list.slots().scopes.len().saturating_mul(24));
+    if list.slots().create.is_some() {
+        height = height.saturating_add(128);
+    }
+    height
+        .saturating_add(72 * 5)
+        .saturating_add(FOOTER)
+}
+
 fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32, i32, i32)> {
     let scale = scale.max(1);
     let available = size
         .1
         .checked_sub(tehuti_core::bar::HEIGHT.saturating_mul(scale))?;
-    let natural = i32::try_from(content_height(list)).ok()?;
+    let own = content_height(list);
+    let natural = i32::try_from(if list.is_anchored() { own.max(full_height(list)) } else { own }).ok()?;
     let width = 640i32
         .saturating_mul(scale)
         .min(size.0.saturating_mul(9).checked_div(10)?)
@@ -250,7 +262,8 @@ fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32
                 .saturating_mul(640)
                 .checked_div(natural)?,
         );
-    let height = width.checked_mul(natural)?.checked_div(640)?;
+    let height = width.checked_mul(i32::try_from(own).ok()?)?.checked_div(640)?;
+    let anchor = width.checked_mul(natural)?.checked_div(640)?;
     if width <= 0 || height <= 0 {
         return None;
     }
@@ -258,7 +271,7 @@ fn panel_geometry(list: &List, size: (i32, i32), scale: i32) -> Option<(i32, i32
         width,
         height,
         size.0.checked_sub(width)?.checked_div(2)?,
-        available.checked_sub(height)?.checked_div(2)?,
+        available.checked_sub(anchor)?.checked_div(2)?,
     ))
 }
 
