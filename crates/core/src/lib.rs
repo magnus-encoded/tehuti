@@ -829,7 +829,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
                     .flatten();
             }
         }
-        if tehuti_protocol::normalize_phrase(phrase) == "scratch that" {
+        if state.level == Level::App && unit_verbs::is_scratch_that(phrase) {
             return Some(Action::UndoDictation);
         }
         let focused = focused_context(state);

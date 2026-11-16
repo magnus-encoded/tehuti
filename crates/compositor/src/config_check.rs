@@ -257,6 +257,10 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
             .map(|word| format!("core owns this reserved unit verb {word:?}"))
     });
     report_unreachable_speech(report, loaded, |phrase| {
+        tehuti_core::unit_verbs::is_scratch_that(phrase)
+            .then(|| "core owns this reserved unit verb \"scratch that\"".to_owned())
+    });
+    report_unreachable_speech(report, loaded, |phrase| {
         tehuti_core::invoke::slash_command(phrase, [])
             .map(|_| "the built-in invoke verb types it as a slash command".to_owned())
     });

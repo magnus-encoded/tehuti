@@ -569,7 +569,9 @@ north = { undo_dictation = true }
 ```
 
 Saying "Scratch that." does the same in every context; core claims it before
-context phrases. A key chord deletes by word: `{ key = "backspace", mods = ["ctrl"] }`.
+context phrases, at the app level only, and `--check-config` warns about a
+context phrase it shadows. With a plugin active the phrase goes to the plugin
+instead. Plugins cannot emit `undo_dictation`. A key chord deletes by word: `{ key = "backspace", mods = ["ctrl"] }`.
 
 ## Column widths
 

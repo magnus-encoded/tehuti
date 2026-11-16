@@ -102,4 +102,49 @@ mod undo_dictation {
         assert_eq!(actions, backspaces(typed_length(&typed)));
         assert_eq!(say(state, "Scratch that.").1, backspaces(1));
     }
+
+    #[test]
+    fn scratch_that_is_not_claimed_at_the_desktop_level() {
+        let (state, _) = say(terminal(), "hello");
+        let mut state = state;
+        for button_state in [ButtonState::Pressed, ButtonState::Released] {
+            state = step(
+                state,
+                &Event::Button {
+                    name: ButtonName::Guide,
+                    state: button_state,
+                },
+            )
+            .0;
+        }
+        let (_, actions) = say(state, "Scratch that");
+        assert_eq!(
+            actions,
+            vec![Action::Key {
+                key: KeyName::A,
+                mods: Vec::new()
+            }],
+            "the context mapping runs when core does not claim the phrase"
+        );
+    }
+
+    #[test]
+    fn an_active_plugin_receives_the_phrase_instead() {
+        let (state, _) = say(terminal(), "hello");
+        let (_, actions, routed) = tehuti_core::step_with_plugin(
+            state,
+            &Event::Speech {
+                text: Text::new("Scratch that".into()).unwrap(),
+            },
+            true,
+        );
+        assert!(routed);
+        assert_eq!(actions, Vec::<Action>::new());
+    }
+
+    #[test]
+    fn plugins_cannot_emit_undo_dictation() {
+        let error = tehuti_core::plugin::validate_actions(vec![Action::UndoDictation], &[]).unwrap_err();
+        assert!(error.contains("reserved for the core"), "{error}");
+    }
 }

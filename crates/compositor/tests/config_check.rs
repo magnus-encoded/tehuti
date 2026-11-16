@@ -100,6 +100,20 @@ order = 1
         assert!(report.has_errors());
     }
 
+    #[test]
+    fn a_context_phrase_core_claims_as_scratch_that_never_fires() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Scratch that.' = { key = 'a' }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+        assert!(report.to_string().contains("reserved unit verb"), "{report}");
+        assert!(report.to_string().contains("scratch that"), "{report}");
+    }
+
     fn write(directory: &Path, relative: &str, text: &str) {
         let path = directory.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
