@@ -72,7 +72,7 @@ venv on first run and opens a window with a foot terminal inside.
 
 From a clone, `scripts/try` runs Tehuti nested in a window on your current
 desktop, with the contexts in `examples/`. Tehuti takes the controller
-exclusively while it runs; hold Guide for three seconds to quit. The nested
+exclusively while it runs; hold Guide and Start together for three seconds to quit. The nested
 window needs read access to `/dev/input`, usually through the `input` group.
 
 With a release install, run `tehuti examples foot` from the clone instead.
@@ -117,8 +117,9 @@ otherwise; `TEHUTI_SPEECH_DEVICE=cpu` forces the CPU. Set `TEHUTI_NO_SPEECH=1` t
 skip speech and its dependencies.
 
 The voice bar along the bottom shows what was heard and what Tehuti did with
-it. Matching a phrase is exact after normalising, so list each likely
-mishearing as its own phrase. A context can also show its buttons and phrases
+it. Matching a phrase is exact after normalising (case, punctuation, number words and
+plain plurals fold together), so list each likely mishearing as its own phrase,
+or turn on `[speech_matching] fuzzy`. A context can also show its buttons and phrases
 as a scrolling hint line on the bar; see
 [docs/contexts.md](docs/contexts.md#mapping-ticker).
 
@@ -155,8 +156,8 @@ saving a file reloads it. The full format is in [docs/contexts.md](docs/contexts
 
 `examples/foot/context.toml` maps a foot terminal:
 
-- South: Enter. East: Backspace. West: Space. Select: Escape.
-- D-pad: arrow keys. North: types `ls -la`. Start: shows a notice.
+- South: Enter. East: Backspace. North: Space. Select: Escape.
+- West: deletes the last dictated phrase. D-pad: arrow keys. Start: shows a notice.
 - Say "Hello" to type `echo hello from Tehuti`, "Enter" for Enter, "Clear" to type `clear`.
   Matching ignores case and punctuation (Unicode included), folds typographic apostrophes
   to `'` and compares NFC-normalized text, so "Hello." and "hello" are the same phrase.
@@ -176,8 +177,6 @@ Run `tehuti examples foot -- bash --norc --noprofile` to see the foot context.
    fullscreen. Say "pause", "play" or "resume".
 5. Edit the file and save. The change applies without a restart. If Tehuti
    shows a notice naming the file, the file has an error; the log has the rest.
-   Today a broken file also drops its last good version, so its buttons and
-   phrases stop working until you fix the file (#625).
 
 A button is a name such as `west`, `dpad_left`, `left_bumper` or
 `right_trigger`; the full list and the keys you can send are in
