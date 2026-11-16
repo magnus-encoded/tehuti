@@ -260,7 +260,14 @@ fn insert_keyboard(
             if !data.seat_active {
                 return;
             }
+            if let InputEvent::DeviceAdded { device } = &event {
+                info!(name = %smithay::backend::input::Device::name(device), "input device added");
+            }
             if let InputEvent::Keyboard { event } = event {
+                if !keyboard_tty.borrow().keyboard_seen {
+                    info!("keyboard input resumed");
+                    keyboard_tty.borrow_mut().keyboard_seen = true;
+                }
                 let key = u32::from(event.key_code()).saturating_sub(8);
                 let escape = keyboard_tty
                     .borrow_mut()
@@ -282,7 +289,9 @@ fn insert_keyboard(
                         data.pacing.input_arrived = true;
                     }
                 }
-            } else if matches!(event, InputEvent::DeviceRemoved { .. }) {
+            } else if let InputEvent::DeviceRemoved { device } = &event {
+                info!(name = %smithay::backend::input::Device::name(device), "input device removed");
+                keyboard_tty.borrow_mut().keyboard_seen = false;
                 keyboard_tty.borrow_mut().keyboard = tehuti::backend::EscapeKeyboard::default();
                 data.compositor.release_host_keys();
             } else {

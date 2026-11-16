@@ -2675,10 +2675,38 @@ impl Compositor {
     /// Releases every held host and pad key, so a key held when the host window loses focus or the seat pauses does not stick.
     pub fn release_host_keys(&mut self) {
         self.held_pad_keys.clear();
-        self.meta_held.clear();
+        self.release_synthesised_pad_buttons();
         self.consumed_host_keys.clear();
         for keycode in self.keyboard.pressed_keys() {
             self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
+        }
+    }
+
+    /// Releases the d-pad arrows and Guide that held host keys stand for, so core never keeps them down.
+    fn release_synthesised_pad_buttons(&mut self) {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let arrows = [
+            (103, ButtonName::DpadUp),
+            (105, ButtonName::DpadLeft),
+            (106, ButtonName::DpadRight),
+            (108, ButtonName::DpadDown),
+        ];
+        let consumed = core::mem::take(&mut self.consumed_host_keys);
+        for (code, name) in arrows {
+            if consumed.iter().any(|key| key.raw().saturating_sub(XKB_KEYCODE_OFFSET) == code) {
+                self.handle(&Event::Button {
+                    name,
+                    state: ButtonState::Released,
+                });
+            }
+        }
+        self.consumed_host_keys = consumed;
+        if !self.meta_held.is_empty() {
+            self.meta_held.clear();
+            self.handle(&Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Released,
+            });
         }
     }
 
