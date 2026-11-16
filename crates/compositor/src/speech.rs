@@ -269,7 +269,9 @@ impl Running {
                     for byte in bytes.get(..count).unwrap_or_default() {
                         if *byte == b'\n' {
                             if is_source_missing(&self.input) {
-                                tracing::warn!("saved microphone is missing; speech captures from another source");
+                                tracing::warn!(
+                                    "saved microphone is missing; speech captures from another source"
+                                );
                                 self.source_missing = true;
                             } else if let Some(input) = parse_reply(&self.input) {
                                 if input == SpeechInput::Available {
