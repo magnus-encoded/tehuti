@@ -218,6 +218,42 @@ impl State {
             .unwrap_or(false)
     }
 
+    /// Resolves the D-pad hold-repeat speeds over the global context.
+    #[must_use]
+    pub fn keyboard_repeat(&self) -> keyboard::Repeat {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        let active = focused_context(self);
+        let pick = |field: fn(&tehuti_protocol::KeyboardConfig) -> Option<u16>| {
+            active
+                .and_then(|context| field(context.keyboard()))
+                .or_else(|| global.and_then(|context| field(context.keyboard())))
+        };
+        keyboard::Repeat::new(
+            pick(|config| config.repeat_delay_ms),
+            pick(|config| config.repeat_rate),
+            pick(|config| config.repeat_max_rate),
+            pick(|config| config.repeat_ramp_ms),
+        )
+    }
+
+    /// Resolves the left-stick word-picking speeds over the global context.
+    #[must_use]
+    pub fn keyboard_word_repeat(&self) -> keyboard::WordRepeat {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        let active = focused_context(self);
+        let pick = |field: fn(&tehuti_protocol::KeyboardConfig) -> Option<u16>| {
+            active
+                .and_then(|context| field(context.keyboard()))
+                .or_else(|| global.and_then(|context| field(context.keyboard())))
+        };
+        keyboard::WordRepeat::new(
+            pick(|config| config.word_repeat_from),
+            pick(|config| config.word_repeat_delay_ms),
+            pick(|config| config.word_min_rate),
+            pick(|config| config.word_max_rate),
+        )
+    }
+
     /// Whether the focused context marks a terminal, plus its legacy level-opening option.
     #[must_use]
     pub fn terminal_config(&self) -> (bool, bool) {
@@ -572,7 +608,7 @@ fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
 }
 
 /// Every exact match in chain order, then the built-in close, then folded
-/// matches, then plurals, then fuzzy, then unmatched dictation.
+/// matches, then plurals, then prefix rules, then fuzzy, then unmatched dictation.
 fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
     focused
         .and_then(|context| context.mapped_speech_action(phrase))
@@ -582,6 +618,7 @@ fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &st
         .or_else(|| global.and_then(|context| context.folded_speech_action(phrase)))
         .or_else(|| focused.and_then(|context| context.plural_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.plural_speech_action(phrase)))
+        .or_else(|| prefix_speech_action(focused, global, phrase))
         .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.action))
         .or_else(|| focused.and_then(|context| context.unmatched_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.unmatched_speech_action(phrase)))
@@ -590,6 +627,14 @@ fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &st
                 .ok()
                 .map(|notice| Action::Notice { text: notice })
         })
+}
+
+/// The `text_after` rule of the focused context, else of the global one.
+fn prefix_speech_action(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
+    focused
+        .and_then(|context| context.prefix_speech_action(phrase))
+        .or_else(|| global.and_then(|context| context.prefix_speech_action(phrase)))
+        .flatten()
 }
 
 /// Whether a context maps the phrase exactly, folded or by plural.
@@ -610,7 +655,12 @@ fn spoken_key_actions(state: &State, event: &Event) -> Option<Vec<Action>> {
     {
         return None;
     }
-    spoken_keys::actions(text.as_str())
+    let actions = spoken_keys::actions(text.as_str())?;
+    // A prefix rule types what is not a key sequence; key sequences keep working.
+    let unknown_key = matches!(actions.as_slice(), [Action::Notice { .. }]);
+    (!unknown_key
+        || prefix_speech_action(focused_context(state), global_context(state), text.as_str()).is_none())
+    .then_some(actions)
 }
 
 /// Whether the focused context maps the pressed button, which then replaces the global layer.

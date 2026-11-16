@@ -3579,6 +3579,194 @@ fn left_stick_moves_the_draft_caret_between_lines() {
     assert_eq!(state.keyboard().draft(), "alpha\nbéta\nend");
 }
 
+fn dpad_hold_first_move_ms(toml: &str) -> Option<u64> {
+    let context = tehuti_protocol::parse_context(toml).unwrap();
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, configured(vec![context], "editor"));
+    let start = state.keyboard().highlight();
+    let mut state = world.run(state, pad_button(ButtonName::DpadRight, ButtonState::Pressed));
+    let pressed = state.keyboard().highlight();
+    assert_ne!(pressed, start, "the press itself moves one key");
+    for now in 1..=2000_u64 {
+        state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_millis(1),
+            },
+        );
+        if state.keyboard().highlight() != pressed {
+            return Some(now);
+        }
+    }
+    None
+}
+
+#[test]
+fn keyboard_repeat_delay_comes_from_the_context_and_reloads() {
+    let plain = "app_id = 'editor'\n[buttons]\n[keyboard]\n";
+    assert_eq!(dpad_hold_first_move_ms(plain), Some(300));
+    let slow = "app_id = 'editor'\n[buttons]\n[keyboard]\nrepeat_delay_ms = 700\n";
+    assert_eq!(dpad_hold_first_move_ms(slow), Some(700));
+
+    let mut world = World::default();
+    let mut state = with_open_keyboard(&mut world, configured(Vec::new(), "editor"));
+    state
+        .core_mut()
+        .replace_contexts(vec![tehuti_protocol::parse_context(slow).unwrap()]);
+    state = world.run(state, pad_button(ButtonName::DpadRight, ButtonState::Pressed));
+    let pressed = state.keyboard().highlight();
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(600),
+        },
+    );
+    assert_eq!(
+        state.keyboard().highlight(),
+        pressed,
+        "reloaded delay applies to the next hold"
+    );
+}
+
+#[test]
+fn keyboard_repeat_rates_come_from_the_context() {
+    let fast = "app_id = 'editor'\n[buttons]\n[keyboard]\nrepeat_delay_ms = 100\nrepeat_rate = 20\nrepeat_max_rate = 20\n";
+    let context = tehuti_protocol::parse_context(fast).unwrap();
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, configured(vec![context], "editor"));
+    let mut state = world.run(state, pad_button(ButtonName::DpadRight, ButtonState::Pressed));
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
+    let first = state.keyboard().highlight();
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(49),
+        },
+    );
+    assert_eq!(state.keyboard().highlight(), first);
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(1),
+        },
+    );
+    assert_ne!(
+        state.keyboard().highlight(),
+        first,
+        "20 keys a second repeats every 50 ms"
+    );
+}
+
+#[test]
+fn keyboard_repeat_rates_must_be_positive() {
+    let good = "app_id = 'editor'\n[buttons]\n[keyboard]\nrepeat_rate = 5\nrepeat_max_rate = 1000\nrepeat_ramp_ms = 1\n";
+    assert!(tehuti_protocol::parse_context(good).is_ok());
+    for bad in ["repeat_rate = 0", "repeat_max_rate = 0", "repeat_ramp_ms = 0"] {
+        let toml = format!("app_id = 'editor'\n[buttons]\n[keyboard]\n{bad}\n");
+        assert!(
+            tehuti_protocol::parse_context(&toml).is_err(),
+            "{bad} must be rejected"
+        );
+    }
+}
+
+fn word_picks_held(toml: &str, depth: i16) -> usize {
+    let context = tehuti_protocol::parse_context(toml).unwrap();
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, configured(vec![context], "editor"));
+    let mut state = world.run(state, speech_event(&"word ".repeat(150)));
+    let held = Input::Sticks(Sticks {
+        left: (depth.saturating_neg(), 0),
+        right: (0, 0),
+    });
+    state = world.run(state, held);
+    let mut picks = 0_usize;
+    let mut previous = state.keyboard().picked_word();
+    for _ in 0..2000 {
+        state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_millis(1),
+            },
+        );
+        if state.keyboard().picked_word() != previous {
+            picks = picks.saturating_add(1);
+            previous = state.keyboard().picked_word();
+        }
+    }
+    picks
+}
+
+#[test]
+fn word_picking_speeds_come_from_the_context() {
+    let plain = "app_id = 'editor'\n[buttons]\n[keyboard]\n";
+    let slow = format!("{plain}word_max_rate = 3\n");
+    let fast = format!("{plain}word_max_rate = 40\nword_repeat_delay_ms = 100\n");
+    let defaults = word_picks_held(plain, 1000);
+    assert!(defaults >= 10, "default full push picked {defaults}");
+    assert!(word_picks_held(&slow, 1000) < defaults);
+    assert!(word_picks_held(&fast, 1000) > defaults);
+    let never = format!("{plain}word_repeat_from = 1000\nword_max_rate = 40\n");
+    assert!(
+        word_picks_held(&never, 900) <= 1,
+        "below word_repeat_from a push steps one word"
+    );
+}
+
+#[test]
+fn word_picking_speeds_reload_with_the_contexts() {
+    let mut world = World::default();
+    let mut state = with_open_keyboard(&mut world, configured(Vec::new(), "editor"));
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'editor'\n[buttons]\n[keyboard]\nword_repeat_delay_ms = 5000\n",
+    )
+    .unwrap();
+    state.core_mut().replace_contexts(vec![context]);
+    state = world.run(state, speech_event(&"word ".repeat(50)));
+    state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (-1000, 0),
+            right: (0, 0),
+        }),
+    );
+    let first = state.keyboard().picked_word();
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(2),
+        },
+    );
+    assert_eq!(
+        state.keyboard().picked_word(),
+        first,
+        "the reloaded delay holds repeats back"
+    );
+}
+
+#[test]
+fn word_picking_options_must_be_in_range() {
+    let good = "app_id = 'editor'\n[buttons]\n[keyboard]\nword_repeat_from = 501\nword_min_rate = 1\nword_max_rate = 100\n";
+    assert!(tehuti_protocol::parse_context(good).is_ok());
+    for bad in [
+        "word_min_rate = 0",
+        "word_max_rate = 0",
+        "word_repeat_from = 1001",
+        "word_repeat_from = 499",
+    ] {
+        let toml = format!("app_id = 'editor'\n[buttons]\n[keyboard]\n{bad}\n");
+        assert!(
+            tehuti_protocol::parse_context(&toml).is_err(),
+            "{bad} must be rejected"
+        );
+    }
+}
+
 #[test]
 fn speech_with_an_open_keyboard_syncs_the_context_terminal_option() {
     let mut world = World::default();

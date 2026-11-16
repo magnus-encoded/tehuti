@@ -202,6 +202,12 @@ subscriber, with a two-second deadline and the same action reply shape:
 {"jsonrpc":"2.0","id":2,"method":"speech","params":{"text":"confirm"}}
 ```
 
+An empty action list declines, and core shows the "No speech mapping" notice
+when nothing else claims the speech. A plugin that acted on the speech itself
+replies `{"jsonrpc":"2.0","id":2,"result":{"handled":true}}`: the request
+completes with no actions and no notice. `handled` must be `true` and is the
+object's only field; without it, behaviour is unchanged.
+
 Speech text is NUL-free. The speech sidecar replies only after release.
 Cancelled sessions and replies from failed sidecars never reach plugins.
 

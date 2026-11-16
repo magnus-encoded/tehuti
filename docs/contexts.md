@@ -114,6 +114,16 @@ Without the option, unmatched speech shows “No speech mapping” for three
 seconds above the client without changing focus. Record (Share) controls push-to-talk
 by default. Configured push-to-talk buttons never reach context mappings.
 
+### Type prefix
+
+`"type" = { text_after = true }` in `[speech]` makes a phrase that starts with
+"type" type the rest of the phrase, with its own case and punctuation and one
+trailing space, as `unmatched_speech = "type"` does. The key itself is never
+typed, and a bare "type" does nothing. A whole-phrase mapping such as
+"type slash" wins over the prefix rule. The rule works in the global context
+and in application contexts; a context's own rule overrides the global one,
+and `"type" = { none = true }` switches an inherited rule off for that context.
+
 ## Legacy favourites key
 
 The global context may still contain a top-level `favourites` list. Tehuti
@@ -366,6 +376,15 @@ password fields keep the space. B closes it; Menu types the draft, presses Enter
 With an empty draft Menu presses only Enter. Closing drops the draft by
 default; `keep_draft = true` in `[keyboard]` keeps it between openings.
 A different text field still clears it.
+A gentle left-stick push steps one word. A push deeper than `word_repeat_from`
+(800 of 1000) keeps picking after `word_repeat_delay_ms` (350), from
+`word_min_rate` words a second (2) up to `word_max_rate` (10) at a full push.
+These are `[keyboard]` options with no settings slider, and edits reload
+without a restart.
+Holding a D-pad direction moves the highlight after `repeat_delay_ms` (300),
+then at `repeat_rate` keys a second (12), speeding up to `repeat_max_rate`
+(30) over `repeat_ramp_ms` (2000). All four are `[keyboard]` options with no
+settings slider, and edits reload without a restart.
 The draft row sits below the keys, beside the powerline, and shows a window
 of text around the caret or picked word.
 The legacy `button` and `open_on_app_level` options remain accepted but

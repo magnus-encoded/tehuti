@@ -9,6 +9,17 @@ right_bumper = { key = "tab" }
 [keyboard]
 on_text_field = "button"
 button = "Y"
+# Left-stick word picking: a deeper push than word_repeat_from (of 1000) keeps
+# picking, from word_min_rate up to word_max_rate words a second.
+# word_repeat_from = 800
+# word_repeat_delay_ms = 350
+# word_min_rate = 2
+# word_max_rate = 10
+# D-pad hold repeat: delay, start and top rate (keys a second), ramp time.
+# repeat_delay_ms = 300
+# repeat_rate = 12
+# repeat_max_rate = 30
+# repeat_ramp_ms = 2000
 
 [speech]
 "Wider." = { layout = "switch-preset-column-width" }
