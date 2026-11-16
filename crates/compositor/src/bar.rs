@@ -510,7 +510,9 @@ mod tests {
         canvas.ticker(&strip, 0, (0, 400), 1);
         let rows = canvas
             .pixels
-            .chunks_exact(400 * 4)
+            .as_chunks::<{ 400 * 4 }>()
+            .0
+            .iter()
             .filter(|row| row.iter().any(|byte| *byte != 0))
             .count();
         assert_eq!(rows, crate::ticker_strip::HEIGHT * 2);
