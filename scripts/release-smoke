@@ -71,9 +71,7 @@ drive hold guide
 drive clock advance 500
 drive release guide
 drive wait-for /overlays/menu true
-drive press dpad_up
-drive press dpad_up
-drive press dpad_up
+drive menu-select SETTINGS
 drive press A
 drive wait-for /overlays/settings true
 drive shot "$output/settings.png"
