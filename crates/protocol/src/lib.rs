@@ -128,13 +128,14 @@ pub enum Event {
 }
 
 macro_rules! key_names {
-    ($(($variant:ident, $name:literal, $code:literal, $keysym:literal, $alias:literal)),+ $(,)?) => {
+    ($(($variant:ident, $name:literal, $code:literal, $keysym:literal, $alias:literal $(, $symbol:literal)?)),+ $(,)?) => {
         /// A key the core can send to the focused client.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
         #[expect(clippy::min_ident_chars, reason = "Variants use keyboard labels")]
         pub enum KeyName {
             $(
                 #[serde(rename = $name, alias = $alias)]
+                $(#[serde(alias = $symbol)])?
                 $variant,
             )+
         }
@@ -205,17 +206,17 @@ key_names! {
     (Digit7, "7", 8, "7", "Digit7"),
     (Digit8, "8", 9, "8", "Digit8"),
     (Digit9, "9", 10, "9", "Digit9"),
-    (Minus, "minus", 12, "minus", "Minus"),
-    (Equal, "equal", 13, "equal", "Equal"),
-    (LeftBracket, "left_bracket", 26, "bracketleft", "LeftBracket"),
-    (RightBracket, "right_bracket", 27, "bracketright", "RightBracket"),
-    (Semicolon, "semicolon", 39, "semicolon", "Semicolon"),
-    (Apostrophe, "apostrophe", 40, "apostrophe", "Apostrophe"),
-    (Grave, "grave", 41, "grave", "Grave"),
-    (Comma, "comma", 51, "comma", "Comma"),
-    (Period, "period", 52, "period", "Period"),
-    (Slash, "slash", 53, "slash", "Slash"),
-    (Backslash, "backslash", 43, "backslash", "Backslash"),
+    (Minus, "minus", 12, "minus", "Minus", "-"),
+    (Equal, "equal", 13, "equal", "Equal", "="),
+    (LeftBracket, "left_bracket", 26, "bracketleft", "LeftBracket", "["),
+    (RightBracket, "right_bracket", 27, "bracketright", "RightBracket", "]"),
+    (Semicolon, "semicolon", 39, "semicolon", "Semicolon", ";"),
+    (Apostrophe, "apostrophe", 40, "apostrophe", "Apostrophe", "'"),
+    (Grave, "grave", 41, "grave", "Grave", "`"),
+    (Comma, "comma", 51, "comma", "Comma", ","),
+    (Period, "period", 52, "period", "Period", "."),
+    (Slash, "slash", 53, "slash", "Slash", "/"),
+    (Backslash, "backslash", 43, "backslash", "Backslash", "\\"),
     (F1, "f1", 59, "F1", "F1"),
     (F2, "f2", 60, "F2", "F2"),
     (F3, "f3", 61, "F3", "F3"),
@@ -1160,6 +1161,54 @@ fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
     Ok(label)
 }
 
+/// The first `key = "..."` value in `source` that names no key.
+fn unknown_key_name(source: &str) -> Option<String> {
+    fn walk(value: &toml::Value) -> Option<String> {
+        match value {
+            toml::Value::Table(table) => {
+                if let Some(toml::Value::String(name)) = table.get("key")
+                    && <KeyName as serde::Deserialize>::deserialize(serde::de::value::StrDeserializer::<
+                        serde::de::value::Error,
+                    >::new(name))
+                    .is_err()
+                {
+                    return Some(name.clone());
+                }
+                table.values().find_map(walk)
+            }
+            toml::Value::Array(items) => items.iter().find_map(walk),
+            toml::Value::String(_)
+            | toml::Value::Integer(_)
+            | toml::Value::Float(_)
+            | toml::Value::Boolean(_)
+            | toml::Value::Datetime(_) => None,
+        }
+    }
+    let toml::Value::Table(root) = toml::from_str::<toml::Value>(source).ok()? else {
+        return None;
+    };
+    ["buttons", "speech", "sticks"]
+        .iter()
+        .filter_map(|section| root.get(*section))
+        .find_map(walk)
+}
+
+/// The TOML error, or one naming the unknown key the untagged mapping enum hid.
+fn key_error(source: &str, error: &toml::de::Error) -> String {
+    let message = error.to_string();
+    if message.contains("MappingAction")
+        && let Some(bad) = unknown_key_name(source)
+    {
+        let mut lines = message.lines();
+        let mut kept: Vec<&str> = lines.next().into_iter().collect();
+        kept.extend(lines.filter(|line| line.contains('|')));
+        let detail = format!("unknown key name {bad:?}; see docs/contexts.md for the valid names");
+        kept.push(&detail);
+        return kept.join("\n");
+    }
+    message
+}
+
 /// Parses a context at the configuration boundary.
 ///
 /// # Errors
@@ -1168,7 +1217,7 @@ fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
 /// normalizes to nothing or to the same text as an earlier phrase is dropped
 /// with a warning instead; the rest of the context loads.
 pub fn parse_context(source: &str) -> Result<Context, String> {
-    let mut context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
+    let mut context: ContextFile = toml::from_str(source).map_err(|error| key_error(source, &error))?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
     validate_holds(&context)?;
     validate_keyboard_button(context.keyboard.button)?;
