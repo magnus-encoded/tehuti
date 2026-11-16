@@ -100,6 +100,71 @@ order = 1
         assert!(report.has_errors());
     }
 
+    #[test]
+    fn a_layout_phrase_with_no_button_is_flagged_as_voice_only() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Half width' = { layout = 'maximize-column' }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.message.contains("only by voice"))
+            .unwrap_or_else(|| panic!("no voice-only warning: {report}"));
+        assert_eq!(finding.severity, Severity::Warning);
+        assert!(finding.message.contains("Half width"), "{report}");
+    }
+
+    #[test]
+    fn a_layout_phrase_with_a_button_is_not_voice_only() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\nnorth = { layout = 'maximize-column' }\n[speech]\n'Half width' = { layout = 'maximize-column' }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.to_string().contains("only by voice"), "{report}");
+    }
+
+    #[test]
+    fn shipped_examples_map_no_voice_only_step_phrases() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let report = check(&examples);
+        assert!(!report.to_string().contains("only by voice"), "{report}");
+        let global = std::fs::read_to_string(examples.join("global/context.toml")).unwrap();
+        let context = tehuti_protocol::parse_context(&global).unwrap();
+        for mapping in context.speech_mappings() {
+            assert!(
+                !matches!(
+                    mapping.action,
+                    tehuti_protocol::Action::Layout {
+                        action: tehuti_protocol::LayoutAction::SwitchPresetColumnWidth
+                            | tehuti_protocol::LayoutAction::SwitchPresetColumnWidthBack
+                    }
+                ),
+                "step phrase {:?} remains",
+                mapping.phrase
+            );
+        }
+    }
+
+    #[test]
+    fn goal_phrases_and_menu_actions_are_not_voice_only() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Half width' = { key = 'h' }\n'Restart' = { restart = true }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.to_string().contains("only by voice"), "{report}");
+    }
+
     fn write(directory: &Path, relative: &str, text: &str) {
         let path = directory.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

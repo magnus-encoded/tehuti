@@ -156,8 +156,11 @@ mod layout_actions {
     }
 
     #[test]
-    fn narrower_global_phrase_maps_to_the_back_command() {
-        let context = parse_context(include_str!("../../../examples/global/context.toml")).unwrap();
+    fn narrower_phrase_maps_to_the_back_command() {
+        let context = parse_context(
+            "app_id = '*'\n[buttons]\n[speech]\n'Narrower.' = { layout = 'switch-preset-column-width-back' }",
+        )
+        .unwrap();
         let action = context.speech_action("Narrower.").unwrap();
         assert_eq!(
             action,

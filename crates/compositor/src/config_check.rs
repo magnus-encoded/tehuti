@@ -107,6 +107,7 @@ pub fn check(directory: &Path) -> Report {
             report_legacy_favourites(&mut report, &loaded);
             report_overridden_shared(&mut report, &loaded, directory);
             report_unknown_ticker_buttons(&mut report, &loaded);
+            report_voice_only(&mut report, &loaded);
         }
         Err(error) => report.push(&error.path, Severity::Error, error.message),
     }
@@ -214,6 +215,46 @@ fn report_unknown_ticker_buttons(report: &mut Report, loaded: &[(PathBuf, tehuti
                 path,
                 Severity::Warning,
                 format!("[ticker.buttons] {spelled:?} is not a pad button; the label is ignored"),
+            );
+        }
+    }
+}
+
+/// Warns about each phrase whose action no button reaches in its context or the global one, and the system
+/// menu does not hold (the menu holds Restart, which the checked actions leave out). Typed results (keys, text, notices, secrets, launches) are whole units that voice
+/// owns; the actions checked are the ones a controller can do too.
+fn report_voice_only(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
+    use tehuti_protocol::Action;
+    for (path, context) in loaded {
+        let mut voice_only: Vec<_> = context
+            .speech_mappings()
+            .filter(|mapping| {
+                matches!(
+                    mapping.action,
+                    Action::Layout { .. } | Action::Close | Action::ToggleTicker
+                )
+            })
+            .filter(|mapping| {
+                !loaded
+                    .iter()
+                    .map(|(_, other)| other)
+                    .filter(|other| core::ptr::eq(*other, context) || other.app_id() == "*")
+                    .any(|other| {
+                        other
+                            .mapped_buttons()
+                            .any(|button| other.action_for(button).as_ref() == Some(&mapping.action))
+                    })
+            })
+            .collect();
+        voice_only.sort_by_key(|mapping| mapping.phrase);
+        for mapping in voice_only {
+            report.push(
+                path,
+                Severity::Warning,
+                format!(
+                    "[speech] {:?} is reachable only by voice: no button maps the same action",
+                    mapping.phrase
+                ),
             );
         }
     }
