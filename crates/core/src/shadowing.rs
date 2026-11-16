@@ -48,7 +48,7 @@ pub fn shadowed(contexts: &[Context]) -> Vec<Shadowing> {
 /// Lists unreachable mappings for the connected pad's roles.
 #[must_use]
 pub fn shadowed_for_pad(contexts: &[Context], pad: crate::pad::PadFamily) -> Vec<Shadowing> {
-    let push_to_talk = |button: ButtonName| {
+    let global_talk = |button: ButtonName| {
         contexts
             .iter()
             .find(|context| context.app_id() == GLOBAL_APP_ID)
@@ -56,6 +56,11 @@ pub fn shadowed_for_pad(contexts: &[Context], pad: crate::pad::PadFamily) -> Vec
     };
     let mut found = Vec::new();
     for (index, context) in contexts.iter().enumerate() {
+        let push_to_talk = |button: ButtonName| {
+            context
+                .own_push_to_talk()
+                .map_or_else(|| global_talk(button), |own| own.contains(&button))
+        };
         if let Some(earlier) = contexts
             .iter()
             .take(index)
