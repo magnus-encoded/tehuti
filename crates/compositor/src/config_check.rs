@@ -25,6 +25,8 @@ pub struct Finding {
 pub struct Report {
     /// Files read, whether or not they parsed.
     pub checked: usize,
+    /// The shared sections that exist, sorted.
+    pub shared: Vec<String>,
     pub findings: Vec<Finding>,
 }
 
@@ -70,6 +72,9 @@ impl fmt::Display for Report {
                 writeln!(formatter, "    {line}")?;
             }
         }
+        if !self.shared.is_empty() {
+            writeln!(formatter, "shared sections: {}", self.shared.join(", "))?;
+        }
         writeln!(
             formatter,
             "{} files checked, {} errors, {} warnings",
@@ -83,7 +88,10 @@ impl fmt::Display for Report {
 /// Checks every `context.toml` that Tehuti would load from `directory`, and its `menu.toml`.
 #[must_use]
 pub fn check(directory: &Path) -> Report {
-    let mut report = Report::default();
+    let mut report = Report {
+        shared: crate::shared_sections::names(directory),
+        ..Report::default()
+    };
     match crate::contexts::load_each(directory) {
         Ok(outcomes) => {
             report.checked = outcomes.len();
@@ -97,6 +105,7 @@ pub fn check(directory: &Path) -> Report {
             report_skipped_phrases(&mut report, &loaded);
             report_shadowing(&mut report, &loaded);
             report_legacy_favourites(&mut report, &loaded);
+            report_overridden_shared(&mut report, &loaded, directory);
             report_unknown_ticker_buttons(&mut report, &loaded);
         }
         Err(error) => report.push(&error.path, Severity::Error, error.message),
@@ -163,6 +172,22 @@ fn check_plugins(directory: &Path, report: &mut Report) {
             Severity::Warning,
             format!("never loaded: plugins load only from {}", plugins.display()),
         );
+    }
+}
+
+fn report_overridden_shared(
+    report: &mut Report,
+    loaded: &[(PathBuf, tehuti_protocol::Context)],
+    directory: &Path,
+) {
+    for (path, _) in loaded {
+        let overridden = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|source| crate::shared_sections::resolve(&source, directory).ok())
+            .map_or_default(|resolved| resolved.overridden);
+        for message in overridden {
+            report.push(path, Severity::Warning, message);
+        }
     }
 }
 

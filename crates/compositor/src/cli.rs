@@ -9,6 +9,7 @@ usage: tehuti <context-directory> [application] [arguments...]
        tehuti --version | -V
        tehuti --check-config [config-directory]
        tehuti --install-skill [path]
+       tehuti config share <context> <section>... [--as <name>]
 ";
 
 /// What one run of the binary does.
@@ -18,6 +19,8 @@ pub enum Invocation {
     Version,
     /// Check the configuration directory; the rest of the arguments follow the option.
     CheckConfig(Vec<OsString>),
+    /// `tehuti config ...`: the words after `config`.
+    Config(Vec<OsString>),
     /// Install the agent skill under the given skills directory, or `~/.agents/skills`.
     InstallSkill(Option<OsString>),
     /// Start the compositor with this context directory and optional first client.
@@ -98,8 +101,12 @@ pub fn parse_with(
     arguments: impl IntoIterator<Item = OsString>,
     is_directory: impl Fn(&std::ffi::OsStr) -> bool,
 ) -> Result<Invocation, UsageError> {
-    let mut arguments = arguments.into_iter();
+    let mut arguments = arguments.into_iter().peekable();
     let first = arguments.next().ok_or(UsageError::MissingContextDirectory)?;
+    // `config share` cannot be a context directory with the application `share`.
+    if first == "config" && arguments.peek().is_some_and(|word| word == "share") {
+        return Ok(Invocation::Config(arguments.collect()));
+    }
     match first.to_str().and_then(option) {
         Some(Opt::Help) => return Ok(Invocation::Help),
         Some(Opt::Version) => return Ok(Invocation::Version),
