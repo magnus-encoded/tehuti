@@ -153,6 +153,18 @@ order = 1
         }
     }
 
+    #[test]
+    fn goal_phrases_and_menu_actions_are_not_voice_only() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Half width' = { key = 'h' }\n'Restart' = { restart = true }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.to_string().contains("only by voice"), "{report}");
+    }
+
     fn write(directory: &Path, relative: &str, text: &str) {
         let path = directory.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

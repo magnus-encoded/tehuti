@@ -221,7 +221,7 @@ fn report_unknown_ticker_buttons(report: &mut Report, loaded: &[(PathBuf, tehuti
 }
 
 /// Warns about each phrase whose action no button reaches in its context or the global one, and the system
-/// menu does not hold. Typed results (keys, text, notices, secrets, launches) are whole units that voice
+/// menu does not hold (the menu holds Restart, which the checked actions leave out). Typed results (keys, text, notices, secrets, launches) are whole units that voice
 /// owns; the actions checked are the ones a controller can do too.
 fn report_voice_only(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
     use tehuti_protocol::Action;
