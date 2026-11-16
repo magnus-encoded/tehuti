@@ -105,7 +105,7 @@ mod invoke_verb {
         assert_eq!(first, typed("/changelog "), "a plugin word snaps");
         state.set_plugin_invoke_words(Vec::new());
         let (_, second) = step(state, &speech("Invoke change log"));
-        assert_eq!(second, typed("/change-log "), "an emptied list no longer snaps");
+        assert_eq!(second, typed("/change-log "), "an emptied list snaps nothing");
     }
 
     #[test]
