@@ -9,6 +9,7 @@ pub mod config_check;
 pub mod controller;
 pub mod input;
 pub mod instance;
+pub mod session_registration;
 pub mod skill_install;
 pub mod state;
 pub mod status;

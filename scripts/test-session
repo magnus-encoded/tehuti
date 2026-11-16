@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 class SessionTests(unittest.TestCase):
     def run_session(self, statuses, times=None, plasma=True, missing_binary=False,
                     plasma_statuses=None, date_failure=False, plasma_active=False,
-                    plasma_active_statuses=None):
+                    plasma_active_statuses=None, systemd=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bin_dir = root / 'bin'
@@ -39,7 +39,9 @@ sed '1d' "$PLASMA_STATUSES" >"$PLASMA_STATUSES.next"
 mv "$PLASMA_STATUSES.next" "$PLASMA_STATUSES"
 exit "$status"
 ''')
-            stub('systemctl', '''[ "$*" = '--user is-active --quiet plasma-workspace.target' ] || exit 2
+            traced = '''case "$2" in stop|unset-environment) echo "systemctl $2" >>"$TRACE"; exit 0;; esac
+''' if systemd else ''
+            stub('systemctl', traced + '''[ "$*" = '--user is-active --quiet plasma-workspace.target' ] || exit 2
 if [ -s "$PLASMA_ACTIVE_STATUSES" ]; then
     read -r status <"$PLASMA_ACTIVE_STATUSES"
     sed '1d' "$PLASMA_ACTIVE_STATUSES" >"$PLASMA_ACTIVE_STATUSES.next"
@@ -94,6 +96,13 @@ echo "$now"
                                     env=env, capture_output=True, timeout=5)
             self.assertEqual(result.returncode, 1)
             self.assertIn(b'Plasma Log Out shortcut', result.stderr)
+
+    def test_session_is_deregistered_after_each_tehuti_exit_before_plasma(self):
+        code, trace, _ = self.run_session([1, 21], systemd=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(trace, ['tehuti', 'systemctl stop', 'systemctl unset-environment',
+                                 'plasma', 'tehuti', 'systemctl stop',
+                                 'systemctl unset-environment'])
 
     def test_switch_returns_and_logout_ends_login(self):
         code, trace, _ = self.run_session([20, 21])

@@ -131,4 +131,66 @@ mod tests {
         );
         Ok(())
     }
+
+    fn stubbed_launcher(
+        exit_status: u8,
+        with_systemctl: bool,
+    ) -> Result<String, Box<dyn core::error::Error>> {
+        let home = tempfile::tempdir()?;
+        let bin = home.path().join("bin");
+        fs::create_dir(&bin)?;
+        std::os::unix::fs::symlink("/bin/mkdir", bin.join("mkdir"))?;
+        let trace = home.path().join("trace");
+        if with_systemctl {
+            let stub = bin.join("systemctl");
+            fs::write(&stub, "#!/bin/sh\necho \"systemctl $*\" >>\"$TRACE\"\nexit 1\n")?;
+            fs::set_permissions(&stub, fs::Permissions::from_mode(0o755))?;
+        }
+        let fake = bin.join("fake");
+        fs::write(
+            &fake,
+            format!("#!/bin/sh\necho tehuti >>\"$TRACE\"\nexit {exit_status}\n"),
+        )?;
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))?;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let status = Command::new(root.join("dist/tehuti-session"))
+            .env_clear()
+            .env("PATH", &bin)
+            .env("HOME", home.path())
+            .env("TRACE", &trace)
+            .env("TEHUTI_BINARY", fake)
+            .status()?;
+        assert_eq!(status.code(), Some(0));
+        Ok(fs::read_to_string(&trace).unwrap_or_default())
+    }
+
+    #[test]
+    fn launcher_deregisters_the_session_after_tehuti_exits() -> Result<(), Box<dyn core::error::Error>> {
+        let trace = stubbed_launcher(21, true)?;
+        assert_eq!(
+            trace,
+            "tehuti\nsystemctl --user stop tehuti-session.target\n\
+             systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP\n",
+            "the target stops and the names are cleared before Plasma could register"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn installer_copies_the_session_target_unit() -> Result<(), Box<dyn core::error::Error>> {
+        let destination = tempfile::tempdir()?;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let output = Command::new(root.join("scripts/install-session"))
+            .env("DESTDIR", destination.path())
+            .output()?;
+        assert!(output.status.success());
+        let unit = fs::read_to_string(
+            destination
+                .path()
+                .join("usr/local/lib/systemd/user/tehuti-session.target"),
+        )?;
+        assert!(unit.contains("BindsTo=graphical-session.target"));
+        assert!(unit.contains("After=graphical-session-pre.target"));
+        Ok(())
+    }
 }

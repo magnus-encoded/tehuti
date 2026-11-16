@@ -33,7 +33,7 @@ Contexts and plugins live at `~/.config/tehuti` by default. The session can star
 without an initial application; the controller's desktop launcher opens apps.
 
 The owner runs `sudo scripts/install-session` from this checkout to copy only
-`dist/tehuti-session` and `dist/tehuti.desktop`. Tehuti then appears among Wayland
+`dist/tehuti-session`, `dist/tehuti.desktop` and the user unit `dist/tehuti-session.target`. Tehuti then appears among Wayland
 sessions. Plasma remains selectable. The installer refuses to overwrite files.
 It prints the two paths to remove. No compositor binary is installed by it.
 
