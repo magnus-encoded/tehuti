@@ -820,9 +820,9 @@ fn insert_controllers(
     let companion = controller::nunchuk_present()
         || controllers
             .values()
-            .any(|attached| !attached.pad.identity().family.is_remote());
-    for attached in controllers.values_mut() {
-        attached.pad.set_companion(companion);
+            .any(|controller| !controller.pad.identity().family.is_remote());
+    for controller in controllers.values_mut() {
+        controller.pad.set_companion(companion);
     }
 }
 
