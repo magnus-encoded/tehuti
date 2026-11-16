@@ -21,27 +21,40 @@ use tehuti_protocol::{Context, parse_context};
 /// A broken file is skipped with a warning so startup always gets the valid contexts.
 #[must_use]
 pub fn load(directory: &Path) -> Vec<Context> {
+    load_files(directory)
+        .into_iter()
+        .map(|(_, context)| context)
+        .collect()
+}
+
+/// Like [`load`], keeping each context's file so a later broken edit can fall back to it.
+#[must_use]
+pub fn load_files(directory: &Path) -> Vec<(PathBuf, Context)> {
     let paths = context_paths(directory, false).unwrap_or_else(|error| {
         tracing::warn!(%error, "context directory unavailable");
         Vec::new()
     });
-    let mut contexts = Vec::new();
+    let mut files = Vec::new();
     for path in paths {
-        match load_one(&path) {
-            Ok(Some(context)) => contexts.push(context),
+        match load_one(&path, directory) {
+            Ok(Some(context)) => files.push((path, context)),
             Ok(None) => {}
             Err(error) => tracing::warn!(%error, "context skipped"),
         }
     }
-    contexts
+    files
 }
 
 /// A reload's valid contexts and the files it skipped.
 #[derive(Debug, Clone, Default)]
 pub struct Reloaded {
     pub contexts: Vec<Context>,
+    /// The file of each entry in `contexts`.
+    pub paths: Vec<PathBuf>,
     /// Files that could not be read or parsed, in load order.
     pub skipped: Vec<LoadError>,
+    /// Speech phrases dropped from files that otherwise loaded, one entry per phrase.
+    pub phrase_warnings: Vec<LoadError>,
 }
 
 /// Loads every valid context, skipping broken files the way startup does.
@@ -52,8 +65,17 @@ pub struct Reloaded {
 pub fn reload(directory: &Path) -> Result<Reloaded, LoadError> {
     let mut reloaded = Reloaded::default();
     for path in context_paths(directory, true)? {
-        match load_one(&path) {
-            Ok(Some(context)) => reloaded.contexts.push(context),
+        match load_one(&path, directory) {
+            Ok(Some(context)) => {
+                reloaded
+                    .phrase_warnings
+                    .extend(context.skipped_phrases().iter().map(|message| LoadError {
+                        path: path.clone(),
+                        message: message.clone(),
+                    }));
+                reloaded.contexts.push(context);
+                reloaded.paths.push(path);
+            }
             Ok(None) => {}
             Err(error) => reloaded.skipped.push(error),
         }
@@ -84,7 +106,7 @@ pub fn load_each(directory: &Path) -> Result<Vec<FileOutcome>, LoadError> {
     Ok(context_paths(directory, true)?
         .into_iter()
         .filter_map(|path| {
-            load_one(&path)
+            load_one(&path, directory)
                 .map(|loaded| loaded.map(|context| (path, context)))
                 .transpose()
         })
@@ -100,13 +122,41 @@ pub struct LoadError {
 }
 
 impl LoadError {
+    /// Two short notice lines: the file, then the phrase that was dropped.
+    #[must_use]
+    pub fn phrase_notice(&self) -> String {
+        format!(
+            "PHRASE SKIPPED {}\n{}",
+            self.file_label(),
+            short_error(&self.message)
+        )
+    }
+
+    /// The notice for a batch of dropped phrases: the first one, plus how many more were dropped.
+    #[must_use]
+    pub fn phrase_notice_for(warnings: &[Self]) -> Option<String> {
+        let (first, rest) = warnings.split_first()?;
+        let notice = first.phrase_notice();
+        if rest.is_empty() {
+            return Some(notice);
+        }
+        Some(match notice.split_once('\n') {
+            Some((head, tail)) => format!("{head} (+{} more)\n{tail}", rest.len()),
+            None => format!("{notice} (+{} more)", rest.len()),
+        })
+    }
+
+    fn file_label(&self) -> String {
+        self.path.parent().and_then(Path::file_name).map_or_else(
+            || self.path.display().to_string(),
+            |name| format!("{}/context.toml", name.display()),
+        )
+    }
+
     /// Two short notice lines: the file, then the error location and message.
     #[must_use]
     pub fn notice(&self) -> String {
-        let file = self.path.parent().and_then(Path::file_name).map_or_else(
-            || self.path.display().to_string(),
-            |name| format!("{}/context.toml", name.display()),
-        );
+        let file = self.file_label();
         format!("CONTEXT ERROR {file}\n{}", short_error(&self.message))
     }
 }
@@ -161,16 +211,30 @@ fn context_paths(directory: &Path, strict: bool) -> Result<Vec<PathBuf>, LoadErr
     Ok(paths)
 }
 
-fn load_one(path: &Path) -> Result<Option<Context>, LoadError> {
+fn load_one(path: &Path, directory: &Path) -> Result<Option<Context>, LoadError> {
     let failed = |message: String| LoadError {
         path: path.to_path_buf(),
         message,
     };
     match read_context(path) {
         Ok(source) => {
-            let context = parse_context(&source).map_err(failed)?;
+            let resolved = crate::shared_sections::resolve(&source, directory).map_err(failed)?;
+            let context = parse_context(&resolved.source).map_err(failed)?;
+            for warning in &resolved.overridden {
+                tracing::warn!(path = %path.display(), %warning, "context shared section");
+            }
             for warning in context.warnings() {
                 tracing::warn!(path = %path.display(), %warning, "context speech phrase");
+            }
+            for mapping in context.speech_mappings() {
+                if let Some(word) = tehuti_core::unit_verbs::reserved_word(mapping.phrase) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        phrase = mapping.phrase,
+                        word,
+                        "context speech phrase starts with a reserved launcher word and never fires"
+                    );
+                }
             }
             Ok(Some(context))
         }
@@ -210,6 +274,8 @@ pub struct ContextWatch {
     directory: PathBuf,
     watcher: Rc<OwnedFd>,
     top: i32,
+    /// The shared folder and its subfolders.
+    shared: Vec<i32>,
     debounce: Debounce,
 }
 
@@ -249,10 +315,11 @@ impl ContextWatch {
             inotify::CreateFlags::NONBLOCK | inotify::CreateFlags::CLOEXEC,
         )?);
         let top = inotify::add_watch(&*watcher, directory, WATCH_FLAGS)?;
-        let context_watch = Self {
+        let mut context_watch = Self {
             directory: directory.to_path_buf(),
             watcher: Rc::clone(&watcher),
             top,
+            shared: Vec::new(),
             debounce: Debounce::default(),
         };
         context_watch.watch_children();
@@ -279,7 +346,10 @@ impl ContextWatch {
                     let overflow = event
                         .events()
                         .contains(rustix::fs::inotify::ReadFlags::QUEUE_OVERFLOW);
-                    if relevant(name, is_directory, event.wd() == self.top, overflow) {
+                    let in_shared = self.shared.contains(&event.wd());
+                    let shared_file =
+                        in_shared && (is_directory || name.is_some_and(|name| name.ends_with(b".toml")));
+                    if shared_file || relevant(name, is_directory, event.wd() == self.top, overflow) {
                         self.debounce.changed(Instant::now());
                     }
                 }
@@ -292,7 +362,18 @@ impl ContextWatch {
         }
     }
 
-    fn watch_children(&self) {
+    fn watch_children(&mut self) {
+        let shared = crate::shared_sections::shared_directory(&self.directory);
+        let folders = std::fs::read_dir(&shared)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir());
+        self.shared = core::iter::once(shared)
+            .chain(folders)
+            .filter_map(|path| rustix::fs::inotify::add_watch(&*self.watcher, path, WATCH_FLAGS).ok())
+            .collect();
         let paths = match context_paths(&self.directory, false) {
             Ok(paths) => paths,
             Err(error) => {
@@ -318,7 +399,7 @@ impl ContextWatch {
     }
 }
 
-fn read_context(path: &Path) -> io::Result<String> {
+pub(crate) fn read_context(path: &Path) -> io::Result<String> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)

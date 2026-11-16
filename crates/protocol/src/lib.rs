@@ -1,11 +1,35 @@
 //! Protocol v0 types shared by the core and plugins.
 
 /// Text that can cross a Wayland string boundary.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Text(String);
 
+thread_local! {
+    static REVEAL: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Debug output shows the length only, so dictated text never reaches a log by accident.
+/// [`Text::reveal_in`] lifts that for the user's own opt-in recording.
+impl core::fmt::Debug for Text {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if REVEAL.with(core::cell::Cell::get) {
+            formatter.debug_tuple("Text").field(&self.0).finish()
+        } else {
+            write!(formatter, "Text({} bytes)", self.0.len())
+        }
+    }
+}
+
 impl Text {
+    /// Runs `action` with `Debug` showing the full text on this thread.
+    pub fn reveal_in<R>(action: impl FnOnce() -> R) -> R {
+        let before = REVEAL.with(|flag| flag.replace(true));
+        let result = action();
+        REVEAL.with(|flag| flag.set(before));
+        result
+    }
+
     /// Validates text before it becomes an action.
     ///
     /// # Errors
@@ -104,13 +128,14 @@ pub enum Event {
 }
 
 macro_rules! key_names {
-    ($(($variant:ident, $name:literal, $code:literal, $keysym:literal, $alias:literal)),+ $(,)?) => {
+    ($(($variant:ident, $name:literal, $code:literal, $keysym:literal, $alias:literal $(, $symbol:literal)?)),+ $(,)?) => {
         /// A key the core can send to the focused client.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
         #[expect(clippy::min_ident_chars, reason = "Variants use keyboard labels")]
         pub enum KeyName {
             $(
                 #[serde(rename = $name, alias = $alias)]
+                $(#[serde(alias = $symbol)])?
                 $variant,
             )+
         }
@@ -181,17 +206,17 @@ key_names! {
     (Digit7, "7", 8, "7", "Digit7"),
     (Digit8, "8", 9, "8", "Digit8"),
     (Digit9, "9", 10, "9", "Digit9"),
-    (Minus, "minus", 12, "minus", "Minus"),
-    (Equal, "equal", 13, "equal", "Equal"),
-    (LeftBracket, "left_bracket", 26, "bracketleft", "LeftBracket"),
-    (RightBracket, "right_bracket", 27, "bracketright", "RightBracket"),
-    (Semicolon, "semicolon", 39, "semicolon", "Semicolon"),
-    (Apostrophe, "apostrophe", 40, "apostrophe", "Apostrophe"),
-    (Grave, "grave", 41, "grave", "Grave"),
-    (Comma, "comma", 51, "comma", "Comma"),
-    (Period, "period", 52, "period", "Period"),
-    (Slash, "slash", 53, "slash", "Slash"),
-    (Backslash, "backslash", 43, "backslash", "Backslash"),
+    (Minus, "minus", 12, "minus", "Minus", "-"),
+    (Equal, "equal", 13, "equal", "Equal", "="),
+    (LeftBracket, "left_bracket", 26, "bracketleft", "LeftBracket", "["),
+    (RightBracket, "right_bracket", 27, "bracketright", "RightBracket", "]"),
+    (Semicolon, "semicolon", 39, "semicolon", "Semicolon", ";"),
+    (Apostrophe, "apostrophe", 40, "apostrophe", "Apostrophe", "'"),
+    (Grave, "grave", 41, "grave", "Grave", "`"),
+    (Comma, "comma", 51, "comma", "Comma", ","),
+    (Period, "period", 52, "period", "Period", "."),
+    (Slash, "slash", 53, "slash", "Slash", "/"),
+    (Backslash, "backslash", 43, "backslash", "Backslash", "\\"),
     (F1, "f1", 59, "F1", "F1"),
     (F2, "f2", 60, "F2", "F2"),
     (F3, "f3", 61, "F3", "F3"),
@@ -254,6 +279,22 @@ pub struct KeyboardConfig {
     pub terminal: Option<bool>,
     /// Legacy option, accepted without opening on level changes.
     pub open_on_app_level: Option<bool>,
+    /// Left-stick push depth, in thousandths (500 to 1000), from which a held stick keeps picking words (default 800).
+    pub word_repeat_from: Option<u16>,
+    /// Milliseconds a deep push waits before it keeps picking words (default 350).
+    pub word_repeat_delay_ms: Option<u16>,
+    /// Words a second at the shallowest repeating push (default 2).
+    pub word_min_rate: Option<u16>,
+    /// Words a second at a full push (default 10).
+    pub word_max_rate: Option<u16>,
+    /// Milliseconds a held D-pad direction waits before repeating (default 300).
+    pub repeat_delay_ms: Option<u16>,
+    /// Keys a second when a held D-pad direction starts repeating (default 12).
+    pub repeat_rate: Option<u16>,
+    /// Keys a second a held D-pad direction speeds up to (default 30).
+    pub repeat_max_rate: Option<u16>,
+    /// Milliseconds of repeating until the top rate is reached (default 2000).
+    pub repeat_ramp_ms: Option<u16>,
 }
 
 /// The fraction of a window's colour retained while dimmed.
@@ -487,16 +528,22 @@ pub struct Context {
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     sticks: Vec<StickMapping>,
     speech: std::collections::HashMap<String, SpeechEntry>,
+    /// Words that prime speech recognition while this context is focused.
+    hotwords: Vec<String>,
     /// Each non-template phrase's [`speech_variant_key`] to its `speech` key, or
     /// `None` once two distinct phrases share the folded form.
     speech_variants: std::collections::HashMap<String, Option<String>>,
     /// Problems that did not stop the load, for the edge to log.
     warnings: Vec<String>,
+    skipped_phrases: Vec<String>,
     unmatched_speech: Option<UnmatchedSpeech>,
+    /// Normalized prefix phrases to whether they type the rest of the utterance.
+    text_prefixes: std::collections::HashMap<String, bool>,
     launch_phrases: Vec<(String, String)>,
-    favourites: Vec<String>,
+    invoke: Vec<String>,
     keyboard: KeyboardConfig,
     dim: DimConfig,
+    key_hold_ms: Option<u32>,
     push_to_talk: Vec<ButtonName>,
     window: WindowConfig,
     log: LogConfig,
@@ -555,7 +602,8 @@ struct PadConfig {
 #[serde(default, deny_unknown_fields)]
 struct WindowConfig {
     open_fullscreen: bool,
-    column_width: Option<WindowFraction>,
+    #[serde(alias = "width")]
+    column_width: Option<WindowWidth>,
     height: Option<WindowFraction>,
 }
 
@@ -612,6 +660,12 @@ impl Context {
         self.log.window_size
     }
 
+    /// How long this context holds each key tap, in milliseconds, when it sets one.
+    #[must_use]
+    pub const fn key_hold_ms(&self) -> Option<u32> {
+        self.key_hold_ms
+    }
+
     #[must_use]
     pub const fn open_fullscreen(&self) -> bool {
         self.window.open_fullscreen
@@ -620,7 +674,16 @@ impl Context {
     /// Opening column width as a fraction of the working area.
     #[must_use]
     pub fn window_column_width(&self) -> Option<f64> {
-        self.window.column_width.map(|value| value.0)
+        match self.window.column_width? {
+            WindowWidth::Fraction(value) | WindowWidth::Decimal(value) => Some(value),
+            WindowWidth::Pixels(_) => None,
+        }
+    }
+
+    /// The opening width as written, before any conversion to a fraction.
+    #[must_use]
+    pub const fn window_width(&self) -> Option<WindowWidth> {
+        self.window.column_width
     }
 
     /// Opening window height as a fraction of the working area.
@@ -629,10 +692,10 @@ impl Context {
         self.window.height.map(|value| value.0)
     }
 
-    /// Ordered desktop entry ids eligible for desktop grid focus.
+    /// Slash-command words the built-in `invoke` verb snaps to, such as `usage`.
     #[must_use]
-    pub fn favourites(&self) -> &[String] {
-        &self.favourites
+    pub fn invoke_words(&self) -> &[String] {
+        &self.invoke
     }
 
     /// First configured launch phrase for each desktop entry, in file order.
@@ -792,6 +855,12 @@ impl Context {
         self.title.as_deref()
     }
 
+    /// The `[speech] hotwords` that prime recognition while this context is focused.
+    #[must_use]
+    pub fn hotwords(&self) -> &[String] {
+        &self.hotwords
+    }
+
     /// The short name the voice bar shows for this application's windows.
     #[must_use]
     pub fn label(&self) -> Option<&str> {
@@ -803,7 +872,42 @@ impl Context {
         self.mapped_speech_action(phrase)
             .or_else(|| self.folded_speech_action(phrase))
             .or_else(|| self.plural_speech_action(phrase))
+            .or_else(|| self.prefix_speech_action(phrase).flatten())
             .or_else(|| self.unmatched_speech_action(phrase))
+    }
+
+    /// What a `text_after` prefix rule makes of the phrase: `None` when no rule
+    /// names the phrase's first words, `Some(None)` when the context opts out
+    /// (`none = true`) or nothing follows the key, otherwise the rest typed.
+    #[must_use]
+    pub fn prefix_speech_action(&self, phrase: &str) -> Option<Option<Action>> {
+        let normalized = normalize_phrase(phrase);
+        let (key, enabled) = self.text_prefixes.iter().find(|(key, _)| {
+            normalized
+                .strip_prefix(key.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })?;
+        if !enabled {
+            return Some(None);
+        }
+        let mut rest = phrase;
+        for _ in key.split(' ') {
+            rest = rest.trim_start_matches(|character: char| !character.is_alphanumeric());
+            rest = rest.trim_start_matches(|character: char| {
+                character.is_alphanumeric() || character == '\'' || character == '\u{2019}'
+            });
+        }
+        let rest = rest.trim_start_matches(|character: char| {
+            character.is_whitespace() || matches!(character, ',' | ':' | ';')
+        });
+        if !rest.chars().any(char::is_alphanumeric) {
+            return Some(None);
+        }
+        Some(
+            Text::new(format!("{rest} "))
+                .ok()
+                .map(|text| Action::Text { text }),
+        )
     }
 
     /// The action of a mapped phrase only, ignoring `unmatched_speech`.
@@ -830,6 +934,12 @@ impl Context {
     #[must_use]
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    /// Speech phrases dropped while loading, each message naming the phrase.
+    #[must_use]
+    pub fn skipped_phrases(&self) -> &[String] {
+        &self.skipped_phrases
     }
 
     /// The action of a phrase the transcript matches once digits and hyphens
@@ -897,7 +1007,8 @@ impl Context {
             | MappingAction::Restart { .. }
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
-            | MappingAction::Ticker { .. } => None,
+            | MappingAction::Ticker { .. }
+            | MappingAction::UndoDictation { .. } => None,
         })
     }
 
@@ -919,7 +1030,8 @@ impl Context {
             | MappingAction::Restart { .. }
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
-            | MappingAction::Ticker { .. } => None,
+            | MappingAction::Ticker { .. }
+            | MappingAction::UndoDictation { .. } => None,
         }
     }
 }
@@ -942,8 +1054,13 @@ struct ContextFile {
     title: Option<String>,
     #[serde(default)]
     label: Option<Text>,
+    /// Legacy key: accepted so old files load, never read.
     #[serde(default)]
+    #[expect(dead_code, reason = "accepted so legacy files load; `--check-config` warns")]
     favourites: Vec<String>,
+    #[serde(default)]
+    invoke: Vec<String>,
+    #[serde(default)]
     buttons: std::collections::HashMap<ButtonName, MappingAction>,
     #[serde(default)]
     sticks: sticks::SticksFile,
@@ -955,6 +1072,8 @@ struct ContextFile {
     keyboard: KeyboardConfig,
     #[serde(default)]
     dim: DimConfig,
+    #[serde(default)]
+    key_hold_ms: Option<u32>,
     #[serde(default = "default_push_to_talk")]
     push_to_talk: Vec<ButtonName>,
     #[serde(default)]
@@ -1008,6 +1127,28 @@ enum MappingAction {
     Ticker {
         ticker: TickerMapping,
     },
+    UndoDictation {
+        undo_dictation: UndoDictationMapping,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UndoDictationMapping;
+
+impl serde::Serialize for UndoDictationMapping {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(true)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for UndoDictationMapping {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if bool::deserialize(deserializer)? {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("undo_dictation must be true"))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1060,6 +1201,7 @@ impl MappingAction {
             },
             Self::Layout { layout } => Action::Layout { action: *layout },
             Self::Ticker { .. } => Action::ToggleTicker,
+            Self::UndoDictation { .. } => Action::UndoDictation,
         }
     }
 }
@@ -1101,32 +1243,103 @@ fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
     Ok(label)
 }
 
+fn validate_key_hold(value: Option<u32>) -> Result<Option<u32>, String> {
+    if value.is_some_and(|millis| !(1..=1000).contains(&millis)) {
+        return Err("key_hold_ms must be between 1 and 1000".to_owned());
+    }
+    Ok(value)
+}
+
+/// The first `key = "..."` value in `source` that names no key.
+fn unknown_key_name(source: &str) -> Option<String> {
+    fn walk(value: &toml::Value) -> Option<String> {
+        match value {
+            toml::Value::Table(table) => {
+                if let Some(toml::Value::String(name)) = table.get("key")
+                    && <KeyName as serde::Deserialize>::deserialize(serde::de::value::StrDeserializer::<
+                        serde::de::value::Error,
+                    >::new(name))
+                    .is_err()
+                {
+                    return Some(name.clone());
+                }
+                table.values().find_map(walk)
+            }
+            toml::Value::Array(items) => items.iter().find_map(walk),
+            toml::Value::String(_)
+            | toml::Value::Integer(_)
+            | toml::Value::Float(_)
+            | toml::Value::Boolean(_)
+            | toml::Value::Datetime(_) => None,
+        }
+    }
+    let toml::Value::Table(root) = toml::from_str::<toml::Value>(source).ok()? else {
+        return None;
+    };
+    ["buttons", "speech", "sticks"]
+        .iter()
+        .filter_map(|section| root.get(*section))
+        .find_map(walk)
+}
+
+/// The TOML error, or one naming the unknown key the untagged mapping enum hid.
+fn key_error(source: &str, error: &toml::de::Error) -> String {
+    let message = error.to_string();
+    if message.contains("MappingAction")
+        && let Some(bad) = unknown_key_name(source)
+    {
+        let mut lines = message.lines();
+        let mut kept: Vec<&str> = lines.next().into_iter().collect();
+        kept.extend(lines.filter(|line| line.contains('|')));
+        let detail = format!("unknown key name {bad:?}; see docs/contexts.md for the valid names");
+        kept.push(&detail);
+        return kept.join("\n");
+    }
+    message
+}
+
 /// Parses a context at the configuration boundary.
 ///
 /// # Errors
 /// The TOML, button names, key names or application id are invalid, a speech
-/// phrase normalizes to nothing or to the same phrase as another mapping, or a
-/// held key has mods or belongs to a phrase.
+/// phrase or a held key has mods or belongs to a phrase. A phrase that
+/// normalizes to nothing or to the same text as an earlier phrase is dropped
+/// with a warning instead; the rest of the context loads.
+#[expect(clippy::too_many_lines, reason = "one pass over every context.toml field")]
 pub fn parse_context(source: &str) -> Result<Context, String> {
-    let context: ContextFile = toml::from_str(source).map_err(|error| error.to_string())?;
+    let mut context: ContextFile = toml::from_str(source).map_err(|error| key_error(source, &error))?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
     validate_holds(&context)?;
     validate_keyboard_button(context.keyboard.button)?;
+    validate_word_picking(&context.keyboard)?;
+    validate_keyboard_repeat(&context.keyboard)?;
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
-    let mut speech = std::collections::HashMap::with_capacity(context.speech.len());
+    let hotwords = take_hotwords(&mut context.speech)?;
+    let mut speech: std::collections::HashMap<String, SpeechEntry> =
+        std::collections::HashMap::with_capacity(context.speech.len());
     let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
     let mut warnings = Vec::new();
+    let mut skipped_phrases = Vec::new();
     let mut launch_phrases = Vec::new();
+    let mut text_prefixes = std::collections::HashMap::new();
     for (mapped, value) in context.speech {
-        let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
-        let normalized = normalized_speech_phrase(&mapped)?;
-        let template = entry.is_template();
-        if speech.insert(normalized.clone(), entry).is_some() {
-            return Err(format!(
-                "speech phrase {mapped:?} duplicates another phrase that also normalizes to {normalized:?}"
-            ));
+        if let Some(enabled) = prefix_rule(&value) {
+            let key = normalized_speech_phrase(&mapped)
+                .map_err(|message| format!("speech phrase skipped: {message}"))?;
+            text_prefixes.extend([(key, enabled)]);
+            continue;
         }
+        let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
+        let normalized = match accept_phrase(&speech, &mapped) {
+            Ok(normalized) => normalized,
+            Err(message) => {
+                skipped_phrases.push(message);
+                continue;
+            }
+        };
+        let template = entry.is_template();
+        drop(speech.insert(normalized.clone(), entry));
         warnings.extend(insert_speech_variant(
             &mut speech_variants,
             &mapped,
@@ -1141,13 +1354,17 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         buttons: context.buttons,
         sticks: sticks::parse_sticks(context.sticks)?,
         speech,
+        hotwords,
         speech_variants,
         warnings,
+        skipped_phrases,
         launch_phrases,
-        favourites: context.favourites,
+        invoke: validate_invoke_words(context.invoke)?,
         unmatched_speech: context.unmatched_speech,
+        text_prefixes,
         keyboard: context.keyboard,
         dim: context.dim,
+        key_hold_ms: validate_key_hold(context.key_hold_ms)?,
         push_to_talk: context.push_to_talk,
         pad: context.pad,
         pointer: context.pointer,
@@ -1162,11 +1379,120 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     })
 }
 
+/// An invoke word is a slash-command name: lowercase letters and digits joined by single hyphens.
+pub(crate) fn validate_invoke_words(words: Vec<String>) -> Result<Vec<String>, String> {
+    for word in &words {
+        let valid = !word.is_empty()
+            && word.split('-').all(|part| {
+                !part.is_empty()
+                    && part
+                        .chars()
+                        .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+            });
+        if !valid {
+            return Err(format!(
+                "invoke word {word:?} must be lowercase letters and digits joined by single hyphens"
+            ));
+        }
+    }
+    Ok(words)
+}
+
+/// The normalized phrase, or why the phrase is dropped: it has no words or
+/// clashes with an earlier phrase.
+fn accept_phrase(
+    speech: &std::collections::HashMap<String, SpeechEntry>,
+    mapped: &str,
+) -> Result<String, String> {
+    let normalized =
+        normalized_speech_phrase(mapped).map_err(|message| format!("speech phrase skipped: {message}"))?;
+    match speech.get(&normalized) {
+        Some(earlier) => Err(format!(
+            "speech phrase {mapped:?} skipped: clashes with earlier phrase {:?}, both normalize to {normalized:?}",
+            earlier.phrase
+        )),
+        None => Ok(normalized),
+    }
+}
+
 fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
     if matches!(button, Some(ButtonName::Guide | ButtonName::Record)) {
         return Err("keyboard button cannot reserve Guide or Record".into());
     }
     Ok(())
+}
+
+fn validate_keyboard_repeat(keyboard: &KeyboardConfig) -> Result<(), String> {
+    for (name, rate) in [
+        ("repeat_rate", keyboard.repeat_rate),
+        ("repeat_max_rate", keyboard.repeat_max_rate),
+    ] {
+        if rate.is_some_and(|rate| !(1..=1000).contains(&rate)) {
+            return Err(format!(
+                "keyboard {name} must be between 1 and 1000 keys a second"
+            ));
+        }
+    }
+    if keyboard.repeat_ramp_ms == Some(0) {
+        return Err("keyboard repeat_ramp_ms must be at least 1".into());
+    }
+    Ok(())
+}
+
+fn validate_word_picking(keyboard: &KeyboardConfig) -> Result<(), String> {
+    for (name, rate) in [
+        ("word_min_rate", keyboard.word_min_rate),
+        ("word_max_rate", keyboard.word_max_rate),
+    ] {
+        if rate.is_some_and(|rate| !(1..=1000).contains(&rate)) {
+            return Err(format!(
+                "keyboard {name} must be between 1 and 1000 words a second"
+            ));
+        }
+    }
+    if keyboard
+        .word_repeat_from
+        .is_some_and(|from| !(500..=1000).contains(&from))
+    {
+        return Err("keyboard word_repeat_from must be between 500 and 1000".into());
+    }
+    Ok(())
+}
+
+/// Removes the `hotwords` array from the `[speech]` table; a `hotwords` phrase
+/// mapped to a table stays a phrase.
+fn take_hotwords(speech: &mut toml::Table) -> Result<Vec<String>, String> {
+    if !speech.get("hotwords").is_some_and(toml::Value::is_array) {
+        return Ok(Vec::new());
+    }
+    let Some(toml::Value::Array(values)) = speech.remove("hotwords") else {
+        return Ok(Vec::new());
+    };
+    values
+        .into_iter()
+        .map(|value| match value {
+            toml::Value::String(word) => Ok(word),
+            toml::Value::Integer(_)
+            | toml::Value::Float(_)
+            | toml::Value::Boolean(_)
+            | toml::Value::Datetime(_)
+            | toml::Value::Array(_)
+            | toml::Value::Table(_) => Err("speech hotwords must be strings".to_owned()),
+        })
+        .collect()
+}
+
+/// `{ text_after = true }` enables a prefix rule and `{ none = true }` opts out of an inherited one.
+fn prefix_rule(value: &toml::Value) -> Option<bool> {
+    let table = value.as_table()?;
+    if table.len() != 1 {
+        return None;
+    }
+    match (table.get("text_after"), table.get("none")) {
+        (Some(toml::Value::Boolean(true)), None) => Some(true),
+        (None, Some(toml::Value::Boolean(true))) => Some(false),
+        _ => None,
+    }
 }
 
 fn speech_entry(
@@ -1268,6 +1594,9 @@ pub enum Action {
     Layout { action: LayoutAction },
     /// Show or hide the mapping ticker; reserved for the core.
     ToggleTicker,
+    /// Delete the last dictated phrase, or one character once anything else was typed; the core expands it
+    /// into backspaces, so it never reaches the compositor.
+    UndoDictation,
 }
 
 /// A tiling action a context maps to a button or phrase, written in kebab case,
@@ -1401,5 +1730,28 @@ fn validate_app_id(app_id: &str) -> Result<(), String> {
 
 mod adjuster;
 pub use adjuster::Adjuster;
+mod window_width;
+pub use window_width::{WindowWidth, fraction_value, nearest_fraction, rewrite_window_width, whole_pixels};
 mod sticks;
 pub use sticks::{Stick, StickDirection, StickMapping};
+
+#[cfg(test)]
+mod text_debug_tests {
+    use super::{Action, Text};
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn debug_output_never_contains_the_text(text in "[a-z]{8,40}") {
+            let value = Text::new(text.clone()).unwrap();
+            let shown = format!("{value:?}");
+            prop_assert!(!shown.contains(&text), "{shown}");
+            prop_assert!(shown.contains(&text.len().to_string()), "{shown}");
+            let nested = format!("{:?}", Action::Text { text: value.clone() });
+            prop_assert!(!nested.contains(&text), "{nested}");
+            let revealed = Text::reveal_in(|| format!("{value:?}"));
+            prop_assert!(revealed.contains(&text), "{revealed}");
+            prop_assert!(!format!("{value:?}").contains(&text), "reveal ends with its scope");
+        }
+    }
+}

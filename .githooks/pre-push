@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Floor, not a replacement: run the full scripts/check before committing.
+exec "$(dirname "$0")/../scripts/check" --quick

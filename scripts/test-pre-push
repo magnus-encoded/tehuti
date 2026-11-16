@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The pre-push hook blocks an unused must_use result and passes a clean crate.
+set -uo pipefail
+repo=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+cd "$tmp" || exit 1
+git init -q -b main .
+git config user.email t@example.com
+git config user.name t
+mkdir -p crates/demo/src scripts .githooks
+cp "$repo/scripts/check" scripts/check
+cp "$repo/.githooks/pre-push" .githooks/pre-push
+printf '[workspace]\nmembers = ["crates/demo"]\nresolver = "2"\n' > Cargo.toml
+printf '[package]\nname = "demo"\nversion = "0.0.0"\nedition = "2021"\n' > crates/demo/Cargo.toml
+printf 'pub fn f() -> u8 {\n    1\n}\n' > crates/demo/src/lib.rs
+cargo generate-lockfile -q
+git add -A
+git commit -qm base
+git update-ref refs/remotes/origin/main HEAD
+export CARGO_TARGET_DIR="$tmp/target"
+git checkout -qb work
+printf 'pub fn f() -> u8 {\n    1\n}\n\n#[must_use]\npub fn g() -> u8 {\n    2\n}\n\npub fn h() {\n    g();\n}\n' > crates/demo/src/lib.rs
+git commit -qam dirty
+if .githooks/pre-push >/dev/null 2>&1; then echo "FAIL: unused must_use passed"; exit 1; fi
+printf 'pub fn f() -> u8 {\n    1\n}\n' > crates/demo/src/lib.rs
+git commit -qam clean
+.githooks/pre-push >/dev/null 2>&1 || { echo "FAIL: clean push blocked"; exit 1; }

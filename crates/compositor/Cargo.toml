@@ -17,6 +17,7 @@ signal-hook = "0.3"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
+toml_edit = "0.25"
 rustix = { version = "1", features = ["fs", "process"] }
 libc = "0.2"
 evdev = { git = "https://github.com/emberian/evdev", rev = "7fee138a341f73b81b9c4f8c59e3527c6a169ea3" }

@@ -35,6 +35,7 @@ pub fn destinations(
                 extra_names: entry.extra_names.clone(),
                 route: description,
                 open,
+                settings: entry.settings,
                 focused: route
                     .context
                     .as_deref()

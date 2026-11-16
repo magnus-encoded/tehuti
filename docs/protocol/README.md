@@ -80,6 +80,9 @@ version, shown here as `0.0.0`:
 {"jsonrpc":"2.0","id":0,"result":{"protocol_version":0,"encoding":"json","events":["button","focus"]}}
 ```
 
+`events` may name any of `button`, `focus` and `speech`; a speech-only plugin
+replies `["speech"]` and never receives button requests.
+
 Only version 0 and encoding `json` are supported. The deadline is two seconds
 from session creation, before the request is queued, not from receipt by the
 plugin. A reply received at or after the deadline, or with another version or
@@ -130,8 +133,11 @@ Commands run without a shell, with the compositor's `WAYLAND_DISPLAY`;
 session and power actions require confirmation.
 
 Without overrides, Log Out and Switch to Plasma stop Tehuti with session exit
-statuses 21 and 20. Task Monitor launches `plasma-systemmonitor` when installed;
-a failed launch shows a notice naming the program.
+statuses 21 and 20. Task Monitor launches `btop` in `kitty` when both are
+installed, else `plasma-systemmonitor`; `task_monitor = [...]` overrides both.
+Programs are detected on `PATH` and never installed. When none is found, the
+notice reads "install btop and kitty, or plasma-systemmonitor". A launch that
+fails shows a notice naming the program.
 Reboot and Shut Down have no built-in command, because power commands differ per
 machine; the menu shows them only once `menu.toml` sets them, for example
 `reboot = ["systemctl", "reboot"]` and `shut_down = ["systemctl", "poweroff"]`.
@@ -152,10 +158,11 @@ Each table requires a nonempty label without control characters, a nonempty
 string argv with a nonblank program and no NUL characters, and an integer order.
 Custom entries follow all built-ins, sorted by ascending order; equal orders keep
 file order. Custom commands run on one Confirm press.
-The menu config loads at startup. Invalid entries produce a notice naming the
-entry and are skipped; valid entries remain available. Invalid TOML disables the
-file and produces a notice. `--check-config` reports the same errors.
-Restart Tehuti to apply menu edits.
+The menu config loads at startup and reloads when the file changes. Invalid
+entries produce a notice naming the entry and are skipped; valid entries remain
+available. Invalid TOML at startup disables the file and produces a notice; on a
+reload it keeps the previous menu and produces the notice. `--check-config`
+reports the same errors.
 
 Reply once with the same id and a list of actions:
 
@@ -196,14 +203,52 @@ hangs has a 250-millisecond latency budget. Pipe reads and writes are nonblockin
 and bounded, including when a child stops reading or floods stdout.
 
 Speech decisions are requests to the first matching initialized `speech`
-subscriber, with a two-second deadline and the same action reply shape:
+subscriber. Speech and button requests route alike: the manifest `app_ids` must
+contain the focused application id, exactly and case sensitively, and a plugin
+may subscribe to `speech` without `button`. A verb plugin has no `app_ids` and
+is chosen by its spoken verb instead. Each request has a two-second deadline and the same action reply shape:
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"speech","params":{"text":"confirm"}}
 ```
 
+An empty action list declines, and core shows the "No speech mapping" notice
+when nothing else claims the speech. A plugin that acted on the speech itself
+replies `{"jsonrpc":"2.0","id":2,"result":{"handled":true}}`: the request
+completes with no actions and no notice. `handled` must be `true` and is the
+object's only field; without it, behaviour is unchanged.
+
 Speech text is NUL-free. The speech sidecar replies only after release.
 Cancelled sessions and replies from failed sidecars never reach plugins.
+
+### Speech hints
+
+An application plugin primes speech recognition with a notice. It replaces
+the plugin's list, can be sent at any time, and applies while a window of the
+plugin's applications is focused. A restart clears it:
+
+```json
+{"jsonrpc":"2.0","method":"speech.hints","params":{"hotwords":["chat with guild"]}}
+```
+
+Context `[speech] hotwords` and plugin hints share a cap of 64 entries, context
+words first. Over the cap the plugin's last entries are dropped and a warning
+is logged once.
+
+### Invoke words
+
+An application plugin adds slash-command words to the built-in `invoke` verb
+with a notice. It replaces the plugin's list, can be sent at any time, and
+applies while a window of the plugin's applications is focused. A restart
+clears it, and so does a crash:
+
+```json
+{"jsonrpc":"2.0","method":"invoke.words","params":{"words":["usage","code-review"]}}
+```
+
+Each word is lowercase letters and digits joined by single hyphens, and a
+notice holds at most 128 words. Spoken words snap to these words as they do
+to a context's `invoke` words, which are tried first.
 
 ### Verbs
 
@@ -334,7 +379,10 @@ limit: the whole JSON line must fit the line limit, counting UTF-8 bytes and
 JSON escapes. Text-input commits split at character boundaries into at most
 4000 bytes. Keyboard fallback skips characters absent from the keymap and
 logs them; a newline becomes Enter. Without a focused client, key and text
-actions have no effect.
+actions have no effect. X11 clients run through `xwayland-satellite`, which
+receives the same configured keymap as Wayland clients (tested), so key taps
+reach them as ordinary key events. Text-input-v3 is a Wayland protocol and an
+X11 client may not enable it; text then arrives through the keyboard fallback.
 
 Contexts can launch an installed desktop entry, close the focused window, or
 show an overlay notice. Both pressed-button and exact phrase mappings accept

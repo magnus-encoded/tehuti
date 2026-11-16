@@ -31,9 +31,19 @@ key = "up"
 Button names use snake case, such as `south`, `left_bumper` and `dpad_left`.
 The analogue triggers are `left_trigger` and `right_trigger`; each presses at 40 percent of its travel and releases below 20 percent.
 Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, `home`, `end`, `page_up` and `page_down`. A mapping sends a complete key tap on button press. Releases send
-nothing. Unknown fields, buttons and keys are rejected. Application ids must
-contain a non-whitespace character.
+`right`, `home`, `end`, `page_up` and `page_down`. Punctuation keys on a US
+layout may be written as the character or its name: `-` or `minus`, `=` or
+`equal`, `[` or `left_bracket`, `]` or `right_bracket`, `;` or `semicolon`,
+`'` or `apostrophe`, `` ` `` or `grave`, `,` or `comma`, `.` or `period`, `/` or
+`slash`, and `\` or `backslash`. An unknown key is reported by name.
+A mapping sends a complete
+key tap on button press. Releases send
+nothing. Key names are lowercase; the CamelCase spelling (`Tab`, `PageUp`)
+is accepted too, in contexts and plugin actions alike, and single letters may
+be `a` or `A`. Other casings such as `TAB` are rejected. Unknown fields,
+buttons and keys are rejected. The `[buttons]` table is optional: a context
+may hold only `[speech]`. Application ids must contain a non-whitespace
+character.
 
 An optional top-level `title = "World of Warcraft"` narrows a context to
 windows whose title equals it exactly. Among contexts for the focused
@@ -42,7 +52,7 @@ untitled context stays the fallback for the application's other windows. A
 titled context never matches other titles and is not inherited by child
 windows. Title changes re-select the context while the window has focus.
 Titles must contain a non-whitespace character; the `*` context cannot have
-one. Labels come from the untitled context. Two contexts with the same
+one. Two contexts with the same
 application id and title make `--check-config` warn.
 
 An optional top-level `label = "Emulator"` names the application's windows on
@@ -52,6 +62,10 @@ or project name on the focus chip. Labels are trimmed and must contain a
 non-whitespace character; NUL is rejected. The first context
 for an application id decides its label. The `*` context's label is ignored.
 Reloading contexts updates the label without another focus change.
+A titled context with its own `label` names its window on the bar while that
+window has focus, so a launcher and a game sharing one application id can read
+differently. A titled context without a `label` falls back to the application's
+untitled label, then to the desktop entry name, then to the application id.
 
 The global layer consumes South presses and sends Enter, unless the active
 context maps South; then its mapping, tap or hold, replaces Enter. A South
@@ -75,7 +89,8 @@ A cursor and “MOUSE MODE” notice show the mode. Exiting mouse mode or losing
 the controller releases held mouse buttons. Holding Guide+Start for three seconds
 still quits in mouse mode.
 
-Speech phrases map to the same key or text actions:
+Speech phrases map to the same key or text actions, and also to `launch`, `close`
+and `notify` (see the [protocol](protocol/README.md)):
 
 ```toml
 [speech]
@@ -83,12 +98,16 @@ confirm = { key = "enter" }
 "insert greeting" = { text = "Hello" }
 ```
 
-Phrase matching ignores case, surrounding whitespace and trailing punctuation.
+`hotwords = ["..."]` in `[speech]` lists words that prime recognition while the context is focused,
+together with the `*` context's. It is not a phrase.
+
+Phrase matching ignores case, surrounding whitespace and trailing punctuation
+(plugin `app_ids` and button names, by contrast, are case sensitive).
 When no phrase matches exactly, numbers 0 to 20 match their words and hyphens and
 word breaks are ignored ("bay-3" and "bay3" match "Bay three"); then a plain plural
 or singular of a last word of four or more letters matches. A phrase matched by
 fold or plural takes the utterance before spoken keys do, as exact phrases already do.
-The first initialized plugin subscribed to speech for the focused application replaces these mappings.
+The first initialized plugin subscribed to speech whose `app_ids` contain the focused application id replaces these mappings; it need not subscribe to buttons.
 Set top-level `unmatched_speech = "type"` before any TOML table to type unmatched
 speech into the focused window, followed by one space. Mapped phrases still win.
 The transcript keeps its original casing and punctuation. Empty or whitespace-only
@@ -97,6 +116,69 @@ Without the option, unmatched speech shows “No speech mapping” for three
 seconds above the client without changing focus. Record (Share) controls push-to-talk
 by default. Configured push-to-talk buttons never reach context mappings.
 
+## Shared sections
+
+Contexts reuse a section without copying it. A shared section is a TOML file at
+`~/.config/tehuti/shared/<name>.toml` that belongs to no application. Nothing in
+it applies until a context opts in with a top-level `include`, unlike the `*`
+global context, which applies to everything.
+
+Name a shared section after the key convention it carries, not after an app. A
+name is one word or `folder/word` (letters, digits, `-` and `_`; at most one
+folder; `context` is reserved). Kitty and alacritty both take tab switching on
+the shoulder buttons from `shared/tabs/ctrl-tab.toml`; a browser that switches
+tabs with Ctrl+PageUp would include `tabs/ctrl-pageup`.
+
+```toml
+# shared/tabs/ctrl-tab.toml
+[buttons.left_bumper]
+key = "tab"
+mods = ["ctrl", "shift"]
+
+[buttons.right_bumper]
+key = "tab"
+mods = ["ctrl"]
+```
+
+```toml
+# kitty/context.toml (alacritty/context.toml says the same)
+app_id = "kitty"
+include = ["tabs/ctrl-tab"]
+```
+
+An included file holds what a context would: top-level keys and tables. The
+context's own entries merge over it field by field: a field the context writes
+replaces the shared one, and every field it leaves out comes from the shared
+section. Tables merge field by field at every depth; arrays and scalars (a
+`mods` list, a `key`, a number) are replaced whole, never combined. If the
+context above also had `[buttons.left_bumper]` with
+`key = "t"`, that button would send Ctrl+Shift+T. `tehuti --check-config` lists
+each overridden field as a warning. Earlier includes win over later ones.
+Shared sections cannot include other shared sections. An include naming a
+section that does not exist is an error and skips that context; `--check-config`
+then lists the shared sections that exist. Editing a shared file reloads the
+contexts like editing a context does.
+
+`tehuti config share <context> <section>... [--as <name>]` moves one or more
+sections out of `<context>/context.toml` into one shared file and puts the
+include in their place. Each `<section>` is a dotted path such as
+`buttons.left_bumper`. With one path the name defaults to its last part; with
+several, `--as` is required. `--as tabs/ctrl-tab` writes
+`shared/tabs/ctrl-tab.toml`. The command refuses when that file exists and asks
+for another name; it never overwrites. The context file is edited in place, so
+its comments stay, and the previous file is kept as `context.toml.bak` (then
+`.bak.2`, and so on).
+
+### Type prefix
+
+`"type" = { text_after = true }` in `[speech]` makes a phrase that starts with
+"type" type the rest of the phrase, with its own case and punctuation and one
+trailing space, as `unmatched_speech = "type"` does. The key itself is never
+typed, and a bare "type" does nothing. A whole-phrase mapping such as
+"type slash" wins over the prefix rule. The rule works in the global context
+and in application contexts; a context's own rule overrides the global one,
+and `"type" = { none = true }` switches an inherited rule off for that context.
+
 ## Legacy favourites key
 
 The global context may still contain a top-level `favourites` list. Tehuti
@@ -104,6 +186,27 @@ accepts the key so existing config files load, and ignores it: there are no
 desktop icons to draw or select with the D-pad. Speech launch mappings still launch
 their configured applications. `tehuti --check-config` warns when the key
 is present.
+
+## Invoke verb
+
+Speech that begins with "invoke" types a slash command in any window: "invoke
+usage report" types `/usage-report ` with a trailing space for arguments. A
+top-level `invoke` list names the slash-command words a context knows, as lowercase letters and digits joined by
+hyphens:
+
+```toml
+app_id = "*"
+invoke = ["usage", "chief-of-staff"]
+```
+
+The words after the verb snap to the closest word in the focused and global
+contexts' lists, so "invoke chief of stuff" still types `/chief-of-staff `; with
+no close word they are typed as heard, lowercased and joined by hyphens. The
+verb comes after Tehuti's own phrases and before plugin verbs and context
+phrases. It overrides every context phrase that starts with "invoke", fixed
+phrases such as `Invoke help` and templates such as `Invoke <name>` alike, so
+there is one way to invoke; `tehuti --check-config` warns about each such
+phrase. A lone "invoke" with nothing after it reaches context phrases as usual.
 
 ## Checking a config
 
@@ -166,8 +269,11 @@ Tehuti watches the context directory and its child directories. Saving any
 `context.toml` reloads every context once edits pause for 300 ms; no restart is
 needed. A successful reload shows “Contexts reloaded”. If any file fails to read
 or parse, Tehuti shows a notice naming the file and the start of the error, and the
-context from that file stops working until the file is fixed (the previous good
-version is dropped; see issue #625); the full error goes to the log. A reload leaves held
+last good version of that file stays active until the file is fixed; the full
+error goes to the log. A speech phrase that normalizes to nothing or to the same
+text as an earlier phrase in the file is dropped alone, with a notice naming the file and
+phrase, with a count when several were dropped; the rest of the file loads.
+`tehuti --check-config` reports each dropped phrase as an error. A reload leaves held
 buttons and a speech session in progress untouched. Plugins are not reloaded;
 they restart as processes.
 
@@ -326,6 +432,15 @@ password fields keep the space. B closes it; Menu types the draft, presses Enter
 With an empty draft Menu presses only Enter. Closing drops the draft by
 default; `keep_draft = true` in `[keyboard]` keeps it between openings.
 A different text field still clears it.
+A gentle left-stick push steps one word. A push deeper than `word_repeat_from`
+(800 of 1000) keeps picking after `word_repeat_delay_ms` (350), from
+`word_min_rate` words a second (2) up to `word_max_rate` (10) at a full push.
+These are `[keyboard]` options with no settings slider, and edits reload
+without a restart.
+Holding a D-pad direction moves the highlight after `repeat_delay_ms` (300),
+then at `repeat_rate` keys a second (12), speeding up to `repeat_max_rate`
+(30) over `repeat_ramp_ms` (2000). All four are `[keyboard]` options with no
+settings slider, and edits reload without a restart.
 The draft row sits below the keys, beside the powerline, and shows a window
 of text around the caret or picked word.
 The legacy `button` and `open_on_app_level` options remain accepted but
@@ -359,6 +474,22 @@ The defaults shown above apply when the values are absent.
 
 The global context accepts `push_to_talk = ['start']` before `[buttons]` to use Menu for push-to-talk. The default is `['record']`; `[]` disables controller push-to-talk. Listed buttons replace their context bindings; Guide+Start still escapes.
 
+## Key tap length
+
+A context can set how long each key tap stays down, in milliseconds:
+
+```toml
+app_id = "steam_app_12345"
+key_hold_ms = 120
+buttons = {}
+```
+
+`key_hold_ms` sits at the top level, before any table. It applies to every key
+tap sent while the context is focused, and falls back to the global `*` context
+when the application's context leaves it out. Unset, taps last 40 ms. Older
+games and emulators that read input slowly may need a longer hold. Values
+under 1 or over 1000 are rejected, and `--check-config` reports them.
+
 ## Opening windows fullscreen
 
 A matching application context can open its windows fullscreen:
@@ -379,22 +510,43 @@ the full available area. Context reloads affect newly opened windows.
 
 ## Opening window sizes
 
-A matching context can set the opening column width and window height:
+A matching context can set the opening width and window height:
 
 ```toml
 app_id = "org.example.Reader"
 buttons = {}
 
 [window]
-column_width = "one-half"
+width = "2/3"
 height = 0.75
 ```
 
-Both values accept a fraction greater than 0 and at most 1, or a named preset:
-`"one-third"`, `"one-half"`, `"two-thirds"` or `"full"`. Fractions refer to the
-available working area, with layout gaps and borders applied. Omit `height`
-to fill the column vertically; omit `column_width` to use the layout default.
-Fullscreen takes precedence over these sizes.
+`width` is a fraction of the screen, written as an exact string: `"1/2"`,
+`"2/3"`, `"1"`. Fractions are the canonical form because screen sizes change
+and people judge what they see as parts of the screen. `column_width` is the
+older name of the same key. A named preset (`"one-third"`, `"one-half"`,
+`"two-thirds"`, `"full"`) is also accepted.
+
+Pixels (`width = 1280`) and decimals (`width = 0.667`) are accepted as input.
+When a window first opens with one, Tehuti converts it against the screen in
+front of it and rewrites the line to the nearest simple fraction (denominator
+1 to 6), keeping the original as a comment:
+
+```toml
+width = "2/3"  # was 1280 px on 1920 px
+```
+
+The rest of the file is kept byte for byte. If the file is not writable the
+converted value is still used. A value that does not parse, a zero
+denominator, or a value outside 0 to 1 after conversion is a config error:
+`tehuti --check-config` reports it. `height` takes a fraction greater than 0
+and at most 1 or a preset. Fractions refer to the available working area, with
+layout gaps and borders applied. Omit `height` to fill the column vertically;
+omit `width` to use the layout default. Fullscreen takes precedence.
+
+Saying "width" or "height" opens a stepper for the focused window over 1/3,
+1/2, 2/3 and 1 of the screen: the pad steps, South keeps and East restores.
+The focus border marks the steps.
 
 The first exact application-id match supplies the opening rules. Without one,
 the nearest matching launcher context supplies them, through XDG parents then
@@ -406,18 +558,30 @@ its first frame. A client that commits a smaller window geometry is centred
 inside its slot. The focus outline follows that geometry. Tehuti does not
 inspect the surface content for letterboxing.
 
-## Column widths
+## Deleting dictation
 
-The global context maps "Wider." to `switch-preset-column-width` and
-"Narrower." to `switch-preset-column-width-back`. These layout actions cycle
-the focused column through the width presets forward and backward, wrapping
-at either end.
+`{ undo_dictation = true }` on a button or phrase deletes exactly the text of
+the last phrase Tehuti typed from speech, when nothing else was typed since.
+Later presses, and a press with no dictation to undo, send one Backspace each,
+so a terminal can bind it where Backspace was.
 
 ```toml
-[speech]
-"Wider." = { layout = "switch-preset-column-width" }
-"Narrower." = { layout = "switch-preset-column-width-back" }
+[buttons]
+north = { undo_dictation = true }
 ```
+
+Saying "Scratch that." does the same in every context; core claims it before
+context phrases, at the app level only, and `--check-config` warns about a
+context phrase it shadows. With a plugin active the phrase goes to the plugin
+instead. Plugins cannot emit `undo_dictation`. A key chord deletes by word: `{ key = "backspace", mods = ["ctrl"] }`.
+
+## Column widths
+
+Saying "width" opens the width adjuster, which the stick moves. The preset
+cycle stays available to buttons, `layout = "switch-preset-column-width"` and
+`layout = "switch-preset-column-width-back"`, but no shipped phrase maps it:
+voice names whole units, and the controller does the increments. A phrase
+that maps an action no button reaches draws a `--check-config` warning.
 
 New columns default to one-third of the available width, the narrowest preset.
 `LayoutConfig.default_column_width` and per-window rules can override it.
@@ -436,6 +600,15 @@ between windows with the same application id. Title updates keep the mode.
 
 A short View press still reaches the passthrough application directly.
 In normal handling, short presses retain View's single and double tap actions.
+In a passthrough context a Guide tap at the app level reaches the stream and
+Tehuti acts on it too, so both sides change level. At the columns level Guide
+stays with Tehuti and is never forwarded. Four taps therefore walk the
+(local, remote) levels: (app, app), (columns, columns), (app, columns),
+(columns, app), then (app, app) again.
+Menu and View pressed together send a Guide press to the stream, held as long
+as the chord is held, so holding the chord for 3 s opens the stream's system
+menu. The button that completes the chord stays out of the stream; Menu or View
+alone are forwarded as usual. The chord is built in; contexts cannot change it.
 Guide stays reserved for Tehuti: hold it for 500 ms to open the system menu;
 Guide+Start held for three seconds quits.
 

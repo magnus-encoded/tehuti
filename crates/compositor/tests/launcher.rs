@@ -141,6 +141,7 @@ routes = [{{steps = [{{icon = 'missing-icon-for-547', target = {{kind = 'action'
                 }],
             }],
             source,
+            settings: false,
         };
         let entries = [
             entry(Target::Application("kitty".into()), Source::Custom),
@@ -339,12 +340,14 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
                 extra_names: Vec::new(),
                 routes: vec![route(Target::Desktop("kitty.desktop".into()))],
                 source: Source::Desktop,
+                settings: false,
             },
             Destination {
                 name: "~: fish".into(),
                 extra_names: vec!["Terminal".into(), "kitty".into()],
                 routes: vec![route(Target::Window(3))],
                 source: Source::Window,
+                settings: false,
             },
         ];
         let (rows, routes) = tehuti::launcher::destinations(
@@ -374,6 +377,8 @@ mod hardware_keyboard {
     const KEY_I: u32 = 23;
     const KEY_T: u32 = 20;
     const KEY_O: u32 = 24;
+    const KEY_UP: u32 = 103;
+    const KEY_DOWN: u32 = 108;
 
     fn tap(compositor: &mut Compositor, code: u32) {
         for pressed in [true, false] {
@@ -447,6 +452,52 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
     }
 
     #[test]
+    fn releasing_host_keys_releases_a_held_meta_guide() -> Result<(), Box<dyn core::error::Error>> {
+        const KEY_LEFTMETA: u32 = 125;
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session(root.path())?;
+        compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), true);
+        compositor.release_host_keys();
+        // A Start held alone must not read as the Guide+Start escape chord.
+        compositor.handle(&tehuti_protocol::Event::Button {
+            name: tehuti_protocol::ButtonName::Start,
+            state: tehuti_protocol::ButtonState::Pressed,
+        });
+        compositor.handle(&tehuti_protocol::Event::Tick {
+            elapsed: core::time::Duration::from_secs(4),
+        });
+        assert!(
+            !compositor.quit_requested(),
+            "a device removal must not leave Guide held"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn meta_space_opens_the_launcher_and_typing_then_filters() -> Result<(), Box<dyn core::error::Error>> {
+        const KEY_LEFTMETA: u32 = 125;
+        const KEY_SPACE: u32 = 57;
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session(root.path())?;
+        tap(&mut compositor, KEY_ESC);
+        assert_eq!(first_row(&compositor), None, "closed before the chord");
+        compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), true);
+        tap(&mut compositor, KEY_SPACE);
+        compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), false);
+        assert!(
+            compositor
+                .choice_list()
+                .is_some_and(tehuti_core::choice_list::List::is_open),
+            "Meta+Space shows the launcher"
+        );
+        for code in [KEY_K, KEY_I, KEY_T] {
+            tap(&mut compositor, code);
+        }
+        assert_eq!(first_row(&compositor).as_deref(), Some("Kitty"));
+        Ok(())
+    }
+
+    #[test]
     fn backspace_widens_the_filter_and_escape_closes_the_launcher() -> Result<(), Box<dyn core::error::Error>>
     {
         let root = tempfile::tempdir()?;
@@ -461,6 +512,139 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         Ok(())
     }
 
+    #[test]
+    fn down_arrow_moves_the_selection_and_enter_opens_the_third_hit()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session_with_three(root.path())?;
+        for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE, KEY_O] {
+            tap(&mut compositor, code);
+        }
+        for code in [KEY_DOWN, KEY_DOWN, KEY_UP, KEY_DOWN, KEY_ENTER] {
+            tap(&mut compositor, code);
+        }
+        assert_eq!(compositor.visible_notice_text().as_deref(), Some("Orchid opened"));
+        Ok(())
+    }
+
+    fn session_with_three(
+        root: &std::path::Path,
+    ) -> Result<(Display<Compositor>, Compositor), Box<dyn core::error::Error>> {
+        let text = ["Orbit", "Orchard", "Orchid"]
+            .into_iter()
+            .map(|name| {
+                format!(
+                    "[[destinations]]\nname = \"{name}\"\n[[destinations.routes]]\nsteps = [{{ icon = \"globe\", target = {{ kind = \"action\", value = {{ type = \"notice\", text = \"{name} opened\" }} }} }}]\n"
+                )
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        std::fs::write(root.join("destinations.toml"), text)?;
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.configure_destinations(Paths {
+            config: root.into(),
+            projects: root.join("projects"),
+            data: Vec::new(),
+        });
+        compositor.say(Text::new("open zzz".into())?);
+        Ok((display, compositor))
+    }
+
+    /// Four desktop entries as an Xfce session lists them; typing "Termin" must put Terminal Emulator first.
+    /// Renders the list to the path in `TEHUTI_SHOT_COPY` when it is set.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "four desktop entries and an optional render"
+    )]
+    fn typing_termin_ranks_terminal_emulator_first_and_settings_last()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let applications = root.path().join("data/applications");
+        std::fs::create_dir_all(&applications)?;
+        for (file, name, generic, extra) in [
+            (
+                "default.desktop",
+                "Default Applications",
+                "Preferred Applications",
+                "Keywords=terminal;\nCategories=Settings;\n",
+            ),
+            (
+                "emulator.desktop",
+                "Terminal Emulator",
+                "Terminal",
+                "Categories=System;\n",
+            ),
+            (
+                "xterm.desktop",
+                "Xfce Terminal",
+                "Terminal Emulator",
+                "Categories=System;\n",
+            ),
+            (
+                "xterm-settings.desktop",
+                "Xfce Terminal settings",
+                "Terminal Emulator",
+                "Categories=Settings;\n",
+            ),
+        ] {
+            std::fs::write(
+                applications.join(file),
+                format!(
+                    "[Desktop Entry]\nType=Application\nName={name}\nGenericName={generic}\nExec=true\n{extra}"
+                ),
+            )?;
+        }
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.configure_destinations(Paths {
+            config: root.path().into(),
+            projects: root.path().join("projects"),
+            data: vec![root.path().join("data")],
+        });
+        if std::env::var("TEHUTI_SHOT_COPY").is_ok() {
+            tehuti::driver::headless_output(&display.handle(), &mut compositor)?;
+        }
+        compositor.say(Text::new("open zzz".into())?);
+        for code in [
+            KEY_BACKSPACE,
+            KEY_BACKSPACE,
+            KEY_BACKSPACE,
+            20,
+            18,
+            19,
+            50,
+            23,
+            49,
+        ] {
+            tap(&mut compositor, code);
+        }
+        let names: Vec<_> = compositor.choice_list().map_or_default(|list| {
+            list.candidates()
+                .iter()
+                .map(|row| row.candidate.name.clone())
+                .collect()
+        });
+        assert_eq!(
+            names,
+            [
+                "Terminal Emulator",
+                "Xfce Terminal",
+                "Xfce Terminal settings",
+                "Default Applications"
+            ]
+        );
+        if let Ok(copy) = std::env::var("TEHUTI_SHOT_COPY") {
+            let mut driver = tehuti::driver::Driver::bind(root.path(), tehuti::backend::Backend::Nested)?;
+            let _scene = driver.execute(
+                &mut compositor,
+                tehuti::driver::Request::Shot { path: copy.into() },
+            )?;
+        }
+        Ok(())
+    }
+
     /// Renders the filtered list to the path in `TEHUTI_SHOT_COPY`; a no-op otherwise.
     #[test]
     fn typed_filter_renders_for_review() -> Result<(), Box<dyn core::error::Error>> {
@@ -470,11 +654,20 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         let root = tempfile::tempdir()?;
         let (display, mut compositor) = session(root.path())?;
         tehuti::driver::headless_output(&display.handle(), &mut compositor)?;
-        for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE, KEY_K, KEY_I] {
+        let mut driver = tehuti::driver::Driver::bind(root.path(), tehuti::backend::Backend::Nested)?;
+        for code in [KEY_BACKSPACE, KEY_BACKSPACE, KEY_BACKSPACE] {
             tap(&mut compositor, code);
         }
-        let mut driver = tehuti::driver::Driver::bind(root.path(), tehuti::backend::Backend::Nested)?;
         let _scene = driver.execute(
+            &mut compositor,
+            tehuti::driver::Request::Shot {
+                path: format!("{copy}.before.png").into(),
+            },
+        )?;
+        for code in [KEY_K, KEY_I] {
+            tap(&mut compositor, code);
+        }
+        let _filtered = driver.execute(
             &mut compositor,
             tehuti::driver::Request::Shot { path: copy.into() },
         )?;

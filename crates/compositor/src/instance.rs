@@ -100,3 +100,19 @@ pub fn acquire(runtime_directory: &Path) -> Result<InstanceLock, InstanceError> 
     writeln!(file, "{}", std::process::id()).map_err(failed)?;
     Ok(InstanceLock { _file: file })
 }
+
+/// The pid recorded by the instance that holds the lock in `runtime_directory`, if one does.
+///
+/// Probes the lock without keeping it, so a stale pid left by a crash reads as not running.
+#[must_use]
+pub fn running_pid(runtime_directory: &Path) -> Option<u32> {
+    let mut file = File::open(runtime_directory.join(LOCK_FILE_NAME)).ok()?;
+    match flock(&file, FlockOperation::NonBlockingLockShared) {
+        Err(rustix::io::Errno::WOULDBLOCK) => {
+            let mut recorded = String::new();
+            let _bytes = file.read_to_string(&mut recorded).ok()?;
+            recorded.trim().parse().ok()
+        }
+        _ => None,
+    }
+}

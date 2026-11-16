@@ -48,6 +48,7 @@ pub(crate) struct LoopData {
     pacing: LoopPacing,
     context_watch: Option<tehuti::contexts::ContextWatch>,
     applications_watch: Option<tehuti::applications_watch::ApplicationsWatch>,
+    menu_watch: Option<tehuti::menu_watch::MenuWatch>,
     driver: Option<tehuti::driver::Driver>,
     frames: Frames,
 }
@@ -56,6 +57,8 @@ pub(crate) struct LoopData {
 enum Frames {
     Backend,
     Headless,
+    /// Every DRM frame failed for a minute; the session exits with an error.
+    Failed,
 }
 
 /// Draws a frame when something on the output changed; the DRM backend installs it.
@@ -109,6 +112,9 @@ impl input::InputSource for AttachedController {
 
 impl LoopData {
     fn exit_code(&self) -> ExitCode {
+        if matches!(self.frames, Frames::Failed) {
+            return ExitCode::FAILURE;
+        }
         exit_code(
             self.log_out || self.compositor.log_out_requested(),
             self.compositor.quit_requested(),
@@ -154,6 +160,50 @@ fn print_version() -> Result<ExitCode, Box<dyn Error>> {
             env!("TEHUTI_BUILD_DATE")
         )
     )?;
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty());
+    writeln!(
+        std::io::stdout().lock(),
+        "{}",
+        tehuti::status::gather(
+            runtime.as_deref().map(std::path::Path::new),
+            std::path::Path::new("/proc"),
+            std::path::Path::new("/dev/dri"),
+        )
+    )?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn default_config_directory() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .ok_or("neither XDG_CONFIG_HOME nor HOME is set")?
+        .join("tehuti"))
+}
+
+const CONFIG_USAGE: &str = "usage: tehuti config share <context> <section>... [--as <name>]";
+
+/// `tehuti config share`: moves a section of a context into a shared section.
+fn config_command(arguments: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn Error>> {
+    use std::io::Write;
+    let words: Vec<&str> = arguments
+        .iter()
+        .map(|word| word.to_str().ok_or(CONFIG_USAGE))
+        .collect::<Result<_, _>>()?;
+    let (context, sections, name) = match words.as_slice() {
+        ["share", context, rest @ ..] => match rest {
+            [sections @ .., "--as", name] if !sections.contains(&"--as") => (*context, sections, Some(*name)),
+            sections if !sections.contains(&"--as") => (*context, sections, None),
+            _ => return Err(CONFIG_USAGE.into()),
+        },
+        _ => return Err(CONFIG_USAGE.into()),
+    };
+    if sections.is_empty() {
+        return Err(CONFIG_USAGE.into());
+    }
+    let report = tehuti::shared_sections::share(&default_config_directory()?, context, sections, name)?;
+    writeln!(std::io::stdout().lock(), "{report}")?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -161,12 +211,7 @@ fn check_config(mut arguments: impl Iterator<Item = std::ffi::OsString>) -> Resu
     use std::io::Write;
     let directory = match arguments.next() {
         Some(directory) => PathBuf::from(directory),
-        None => std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .ok_or("neither XDG_CONFIG_HOME nor HOME is set")?
-            .join("tehuti"),
+        None => default_config_directory()?,
     };
     if arguments.next().is_some() {
         return Err("usage: tehuti --check-config [config-directory]".into());
@@ -221,6 +266,8 @@ fn insert_backend(
 /// Exit codes for a start refused before any session setup.
 const EXIT_USAGE: u8 = 2;
 const EXIT_ALREADY_RUNNING: u8 = 3;
+/// Another process holds the DRM device; restarting cannot help until it is closed.
+const EXIT_DEVICE_BUSY: u8 = 4;
 
 fn print_usage() -> Result<ExitCode, Box<dyn Error>> {
     use std::io::Write;
@@ -246,6 +293,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         Ok(tehuti::cli::Invocation::Help) => return print_usage(),
         Ok(tehuti::cli::Invocation::Version) => return print_version(),
         Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
+        Ok(tehuti::cli::Invocation::Config(rest)) => return config_command(&rest),
         Ok(tehuti::cli::Invocation::InstallSkill(path)) => return install_skill(path),
         Ok(tehuti::cli::Invocation::Session {
             context_directory,
@@ -278,7 +326,13 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             return refuse(&error, code);
         }
     };
-    start_session(&context_directory, program, application, headless, backend)
+    match start_session(&context_directory, program, application, headless, backend) {
+        Err(error) if error.is::<tehuti::drm_holders::DeviceBusy>() => {
+            error!("{error}");
+            refuse(&error, EXIT_DEVICE_BUSY)
+        }
+        result => result,
+    }
 }
 
 #[expect(clippy::too_many_lines, reason = "speech spawn stays in startup")]
@@ -340,6 +394,7 @@ fn start_session(
     }
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
+    compositor.set_timeline_level(tehuti::timeline_level::TimelineLevel::load());
     match tehuti::display_mode_store::config_root() {
         Ok(root) => compositor.load_bar_font(tehuti::display_mode_store::Store::new(
             root.join("tehuti/bar-font"),
@@ -352,7 +407,9 @@ fn start_session(
         config: std::path::PathBuf::from(context_directory),
         ..tehuti::destinations::Paths::default()
     });
-    compositor.set_contexts(tehuti::contexts::load(std::path::Path::new(context_directory)));
+    compositor.set_context_files(tehuti::contexts::load_files(std::path::Path::new(
+        context_directory,
+    )));
     match tehuti::input_choice_store::Store::from_env() {
         Ok(store) => compositor.load_input_choices(store),
         Err(error) => warn!(%error, "input choices will not be saved"),
@@ -424,8 +481,10 @@ fn start_session(
         .transpose()?;
 
     let applications_watch = insert_applications_watch(&event_loop, &compositor.destination_paths().data);
+    let menu_watch = insert_menu_watch(&event_loop);
     let mut data = LoopData {
         applications_watch,
+        menu_watch,
         display,
         compositor,
         controllers,
@@ -537,6 +596,16 @@ fn shut_down(mut event_loop: EventLoop<LoopData>, data: LoopData) {
     drop(display);
 }
 
+/// Only the DRM session is watched: a frozen nested window can just be closed.
+/// The heartbeat ends with `run`, so shutdown is not watched: an abort there
+/// would turn a log-out into a failure.
+fn start_watchdog(data: &LoopData) -> Option<tehuti::watchdog::Heartbeat> {
+    let _drm = data.redraw.as_ref()?;
+    tehuti::watchdog::spawn(tehuti::watchdog::FROZEN_AFTER, tehuti::watchdog::abort_frozen)
+        .inspect_err(|error| warn!(%error, "watchdog failed to start"))
+        .ok()
+}
+
 fn run(
     event_loop: &mut EventLoop<LoopData>,
     data: &mut LoopData,
@@ -545,7 +614,9 @@ fn run(
     let termination = tehuti::shutdown::Termination::register()?;
     let signal = event_loop.get_signal();
     let handle = event_loop.handle();
+    let heartbeat = start_watchdog(data);
     let result = event_loop.run(Some(tehuti::pacing::LOOP_TIMEOUT), data, |data| {
+        heartbeat.iter().for_each(tehuti::watchdog::Heartbeat::beat);
         termination.stop_if_requested(&signal);
         if let Some(driver) = data.driver.as_mut() {
             driver.poll(&mut data.compositor);
@@ -664,9 +735,21 @@ fn drop_reopened_controllers(data: &mut LoopData) {
             return true;
         }
         if let Some(kept) = pad.pad.detach_virtual_pad() {
-            *spare = Some(kept);
+            controller::keep_spare(spare, kept);
         }
         false
+    });
+}
+
+/// Removes the event sources of pads that are gone, so a dead descriptor wakes the loop once.
+fn prune_controller_tokens(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
+    data.controller_tokens.retain(|path, token| {
+        if data.controllers.contains_key(path) {
+            true
+        } else {
+            handle.remove(*token);
+            false
+        }
     });
 }
 
@@ -676,14 +759,7 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
     }
     let was_attached = !data.controllers.is_empty();
     drop_reopened_controllers(data);
-    data.controller_tokens.retain(|path, token| {
-        if data.controllers.contains_key(path) {
-            true
-        } else {
-            handle.remove(*token);
-            false
-        }
-    });
+    prune_controller_tokens(data, handle);
     if was_attached && data.controllers.is_empty() {
         controllers_disconnected(data);
     }
@@ -776,7 +852,8 @@ fn insert_controllers(
     tokens: &mut BTreeMap<PathBuf, calloop::RegistrationToken>,
 ) {
     let attached = controllers.keys().cloned().collect();
-    for (path, pad) in controller::open_grabbed(virtual_pad, &attached) {
+    let opened = controller::open_grabbed(virtual_pad, &attached);
+    for (path, pad) in opened {
         let registration = pad
             .as_fd()
             .try_clone_to_owned()
@@ -785,7 +862,14 @@ fn insert_controllers(
                 handle
                     .insert_source(
                         Generic::new(controller_fd, Interest::READ, calloop::Mode::Level),
-                        |_, _, data| Ok(route_controller_input(data)),
+                        {
+                            let remover = handle.clone();
+                            move |_, _, data| {
+                                let action = route_controller_input(data);
+                                prune_controller_tokens(data, &remover);
+                                Ok(action)
+                            }
+                        },
                     )
                     .map_err(|error| -> Box<dyn Error> { Box::new(error) })
             });
@@ -803,6 +887,13 @@ fn insert_controllers(
             }
             Err(error) => warn!(%error, "controller registration failed; retrying"),
         }
+    }
+    let companion = controller::nunchuk_present()
+        || controllers
+            .values()
+            .any(|controller| !controller.pad.identity().family.is_remote());
+    for controller in controllers.values_mut() {
+        controller.pad.set_companion(companion);
     }
 }
 
@@ -849,7 +940,30 @@ fn insert_applications_watch(
     .ok()
 }
 
-/// Rebuilds destinations once a burst of desktop entry edits has gone quiet.
+/// Watches the menu config; a failure leaves the menu loaded until restart.
+fn insert_menu_watch(event_loop: &EventLoop<'static, LoopData>) -> Option<tehuti::menu_watch::MenuWatch> {
+    let path = tehuti::system_menu::config_path()
+        .inspect_err(|error| warn!(%error, "no menu config path; the menu reloads only on restart"))
+        .ok()?;
+    tehuti::menu_watch::MenuWatch::insert(&event_loop.handle(), &path, |data: &mut LoopData| {
+        data.menu_watch.as_mut()
+    })
+    .inspect_err(|error| warn!(%error, "menu watch unavailable; the menu reloads only on restart"))
+    .ok()
+}
+
+/// Reloads the system menu once a burst of edits to its config has gone quiet.
+fn reload_menu(data: &mut LoopData) {
+    if data
+        .menu_watch
+        .as_mut()
+        .is_some_and(|watch| watch.poll(std::time::Instant::now()))
+    {
+        data.compositor.reload_menu_config(tehuti::system_menu::load());
+    }
+}
+
+/// Rebuilds destinations once a burst of desktop entry edits has gone quiet, then checks the menu config.
 fn reload_desktop_entries(data: &mut LoopData) {
     if data
         .applications_watch
@@ -858,6 +972,7 @@ fn reload_desktop_entries(data: &mut LoopData) {
     {
         data.compositor.refresh_destinations();
     }
+    reload_menu(data);
 }
 
 /// Reloads contexts once a burst of edits has gone quiet.
@@ -918,7 +1033,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         },
         |controller| {
             if let Some(kept) = controller.pad.detach_virtual_pad() {
-                *spare = Some(kept);
+                controller::keep_spare(spare, kept);
             }
         },
     );
@@ -1066,7 +1181,7 @@ fn pump_virtual_pads(data: &mut LoopData) {
             // The physical pad is gone; the virtual pad stays, at rest, for the next one.
             warn!(%error, "physical pad lost; keeping the virtual pad");
             if let Some(kept) = controller.pad.detach_virtual_pad() {
-                *spare = Some(kept);
+                controller::keep_spare(spare, kept);
             }
             controller.watchdog.request_reopen();
         }

@@ -142,6 +142,33 @@ mod tests {
     }
 
     #[test]
+    fn a_titled_context_label_names_its_window_and_a_titled_context_without_one_falls_back() {
+        let state = labelled(&[
+            "app_id = 'steam_proton'\nlabel = 'Launcher'\nbuttons = {}",
+            "app_id = 'steam_proton'\ntitle = 'Game Window'\nlabel = 'Game'\nbuttons = {}",
+            "app_id = 'steam_proton'\ntitle = 'Quiet Window'\nbuttons = {}",
+        ]);
+        let chip = |title: &str| {
+            focus_titled(state.clone(), "steam_proton", title)
+                .bar()
+                .segments()[0]
+                .text
+                .clone()
+        };
+        assert_eq!(chip("Game Window"), "Game");
+        assert_eq!(chip("Quiet Window"), "Launcher");
+        assert_eq!(chip("Other"), "Launcher");
+        let bare = labelled(&["app_id = 'steam_proton'\ntitle = 'Quiet Window'\nbuttons = {}"]);
+        assert_eq!(
+            focus_titled(bare, "steam_proton", "Quiet Window")
+                .bar()
+                .segments()[0]
+                .text,
+            "steam_proton"
+        );
+    }
+
+    #[test]
     fn agent_titles_win_over_a_label() {
         let state = labelled(&["app_id = 'kitty'\nlabel = 'Terminal'\nbuttons = {}"]);
         assert_eq!(

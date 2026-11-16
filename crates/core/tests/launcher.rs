@@ -14,6 +14,7 @@ mod tests {
                     open: false,
                     focused: false,
                     safety: Safety::Launch,
+                    settings: false,
                 },
                 Destination {
                     name: "Pokémon".into(),
@@ -22,6 +23,7 @@ mod tests {
                     open: false,
                     focused: false,
                     safety: Safety::Launch,
+                    settings: false,
                 },
             ],
             None,
@@ -72,6 +74,55 @@ mod tests {
         assert_eq!(launcher.confirm(), Some(0));
     }
 
+    fn entry(name: &str, extras: &[&str], settings: bool) -> Destination {
+        Destination {
+            name: name.into(),
+            extra_names: extras.iter().map(|extra| (*extra).into()).collect(),
+            route: format!("{name} (app)"),
+            open: false,
+            focused: false,
+            safety: Safety::Launch,
+            settings,
+        }
+    }
+
+    #[test]
+    fn typed_names_outrank_generic_names_and_settings_lose_ties() {
+        let entries = || {
+            vec![
+                entry(
+                    "Default Applications",
+                    &["Preferred Applications", "terminal"],
+                    true,
+                ),
+                entry("Terminal Emulator", &["Terminal"], false),
+                entry("Xfce Terminal", &["Terminal Emulator"], false),
+                entry("Xfce Terminal settings", &["Terminal Emulator"], true),
+            ]
+        };
+        let ranked = |query: &str| {
+            Launcher::typed(query, entries())
+                .list()
+                .candidates()
+                .iter()
+                .map(|row| row.candidate.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ranked("Termin"),
+            [
+                "Terminal Emulator",
+                "Xfce Terminal",
+                "Xfce Terminal settings",
+                "Default Applications"
+            ]
+        );
+        assert_eq!(
+            ranked("terminal emulator").first().map(String::as_str),
+            Some("Terminal Emulator")
+        );
+    }
+
     fn browser(safety: Safety) -> Destination {
         Destination {
             name: "Browser".into(),
@@ -80,6 +131,7 @@ mod tests {
             open: false,
             focused: false,
             safety,
+            settings: false,
         }
     }
 
@@ -250,6 +302,7 @@ mod tests {
                     open: false,
                     focused: false,
                     safety: Safety::Launch,
+                    settings: false,
                 },
                 Destination {
                     name: "~/notes: shell".into(),
@@ -258,6 +311,7 @@ mod tests {
                     open: true,
                     focused: false,
                     safety: Safety::Focus,
+                    settings: false,
                 },
             ],
             None,

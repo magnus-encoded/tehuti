@@ -36,8 +36,12 @@ enum Delivery {
         result: Result<Vec<Action>, String>,
         submission_id: Option<u64>,
     },
+    /// The plugin handled the request itself: no actions and no fallback.
+    Handled(tehuti_core::plugin::RequestKey),
     Notice(Vec<Action>),
     PadOverrides(Vec<tehuti_protocol::PadOverride>),
+    /// The plugin replaced its speech hotwords.
+    SpeechHints,
 }
 
 #[derive(Debug)]
@@ -77,6 +81,10 @@ struct Session {
     status_text: Option<String>,
     /// A verb plugin's current verbs; empty for application plugins.
     verbs: Vec<String>,
+    /// The hotwords the plugin last sent; a restart starts empty.
+    hints: Vec<String>,
+    /// The invoke words the plugin last sent; a restart starts empty.
+    invoke_words: Vec<String>,
 }
 
 impl Drop for Process {
@@ -148,6 +156,11 @@ impl Session {
                 Err(error) => self.fail(&format!("plugin status failed: {error}")),
             }
         }
+    }
+
+    /// Whether the manifest lists this application; focus notices go to no other plugin.
+    fn owns_app(&self, app_id: Option<&String>) -> bool {
+        app_id.is_some_and(|app_id| self.manifest.app_ids.contains(app_id))
     }
 
     fn observe(&mut self, event: &Event) {
@@ -313,6 +326,7 @@ impl Session {
                 self.healthy_since = Some(Instant::now());
                 if self.events.contains(&Subscription::Focus)
                     && let Some((app_id, title)) = self.latest_focus.clone()
+                    && self.owns_app(app_id.as_ref())
                     && let Err(error) = self.queue(&Call {
                         jsonrpc: RpcVersion::Two,
                         request_id: None,
@@ -370,17 +384,25 @@ impl Session {
         }
         self.complete_decision(&message);
         match message {
-            Message::Response(response) => vec![Delivery::Reply {
-                key: tehuti_core::plugin::RequestKey {
+            Message::Response(response) => {
+                let key = tehuti_core::plugin::RequestKey {
                     plugin: self.plugin,
                     request_id: response.request_id,
-                },
-                result: match response.result {
-                    ResultValue::Actions(actions) => Ok(actions),
-                    ResultValue::Initialized(_) => Err("result must be an action list".into()),
-                },
-                submission_id: None,
-            }],
+                };
+                vec![match response.result {
+                    ResultValue::Handled(_) => Delivery::Handled(key),
+                    ResultValue::Actions(actions) => Delivery::Reply {
+                        key,
+                        result: Ok(actions),
+                        submission_id: None,
+                    },
+                    ResultValue::Initialized(_) => Delivery::Reply {
+                        key,
+                        result: Err("result must be an action list".into()),
+                        submission_id: None,
+                    },
+                }]
+            }
             Message::Error(response) => vec![Delivery::Reply {
                 key: tehuti_core::plugin::RequestKey {
                     plugin: self.plugin,
@@ -417,6 +439,14 @@ impl Session {
             Method::Verbs { verbs } => {
                 self.set_verbs(verbs);
                 Vec::new()
+            }
+            Method::SpeechHints { hotwords } => {
+                self.hints = hotwords;
+                vec![Delivery::SpeechHints]
+            }
+            Method::InvokeWords { words } => {
+                self.invoke_words = words;
+                vec![Delivery::SpeechHints]
             }
             Method::Adjuster { .. }
             | Method::Initialize(_)
@@ -459,13 +489,17 @@ impl Session {
                 let request_id = self.request()?;
                 (Some(request_id), Method::Speech { text: text.clone() })
             }
-            Event::Focus { app_id, title } if self.events.contains(&Subscription::Focus) => (
-                None,
-                Method::Focus {
-                    app_id: app_id.clone(),
-                    title: title.clone(),
-                },
-            ),
+            Event::Focus { app_id, title }
+                if self.events.contains(&Subscription::Focus) && self.owns_app(app_id.as_ref()) =>
+            {
+                (
+                    None,
+                    Method::Focus {
+                        app_id: app_id.clone(),
+                        title: title.clone(),
+                    },
+                )
+            }
             Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
                 return None;
             }
@@ -567,6 +601,34 @@ impl Plugins {
     pub(crate) fn status(&self) -> Option<String> {
         self.focused_ready()
             .find_map(|entry| entry.session.as_ref()?.borrow().status_text.clone())
+    }
+
+    /// Invoke words of the initialized application plugins that cover `app_id`, in manifest order.
+    pub(crate) fn invoke_words(&self, app_id: &str) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.manifest.kind == PluginKind::Application
+                    && entry.manifest.app_ids.iter().any(|name| name == app_id)
+            })
+            .filter_map(|entry| entry.session.as_ref())
+            .filter(|session| session.borrow().status == Status::Ready)
+            .flat_map(|session| session.borrow().invoke_words.clone())
+            .collect()
+    }
+
+    /// Hotwords of the initialized application plugins that cover `app_id`, in manifest order.
+    pub(crate) fn speech_hints(&self, app_id: &str) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.manifest.kind == PluginKind::Application
+                    && entry.manifest.app_ids.iter().any(|name| name == app_id)
+            })
+            .filter_map(|entry| entry.session.as_ref())
+            .filter(|session| session.borrow().status == Status::Ready)
+            .flat_map(|session| session.borrow().hints.clone())
+            .collect()
     }
 
     pub(crate) fn set_pad_overrides(&mut self, plugin: usize, overrides: Vec<tehuti_protocol::PadOverride>) {
@@ -1019,6 +1081,8 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
         read_bytes: 0,
         status_text: None,
         verbs: manifest.verbs.clone(),
+        hints: Vec::new(),
+        invoke_words: Vec::new(),
     }));
     session.borrow_mut().queue_initialize()?;
     Ok((session, stdout))
@@ -1246,10 +1310,12 @@ fn deliver(
                     tracing::warn!(%error, "plugin rejection dropped");
                 }
             }
+            Delivery::Handled(key) => compositor.plugin_handled(key),
             Delivery::PadOverrides(overrides) => {
                 let plugin = reader.borrow().plugin;
                 compositor.set_pad_overrides(plugin, overrides);
             }
+            Delivery::SpeechHints => compositor.refresh_speech_vocabulary(),
             Delivery::Notice(actions) => apply_notice(compositor, actions, later),
         }
     }
@@ -1305,6 +1371,8 @@ fn fuzz_session() -> io::Result<Session> {
         read_bytes: 0,
         status_text: None,
         verbs: Vec::new(),
+        hints: Vec::new(),
+        invoke_words: Vec::new(),
     })
 }
 
@@ -1367,6 +1435,39 @@ mod tests {
 
     fn key(name: &str) -> Action {
         serde_json::from_value(serde_json::json!({"type":"key","key":name})).unwrap()
+    }
+
+    #[test]
+    fn focus_notices_reach_only_plugins_that_list_the_app() {
+        let mut session = fuzz_session().unwrap();
+        session.events = vec![Subscription::Focus];
+        let focus = |app_id: Option<&str>| Event::Focus {
+            app_id: app_id.map(Into::into),
+            title: "private title".into(),
+        };
+        assert!(
+            session.call_for_event(&focus(Some("other")), true).is_none(),
+            "another app"
+        );
+        assert!(session.call_for_event(&focus(None), true).is_none(), "no app");
+        assert!(
+            session.call_for_event(&focus(Some("fuzz")), true).is_some(),
+            "its own app"
+        );
+    }
+
+    #[test]
+    fn the_handshake_replays_focus_only_for_a_listed_app() {
+        for (app, replayed) in [("other", false), ("fuzz", true)] {
+            let mut session = fuzz_session().unwrap();
+            session.initialize_deadline = Instant::now() + Duration::from_secs(60);
+            session.latest_focus = Some((Some(app.into()), "private title".into()));
+            let reply = "{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocol_version\":0,\"encoding\":\"json\",\"events\":[\"focus\"]}}\n";
+            drop(session.receive(reply.as_bytes()));
+            assert_eq!(session.status, Status::Ready);
+            let sent = String::from_utf8(session.output.iter().copied().collect()).unwrap();
+            assert_eq!(sent.contains("private title"), replayed, "{app}: {sent}");
+        }
     }
 
     fn text(value: &str) -> Action {
@@ -1480,6 +1581,8 @@ mod tests {
                 read_bytes: 0,
                 status_text: None,
                 verbs: manifest.verbs.clone(),
+                hints: Vec::new(),
+                invoke_words: Vec::new(),
             })))
         }
 
@@ -1684,6 +1787,36 @@ mod tests {
             assert!(
                 !plugins.active(&speech("ada sum up")),
                 "the refused verb never routes"
+            );
+        }
+
+        #[test]
+        fn an_application_plugins_invoke_words_replace_and_apply_to_its_applications() {
+            let plugins = verb_plugins(&[]);
+            let notice = |words: &[&str]| {
+                Message::Call(Call {
+                    jsonrpc: RpcVersion::Two,
+                    request_id: None,
+                    method: Method::InvokeWords {
+                        words: words.iter().map(|word| (*word).to_owned()).collect(),
+                    },
+                })
+            };
+            let session = plugins.entries[1].session.clone().unwrap();
+            let _first = session.borrow_mut().message(notice(&["usage", "code-review"]));
+            let deliveries = session.borrow_mut().message(notice(&["usage"]));
+            assert!(
+                matches!(deliveries.as_slice(), [Delivery::SpeechHints]),
+                "a notice refreshes the focused window's words"
+            );
+            assert_eq!(
+                plugins.invoke_words("test"),
+                ["usage"],
+                "the second list replaces"
+            );
+            assert!(
+                plugins.invoke_words("other").is_empty(),
+                "only covered applications"
             );
         }
 

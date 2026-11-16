@@ -1496,12 +1496,7 @@ impl Layout {
                         self.outputs[output].workspaces[active].columns[index].width =
                             Some(PresetSize::Fixed(width.sub(2.0_f64.mul(config.border))));
                     }
-                    #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
-                    let start = self.outputs[output].column_x(active, first);
-                    #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
-                    {
-                        self.outputs[output].workspaces[active].view = start.sub(config.gaps);
-                    }
+                    self.anchor_view_after_expand(output, active, index, first);
                 }
             }
             return;
@@ -1509,6 +1504,20 @@ impl Layout {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let workspace = &mut self.outputs[output].workspaces[active];
         workspace.apply_column_command(index, command, &config, working, height);
+    }
+    /// Scrolls to the first visible column after an expand; a fullscreen column keeps its output-edge anchor.
+    #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+    fn anchor_view_after_expand(&mut self, output: usize, active: usize, index: usize, first: usize) {
+        let gaps = self.outputs[output].config.gaps;
+        let working_x = self.outputs[output].working().x;
+        let focused = &self.outputs[output].workspaces[active].columns[index];
+        let fullscreen = focused.tiles[focused.focused].mode == TileMode::Fullscreen;
+        let view = if fullscreen {
+            working_x.add(self.outputs[output].column_x(active, index))
+        } else {
+            self.outputs[output].column_x(active, first).sub(gaps)
+        };
+        self.outputs[output].workspaces[active].view = view;
     }
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {

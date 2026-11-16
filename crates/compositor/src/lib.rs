@@ -12,8 +12,10 @@ pub mod instance;
 pub mod session_registration;
 pub mod skill_install;
 pub mod state;
+pub mod status;
 
 pub mod contexts;
+pub mod width_rewrite;
 
 pub(crate) mod text_input;
 
@@ -32,8 +34,10 @@ pub mod desktop;
 
 pub mod backend;
 
+pub mod drm_holders;
 pub mod drm_hotplug;
 pub mod frame_recovery;
+pub mod watchdog;
 
 pub mod dim;
 mod focus_outline;
@@ -64,6 +68,7 @@ pub mod display_mode_store;
 pub mod input_choice_store;
 mod screenshot;
 pub mod settings;
+pub mod shared_sections;
 pub mod system_menu;
 
 pub mod desktop_hints;
@@ -86,8 +91,10 @@ pub mod adjuster;
 pub mod applications_watch;
 pub mod driver;
 mod driver_shot;
+pub mod menu_watch;
 pub mod volume;
 
 pub mod readback;
 
 pub mod recording_encoder;
+pub mod timeline_level;

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Point this clone at the tracked hooks in .githooks (pre-push runs scripts/check --quick).
+set -eu
+cd "$(dirname "$0")/.."
+git config core.hooksPath .githooks
+echo 'core.hooksPath set to .githooks'

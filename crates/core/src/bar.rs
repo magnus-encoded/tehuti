@@ -49,6 +49,8 @@ pub struct Bar {
     context: Option<String>,
     focus: Option<(Option<String>, String)>,
     labels: Vec<(String, String)>,
+    /// Labels of titled contexts, keyed by application id and exact window title.
+    titled_labels: Vec<((String, String), String)>,
     agents: Vec<String>,
     windows: Vec<(String, bool)>,
     feedback: Option<Segment>,
@@ -133,6 +135,7 @@ impl Bar {
             context: None,
             focus: None,
             labels: Vec::new(),
+            titled_labels: Vec::new(),
             agents: Vec::new(),
             windows: Vec::new(),
             feedback: None,
@@ -189,22 +192,36 @@ impl Bar {
     }
 
     /// Sets the per-application chip labels and relabels the focused window.
-    pub(crate) fn set_labels(&mut self, labels: Vec<(String, String)>) {
-        if labels != self.labels {
+    pub(crate) fn set_labels(
+        &mut self,
+        labels: Vec<(String, String)>,
+        titled_labels: Vec<((String, String), String)>,
+    ) {
+        if labels != self.labels || titled_labels != self.titled_labels {
             self.labels = labels;
+            self.titled_labels = titled_labels;
             if let Some((app_id, title)) = &self.focus {
                 self.context = context_label(
                     app_id.as_deref(),
                     title,
-                    self.label(app_id.as_deref()),
+                    self.label(app_id.as_deref(), title),
                     &self.agents,
                 );
             }
         }
     }
 
-    fn label(&self, app_id: Option<&str>) -> Option<&str> {
+    /// A titled context's own label for this exact window title, else the application's label.
+    fn label(&self, app_id: Option<&str>, title: &str) -> Option<&str> {
         let app_id = app_id?;
+        self.titled_labels
+            .iter()
+            .find(|((labelled, named), _)| labelled == app_id && named == title)
+            .map(|(_, label)| label.as_str())
+            .or_else(|| self.app_label(app_id))
+    }
+
+    fn app_label(&self, app_id: &str) -> Option<&str> {
         self.labels
             .iter()
             .find(|(labelled, _)| labelled == app_id)
@@ -322,7 +339,7 @@ impl Bar {
                 self.context = context_label(
                     app_id.as_deref(),
                     title,
-                    self.label(app_id.as_deref()),
+                    self.label(app_id.as_deref(), title),
                     &self.agents,
                 );
                 self.focus = Some((app_id.clone(), title.clone()));
@@ -463,6 +480,7 @@ impl Bar {
                 Action::Close => ("Closed".into(), Tone::Result),
                 Action::Layout { .. } => ("Layout".into(), Tone::Result),
                 Action::ToggleTicker => ("Ticker".into(), Tone::Result),
+                Action::UndoDictation => ("Undone".into(), Tone::Result),
                 Action::Quit => ("Quitting".into(), Tone::Result),
                 Action::Restart => ("Restarting".into(), Tone::Result),
             };

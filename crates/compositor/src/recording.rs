@@ -122,7 +122,9 @@ impl Compositor {
         if !self.recording_active() {
             return;
         }
-        self.record_event(kind, &json!({"event": format!("{event:?}")}));
+        // The timeline is the user's own opt-in recording and keeps what was said.
+        let shown = tehuti_protocol::Text::reveal_in(|| format!("{event:?}"));
+        self.record_event(kind, &json!({"event": shown}));
     }
 
     /// Keeps the newest continuous sample of `name`; `poll_recording` writes it once per video
@@ -137,7 +139,7 @@ impl Compositor {
         if session.stop.load(Ordering::Relaxed) != u64::MAX {
             return;
         }
-        let text = format!("{sample:?}");
+        let text = tehuti_protocol::Text::reveal_in(|| format!("{sample:?}"));
         let mut samples = session.samples.borrow_mut();
         if let Some(slot) = samples.iter_mut().find(|slot| slot.name == name) {
             slot.pending = Some(text);

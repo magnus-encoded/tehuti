@@ -94,6 +94,8 @@ impl World {
                     | Effect::OpenLauncher(_)
                     | Effect::AdjusterValue { .. }
                     | Effect::ReadVolume
+                    | Effect::ReadWindowSize(_)
+                    | Effect::SetWindowSize { .. }
                     | Effect::SetVolume(_)
                     | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
@@ -312,7 +314,10 @@ proptest! {
                 reference = next;
                 expected.append(&mut actions);
             }
-            if !record {
+            // Dispatch opens the launcher for an unmapped "new <words>" phrase and never steps core.
+            let consumed = matches!(&event, Event::Speech { text }
+                if crate::unit_verbs::new_request(text.as_str()).is_some() && !reference.context_maps_speech(text.as_str()));
+            if !record && !consumed {
                 let (next, mut actions) = crate::step(reference, &event);
                 reference = next;
                 expected.append(&mut actions);
@@ -1809,17 +1814,25 @@ fn settings_event(world: &mut World, state: State, event: Event) -> State {
 }
 
 fn open_display(world: &mut World) -> State {
-    let state = world.run(
-        State::default(),
-        Input::DisplayModes {
-            modes: vec![
-                "1920x1080@60".into(),
-                "3840x2160@60".into(),
-                "3840x2160@120".into(),
-            ],
-            current: 0,
-        },
-    );
+    open_display_with(
+        world,
+        vec![
+            "1920x1080@60".into(),
+            "3840x2160@60".into(),
+            "3840x2160@120".into(),
+        ],
+        0,
+    )
+}
+
+/// Display page with the Resolution row expanded into its mode list.
+fn open_display_expanded(world: &mut World) -> State {
+    let state = open_display(world);
+    settings_button(world, state, ButtonName::South)
+}
+
+fn open_display_with(world: &mut World, modes: Vec<String>, current: usize) -> State {
+    let state = world.run(State::default(), Input::DisplayModes { modes, current });
     let state = settings_event(
         world,
         state,
@@ -1885,7 +1898,7 @@ fn wallpaper_preview_saves_and_cancel_restores_saved_choice() {
 #[test]
 fn settings_navigation_is_bounded_and_consumes_client_input() {
     let mut world = World::default();
-    let mut state = open_display(&mut world);
+    let mut state = open_display_expanded(&mut world);
     assert!(state.settings().open);
     assert_eq!(state.settings().page, Page::Display);
     world.trace.clear();
@@ -1922,6 +1935,9 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
             .any(|effect| matches!(effect, Effect::Apply(_) | Effect::ConfirmSecret(_)))
     );
     state = settings_button(&mut world, state, ButtonName::East);
+    assert_eq!(state.settings().page, Page::Display, "B collapses first");
+    assert!(!state.settings().resolution_open);
+    state = settings_button(&mut world, state, ButtonName::East);
     assert!(state.settings().open);
     assert_eq!(state.settings().page, Page::Categories);
     state = settings_button(&mut world, state, ButtonName::East);
@@ -1931,7 +1947,7 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
 #[test]
 fn successful_mode_apply_starts_countdown_and_south_confirms_once() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     world.trace.clear();
     let state = settings_button(&mut world, state, ButtonName::South);
@@ -1984,7 +2000,7 @@ fn successful_mode_apply_starts_countdown_and_south_confirms_once() {
 fn unconfirmed_mode_reverts_at_fifteen_seconds_without_persisting() {
     for final_tick in [Duration::from_secs(1), Duration::from_secs(20)] {
         let mut world = World::default();
-        let state = open_display(&mut world);
+        let state = open_display_expanded(&mut world);
         let state = settings_button(&mut world, state, ButtonName::DpadDown);
         let state = settings_button(&mut world, state, ButtonName::South);
         let state = world.run(state, Input::ModeApplied(Some(1)));
@@ -2013,7 +2029,7 @@ fn unconfirmed_mode_reverts_at_fifteen_seconds_without_persisting() {
 #[test]
 fn rejected_modes_keep_current_choice_and_do_not_offer_confirmation() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let state = world.run(state, Input::ModeApplied(None));
@@ -2047,7 +2063,7 @@ fn east_and_the_global_phrase_cancel_mode_preview() {
         },
     ] {
         let mut world = World::default();
-        let state = open_display(&mut world);
+        let state = open_display_expanded(&mut world);
         let state = settings_button(&mut world, state, ButtonName::DpadDown);
         let state = settings_button(&mut world, state, ButtonName::South);
         let state = world.run(state, Input::ModeApplied(Some(1)));
@@ -2064,7 +2080,7 @@ fn east_and_the_global_phrase_cancel_mode_preview() {
 #[test]
 fn closing_during_apply_reverts_after_the_backend_reports_success() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let state = settings_event(
@@ -2086,7 +2102,7 @@ fn closing_during_apply_reverts_after_the_backend_reports_success() {
 #[test]
 fn confirmation_at_the_deadline_cannot_persist_the_expired_preview() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let state = world.run(state, Input::ModeApplied(Some(1)));
@@ -2110,17 +2126,97 @@ fn confirmation_at_the_deadline_cannot_persist_the_expired_preview() {
     );
 }
 
+fn modes_of(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|index| format!("{}x1080@60", index.saturating_add(1000)))
+        .collect()
+}
+
+proptest! {
+    #[test]
+    fn collapsed_resolution_is_one_row_above_scale((count, current) in (1_usize..40).prop_flat_map(|count| (Just(count), 0..count))) {
+        let mut world = World::default();
+        let state = open_display_with(&mut world, modes_of(count), current);
+        prop_assert!(!state.settings().resolution_open);
+        let state = settings_button(&mut world, state, ButtonName::DpadDown);
+        world.trace.clear();
+        let state = settings_button(&mut world, state, ButtonName::DpadRight);
+        prop_assert!(world.trace.contains(&Effect::SettingsScale(core::num::NonZeroU32::new(2).unwrap())));
+        prop_assert_eq!(state.settings().scale.get(), 2);
+        let state = settings_button(&mut world, state, ButtonName::DpadUp);
+        prop_assert_eq!(state.settings().selected, current, "one step up is the Resolution row again");
+    }
+
+    #[test]
+    fn expanding_picking_and_collapsing_behave_as_the_picker((count, current) in (2_usize..40).prop_flat_map(|count| (Just(count), 0..count))) {
+        let mut world = World::default();
+        let state = open_display_with(&mut world, modes_of(count), current);
+        world.trace.clear();
+        let state = settings_button(&mut world, state, ButtonName::South);
+        prop_assert!(state.settings().resolution_open);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SettingsMode(_))));
+        let target = current.checked_sub(1).unwrap_or(1);
+        let key = if target > current { ButtonName::DpadDown } else { ButtonName::DpadUp };
+        let state = settings_button(&mut world, state, key);
+        prop_assert_eq!(state.settings().selected, target);
+        let state = settings_button(&mut world, state, ButtonName::South);
+        prop_assert!(world.trace.contains(&Effect::SettingsMode(target)));
+        let state = world.run(state, Input::ModeApplied(Some(target)));
+        let state = settings_button(&mut world, state, ButtonName::South);
+        prop_assert!(world.trace.contains(&Effect::PersistMode(target)));
+        prop_assert!(state.settings().resolution_open);
+    }
+
+    #[test]
+    fn b_collapses_without_change_then_backs_out((count, current) in (2_usize..40).prop_flat_map(|count| (Just(count), 0..count)), moves in 0_usize..6) {
+        let mut world = World::default();
+        let state = open_display_with(&mut world, modes_of(count), current);
+        let mut state = settings_button(&mut world, state, ButtonName::South);
+        for _ in 0..moves {
+            state = settings_button(&mut world, state, ButtonName::DpadDown);
+        }
+        world.trace.clear();
+        let state = settings_button(&mut world, state, ButtonName::East);
+        prop_assert!(!state.settings().resolution_open);
+        prop_assert_eq!(state.settings().page, Page::Display);
+        prop_assert_eq!(state.settings().selected, current);
+        prop_assert_eq!(state.settings().current, current);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SettingsMode(_) | Effect::PersistMode(_))));
+        let state = settings_button(&mut world, state, ButtonName::East);
+        prop_assert_eq!(state.settings().page, Page::Categories);
+    }
+}
+
+#[test]
+fn leaving_display_leaves_the_resolution_row_collapsed() {
+    let mut world = World::default();
+    let state = open_display_expanded(&mut world);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert!(state.settings().resolution_open);
+    let state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood.".into()).unwrap(),
+        },
+    );
+    assert!(!state.settings().open);
+    assert!(!state.settings().resolution_open);
+}
+
 #[test]
 fn settings_button_hints_name_a_and_b_through_navigation_and_confirmation() {
     let mut world = World::default();
     let state = open_display(&mut world);
     assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+    let state = settings_button(&mut world, state, ButtonName::South);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let state = world.run(state, Input::ModeApplied(Some(1)));
     assert_eq!(state.settings().button_hint(), "A: KEEP THIS MODE");
     let state = settings_button(&mut world, state, ButtonName::South);
     assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+    let state = settings_button(&mut world, state, ButtonName::East);
     let state = settings_button(&mut world, state, ButtonName::East);
     assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: OPEN   B: CLOSE");
 }
@@ -2150,7 +2246,7 @@ proptest! {
 #[test]
 fn settings_confirmation_requires_a_release_after_the_apply_press() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let mut state = world.run(state, Input::ModeApplied(Some(1)));
@@ -2263,7 +2359,7 @@ fn b_backs_out_of_settings_without_forwarding_its_release_to_the_application() {
 fn emergency_escape_survives_switching_and_the_confirmation_countdown() {
     for applied in [false, true] {
         let mut world = World::default();
-        let state = open_display(&mut world);
+        let state = open_display_expanded(&mut world);
         let state = settings_button(&mut world, state, ButtonName::DpadDown);
         let mut state = settings_button(&mut world, state, ButtonName::South);
         if applied {
@@ -2610,9 +2706,7 @@ fn configured_start_ptt_preserves_guide_start_escape() {
 fn display_scale_changes_immediately_without_mode_confirmation() {
     let mut world = World::default();
     let mut state = open_display(&mut world);
-    for _ in 0..3 {
-        state = settings_button(&mut world, state, ButtonName::DpadDown);
-    }
+    state = settings_button(&mut world, state, ButtonName::DpadDown);
     state = settings_button(&mut world, state, ButtonName::DpadRight);
     state = settings_button(&mut world, state, ButtonName::DpadRight);
     assert_eq!(state.settings().scale.get(), 3);
@@ -3577,6 +3671,194 @@ fn left_stick_moves_the_draft_caret_between_lines() {
     assert_eq!(state.keyboard().draft(), "alpha\nbéta\nend");
 }
 
+fn dpad_hold_first_move_ms(toml: &str) -> Option<u64> {
+    let context = tehuti_protocol::parse_context(toml).unwrap();
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, configured(vec![context], "editor"));
+    let start = state.keyboard().highlight();
+    let mut state = world.run(state, pad_button(ButtonName::DpadRight, ButtonState::Pressed));
+    let pressed = state.keyboard().highlight();
+    assert_ne!(pressed, start, "the press itself moves one key");
+    for now in 1..=2000_u64 {
+        state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_millis(1),
+            },
+        );
+        if state.keyboard().highlight() != pressed {
+            return Some(now);
+        }
+    }
+    None
+}
+
+#[test]
+fn keyboard_repeat_delay_comes_from_the_context_and_reloads() {
+    let plain = "app_id = 'editor'\n[buttons]\n[keyboard]\n";
+    assert_eq!(dpad_hold_first_move_ms(plain), Some(300));
+    let slow = "app_id = 'editor'\n[buttons]\n[keyboard]\nrepeat_delay_ms = 700\n";
+    assert_eq!(dpad_hold_first_move_ms(slow), Some(700));
+
+    let mut world = World::default();
+    let mut state = with_open_keyboard(&mut world, configured(Vec::new(), "editor"));
+    state
+        .core_mut()
+        .replace_contexts(vec![tehuti_protocol::parse_context(slow).unwrap()]);
+    state = world.run(state, pad_button(ButtonName::DpadRight, ButtonState::Pressed));
+    let pressed = state.keyboard().highlight();
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(600),
+        },
+    );
+    assert_eq!(
+        state.keyboard().highlight(),
+        pressed,
+        "reloaded delay applies to the next hold"
+    );
+}
+
+#[test]
+fn keyboard_repeat_rates_come_from_the_context() {
+    let fast = "app_id = 'editor'\n[buttons]\n[keyboard]\nrepeat_delay_ms = 100\nrepeat_rate = 20\nrepeat_max_rate = 20\n";
+    let context = tehuti_protocol::parse_context(fast).unwrap();
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, configured(vec![context], "editor"));
+    let mut state = world.run(state, pad_button(ButtonName::DpadRight, ButtonState::Pressed));
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
+    let first = state.keyboard().highlight();
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(49),
+        },
+    );
+    assert_eq!(state.keyboard().highlight(), first);
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(1),
+        },
+    );
+    assert_ne!(
+        state.keyboard().highlight(),
+        first,
+        "20 keys a second repeats every 50 ms"
+    );
+}
+
+#[test]
+fn keyboard_repeat_rates_must_be_positive() {
+    let good = "app_id = 'editor'\n[buttons]\n[keyboard]\nrepeat_rate = 5\nrepeat_max_rate = 1000\nrepeat_ramp_ms = 1\n";
+    assert!(tehuti_protocol::parse_context(good).is_ok());
+    for bad in ["repeat_rate = 0", "repeat_max_rate = 0", "repeat_ramp_ms = 0"] {
+        let toml = format!("app_id = 'editor'\n[buttons]\n[keyboard]\n{bad}\n");
+        assert!(
+            tehuti_protocol::parse_context(&toml).is_err(),
+            "{bad} must be rejected"
+        );
+    }
+}
+
+fn word_picks_held(toml: &str, depth: i16) -> usize {
+    let context = tehuti_protocol::parse_context(toml).unwrap();
+    let mut world = World::default();
+    let state = with_open_keyboard(&mut world, configured(vec![context], "editor"));
+    let mut state = world.run(state, speech_event(&"word ".repeat(150)));
+    let held = Input::Sticks(Sticks {
+        left: (depth.saturating_neg(), 0),
+        right: (0, 0),
+    });
+    state = world.run(state, held);
+    let mut picks = 0_usize;
+    let mut previous = state.keyboard().picked_word();
+    for _ in 0..2000 {
+        state = world.run(
+            state,
+            Input::Tick {
+                elapsed: Duration::from_millis(1),
+            },
+        );
+        if state.keyboard().picked_word() != previous {
+            picks = picks.saturating_add(1);
+            previous = state.keyboard().picked_word();
+        }
+    }
+    picks
+}
+
+#[test]
+fn word_picking_speeds_come_from_the_context() {
+    let plain = "app_id = 'editor'\n[buttons]\n[keyboard]\n";
+    let slow = format!("{plain}word_max_rate = 3\n");
+    let fast = format!("{plain}word_max_rate = 40\nword_repeat_delay_ms = 100\n");
+    let defaults = word_picks_held(plain, 1000);
+    assert!(defaults >= 10, "default full push picked {defaults}");
+    assert!(word_picks_held(&slow, 1000) < defaults);
+    assert!(word_picks_held(&fast, 1000) > defaults);
+    let never = format!("{plain}word_repeat_from = 1000\nword_max_rate = 40\n");
+    assert!(
+        word_picks_held(&never, 900) <= 1,
+        "below word_repeat_from a push steps one word"
+    );
+}
+
+#[test]
+fn word_picking_speeds_reload_with_the_contexts() {
+    let mut world = World::default();
+    let mut state = with_open_keyboard(&mut world, configured(Vec::new(), "editor"));
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'editor'\n[buttons]\n[keyboard]\nword_repeat_delay_ms = 5000\n",
+    )
+    .unwrap();
+    state.core_mut().replace_contexts(vec![context]);
+    state = world.run(state, speech_event(&"word ".repeat(50)));
+    state = world.run(
+        state,
+        Input::Sticks(Sticks {
+            left: (-1000, 0),
+            right: (0, 0),
+        }),
+    );
+    let first = state.keyboard().picked_word();
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_secs(2),
+        },
+    );
+    assert_eq!(
+        state.keyboard().picked_word(),
+        first,
+        "the reloaded delay holds repeats back"
+    );
+}
+
+#[test]
+fn word_picking_options_must_be_in_range() {
+    let good = "app_id = 'editor'\n[buttons]\n[keyboard]\nword_repeat_from = 501\nword_min_rate = 1\nword_max_rate = 100\n";
+    assert!(tehuti_protocol::parse_context(good).is_ok());
+    for bad in [
+        "word_min_rate = 0",
+        "word_max_rate = 0",
+        "word_repeat_from = 1001",
+        "word_repeat_from = 499",
+    ] {
+        let toml = format!("app_id = 'editor'\n[buttons]\n[keyboard]\n{bad}\n");
+        assert!(
+            tehuti_protocol::parse_context(&toml).is_err(),
+            "{bad} must be rejected"
+        );
+    }
+}
+
 #[test]
 fn speech_with_an_open_keyboard_syncs_the_context_terminal_option() {
     let mut world = World::default();
@@ -3808,7 +4090,7 @@ fn interactive_views_keep_the_pad_while_a_secret_prompt_is_visible() {
 #[test]
 fn settings_back_cancels_a_mode_change_while_the_backend_applies_it() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     world.trace.clear();
     let state = settings_button(&mut world, state, ButtonName::South);
@@ -4344,6 +4626,7 @@ fn launcher_controller_confirmation_becomes_a_route_effect() {
             open: false,
             focused: false,
             safety: crate::launcher::Safety::Launch,
+            settings: false,
         }],
         None,
     );
@@ -4375,6 +4658,7 @@ fn launcher_allows_push_to_talk_and_replaces_its_query() {
             open: false,
             focused: false,
             safety: crate::launcher::Safety::Launch,
+            settings: false,
         }],
         None,
     );
@@ -4626,6 +4910,70 @@ proptest! {
         let state = tap_button(&mut world, state, ButtonName::East);
         prop_assert!(state.adjuster().is_none());
         prop_assert!(world.trace.contains(&Effect::SetVolume(value)));
+    }
+}
+
+fn last_window_size(world: &World) -> Option<(crate::adjuster::SizeAxis, u32)> {
+    world.trace.iter().rev().find_map(|effect| {
+        if let Effect::SetWindowSize { axis, millionths } = effect {
+            Some((*axis, *millionths))
+        } else {
+            None
+        }
+    })
+}
+
+#[test]
+fn width_then_two_steps_right_then_south_sets_two_thirds() {
+    use crate::adjuster::SizeAxis;
+    for (phrase, axis) in [("width", SizeAxis::Width), ("height", SizeAxis::Height)] {
+        let mut world = World::default();
+        let state = world.run(State::default(), speech_event(phrase));
+        assert!(world.trace.contains(&Effect::ReadWindowSize(axis)));
+        let state = world.run(state, Input::WindowSize(Some(333_333)));
+        assert!(state.adjuster().is_some_and(crate::adjuster::Gauge::is_stepper));
+        let state = tap_button(&mut world, state, ButtonName::DpadRight);
+        assert_eq!(last_window_size(&world), Some((axis, 500_000)), "{phrase}");
+        let state = tap_button(&mut world, state, ButtonName::DpadRight);
+        assert_eq!(last_window_size(&world), Some((axis, 666_667)), "{phrase}");
+        let state = tap_button(&mut world, state, ButtonName::South);
+        assert!(state.adjuster().is_none());
+        assert_eq!(last_window_size(&world), Some((axis, 666_667)), "{phrase}");
+    }
+}
+
+#[test]
+fn east_restores_the_exact_original_window_size() {
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("width"));
+    let state = world.run(state, Input::WindowSize(Some(400_000)));
+    let state = tap_button(&mut world, state, ButtonName::DpadRight);
+    let state = tap_button(&mut world, state, ButtonName::DpadRight);
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(state.adjuster().is_none());
+    assert_eq!(
+        last_window_size(&world),
+        Some((crate::adjuster::SizeAxis::Width, 400_000))
+    );
+}
+
+proptest! {
+    #[test]
+    fn the_size_stepper_stays_on_its_list_and_east_restores_the_start(
+        start in 1_u32..=1_000_000,
+        presses in prop::collection::vec(prop::bool::ANY, 0..12),
+    ) {
+        let mut world = World::default();
+        let state = world.run(State::default(), speech_event("height"));
+        let mut state = world.run(state, Input::WindowSize(Some(start)));
+        for right in presses {
+            state = tap_button(&mut world, state, if right { ButtonName::DpadRight } else { ButtonName::DpadLeft });
+            let (_, now) = last_window_size(&world).unwrap_or((crate::adjuster::SizeAxis::Height, start));
+            prop_assert!(now == start || crate::adjuster::SIZE_STEPS.contains(&now));
+        }
+        let state = tap_button(&mut world, state, ButtonName::East);
+        prop_assert!(state.adjuster().is_none());
+        prop_assert_eq!(last_window_size(&world).map(|(_, size)| size), Some(start));
     }
 }
 
@@ -5231,6 +5579,7 @@ fn launcher_row(name: &str) -> crate::launcher::Destination {
         open: false,
         focused: false,
         safety: crate::launcher::Safety::Launch,
+        settings: false,
     }
 }
 
@@ -5381,4 +5730,56 @@ fn the_open_keyboard_takes_a_face_button_before_stick_modifier_capture() {
     let state = with_open_keyboard(&mut world, state);
     let state = world.run(state, pad_button(ButtonName::North, ButtonState::Pressed));
     assert_eq!(state.core().held_stick_modifier(), None);
+}
+
+#[test]
+fn an_active_plugin_gets_a_tapped_stick_modifier_as_press_then_release() {
+    let mut world = World {
+        plugin_active: true,
+        ..World::default()
+    };
+    let player = stick_modifier_player(&mut world);
+    world.trace.clear();
+    let _tapped: State = tap_button(&mut world, player, ButtonName::North);
+    let routed: Vec<ButtonState> = world
+        .trace
+        .iter()
+        .filter_map(|effect| {
+            if let Effect::DispatchPlugin {
+                event:
+                    Event::Button {
+                        name: ButtonName::North,
+                        state: half,
+                    },
+                route: true,
+            } = effect
+            {
+                Some(*half)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(routed, vec![ButtonState::Pressed, ButtonState::Released]);
+}
+
+#[test]
+fn an_unmapped_new_phrase_is_consumed_before_the_core_step() {
+    let mut world = World::default();
+    let state = configured(Vec::new(), "a");
+    let _state = world.run(
+        state,
+        Input::Event {
+            event: Event::Speech {
+                text: Text::new("new thing".to_owned()).unwrap(),
+            },
+            elapsed: Duration::from_millis(16),
+        },
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(_)))
+    );
 }

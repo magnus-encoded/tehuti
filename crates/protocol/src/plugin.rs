@@ -200,6 +200,16 @@ pub enum Method {
     Verbs {
         verbs: Vec<String>,
     },
+    /// Replaces the sending plugin's speech hotwords.
+    #[serde(rename = "speech.hints")]
+    SpeechHints {
+        hotwords: Vec<String>,
+    },
+    /// Replaces the sending application plugin's slash-command words for the built-in `invoke` verb.
+    #[serde(rename = "invoke.words")]
+    InvokeWords {
+        words: Vec<String>,
+    },
     Focus {
         app_id: Option<String>,
         title: String,
@@ -229,6 +239,9 @@ pub enum Method {
 /// The longest powerline status a plugin may set, in characters.
 pub const MAX_STATUS_CHARS: usize = 32;
 
+/// The most invoke words one `invoke.words` notice may set.
+pub const MAX_INVOKE_WORDS: usize = 128;
+
 /// The most overrides one `pad_overrides` notice may set.
 pub const MAX_PAD_OVERRIDES: usize = 64;
 
@@ -246,6 +259,10 @@ fn validate_notice(method: &Method) -> Result<(), String> {
     match method {
         Method::PadOverrides { overrides } => validate_pad_overrides(overrides),
         Method::Verbs { verbs } => validate_verbs(verbs),
+        Method::InvokeWords { words } if words.len() > MAX_INVOKE_WORDS => {
+            Err(format!("at most {MAX_INVOKE_WORDS} invoke words are accepted"))
+        }
+        Method::InvokeWords { words } => crate::validate_invoke_words(words.clone()).map(|_| ()),
         Method::Status { text: Some(text) }
             if text.chars().count() > MAX_STATUS_CHARS || text.chars().any(char::is_control) =>
         {
@@ -258,6 +275,7 @@ fn validate_notice(method: &Method) -> Result<(), String> {
         | Method::Button { .. }
         | Method::Speech { .. }
         | Method::Verb { .. }
+        | Method::SpeechHints { .. }
         | Method::Focus { .. }
         | Method::Actions { .. }
         | Method::SubmitActions { .. }
@@ -301,6 +319,36 @@ pub struct Call {
 pub enum ResultValue {
     Initialized(Initialized),
     Actions(Vec<Action>),
+    /// A speech reply `{"handled": true}`: the plugin acted, so no fallback notice shows.
+    Handled(HandledReply),
+}
+
+/// The marker object `{"handled": true}`; `false` is not a valid reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandledReply;
+
+impl Serialize for HandledReply {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("handled", &true)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for HandledReply {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            handled: bool,
+        }
+        if Fields::deserialize(deserializer)?.handled {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("handled must be true"))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,7 +433,9 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
             result: serde_json::Value,
         }
         let envelope: Envelope = serde_json::from_value(value).map_err(|error| error.to_string())?;
-        let result = if envelope.result.is_object() {
+        let result = if envelope.result.get("handled").is_some() {
+            ResultValue::Handled(serde_json::from_value(envelope.result).map_err(|error| error.to_string())?)
+        } else if envelope.result.is_object() {
             ResultValue::Initialized(
                 serde_json::from_value(envelope.result).map_err(|error| error.to_string())?,
             )

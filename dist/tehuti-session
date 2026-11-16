@@ -5,6 +5,8 @@ unset WAYLAND_DISPLAY DISPLAY
 state_dir=${XDG_STATE_HOME:-"$HOME/.local/state"}/tehuti
 umask 077
 mkdir -p "$state_dir"
+# Keep one earlier log, so the file never spans more than two logins.
+[ ! -e "$state_dir/session.log" ] || mv -f "$state_dir/session.log" "$state_dir/session.log.1"
 exec >>"$state_dir/session.log" 2>&1
 binary=${TEHUTI_BINARY:-"$HOME/.local/bin/tehuti"}
 contexts=${TEHUTI_CONTEXT_DIRECTORY:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/tehuti"}
@@ -23,6 +25,10 @@ while :; do
         fi
         [ "$status" -ne 21 ] || exit 0
         [ "$status" -ne 75 ] || continue
+        if [ "$status" -eq 4 ]; then
+            # The display is held by another program; restarting cannot help.
+            stay_in_plasma=true
+        fi
         if [ "$status" -ne 20 ]; then
             now=$(date +%s) || now=0
             recent=''

@@ -35,6 +35,8 @@ pub enum Input {
     /// Closes the session-start invitation once a window exists.
     CloseInvitation,
     Volume(Option<u8>),
+    /// Reply to [`Effect::ReadWindowSize`]: the focused window's size in millionths of the screen.
+    WindowSize(Option<u32>),
     Adjusters(Vec<(usize, tehuti_protocol::Adjuster)>),
     ChoiceList(crate::choice_list::Slots),
     DisplayModes {
@@ -82,6 +84,10 @@ pub enum Input {
         key: RequestKey,
         result: Result<Vec<Action>, String>,
     },
+    /// A plugin completed the request itself: no actions and no fallback.
+    PluginHandled {
+        key: RequestKey,
+    },
     PluginExited {
         plugin: usize,
     },
@@ -126,6 +132,13 @@ pub enum Effect {
         finished: bool,
     },
     ReadVolume,
+    /// Query: read the focused window's size. Reply [`Input::WindowSize`].
+    ReadWindowSize(crate::adjuster::SizeAxis),
+    /// Sets the focused window's size to a fraction of the screen, in millionths.
+    SetWindowSize {
+        axis: crate::adjuster::SizeAxis,
+        millionths: u32,
+    },
     SetVolume(u8),
     PasswordSpeechIgnored,
     RunMenuCommand(crate::menu::Command),
@@ -238,6 +251,8 @@ enum Await {
         event: Event,
         actions: Vec<Action>,
         route: bool,
+        /// A stick-modifier tap's press, dispatched ahead of the release in `event`.
+        press: Option<Event>,
     },
     Supervised,
     SecretConfirmation(Event),
@@ -285,6 +300,8 @@ pub struct State {
     secret_prompt: SecretPrompt,
     adjuster: Option<crate::adjuster::Gauge>,
     volume_pending: crate::adjuster::VolumeRead,
+    /// The axis whose size read is pending; set together with `volume_pending`.
+    size_pending: Option<crate::adjuster::SizeAxis>,
     adjusters: Vec<(usize, tehuti_protocol::Adjuster)>,
     adjuster_buttons: Vec<ButtonName>,
     /// The left stick's last vertical sample, so a gauge opens already moving.
@@ -317,6 +334,7 @@ impl State {
             secret_prompt: SecretPrompt::Hidden,
             adjuster: None,
             volume_pending: crate::adjuster::VolumeRead::Idle,
+            size_pending: None,
             adjusters: Vec::new(),
             adjuster_buttons: Vec::new(),
             adjuster_stick: 0,
@@ -617,6 +635,8 @@ fn sync_keyboard_config(state: &mut State) {
     state.settings.pad_family = state.core.pad_family();
     state.mouse.pad_family = state.core.pad_family();
     state.keyboard.set_keep_draft(state.core.keep_keyboard_draft());
+    state.keyboard.set_word_repeat(state.core.keyboard_word_repeat());
+    state.keyboard.set_repeat(state.core.keyboard_repeat());
     let terminal = state.terminal_field || state.core.terminal_config().0;
     if terminal != state.keyboard.terminal() {
         state.keyboard.set_terminal(terminal);
@@ -628,6 +648,17 @@ fn volume_read(mut state: State, value: Option<u8>) -> State {
     if core::mem::take(&mut state.volume_pending) == crate::adjuster::VolumeRead::Pending {
         state.adjuster = value.map(crate::adjuster::Gauge::volume);
         adjustment::seed_stick(&mut state);
+    }
+    state
+}
+
+/// Opens a size stepper once the pending read arrives.
+fn size_read(mut state: State, value: Option<u32>) -> State {
+    let axis = state.size_pending.take();
+    if core::mem::take(&mut state.volume_pending) == crate::adjuster::VolumeRead::Pending {
+        state.adjuster = axis
+            .zip(value)
+            .map(|(axis, current)| crate::adjuster::Gauge::size(axis, current));
     }
     state
 }
@@ -650,6 +681,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             (state, Vec::new())
         }
         Input::Volume(value) => (volume_read(state, value), Vec::new()),
+        Input::WindowSize(value) => (size_read(state, value), Vec::new()),
         Input::ChoiceList(slots) => {
             state.launcher = None;
             state.choice_list = Some(crate::choice_list::List::new(slots));
@@ -677,6 +709,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ControllerDisconnected
         | Input::FocusedWindowClosed) => state_input(state, &input),
         Input::PluginReply { key, result } => plugin_reply(state, key, result),
+        Input::PluginHandled { key } => plugin_handled(state, key),
         reply @ (Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -716,6 +749,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -734,6 +768,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ControllerDisconnected
         | Input::FocusedWindowClosed
         | Input::PluginReply { .. }
+        | Input::PluginHandled { .. }
         | Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -777,6 +812,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -795,6 +831,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::Speech(_)
         | Input::PluginExited { .. }
         | Input::PluginReply { .. }
+        | Input::PluginHandled { .. }
         | Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -846,12 +883,14 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::Tick { .. }
         | Input::Event { .. }
         | Input::ClockRead(_)
         | Input::Speech(_)
         | Input::PluginReply { .. }
+        | Input::PluginHandled { .. }
         | Input::PluginExited { .. }
         | Input::TextField { .. }
         | Input::ControllerDisconnected
@@ -881,6 +920,12 @@ fn plugin_reply(
     let mut effects: Vec<_> = actions.into_iter().map(Effect::PluginAction).collect();
     effects.extend(rejection.map(Effect::PluginRejected));
     (state, effects)
+}
+
+fn plugin_handled(mut state: State, key: RequestKey) -> (State, Vec<Effect>) {
+    let (next, _actions, _rejection) = crate::plugin::step(state.core, crate::plugin::Input::Handled { key });
+    state.core = next;
+    (state, Vec::new())
 }
 
 fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
@@ -1046,9 +1091,23 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
     };
     match (awaiting, reply) {
         (Await::PluginActive(event), Input::PluginActive(active)) => {
-            let (next, actions, route) =
-                crate::step_with_plugin(core::mem::take(&mut state.core), &event, active);
-            state.core = next;
+            // "new <words>" opens the creation launcher unless a plugin handles speech or a context maps it.
+            if !active && let Some(request) = unmapped_new_request(&state.core, &event) {
+                effects.push(Effect::OpenLauncher(request));
+                return;
+            }
+            frame.awaiting = Some(plugin_decision(&mut state.core, event, active, effects));
+        }
+        (
+            Await::PluginRequest {
+                event,
+                mut actions,
+                route,
+                press: Some(press),
+            },
+            Input::PluginRequest(request),
+        ) => {
+            replay_press(&mut state.core, press, request, &mut actions);
             effects.push(Effect::DispatchPlugin {
                 event: event.clone(),
                 route,
@@ -1057,6 +1116,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 event,
                 actions,
                 route,
+                press: None,
             });
         }
         (
@@ -1064,6 +1124,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 event,
                 actions,
                 route,
+                press: None,
             },
             Input::PluginRequest(request),
         ) => finish_route(state, event, actions, route, request, effects),
@@ -1077,6 +1138,73 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             effects.push(Effect::InvalidReply);
         }
     }
+}
+
+/// Steps core for an event and asks the plugin to decide it.
+fn plugin_decision(core: &mut crate::State, event: Event, active: bool, effects: &mut Vec<Effect>) -> Await {
+    let (actions, route, press) = step_routed(core, &event, active);
+    effects.push(Effect::DispatchPlugin {
+        event: press.clone().unwrap_or_else(|| event.clone()),
+        route,
+    });
+    Await::PluginRequest {
+        event,
+        actions,
+        route,
+        press,
+    }
+}
+
+/// The creation request for a "new <words>" phrase no context maps.
+fn unmapped_new_request(core: &crate::State, event: &Event) -> Option<crate::unit_verbs::LauncherRequest> {
+    let Event::Speech { text } = event else {
+        return None;
+    };
+    crate::unit_verbs::new_request(text.as_str()).filter(|_| !core.context_maps_speech(text.as_str()))
+}
+
+/// Steps core for an event; a routed stick-modifier tap also returns its held-back press.
+fn step_routed(
+    core_state: &mut crate::State,
+    event: &Event,
+    active: bool,
+) -> (Vec<Action>, bool, Option<Event>) {
+    let held = matches!(
+        event,
+        Event::Button { name, state: tehuti_protocol::ButtonState::Released } if core_state.sticks.holds(*name)
+    );
+    let (next, actions, route) = crate::step_with_plugin(core::mem::take(core_state), event, active);
+    *core_state = next;
+    let press = match event {
+        Event::Button { name, .. } if held && route => Some(Event::Button {
+            name: *name,
+            state: tehuti_protocol::ButtonState::Pressed,
+        }),
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => None,
+    };
+    (actions, route, press)
+}
+
+/// Hands a replayed press to the plugin's request, if it made one.
+fn replay_press(
+    core_state: &mut crate::State,
+    press: Event,
+    request: Option<(RequestKey, Vec<Permission>)>,
+    actions: &mut Vec<Action>,
+) {
+    let Some((key, permissions)) = request else {
+        return;
+    };
+    let (next, mut routed, _) = crate::plugin::step(
+        core::mem::take(core_state),
+        crate::plugin::Input::Request {
+            key,
+            event: press,
+            permissions,
+        },
+    );
+    *core_state = next;
+    actions.append(&mut routed);
 }
 
 fn queue_reply(frame: &mut Frame, pair: (Await, Input)) {

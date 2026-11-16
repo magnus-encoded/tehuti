@@ -22,7 +22,7 @@ pub fn numbered_controllers(
     devices
         .into_iter()
         .map(|(_, name, vendor, product)| {
-            let model = tehuti_core::pad::Identity::for_device(vendor, product).model_name(&name);
+            let model = tehuti_core::pad::Identity::for_node(vendor, product, &name).model_name(&name);
             let count = counts.entry(model.clone()).or_default();
             *count = count.saturating_add(1);
             tehuti_core::dispatch::ControllerInfo {
@@ -54,7 +54,11 @@ pub fn open_grabbed(
         })
         .filter_map(|(path, mut device)| match grab_nonblocking(&mut device) {
             Ok(()) => {
-                let mut translator = DpadHat::for_device(device.input_id().vendor(), device.input_id().product());
+                let mut translator = DpadHat::for_node(
+                    device.input_id().vendor(),
+                    device.input_id().product(),
+                    device.name().unwrap_or_default(),
+                );
                 if let Ok(axes) = device.get_absinfo() {
                     for (axis, info) in axes {
                         translator.set_trigger_range(axis, info.minimum(), info.maximum());
@@ -80,6 +84,20 @@ pub fn open_grabbed(
             }
         })
         .collect()
+}
+
+/// True while a Wii remote's nunchuk extension node exists; it has no south button, so it is
+/// never opened as a pad, and its name is read from sysfs instead.
+#[must_use]
+pub fn nunchuk_present() -> bool {
+    std::fs::read_dir("/sys/class/input")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            std::fs::read_to_string(entry.path().join("name"))
+                .is_ok_and(|name| name.trim() == "Nintendo Wii Remote Nunchuk")
+        })
 }
 
 /// Opens the input devices that could be pads. Opening and closing a device is slow on some kernels
@@ -303,6 +321,23 @@ pub fn mirror_wanted(mirrored: bool, active: Option<&std::path::Path>, path: &st
     mirrored && active == Some(path)
 }
 
+/// Why copying pending input stopped.
+enum Copy {
+    /// The physical pad could not be read.
+    Read(io::Error),
+    /// The virtual pad could not be written.
+    Write(io::Error),
+}
+
+/// Parks `kept` as the spare unless one is already parked; the extra virtual pad is dropped.
+pub fn keep_spare(spare: &mut Option<VirtualPad>, kept: VirtualPad) {
+    if spare.is_some() {
+        warn!("a spare virtual pad is already parked; dropping the extra one");
+    } else {
+        *spare = Some(kept);
+    }
+}
+
 /// What [`sync_mirrors`] changed.
 #[derive(Debug, Default)]
 pub struct MirrorSync {
@@ -394,9 +429,59 @@ struct MirrorCopy {
     buffered: Vec<Event>,
     /// Keys and hat axes the virtual controller currently shows as held.
     held: Vec<(u16, u16)>,
+    /// Menu and View as the physical pad holds them, for the Guide chord.
+    menu_down: bool,
+    view_down: bool,
+    /// The key whose press completed the chord and went to the stream as Guide instead.
+    chord_key: Option<(u16, u16)>,
+    chord_live: bool,
 }
 
 impl MirrorCopy {
+    /// Menu + View together reach the stream as Guide, held as long as the chord is; the completing button stays out.
+    /// Returns whether `key`'s own event is kept from the stream.
+    fn chord(&mut self, name: ButtonName, state: ButtonState, key: (u16, u16)) -> bool {
+        if name != ButtonName::Start && name != ButtonName::Select {
+            return false;
+        }
+        let menu = name == ButtonName::Start;
+        let guide = (evdev::EventType::KEY.0, KeyCode::BTN_MODE.code());
+        let mut kept = self.chord_key == Some(key);
+        match state {
+            ButtonState::Pressed => {
+                if menu {
+                    self.menu_down = true;
+                } else {
+                    self.view_down = true;
+                }
+                if self.menu_down && self.view_down && self.chord_key.is_none() {
+                    self.chord_key = Some(key);
+                    self.chord_live = true;
+                    self.held.retain(|held| *held != guide);
+                    self.held.push(guide);
+                    self.frame.push(evdev::InputEvent::new(guide.0, guide.1, 1));
+                    kept = true;
+                }
+            }
+            ButtonState::Released => {
+                if menu {
+                    self.menu_down = false;
+                } else {
+                    self.view_down = false;
+                }
+                if self.chord_live {
+                    self.chord_live = false;
+                    self.held.retain(|held| *held != guide);
+                    self.frame.push(evdev::InputEvent::new(guide.0, guide.1, 0));
+                }
+                if self.chord_key == Some(key) {
+                    self.chord_key = None;
+                }
+            }
+        }
+        kept
+    }
+
     /// Hands over every translated event taken so far, for [`InputSource::drain`].
     fn drain(&mut self) -> Vec<Event> {
         core::mem::take(&mut self.buffered)
@@ -418,6 +503,10 @@ impl MirrorCopy {
         let mut kept = self.blocked.contains(&key);
         for input in &translated {
             if let Event::Button { name, state } = input
+                && self.chord(*name, *state, key)
+            {
+                kept = true;
+            } else if let Event::Button { name, state } = input
                 && consume(*name, *state)
             {
                 kept = true;
@@ -486,6 +575,10 @@ impl MirrorCopy {
 
     /// A frame that lets go of every key and hat the virtual controller shows as held.
     fn release(&mut self) -> Option<Vec<evdev::InputEvent>> {
+        self.menu_down = false;
+        self.view_down = false;
+        self.chord_key = None;
+        self.chord_live = false;
         if self.held.is_empty() {
             return None;
         }
@@ -780,9 +873,13 @@ impl EvdevPad {
     }
 
     #[must_use]
-    pub fn identity(&self) -> tehuti_core::pad::Identity {
-        let input_id = self.handles.events.input_id();
-        tehuti_core::pad::Identity::for_device(input_id.vendor(), input_id.product())
+    pub const fn identity(&self) -> tehuti_core::pad::Identity {
+        self.translator.identity
+    }
+
+    /// Tells a Wii remote whether another pad or a nunchuk is attached beside it.
+    pub const fn set_companion(&mut self, companion: bool) {
+        self.translator.set_companion(companion);
     }
 }
 
@@ -927,11 +1024,23 @@ impl<D: PadDevice> EvdevPad<D> {
         if self.lost {
             return Ok(());
         }
-        let copied = self.copy_pending(&mut *consume);
-        if copied.is_err() {
-            self.lose(consume);
+        match self.copy_pending(&mut *consume) {
+            Ok(()) => Ok(()),
+            Err(Copy::Read(error)) => {
+                self.lose(consume);
+                Err(error)
+            }
+            Err(Copy::Write(error)) => {
+                // The physical pad still works; only the virtual one is suspect, so it is not kept.
+                warn!(%error, "virtual pad write failed; passing the physical pad through");
+                self.mirror = None;
+                self.mirror_failed = true;
+                for button in core::mem::take(&mut self.plugin_held) {
+                    let _kept = consume(button, ButtonState::Released);
+                }
+                Ok(())
+            }
         }
-        copied
     }
 
     /// Whether a failed read lost this physical pad.
@@ -955,12 +1064,12 @@ impl<D: PadDevice> EvdevPad<D> {
         }
     }
 
-    fn copy_pending(&mut self, consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool) -> io::Result<()> {
+    fn copy_pending(&mut self, consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool) -> Result<(), Copy> {
         if self.mirror.is_none() && self.plugin_held.is_empty() {
             return Ok(());
         }
         loop {
-            let raw = self.handles.events().fetch_raw()?;
+            let raw = self.handles.events().fetch_raw().map_err(Copy::Read)?;
             if raw.is_empty() {
                 break;
             }
@@ -978,7 +1087,7 @@ impl<D: PadDevice> EvdevPad<D> {
                         kept
                     };
                     if let Some(frame) = mirror.copy.take(event, &mut self.translator, &mut track) {
-                        mirror.device.emit(&frame)?;
+                        mirror.device.emit(&frame).map_err(Copy::Write)?;
                         let first_after_focus = self.first_emit_after_focus.take();
                         tracing::debug!(target: "pad_latency", stage = "emit", at_us = timestamp_us(std::time::SystemTime::now()), read_us = timestamp_us(read_at), physical_us = timestamp_us(event.timestamp()), first_after_focus = first_after_focus.is_some(), since_focus_us = first_after_focus.map_or(0, |focus| focus.elapsed().as_micros()));
                     }
@@ -1213,6 +1322,16 @@ impl DpadHat {
         }
     }
 
+    /// Like [`Self::for_device`], with the node name that tells a Wii remote's buttons node from
+    /// the extension nodes that share its id.
+    #[must_use]
+    pub fn for_node(vendor: u16, product: u16, name: &str) -> Self {
+        Self {
+            identity: tehuti_core::pad::Identity::for_node(vendor, product, name),
+            ..Self::default()
+        }
+    }
+
     /// Records the device's reported range for a trigger axis; other axes are ignored.
     pub const fn set_trigger_range(&mut self, axis: AbsoluteAxisCode, minimum: i32, maximum: i32) {
         let trigger = match axis {
@@ -1226,10 +1345,44 @@ impl DpadHat {
         }
     }
 
+    /// Switches a Wii remote between its alone and paired layouts; other pads ignore it.
+    pub const fn set_companion(&mut self, companion: bool) {
+        self.identity = self.identity.with_companion(companion);
+    }
+
+    /// Moves a key onto the position its pad family reads it from.
+    ///
+    /// The Wii remote is held sideways, so its d-pad turns a quarter turn anticlockwise (its
+    /// up arm points left). Alone, 1 confirms, 2 goes back and A opens the keyboard; with a
+    /// companion A confirms, B goes back and 1 opens the keyboard. + is push-to-talk and − View
+    /// either way. The leftover buttons map to a code nothing reads.
     const fn face_code(&self, code: KeyCode) -> KeyCode {
-        match (self.identity.swap_north_west, code) {
-            (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
-            (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+        use tehuti_core::pad::PadFamily;
+        let unmapped = KeyCode::BTN_TRIGGER_HAPPY1;
+        let paired = match self.identity.family {
+            PadFamily::Remote => false,
+            PadFamily::RemotePaired => true,
+            PadFamily::Letters | PadFamily::Symbols | PadFamily::Nintendo => {
+                return match (self.identity.swap_north_west, code) {
+                    (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
+                    (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+                    _ => code,
+                };
+            }
+        };
+        match code {
+            KeyCode::KEY_UP => KeyCode::BTN_DPAD_LEFT,
+            KeyCode::KEY_RIGHT => KeyCode::BTN_DPAD_UP,
+            KeyCode::KEY_DOWN => KeyCode::BTN_DPAD_RIGHT,
+            KeyCode::KEY_LEFT => KeyCode::BTN_DPAD_DOWN,
+            KeyCode::KEY_NEXT => KeyCode::KEY_RECORD,
+            KeyCode::KEY_PREVIOUS => KeyCode::BTN_SELECT,
+            KeyCode::BTN_1 if paired => KeyCode::BTN_NORTH,
+            KeyCode::BTN_1 => KeyCode::BTN_SOUTH,
+            KeyCode::BTN_2 if paired => unmapped,
+            KeyCode::BTN_2 => KeyCode::BTN_EAST,
+            KeyCode::BTN_SOUTH if !paired => KeyCode::BTN_NORTH,
+            KeyCode::BTN_EAST if !paired => unmapped,
             _ => code,
         }
     }
@@ -1336,6 +1489,39 @@ mod mirror_tests {
         InputEvent::new(EventType::KEY.0, code.code(), value)
     }
 
+    struct Counted(std::rc::Rc<core::cell::Cell<usize>>);
+
+    impl super::MirrorSink for Counted {
+        fn emit(&mut self, _frame: &[InputEvent]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.set(self.0.get().saturating_add(1));
+        }
+    }
+
+    fn virtual_pad(drops: &std::rc::Rc<core::cell::Cell<usize>>) -> super::VirtualPad {
+        super::VirtualPad(super::Mirror {
+            device: Box::new(Counted(std::rc::Rc::clone(drops))),
+            copy: MirrorCopy::default(),
+            centres: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn parking_a_spare_keeps_the_one_already_parked() {
+        let drops = std::rc::Rc::default();
+        let mut spare = Some(virtual_pad(&drops));
+        super::keep_spare(&mut spare, virtual_pad(&drops));
+        assert!(spare.is_some());
+        assert_eq!(drops.get(), 1, "the extra virtual pad is dropped");
+        super::keep_spare(&mut None, virtual_pad(&drops));
+        assert_eq!(drops.get(), 2);
+    }
+
     #[test]
     fn one_frame_keeps_matched_inputs_and_copies_the_rest() {
         let mut copy = MirrorCopy::default();
@@ -1377,6 +1563,26 @@ mod mirror_tests {
 
     fn sync() -> InputEvent {
         InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0)
+    }
+
+    #[test]
+    fn release_forgets_a_half_held_chord() {
+        let mut copy = MirrorCopy::default();
+        let mut translator = DpadHat::default();
+        let mut consume = |_: ButtonName, _: ButtonState| false;
+        for event in [key(KeyCode::BTN_START, 1), sync()] {
+            let _frame = copy.take(event, &mut translator, &mut consume);
+        }
+        let _released = copy.release();
+        let sent: Vec<_> = [key(KeyCode::BTN_SELECT, 1), sync()]
+            .into_iter()
+            .filter_map(|event| copy.take(event, &mut translator, &mut consume))
+            .flatten()
+            .collect();
+        assert!(
+            sent.iter().all(|event| event.code() != KeyCode::BTN_MODE.code()),
+            "a lone View press after a release is no chord: {sent:?}"
+        );
     }
 
     proptest::proptest! {
@@ -1922,4 +2128,98 @@ fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
     .clamp(-1000, 1000);
     let travel = normalized.abs().saturating_sub(150).max(0).saturating_mul(1000) / 850;
     i16::try_from(travel.saturating_mul(normalized.signum())).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::DpadHat;
+    use evdev::{EventType, InputEvent, KeyCode};
+    use tehuti_protocol::{ButtonName, ButtonState, Event};
+
+    fn remote() -> DpadHat {
+        DpadHat::for_node(0x057e, 0x0306, "Nintendo Wii Remote")
+    }
+
+    fn press(hat: &mut DpadHat, code: KeyCode) -> Vec<Event> {
+        hat.translate(&InputEvent::new(EventType::KEY.0, code.code(), 1).destructure())
+    }
+
+    #[test]
+    fn the_sideways_remote_reads_its_buttons_from_the_standard_positions() {
+        let mut hat = remote();
+        for (code, name) in [
+            (KeyCode::BTN_1, ButtonName::South),
+            (KeyCode::BTN_2, ButtonName::East),
+            (KeyCode::BTN_SOUTH, ButtonName::North),
+            (KeyCode::KEY_NEXT, ButtonName::Record),
+            (KeyCode::KEY_PREVIOUS, ButtonName::Select),
+            (KeyCode::BTN_MODE, ButtonName::Guide),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_a_companion_the_remote_confirms_on_a_and_goes_back_on_b() {
+        let mut hat = remote();
+        hat.set_companion(true);
+        for (code, name) in [
+            (KeyCode::BTN_SOUTH, ButtonName::South),
+            (KeyCode::BTN_EAST, ButtonName::East),
+            (KeyCode::BTN_1, ButtonName::North),
+            (KeyCode::KEY_NEXT, ButtonName::Record),
+            (KeyCode::KEY_PREVIOUS, ButtonName::Select),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+        assert_eq!(press(&mut hat, KeyCode::BTN_2), Vec::<Event>::new());
+        hat.set_companion(false);
+        assert_eq!(press(&mut hat, KeyCode::BTN_EAST), Vec::<Event>::new());
+    }
+
+    #[test]
+    fn the_sideways_remote_turns_its_dpad_a_quarter_turn_anticlockwise() {
+        let mut hat = remote();
+        for (code, name) in [
+            (KeyCode::KEY_UP, ButtonName::DpadLeft),
+            (KeyCode::KEY_RIGHT, ButtonName::DpadUp),
+            (KeyCode::KEY_DOWN, ButtonName::DpadRight),
+            (KeyCode::KEY_LEFT, ButtonName::DpadDown),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_classic_controller_on_the_remote_keeps_its_own_buttons() {
+        let mut hat = DpadHat::for_node(0x057e, 0x0306, "Nintendo Wii Remote Classic Controller");
+        assert_eq!(
+            press(&mut hat, KeyCode::BTN_SOUTH),
+            vec![Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed
+            }]
+        );
+    }
 }

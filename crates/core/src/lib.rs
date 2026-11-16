@@ -57,10 +57,50 @@ pub struct State {
     pad_family: pad::PadFamily,
     controller_talk: Option<ButtonName>,
     app_names: Vec<(String, String)>,
+    plugin_invoke_words: Vec<String>,
     sticks: stick_actions::StickActions,
+    /// Characters of the last dictated phrase, while nothing else was typed after it.
+    dictated: Option<usize>,
 }
 
 impl State {
+    /// Expands undo into backspaces and remembers what a spoken phrase typed, until anything else is typed.
+    fn track_dictation(&mut self, event: &Event, actions: Vec<Action>) -> Vec<Action> {
+        if matches!(event, Event::Focus { .. }) {
+            self.dictated = None;
+        }
+        let mut tracked = Vec::with_capacity(actions.len());
+        for action in actions {
+            match action {
+                Action::UndoDictation => {
+                    let count = self.dictated.take().unwrap_or(1);
+                    tracked.extend((0..count).map(|_| Action::Key {
+                        key: KeyName::Backspace,
+                        mods: Vec::new(),
+                    }));
+                }
+                Action::Text { ref text } => {
+                    self.dictated =
+                        matches!(event, Event::Speech { .. }).then(|| text.as_str().chars().count());
+                    tracked.push(action);
+                }
+                Action::Key { .. } | Action::KeyDown { .. } | Action::SecretRequest { .. } => {
+                    self.dictated = None;
+                    tracked.push(action);
+                }
+                Action::Launch { .. }
+                | Action::Close
+                | Action::Quit
+                | Action::Restart
+                | Action::Notice { .. }
+                | Action::Layout { .. }
+                | Action::KeyUp { .. }
+                | Action::ToggleTicker => tracked.push(action),
+            }
+        }
+        tracked
+    }
+
     pub fn set_menu_entries(&mut self, entries: Vec<String>) {
         self.menu_entries = entries;
     }
@@ -151,7 +191,9 @@ impl State {
             pad_family: pad::PadFamily::Letters,
             controller_talk: None,
             app_names: Vec::new(),
+            plugin_invoke_words: Vec::new(),
             sticks: stick_actions::StickActions::default(),
+            dictated: None,
         };
         state.refresh_ticker();
         state.refresh_labels();
@@ -218,6 +260,42 @@ impl State {
             .unwrap_or(false)
     }
 
+    /// Resolves the D-pad hold-repeat speeds over the global context.
+    #[must_use]
+    pub fn keyboard_repeat(&self) -> keyboard::Repeat {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        let active = focused_context(self);
+        let pick = |field: fn(&tehuti_protocol::KeyboardConfig) -> Option<u16>| {
+            active
+                .and_then(|context| field(context.keyboard()))
+                .or_else(|| global.and_then(|context| field(context.keyboard())))
+        };
+        keyboard::Repeat::new(
+            pick(|config| config.repeat_delay_ms),
+            pick(|config| config.repeat_rate),
+            pick(|config| config.repeat_max_rate),
+            pick(|config| config.repeat_ramp_ms),
+        )
+    }
+
+    /// Resolves the left-stick word-picking speeds over the global context.
+    #[must_use]
+    pub fn keyboard_word_repeat(&self) -> keyboard::WordRepeat {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        let active = focused_context(self);
+        let pick = |field: fn(&tehuti_protocol::KeyboardConfig) -> Option<u16>| {
+            active
+                .and_then(|context| field(context.keyboard()))
+                .or_else(|| global.and_then(|context| field(context.keyboard())))
+        };
+        keyboard::WordRepeat::new(
+            pick(|config| config.word_repeat_from),
+            pick(|config| config.word_repeat_delay_ms),
+            pick(|config| config.word_min_rate),
+            pick(|config| config.word_max_rate),
+        )
+    }
+
     /// Whether the focused context marks a terminal, plus its legacy level-opening option.
     #[must_use]
     pub fn terminal_config(&self) -> (bool, bool) {
@@ -253,6 +331,17 @@ impl State {
         self.refresh_labels();
     }
 
+    /// The extra invoke words application plugins currently supply.
+    #[must_use]
+    pub fn plugin_invoke_words(&self) -> &[String] {
+        &self.plugin_invoke_words
+    }
+
+    /// Replaces the extra invoke words application plugins supply for the focused window.
+    pub fn set_plugin_invoke_words(&mut self, words: Vec<String>) {
+        self.plugin_invoke_words = words;
+    }
+
     /// Supplies each application's desktop entry `Name`, keyed by app id.
     pub fn set_app_names(&mut self, names: Vec<(String, String)>) {
         self.app_names = names;
@@ -284,7 +373,18 @@ impl State {
             .chain(self.app_names.iter().map(|(app_id, _)| app_id.as_str()))
             .filter_map(|app_id| Some((app_id.to_owned(), self.label(Some(app_id))?.to_owned())))
             .collect();
-        self.bar.set_labels(labels);
+        let titled = self
+            .contexts
+            .iter()
+            .filter(|context| context.app_id() != GLOBAL_APP_ID)
+            .filter_map(|context| {
+                Some((
+                    (context.app_id().to_owned(), context.title()?.to_owned()),
+                    context.label()?.to_owned(),
+                ))
+            })
+            .collect();
+        self.bar.set_labels(labels, titled);
     }
 
     /// Names buttons on the ticker as the pad in use prints them.
@@ -302,6 +402,17 @@ impl State {
     #[must_use]
     pub fn fuzzy_speech_match(&self, phrase: &str) -> Option<tehuti_protocol::FuzzyMatch> {
         fuzzy_speech_match(focused_context(self), global_context(self), phrase)
+    }
+
+    /// Whether the focused or global context maps the phrase, exactly, folded, by plural or fuzzily.
+    #[must_use]
+    pub fn context_maps_speech(&self, phrase: &str) -> bool {
+        let (focused, global) = (focused_context(self), global_context(self));
+        [focused, global]
+            .into_iter()
+            .flatten()
+            .any(|context| maps_phrase(context, phrase))
+            || fuzzy_speech_match(focused, global, phrase).is_some()
     }
 
     /// Hides a shown mapping ticker or shows a hidden one; the choice outlasts focus changes.
@@ -461,6 +572,7 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     if let Some(release) = released {
         actions.insert(0, release);
     }
+    actions = next.track_dictation(event, actions);
     if matches!(event, Event::Focus { .. }) {
         next.bar.event(event);
     }
@@ -514,11 +626,8 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
     }
-    if matches!(
-        event,
-        Event::Button { name, .. } if state.push_to_talk(*name)
-    ) {
-        return (state, Vec::new(), false);
+    if let Some(actions) = talk_or_invoke(&state, event) {
+        return (state, actions, false);
     }
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
         return (state, Vec::new(), true);
@@ -533,8 +642,28 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     (state, actions, false)
 }
 
+/// A push-to-talk press does nothing more. Speech meets the built-in `invoke` verb
+/// ahead of plugin verbs and context phrases; its words snap to the focused and
+/// global contexts' invoke words.
+fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
+    let transcript = match event {
+        Event::Button { name, .. } if state.push_to_talk(*name) => return Some(Vec::new()),
+        Event::Speech { text } => text,
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => return None,
+    };
+    let known = [focused_context(state), global_context(state)]
+        .into_iter()
+        .flatten()
+        .flat_map(|context| context.invoke_words().iter().map(String::as_str))
+        .chain(state.plugin_invoke_words.iter().map(String::as_str));
+    let typed = invoke::slash_command(transcript.as_str(), known)?;
+    tehuti_protocol::Text::new(typed)
+        .ok()
+        .map(|slash| vec![Action::Text { text: slash }])
+}
+
 /// Every exact match in chain order, then the built-in close, then folded
-/// matches, then plurals, then fuzzy, then unmatched dictation.
+/// matches, then plurals, then prefix rules, then fuzzy, then unmatched dictation.
 fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
     focused
         .and_then(|context| context.mapped_speech_action(phrase))
@@ -544,6 +673,7 @@ fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &st
         .or_else(|| global.and_then(|context| context.folded_speech_action(phrase)))
         .or_else(|| focused.and_then(|context| context.plural_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.plural_speech_action(phrase)))
+        .or_else(|| prefix_speech_action(focused, global, phrase))
         .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.action))
         .or_else(|| focused.and_then(|context| context.unmatched_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.unmatched_speech_action(phrase)))
@@ -552,6 +682,14 @@ fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &st
                 .ok()
                 .map(|notice| Action::Notice { text: notice })
         })
+}
+
+/// The `text_after` rule of the focused context, else of the global one.
+fn prefix_speech_action(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
+    focused
+        .and_then(|context| context.prefix_speech_action(phrase))
+        .or_else(|| global.and_then(|context| context.prefix_speech_action(phrase)))
+        .flatten()
 }
 
 /// Whether a context maps the phrase exactly, folded or by plural.
@@ -572,7 +710,12 @@ fn spoken_key_actions(state: &State, event: &Event) -> Option<Vec<Action>> {
     {
         return None;
     }
-    spoken_keys::actions(text.as_str())
+    let actions = spoken_keys::actions(text.as_str())?;
+    // A prefix rule types what is not a key sequence; key sequences keep working.
+    let unknown_key = matches!(actions.as_slice(), [Action::Notice { .. }]);
+    (!unknown_key
+        || prefix_speech_action(focused_context(state), global_context(state), text.as_str()).is_none())
+    .then_some(actions)
 }
 
 /// Whether the focused context maps the pressed button, which then replaces the global layer.
@@ -699,6 +842,9 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
                     })
                     .flatten();
             }
+        }
+        if state.level == Level::App && unit_verbs::is_scratch_that(phrase) {
+            return Some(Action::UndoDictation);
         }
         let focused = focused_context(state);
         let global = global_context(state);
@@ -955,6 +1101,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     }
 }
 
+pub mod invoke;
 pub mod secret;
 pub mod shadowing;
 pub mod speech;

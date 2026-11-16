@@ -17,6 +17,23 @@ mod tests {
     }
 
     #[test]
+    fn a_set_hold_time_replaces_the_default_for_later_taps() {
+        let mut taps = TapHold::default();
+        taps.set_hold(millis(120));
+        assert_eq!(taps.tap(millis(0), 1, &[]), [(1, true)]);
+        assert_eq!(taps.tick(millis(119)), Vec::<(i32, bool)>::new());
+        assert_eq!(taps.tick(millis(120)), [(1, false)]);
+    }
+
+    #[test]
+    fn instant_taps_ignore_a_set_hold_time() {
+        let mut taps = TapHold::default();
+        taps.instant_taps();
+        taps.set_hold(millis(120));
+        assert_eq!(taps.tap(millis(0), 1, &[]), [(1, true), (1, false)]);
+    }
+
+    #[test]
     fn repeats_restart_the_gap_then_hold_from_the_actual_press() {
         let mut taps = TapHold::default();
         assert_eq!(taps.tap(millis(0), 1, &[]), [(1, true)]);

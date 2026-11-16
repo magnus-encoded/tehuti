@@ -259,6 +259,8 @@ for line in sys.stdin:
             | Effect::LauncherUsed(_)
             | Effect::OpenLauncher(_)
             | Effect::ReadVolume
+            | Effect::ReadWindowSize(_)
+            | Effect::SetWindowSize { .. }
             | Effect::SetVolume(_)
             | Effect::AdjusterValue { .. }
             | Effect::RunMenuCommand(_)
@@ -984,6 +986,25 @@ for line in sys.stdin:
                 "an accepted verb replaces the context phrase; a declined one routes it"
             );
         }
+    }
+
+    #[test]
+    fn the_built_in_invoke_verb_beats_a_plugin_that_claims_it() {
+        let mut harness = verb_harness(&["invoke", "ada"], true);
+        let typed = text_actions(|| {
+            harness.send([speech("invoke usage report"), speech("ada done")]);
+            harness.pump_until(|harness| !verb_requests(harness).is_empty());
+            settle(&mut harness);
+        });
+        assert_eq!(
+            verb_requests(&harness),
+            ["ada"],
+            "the plugin never hears the invoke verb"
+        );
+        assert_eq!(
+            typed, 3,
+            "the built-in slash command, then the plugin's two texts"
+        );
     }
 
     #[test]

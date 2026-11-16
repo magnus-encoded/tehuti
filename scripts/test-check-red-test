@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Checks scripts/check-red-test on fixture PR diffs with a stub cargo.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# Stub cargo, driven by crates/a/src/lib.rs: "nocompile" is a build error,
+# "base" is behaviour the added tests reject, anything else passes.
+cat >"$work/cargo-stub" <<'STUB'
+#!/usr/bin/env bash
+echo "args: $*" >>"$STUB_LOG"
+cat crates/a/src/lib.rs >>"$STUB_LOG"
+if grep -q nocompile crates/a/src/lib.rs; then echo "error: could not compile \`a\`"; exit 101; fi
+if grep -q base crates/a/src/lib.rs; then echo "test result: FAILED"; exit 101; fi
+exit 0
+STUB
+chmod +x "$work/cargo-stub"
+export CARGO="$work/cargo-stub" STUB_LOG="$work/log"
+mkdir "$work/repo"
+cd "$work/repo"
+git init -q -b main
+git config user.email t@example.com
+git config user.name t
+mkdir -p crates/a/src crates/a/tests scripts
+printf 'base\n#[cfg(test)]\nmod tests {\n    fn inline_old() {}\n}\n' >crates/a/src/lib.rs
+printf 'fn existing() {\n    let x = 1;\n}\n\nfn other() {\n    let y = 2;\n}\n' >crates/a/tests/t.rs
+cp "$root/scripts/check-red-test" scripts/
+git add -A
+git commit -qm base
+base=$(git rev-parse HEAD)
+
+start() { git checkout -q -B "$1" "$base"; : >"$STUB_LOG"; }
+run() { scripts/check-red-test "$base" >"$work/out" 2>&1; }
+fail() { echo "test-check-red-test: $1" >&2; cat "$work/out" "$STUB_LOG" >&2; exit 1; }
+fixed() { printf 'fixed\n#[cfg(test)]\nmod tests {\n    fn inline_old() {}\n}\n' >crates/a/src/lib.rs; }
+
+# Added test, fails on the base source: pass.
+start added
+fixed
+printf '%s\nfn added_test() {}\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git commit -qam fix
+run || fail "fix with a red test should pass"
+grep -q added_test "$work/log" || fail "added test name not passed to cargo"
+grep -q fixed crates/a/src/lib.rs || fail "source not restored"
+
+# Added test that also passes on the base source: fail.
+start weak
+sed -i 's/^base/fixed/' crates/a/src/lib.rs
+printf '%s\nfn weak_test() {}\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git commit -qam weak
+# The base source is "base", so make the stub accept it.
+printf '#!/usr/bin/env bash\nexit 0\n' >"$work/cargo-pass"
+chmod +x "$work/cargo-pass"
+if CARGO="$work/cargo-pass" run; then fail "a test that passes on base should fail the job"; fi
+grep -q 'passes without' "$work/out" || fail "no explanation printed"
+
+# Existing test edited in place, fails on base: pass, and only the edited name is run.
+start edited
+fixed
+sed -i 's/let y = 2;/let y = 3;/' crates/a/tests/t.rs
+git commit -qam edit
+run || fail "edited test should be checked"
+grep -q 'other' "$work/out" || fail "edited test name not found"
+grep -q 'existing' "$work/out" && fail "untouched test selected"
+
+# No test touched: skip.
+start src-only
+fixed
+git commit -qam src-only
+run || fail "no test change should skip"
+grep -q skipping "$work/out" || fail "skip not announced"
+
+# Inline test module added in the source file: the base code with the PR's tests.
+start inline
+printf 'fixed\n#[cfg(test)]\nmod tests {\n    fn inline_old() {}\n    #[test]\n    fn inline_new() {}\n}\n' >crates/a/src/lib.rs
+git commit -qam inline
+run || fail "inline test should be checked"
+grep -q inline_new "$work/out" || fail "inline test name not selected"
+grep -q inline_old "$work/out" && fail "unchanged inline test selected"
+grep -A9 '^args' "$work/log" | grep -q '^base' || fail "source not reverted to base"
+grep -q inline_new "$work/log" || fail "PR's inline tests dropped during the revert"
+grep -q fixed crates/a/src/lib.rs || fail "inline source not restored"
+
+# Build failure on the base: inconclusive unless the label env is set.
+start nobuild
+# A base whose source does not compile.
+nbase=$(git commit-tree -p "$base" -m nocompile-base "$(git rev-parse "$base^{tree}")")
+git checkout -q -B nobuild2 "$nbase"
+printf 'nocompile\n' >crates/a/src/lib.rs
+git commit -qam 'broken base'
+nbase=$(git rev-parse HEAD)
+printf 'fixed\n' >crates/a/src/lib.rs
+printf '%s\nfn built_test() {}\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git commit -qam 'pr on broken base'
+scripts/check-red-test "$nbase" >"$work/out" 2>&1 && fail "base build failure should be inconclusive"
+grep -q 'red-test-build-ok' "$work/out" || fail "label hint missing"
+RED_TEST_BUILD_OK=1 scripts/check-red-test "$nbase" >"$work/out" 2>&1 || fail "label should accept a build failure"
+
+# Fix only in a newly added source file: reported, not skipped.
+start newfile
+fixed
+git checkout -q "$base" -- crates/a/src/lib.rs
+echo 'pub fn f() {}' >crates/a/src/new.rs
+printf '%s\nfn new_file_test() {}\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git add -A
+git commit -qm newfile
+if run; then fail "a fix in a new file should not pass silently"; fi
+grep -q 'newly added' "$work/out" || fail "new file not reported"
+echo "test-check-red-test: ok"
