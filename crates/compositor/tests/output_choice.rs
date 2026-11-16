@@ -1,10 +1,12 @@
 //! The fallback output lights only when no other connector is connected.
 
 use proptest::prelude::*;
-use tehuti::output_choice::{fallback_from_config, try_order};
+use tehuti::output_choice::{connector_name, fallback_from_config, try_order};
 
 fn first<'a>(connected: &[&'a str], fallback: Option<&str>) -> Option<&'a str> {
-    try_order(connected, fallback).first().map(|index| connected[*index])
+    try_order(connected, fallback)
+        .first()
+        .map(|index| connected[*index])
 }
 
 #[test]
@@ -23,7 +25,10 @@ fn unplugging_the_monitor_lights_the_fallback_again() {
 
 #[test]
 fn connectors_listed_after_the_fallback_win_over_it() {
-    assert_eq!(first(&["HDMI-A-1", "HDMI-A-2"], Some("HDMI-A-1")), Some("HDMI-A-2"));
+    assert_eq!(
+        first(&["HDMI-A-1", "HDMI-A-2"], Some("HDMI-A-1")),
+        Some("HDMI-A-2")
+    );
 }
 
 #[test]
@@ -62,4 +67,11 @@ proptest! {
         prop_assert_eq!(try_order(&connected, None), (0..connected.len()).collect::<Vec<_>>());
         prop_assert_eq!(try_order(&connected, Some("absent-1")), (0..connected.len()).collect::<Vec<_>>());
     }
+}
+
+#[test]
+fn connector_names_follow_the_kernel() {
+    assert_eq!(connector_name("HDMIA", 1), "HDMI-A-1");
+    assert_eq!(connector_name("DisplayPort", 3), "DP-3");
+    assert_eq!(connector_name("EmbeddedDisplayPort", 1), "eDP-1");
 }

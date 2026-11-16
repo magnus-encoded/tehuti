@@ -463,11 +463,26 @@ fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn
     let request = std::env::var("TEHUTI_MODE").ok();
     let parsed = request.as_deref().and_then(mode::Request::parse);
     let resources = device.resource_handles()?;
+    let mut connected = Vec::new();
     for handle in resources.connectors() {
         let connector = device.get_connector(*handle, true)?;
-        if connector.state() != connector::State::Connected {
-            continue;
+        if connector.state() == connector::State::Connected {
+            connected.push((*handle, connector));
         }
+    }
+    let names: Vec<String> = connected
+        .iter()
+        .map(|(_, connector)| {
+            tehuti::output_choice::connector_name(
+                &format!("{:?}", connector.interface()),
+                connector.interface_id(),
+            )
+        })
+        .collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let fallback = tehuti::output_choice::fallback_from_env();
+    for index in tehuti::output_choice::try_order(&name_refs, fallback.as_deref()) {
+        let (handle, connector) = &connected[index];
         let listed: Vec<_> = connector
             .modes()
             .iter()
