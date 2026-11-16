@@ -11,8 +11,7 @@ static TASK_MONITOR: std::sync::LazyLock<Vec<String>> =
 
 /// Whether `program` is an executable file in one of the directories of `search_path`.
 #[must_use]
-pub fn is_installed(program: &str, search_path: &std::ffi::OsStr) -> bool {
-    let _unused = (program, search_path);
+pub const fn is_installed(_program: &str, _search_path: &std::ffi::OsStr) -> bool {
     false
 }
 
