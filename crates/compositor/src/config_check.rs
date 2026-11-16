@@ -231,7 +231,7 @@ fn report_voice_only(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::C
             .filter(|mapping| {
                 matches!(
                     mapping.action,
-                    Action::Layout { .. } | Action::Close | Action::ToggleTicker
+                    Action::Layout { .. } | Action::Close | Action::ToggleTicker | Action::UndoDictation
                 )
             })
             .filter(|mapping| {
@@ -296,6 +296,10 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
     report_unreachable_speech(report, loaded, |phrase| {
         tehuti_core::unit_verbs::reserved_word(phrase)
             .map(|word| format!("core owns this reserved unit verb {word:?}"))
+    });
+    report_unreachable_speech(report, loaded, |phrase| {
+        tehuti_core::unit_verbs::is_scratch_that(phrase)
+            .then(|| "core owns this reserved unit verb \"scratch that\"".to_owned())
     });
     report_unreachable_speech(report, loaded, |phrase| {
         tehuti_core::invoke::slash_command(phrase, [])

@@ -558,6 +558,23 @@ its first frame. A client that commits a smaller window geometry is centred
 inside its slot. The focus outline follows that geometry. Tehuti does not
 inspect the surface content for letterboxing.
 
+## Deleting dictation
+
+`{ undo_dictation = true }` on a button or phrase deletes exactly the text of
+the last phrase Tehuti typed from speech, when nothing else was typed since.
+Later presses, and a press with no dictation to undo, send one Backspace each,
+so a terminal can bind it where Backspace was.
+
+```toml
+[buttons]
+north = { undo_dictation = true }
+```
+
+Saying "Scratch that." does the same in every context; core claims it before
+context phrases, at the app level only, and `--check-config` warns about a
+context phrase it shadows. With a plugin active the phrase goes to the plugin
+instead. Plugins cannot emit `undo_dictation`. A key chord deletes by word: `{ key = "backspace", mods = ["ctrl"] }`.
+
 ## Column widths
 
 Saying "width" opens the width adjuster, which the stick moves. The preset

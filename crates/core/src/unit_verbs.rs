@@ -35,6 +35,12 @@ pub fn reserved_word(phrase: &str) -> Option<&'static str> {
         .map(|(verb, _)| verb.trim_end())
 }
 
+/// The reserved phrase that undoes the last dictated phrase.
+#[must_use]
+pub fn is_scratch_that(phrase: &str) -> bool {
+    tehuti_protocol::normalize_phrase(phrase) == "scratch that"
+}
+
 /// "new" followed by query words: a creation request that any focused context's own phrase outranks.
 #[must_use]
 pub fn new_request(phrase: &str) -> Option<LauncherRequest> {

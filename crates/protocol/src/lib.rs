@@ -1007,7 +1007,8 @@ impl Context {
             | MappingAction::Restart { .. }
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
-            | MappingAction::Ticker { .. } => None,
+            | MappingAction::Ticker { .. }
+            | MappingAction::UndoDictation { .. } => None,
         })
     }
 
@@ -1029,7 +1030,8 @@ impl Context {
             | MappingAction::Restart { .. }
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
-            | MappingAction::Ticker { .. } => None,
+            | MappingAction::Ticker { .. }
+            | MappingAction::UndoDictation { .. } => None,
         }
     }
 }
@@ -1125,6 +1127,28 @@ enum MappingAction {
     Ticker {
         ticker: TickerMapping,
     },
+    UndoDictation {
+        undo_dictation: UndoDictationMapping,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UndoDictationMapping;
+
+impl serde::Serialize for UndoDictationMapping {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(true)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for UndoDictationMapping {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if bool::deserialize(deserializer)? {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("undo_dictation must be true"))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1177,6 +1201,7 @@ impl MappingAction {
             },
             Self::Layout { layout } => Action::Layout { action: *layout },
             Self::Ticker { .. } => Action::ToggleTicker,
+            Self::UndoDictation { .. } => Action::UndoDictation,
         }
     }
 }
@@ -1569,6 +1594,9 @@ pub enum Action {
     Layout { action: LayoutAction },
     /// Show or hide the mapping ticker; reserved for the core.
     ToggleTicker,
+    /// Delete the last dictated phrase, or one character once anything else was typed; the core expands it
+    /// into backspaces, so it never reaches the compositor.
+    UndoDictation,
 }
 
 /// A tiling action a context maps to a button or phrase, written in kebab case,

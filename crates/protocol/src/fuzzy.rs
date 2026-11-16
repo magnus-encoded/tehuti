@@ -123,7 +123,8 @@ pub fn destructive(action: &Action) -> bool {
         | Action::SecretRequest { .. }
         | Action::Notice { .. }
         | Action::Layout { .. }
-        | Action::ToggleTicker => false,
+        | Action::ToggleTicker
+        | Action::UndoDictation => false,
     }
 }
 

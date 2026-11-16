@@ -101,6 +101,20 @@ order = 1
     }
 
     #[test]
+    fn a_context_phrase_core_claims_as_scratch_that_never_fires() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Scratch that.' = { key = 'a' }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+        assert!(report.to_string().contains("reserved unit verb"), "{report}");
+        assert!(report.to_string().contains("scratch that"), "{report}");
+    }
+
+    #[test]
     fn a_layout_phrase_with_no_button_is_flagged_as_voice_only() {
         let directory = tempfile::tempdir().unwrap();
         write(
@@ -163,6 +177,17 @@ order = 1
         );
         let report = check(directory.path());
         assert!(!report.to_string().contains("only by voice"), "{report}");
+    }
+
+    #[test]
+    fn an_undo_dictation_phrase_with_no_button_is_voice_only() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Oops' = { undo_dictation = true }\n",
+        );
+        assert!(check(directory.path()).to_string().contains("only by voice"));
     }
 
     fn write(directory: &Path, relative: &str, text: &str) {

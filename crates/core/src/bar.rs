@@ -480,6 +480,7 @@ impl Bar {
                 Action::Close => ("Closed".into(), Tone::Result),
                 Action::Layout { .. } => ("Layout".into(), Tone::Result),
                 Action::ToggleTicker => ("Ticker".into(), Tone::Result),
+                Action::UndoDictation => ("Undone".into(), Tone::Result),
                 Action::Quit => ("Quitting".into(), Tone::Result),
                 Action::Restart => ("Restarting".into(), Tone::Result),
             };
