@@ -1170,7 +1170,7 @@ fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
 }
 
 fn validate_key_hold(value: Option<u32>) -> Result<Option<u32>, String> {
-    if value.is_some_and(|ms| !(1..=1000).contains(&ms)) {
+    if value.is_some_and(|millis| !(1..=1000).contains(&millis)) {
         return Err("key_hold_ms must be between 1 and 1000".to_owned());
     }
     Ok(value)
@@ -1194,8 +1194,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut speech: std::collections::HashMap<String, SpeechEntry> =
         std::collections::HashMap::with_capacity(context.speech.len());
     let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
-    let mut warnings = Vec::new();
-    let mut skipped_phrases = Vec::new();
+    let (mut warnings, mut skipped_phrases) = (Vec::new(), Vec::new());
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
         let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
