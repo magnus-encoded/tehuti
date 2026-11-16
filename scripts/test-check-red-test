@@ -81,6 +81,21 @@ grep -A9 '^args' "$work/log" | grep -q '^base' || fail "source not reverted to b
 grep -q inline_new "$work/log" || fail "PR's inline tests dropped during the revert"
 grep -q fixed crates/a/src/lib.rs || fail "inline source not restored"
 
+# Branch behind the base tip: only the branch's own test is counted, not the tip's newer ones.
+start behind
+fixed
+printf '%s\nfn own_test() {}\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git commit -qam own
+git checkout -q -B tip "$base"
+sed -i 's/^fn other/fn tip_test() {}\n\nfn other/' crates/a/tests/t.rs
+git commit -qam tip
+tip=$(git rev-parse HEAD)
+git checkout -q behind
+: >"$STUB_LOG"
+scripts/check-red-test "$tip" >"$work/out" 2>&1 || fail "branch behind the tip should pass"
+grep -q own_test "$work/out" || fail "own test not counted"
+grep -q 'running 1 test name(s) against base sources: own_test$' "$work/out" || fail "names beyond the branch's own test counted"
+
 # Build failure on the base: inconclusive unless the label env is set.
 start nobuild
 # A base whose source does not compile.

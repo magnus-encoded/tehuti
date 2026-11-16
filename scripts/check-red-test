@@ -5,6 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 base=${1:?usage: check-red-test BASE_COMMIT}
+# Diff from the merge base, so a branch behind the base tip is not charged with the tip's newer tests.
+base=$(git merge-base "$base" HEAD)
 cargo=${CARGO:-cargo}
 is_test() {
     [[ $1 == crates/*/tests/*.rs || $1 == crates/*/src/*tests.rs || $1 == crates/*/src/*/tests.rs || $1 == crates/*/src/*/tests/*.rs ]]
