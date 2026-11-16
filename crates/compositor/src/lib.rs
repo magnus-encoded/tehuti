@@ -11,6 +11,7 @@ pub mod input;
 pub mod instance;
 pub mod skill_install;
 pub mod state;
+pub mod status;
 
 pub mod contexts;
 pub mod width_rewrite;
@@ -32,6 +33,7 @@ pub mod desktop;
 
 pub mod backend;
 
+pub mod drm_holders;
 pub mod drm_hotplug;
 pub mod frame_recovery;
 pub mod watchdog;
