@@ -20,13 +20,16 @@ mod new_launcher {
             state = next;
             input = Input::Resume;
             for effect in effects {
-                match &effect {
-                    Effect::QueryPlugin(_) => input = Input::PluginActive(false),
-                    Effect::DispatchPlugin { .. } => input = Input::PluginRequest(None),
-                    Effect::ReadClock => input = Input::ClockRead(Duration::ZERO),
-                    Effect::PollSpeech(_) => input = Input::SpeechPolled(vec![]),
-                    Effect::Supervise => input = Input::Supervised(vec![]),
-                    _ => {}
+                if matches!(effect, Effect::QueryPlugin(_)) {
+                    input = Input::PluginActive(false);
+                } else if matches!(effect, Effect::DispatchPlugin { .. }) {
+                    input = Input::PluginRequest(None);
+                } else if effect == Effect::ReadClock {
+                    input = Input::ClockRead(Duration::ZERO);
+                } else if matches!(effect, Effect::PollSpeech(_)) {
+                    input = Input::SpeechPolled(vec![]);
+                } else if effect == Effect::Supervise {
+                    input = Input::Supervised(vec![]);
                 }
                 all.push(effect);
             }
