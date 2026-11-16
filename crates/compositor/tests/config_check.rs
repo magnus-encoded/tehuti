@@ -249,6 +249,10 @@ order = 1
                     && finding.message.contains("reserved unit verb")),
             "{report}"
         );
+        let text = report.to_string();
+        for word in ["\"open\"", "\"åpne\"", "\"work on\""] {
+            assert!(text.contains(&format!("reserved unit verb {word}")), "{word}: {text}");
+        }
         let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
             .args(["--check-config".as_ref(), directory.path().as_os_str()])
             .env_clear()
