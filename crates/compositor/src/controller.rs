@@ -856,7 +856,7 @@ impl EvdevPad {
     }
 
     #[must_use]
-    pub fn identity(&self) -> tehuti_core::pad::Identity {
+    pub const fn identity(&self) -> tehuti_core::pad::Identity {
         self.translator.identity
     }
 
@@ -1330,36 +1330,30 @@ impl DpadHat {
     const fn face_code(&self, code: KeyCode) -> KeyCode {
         use tehuti_core::pad::PadFamily;
         let unmapped = KeyCode::BTN_TRIGGER_HAPPY1;
-        let dpad = match code {
-            KeyCode::KEY_UP => Some(KeyCode::BTN_DPAD_LEFT),
-            KeyCode::KEY_RIGHT => Some(KeyCode::BTN_DPAD_UP),
-            KeyCode::KEY_DOWN => Some(KeyCode::BTN_DPAD_RIGHT),
-            KeyCode::KEY_LEFT => Some(KeyCode::BTN_DPAD_DOWN),
-            _ => None,
-        };
-        match (self.identity.family, code) {
-            (PadFamily::Remote | PadFamily::RemotePaired, _) if dpad.is_some() => {
-                return match dpad {
-                    Some(turned) => turned,
-                    None => code,
+        let paired = match self.identity.family {
+            PadFamily::Remote => false,
+            PadFamily::RemotePaired => true,
+            PadFamily::Letters | PadFamily::Symbols | PadFamily::Nintendo => {
+                return match (self.identity.swap_north_west, code) {
+                    (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
+                    (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+                    _ => code,
                 };
             }
-            (PadFamily::Remote | PadFamily::RemotePaired, KeyCode::KEY_NEXT) => return KeyCode::KEY_RECORD,
-            (PadFamily::Remote | PadFamily::RemotePaired, KeyCode::KEY_PREVIOUS) => {
-                return KeyCode::BTN_SELECT;
-            }
-            (PadFamily::Remote, KeyCode::BTN_1) => return KeyCode::BTN_SOUTH,
-            (PadFamily::Remote, KeyCode::BTN_2) => return KeyCode::BTN_EAST,
-            (PadFamily::Remote, KeyCode::BTN_SOUTH) => return KeyCode::BTN_NORTH,
-            (PadFamily::Remote, KeyCode::BTN_EAST) => return unmapped,
-            (PadFamily::RemotePaired, KeyCode::BTN_SOUTH | KeyCode::BTN_EAST) => return code,
-            (PadFamily::RemotePaired, KeyCode::BTN_1) => return KeyCode::BTN_NORTH,
-            (PadFamily::RemotePaired, KeyCode::BTN_2) => return unmapped,
-            _ => {}
-        }
-        match (self.identity.swap_north_west, code) {
-            (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
-            (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+        };
+        match code {
+            KeyCode::KEY_UP => KeyCode::BTN_DPAD_LEFT,
+            KeyCode::KEY_RIGHT => KeyCode::BTN_DPAD_UP,
+            KeyCode::KEY_DOWN => KeyCode::BTN_DPAD_RIGHT,
+            KeyCode::KEY_LEFT => KeyCode::BTN_DPAD_DOWN,
+            KeyCode::KEY_NEXT => KeyCode::KEY_RECORD,
+            KeyCode::KEY_PREVIOUS => KeyCode::BTN_SELECT,
+            KeyCode::BTN_1 if paired => KeyCode::BTN_NORTH,
+            KeyCode::BTN_1 => KeyCode::BTN_SOUTH,
+            KeyCode::BTN_2 if paired => unmapped,
+            KeyCode::BTN_2 => KeyCode::BTN_EAST,
+            KeyCode::BTN_SOUTH if !paired => KeyCode::BTN_NORTH,
+            KeyCode::BTN_EAST if !paired => unmapped,
             _ => code,
         }
     }
@@ -2130,9 +2124,9 @@ mod remote_tests {
                 "{code:?}"
             );
         }
-        assert!(press(&mut hat, KeyCode::BTN_2).is_empty());
+        assert_eq!(press(&mut hat, KeyCode::BTN_2), Vec::<Event>::new());
         hat.set_companion(false);
-        assert!(press(&mut hat, KeyCode::BTN_EAST).is_empty());
+        assert_eq!(press(&mut hat, KeyCode::BTN_EAST), Vec::<Event>::new());
     }
 
     #[test]
