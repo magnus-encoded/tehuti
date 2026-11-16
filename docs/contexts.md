@@ -267,8 +267,9 @@ needed. A successful reload shows “Contexts reloaded”. If any file fails to 
 or parse, Tehuti shows a notice naming the file and the start of the error, and the
 last good version of that file stays active until the file is fixed; the full
 error goes to the log. A speech phrase that normalizes to nothing or to the same
-text as an earlier phrase is dropped alone, with a notice naming the file and
-phrase; the rest of the file loads. A reload leaves held
+text as an earlier phrase in the file is dropped alone, with a notice naming the file and
+phrase, with a count when several were dropped; the rest of the file loads.
+`tehuti --check-config` reports each dropped phrase as an error. A reload leaves held
 buttons and a speech session in progress untouched. Plugins are not reloaded;
 they restart as processes.
 

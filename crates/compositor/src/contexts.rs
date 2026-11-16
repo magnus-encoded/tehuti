@@ -132,6 +132,20 @@ impl LoadError {
         )
     }
 
+    /// The notice for a batch of dropped phrases: the first one, plus how many more were dropped.
+    #[must_use]
+    pub fn phrase_notice_for(warnings: &[Self]) -> Option<String> {
+        let (first, rest) = warnings.split_first()?;
+        let notice = first.phrase_notice();
+        if rest.is_empty() {
+            return Some(notice);
+        }
+        Some(match notice.split_once('\n') {
+            Some((head, tail)) => format!("{head} (+{} more)\n{tail}", rest.len()),
+            None => format!("{notice} (+{} more)", rest.len()),
+        })
+    }
+
     fn file_label(&self) -> String {
         self.path.parent().and_then(Path::file_name).map_or_else(
             || self.path.display().to_string(),

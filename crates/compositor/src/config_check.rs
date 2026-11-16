@@ -102,6 +102,7 @@ pub fn check(directory: &Path) -> Report {
                     Err(error) => report.push(&error.path, Severity::Error, error.message),
                 }
             }
+            report_skipped_phrases(&mut report, &loaded);
             report_shadowing(&mut report, &loaded);
             report_legacy_favourites(&mut report, &loaded);
             report_overridden_shared(&mut report, &loaded, directory);
@@ -236,6 +237,15 @@ fn report_unreachable_speech(
                 Severity::Warning,
                 format!("[speech] {:?} never fires: {reason}", mapping.phrase),
             );
+        }
+    }
+}
+
+/// A phrase the loader drops, such as a duplicate after normalization, is an error here.
+fn report_skipped_phrases(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
+    for (path, context) in loaded {
+        for message in context.skipped_phrases() {
+            report.push(path, Severity::Error, message.clone());
         }
     }
 }
