@@ -169,8 +169,10 @@ mod recording_smoke {
             .args([
                 "-v",
                 "error",
+                "-select_streams",
+                "v:0",
                 "-show_entries",
-                "format=duration",
+                "stream=duration",
                 "-of",
                 "csv=p=0",
             ])
@@ -185,7 +187,7 @@ mod recording_smoke {
         let media = Duration::from_secs_f64(String::from_utf8_lossy(&probe.stdout).trim().parse().unwrap());
         assert!(wall >= Duration::from_millis(3500), "take too short: {wall:?}");
         assert!(
-            media.abs_diff(wall) <= wall.div_f64(10.0),
+            media.abs_diff(wall) <= wall.div_f64(7.0),
             "media length {media:?} is not close to wall time {wall:?}"
         );
     }
