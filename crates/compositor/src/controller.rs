@@ -1450,7 +1450,7 @@ fn trigger_event(trigger: &mut Trigger, value: i32, name: ButtonName) -> Vec<Eve
         .collect()
 }
 
-/// Back paddles: BTN_GRIPL, BTN_GRIPR, BTN_GRIPL2 and BTN_GRIPR2 (0x224-0x227).
+/// Back paddles: `BTN_GRIPL`, `BTN_GRIPR`, `BTN_GRIPL2` and `BTN_GRIPR2` (0x224-0x227).
 const PADDLE_1: KeyCode = KeyCode::new(0x224);
 const PADDLE_2: KeyCode = KeyCode::new(0x225);
 const PADDLE_3: KeyCode = KeyCode::new(0x226);
@@ -1480,10 +1480,10 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
         KeyCode::BTN_DPAD_DOWN => ButtonName::DpadDown,
         KeyCode::BTN_DPAD_LEFT => ButtonName::DpadLeft,
         KeyCode::BTN_DPAD_RIGHT => ButtonName::DpadRight,
-        KeyCode::PADDLE_1 => ButtonName::Paddle1,
-        KeyCode::PADDLE_2 => ButtonName::Paddle2,
-        KeyCode::PADDLE_3 => ButtonName::Paddle3,
-        KeyCode::PADDLE_4 => ButtonName::Paddle4,
+        PADDLE_1 => ButtonName::Paddle1,
+        PADDLE_2 => ButtonName::Paddle2,
+        PADDLE_3 => ButtonName::Paddle3,
+        PADDLE_4 => ButtonName::Paddle4,
         _ => return None,
     };
     Some(Event::Button { name, state })
@@ -2163,7 +2163,7 @@ mod remote_tests {
             (0x227, ButtonName::Paddle4),
         ] {
             assert_eq!(
-                parse_button(KeyCode::new(code), 1),
+                super::parse_button(KeyCode::new(code), 1),
                 Some(Event::Button {
                     name,
                     state: ButtonState::Pressed

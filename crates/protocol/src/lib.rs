@@ -106,16 +106,16 @@ pub enum ButtonName {
     DpadDown,
     DpadLeft,
     DpadRight,
-    /// A back paddle (BTN_GRIPL); only some pads have one.
+    /// A back paddle (`BTN_GRIPL`); only some pads have one.
     #[serde(rename = "paddle_1")]
     Paddle1,
-    /// A back paddle (BTN_GRIPR); only some pads have one.
+    /// A back paddle (`BTN_GRIPR`); only some pads have one.
     #[serde(rename = "paddle_2")]
     Paddle2,
-    /// A back paddle (BTN_GRIPL2); only some pads have one.
+    /// A back paddle (`BTN_GRIPL2`); only some pads have one.
     #[serde(rename = "paddle_3")]
     Paddle3,
-    /// A back paddle (BTN_GRIPR2); only some pads have one.
+    /// A back paddle (`BTN_GRIPR2`); only some pads have one.
     #[serde(rename = "paddle_4")]
     Paddle4,
 }
@@ -1225,8 +1225,19 @@ fn validate_push_to_talk(buttons: Option<&[ButtonName]>) -> Result<(), String> {
     if buttons.is_empty() || buttons.contains(&ButtonName::Guide) || buttons.contains(&ButtonName::Start) {
         return Err("pad.push_to_talk needs buttons other than Guide or Start".into());
     }
-    if matches!(buttons, [button] if !matches!(button, ButtonName::Record | ButtonName::Select)) {
-        return Err("a single pad.push_to_talk button must be Record or Select".into());
+    let safe_alone = |button: &ButtonName| {
+        matches!(
+            button,
+            ButtonName::Record
+                | ButtonName::Select
+                | ButtonName::Paddle1
+                | ButtonName::Paddle2
+                | ButtonName::Paddle3
+                | ButtonName::Paddle4
+        )
+    };
+    if matches!(buttons, [button] if !safe_alone(button)) {
+        return Err("a single pad.push_to_talk button must be Record, Select or a paddle".into());
     }
     let mut seen = std::collections::HashSet::new();
     for button in buttons {
