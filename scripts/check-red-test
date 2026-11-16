@@ -39,7 +39,7 @@ done
 echo "check-red-test: running ${#names[@]} test name(s) against base sources: ${names[*]}"
 if XKB_DEFAULT_LAYOUT=us "$cargo" test --workspace --locked -- --test-threads=1 "${names[@]}"; then
     echo "check-red-test: every added test passes without the source change." >&2
-    echo "Make a test fail on the old code, or label the PR no-red-test (docs, refactors)." >&2
+    echo "Make a test fail on the base code, or label the PR no-red-test (docs, refactors)." >&2
     exit 1
 fi
 echo "check-red-test: at least one added test fails without the source change (a build failure counts)."

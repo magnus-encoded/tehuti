@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-# Stub cargo: the test run fails while src/lib.rs holds the old behaviour.
+# Stub cargo: the test run fails while src/lib.rs holds the base behaviour.
 cat >"$work/cargo-stub" <<'STUB'
 #!/usr/bin/env bash
 echo "$@" >>"$STUB_LOG"
