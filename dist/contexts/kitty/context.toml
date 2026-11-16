@@ -2,6 +2,7 @@ app_id = "kitty"
 unmatched_speech = "type"
 
 [buttons]
+west = { undo_dictation = true }
 left_bumper = { key = "tab", mods = ["ctrl", "shift"] }
 right_bumper = { key = "tab", mods = ["ctrl"] }
 

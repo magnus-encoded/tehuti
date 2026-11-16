@@ -149,4 +149,99 @@ mod undo_dictation {
         let error = tehuti_core::plugin::validate_actions(vec![undo], &[]).unwrap_err();
         assert!(error.contains("reserved for the core"), "{error}");
     }
+
+    fn release_x(state: State) -> (State, Vec<Action>) {
+        step(
+            state,
+            &Event::Button {
+                name: ButtonName::West,
+                state: ButtonState::Released,
+            },
+        )
+    }
+
+    fn tick(state: State, millis: u64) -> (State, Vec<Action>) {
+        step(
+            state,
+            &Event::Tick {
+                elapsed: core::time::Duration::from_millis(millis),
+            },
+        )
+    }
+
+    fn held_backspaces(mut state: State, slices: &[u64]) -> usize {
+        let mut count = 0;
+        for millis in slices {
+            let (next, actions) = tick(state, *millis);
+            assert!(
+                actions.iter().all(|action| *action == backspaces(1)[0]),
+                "{actions:?}"
+            );
+            count += actions.len();
+            state = next;
+        }
+        count
+    }
+
+    #[test]
+    fn holding_the_button_repeats_backspace_after_the_delay() {
+        let (state, _) = press_x(terminal());
+        let (state, early) = tick(state, 100);
+        assert_eq!(early, Vec::new());
+        let (state, repeated) = tick(state, 200);
+        assert_eq!(repeated, backspaces(1));
+        let (state, _) = release_x(state);
+        assert_eq!(tick(state, 2000).1, Vec::new());
+    }
+
+    #[test]
+    fn a_button_that_is_not_undo_does_not_repeat() {
+        let state = step(
+            terminal(),
+            &Event::Button {
+                name: ButtonName::East,
+                state: ButtonState::Pressed,
+            },
+        )
+        .0;
+        assert_eq!(tick(state, 2000).1, Vec::new());
+    }
+
+    proptest! {
+        #[test]
+        fn the_repeat_count_does_not_depend_on_how_ticks_are_sliced(
+            slices in proptest::collection::vec(1u64..100, 1..20),
+        ) {
+            let total: u64 = slices.iter().sum();
+            let (state, _) = press_x(terminal());
+            let sliced = held_backspaces(state.clone(), &slices);
+            let whole = held_backspaces(state, &[total]);
+            prop_assert_eq!(sliced, whole);
+        }
+
+        #[test]
+        fn a_long_hold_repeats_and_a_longer_one_repeats_more(extra in 1u64..2000) {
+            let (state, _) = press_x(terminal());
+            let short = held_backspaces(state.clone(), &[1000]);
+            let long = held_backspaces(state, &[1000 + extra]);
+            prop_assert!(short >= 1 && long >= short);
+        }
+
+        #[test]
+        fn nothing_repeats_before_the_delay(millis in 1u64..299) {
+            let (state, _) = press_x(terminal());
+            prop_assert_eq!(held_backspaces(state, &[millis]), 0);
+        }
+    }
+
+    #[test]
+    fn shipped_terminal_contexts_bind_undo_to_x() {
+        for source in [
+            include_str!("../../../dist/contexts/kitty/context.toml"),
+            include_str!("../../../examples/foot/context.toml"),
+        ] {
+            let context = parse_context(source).unwrap();
+            assert_eq!(context.action_for(ButtonName::West), Some(Action::UndoDictation));
+        }
+    }
 }
