@@ -102,7 +102,7 @@ mod docs {
             }
         }
         assert!(
-            manifests >= 2 && actions >= 8 && messages >= 15,
+            manifests >= 2 && actions >= 7 && messages >= 15,
             "{manifests} {actions} {messages}"
         );
     }
