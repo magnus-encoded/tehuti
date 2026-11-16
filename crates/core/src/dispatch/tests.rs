@@ -314,7 +314,10 @@ proptest! {
                 reference = next;
                 expected.append(&mut actions);
             }
-            if !record {
+            // Dispatch opens the launcher for an unmapped "new <words>" phrase and never steps core.
+            let consumed = matches!(&event, Event::Speech { text }
+                if crate::unit_verbs::new_request(text.as_str()).is_some() && !reference.context_maps_speech(text.as_str()));
+            if !record && !consumed {
                 let (next, mut actions) = crate::step(reference, &event);
                 reference = next;
                 expected.append(&mut actions);
@@ -5758,4 +5761,25 @@ fn an_active_plugin_gets_a_tapped_stick_modifier_as_press_then_release() {
         })
         .collect();
     assert_eq!(routed, vec![ButtonState::Pressed, ButtonState::Released]);
+}
+
+#[test]
+fn an_unmapped_new_phrase_is_consumed_before_the_core_step() {
+    let mut world = World::default();
+    let state = configured(Vec::new(), "a");
+    let _state = world.run(
+        state,
+        Input::Event {
+            event: Event::Speech {
+                text: Text::new("new thing".to_owned()).unwrap(),
+            },
+            elapsed: Duration::from_millis(16),
+        },
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(_)))
+    );
 }
