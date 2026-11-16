@@ -459,15 +459,39 @@ struct ConnectedSurface {
     listed_modes: Vec<Mode>,
 }
 
+/// Connected connectors in the order a rescan tries them: the configured fallback comes last.
+fn connected_in_try_order(
+    device: &DrmDevice,
+    resources: &smithay::reexports::drm::control::ResourceHandles,
+) -> Result<Vec<(connector::Handle, connector::Info)>, Box<dyn Error>> {
+    let mut connected = Vec::new();
+    for handle in resources.connectors() {
+        let connector = device.get_connector(*handle, true)?;
+        if connector.state() == connector::State::Connected {
+            connected.push((*handle, connector));
+        }
+    }
+    let names: Vec<String> = connected
+        .iter()
+        .map(|(_, connector)| {
+            tehuti::output_choice::connector_name(connector.interface(), connector.interface_id())
+        })
+        .collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let fallback = tehuti::output_choice::fallback_from_env();
+    let mut pool: Vec<_> = connected.into_iter().map(Some).collect();
+    Ok(tehuti::output_choice::try_order(&name_refs, fallback.as_deref())
+        .into_iter()
+        .filter_map(|slot| pool.get_mut(slot).and_then(Option::take))
+        .collect())
+}
+
 fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn Error>> {
     let request = std::env::var("TEHUTI_MODE").ok();
     let parsed = request.as_deref().and_then(mode::Request::parse);
     let resources = device.resource_handles()?;
-    for handle in resources.connectors() {
-        let connector = device.get_connector(*handle, true)?;
-        if connector.state() != connector::State::Connected {
-            continue;
-        }
+    let connected = connected_in_try_order(device, &resources)?;
+    for (handle, connector) in &connected {
         let listed: Vec<_> = connector
             .modes()
             .iter()
