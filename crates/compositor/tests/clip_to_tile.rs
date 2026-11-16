@@ -138,7 +138,12 @@ mod clip_to_tile {
     }
 
     /// Runs the client and returns how many configures arrived after its first draw.
-    fn client(stream: UnixStream, count: usize, ready: &mpsc::Sender<()>, stop: &mpsc::Receiver<()>) -> usize {
+    fn client(
+        stream: UnixStream,
+        count: usize,
+        ready: &mpsc::Sender<()>,
+        stop: &mpsc::Receiver<()>,
+    ) -> usize {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
