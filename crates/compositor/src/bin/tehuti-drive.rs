@@ -170,11 +170,11 @@ fn menu_select(socket: &Path, label: &str) -> Result<Value, Box<dyn Error>> {
         .saturating_sub(selected)
         .checked_rem(count)
         .unwrap_or_default();
-    let up = count.saturating_sub(down);
-    let (steps, name) = if down <= up {
+    let upward = count.saturating_sub(down);
+    let (steps, name) = if down <= upward {
         (down, "dpad_down")
     } else {
-        (up, "dpad_up")
+        (upward, "dpad_up")
     };
     for _ in 0..steps {
         let button = serde_json::from_value(json!(name))?;
