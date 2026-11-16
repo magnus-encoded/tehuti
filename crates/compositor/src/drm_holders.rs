@@ -48,7 +48,10 @@ impl fmt::Display for DeviceBusy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{} is held by another process", self.device.display())?;
         if self.holders.is_empty() {
-            write!(formatter, "; no other process was found holding it")?;
+            write!(
+                formatter,
+                "; no holder was visible to this user (processes of other users are hidden)"
+            )?;
         }
         for holder in &self.holders {
             write!(formatter, "; {} (pid {})", holder.command, holder.pid)?;
@@ -71,6 +74,7 @@ pub fn is_busy(error: &(dyn core::error::Error + 'static)) -> bool {
             || link
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|failure| failure.raw_os_error() == Some(16))
+            // Smithay reports the errno only inside its Debug text, not as a typed source.
             || format!("{link:?}").contains("ResourceBusy")
         {
             return true;
