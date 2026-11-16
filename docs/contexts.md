@@ -366,6 +366,11 @@ password fields keep the space. B closes it; Menu types the draft, presses Enter
 With an empty draft Menu presses only Enter. Closing drops the draft by
 default; `keep_draft = true` in `[keyboard]` keeps it between openings.
 A different text field still clears it.
+A gentle left-stick push steps one word. A push deeper than `word_repeat_from`
+(800 of 1000) keeps picking after `word_repeat_delay_ms` (350), from
+`word_min_rate` words a second (2) up to `word_max_rate` (10) at a full push.
+These are `[keyboard]` options with no settings slider, and edits reload
+without a restart.
 The draft row sits below the keys, beside the powerline, and shows a window
 of text around the caret or picked word.
 The legacy `button` and `open_on_app_level` options remain accepted but

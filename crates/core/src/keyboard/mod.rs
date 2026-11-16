@@ -15,6 +15,78 @@ pub const REPEAT_INTERVAL: Duration = Duration::from_millis(80);
 pub const WORD_PICK_DEFLECTION: i16 = 500;
 /// The left stick must return inside this deflection before it picks another word.
 const WORD_PICK_RELEASE: i16 = 250;
+/// Left stick depth, in thousandths, from which a held push keeps picking words.
+pub const WORD_REPEAT_FROM: u16 = 800;
+/// How long a deep push waits before it keeps picking words.
+pub const WORD_REPEAT_DELAY: Duration = Duration::from_millis(350);
+/// Words a second at the shallowest repeating push.
+pub const WORD_MIN_RATE: u16 = 2;
+/// Words a second at a full push.
+pub const WORD_MAX_RATE: u16 = 10;
+
+/// How a held left stick keeps picking words: not at all while gentle, faster the deeper the push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WordRepeat {
+    from: u16,
+    delay: Duration,
+    min_rate: u16,
+    max_rate: u16,
+}
+
+impl Default for WordRepeat {
+    fn default() -> Self {
+        Self::new(None, None, None, None)
+    }
+}
+
+impl WordRepeat {
+    /// Configured values over the defaults; a ceiling below the floor is raised to it.
+    #[must_use]
+    pub fn new(
+        from: Option<u16>,
+        delay_ms: Option<u16>,
+        min_rate: Option<u16>,
+        max_rate: Option<u16>,
+    ) -> Self {
+        let min_rate = min_rate.unwrap_or(WORD_MIN_RATE).max(1);
+        Self {
+            from: from
+                .unwrap_or(WORD_REPEAT_FROM)
+                .clamp(WORD_PICK_DEFLECTION.unsigned_abs(), 1000),
+            delay: delay_ms.map_or(WORD_REPEAT_DELAY, |millis| {
+                Duration::from_millis(u64::from(millis))
+            }),
+            min_rate,
+            max_rate: max_rate.unwrap_or(WORD_MAX_RATE).max(min_rate),
+        }
+    }
+
+    /// Time between picks at a push `depth` thousandths deep.
+    fn interval(self, depth: u16) -> Duration {
+        let span = u32::from(1000_u16.saturating_sub(self.from)).max(1);
+        let into = u32::from(depth.clamp(self.from, 1000).saturating_sub(self.from));
+        let climb = u32::from(self.max_rate.saturating_sub(self.min_rate));
+        // Words a second times `span`, so the integer maths keeps its precision.
+        let scaled = u64::from(self.min_rate)
+            .saturating_mul(u64::from(span))
+            .saturating_add(u64::from(climb).saturating_mul(u64::from(into)));
+        let micros = 1_000_000_u64
+            .saturating_mul(u64::from(span))
+            .checked_div(scaled)
+            .unwrap_or(1_000_000)
+            .max(1);
+        Duration::from_micros(micros)
+    }
+}
+
+/// A left stick held deep enough to keep picking words: which way, how deep, time to the next pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeldStick {
+    forward: bool,
+    depth: u16,
+    remaining: Duration,
+}
+
 /// Every row spans this many width units.
 pub const ROW_UNITS: u8 = 28;
 
@@ -421,6 +493,8 @@ pub struct Keyboard {
     captured: Vec<ButtonName>,
     repeat: Option<(Direction, Duration)>,
     stick_engaged: bool,
+    word_repeat: WordRepeat,
+    held_stick: Option<HeldStick>,
     send_on_start_release: bool,
     space: Option<SpaceHold>,
     start: Option<SpaceHold>,
@@ -462,6 +536,7 @@ impl Keyboard {
             highlight: (usize::from(self.rows().len() > LETTERS.len()), 1),
             captured: core::mem::take(&mut self.captured),
             stick_engaged: self.stick_engaged,
+            word_repeat: self.word_repeat,
             ..Self::default()
         };
     }
@@ -476,8 +551,14 @@ impl Keyboard {
         }
         self.word = None;
         self.repeat = None;
+        self.held_stick = None;
         self.layer = Layer::Letters;
         self.latched = Modifiers::default();
+    }
+
+    /// Sets how a held left stick keeps picking words; a push in progress keeps its pace.
+    pub const fn set_word_repeat(&mut self, repeat: WordRepeat) {
+        self.word_repeat = repeat;
     }
 
     /// Chooses whether closing keeps the local draft.
@@ -925,6 +1006,7 @@ impl Keyboard {
     pub fn tick(&mut self, elapsed: Duration) -> bool {
         let talk = self.tick_space(elapsed) | self.tick_start(elapsed);
         self.tick_reveal_and_repeat(elapsed);
+        self.tick_stick(elapsed);
         talk
     }
 
@@ -977,12 +1059,19 @@ impl Keyboard {
         let deflection = x.unsigned_abs().max(y.unsigned_abs());
         if deflection < WORD_PICK_RELEASE.unsigned_abs() {
             self.stick_engaged = false;
+            self.held_stick = None;
             return;
         }
-        if self.stick_engaged || deflection < WORD_PICK_DEFLECTION.unsigned_abs() {
+        let horizontal = x.unsigned_abs() >= y.unsigned_abs();
+        if self.stick_engaged {
+            self.hold_stick(x, horizontal, deflection);
+            return;
+        }
+        if deflection < WORD_PICK_DEFLECTION.unsigned_abs() {
             return;
         }
         self.stick_engaged = true;
+        self.hold_stick(x, horizontal, deflection);
         if self.open {
             if x.unsigned_abs() >= y.unsigned_abs() {
                 self.pick_word(x > 0);
@@ -990,6 +1079,41 @@ impl Keyboard {
                 self.move_line(y > 0);
             }
         }
+    }
+
+    /// Follows a deep horizontal push so a held stick keeps picking; anything else stops it.
+    fn hold_stick(&mut self, x: i16, horizontal: bool, deflection: u16) {
+        if !horizontal || deflection < self.word_repeat.from {
+            self.held_stick = None;
+            return;
+        }
+        let forward = x > 0;
+        let remaining = match self.held_stick {
+            Some(held) if held.forward == forward => held.remaining,
+            _ => self.word_repeat.delay,
+        };
+        self.held_stick = Some(HeldStick {
+            forward,
+            depth: deflection,
+            remaining,
+        });
+    }
+
+    fn tick_stick(&mut self, elapsed: Duration) {
+        let Some(mut held) = self.held_stick else {
+            return;
+        };
+        if !self.open {
+            return;
+        }
+        let mut elapsed = elapsed.min(Duration::from_secs(1));
+        while elapsed >= held.remaining {
+            self.pick_word(held.forward);
+            elapsed = elapsed.saturating_sub(held.remaining);
+            held.remaining = self.word_repeat.interval(held.depth);
+        }
+        held.remaining = held.remaining.saturating_sub(elapsed);
+        self.held_stick = Some(held);
     }
 
     fn move_line(&mut self, down: bool) {
