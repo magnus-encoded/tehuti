@@ -228,7 +228,7 @@ fn holding_a_direction_repeats_after_a_delay() {
     assert_eq!(keyboard.highlight(), (0, 2));
     assert!(!keyboard.tick(Duration::from_millis(1)));
     assert_eq!(keyboard.highlight(), (0, 3));
-    assert!(!keyboard.tick(REPEAT_INTERVAL.saturating_mul(2)));
+    assert!(!keyboard.tick(Duration::from_millis(170)));
     assert_eq!(keyboard.highlight(), (0, 5));
     let _released = keyboard.button(ButtonName::DpadRight, ButtonState::Released, true);
     assert!(!keyboard.tick(Duration::from_secs(1)));

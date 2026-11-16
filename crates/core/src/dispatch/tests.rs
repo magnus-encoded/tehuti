@@ -3664,6 +3664,8 @@ fn keyboard_repeat_rates_come_from_the_context() {
 
 #[test]
 fn keyboard_repeat_rates_must_be_positive() {
+    let good = "app_id = 'editor'\n[buttons]\n[keyboard]\nrepeat_rate = 5\nrepeat_max_rate = 1000\nrepeat_ramp_ms = 1\n";
+    assert!(tehuti_protocol::parse_context(good).is_ok());
     for bad in ["repeat_rate = 0", "repeat_max_rate = 0", "repeat_ramp_ms = 0"] {
         let toml = format!("app_id = 'editor'\n[buttons]\n[keyboard]\n{bad}\n");
         assert!(
