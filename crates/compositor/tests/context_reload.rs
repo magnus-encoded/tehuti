@@ -241,6 +241,22 @@ mod context_reload {
     }
 
     #[test]
+    fn the_phrase_skip_notice_names_the_first_phrase_and_counts_the_rest() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "one",
+            "app_id = 'one'\n[buttons]\n[speech]\n'Go' = { key = 'enter' }\n'go.' = { key = 'tab' }\n'Go!' = { key = 'space' }\n'GO' = { key = 'escape' }",
+        );
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_context_files(contexts::load_files(directory.path()));
+        let notice = compositor.visible_notice_text().unwrap();
+        assert!(notice.starts_with("PHRASE SKIPPED one/context.toml (+2 more)\n"), "{notice}");
+        assert!(notice.contains("go."), "{notice}");
+    }
+
+    #[test]
     fn a_fix_saved_after_a_skipped_load_is_picked_up_by_the_watcher() {
         let directory = tempfile::tempdir().unwrap();
         write(directory.path(), "one", "app_id = 'one'\n[buttons]");

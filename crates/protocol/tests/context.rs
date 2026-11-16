@@ -705,6 +705,22 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn the_phrase_written_first_wins_whatever_its_alphabetical_order() {
+        let context = parse_context(
+            "app_id = 'foot'\n[buttons]\n[speech]\n\"zed.\" = { key = 'enter' }\n\"Zed\" = { key = 'tab' }",
+        )
+        .unwrap();
+        assert_eq!(context.skipped_phrases().len(), 1);
+        assert!(
+            context.skipped_phrases()[0].starts_with("speech phrase \"Zed\" skipped"),
+            "{:?}",
+            context.skipped_phrases()
+        );
+        let first = parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"zed.\" = { key = 'enter' }").unwrap();
+        assert_eq!(context.speech_action("zed"), first.speech_action("zed"));
+    }
+
+    #[test]
     fn speech_phrases_that_normalize_to_nothing_are_dropped_with_a_warning() {
         for phrase in ["", "...", " ' ", "\u{2014}\u{ff01}"] {
             let source = format!(
