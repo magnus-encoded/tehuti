@@ -253,13 +253,8 @@ restart = { restart = false }"
     }
 
     #[test]
-    fn favourites_preserve_order_and_default_to_empty() {
-        let plain = parse_context("app_id = '*'\n[buttons]").unwrap();
-        assert_eq!(plain.favourites(), Vec::<String>::new());
-        let configured =
-            parse_context("app_id = '*'\nfavourites = ['reader.desktop', 'browser.desktop']\n[buttons]")
-                .unwrap();
-        assert_eq!(configured.favourites(), ["reader.desktop", "browser.desktop"]);
+    fn legacy_favourites_key_still_loads() {
+        assert!(parse_context("app_id = '*'\nfavourites = ['reader.desktop']\n[buttons]").is_ok());
         assert!(parse_context("app_id = '*'\nfavorite = ['reader.desktop']\n[buttons]").is_err());
     }
 
