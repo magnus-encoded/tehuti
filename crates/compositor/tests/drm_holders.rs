@@ -72,7 +72,7 @@ mod holders {
             device: "/dev/dri/card1".into(),
             holders: vec![],
         };
-        assert!(busy.to_string().contains("no other process"), "{busy}");
+        assert!(busy.to_string().contains("no holder was visible"), "{busy}");
     }
 
     #[test]
