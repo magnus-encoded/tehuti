@@ -431,6 +431,7 @@ mod tests {
         });
         for name in [
             tehuti_protocol::ButtonName::South,
+            tehuti_protocol::ButtonName::South,
             tehuti_protocol::ButtonName::DpadDown,
             tehuti_protocol::ButtonName::South,
         ] {
