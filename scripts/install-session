@@ -5,11 +5,13 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 root=${DESTDIR:-}
 launcher=$root/usr/local/bin/tehuti-session
 entry=$root/usr/share/wayland-sessions/tehuti.desktop
-if [ -e "$launcher" ] || [ -e "$entry" ]; then
+unit=$root/usr/local/lib/systemd/user/tehuti-session.target
+if [ -e "$launcher" ] || [ -e "$entry" ] || [ -e "$unit" ]; then
     printf '%s\n' 'Refusing to replace an existing Tehuti session. Remove it first.' >&2
     exit 1
 fi
 install -D -m 0755 "$repo/dist/tehuti-session" "$launcher"
 install -D -m 0644 "$repo/dist/tehuti.desktop" "$entry"
+install -D -m 0644 "$repo/dist/tehuti-session.target" "$unit"
 printf '%s\n' 'Tehuti session installed. The compositor must be at ~/.local/bin/tehuti.'
-printf 'Remove with: rm -- "%s" "%s"\n' "$launcher" "$entry"
+printf 'Remove with: rm -- "%s" "%s" "%s"\n' "$launcher" "$entry" "$unit"

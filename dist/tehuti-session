@@ -15,6 +15,12 @@ while :; do
         status=0
         XDG_CURRENT_DESKTOP=Tehuti XDG_SESSION_DESKTOP=Tehuti "$binary" "$contexts" "$@" || status=$?
         echo "Tehuti exited with status $status"
+        # The compositor registers the session itself; stopping here covers a crash,
+        # and Plasma then registers its own session on a clean slate.
+        if systemctl=$(command -v systemctl); then
+            "$systemctl" --user stop tehuti-session.target || echo 'could not stop tehuti-session.target'
+            "$systemctl" --user unset-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP || echo 'could not clear the session environment'
+        fi
         [ "$status" -ne 21 ] || exit 0
         [ "$status" -ne 75 ] || continue
         if [ "$status" -ne 20 ]; then

@@ -407,6 +407,14 @@ fn start_session(
         initial_discovery(!controllers.is_empty(), &mut compositor)
     };
 
+    // Only the real session registers; nested runs must not touch the host's session target.
+    let _registration = (backend == tehuti::backend::Backend::Tty && !headless).then(|| {
+        tehuti::session_registration::Registration::start(
+            &socket_name,
+            tehuti::child_process::display(),
+            &mut |warning| warn!(%warning, "systemd session registration failed"),
+        )
+    });
     let child = program
         .map(|program| {
             tehuti::client_env::command(&program, &socket_name)
