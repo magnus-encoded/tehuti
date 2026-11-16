@@ -113,7 +113,7 @@ named by the latest focus notice; subscribe to `focus` to know which one it is.
 Without a focus subscription, the plugin only knows that the focused application
 matches one of its manifest `app_ids`. States are `pressed` and `released`. Names are `south`, `east`, `north`,
 `west`, `left_bumper`, `right_bumper`, `left_trigger`, `right_trigger`, `select`, `record`, `start`, `guide`, `left_stick`,
-`right_stick`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`.
+`right_stick`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`, `paddle_1`, `paddle_2`, `paddle_3`, `paddle_4`.
 All names and enum values are case sensitive.
 
 Record (Share) presses and releases control push-to-talk and never reach plugins.

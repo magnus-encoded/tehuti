@@ -692,6 +692,13 @@ Sources are `compositor configure`, `client commit`, and `client request`
 Layout configures cover column widths, window heights and fullscreen.
 The log contains no window titles or content.
 
+## Back paddles
+
+Some pads have back paddles, which the kernel reports as BTN_GRIPL, BTN_GRIPR,
+BTN_GRIPL2 and BTN_GRIPR2. They are named `paddle_1` to `paddle_4` and work in
+`[buttons]` and in `push_to_talk`, like any other button. Most pads have none;
+a context that names a paddle still loads there, and the binding stays idle.
+
 ## Per-controller push-to-talk
 
 Pop the hood → Input lists Controller, Push to talk and Microphone. Left and

@@ -2634,6 +2634,9 @@ fn controller_ptt_uses_global_buttons_and_defaults_to_share() {
         ("push_to_talk = ['start']", ButtonName::Start, true),
         ("push_to_talk = ['start']", ButtonName::Record, false),
         ("push_to_talk = []", ButtonName::Record, false),
+        ("push_to_talk = ['paddle_1']", ButtonName::Paddle1, true),
+        ("push_to_talk = ['paddle_4']", ButtonName::Paddle4, true),
+        ("push_to_talk = ['paddle_4']", ButtonName::Paddle1, false),
     ] {
         let context = tehuti_protocol::parse_context(&format!(
             "app_id = '*'\n{setting}\n[buttons]\nstart = {{ key = 'enter' }}\nrecord = {{ key = 'enter' }}"

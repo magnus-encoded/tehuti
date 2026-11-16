@@ -541,6 +541,10 @@ const fn column_action(button: ButtonName) -> Option<Action> {
         | ButtonName::Guide
         | ButtonName::LeftStick
         | ButtonName::RightStick
+        | ButtonName::Paddle1
+        | ButtonName::Paddle2
+        | ButtonName::Paddle3
+        | ButtonName::Paddle4
         | ButtonName::DpadUp
         | ButtonName::DpadDown
         | ButtonName::DpadLeft

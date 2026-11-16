@@ -106,6 +106,18 @@ pub enum ButtonName {
     DpadDown,
     DpadLeft,
     DpadRight,
+    /// A back paddle (BTN_GRIPL); only some pads have one.
+    #[serde(rename = "paddle_1")]
+    Paddle1,
+    /// A back paddle (BTN_GRIPR); only some pads have one.
+    #[serde(rename = "paddle_2")]
+    Paddle2,
+    /// A back paddle (BTN_GRIPL2); only some pads have one.
+    #[serde(rename = "paddle_3")]
+    Paddle3,
+    /// A back paddle (BTN_GRIPR2); only some pads have one.
+    #[serde(rename = "paddle_4")]
+    Paddle4,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

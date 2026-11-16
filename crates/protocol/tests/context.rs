@@ -1031,6 +1031,28 @@ text = "a\u0000b"
     }
 
     #[test]
+    fn each_paddle_name_parses_in_buttons_and_push_to_talk() {
+        use tehuti_protocol::{Action, ButtonName};
+        for (n, name) in [
+            (1, ButtonName::Paddle1),
+            (2, ButtonName::Paddle2),
+            (3, ButtonName::Paddle3),
+            (4, ButtonName::Paddle4),
+        ] {
+            let context = parse_context(&format!(
+                "app_id = 'test'\n[buttons]\npaddle_{n} = {{ ticker = 'toggle' }}"
+            ))
+            .unwrap();
+            assert_eq!(context.action_for(name), Some(Action::ToggleTicker));
+            let context = parse_context(&format!(
+                "app_id = 'test'\nbuttons = {{}}\n[pad]\npush_to_talk = ['paddle_{n}']"
+            ))
+            .unwrap();
+            assert_eq!(context.passthrough_push_to_talk(), &[name]);
+        }
+    }
+
+    #[test]
     fn a_context_may_name_its_windows() {
         let context = parse_context("app_id = 'mgba-qt'\nlabel = ' mGBA '\nbuttons = {}").unwrap();
         assert_eq!(context.label(), Some("mGBA"));

@@ -481,7 +481,11 @@ impl Direction {
             | ButtonName::Start
             | ButtonName::Guide
             | ButtonName::LeftStick
-            | ButtonName::RightStick => None,
+            | ButtonName::RightStick
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4 => None,
         }
     }
 }
@@ -950,6 +954,10 @@ impl Keyboard {
             ButtonName::South
             | ButtonName::East
             | ButtonName::RightStick
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4
             | ButtonName::LeftTrigger
             | ButtonName::RightTrigger
             | ButtonName::Select
@@ -1393,6 +1401,10 @@ const fn captures(name: ButtonName, shoulders_move_caret: bool) -> bool {
         | ButtonName::Start
         | ButtonName::LeftStick
         | ButtonName::RightStick
+        | ButtonName::Paddle1
+        | ButtonName::Paddle2
+        | ButtonName::Paddle3
+        | ButtonName::Paddle4
         | ButtonName::LeftTrigger
         | ButtonName::RightTrigger
         | ButtonName::DpadUp
