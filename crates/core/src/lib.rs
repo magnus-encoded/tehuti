@@ -351,6 +351,17 @@ impl State {
         fuzzy_speech_match(focused_context(self), global_context(self), phrase)
     }
 
+    /// Whether the focused or global context maps the phrase, exactly, folded, by plural or fuzzily.
+    #[must_use]
+    pub fn context_maps_speech(&self, phrase: &str) -> bool {
+        let (focused, global) = (focused_context(self), global_context(self));
+        [focused, global]
+            .into_iter()
+            .flatten()
+            .any(|context| maps_phrase(context, phrase))
+            || fuzzy_speech_match(focused, global, phrase).is_some()
+    }
+
     /// Hides a shown mapping ticker or shows a hidden one; the choice outlasts focus changes.
     pub const fn toggle_ticker(&mut self) {
         self.bar.toggle_ticker();

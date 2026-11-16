@@ -1091,17 +1091,12 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
     };
     match (awaiting, reply) {
         (Await::PluginActive(event), Input::PluginActive(active)) => {
-            let (actions, route, press) = step_routed(&mut state.core, &event, active);
-            effects.push(Effect::DispatchPlugin {
-                event: press.clone().unwrap_or_else(|| event.clone()),
-                route,
-            });
-            frame.awaiting = Some(Await::PluginRequest {
-                event,
-                actions,
-                route,
-                press,
-            });
+            // "new <words>" opens the creation launcher unless a plugin handles speech or a context maps it.
+            if !active && let Some(request) = unmapped_new_request(&state.core, &event) {
+                effects.push(Effect::OpenLauncher(request));
+                return;
+            }
+            frame.awaiting = Some(plugin_decision(&mut state.core, event, active, effects));
         }
         (
             Await::PluginRequest {
@@ -1143,6 +1138,29 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             effects.push(Effect::InvalidReply);
         }
     }
+}
+
+/// Steps core for an event and asks the plugin to decide it.
+fn plugin_decision(core: &mut crate::State, event: Event, active: bool, effects: &mut Vec<Effect>) -> Await {
+    let (actions, route, press) = step_routed(core, &event, active);
+    effects.push(Effect::DispatchPlugin {
+        event: press.clone().unwrap_or_else(|| event.clone()),
+        route,
+    });
+    Await::PluginRequest {
+        event,
+        actions,
+        route,
+        press,
+    }
+}
+
+/// The creation request for a "new <words>" phrase no context maps.
+fn unmapped_new_request(core: &crate::State, event: &Event) -> Option<crate::unit_verbs::LauncherRequest> {
+    let Event::Speech { text } = event else {
+        return None;
+    };
+    crate::unit_verbs::new_request(text.as_str()).filter(|_| !core.context_maps_speech(text.as_str()))
 }
 
 /// Steps core for an event; a routed stick-modifier tap also returns its held-back press.
