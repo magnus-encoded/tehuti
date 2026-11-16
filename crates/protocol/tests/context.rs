@@ -192,13 +192,16 @@ restart = { restart = false }"
             );
         }
         let backslash = parse_context("app_id = '*'\n[buttons]\neast = { key = '\\' }").unwrap();
-        assert_eq!(backslash.key_for(tehuti_protocol::ButtonName::East), Some(KeyName::Backslash));
+        assert_eq!(
+            backslash.key_for(tehuti_protocol::ButtonName::East),
+            Some(KeyName::Backslash)
+        );
     }
 
     #[test]
     fn an_unknown_key_error_names_the_key() {
-        let error = parse_context("app_id = '*'\n[buttons]\neast = { key = 'florp', mods = ['ctrl'] }")
-            .unwrap_err();
+        let error =
+            parse_context("app_id = '*'\n[buttons]\neast = { key = 'florp', mods = ['ctrl'] }").unwrap_err();
         assert!(error.contains("florp"), "{error}");
         assert!(!error.contains("untagged"), "{error}");
     }
