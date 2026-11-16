@@ -883,10 +883,14 @@ impl Context {
         }
         let mut rest = phrase;
         for _ in key.split(' ') {
-            rest = rest.trim_start_matches(|c: char| !c.is_alphanumeric());
-            rest = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '\'' || c == '\u{2019}');
+            rest = rest.trim_start_matches(|character: char| !character.is_alphanumeric());
+            rest = rest.trim_start_matches(|character: char| {
+                character.is_alphanumeric() || character == '\'' || character == '\u{2019}'
+            });
         }
-        let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | ';'));
+        let rest = rest.trim_start_matches(|character: char| {
+            character.is_whitespace() || matches!(character, ',' | ':' | ';')
+        });
         if rest.trim().is_empty() {
             return Some(None);
         }
@@ -1285,7 +1289,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         if let Some(enabled) = prefix_rule(&value) {
             let key = normalized_speech_phrase(&mapped)
                 .map_err(|message| format!("speech phrase skipped: {message}"))?;
-            drop(text_prefixes.insert(key, enabled));
+            text_prefixes.extend([(key, enabled)]);
             continue;
         }
         let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
