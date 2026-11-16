@@ -31,7 +31,11 @@ key = "up"
 Button names use snake case, such as `south`, `left_bumper` and `dpad_left`.
 The analogue triggers are `left_trigger` and `right_trigger`; each presses at 40 percent of its travel and releases below 20 percent.
 Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, `home`, `end`, `page_up` and `page_down`. A mapping sends a complete
+`right`, `home`, `end`, `page_up` and `page_down`. Punctuation keys on a US
+layout may be written as the character or its name: `-` or `minus`, `=` or
+`equal`, `[` or `left_bracket`, `]` or `right_bracket`, `;` or `semicolon`,
+`'` or `apostrophe`, `` ` `` or `grave`, `,` or `comma`, `.` or `period`, `/` or
+`slash`, and `\` or `backslash`. An unknown key is reported by name. A mapping sends a complete
 key tap on button press. Releases send
 nothing. Key names are lowercase; the CamelCase spelling (`Tab`, `PageUp`)
 is accepted too, in contexts and plugin actions alike, and single letters may

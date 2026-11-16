@@ -164,6 +164,46 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn punctuation_keys_parse_as_characters_and_evdev_names() {
+        for (spelled, key) in [
+            ("=", KeyName::Equal),
+            ("equal", KeyName::Equal),
+            ("-", KeyName::Minus),
+            ("minus", KeyName::Minus),
+            ("[", KeyName::LeftBracket),
+            ("]", KeyName::RightBracket),
+            (";", KeyName::Semicolon),
+            ("'", KeyName::Apostrophe),
+            (",", KeyName::Comma),
+            (".", KeyName::Period),
+            ("/", KeyName::Slash),
+            ("`", KeyName::Grave),
+        ] {
+            let context = parse_context(&format!(
+                "app_id = '*'\n[buttons]\neast = {{ key = \"{spelled}\", mods = ['ctrl'] }}"
+            ))
+            .unwrap();
+            assert_eq!(
+                context.action_for(tehuti_protocol::ButtonName::East),
+                Some(tehuti_protocol::Action::Key {
+                    key,
+                    mods: vec![tehuti_protocol::Modifier::Ctrl]
+                })
+            );
+        }
+        let backslash = parse_context("app_id = '*'\n[buttons]\neast = { key = '\\' }").unwrap();
+        assert_eq!(backslash.key_for(tehuti_protocol::ButtonName::East), Some(KeyName::Backslash));
+    }
+
+    #[test]
+    fn an_unknown_key_error_names_the_key() {
+        let error = parse_context("app_id = '*'\n[buttons]\neast = { key = 'florp', mods = ['ctrl'] }")
+            .unwrap_err();
+        assert!(error.contains("florp"), "{error}");
+        assert!(!error.contains("untagged"), "{error}");
+    }
+
+    #[test]
     fn capitalised_key_names_mean_the_same_key_in_contexts_and_plugin_actions() {
         for (spelled, key) in [
             ("Tab", KeyName::Tab),
