@@ -64,7 +64,7 @@ mod recording_smoke {
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(config.join("speech-source"), "auto").unwrap();
         let result = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture"])
+            .args(["--exact", &format!("recording_smoke::{TEST}"), "--nocapture"])
             .env(PROBE, "1")
             .env("HOME", directory.path())
             .env("XDG_CONFIG_HOME", directory.path().join("config"))
