@@ -711,7 +711,7 @@ impl Scanout {
         self.modeset = true;
         // Keep the confirmed scanout alive until the preview is confirmed or reverted.
         let retained = self.rollback.take();
-        match self.render_frame(data) {
+        match self.render_frame(data, device) {
             Ok(()) => {
                 self.recovery.reset();
                 if !reverting {
@@ -852,25 +852,7 @@ impl Scanout {
         let mut mode_error = None;
         let result = mode::retry(
             &mut (&mut *self, &mut *data),
-            |(tty, data)| {
-                tty.render_frame(data).or_else(|error| {
-                    // A GLES failure after startup would freeze the screen; draw in software.
-                    match render::fall_back(&mut tty.renderer, device.device_fd(), &tty.surface) {
-                        Ok(true) => {
-                            tracing::warn!(%error, "GLES rendering failed; switched to pixman");
-                            advertise(&mut tty.renderer, &data.display.handle(), &mut data.compositor);
-                            tty.damage = OutputDamageTracker::from_output(&tty.output);
-                            tty.modeset = true;
-                            tty.render_frame(data)
-                        }
-                        Ok(false) => Err(error),
-                        Err(software) => {
-                            tracing::warn!(%software, "pixman fall-back failed");
-                            Err(error)
-                        }
-                    }
-                })
-            },
+            |(tty, data)| tty.render_frame(data, device),
             |(tty, data), error| {
                 tty.damage = OutputDamageTracker::from_output(&tty.output);
                 if tty.recovery.fallback_attempted() || tty.reject_preview(data)? || !tty.modeset {
@@ -895,19 +877,24 @@ impl Scanout {
         Ok(retry)
     }
 
-    fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
+    fn render_frame(&mut self, data: &mut LoopData, device: &DrmDevice) -> Result<(), Box<dyn Error>> {
         let started = std::time::Instant::now();
-        let drawn = render::draw(
+        let (drawn, switched) = render::draw(
             &mut self.renderer,
             self.next,
-            render::Pass {
+            &mut render::Pass {
                 drawn: &mut self.drawn,
                 full: self.modeset,
             },
             &self.output,
             &mut self.damage,
             &data.compositor,
+            (device.device_fd(), &self.surface),
         )?;
+        if switched {
+            advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
+            self.modeset = true;
+        }
         self.statistics.count(drawn.is_some());
         let Some(drawn) = drawn else {
             trace!(elapsed = ?started.elapsed(), "DRM frame unchanged");

@@ -38,6 +38,41 @@ impl<Gpu, Software> Rendering<Gpu, Software> {
     }
 }
 
+/// Draws with `draw`; if the GPU renderer fails, switches to software, runs `switched`, and draws once more.
+/// Only errors from `draw` trigger the switch, so callers keep submit failures out of it.
+///
+/// # Errors
+/// Returns the draw error when no switch is possible or the second draw fails.
+pub fn draw_with_fall_back<
+    Gpu,
+    Software,
+    Output,
+    DrawError: core::fmt::Display,
+    SoftwareError: core::fmt::Display,
+>(
+    rendering: &mut Rendering<Gpu, Software>,
+    mut draw: impl FnMut(&mut Rendering<Gpu, Software>) -> Result<Output, DrawError>,
+    software: impl FnOnce() -> Result<Software, SoftwareError>,
+    switched: impl FnOnce(&mut Rendering<Gpu, Software>),
+) -> Result<Output, DrawError> {
+    let error = match draw(rendering) {
+        Err(error) if matches!(rendering, Rendering::Gles(_)) => error,
+        other => return other,
+    };
+    match rendering.fall_back(software) {
+        Ok(true) => {
+            tracing::warn!(%error, "GLES rendering failed; switched to pixman");
+            switched(rendering);
+            draw(rendering)
+        }
+        Ok(false) => Err(error),
+        Err(software_error) => {
+            tracing::warn!(%software_error, "pixman fall-back failed");
+            Err(error)
+        }
+    }
+}
+
 /// Why no plane format matches the renderer, or `None` when one does.
 #[must_use]
 pub fn scanout_mismatch(renderer: &FormatSet, plane: &FormatSet) -> Option<String> {
@@ -175,6 +210,20 @@ impl Compositor {
         })
     }
 
+    /// Withdraws the dmabuf global and import route so clients are not offered a dead renderer.
+    pub fn disable_dmabuf(&mut self, display: &DisplayHandle) {
+        if let Some(global) = self.dmabuf.global.take() {
+            self.dmabuf.state.destroy_global::<Self>(display, global);
+        }
+        self.dmabuf.import = None;
+    }
+
+    /// Whether clients are currently offered dmabuf import.
+    #[must_use]
+    pub const fn dmabuf_advertised(&self) -> bool {
+        self.dmabuf.global.is_some()
+    }
+
     /// Imports a client dmabuf on the current renderer; `false` when none accepts it.
     pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool {
         self.dmabuf.import.as_mut().is_some_and(|import| import(dmabuf))
@@ -296,6 +345,21 @@ mod tests {
             released.upgrade().is_none(),
             "the compositor holds no replaced renderer"
         );
+    }
+
+    #[test]
+    fn disabling_dmabuf_withdraws_the_global_and_imports() {
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let device = Rc::new(RefCell::new(Device::default()));
+        compositor
+            .enable_dmabuf_on(&display.handle(), formats(), None, &device, accept)
+            .unwrap();
+        assert!(compositor.dmabuf_advertised());
+        compositor.disable_dmabuf(&display.handle());
+        assert!(!compositor.dmabuf_advertised());
+        assert!(!compositor.import_dmabuf(&dmabuf()));
+        assert_eq!(device.borrow().imports, 0);
     }
 
     #[test]
