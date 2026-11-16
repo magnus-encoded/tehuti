@@ -145,7 +145,7 @@ impl State {
                 hold.held = hold.held.saturating_add(*elapsed);
                 let mut due = 0;
                 while hold.held >= hold.next && due < MAX_REPEATS_PER_TICK {
-                    due += 1;
+                    due = due.saturating_add(1);
                     hold.next = hold
                         .next
                         .saturating_add(repeat.interval(hold.next.saturating_sub(delay)));
