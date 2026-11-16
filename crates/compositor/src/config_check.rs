@@ -221,22 +221,14 @@ fn report_unreachable_speech(
 
 fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
     let contexts: Vec<_> = loaded.iter().map(|(_, context)| context.clone()).collect();
-    report_unreachable_speech(
-        report,
-        loaded,
-        |phrase| {
-            tehuti_core::unit_verbs::reserved_word(phrase)
-                .map(|word| format!("core owns this reserved unit verb {word:?}"))
-        },
-    );
-    report_unreachable_speech(
-        report,
-        loaded,
-        |phrase| {
-            tehuti_core::invoke::slash_command(phrase, [])
-                .map(|_| "the built-in invoke verb types it as a slash command".to_owned())
-        },
-    );
+    report_unreachable_speech(report, loaded, |phrase| {
+        tehuti_core::unit_verbs::reserved_word(phrase)
+            .map(|word| format!("core owns this reserved unit verb {word:?}"))
+    });
+    report_unreachable_speech(report, loaded, |phrase| {
+        tehuti_core::invoke::slash_command(phrase, [])
+            .map(|_| "the built-in invoke verb types it as a slash command".to_owned())
+    });
     for shadowing in shadowed(&contexts) {
         match shadowing {
             Shadowing::Context { context, earlier } => {
