@@ -122,7 +122,7 @@ pub(crate) fn insert(
     let path = primary_gpu(session.seat())?
         .or_else(|| udev.device_list().next().map(|(_, path)| path.to_owned()))
         .ok_or("no DRM device on seat")?;
-    let (initialized_tty, drm_notifier) = create_output(session, &path, display, compositor)?;
+    let (initialized_tty, drm_notifier) = create_output_reporting_busy(session, path, display, compositor)?;
     let tty = Rc::new(RefCell::new(initialized_tty));
     let seat_token = insert_seat(event_loop, notifier, &tty)?;
     let keyboard_token = insert_keyboard(event_loop, &tty)?;
@@ -388,6 +388,23 @@ fn drm_output(display: &DisplayHandle, mode: Mode) -> (Output, GlobalId) {
     );
     output.set_preferred(mode.into());
     (output, global)
+}
+
+fn create_output_reporting_busy(
+    session: LibSeatSession,
+    path: std::path::PathBuf,
+    display: &DisplayHandle,
+    compositor: &mut Compositor,
+) -> Result<(Tty, smithay::backend::drm::DrmDeviceNotifier), Box<dyn Error>> {
+    match create_output(session, &path, display, compositor) {
+        Err(error) if tehuti::drm_holders::is_busy(&*error) => {
+            Err(Box::new(tehuti::drm_holders::DeviceBusy {
+                holders: tehuti::drm_holders::find(std::path::Path::new("/proc"), &path),
+                device: path,
+            }))
+        }
+        other => other,
+    }
 }
 
 fn create_output(
