@@ -558,16 +558,11 @@ inspect the surface content for letterboxing.
 
 ## Column widths
 
-The global context maps "Wider." to `switch-preset-column-width` and
-"Narrower." to `switch-preset-column-width-back`. These layout actions cycle
-the focused column through the width presets forward and backward, wrapping
-at either end.
-
-```toml
-[speech]
-"Wider." = { layout = "switch-preset-column-width" }
-"Narrower." = { layout = "switch-preset-column-width-back" }
-```
+Saying "width" opens the width adjuster, which the stick moves. The preset
+cycle stays available to buttons, `layout = "switch-preset-column-width"` and
+`layout = "switch-preset-column-width-back"`, but no shipped phrase maps it:
+voice names whole units, and the controller does the increments. A phrase
+that maps an action no button reaches draws a `--check-config` warning.
 
 New columns default to one-third of the available width, the narrowest preset.
 `LayoutConfig.default_column_width` and per-window rules can override it.

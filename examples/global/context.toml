@@ -20,7 +20,3 @@ button = "Y"
 # repeat_rate = 12
 # repeat_max_rate = 30
 # repeat_ramp_ms = 2000
-
-[speech]
-"Wider." = { layout = "switch-preset-column-width" }
-"Narrower." = { layout = "switch-preset-column-width-back" }
