@@ -459,10 +459,11 @@ struct ConnectedSurface {
     listed_modes: Vec<Mode>,
 }
 
-fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn Error>> {
-    let request = std::env::var("TEHUTI_MODE").ok();
-    let parsed = request.as_deref().and_then(mode::Request::parse);
-    let resources = device.resource_handles()?;
+/// Connected connectors in the order a rescan tries them: the configured fallback comes last.
+fn connected_in_try_order(
+    device: &DrmDevice,
+    resources: &smithay::reexports::drm::control::ResourceHandles,
+) -> Result<Vec<(connector::Handle, connector::Info)>, Box<dyn Error>> {
     let mut connected = Vec::new();
     for handle in resources.connectors() {
         let connector = device.get_connector(*handle, true)?;
@@ -481,8 +482,25 @@ fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn
         .collect();
     let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let fallback = tehuti::output_choice::fallback_from_env();
-    for index in tehuti::output_choice::try_order(&name_refs, fallback.as_deref()) {
-        let (handle, connector) = &connected[index];
+    let mut slots: Vec<_> = tehuti::output_choice::try_order(&name_refs, fallback.as_deref())
+        .into_iter()
+        .map(Some)
+        .collect();
+    slots.shrink_to_fit();
+    let mut pool: Vec<_> = connected.into_iter().map(Some).collect();
+    Ok(slots
+        .into_iter()
+        .flatten()
+        .filter_map(|slot| pool.get_mut(slot).and_then(Option::take))
+        .collect())
+}
+
+fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn Error>> {
+    let request = std::env::var("TEHUTI_MODE").ok();
+    let parsed = request.as_deref().and_then(mode::Request::parse);
+    let resources = device.resource_handles()?;
+    let connected = connected_in_try_order(device, &resources)?;
+    for (handle, connector) in &connected {
         let listed: Vec<_> = connector
             .modes()
             .iter()

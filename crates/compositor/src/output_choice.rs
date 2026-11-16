@@ -16,10 +16,12 @@ pub fn fallback_from_config(source: &str) -> Option<String> {
 /// connected. The `fallback` connector moves behind all the others.
 #[must_use]
 pub fn try_order(connected: &[&str], fallback: Option<&str>) -> Vec<usize> {
-    let (mut rest, held): (Vec<usize>, Vec<usize>) =
-        (0..connected.len()).partition(|index| Some(connected[*index]) != fallback);
+    let (mut rest, held): (Vec<_>, Vec<_>) = connected
+        .iter()
+        .enumerate()
+        .partition(|(_, name)| Some(**name) != fallback);
     rest.extend(held);
-    rest
+    rest.into_iter().map(|(index, _)| index).collect()
 }
 
 /// The configured fallback connector name, read from `$XDG_CONFIG_HOME/tehuti/config.toml`.
@@ -33,7 +35,7 @@ pub fn fallback_from_env() -> Option<String> {
 
 /// The kernel's connector name, such as `HDMI-A-1`, from the interface's variant name and id.
 #[must_use]
-pub fn connector_name(interface: &str, id: u32) -> String {
+pub fn connector_name(interface: &str, number: u32) -> String {
     let kernel = match interface {
         "DVII" => "DVI-I",
         "DVID" => "DVI-D",
@@ -46,5 +48,5 @@ pub fn connector_name(interface: &str, id: u32) -> String {
         "EmbeddedDisplayPort" => "eDP",
         other => other,
     };
-    format!("{kernel}-{id}")
+    format!("{kernel}-{number}")
 }
