@@ -28,10 +28,15 @@ key = "tab"
 key = "up"
 ```
 
-Button names use snake case, such as `south`, `left_bumper` and `dpad_left`.
+Button names use snake case: `south`, `east`, `north`, `west`, `left_bumper`,
+`right_bumper`, `left_trigger`, `right_trigger`, `select`, `record`, `start`,
+`guide`, `left_stick`, `right_stick`, `dpad_up`, `dpad_down`, `dpad_left`,
+`dpad_right` and `paddle_1` to `paddle_4`. The face buttons also accept the
+Xbox letters `A`, `B`, `Y` and `X` for `south`, `east`, `north` and `west`.
 The analogue triggers are `left_trigger` and `right_trigger`; each presses at 40 percent of its travel and releases below 20 percent.
-Keys are `enter`, `escape`, `space`, `tab`, `backspace`, `up`, `down`, `left`,
-`right`, `home`, `end`, `page_up` and `page_down`. Punctuation keys on a US
+Keys are `a` to `z`, `0` to `9`, `f1` to `f12`, `enter`, `escape`, `space`,
+`tab`, `backspace`, `up`, `down`, `left`, `right`, `home`, `end`, `page_up`,
+`page_down`, `insert` and `delete`. Punctuation keys on a US
 layout may be written as the character or its name: `-` or `minus`, `=` or
 `equal`, `[` or `left_bracket`, `]` or `right_bracket`, `;` or `semicolon`,
 `'` or `apostrophe`, `` ` `` or `grave`, `,` or `comma`, `.` or `period`, `/` or
@@ -89,8 +94,9 @@ A cursor and “MOUSE MODE” notice show the mode. Exiting mouse mode or losing
 the controller releases held mouse buttons. Holding Guide+Start for three seconds
 still quits in mouse mode.
 
-Speech phrases map to the same key or text actions, and also to `launch`, `close`
-and `notify` (see the [protocol](protocol/README.md)):
+Speech phrases map to the same key or text actions, and also to `launch`, `close`,
+`notify`, `restart`, `layout`, `ticker`, `undo_dictation` and `secret` (see
+"Mapping values" below and the [protocol](protocol/README.md)):
 
 ```toml
 [speech]
@@ -108,13 +114,33 @@ word breaks are ignored ("bay-3" and "bay3" match "Bay three"); then a plain plu
 or singular of a last word of four or more letters matches. A phrase matched by
 fold or plural takes the utterance before spoken keys do, as exact phrases already do.
 The first initialized plugin subscribed to speech whose `app_ids` contain the focused application id replaces these mappings; it need not subscribe to buttons.
-Set top-level `unmatched_speech = "type"` before any TOML table to type unmatched
+Set top-level `unmatched_speech = "type"` (the only accepted value) before any TOML table to type unmatched
 speech into the focused window, followed by one space. Mapped phrases still win.
 The transcript keeps its original casing and punctuation. Empty or whitespace-only
 transcripts do nothing. The option applies only to the focused window's context.
 Without the option, unmatched speech shows “No speech mapping” for three
 seconds above the client without changing focus. Record (Share) controls push-to-talk
 by default. Configured push-to-talk buttons never reach context mappings.
+
+## Mapping values
+
+A button, stick direction or phrase takes exactly one of these values. Unknown
+fields are rejected.
+
+| Value | Effect |
+| --- | --- |
+| `{ key = "tab", mods = ["ctrl"], hold = true }` | Taps a key. `mods` lists `ctrl`, `alt`, `shift` or `super`. `hold` keeps the key down while the button is held (buttons only; no `mods`). |
+| `{ text = "Hello" }` | Types Unicode text. |
+| `{ launch = "org.example.App.desktop" }` | Launches an installed desktop entry. |
+| `{ close = "focused" }` | Closes the focused window. |
+| `{ restart = true }` | Restarts the compositor in its session. `false` is rejected. |
+| `{ notify = "Ready" }` | Shows a notice. |
+| `{ layout = "focus-column-left" }` | Runs a tiling action, written in kebab case: `focus-column-left`, `focus-column-right`, `focus-window-up`, `focus-window-down`, `move-column-left`, `move-column-right`, `switch-preset-column-width`, `switch-preset-column-width-back`, `focus-workspace-down`, `focus-workspace-up`, `move-column-to-workspace-down`, `move-column-to-workspace-up`, `toggle-fullscreen`, `maximize-column`. |
+| `{ ticker = "toggle" }` | Shows or hides the mapping ticker. |
+| `{ undo_dictation = true }` | Deletes the last dictated phrase. `false` is rejected. |
+| `{ secret = { entry = "mail" } }` | Asks for confirmation, then delivers the named secret entry. |
+
+A phrase may also carry `icon = "..."` beside its value (see the ticker).
 
 ## Shared sections
 
@@ -444,7 +470,10 @@ settings slider, and edits reload without a restart.
 The draft row sits below the keys, beside the powerline, and shows a window
 of text around the caret or picked word.
 The legacy `button` and `open_on_app_level` options remain accepted but
-do not change the opening triggers. See `examples/global/context.toml`.
+do not change the opening triggers; `button` cannot be `guide` or `record`.
+`repeat_rate`, `repeat_max_rate`, `word_min_rate` and `word_max_rate` take 1 to
+1000, `repeat_ramp_ms` at least 1, and `word_repeat_from` 500 to 1000.
+See `examples/global/context.toml`.
 
 A terminal reports the terminal field purpose or has `terminal = true`.
 Its layout adds Esc, Tab, Ctrl, Alt, arrows, paging keys and shell symbols.
@@ -470,9 +499,27 @@ fade_ms = 100
 
 `strength` is the retained colour fraction, between 0 and 1, rounded to
 thousandths. `fade_ms` is the time to full dimming in milliseconds (0 to 65535).
-The defaults shown above apply when the values are absent.
+The defaults shown above apply when the values are absent. Unknown keys are rejected.
 
 The global context accepts `push_to_talk = ['start']` before `[buttons]` to use Menu for push-to-talk. The default is `['record']`; `[]` disables controller push-to-talk. Listed buttons replace their context bindings; Guide+Start still escapes.
+
+## Pointer and launcher settings
+
+`[pointer] physical = true` lets a physical mouse move the pointer while the
+context is focused. It defaults to false, and the global `*` context does not
+supply it.
+
+`[launcher]` tunes the destination launcher. `auto_pick` (default true) picks
+the single clear match by itself after `delay_ms` milliseconds (default 5000;
+at least 1). `jev` (default false) allows asking Jev to rank the choices; the
+request is currently only logged because no client is connected. The active
+context's value wins over the global `*` context's.
+
+```toml
+[launcher]
+auto_pick = true
+delay_ms = 3000
+```
 
 ## Key tap length
 
@@ -523,8 +570,8 @@ height = 0.75
 
 `width` is a fraction of the screen, written as an exact string: `"1/2"`,
 `"2/3"`, `"1"`. Fractions are the canonical form because screen sizes change
-and people judge what they see as parts of the screen. `column_width` is the
-older name of the same key. A named preset (`"one-third"`, `"one-half"`,
+and people judge what they see as parts of the screen. `column_width` is an equivalent name
+for the same key. A named preset (`"one-third"`, `"one-half"`,
 `"two-thirds"`, `"full"`) is also accepted.
 
 Pixels (`width = 1280`) and decimals (`width = 0.667`) are accepted as input.
@@ -533,14 +580,15 @@ front of it and rewrites the line to the nearest simple fraction (denominator
 1 to 6), keeping the original as a comment:
 
 ```toml
+[window]
 width = "2/3"  # was 1280 px on 1920 px
 ```
 
 The rest of the file is kept byte for byte. If the file is not writable the
 converted value is still used. A value that does not parse, a zero
 denominator, or a value outside 0 to 1 after conversion is a config error:
-`tehuti --check-config` reports it. `height` takes a fraction greater than 0
-and at most 1 or a preset. Fractions refer to the available working area, with
+`tehuti --check-config` reports it. `height` takes a decimal greater than 0
+and at most 1 or a preset; it does not accept `"2/3"` strings. Fractions refer to the available working area, with
 layout gaps and borders applied. Omit `height` to fill the column vertically;
 omit `width` to use the layout default. Fullscreen takes precedence.
 

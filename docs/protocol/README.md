@@ -54,8 +54,10 @@ The core logs the code and message at warn and treats the reply as declining
 closes the plugin for an error reply. An initialize error leaves initialization
 pending until a valid reply or the existing deadline. For unknown methods sent
 to a plugin, it may reply with error -32601 or stay silent; both mean declined.
-Valid plugin `initialize`, `button` and `focus` calls are ignored: plugins send
-only replies and `actions` notices.
+Valid plugin `initialize`, `button`, `speech`, `verb`, `focus`, `adjuster` and
+`pad_input` calls are ignored: plugins send only replies and these notices:
+`actions`, `speech.hints`, `invoke.words`, `verbs`, `pad_overrides` and
+`status`, plus `submit_actions` requests.
 When an `actions` notice lists a `key` action directly followed by a `text`
 action, the core waits 50 ms after the key before applying the rest of the list
 in order to whatever has focus then, so the client can react to the key first.
@@ -409,6 +411,13 @@ Their action shapes are:
 ```
 
 These actions are reserved for core contexts; plugins cannot submit them.
+Context mappings also reach four more reserved actions, whose JSON shapes are
+`{"type":"restart"}`, `{"type":"layout","action":"focus-column-left"}`,
+`{"type":"toggle_ticker"}` and `{"type":"undo_dictation"}`. The core also uses
+`{"type":"key_down","key":"x"}`, `{"type":"key_up","key":"x"}` and
+`{"type":"secret_request","reference":{"entry":"mail"}}` itself. A plugin that
+sends any of them has its whole batch rejected as "reserved for the core".
+See "Mapping values" in the [context guide](../contexts.md) for the TOML forms.
 Launch uses `gtk-launch`, which must be installed, with the compositor's Wayland
 socket. Desktop entry ids include `.desktop` and match entries beneath
 `$XDG_DATA_HOME/applications` (default `~/.local/share/applications`) and
@@ -451,7 +460,7 @@ A plugin may send actions without a request:
 These notices need no event subscription or application match, but require
 completed initialization. They have no id, response or button deadline.
 They are independent actions and never complete a pending request.
-Notice actions are reserved for the core and are dropped from plugins.
+`notice` actions are reserved for the core, like `launch` and `close`.
 Every action requires its matching manifest permission: `key`, `text`, or
 `quit`. This applies to actions in replies, `submit_actions` and notices alike:
 replying with a `text` action needs the `text` permission. The core rejects the entire batch if any action lacks permission or
