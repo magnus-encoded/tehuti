@@ -114,6 +114,16 @@ Without the option, unmatched speech shows “No speech mapping” for three
 seconds above the client without changing focus. Record (Share) controls push-to-talk
 by default. Configured push-to-talk buttons never reach context mappings.
 
+### Type prefix
+
+`"type" = { text_after = true }` in `[speech]` makes a phrase that starts with
+"type" type the rest of the phrase, with its own case and punctuation and one
+trailing space, as `unmatched_speech = "type"` does. The key itself is never
+typed, and a bare "type" does nothing. A whole-phrase mapping such as
+"type slash" wins over the prefix rule. The rule works in the global context
+and in application contexts; a context's own rule overrides the global one,
+and `"type" = { none = true }` switches an inherited rule off for that context.
+
 ## Legacy favourites key
 
 The global context may still contain a top-level `favourites` list. Tehuti
