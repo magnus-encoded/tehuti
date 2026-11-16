@@ -452,6 +452,18 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
     }
 
     #[test]
+    fn releasing_host_keys_releases_a_held_meta_guide() -> Result<(), Box<dyn core::error::Error>> {
+        const KEY_LEFTMETA: u32 = 125;
+        let root = tempfile::tempdir()?;
+        let (_display, mut compositor) = session(root.path())?;
+        compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), true);
+        assert!(compositor.guide_held(), "Meta is Guide");
+        compositor.release_host_keys();
+        assert!(!compositor.guide_held(), "a device removal must not leave Guide held");
+        Ok(())
+    }
+
+    #[test]
     fn meta_space_opens_the_launcher_and_typing_then_filters() -> Result<(), Box<dyn core::error::Error>> {
         const KEY_LEFTMETA: u32 = 125;
         const KEY_SPACE: u32 = 57;
