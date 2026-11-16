@@ -1091,6 +1091,15 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
     };
     match (awaiting, reply) {
         (Await::PluginActive(event), Input::PluginActive(active)) => {
+            // "new <words>" opens the creation launcher unless a plugin handles speech or a context maps it.
+            if !active
+                && let Event::Speech { text } = &event
+                && let Some(request) = crate::unit_verbs::new_request(text.as_str())
+                && !state.core.context_maps_speech(text.as_str())
+            {
+                effects.push(Effect::OpenLauncher(request));
+                return;
+            }
             let (actions, route, press) = step_routed(&mut state.core, &event, active);
             effects.push(Effect::DispatchPlugin {
                 event: press.clone().unwrap_or_else(|| event.clone()),
@@ -1439,13 +1448,6 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     }
     if let Event::Speech { text } = &event
         && let Some(request) = crate::unit_verbs::launcher_request(text.as_str())
-    {
-        effects.push(Effect::OpenLauncher(request));
-        return;
-    }
-    if let Event::Speech { text } = &event
-        && let Some(request) = crate::unit_verbs::new_request(text.as_str())
-        && !state.core.context_maps_speech(text.as_str())
     {
         effects.push(Effect::OpenLauncher(request));
         return;
