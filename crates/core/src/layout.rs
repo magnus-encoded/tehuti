@@ -1499,8 +1499,17 @@ impl Layout {
                     #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
                     let start = self.outputs[output].column_x(active, first);
                     #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+                    let fullscreen = {
+                        let focused = &self.outputs[output].workspaces[active].columns[index];
+                        focused.tiles[focused.focused].mode == TileMode::Fullscreen
+                    };
+                    #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+                    let anchor = self.outputs[output].column_x(active, index);
+                    #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
                     {
-                        self.outputs[output].workspaces[active].view = start.sub(config.gaps);
+                        // A fullscreen column keeps its output-edge anchor.
+                        self.outputs[output].workspaces[active].view =
+                            if fullscreen { working.x.add(anchor) } else { start.sub(config.gaps) };
                     }
                 }
             }
