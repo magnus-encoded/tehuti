@@ -676,9 +676,21 @@ fn drop_reopened_controllers(data: &mut LoopData) {
             return true;
         }
         if let Some(kept) = pad.pad.detach_virtual_pad() {
-            *spare = Some(kept);
+            controller::keep_spare(spare, kept);
         }
         false
+    });
+}
+
+/// Removes the event sources of pads that are gone, so a dead descriptor wakes the loop once.
+fn prune_controller_tokens(data: &mut LoopData, handle: &calloop::LoopHandle<'_, LoopData>) {
+    data.controller_tokens.retain(|path, token| {
+        if data.controllers.contains_key(path) {
+            true
+        } else {
+            handle.remove(*token);
+            false
+        }
     });
 }
 
@@ -688,14 +700,7 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
     }
     let was_attached = !data.controllers.is_empty();
     drop_reopened_controllers(data);
-    data.controller_tokens.retain(|path, token| {
-        if data.controllers.contains_key(path) {
-            true
-        } else {
-            handle.remove(*token);
-            false
-        }
-    });
+    prune_controller_tokens(data, handle);
     if was_attached && data.controllers.is_empty() {
         controllers_disconnected(data);
     }
@@ -797,7 +802,14 @@ fn insert_controllers(
                 handle
                     .insert_source(
                         Generic::new(controller_fd, Interest::READ, calloop::Mode::Level),
-                        |_, _, data| Ok(route_controller_input(data)),
+                        {
+                            let remover = handle.clone();
+                            move |_, _, data| {
+                                let action = route_controller_input(data);
+                                prune_controller_tokens(data, &remover);
+                                Ok(action)
+                            }
+                        },
                     )
                     .map_err(|error| -> Box<dyn Error> { Box::new(error) })
             });
@@ -930,7 +942,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         },
         |controller| {
             if let Some(kept) = controller.pad.detach_virtual_pad() {
-                *spare = Some(kept);
+                controller::keep_spare(spare, kept);
             }
         },
     );
@@ -1078,7 +1090,7 @@ fn pump_virtual_pads(data: &mut LoopData) {
             // The physical pad is gone; the virtual pad stays, at rest, for the next one.
             warn!(%error, "physical pad lost; keeping the virtual pad");
             if let Some(kept) = controller.pad.detach_virtual_pad() {
-                *spare = Some(kept);
+                controller::keep_spare(spare, kept);
             }
             controller.watchdog.request_reopen();
         }
