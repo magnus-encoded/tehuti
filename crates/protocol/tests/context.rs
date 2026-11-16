@@ -716,7 +716,8 @@ restart = { restart = false }"
             "{:?}",
             context.skipped_phrases()
         );
-        let first = parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"zed.\" = { key = 'enter' }").unwrap();
+        let first =
+            parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"zed.\" = { key = 'enter' }").unwrap();
         assert_eq!(context.speech_action("zed"), first.speech_action("zed"));
     }
 

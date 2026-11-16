@@ -252,7 +252,10 @@ mod context_reload {
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         compositor.set_context_files(contexts::load_files(directory.path()));
         let notice = compositor.visible_notice_text().unwrap();
-        assert!(notice.starts_with("PHRASE SKIPPED one/context.toml (+2 more)\n"), "{notice}");
+        assert!(
+            notice.starts_with("PHRASE SKIPPED one/context.toml (+2 more)\n"),
+            "{notice}"
+        );
         assert!(notice.contains("go."), "{notice}");
     }
 
