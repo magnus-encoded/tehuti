@@ -1118,7 +1118,11 @@ impl Compositor {
             .as_deref()
             .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &self.speech_title))
             .is_some_and(|context| context.mapped_buttons().any(|mapped| mapped == name));
-        let taken_by = if self.plugins.as_ref().is_some_and(|plugins| plugins.pad_consumed(name)) {
+        let taken_by = if self
+            .plugins
+            .as_ref()
+            .is_some_and(|plugins| plugins.pad_consumed(name))
+        {
             "plugin"
         } else if self.virtual_pad_consumed(name) {
             "virtual pad"
@@ -1127,7 +1131,12 @@ impl Compositor {
         } else {
             "core"
         };
-        let controller = self.settings().input.active_controller.as_deref().unwrap_or("none");
+        let controller = self
+            .settings()
+            .input
+            .active_controller
+            .as_deref()
+            .unwrap_or("none");
         tracing::debug!(controller, button = ?name, ?state, taken_by, "controller button");
     }
 
