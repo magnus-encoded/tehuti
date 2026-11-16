@@ -113,5 +113,8 @@ mod menu_reload {
         assert!(!dispatch_until(Duration::from_millis(500)));
         std::fs::write(&path, entry("Alpha")).unwrap();
         assert!(dispatch_until(Duration::from_secs(5)));
+        let (_display, mut compositor) = compositor();
+        compositor.reload_menu_config(system_menu::load_from(&path));
+        assert_eq!(compositor.menu_config().labels(), ["Alpha"]);
     }
 }
