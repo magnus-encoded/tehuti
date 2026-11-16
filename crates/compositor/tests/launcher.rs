@@ -457,10 +457,17 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         let root = tempfile::tempdir()?;
         let (_display, mut compositor) = session(root.path())?;
         compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), true);
-        assert!(compositor.guide_held(), "Meta is Guide");
         compositor.release_host_keys();
+        // A Start held alone must not read as the Guide+Start escape chord.
+        compositor.handle(&tehuti_protocol::Event::Button {
+            name: tehuti_protocol::ButtonName::Start,
+            state: tehuti_protocol::ButtonState::Pressed,
+        });
+        compositor.handle(&tehuti_protocol::Event::Tick {
+            elapsed: core::time::Duration::from_secs(4),
+        });
         assert!(
-            !compositor.guide_held(),
+            !compositor.quit_requested(),
             "a device removal must not leave Guide held"
         );
         Ok(())

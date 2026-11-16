@@ -1003,12 +1003,6 @@ impl Compositor {
         self.pointer.clone().button(self, &event);
         self.pointer.clone().frame(self);
     }
-    /// Whether core dispatch believes Guide is down.
-    #[must_use]
-    pub const fn guide_held(&self) -> bool {
-        self.dispatch.core().guide_held()
-    }
-
     #[must_use]
     pub fn pad_passthrough(&self) -> bool {
         self.dispatch.core().passthrough() && !self.dispatch.overlay_owns_pad()
