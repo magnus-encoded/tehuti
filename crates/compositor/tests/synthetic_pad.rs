@@ -3476,7 +3476,7 @@ else:
                 .voice_bar()
                 .segments()
                 .iter()
-                .any(|segment| segment.text == "UP · 1")
+                .any(|segment| segment.text == "UP · Workspace 1")
         );
     }
 
