@@ -1146,20 +1146,6 @@ mod tests {
     }
 
     #[test]
-    fn parking_a_spare_keeps_one_already_parked() {
-        let log = Rc::new(RefCell::new(Log::default()));
-        let mut spare = unplugged(&log);
-        let other = unplugged(&log).unwrap();
-        tehuti::controller::keep_spare(&mut spare, other);
-        assert!(spare.is_some());
-        assert_eq!(
-            log.borrow().live,
-            1,
-            "the extra virtual pad is dropped, not leaked"
-        );
-    }
-
-    #[test]
     fn switching_mirroring_off_keeps_the_spare_virtual_pad() {
         let log = Rc::new(RefCell::new(Log::default()));
         let mut spare = unplugged(&log);

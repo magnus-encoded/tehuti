@@ -1489,6 +1489,39 @@ mod mirror_tests {
         InputEvent::new(EventType::KEY.0, code.code(), value)
     }
 
+    struct Counted(std::rc::Rc<core::cell::Cell<usize>>);
+
+    impl super::MirrorSink for Counted {
+        fn emit(&mut self, _frame: &[InputEvent]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.set(self.0.get().saturating_add(1));
+        }
+    }
+
+    fn virtual_pad(drops: &std::rc::Rc<core::cell::Cell<usize>>) -> super::VirtualPad {
+        super::VirtualPad(super::Mirror {
+            device: Box::new(Counted(std::rc::Rc::clone(drops))),
+            copy: MirrorCopy::default(),
+            centres: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn parking_a_spare_keeps_the_one_already_parked() {
+        let drops = std::rc::Rc::default();
+        let mut spare = Some(virtual_pad(&drops));
+        super::keep_spare(&mut spare, virtual_pad(&drops));
+        assert!(spare.is_some());
+        assert_eq!(drops.get(), 1, "the extra virtual pad is dropped");
+        super::keep_spare(&mut None, virtual_pad(&drops));
+        assert_eq!(drops.get(), 2);
+    }
+
     #[test]
     fn one_frame_keeps_matched_inputs_and_copies_the_rest() {
         let mut copy = MirrorCopy::default();
