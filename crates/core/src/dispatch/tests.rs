@@ -1811,17 +1811,25 @@ fn settings_event(world: &mut World, state: State, event: Event) -> State {
 }
 
 fn open_display(world: &mut World) -> State {
-    let state = world.run(
-        State::default(),
-        Input::DisplayModes {
-            modes: vec![
-                "1920x1080@60".into(),
-                "3840x2160@60".into(),
-                "3840x2160@120".into(),
-            ],
-            current: 0,
-        },
-    );
+    open_display_with(
+        world,
+        vec![
+            "1920x1080@60".into(),
+            "3840x2160@60".into(),
+            "3840x2160@120".into(),
+        ],
+        0,
+    )
+}
+
+/// Display page with the Resolution row expanded into its mode list.
+fn open_display_expanded(world: &mut World) -> State {
+    let state = open_display(world);
+    settings_button(world, state, ButtonName::South)
+}
+
+fn open_display_with(world: &mut World, modes: Vec<String>, current: usize) -> State {
+    let state = world.run(State::default(), Input::DisplayModes { modes, current });
     let state = settings_event(
         world,
         state,
@@ -1887,7 +1895,7 @@ fn wallpaper_preview_saves_and_cancel_restores_saved_choice() {
 #[test]
 fn settings_navigation_is_bounded_and_consumes_client_input() {
     let mut world = World::default();
-    let mut state = open_display(&mut world);
+    let mut state = open_display_expanded(&mut world);
     assert!(state.settings().open);
     assert_eq!(state.settings().page, Page::Display);
     world.trace.clear();
@@ -1924,6 +1932,9 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
             .any(|effect| matches!(effect, Effect::Apply(_) | Effect::ConfirmSecret(_)))
     );
     state = settings_button(&mut world, state, ButtonName::East);
+    assert_eq!(state.settings().page, Page::Display, "B collapses first");
+    assert!(!state.settings().resolution_open);
+    state = settings_button(&mut world, state, ButtonName::East);
     assert!(state.settings().open);
     assert_eq!(state.settings().page, Page::Categories);
     state = settings_button(&mut world, state, ButtonName::East);
@@ -1933,7 +1944,7 @@ fn settings_navigation_is_bounded_and_consumes_client_input() {
 #[test]
 fn successful_mode_apply_starts_countdown_and_south_confirms_once() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     world.trace.clear();
     let state = settings_button(&mut world, state, ButtonName::South);
@@ -1986,7 +1997,7 @@ fn successful_mode_apply_starts_countdown_and_south_confirms_once() {
 fn unconfirmed_mode_reverts_at_fifteen_seconds_without_persisting() {
     for final_tick in [Duration::from_secs(1), Duration::from_secs(20)] {
         let mut world = World::default();
-        let state = open_display(&mut world);
+        let state = open_display_expanded(&mut world);
         let state = settings_button(&mut world, state, ButtonName::DpadDown);
         let state = settings_button(&mut world, state, ButtonName::South);
         let state = world.run(state, Input::ModeApplied(Some(1)));
@@ -2015,7 +2026,7 @@ fn unconfirmed_mode_reverts_at_fifteen_seconds_without_persisting() {
 #[test]
 fn rejected_modes_keep_current_choice_and_do_not_offer_confirmation() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let state = world.run(state, Input::ModeApplied(None));
@@ -2049,7 +2060,7 @@ fn east_and_the_global_phrase_cancel_mode_preview() {
         },
     ] {
         let mut world = World::default();
-        let state = open_display(&mut world);
+        let state = open_display_expanded(&mut world);
         let state = settings_button(&mut world, state, ButtonName::DpadDown);
         let state = settings_button(&mut world, state, ButtonName::South);
         let state = world.run(state, Input::ModeApplied(Some(1)));
@@ -2066,7 +2077,7 @@ fn east_and_the_global_phrase_cancel_mode_preview() {
 #[test]
 fn closing_during_apply_reverts_after_the_backend_reports_success() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let state = settings_event(
@@ -2088,7 +2099,7 @@ fn closing_during_apply_reverts_after_the_backend_reports_success() {
 #[test]
 fn confirmation_at_the_deadline_cannot_persist_the_expired_preview() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let state = world.run(state, Input::ModeApplied(Some(1)));
@@ -2112,11 +2123,91 @@ fn confirmation_at_the_deadline_cannot_persist_the_expired_preview() {
     );
 }
 
+fn modes_of(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("{}x1080@60", 1000 + index)).collect()
+}
+
+proptest! {
+    #[test]
+    fn collapsed_resolution_is_one_row_above_scale(count in 1_usize..40, current in 0_usize..40) {
+        let current = current % count;
+        let mut world = World::default();
+        let state = open_display_with(&mut world, modes_of(count), current);
+        prop_assert!(!state.settings().resolution_open);
+        let state = settings_button(&mut world, state, ButtonName::DpadDown);
+        world.trace.clear();
+        let state = settings_button(&mut world, state, ButtonName::DpadRight);
+        prop_assert!(world.trace.contains(&Effect::SettingsScale(core::num::NonZeroU32::new(2).unwrap())));
+        prop_assert_eq!(state.settings().scale.get(), 2);
+        let state = settings_button(&mut world, state, ButtonName::DpadUp);
+        prop_assert_eq!(state.settings().selected, current, "one step up is the Resolution row again");
+    }
+
+    #[test]
+    fn expanding_picking_and_collapsing_behave_as_the_picker(count in 2_usize..40, current in 0_usize..40) {
+        let current = current % count;
+        let mut world = World::default();
+        let state = open_display_with(&mut world, modes_of(count), current);
+        world.trace.clear();
+        let state = settings_button(&mut world, state, ButtonName::South);
+        prop_assert!(state.settings().resolution_open);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SettingsMode(_))));
+        let target = if current == 0 { 1 } else { current - 1 };
+        let key = if target > current { ButtonName::DpadDown } else { ButtonName::DpadUp };
+        let state = settings_button(&mut world, state, key);
+        prop_assert_eq!(state.settings().selected, target);
+        let state = settings_button(&mut world, state, ButtonName::South);
+        prop_assert!(world.trace.contains(&Effect::SettingsMode(target)));
+        let state = world.run(state, Input::ModeApplied(Some(target)));
+        let state = settings_button(&mut world, state, ButtonName::South);
+        prop_assert!(world.trace.contains(&Effect::PersistMode(target)));
+        prop_assert!(state.settings().resolution_open);
+    }
+
+    #[test]
+    fn b_collapses_without_change_then_backs_out(count in 2_usize..40, current in 0_usize..40, moves in 0_usize..6) {
+        let current = current % count;
+        let mut world = World::default();
+        let state = open_display_with(&mut world, modes_of(count), current);
+        let mut state = settings_button(&mut world, state, ButtonName::South);
+        for _ in 0..moves {
+            state = settings_button(&mut world, state, ButtonName::DpadDown);
+        }
+        world.trace.clear();
+        let state = settings_button(&mut world, state, ButtonName::East);
+        prop_assert!(!state.settings().resolution_open);
+        prop_assert_eq!(state.settings().page, Page::Display);
+        prop_assert_eq!(state.settings().selected, current);
+        prop_assert_eq!(state.settings().current, current);
+        prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SettingsMode(_) | Effect::PersistMode(_))));
+        let state = settings_button(&mut world, state, ButtonName::East);
+        prop_assert_eq!(state.settings().page, Page::Categories);
+    }
+}
+
+#[test]
+fn leaving_display_leaves_the_resolution_row_collapsed() {
+    let mut world = World::default();
+    let state = open_display_expanded(&mut world);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert!(state.settings().resolution_open);
+    let state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("Pop the hood.".into()).unwrap(),
+        },
+    );
+    assert!(!state.settings().open);
+    assert!(!state.settings().resolution_open);
+}
+
 #[test]
 fn settings_button_hints_name_a_and_b_through_navigation_and_confirmation() {
     let mut world = World::default();
     let state = open_display(&mut world);
     assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+    let state = settings_button(&mut world, state, ButtonName::South);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let state = world.run(state, Input::ModeApplied(Some(1)));
@@ -2152,7 +2243,7 @@ proptest! {
 #[test]
 fn settings_confirmation_requires_a_release_after_the_apply_press() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     let mut state = world.run(state, Input::ModeApplied(Some(1)));
@@ -2265,7 +2356,7 @@ fn b_backs_out_of_settings_without_forwarding_its_release_to_the_application() {
 fn emergency_escape_survives_switching_and_the_confirmation_countdown() {
     for applied in [false, true] {
         let mut world = World::default();
-        let state = open_display(&mut world);
+        let state = open_display_expanded(&mut world);
         let state = settings_button(&mut world, state, ButtonName::DpadDown);
         let mut state = settings_button(&mut world, state, ButtonName::South);
         if applied {

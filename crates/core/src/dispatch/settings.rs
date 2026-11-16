@@ -51,6 +51,8 @@ pub struct Settings {
     pub selected: usize,
     pub current: usize,
     pub modes: Vec<String>,
+    /// Whether the Resolution row is expanded into its mode list.
+    pub resolution_open: bool,
     pub wallpapers: Vec<String>,
     pub wallpaper_locked: Vec<bool>,
     pub wallpaper_selected: usize,
@@ -566,6 +568,7 @@ impl Default for Settings {
             selected: 0,
             current: 0,
             modes: Vec::new(),
+            resolution_open: false,
             wallpapers: Vec::new(),
             wallpaper_locked: Vec::new(),
             wallpaper_selected: 0,
