@@ -88,7 +88,9 @@ mod clip_to_tile {
             if let xdg_surface::Event::Configure { serial } = event {
                 surface.ack_configure(serial);
                 app.acked.push(*index);
-                app.configures_after_draw = app.configures_after_draw.saturating_add(usize::from(app.draws > 0));
+                app.configures_after_draw = app
+                    .configures_after_draw
+                    .saturating_add(usize::from(app.draws > 0));
             }
         }
     }
@@ -310,7 +312,8 @@ mod clip_to_tile {
             .unwrap();
         let (ready, received) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
-        let thread = thread::spawn(move || client(stream, 1, &ready, &stopped, &[(2200, 1400), (2300, 1400)]));
+        let thread =
+            thread::spawn(move || client(stream, 1, &ready, &stopped, &[(2200, 1400), (2300, 1400)]));
         let started = Instant::now();
         while received.try_recv().is_err() {
             assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
