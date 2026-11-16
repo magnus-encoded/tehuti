@@ -310,7 +310,7 @@ fn long_draft() -> Keyboard {
 
 /// How many words the left stick picks while held at `x` for `held_ms`, ticking by one millisecond.
 fn picks_while_held(keyboard: &mut Keyboard, x: i16, held_ms: u64) -> usize {
-    let mut picks = 0;
+    let mut picks = 0_usize;
     let mut previous = keyboard.picked_word();
     keyboard.left_stick(x, 0);
     for _ in 0..=held_ms {

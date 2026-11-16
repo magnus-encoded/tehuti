@@ -3589,7 +3589,7 @@ fn word_picks_held(toml: &str, depth: i16) -> usize {
         right: (0, 0),
     });
     state = world.run(state, held.clone());
-    let mut picks = 0;
+    let mut picks = 0_usize;
     let mut previous = state.keyboard().picked_word();
     for _ in 0..2000 {
         state = world.run(
