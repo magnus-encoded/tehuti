@@ -427,6 +427,10 @@ const SYMBOL_LABELS: &[(ButtonName, &str)] = &[
 ];
 
 const COMMON_LABELS: &[(ButtonName, &str)] = &[
+    (ButtonName::Paddle1, "P1"),
+    (ButtonName::Paddle2, "P2"),
+    (ButtonName::Paddle3, "P3"),
+    (ButtonName::Paddle4, "P4"),
     (ButtonName::Guide, "Guide"),
     (ButtonName::DpadUp, "Up"),
     (ButtonName::DpadDown, "Down"),

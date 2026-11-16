@@ -2634,12 +2634,9 @@ fn controller_ptt_uses_global_buttons_and_defaults_to_share() {
         ("push_to_talk = ['start']", ButtonName::Start, true),
         ("push_to_talk = ['start']", ButtonName::Record, false),
         ("push_to_talk = []", ButtonName::Record, false),
-        ("push_to_talk = ['paddle_1']", ButtonName::Paddle1, true),
-        ("push_to_talk = ['paddle_4']", ButtonName::Paddle4, true),
-        ("push_to_talk = ['paddle_4']", ButtonName::Paddle1, false),
     ] {
         let context = tehuti_protocol::parse_context(&format!(
-            "app_id = '*'\n{setting}\n[buttons]\nstart = {{ key = 'enter' }}\nrecord = {{ key = 'enter' }}\npaddle_1 = {{ key = 'enter' }}\npaddle_4 = {{ key = 'enter' }}"
+            "app_id = '*'\n{setting}\n[buttons]\nstart = {{ key = 'enter' }}\nrecord = {{ key = 'enter' }}"
         ))
         .unwrap();
         let mut world = World::default();
@@ -2677,6 +2674,31 @@ fn controller_ptt_uses_global_buttons_and_defaults_to_share() {
             })),
             !talks
         );
+    }
+}
+
+#[test]
+fn a_paddle_named_by_string_talks_when_configured() {
+    for (setting, label, talks) in [
+        ("push_to_talk = ['paddle_1']", "paddle_1", true),
+        ("push_to_talk = ['paddle_4']", "paddle_4", true),
+        ("push_to_talk = ['paddle_4']", "paddle_1", false),
+    ] {
+        let name: ButtonName = toml::Value::String(label.into()).try_into().unwrap();
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = '*'\n{setting}\n[buttons]\npaddle_1 = {{ key = 'enter' }}\npaddle_4 = {{ key = 'enter' }}"
+        ))
+        .unwrap();
+        let mut world = World::default();
+        let state = State::new(crate::State::with_contexts(vec![context]));
+        let state = world.run(state, Input::Speech(SpeechInput::Available));
+        let state = world.run(state, pad_button(name, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(name, ButtonState::Released));
+        let started = world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SpeechCommand(SpeechEffect::Start { .. })));
+        assert_eq!(started, talks, "{setting}, {name:?}");
     }
 }
 
