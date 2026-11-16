@@ -221,7 +221,7 @@ pub fn share(
         std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
     }
     write_new(&target, &shared.to_string())?;
-    std::fs::write(&file, document.to_string()).map_err(|error| format!("{}: {error}", file.display()))?;
+    replace_atomically(&file, &document.to_string())?;
     Ok(format!(
         "Moved {} to {} and included it as {name:?}; the previous file is kept at {}",
         sections.join(", "),
@@ -287,6 +287,18 @@ fn write_new(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     file.write_all(text.as_bytes())
         .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Replaces `path` with `text` through a temporary file in the same folder, so a crash or a
+/// reload in the middle never sees half a context.
+fn replace_atomically(path: &Path, text: &str) -> Result<(), String> {
+    let temporary = path.with_extension("toml.tmp");
+    let _stale = std::fs::remove_file(&temporary);
+    write_new(&temporary, text)?;
+    std::fs::rename(&temporary, path).map_err(|error| {
+        let _cleanup = std::fs::remove_file(&temporary);
+        format!("{}: {error}", path.display())
+    })
 }
 
 /// `context.toml.bak`, or the first `context.toml.bak.N` that does not exist yet.

@@ -147,7 +147,9 @@ include = ["tabs/ctrl-tab"]
 An included file holds what a context would: top-level keys and tables. The
 context's own entries merge over it field by field: a field the context writes
 replaces the shared one, and every field it leaves out comes from the shared
-section. If the context above also had `[buttons.left_bumper]` with
+section. Tables merge field by field at every depth; arrays and scalars (a
+`mods` list, a `key`, a number) are replaced whole, never combined. If the
+context above also had `[buttons.left_bumper]` with
 `key = "t"`, that button would send Ctrl+Shift+T. `tehuti --check-config` lists
 each overridden field as a warning. Earlier includes win over later ones.
 Shared sections cannot include other shared sections. An include naming a

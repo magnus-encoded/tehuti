@@ -331,6 +331,63 @@ mod context_reload {
     }
 
     #[test]
+    fn shared_sections_created_and_edited_after_startup_reload_the_including_context() {
+        use tehuti_protocol::{ButtonName, KeyName};
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "kitty",
+            "app_id = 'kitty'\ninclude = ['tabs/x']\n",
+        );
+        let mut event_loop: calloop::EventLoop<'static, Looped> = calloop::EventLoop::try_new().unwrap();
+        let watch =
+            contexts::ContextWatch::insert(&event_loop.handle(), directory.path(), |looped: &mut Looped| {
+                looped.watch.as_mut()
+            })
+            .unwrap();
+        let mut looped = Looped { watch: Some(watch) };
+        let far = || Instant::now().checked_add(DEBOUNCE).unwrap();
+        let wait_for_key =
+            |driven: &mut calloop::EventLoop<'static, Looped>, expected: KeyName, state: &mut Looped| {
+                dispatch_until(driven, state, Duration::from_secs(5), |current| {
+                    current
+                        .watch
+                        .as_mut()
+                        .unwrap()
+                        .poll(far())
+                        .is_some_and(|reloaded| {
+                            reloaded
+                                .iter()
+                                .flat_map(|reloaded| &reloaded.contexts)
+                                .any(|context| {
+                                    context.app_id() == "kitty"
+                                        && context.key_for(ButtonName::LeftBumper) == Some(expected)
+                                })
+                        })
+                })
+            };
+        let shared = directory.path().join("shared/tabs");
+        std::fs::create_dir(directory.path().join("shared")).unwrap();
+        assert!(
+            dispatch_until(&mut event_loop, &mut looped, Duration::from_secs(5), |current| {
+                current.watch.as_mut().unwrap().poll(far()).is_some()
+            }),
+            "creating shared/ reloads"
+        );
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::write(shared.join("x.toml"), "[buttons.left_bumper]\nkey = 'tab'\n").unwrap();
+        assert!(
+            wait_for_key(&mut event_loop, KeyName::Tab, &mut looped),
+            "creating the shared section reloads"
+        );
+        std::fs::write(shared.join("x.toml"), "[buttons.left_bumper]\nkey = 'enter'\n").unwrap();
+        assert!(
+            wait_for_key(&mut event_loop, KeyName::Enter, &mut looped),
+            "editing the shared section reloads"
+        );
+    }
+
+    #[test]
     fn a_speech_session_survives_a_reload() {
         use tehuti_core::speech::SpeechInput;
         let directory = tempfile::tempdir().unwrap();
