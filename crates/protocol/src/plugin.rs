@@ -422,9 +422,7 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
         }
         let envelope: Envelope = serde_json::from_value(value).map_err(|error| error.to_string())?;
         let result = if envelope.result.get("handled").is_some() {
-            ResultValue::Handled(
-                serde_json::from_value(envelope.result).map_err(|error| error.to_string())?,
-            )
+            ResultValue::Handled(serde_json::from_value(envelope.result).map_err(|error| error.to_string())?)
         } else if envelope.result.is_object() {
             ResultValue::Initialized(
                 serde_json::from_value(envelope.result).map_err(|error| error.to_string())?,

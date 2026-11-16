@@ -921,8 +921,7 @@ fn plugin_reply(
 }
 
 fn plugin_handled(mut state: State, key: RequestKey) -> (State, Vec<Effect>) {
-    let (next, _actions, _rejection) =
-        crate::plugin::step(state.core, crate::plugin::Input::Handled { key });
+    let (next, _actions, _rejection) = crate::plugin::step(state.core, crate::plugin::Input::Handled { key });
     state.core = next;
     (state, Vec::new())
 }
