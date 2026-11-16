@@ -884,8 +884,7 @@ fn reload_menu(data: &mut LoopData) {
         .as_mut()
         .is_some_and(|watch| watch.poll(std::time::Instant::now()))
     {
-        data.compositor
-            .reload_menu_config(tehuti::system_menu::load());
+        data.compositor.reload_menu_config(tehuti::system_menu::load());
     }
 }
 

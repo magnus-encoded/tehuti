@@ -463,8 +463,12 @@ impl Compositor {
             tracing::warn!(%notices, "invalid menu entries skipped");
             self.show_notice(&notices);
         }
-        self.dispatch.core_mut().set_menu_entries(self.menu_config.labels());
-        self.dispatch.core_mut().set_menu_hidden(self.menu_config.hidden());
+        self.dispatch
+            .core_mut()
+            .set_menu_entries(self.menu_config.labels());
+        self.dispatch
+            .core_mut()
+            .set_menu_hidden(self.menu_config.hidden());
     }
 
     /// Installs contexts before accepting clients.
