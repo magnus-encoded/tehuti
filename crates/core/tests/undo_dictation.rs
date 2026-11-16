@@ -144,7 +144,9 @@ mod undo_dictation {
 
     #[test]
     fn plugins_cannot_emit_undo_dictation() {
-        let error = tehuti_core::plugin::validate_actions(vec![Action::UndoDictation], &[]).unwrap_err();
+        let context = parse_context("app_id = 'x'\n[buttons]\nwest = { undo_dictation = true }").unwrap();
+        let undo = context.action_for(ButtonName::West).unwrap();
+        let error = tehuti_core::plugin::validate_actions(vec![undo], &[]).unwrap_err();
         assert!(error.contains("reserved for the core"), "{error}");
     }
 }
