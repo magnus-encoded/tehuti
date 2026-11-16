@@ -9,6 +9,13 @@ const COMMANDS: [&str; 5] = ["log_out", "plasma", "reboot", "shut_down", "task_m
 static TASK_MONITOR: std::sync::LazyLock<Vec<String>> =
     std::sync::LazyLock::new(|| vec!["plasma-systemmonitor".to_owned()]);
 
+/// Whether `program` is an executable file in one of the directories of `search_path`.
+#[must_use]
+pub fn is_installed(program: &str, search_path: &std::ffi::OsStr) -> bool {
+    let _unused = (program, search_path);
+    false
+}
+
 /// How long a started menu command is watched for a failing exit.
 const EXIT_WATCH: Duration = Duration::from_secs(5);
 
@@ -167,6 +174,20 @@ impl Config {
     pub fn run(
         &self,
         command: Command,
+        spawn: impl FnOnce(&str, &[String]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        self.run_with(command, |program| is_installed(program, &search_path), spawn)
+    }
+
+    /// Like [`Self::run`], with `installed` telling which programs the Task Monitor default may use.
+    ///
+    /// # Errors
+    /// The command is disabled, no default program is installed, or the executor failed.
+    pub fn run_with(
+        &self,
+        command: Command,
+        _installed: impl Fn(&str) -> bool,
         spawn: impl FnOnce(&str, &[String]) -> io::Result<()>,
     ) -> io::Result<()> {
         let (program, args) = self

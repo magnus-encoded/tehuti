@@ -178,15 +178,83 @@ log_out = []",
             .unwrap();
     }
 
-    #[test]
-    fn task_monitor_uses_the_default_program_and_preserves_spawn_errors() {
-        Config::default()
-            .run(Command::TaskMonitor, |program, args| {
-                assert_eq!(program, "plasma-systemmonitor");
-                assert_eq!(args, Vec::<String>::new());
+    fn launched(config: &Config, installed: &[&str]) -> std::io::Result<Vec<String>> {
+        let mut argv = Vec::new();
+        config.run_with(
+            Command::TaskMonitor,
+            |program| installed.contains(&program),
+            |program, args| {
+                argv.push(program.to_owned());
+                argv.extend(args.iter().cloned());
                 Ok(())
-            })
-            .unwrap();
+            },
+        )?;
+        Ok(argv)
+    }
+
+    #[test]
+    fn task_monitor_prefers_btop_in_kitty() {
+        let argv = launched(&Config::default(), &["btop", "kitty", "plasma-systemmonitor"]).unwrap();
+        assert_eq!(argv, ["kitty", "btop"]);
+    }
+
+    #[test]
+    fn task_monitor_falls_back_to_plasma_systemmonitor() {
+        for installed in [&["plasma-systemmonitor"][..], &["btop", "plasma-systemmonitor"], &["kitty", "plasma-systemmonitor"]] {
+            let argv = launched(&Config::default(), installed).unwrap();
+            assert_eq!(argv, ["plasma-systemmonitor"], "{installed:?}");
+        }
+    }
+
+    #[test]
+    fn task_monitor_with_nothing_installed_names_what_to_install() {
+        for installed in [&[][..], &["btop"], &["kitty"]] {
+            let error = launched(&Config::default(), installed).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            let text = error.to_string();
+            for name in ["btop", "kitty", "plasma-systemmonitor"] {
+                assert!(text.contains(name), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_task_monitor_override_wins_without_detection() {
+        let config = Config::parse("task_monitor = [\"example-monitor\", \"-x\"]").unwrap();
+        assert_eq!(launched(&config, &[]).unwrap(), ["example-monitor", "-x"]);
+        assert_eq!(
+            launched(&config, &["btop", "kitty"]).unwrap(),
+            ["example-monitor", "-x"]
+        );
+    }
+
+    #[test]
+    fn the_task_monitor_entry_stays_visible_when_nothing_is_installed() {
+        assert!(!Config::default().hidden().contains(&Command::TaskMonitor));
+    }
+
+    #[test]
+    fn installed_means_an_executable_file_on_the_search_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let tool = second.path().join("example-tool");
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let plain = first.path().join("example-plain");
+        std::fs::write(&plain, "text").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::create_dir(first.path().join("example-dir")).unwrap();
+        let path = std::env::join_paths([first.path(), second.path()]).unwrap();
+        assert!(tehuti::system_menu::is_installed("example-tool", &path));
+        assert!(!tehuti::system_menu::is_installed("example-plain", &path));
+        assert!(!tehuti::system_menu::is_installed("example-dir", &path));
+        assert!(!tehuti::system_menu::is_installed("example-missing", &path));
+        assert!(!tehuti::system_menu::is_installed("example-tool", "".as_ref()));
+    }
+
+    #[test]
+    fn spawn_errors_name_the_program() {
         let config = Config::parse("task_monitor = [\"example-monitor\"]").unwrap();
         let error = config
             .run(Command::TaskMonitor, |_, _| {
