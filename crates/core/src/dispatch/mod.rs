@@ -1092,11 +1092,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
     match (awaiting, reply) {
         (Await::PluginActive(event), Input::PluginActive(active)) => {
             // "new <words>" opens the creation launcher unless a plugin handles speech or a context maps it.
-            if !active
-                && let Event::Speech { text } = &event
-                && let Some(request) = crate::unit_verbs::new_request(text.as_str())
-                && !state.core.context_maps_speech(text.as_str())
-            {
+            if !active && let Some(request) = unmapped_new_request(&state.core, &event) {
                 effects.push(Effect::OpenLauncher(request));
                 return;
             }
@@ -1152,6 +1148,14 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             effects.push(Effect::InvalidReply);
         }
     }
+}
+
+/// The creation request for a "new <words>" phrase no context maps.
+fn unmapped_new_request(core: &crate::State, event: &Event) -> Option<crate::unit_verbs::LauncherRequest> {
+    let Event::Speech { text } = event else {
+        return None;
+    };
+    crate::unit_verbs::new_request(text.as_str()).filter(|_| !core.context_maps_speech(text.as_str()))
 }
 
 /// Steps core for an event; a routed stick-modifier tap also returns its held-back press.
