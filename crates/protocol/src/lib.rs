@@ -890,7 +890,11 @@ impl Context {
         if rest.trim().is_empty() {
             return Some(None);
         }
-        Some(Text::new(format!("{rest} ")).ok().map(|text| Action::Text { text }))
+        Some(
+            Text::new(format!("{rest} "))
+                .ok()
+                .map(|text| Action::Text { text }),
+        )
     }
 
     /// The action of a mapped phrase only, ignoring `unmatched_speech`.
