@@ -206,7 +206,7 @@ impl SpeechProcess {
         running.age = running.age.saturating_add(elapsed);
         match running.poll() {
             Ok(inputs) => {
-                if std::mem::take(&mut running.source_missing) {
+                if core::mem::take(&mut running.source_missing) {
                     self.notices.push_back("Saved mic missing, using another");
                 }
                 if self.outage && running.ready {
@@ -235,6 +235,28 @@ impl Running {
             self.vocabulary = None;
         }
         Ok(())
+    }
+
+    /// Interprets one complete reply line from the sidecar.
+    fn handle_line(&mut self) -> Option<SpeechInput> {
+        if is_source_missing(&self.input) {
+            tracing::warn!("saved microphone is missing; speech captures from another source");
+            self.source_missing = true;
+            return None;
+        }
+        let Some(input) = parse_reply(&self.input) else {
+            tracing::warn!(
+                reply = %String::from_utf8_lossy(&self.input),
+                "speech reply ignored: unrecognized"
+            );
+            return None;
+        };
+        if input == SpeechInput::Available {
+            self.device = parse_ready_device(&self.input);
+            tracing::info!(device = ?self.device, "speech sidecar ready");
+            self.ready = true;
+        }
+        Some(input)
     }
 
     fn poll(&mut self) -> io::Result<Vec<SpeechInput>> {
@@ -268,24 +290,7 @@ impl Running {
                 Ok(count) => {
                     for byte in bytes.get(..count).unwrap_or_default() {
                         if *byte == b'\n' {
-                            if is_source_missing(&self.input) {
-                                tracing::warn!(
-                                    "saved microphone is missing; speech captures from another source"
-                                );
-                                self.source_missing = true;
-                            } else if let Some(input) = parse_reply(&self.input) {
-                                if input == SpeechInput::Available {
-                                    self.device = parse_ready_device(&self.input);
-                                    tracing::info!(device = ?self.device, "speech sidecar ready");
-                                    self.ready = true;
-                                }
-                                inputs.push(input);
-                            } else {
-                                tracing::warn!(
-                                    reply = %String::from_utf8_lossy(&self.input),
-                                    "speech reply ignored: unrecognized"
-                                );
-                            }
+                            inputs.extend(self.handle_line());
                             self.input.clear();
                         } else {
                             if self.input.len() >= MAX_MESSAGE_BYTES {
