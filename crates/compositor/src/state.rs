@@ -471,13 +471,12 @@ impl Compositor {
                     message: message.clone(),
                 })
         });
-        let mut last = None;
-        for warning in skipped {
+        let skipped: Vec<_> = skipped.collect();
+        for warning in &skipped {
             tracing::warn!(%warning, "speech phrase skipped");
-            last = Some(warning);
         }
-        if let Some(warning) = last {
-            self.show_notice(&warning.phrase_notice());
+        if let Some(notice) = crate::contexts::LoadError::phrase_notice_for(&skipped) {
+            self.show_notice(&notice);
         }
         self.context_files = files;
     }
@@ -543,8 +542,8 @@ impl Compositor {
                 }
                 if let Some(error) = skipped.last() {
                     self.show_notice(&error.notice());
-                } else if let Some(warning) = phrase_warnings.last() {
-                    self.show_notice(&warning.phrase_notice());
+                } else if let Some(notice) = crate::contexts::LoadError::phrase_notice_for(&phrase_warnings) {
+                    self.show_notice(&notice);
                 }
             }
             Err(error) => self.reload_contexts(Err(error)),
