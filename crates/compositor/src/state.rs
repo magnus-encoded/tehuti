@@ -3571,7 +3571,12 @@ impl CompositorHandler for Compositor {
             }
             window.on_commit();
             let previous_size = window.replace_committed_size(window.client_geometry().size);
-            self.log_window_size(&window, previous_size, window.client_geometry().size, "client commit");
+            self.log_window_size(
+                &window,
+                previous_size,
+                window.client_geometry().size,
+                "client commit",
+            );
             let membership_changed = window
                 .toplevel()
                 .is_some_and(|toplevel| self.update_helper(toplevel));
