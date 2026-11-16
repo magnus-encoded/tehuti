@@ -443,7 +443,7 @@ ones when none is held.
 
 ## Keyboard intent
 
-The keyboard opens only from Y or the spoken word "keyboard". Entering app
+The keyboard opens only from its button (Y unless `button` says otherwise) or the spoken word "keyboard". Entering app
 level or columns level and enabling a text field keep it closed.
 
 In `[keyboard]`, `on_text_field = "button"` (the default) lets Y open
@@ -469,8 +469,10 @@ then at `repeat_rate` keys a second (12), speeding up to `repeat_max_rate`
 settings slider, and edits reload without a restart.
 The draft row sits below the keys, beside the powerline, and shows a window
 of text around the caret or picked word.
-The legacy `button` and `open_on_app_level` options remain accepted but
-do not change the opening triggers; `button` cannot be `guide` or `record`.
+`button` names the pad button that opens the keyboard at the app level, when
+`on_text_field` allows it (default: the pad's Y button; never `guide` or
+`record`). At the columns level the pad's own Y button always opens it.
+`open_on_app_level` is a legacy option, accepted and ignored.
 `repeat_rate`, `repeat_max_rate`, `word_min_rate` and `word_max_rate` take 1 to
 1000, `repeat_ramp_ms` at least 1, and `word_repeat_from` 500 to 1000.
 See `examples/global/context.toml`.
@@ -511,8 +513,8 @@ supply it.
 
 `[launcher]` tunes the destination launcher. `auto_pick` (default true) picks
 the single clear match by itself after `delay_ms` milliseconds (default 5000;
-at least 1). `jev` (default false) allows asking Jev to rank the choices; the
-request is currently only logged because no client is connected. The active
+at least 1). `jev` (default false) is accepted; when it is on, the launcher only logs
+"launcher Jev request skipped: no client" and ranks locally as usual. The active
 context's value wins over the global `*` context's.
 
 ```toml
