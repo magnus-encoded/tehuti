@@ -207,6 +207,15 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn an_unknown_key_outside_the_mappings_does_not_hide_a_mapping_error() {
+        let error = parse_context(
+            "app_id = '*'\n[ticker.extra]\nkey = 'florp'\n[buttons]\neast = { key = 'tab', mods = ['hyper'] }",
+        )
+        .unwrap_err();
+        assert!(!error.contains("florp"), "{error}");
+    }
+
+    #[test]
     fn capitalised_key_names_mean_the_same_key_in_contexts_and_plugin_actions() {
         for (spelled, key) in [
             ("Tab", KeyName::Tab),

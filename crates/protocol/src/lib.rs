@@ -1184,7 +1184,13 @@ fn unknown_key_name(source: &str) -> Option<String> {
             | toml::Value::Datetime(_) => None,
         }
     }
-    walk(&toml::from_str::<toml::Value>(source).ok()?)
+    let toml::Value::Table(root) = toml::from_str::<toml::Value>(source).ok()? else {
+        return None;
+    };
+    ["buttons", "speech", "sticks"]
+        .iter()
+        .filter_map(|section| root.get(*section))
+        .find_map(walk)
 }
 
 /// The TOML error, or one naming the unknown key the untagged mapping enum hid.
