@@ -286,8 +286,14 @@ fn a_held_direction_speeds_up_and_never_slows() {
         }),
         "gaps must not grow: {gaps:?}"
     );
-    let (first, last) = (gaps.first().copied().unwrap_or(0), gaps.last().copied().unwrap_or(u64::MAX));
-    assert!(last.saturating_mul(2) <= first, "expected at least double speed, first {first} ms last {last} ms");
+    let (first, last) = (
+        gaps.first().copied().unwrap_or(0),
+        gaps.last().copied().unwrap_or(u64::MAX),
+    );
+    assert!(
+        last.saturating_mul(2) <= first,
+        "expected at least double speed, first {first} ms last {last} ms"
+    );
 }
 
 #[test]
@@ -297,7 +303,10 @@ fn releasing_and_pressing_again_restarts_the_slow_pace() {
     let _released = keyboard.button(ButtonName::DpadRight, ButtonState::Released, true);
     let times = held_move_times(&mut keyboard, 1000);
     assert_eq!(times.first(), Some(&300));
-    let gap = times.get(1).zip(times.first()).map(|(second, first)| second.saturating_sub(*first));
+    let gap = times
+        .get(1)
+        .zip(times.first())
+        .map(|(second, first)| second.saturating_sub(*first));
     assert!(matches!(gap, Some(82..=84)), "gap after re-press was {gap:?} ms");
 }
 

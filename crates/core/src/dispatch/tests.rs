@@ -3610,13 +3610,22 @@ fn keyboard_repeat_delay_comes_from_the_context_and_reloads() {
 
     let mut world = World::default();
     let mut state = with_open_keyboard(&mut world, configured(Vec::new(), "editor"));
-    state.core_mut().replace_contexts(vec![
-        tehuti_protocol::parse_context(slow).unwrap(),
-    ]);
+    state
+        .core_mut()
+        .replace_contexts(vec![tehuti_protocol::parse_context(slow).unwrap()]);
     state = world.run(state, pad_button(ButtonName::DpadRight, ButtonState::Pressed));
     let pressed = state.keyboard().highlight();
-    state = world.run(state, Input::Tick { elapsed: Duration::from_millis(600) });
-    assert_eq!(state.keyboard().highlight(), pressed, "reloaded delay applies to the next hold");
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(600),
+        },
+    );
+    assert_eq!(
+        state.keyboard().highlight(),
+        pressed,
+        "reloaded delay applies to the next hold"
+    );
 }
 
 #[test]
@@ -3626,19 +3635,41 @@ fn keyboard_repeat_rates_come_from_the_context() {
     let mut world = World::default();
     let state = with_open_keyboard(&mut world, configured(vec![context], "editor"));
     let mut state = world.run(state, pad_button(ButtonName::DpadRight, ButtonState::Pressed));
-    state = world.run(state, Input::Tick { elapsed: Duration::from_millis(100) });
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(100),
+        },
+    );
     let first = state.keyboard().highlight();
-    state = world.run(state, Input::Tick { elapsed: Duration::from_millis(49) });
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(49),
+        },
+    );
     assert_eq!(state.keyboard().highlight(), first);
-    state = world.run(state, Input::Tick { elapsed: Duration::from_millis(1) });
-    assert_ne!(state.keyboard().highlight(), first, "20 keys a second repeats every 50 ms");
+    state = world.run(
+        state,
+        Input::Tick {
+            elapsed: Duration::from_millis(1),
+        },
+    );
+    assert_ne!(
+        state.keyboard().highlight(),
+        first,
+        "20 keys a second repeats every 50 ms"
+    );
 }
 
 #[test]
 fn keyboard_repeat_rates_must_be_positive() {
     for bad in ["repeat_rate = 0", "repeat_max_rate = 0", "repeat_ramp_ms = 0"] {
         let toml = format!("app_id = 'editor'\n[buttons]\n[keyboard]\n{bad}\n");
-        assert!(tehuti_protocol::parse_context(&toml).is_err(), "{bad} must be rejected");
+        assert!(
+            tehuti_protocol::parse_context(&toml).is_err(),
+            "{bad} must be rejected"
+        );
     }
 }
 
