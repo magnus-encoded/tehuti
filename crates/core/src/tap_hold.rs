@@ -33,6 +33,7 @@ pub struct TapHold<Key> {
     release_timer: ReleaseTimer,
     focus_epoch: u32,
     hold_duration: Duration,
+    instant: bool,
 }
 
 impl<Key: Copy + Eq> Default for TapHold<Key> {
@@ -42,6 +43,7 @@ impl<Key: Copy + Eq> Default for TapHold<Key> {
             release_timer: ReleaseTimer::Idle,
             focus_epoch: 0,
             hold_duration: TAP_HOLD,
+            instant: false,
         }
     }
 }
@@ -50,6 +52,14 @@ impl<Key: Copy + Eq> TapHold<Key> {
     /// Makes taps press and release at once, with no hold time.
     pub const fn instant_taps(&mut self) {
         self.hold_duration = Duration::ZERO;
+        self.instant = true;
+    }
+
+    /// Sets how long later taps stay down; instant taps stay instant.
+    pub const fn set_hold(&mut self, hold: Duration) {
+        if !self.instant {
+            self.hold_duration = hold;
+        }
     }
     /// Extends shared modifiers and restarts repeated keys after a release gap.
     pub fn tap(&mut self, now: Duration, keycode: Key, modifiers: &[Key]) -> Vec<(Key, bool)> {

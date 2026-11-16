@@ -2335,7 +2335,27 @@ impl Compositor {
         }
     }
 
+    /// The hold time the focused context sets for key taps, else the global context's, else the default.
+    fn key_hold(&self) -> core::time::Duration {
+        let own = self
+            .speech_context
+            .as_deref()
+            .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &self.speech_title))
+            .and_then(tehuti_protocol::Context::key_hold_ms);
+        let global = || {
+            self.contexts()
+                .iter()
+                .filter(|context| context.app_id() == "*")
+                .find_map(tehuti_protocol::Context::key_hold_ms)
+        };
+        own.or_else(global).map_or(tehuti_core::tap_hold::TAP_HOLD, |ms| {
+            core::time::Duration::from_millis(u64::from(ms))
+        })
+    }
+
     fn tap_held(&mut self, keycode: Keycode, modifiers: &[Keycode]) {
+        let hold = self.key_hold();
+        self.taps.set_hold(hold);
         let events = self.taps.tap(self.clock_elapsed(), keycode, modifiers);
         self.apply_tap_events(events);
     }

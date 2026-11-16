@@ -394,6 +394,22 @@ The defaults shown above apply when the values are absent.
 
 The global context accepts `push_to_talk = ['start']` before `[buttons]` to use Menu for push-to-talk. The default is `['record']`; `[]` disables controller push-to-talk. Listed buttons replace their context bindings; Guide+Start still escapes.
 
+## Key tap length
+
+A context can set how long each key tap stays down, in milliseconds:
+
+```toml
+app_id = "steam_app_12345"
+key_hold_ms = 120
+buttons = {}
+```
+
+`key_hold_ms` sits at the top level, before any table. It applies to every key
+tap sent while the context is focused, and falls back to the global `*` context
+when the application's context leaves it out. Unset, taps last 40 ms. Older
+games and emulators that read input slowly may need a longer hold. Values
+under 1 or over 1000 are rejected, and `--check-config` reports them.
+
 ## Opening windows fullscreen
 
 A matching application context can open its windows fullscreen:

@@ -24,6 +24,23 @@ mod config_check {
     }
 
     #[test]
+    fn check_config_rejects_a_key_hold_outside_one_to_a_thousand() {
+        for (value, rejected) in [("0", true), ("1001", true), ("1", false), ("1000", false)] {
+            let directory = tempfile::tempdir().unwrap();
+            write(
+                directory.path(),
+                "global/context.toml",
+                &format!("app_id = '*'\nkey_hold_ms = {value}\n[buttons]\n"),
+            );
+            let report = check(directory.path());
+            assert_eq!(report.has_errors(), rejected, "{value}: {report}");
+            if rejected {
+                assert!(report.to_string().contains("key_hold_ms"), "{report}");
+            }
+        }
+    }
+
+    #[test]
     fn unknown_ticker_button_names_warn_without_failing() {
         let directory = tempfile::tempdir().unwrap();
         write(

@@ -525,6 +525,7 @@ pub struct Context {
     invoke: Vec<String>,
     keyboard: KeyboardConfig,
     dim: DimConfig,
+    key_hold_ms: Option<u32>,
     push_to_talk: Vec<ButtonName>,
     window: WindowConfig,
     log: LogConfig,
@@ -639,6 +640,12 @@ impl Context {
     #[must_use]
     pub const fn log_window_size(&self) -> bool {
         self.log.window_size
+    }
+
+    /// How long this context holds each key tap, in milliseconds, when it sets one.
+    #[must_use]
+    pub const fn key_hold_ms(&self) -> Option<u32> {
+        self.key_hold_ms
     }
 
     #[must_use]
@@ -1014,6 +1021,8 @@ struct ContextFile {
     keyboard: KeyboardConfig,
     #[serde(default)]
     dim: DimConfig,
+    #[serde(default)]
+    key_hold_ms: Option<u32>,
     #[serde(default = "default_push_to_talk")]
     push_to_talk: Vec<ButtonName>,
     #[serde(default)]
@@ -1160,6 +1169,13 @@ fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
     Ok(label)
 }
 
+fn validate_key_hold(value: Option<u32>) -> Result<Option<u32>, String> {
+    if value.is_some_and(|ms| !(1..=1000).contains(&ms)) {
+        return Err("key_hold_ms must be between 1 and 1000".to_owned());
+    }
+    Ok(value)
+}
+
 /// Parses a context at the configuration boundary.
 ///
 /// # Errors
@@ -1216,6 +1232,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         unmatched_speech: context.unmatched_speech,
         keyboard: context.keyboard,
         dim: context.dim,
+        key_hold_ms: validate_key_hold(context.key_hold_ms)?,
         push_to_talk: context.push_to_talk,
         pad: context.pad,
         pointer: context.pointer,
