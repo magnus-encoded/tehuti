@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod context {
     use proptest::prelude::*;
-    use tehuti_protocol::{KeyName, parse_context};
+    use tehuti_protocol::{parse_context, KeyName};
 
     #[test]
     fn window_size_logging_is_opt_in_and_validated() {
@@ -31,15 +31,13 @@ restart = { restart = true }",
             Some(tehuti_protocol::Action::Restart)
         );
         assert!(tehuti_protocol::destructive(&tehuti_protocol::Action::Restart));
-        assert!(
-            parse_context(
-                "app_id = '*'
+        assert!(parse_context(
+            "app_id = '*'
 buttons = {}
 [speech]
 restart = { restart = false }"
-            )
-            .is_err()
-        );
+        )
+        .is_err());
     }
 
     #[test]
@@ -341,13 +339,20 @@ restart = { restart = false }"
     #[test]
     fn kitty_context_maps_bumpers_and_tab_speech() {
         use tehuti_protocol::{Action, ButtonName, Modifier};
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../dist/contexts/kitty/context.toml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../dist/contexts/kitty/context.toml"
+        );
         let text = std::fs::read_to_string(path);
         assert!(text.is_ok(), "dist/contexts/kitty/context.toml must exist");
         let context = parse_context(&text.unwrap()).unwrap();
         assert_eq!(context.app_id(), "kitty");
         for (button, key, mods) in [
-            (ButtonName::LeftBumper, KeyName::Tab, vec![Modifier::Ctrl, Modifier::Shift]),
+            (
+                ButtonName::LeftBumper,
+                KeyName::Tab,
+                vec![Modifier::Ctrl, Modifier::Shift],
+            ),
             (ButtonName::RightBumper, KeyName::Tab, vec![Modifier::Ctrl]),
         ] {
             assert_eq!(context.action_for(button), Some(Action::Key { key, mods }));
@@ -365,7 +370,10 @@ restart = { restart = false }"
         ] {
             assert_eq!(
                 context.speech_action(phrase),
-                Some(Action::Key { key, mods: ctrl_shift.clone() }),
+                Some(Action::Key {
+                    key,
+                    mods: ctrl_shift.clone()
+                }),
                 "{phrase}"
             );
         }
@@ -580,11 +588,9 @@ restart = { restart = false }"
                 "{spoken:?} for {phrase:?}"
             );
         }
-        assert!(
-            speech_context(&[("Rope", "enter")])
-                .speech_action("ropes")
-                .is_some()
-        );
+        assert!(speech_context(&[("Rope", "enter")])
+            .speech_action("ropes")
+            .is_some());
     }
 
     #[test]
@@ -603,16 +609,12 @@ restart = { restart = false }"
                 "{spoken:?} for {phrase:?}"
             );
         }
-        assert!(
-            speech_context(&[("Open rope", "enter")])
-                .speech_action("open ropes")
-                .is_some()
-        );
-        assert!(
-            speech_context(&[("Open ropes", "enter")])
-                .speech_action("open rope")
-                .is_some()
-        );
+        assert!(speech_context(&[("Open rope", "enter")])
+            .speech_action("open ropes")
+            .is_some());
+        assert!(speech_context(&[("Open ropes", "enter")])
+            .speech_action("open rope")
+            .is_some());
     }
 
     #[test]
@@ -728,16 +730,12 @@ restart = { restart = false }"
         )
         .unwrap();
         assert!(context.speech_action("Don\u{2019}t stop.").is_some());
-        assert!(
-            context
-                .speech_action("don\u{2bc}t \u{201c}stop\u{201d}")
-                .is_some()
-        );
-        assert!(
-            context
-                .speech_action("\u{bf}Caf\u{e9}\u{2014}ol\u{e9}!")
-                .is_some()
-        );
+        assert!(context
+            .speech_action("don\u{2bc}t \u{201c}stop\u{201d}")
+            .is_some());
+        assert!(context
+            .speech_action("\u{bf}Caf\u{e9}\u{2014}ol\u{e9}!")
+            .is_some());
         assert!(context.speech_action("dont stop").is_none());
     }
 
@@ -825,12 +823,10 @@ text = "a\u0000b"
             "button = 'record'",
             "popup = true",
         ] {
-            assert!(
-                tehuti_protocol::parse_context(&format!(
-                    "app_id = 'editor'\n[buttons]\n[keyboard]\n{setting}"
-                ))
-                .is_err()
-            );
+            assert!(tehuti_protocol::parse_context(&format!(
+                "app_id = 'editor'\n[buttons]\n[keyboard]\n{setting}"
+            ))
+            .is_err());
         }
     }
 
