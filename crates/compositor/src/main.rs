@@ -345,6 +345,7 @@ fn start_session(
     }
     let mut display: Display<Compositor> = Display::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
+    compositor.set_timeline_level(tehuti::timeline_level::TimelineLevel::load());
     match tehuti::display_mode_store::config_root() {
         Ok(root) => compositor.load_bar_font(tehuti::display_mode_store::Store::new(
             root.join("tehuti/bar-font"),

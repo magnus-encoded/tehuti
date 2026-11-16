@@ -154,6 +154,11 @@ pub struct Compositor {
     pub(crate) dmabuf: crate::rendering::DmabufSupport,
     recording: Option<recording::Session>,
     recording_runtime: Option<std::rc::Rc<dyn crate::recording_encoder::Runtime>>,
+    timeline_level: crate::timeline_level::TimelineLevel,
+    /// Last stick reading kept for the timeline at `info`.
+    last_kept_sticks: Option<[i16; 4]>,
+    /// Whether the last timeline input written was `CloseInvitation`.
+    close_invitation_written: crate::timeline_level::CloseWritten,
     pub(crate) capture_source: crate::screenshot::CaptureSource,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
@@ -309,6 +314,9 @@ impl Compositor {
             dmabuf: crate::rendering::DmabufSupport::default(),
             recording: None,
             recording_runtime: None,
+            timeline_level: crate::timeline_level::TimelineLevel::default(),
+            last_kept_sticks: None,
+            close_invitation_written: crate::timeline_level::CloseWritten::Not,
             capture_source: crate::screenshot::CaptureSource::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
@@ -1095,8 +1103,48 @@ impl Compositor {
         elapsed
     }
 
+    /// Sets how much the recording timeline writes; `info` leaves out per-frame events.
+    pub const fn set_timeline_level(&mut self, level: crate::timeline_level::TimelineLevel) {
+        self.timeline_level = level;
+    }
+
+    /// Logs one button press or release at debug level: which pad, which button, and who took it.
+    fn log_button(&self, name: tehuti_protocol::ButtonName, state: tehuti_protocol::ButtonState) {
+        if !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
+        let in_context = self
+            .speech_context
+            .as_deref()
+            .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &self.speech_title))
+            .is_some_and(|context| context.mapped_buttons().any(|mapped| mapped == name));
+        let taken_by = if self
+            .plugins
+            .as_ref()
+            .is_some_and(|plugins| plugins.pad_consumed(name))
+        {
+            "plugin"
+        } else if self.virtual_pad_consumed(name) {
+            "virtual pad"
+        } else if in_context {
+            "context"
+        } else {
+            "core"
+        };
+        let controller = self
+            .settings()
+            .input
+            .active_controller
+            .as_deref()
+            .unwrap_or("none");
+        tracing::debug!(controller, button = ?name, ?state, taken_by, "controller button");
+    }
+
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if let Event::Button { name, state } = event {
+            self.log_button(*name, *state);
+        }
         if matches!(
             event,
             Event::Button {
@@ -1191,8 +1239,20 @@ impl Compositor {
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
         // Loop ticks are not timeline events; sticks are sampled once per video frame.
         if let DispatchInput::Sticks(sticks) = &input {
-            self.record_sample("input", "sticks", sticks);
+            let now = [sticks.left.0, sticks.left.1, sticks.right.0, sticks.right.1];
+            if self.timeline_level.keeps_sticks(self.last_kept_sticks, now) {
+                self.last_kept_sticks = Some(now);
+                self.record_sample("input", "sticks", sticks);
+            }
+        } else if matches!(input, DispatchInput::CloseInvitation) {
+            let repeat = self.close_invitation_written == crate::timeline_level::CloseWritten::Yes
+                && self.timeline_level == crate::timeline_level::TimelineLevel::Info;
+            if !repeat {
+                self.record_debug("input", &input);
+            }
+            self.close_invitation_written = crate::timeline_level::CloseWritten::Yes;
         } else if !matches!(input, DispatchInput::Tick { .. }) {
+            self.close_invitation_written = crate::timeline_level::CloseWritten::Not;
             self.record_debug("input", &input);
         }
         let elapsed = dispatch_elapsed(&input);
