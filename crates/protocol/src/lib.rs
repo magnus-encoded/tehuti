@@ -891,7 +891,7 @@ impl Context {
         let rest = rest.trim_start_matches(|character: char| {
             character.is_whitespace() || matches!(character, ',' | ':' | ';')
         });
-        if rest.trim().is_empty() {
+        if !rest.chars().any(char::is_alphanumeric) {
             return Some(None);
         }
         Some(
