@@ -210,7 +210,11 @@ fn report_unreachable_speech(
             report.push(
                 path,
                 Severity::Warning,
-                format!("[speech] {:?} never fires: {}", mapping.phrase, reason.replace("{word}", &word)),
+                format!(
+                    "[speech] {:?} never fires: {}",
+                    mapping.phrase,
+                    reason.replace("{word}", &word)
+                ),
             );
         }
     }

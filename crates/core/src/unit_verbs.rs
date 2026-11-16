@@ -46,8 +46,8 @@ pub fn launcher_request(phrase: &str) -> Option<LauncherRequest> {
         });
     }
     let (kind, query) = QUERY_VERBS
-    .into_iter()
-    .find_map(|(verb, kind)| normalized.strip_prefix(verb).map(|query| (kind, query)))?;
+        .into_iter()
+        .find_map(|(verb, kind)| normalized.strip_prefix(verb).map(|query| (kind, query)))?;
     (!(query.is_empty() || kind == DestinationKind::Project && query == "on")).then(|| LauncherRequest {
         kind,
         query: query.into(),
