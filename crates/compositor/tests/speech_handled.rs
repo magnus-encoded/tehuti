@@ -68,7 +68,10 @@ for line in sys.stdin:
             });
             seen |= compositor.visible_notice_text().as_deref() == Some("NO SPEECH MAPPING");
         }
-        assert!(directory.path().join("replied").exists(), "plugin heard the speech");
+        assert!(
+            directory.path().join("replied").exists(),
+            "plugin heard the speech"
+        );
         seen
     }
 
