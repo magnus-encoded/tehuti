@@ -647,7 +647,12 @@ fn hint(canvas: &mut Canvas, x: usize, y: usize, hint: &(Piece, &str), family: P
     {
         let colour = [blue, green, red, 255];
         match shape {
-            Shape::Disc(letter) if family == PadFamily::Nintendo => {
+            Shape::Disc(letter)
+                if matches!(
+                    family,
+                    PadFamily::Nintendo | PadFamily::Remote | PadFamily::RemotePaired
+                ) =>
+            {
                 canvas.centred(disc_centre(x, y), &letter.to_string(), 23, WHITE);
             }
             Shape::Disc(letter) => {
