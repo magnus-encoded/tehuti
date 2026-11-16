@@ -164,4 +164,59 @@ mod tests {
             std::panic::resume_unwind(panic);
         }
     }
+
+    #[test]
+    fn menu_select_moves_the_selection_to_the_entry_with_that_label() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config");
+        std::fs::create_dir(&config).unwrap();
+        let socket = root.path().join("runtime/tehuti-drive.sock");
+        let start = drive(
+            &socket,
+            &["start", config.to_str().unwrap(), "--headless", "--size", "320x240"],
+        );
+        assert!(
+            start.status.success(),
+            "{}",
+            String::from_utf8_lossy(&start.stderr)
+        );
+        let selected = || {
+            let scene = drive(&socket, &["scene", "--json"]);
+            let scene: Value = serde_json::from_slice(&scene.stdout).unwrap();
+            scene["menu_text"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .find_map(|line| line.strip_prefix("> ").map(str::to_owned))
+                .unwrap_or_default()
+        };
+        let result = || {
+            assert!(drive(&socket, &["hold", "guide"]).status.success());
+            assert!(drive(&socket, &["clock", "advance", "500"]).status.success());
+            assert!(drive(&socket, &["release", "guide"]).status.success());
+            assert!(
+                drive(&socket, &["wait-for", "/overlays/menu", "true"])
+                    .status
+                    .success()
+            );
+            for label in ["SETTINGS", "SCREENSHOT", "TASK MONITOR", "SETTINGS"] {
+                let output = drive(&socket, &["menu-select", label]);
+                assert!(
+                    output.status.success(),
+                    "menu-select {label}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(selected(), label);
+            }
+            let missing = drive(&socket, &["menu-select", "NO SUCH ENTRY"]);
+            assert!(!missing.status.success());
+            assert!(String::from_utf8_lossy(&missing.stderr).contains("NO SUCH ENTRY"));
+            assert_eq!(selected(), "SETTINGS");
+        };
+        let checked = std::panic::catch_unwind(result);
+        assert!(drive(&socket, &["stop"]).status.success());
+        if let Err(panic) = checked {
+            std::panic::resume_unwind(panic);
+        }
+    }
 }
