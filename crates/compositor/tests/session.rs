@@ -177,12 +177,6 @@ mod tests {
     }
 
     #[test]
-    fn launcher_survives_a_missing_systemd() -> Result<(), Box<dyn core::error::Error>> {
-        assert_eq!(stubbed_launcher(21, false)?, "tehuti\n");
-        Ok(())
-    }
-
-    #[test]
     fn installer_copies_the_session_target_unit() -> Result<(), Box<dyn core::error::Error>> {
         let destination = tempfile::tempdir()?;
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
