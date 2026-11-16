@@ -3222,6 +3222,33 @@ impl Compositor {
         self.place_layout();
     }
 
+    /// Sends the tile configure again after a client commits a new size that
+    /// is not its tile, so an oversized client is asked back.
+    ///
+    /// Skipped while a configure awaits its ack: that one already asks, and a
+    /// client that answers every configure with a new size would never settle.
+    fn ask_back_to_tile(&self, root: &WlSurface, window: &LayoutWindow) {
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        if !toplevel.is_initial_configure_sent()
+            || window.client_geometry().size == window.layout_size()
+            || !Self::awaits_answer(toplevel)
+        {
+            return;
+        }
+        if let Some(placed) = self
+            .placement
+            .placed(|_| 0.0)
+            .iter()
+            .find(|placed| placed.key == root)
+            && let Some((tile, _)) = &placed.tile
+        {
+            Self::set_layout_state(toplevel, tile, placed.focused);
+            let _serial = toplevel.send_configure();
+        }
+    }
+
     /// A request that changes nothing still deserves one configure, unless the
     /// client has yet to acknowledge one: a client that re-asks after every
     /// configure would otherwise loop forever.
@@ -3543,9 +3570,10 @@ impl CompositorHandler for Compositor {
                 self.log_window_size(&window, old, requested, "client request");
             }
             window.on_commit();
+            let previous_size = window.replace_committed_size(window.client_geometry().size);
             self.log_window_size(
                 &window,
-                window.replace_committed_size(window.client_geometry().size),
+                previous_size,
                 window.client_geometry().size,
                 "client commit",
             );
@@ -3561,6 +3589,9 @@ impl CompositorHandler for Compositor {
                 && !toplevel.is_initial_configure_sent()
             {
                 let _serial = toplevel.send_configure();
+            }
+            if previous_size != window.client_geometry().size {
+                self.ask_back_to_tile(&root, &window);
             }
         }
         self.record_surface_change();
