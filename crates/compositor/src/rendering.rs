@@ -20,6 +20,38 @@ pub enum Rendering<Gpu, Software> {
     Pixman(Software),
 }
 
+impl<Gpu, Software> Rendering<Gpu, Software> {
+    /// Replaces a GPU renderer that failed after startup with software rendering.
+    /// Returns whether it switched; on error the GPU renderer stays in place.
+    ///
+    /// # Errors
+    /// Returns the software initialization error.
+    pub fn fall_back<SoftwareError>(
+        &mut self,
+        software: impl FnOnce() -> Result<Software, SoftwareError>,
+    ) -> Result<bool, SoftwareError> {
+        if matches!(self, Self::Pixman(_)) {
+            return Ok(false);
+        }
+        *self = Self::Pixman(software()?);
+        Ok(true)
+    }
+}
+
+/// Why no plane format matches the renderer, or `None` when one does.
+#[must_use]
+pub fn scanout_mismatch(renderer: &FormatSet, plane: &FormatSet) -> Option<String> {
+    if !scanout_formats(renderer, plane).is_empty() {
+        return None;
+    }
+    Some(format!(
+        "no scanout plane format matches the renderer (renderer offers {} formats, plane {}); \
+         drivers with implicit modifiers can cause this",
+        renderer.iter().count(),
+        plane.iter().count()
+    ))
+}
+
 /// Tries GPU initialization before allocating any software resources.
 ///
 /// # Errors

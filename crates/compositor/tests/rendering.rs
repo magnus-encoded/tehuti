@@ -7,6 +7,36 @@ mod tests {
     use tehuti::rendering::{Rendering, initialize, scanout_formats};
 
     #[test]
+    fn gpu_failure_after_startup_falls_back_once() {
+        let mut rendering: Rendering<u8, u8> = Rendering::Gles(1);
+        assert_eq!(rendering.fall_back(|| Ok::<_, ()>(2)), Ok(true));
+        assert!(matches!(rendering, Rendering::Pixman(2)));
+        assert_eq!(rendering.fall_back(|| Ok::<_, ()>(3)), Ok(false));
+        assert!(matches!(rendering, Rendering::Pixman(2)));
+    }
+
+    #[test]
+    fn failed_fall_back_keeps_the_gpu_renderer() {
+        let mut rendering: Rendering<u8, u8> = Rendering::Gles(1);
+        assert_eq!(rendering.fall_back(|| Err::<u8, _>("no")), Err("no"));
+        assert!(matches!(rendering, Rendering::Gles(1)));
+    }
+
+    #[test]
+    fn mismatch_is_reported_only_when_no_format_matches() {
+        let renderer = FormatSet::from_iter([Format {
+            code: Fourcc::Xrgb8888,
+            modifier: Modifier::Invalid,
+        }]);
+        let plane = FormatSet::from_iter([Format {
+            code: Fourcc::Xrgb8888,
+            modifier: Modifier::Linear,
+        }]);
+        assert!(tehuti::rendering::scanout_mismatch(&renderer, &plane).is_some());
+        assert!(tehuti::rendering::scanout_mismatch(&renderer, &renderer).is_none());
+    }
+
+    #[test]
     fn gpu_success_never_initializes_pixman() {
         let software_called = Cell::new(false);
         let selected = initialize(

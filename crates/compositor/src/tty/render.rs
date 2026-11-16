@@ -88,6 +88,12 @@ fn create_gpu(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Gpu, Box<
         device.renderer().egl_context().dmabuf_render_formats(),
         &surface.plane_info().formats,
     );
+    if let Some(reason) = tehuti::rendering::scanout_mismatch(
+        device.renderer().egl_context().dmabuf_render_formats(),
+        &surface.plane_info().formats,
+    ) {
+        tracing::warn!(%reason, "GPU scanout format mismatch");
+    }
     let mut allocator = GbmAllocator::new(gbm, GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
     let (width, height) = surface.pending_mode().size();
     for format in formats {
@@ -146,6 +152,15 @@ fn create_software(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Soft
         buffers: [allocate()?, allocate()?],
         overlays: Overlays::default(),
     })
+}
+
+/// Switches a failed GPU renderer to pixman. Returns whether it switched.
+pub(super) fn fall_back(
+    rendering: &mut DrmRendering,
+    device_fd: &DrmDeviceFd,
+    surface: &DrmSurface,
+) -> Result<bool, Box<dyn Error>> {
+    rendering.fall_back(|| create_software(device_fd, surface))
 }
 
 pub(super) fn advertise(

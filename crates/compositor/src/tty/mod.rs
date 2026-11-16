@@ -852,7 +852,25 @@ impl Scanout {
         let mut mode_error = None;
         let result = mode::retry(
             &mut (&mut *self, &mut *data),
-            |(tty, data)| tty.render_frame(data),
+            |(tty, data)| {
+                tty.render_frame(data).or_else(|error| {
+                    // A GLES failure after startup would freeze the screen; draw in software.
+                    match render::fall_back(&mut tty.renderer, device.device_fd(), &tty.surface) {
+                        Ok(true) => {
+                            tracing::warn!(%error, "GLES rendering failed; switched to pixman");
+                            advertise(&mut tty.renderer, &data.display.handle(), &mut data.compositor);
+                            tty.damage = OutputDamageTracker::from_output(&tty.output);
+                            tty.modeset = true;
+                            tty.render_frame(data)
+                        }
+                        Ok(false) => Err(error),
+                        Err(software) => {
+                            tracing::warn!(%software, "pixman fall-back failed");
+                            Err(error)
+                        }
+                    }
+                })
+            },
             |(tty, data), error| {
                 tty.damage = OutputDamageTracker::from_output(&tty.output);
                 if tty.recovery.fallback_attempted() || tty.reject_preview(data)? || !tty.modeset {
