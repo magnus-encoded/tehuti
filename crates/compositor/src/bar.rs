@@ -95,13 +95,14 @@ impl Buffer {
             .ticker()
             .filter(|_| viewport >= TICKER_MIN_WIDTH.saturating_mul(unit))
             .map(|view| {
-                let content = self.ticker_strip(&view.entries).width().saturating_mul(unit);
+                let zoom = unit.saturating_mul(TICKER_ZOOM);
+                let content = self.ticker_strip(&view.entries).width().saturating_mul(zoom);
                 let offset = ticker::scroll_offset(
                     view.step,
                     content,
                     viewport,
-                    ticker::STEP_PIXELS.saturating_mul(unit),
-                    ticker::REPEAT_GAP.saturating_mul(unit),
+                    ticker::STEP_PIXELS.saturating_mul(zoom),
+                    ticker::REPEAT_GAP.saturating_mul(zoom),
                 );
                 (view.entries, offset)
             });
@@ -259,6 +260,9 @@ impl Layout {
 }
 
 const TICKER_MIN_WIDTH: usize = 32;
+
+/// How many bar units each ticker pixel covers, so the phrases stay readable in a 1080p recording.
+const TICKER_ZOOM: usize = 2;
 
 const fn colour(tone: Tone) -> [u8; 4] {
     match tone {
@@ -460,21 +464,22 @@ impl Canvas {
         if end.saturating_sub(start) < TICKER_MIN_WIDTH.saturating_mul(unit) || unit == 0 {
             return;
         }
-        let height = crate::ticker_strip::HEIGHT.saturating_mul(unit);
+        let zoom = unit.saturating_mul(TICKER_ZOOM);
+        let height = crate::ticker_strip::HEIGHT.saturating_mul(zoom);
         let top = self.height.saturating_sub(height) / 2;
         let period = strip
             .width()
             .saturating_add(ticker::REPEAT_GAP)
-            .saturating_mul(unit);
+            .saturating_mul(zoom);
         for row in 0..height {
-            let strip_row = row.checked_div(unit).unwrap_or_default();
+            let strip_row = row.checked_div(zoom).unwrap_or_default();
             for column in start..end {
                 let along = column
                     .saturating_sub(start)
                     .saturating_add(offset)
                     .checked_rem(period)
                     .unwrap_or_default();
-                if let Some(colour) = strip.pixel(along.checked_div(unit).unwrap_or_default(), strip_row) {
+                if let Some(colour) = strip.pixel(along.checked_div(zoom).unwrap_or_default(), strip_row) {
                     self.pixel(column, top.saturating_add(row), bgra(colour));
                 }
             }
