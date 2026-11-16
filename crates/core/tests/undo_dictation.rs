@@ -170,14 +170,14 @@ mod undo_dictation {
     }
 
     fn held_backspaces(mut state: State, slices: &[u64]) -> usize {
-        let mut count = 0;
+        let mut count = 0_usize;
         for millis in slices {
             let (next, actions) = tick(state, *millis);
             assert!(
                 actions.iter().all(|action| *action == backspaces(1)[0]),
                 "{actions:?}"
             );
-            count += actions.len();
+            count = count.saturating_add(actions.len());
             state = next;
         }
         count
@@ -212,7 +212,7 @@ mod undo_dictation {
         fn the_repeat_count_does_not_depend_on_how_ticks_are_sliced(
             slices in proptest::collection::vec(1u64..100, 1..20),
         ) {
-            let total: u64 = slices.iter().sum();
+            let total: u64 = slices.iter().fold(0_u64, |sum, millis| sum.saturating_add(*millis));
             let (state, _) = press_x(terminal());
             let sliced = held_backspaces(state.clone(), &slices);
             let whole = held_backspaces(state, &[total]);
@@ -223,7 +223,7 @@ mod undo_dictation {
         fn a_long_hold_repeats_and_a_longer_one_repeats_more(extra in 1u64..2000) {
             let (state, _) = press_x(terminal());
             let short = held_backspaces(state.clone(), &[1000]);
-            let long = held_backspaces(state, &[1000 + extra]);
+            let long = held_backspaces(state, &[1000_u64.saturating_add(extra)]);
             prop_assert!(short >= 1 && long >= short);
         }
 
