@@ -97,4 +97,45 @@ mod applications_watch {
         compositor.refresh_destinations();
         assert!(names(&compositor).contains(&"Reader".into()));
     }
+
+    #[test]
+    fn an_applications_directory_created_after_start_is_watched() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.configure_destinations(Paths {
+            config: root.path().join("config"),
+            projects: root.path().join("projects"),
+            data: vec![data.clone()],
+        });
+        let mut event_loop: calloop::EventLoop<'static, Looped> = calloop::EventLoop::try_new().unwrap();
+        let watch = ApplicationsWatch::insert(
+            &event_loop.handle(),
+            core::slice::from_ref(&data),
+            |looped: &mut Looped| looped.watch.as_mut(),
+        )
+        .unwrap();
+        let mut looped = Looped { watch: Some(watch) };
+        let applications = data.join("applications");
+        std::fs::create_dir(&applications).unwrap();
+        // The directory appearing is itself a change; wait for the watch to arm.
+        assert!(changed_within(
+            &mut event_loop,
+            &mut looped,
+            Duration::from_secs(5)
+        ));
+        std::fs::write(
+            applications.join("reader.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Reader\nExec=reader\n",
+        )
+        .unwrap();
+        assert!(
+            changed_within(&mut event_loop, &mut looped, Duration::from_secs(5)),
+            "a file in the new directory is noticed"
+        );
+        compositor.refresh_destinations();
+        assert!(names(&compositor).contains(&"Reader".into()));
+    }
 }
