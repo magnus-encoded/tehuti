@@ -2156,7 +2156,12 @@ mod remote_tests {
 
     #[test]
     fn back_paddles_map_from_their_evdev_codes() {
-        for (code, expected) in [(0x224, "Paddle1"), (0x225, "Paddle2"), (0x226, "Paddle3"), (0x227, "Paddle4")] {
+        for (code, expected) in [
+            (0x224, "Paddle1"),
+            (0x225, "Paddle2"),
+            (0x226, "Paddle3"),
+            (0x227, "Paddle4"),
+        ] {
             assert_eq!(
                 format!("{:?}", super::parse_button(KeyCode::new(code), 1)),
                 format!("Some(Button {{ name: {expected}, state: Pressed }})"),

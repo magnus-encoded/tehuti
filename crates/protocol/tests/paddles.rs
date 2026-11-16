@@ -11,7 +11,10 @@ mod paddles {
                 "app_id = 'test'\nbuttons = {{}}\n[pad]\npush_to_talk = ['paddle_{num}']"
             ))
             .unwrap();
-            assert_eq!(format!("{:?}", talk.passthrough_push_to_talk()), format!("[Paddle{num}]"));
+            assert_eq!(
+                format!("{:?}", talk.passthrough_push_to_talk()),
+                format!("[Paddle{num}]")
+            );
         }
     }
 }

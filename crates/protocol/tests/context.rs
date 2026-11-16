@@ -1034,11 +1034,17 @@ text = "a\u0000b"
     fn paddle_names_load_in_buttons_and_push_to_talk() {
         for num in 1..=4 {
             assert!(
-                parse_context(&format!("app_id = 'test'\n[buttons]\npaddle_{num} = {{ key = 'tab' }}")).is_ok(),
+                parse_context(&format!(
+                    "app_id = 'test'\n[buttons]\npaddle_{num} = {{ key = 'tab' }}"
+                ))
+                .is_ok(),
                 "buttons paddle_{num}"
             );
             assert!(
-                parse_context(&format!("app_id = 'test'\nbuttons = {{}}\n[pad]\npush_to_talk = ['paddle_{num}']")).is_ok(),
+                parse_context(&format!(
+                    "app_id = 'test'\nbuttons = {{}}\n[pad]\npush_to_talk = ['paddle_{num}']"
+                ))
+                .is_ok(),
                 "push_to_talk paddle_{num}"
             );
         }
