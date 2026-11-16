@@ -33,6 +33,7 @@ struct View {
     selected: usize,
     current: usize,
     modes: Vec<String>,
+    resolution_open: bool,
     wallpapers: Vec<String>,
     wallpaper_locked: Vec<bool>,
     wallpaper_selected: usize,
@@ -57,6 +58,7 @@ impl View {
             selected: settings.selected,
             current: settings.current,
             modes: settings.modes.clone(),
+            resolution_open: settings.resolution_open,
             wallpapers: settings.wallpapers.clone(),
             wallpaper_locked: settings.wallpaper_locked.clone(),
             wallpaper_selected: settings.wallpaper_selected,
@@ -175,28 +177,46 @@ impl Canvas {
     }
 
     fn display(&mut self, settings: &Settings) {
-        let first = settings.selected.saturating_sub(2);
-        let rows: Vec<String> = settings
-            .modes
-            .iter()
-            .map(|mode| format!("{} HZ", mode.replace('x', " X ").replace('@', " / ")))
-            .chain(core::iter::once(format!(
-                "SCALE {}  (LEFT / RIGHT)",
-                settings.scale
-            )))
-            .chain(core::iter::once(format!(
-                "BAR FONT: {}  (LEFT / RIGHT)",
-                settings.bar_font.label()
-            )))
-            .collect();
+        let scale_row = format!("SCALE {}  (LEFT / RIGHT)", settings.scale);
+        let font_row = format!("BAR FONT: {}  (LEFT / RIGHT)", settings.bar_font.label());
+        let label = |mode: &String| format!("{} HZ", mode.replace('x', " X ").replace('@', " / "));
+        // Collapsed, the whole mode list is the one Resolution row, selected as the current mode.
+        let (rows, selected, first): (Vec<String>, usize, usize) = if settings.resolution_open {
+            let rows = settings
+                .modes
+                .iter()
+                .map(label)
+                .chain([scale_row, font_row])
+                .collect();
+            (rows, settings.selected, settings.selected.saturating_sub(2))
+        } else {
+            let current = settings
+                .modes
+                .get(settings.current)
+                .map_or_else(|| "NONE".to_owned(), label);
+            let rows = vec![format!("RESOLUTION: {current}  (A)"), scale_row, font_row];
+            let selected = settings
+                .selected
+                .saturating_sub(settings.modes.len())
+                .saturating_add(1);
+            (
+                rows,
+                if settings.selected < settings.modes.len() {
+                    0
+                } else {
+                    selected
+                },
+                0,
+            )
+        };
         for (row, (index, mode)) in rows.iter().enumerate().skip(first).take(5).enumerate() {
             let y = 244usize.saturating_add(row.saturating_mul(64));
-            if index == settings.selected {
+            if index == selected {
                 self.rectangle(72, y.saturating_sub(12), 850, 54, [65, 43, 12, 255]);
                 self.rectangle(72, y.saturating_sub(12), 4, 54, CYAN);
             }
             self.text(96, y, mode, 4, WHITE);
-            if index == settings.current && index < settings.modes.len() {
+            if settings.resolution_open && index == settings.current && index < settings.modes.len() {
                 self.text(720, y.saturating_add(6), "ACTIVE", 2, CYAN);
             }
         }

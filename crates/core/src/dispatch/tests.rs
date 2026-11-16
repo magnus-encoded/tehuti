@@ -2124,13 +2124,14 @@ fn confirmation_at_the_deadline_cannot_persist_the_expired_preview() {
 }
 
 fn modes_of(count: usize) -> Vec<String> {
-    (0..count).map(|index| format!("{}x1080@60", 1000 + index)).collect()
+    (0..count)
+        .map(|index| format!("{}x1080@60", index.saturating_add(1000)))
+        .collect()
 }
 
 proptest! {
     #[test]
-    fn collapsed_resolution_is_one_row_above_scale(count in 1_usize..40, current in 0_usize..40) {
-        let current = current % count;
+    fn collapsed_resolution_is_one_row_above_scale((count, current) in (1_usize..40).prop_flat_map(|count| (Just(count), 0..count))) {
         let mut world = World::default();
         let state = open_display_with(&mut world, modes_of(count), current);
         prop_assert!(!state.settings().resolution_open);
@@ -2144,15 +2145,14 @@ proptest! {
     }
 
     #[test]
-    fn expanding_picking_and_collapsing_behave_as_the_picker(count in 2_usize..40, current in 0_usize..40) {
-        let current = current % count;
+    fn expanding_picking_and_collapsing_behave_as_the_picker((count, current) in (2_usize..40).prop_flat_map(|count| (Just(count), 0..count))) {
         let mut world = World::default();
         let state = open_display_with(&mut world, modes_of(count), current);
         world.trace.clear();
         let state = settings_button(&mut world, state, ButtonName::South);
         prop_assert!(state.settings().resolution_open);
         prop_assert!(!world.trace.iter().any(|effect| matches!(effect, Effect::SettingsMode(_))));
-        let target = if current == 0 { 1 } else { current - 1 };
+        let target = current.checked_sub(1).unwrap_or(1);
         let key = if target > current { ButtonName::DpadDown } else { ButtonName::DpadUp };
         let state = settings_button(&mut world, state, key);
         prop_assert_eq!(state.settings().selected, target);
@@ -2165,8 +2165,7 @@ proptest! {
     }
 
     #[test]
-    fn b_collapses_without_change_then_backs_out(count in 2_usize..40, current in 0_usize..40, moves in 0_usize..6) {
-        let current = current % count;
+    fn b_collapses_without_change_then_backs_out((count, current) in (2_usize..40).prop_flat_map(|count| (Just(count), 0..count)), moves in 0_usize..6) {
         let mut world = World::default();
         let state = open_display_with(&mut world, modes_of(count), current);
         let mut state = settings_button(&mut world, state, ButtonName::South);
@@ -2214,6 +2213,7 @@ fn settings_button_hints_name_a_and_b_through_navigation_and_confirmation() {
     assert_eq!(state.settings().button_hint(), "A: KEEP THIS MODE");
     let state = settings_button(&mut world, state, ButtonName::South);
     assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: APPLY   B: BACK");
+    let state = settings_button(&mut world, state, ButtonName::East);
     let state = settings_button(&mut world, state, ButtonName::East);
     assert_eq!(state.settings().button_hint(), "D-PAD: MOVE   A: OPEN   B: CLOSE");
 }
@@ -2703,9 +2703,7 @@ fn configured_start_ptt_preserves_guide_start_escape() {
 fn display_scale_changes_immediately_without_mode_confirmation() {
     let mut world = World::default();
     let mut state = open_display(&mut world);
-    for _ in 0..3 {
-        state = settings_button(&mut world, state, ButtonName::DpadDown);
-    }
+    state = settings_button(&mut world, state, ButtonName::DpadDown);
     state = settings_button(&mut world, state, ButtonName::DpadRight);
     state = settings_button(&mut world, state, ButtonName::DpadRight);
     assert_eq!(state.settings().scale.get(), 3);
@@ -4089,7 +4087,7 @@ fn interactive_views_keep_the_pad_while_a_secret_prompt_is_visible() {
 #[test]
 fn settings_back_cancels_a_mode_change_while_the_backend_applies_it() {
     let mut world = World::default();
-    let state = open_display(&mut world);
+    let state = open_display_expanded(&mut world);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     world.trace.clear();
     let state = settings_button(&mut world, state, ButtonName::South);
