@@ -234,7 +234,7 @@ is logged once.
 An application plugin adds slash-command words to the built-in `invoke` verb
 with a notice. It replaces the plugin's list, can be sent at any time, and
 applies while a window of the plugin's applications is focused. A restart
-clears it:
+clears it, and so does a crash:
 
 ```json
 {"jsonrpc":"2.0","method":"invoke.words","params":{"words":["usage","code-review"]}}

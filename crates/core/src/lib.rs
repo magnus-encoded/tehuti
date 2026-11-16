@@ -291,6 +291,12 @@ impl State {
         self.refresh_labels();
     }
 
+    /// The extra invoke words application plugins currently supply.
+    #[must_use]
+    pub fn plugin_invoke_words(&self) -> &[String] {
+        &self.plugin_invoke_words
+    }
+
     /// Replaces the extra invoke words application plugins supply for the focused window.
     pub fn set_plugin_invoke_words(&mut self, words: Vec<String>) {
         self.plugin_invoke_words = words;
