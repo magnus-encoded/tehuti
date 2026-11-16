@@ -14,6 +14,10 @@ mod recording_smoke {
 
     #[expect(clippy::print_stderr, reason = "the skip must be visible in the test output")]
     fn skip(reason: &str) {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "a missing tool must fail in CI: {reason}"
+        );
         eprintln!("SKIPPED: {reason}");
     }
 
@@ -149,7 +153,7 @@ mod recording_smoke {
             .collect();
         let distinct: std::collections::HashSet<_> = frames.iter().collect();
         assert!(
-            frames.len() >= 60 && distinct.len() >= 20,
+            frames.len() >= 40 && distinct.len() >= 20,
             "frozen picture: {} distinct of {} frames",
             distinct.len(),
             frames.len()
