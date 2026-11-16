@@ -540,7 +540,6 @@ pub struct Context {
     /// Normalized prefix phrases to whether they type the rest of the utterance.
     text_prefixes: std::collections::HashMap<String, bool>,
     launch_phrases: Vec<(String, String)>,
-    favourites: Vec<String>,
     invoke: Vec<String>,
     keyboard: KeyboardConfig,
     dim: DimConfig,
@@ -691,12 +690,6 @@ impl Context {
     #[must_use]
     pub fn window_height(&self) -> Option<f64> {
         self.window.height.map(|value| value.0)
-    }
-
-    /// Ordered desktop entry ids eligible for desktop grid focus.
-    #[must_use]
-    pub fn favourites(&self) -> &[String] {
-        &self.favourites
     }
 
     /// Slash-command words the built-in `invoke` verb snaps to, such as `usage`.
@@ -1059,7 +1052,9 @@ struct ContextFile {
     title: Option<String>,
     #[serde(default)]
     label: Option<Text>,
+    /// Legacy key: accepted so old files load, never read.
     #[serde(default)]
+    #[expect(dead_code, reason = "accepted so legacy files load; `--check-config` warns")]
     favourites: Vec<String>,
     #[serde(default)]
     invoke: Vec<String>,
@@ -1339,7 +1334,6 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         warnings,
         skipped_phrases,
         launch_phrases,
-        favourites: context.favourites,
         invoke: validate_invoke_words(context.invoke)?,
         unmatched_speech: context.unmatched_speech,
         text_prefixes,
