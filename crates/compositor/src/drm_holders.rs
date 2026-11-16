@@ -94,6 +94,19 @@ pub fn closable(holders: &[Holder], own_pid: u32) -> Vec<Holder> {
         .collect()
 }
 
+/// The holders whose `/proc` entry belongs to `uid`; others cannot be signalled anyway.
+#[must_use]
+pub fn owned_by(proc_root: &Path, holders: &[Holder], uid: u32) -> Vec<Holder> {
+    use std::os::unix::fs::MetadataExt;
+    holders
+        .iter()
+        .filter(|holder| {
+            std::fs::metadata(proc_root.join(holder.pid.to_string())).is_ok_and(|entry| entry.uid() == uid)
+        })
+        .cloned()
+        .collect()
+}
+
 /// What closing the holders did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Closed {

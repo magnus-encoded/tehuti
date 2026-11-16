@@ -131,8 +131,16 @@ mod display_holders {
         open_menu(&mut compositor);
         press(&mut compositor, ButtonName::South);
         press(&mut compositor, ButtonName::South);
-        assert!(compositor.quit_requested());
+        assert!(
+            !compositor.quit_requested(),
+            "the warning must show before leaving"
+        );
         let notice = compositor.visible_notice_text().unwrap();
         assert!(notice.contains("example-player"), "{notice}");
+        compositor.advance_time();
+        assert!(!compositor.quit_requested());
+        std::thread::sleep(Duration::from_millis(2100));
+        compositor.advance_time();
+        assert!(compositor.quit_requested());
     }
 }

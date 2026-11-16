@@ -142,3 +142,31 @@ mod closing {
         assert!(tehuti::drm_holders::terminate(0).is_err());
     }
 }
+
+#[cfg(test)]
+mod ownership {
+    use std::os::unix::fs::MetadataExt;
+    use tehuti::drm_holders::{Holder, owned_by};
+
+    #[test]
+    fn only_holders_of_the_given_user_remain() {
+        let proc_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(proc_root.path().join("900")).unwrap();
+        let mine = std::fs::metadata(proc_root.path().join("900")).unwrap().uid();
+        let holders = [
+            Holder {
+                pid: 900,
+                command: "player".into(),
+            },
+            Holder {
+                pid: 901,
+                command: "gone".into(),
+            },
+        ];
+        assert_eq!(
+            owned_by(proc_root.path(), &holders, mine),
+            vec![holders[0].clone()]
+        );
+        assert_eq!(owned_by(proc_root.path(), &holders, mine + 1), vec![]);
+    }
+}

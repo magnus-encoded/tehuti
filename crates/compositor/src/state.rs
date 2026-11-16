@@ -101,6 +101,9 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
 /// XKB keycodes are evdev codes plus 8.
 const XKB_KEYCODE_OFFSET: u32 = 8;
 
+/// How long the warning about display holders shows before the session leaves.
+const HANDOFF_WARNING_HOLD: core::time::Duration = core::time::Duration::from_secs(2);
+
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
@@ -112,7 +115,8 @@ pub struct Compositor {
     dispatch: tehuti_core::dispatch::State,
     menu_config: crate::system_menu::Config,
     display_holders: Option<(std::path::PathBuf, std::path::PathBuf)>,
-    holders_scanned: Instant,
+    holders_cache: Vec<crate::drm_holders::Holder>,
+    exit_hold: Option<(u8, Instant)>,
     menu_failures: (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>),
     settings_display: crate::settings::Display,
     bar_font_store: Option<crate::display_mode_store::Store>,
@@ -264,7 +268,8 @@ impl Compositor {
         let mut compositor = Self {
             menu_config: crate::system_menu::Config::default(),
             display_holders: None,
-            holders_scanned: Instant::now(),
+            holders_cache: Vec::new(),
+            exit_hold: None,
             menu_failures: std::sync::mpsc::channel(),
             start_time: Instant::now(),
             pointer,
@@ -460,26 +465,30 @@ impl Compositor {
         }
     }
 
-    /// Raises the notice for skipped menu entries and gives the core the configured entries.
     /// Where `/proc` is read and which device to look for holders of.
     pub fn set_display_holders(&mut self, proc_root: std::path::PathBuf, device: std::path::PathBuf) {
         self.display_holders = Some((proc_root, device));
+        self.scan_display_holders();
+    }
+
+    /// Reads `/proc` for processes of this user, other than Tehuti, holding the display device.
+    fn scan_display_holders(&mut self) {
+        self.holders_cache = self
+            .display_holders
+            .as_ref()
+            .map_or_default(|(proc_root, device)| {
+                let found = crate::drm_holders::find(proc_root, device);
+                let mine =
+                    crate::drm_holders::owned_by(proc_root, &found, rustix::process::getuid().as_raw());
+                crate::drm_holders::closable(&mine, std::process::id())
+            });
         self.refresh_menu_hidden();
     }
 
-    /// Processes other than Tehuti holding the display device.
-    fn display_holders(&self) -> Vec<crate::drm_holders::Holder> {
-        self.display_holders
-            .as_ref()
-            .map_or_default(|(proc_root, device)| {
-                crate::drm_holders::closable(&crate::drm_holders::find(proc_root, device), std::process::id())
-            })
-    }
-
-    /// Menu rows with nothing to do: the close row shows only while a holder exists.
+    /// Menu rows with nothing to do: the close row shows only while a holder was seen.
     fn menu_hidden(&self) -> Vec<tehuti_core::menu::Command> {
         let mut hidden = self.menu_config.hidden();
-        if self.display_holders().is_empty() {
+        if self.holders_cache.is_empty() {
             hidden.push(tehuti_core::menu::Command::CloseHolder);
         }
         hidden
@@ -490,6 +499,7 @@ impl Compositor {
         self.dispatch.core_mut().set_menu_hidden(hidden);
     }
 
+    /// Raises the notice for skipped menu entries and gives the core the configured entries.
     fn announce_menu_config(&mut self) {
         let notices = self.menu_config.notices().join("\n");
         if !notices.is_empty() {
@@ -915,11 +925,11 @@ impl Compositor {
         self.release_due_keys();
         self.keep_invitation();
         self.poll_recording();
-        if self.display_holders.is_some()
-            && self.holders_scanned.elapsed() >= core::time::Duration::from_secs(2)
+        if let Some((status, due)) = self.exit_hold
+            && Instant::now() >= due
         {
-            self.holders_scanned = Instant::now();
-            self.refresh_menu_hidden();
+            self.exit_hold = None;
+            self.leave_session(status);
         }
     }
 
@@ -1212,6 +1222,11 @@ impl Compositor {
     pub fn handle(&mut self, event: &Event) {
         if let Event::Button { name, state } = event {
             self.log_button(*name, *state);
+            // The menu opens a moment after Guide goes down; look for holders once, now.
+            if *name == tehuti_protocol::ButtonName::Guide && *state == tehuti_protocol::ButtonState::Pressed
+            {
+                self.scan_display_holders();
+            }
         }
         if matches!(
             event,
@@ -1863,13 +1878,18 @@ impl Compositor {
             return;
         }
         if let Some(status) = self.menu_config.session_exit_status(command) {
-            if let Some(warning) = crate::drm_holders::warning(&self.display_holders()) {
+            self.scan_display_holders();
+            if let Some(warning) = crate::drm_holders::warning(&self.holders_cache) {
                 tracing::warn!(%warning, "leaving the session with clients holding the display");
                 self.show_notice(&warning);
+                // Leave after the notice has been on screen for a moment.
+                if self.exit_hold.is_none() {
+                    let now = Instant::now();
+                    self.exit_hold = Some((status, now.checked_add(HANDOFF_WARNING_HOLD).unwrap_or(now)));
+                }
+                return;
             }
-            self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
-            self.session_exit_status = Some(status);
-            self.quit_requested = true;
+            self.leave_session(status);
             return;
         }
         let result = self
@@ -1886,9 +1906,16 @@ impl Compositor {
         }
     }
 
+    fn leave_session(&mut self, status: u8) {
+        self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
+        self.session_exit_status = Some(status);
+        self.quit_requested = true;
+    }
+
     fn close_display_holders(&mut self) {
+        self.scan_display_holders();
         let closed = crate::drm_holders::close(
-            &self.display_holders(),
+            &self.holders_cache,
             std::process::id(),
             crate::drm_holders::terminate,
         );
@@ -1907,7 +1934,7 @@ impl Compositor {
         }
         tracing::info!(?lines, "closed display holders");
         self.show_notice(&lines.join("\n"));
-        self.refresh_menu_hidden();
+        self.scan_display_holders();
     }
 
     fn poll_menu_failures(&mut self) {
