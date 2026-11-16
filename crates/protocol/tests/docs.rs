@@ -10,28 +10,29 @@ mod docs {
     /// The bodies of the fenced blocks tagged `language`.
     fn blocks<'a>(source: &'a str, language: &str) -> Vec<&'a str> {
         let opening = format!("```{language}\n");
-        let mut found = Vec::new();
-        let mut rest = source;
-        while let Some(start) = rest.find(&opening) {
-            let body = &rest[start + opening.len()..];
-            let end = body.find("```").expect("fenced block is closed");
-            found.push(&body[..end]);
-            rest = &body[end + 3..];
-        }
-        found
+        source
+            .split(opening.as_str())
+            .skip(1)
+            .map(|rest| rest.split_once("```").expect("fenced block is closed").0)
+            .collect()
     }
 
     /// A context file, a shared section or a fragment of one, made complete.
     fn as_context(block: &str) -> String {
-        let body: String = block
+        let body = block
             .lines()
             .filter(|line| !line.trim_start().starts_with("include"))
-            .map(|line| format!("{line}\n"))
-            .collect();
+            .fold(String::new(), |mut text, line| {
+                text.push_str(line);
+                text.push('\n');
+                text
+            });
         if body.lines().any(|line| line.starts_with("app_id")) {
             body
         } else {
-            format!("app_id = \"org.example.App\"\n{body}")
+            let mut complete = String::from("app_id = \"org.example.App\"\n");
+            complete.push_str(&body);
+            complete
         }
     }
 
@@ -45,7 +46,8 @@ mod docs {
                         block.parse().unwrap_or_else(|error| panic!("{error}\n{block}"));
                     continue;
                 }
-                parse_context(&as_context(block)).unwrap_or_else(|error| panic!("{error}\n{block}"));
+                let _context =
+                    parse_context(&as_context(block)).unwrap_or_else(|error| panic!("{error}\n{block}"));
                 contexts += 1;
             }
         }
@@ -63,7 +65,7 @@ mod docs {
             ("global", include_str!("../../../examples/global/context.toml")),
             ("mpv", include_str!("../../../examples/mpv/context.toml")),
         ] {
-            parse_context(source).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let _context = parse_context(source).unwrap_or_else(|error| panic!("{name}: {error}"));
         }
     }
 
@@ -81,7 +83,8 @@ mod docs {
         for block in blocks(PROTOCOL_GUIDE, "json") {
             for line in block.lines().map(str::trim).filter(|line| line.starts_with('{')) {
                 if line.contains("\"executable\"") {
-                    parse_manifest(line.as_bytes()).unwrap_or_else(|error| panic!("{error}\n{line}"));
+                    let _manifest =
+                        parse_manifest(line.as_bytes()).unwrap_or_else(|error| panic!("{error}\n{line}"));
                     manifests += 1;
                 } else if line.contains("\"jsonrpc\"") {
                     let message =
