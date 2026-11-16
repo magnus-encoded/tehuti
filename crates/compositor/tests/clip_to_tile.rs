@@ -47,6 +47,8 @@ mod clip_to_tile {
     struct App {
         configured: Vec<(i32, i32)>,
         acked: Vec<usize>,
+        draws: usize,
+        configures_after_draw: usize,
     }
 
     impl Dispatch<WlRegistry, GlobalListContents> for App {
@@ -86,6 +88,9 @@ mod clip_to_tile {
             if let xdg_surface::Event::Configure { serial } = event {
                 surface.ack_configure(serial);
                 app.acked.push(*index);
+                app.configures_after_draw = app
+                    .configures_after_draw
+                    .saturating_add(usize::from(app.draws > 0));
             }
         }
     }
@@ -134,7 +139,14 @@ mod clip_to_tile {
         surface.commit();
     }
 
-    fn client(stream: UnixStream, count: usize, ready: &mpsc::Sender<()>, stop: &mpsc::Receiver<()>) {
+    /// Runs the client and returns how many configures arrived after its first draw.
+    fn client(
+        stream: UnixStream,
+        count: usize,
+        ready: &mpsc::Sender<()>,
+        stop: &mpsc::Receiver<()>,
+        sizes: &[(i32, i32)],
+    ) -> usize {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -157,7 +169,9 @@ mod clip_to_tile {
         while stop.try_recv().is_err() {
             for index in core::mem::take(&mut app.acked) {
                 let (surface, xdg, _) = &windows[index];
-                draw(&shm, surface, xdg, &handle, (2200, 1400));
+                let size = sizes[app.draws.min(sizes.len().saturating_sub(1))];
+                draw(&shm, surface, xdg, &handle, size);
+                app.draws = app.draws.saturating_add(1);
             }
             let _dispatched = queue.roundtrip(&mut app).unwrap();
             if !announced && app.acked.is_empty() {
@@ -165,6 +179,7 @@ mod clip_to_tile {
                 announced = true;
             }
         }
+        app.configures_after_draw
     }
 
     fn pump(display: &mut Display<Compositor>, compositor: &mut Compositor, duration: Duration) {
@@ -242,7 +257,7 @@ mod clip_to_tile {
             .unwrap();
         let (ready, received) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
-        let thread = thread::spawn(move || client(stream, 1, &ready, &stopped));
+        let thread = thread::spawn(move || client(stream, 1, &ready, &stopped, &[(2200, 1400)]));
         let started = Instant::now();
         while received.try_recv().is_err() {
             assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
@@ -282,6 +297,37 @@ mod clip_to_tile {
         while !thread.is_finished() {
             pump(&mut display, &mut compositor, Duration::from_millis(1));
         }
-        thread.join().unwrap();
+        let _configures = thread.join().unwrap();
+    }
+
+    #[test]
+    fn new_oversized_commit_size_is_asked_back_to_its_tile_once() {
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        attach_output(&display, &mut compositor);
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready, received) = mpsc::channel();
+        let (stop, stopped) = mpsc::channel();
+        let thread =
+            thread::spawn(move || client(stream, 1, &ready, &stopped, &[(2200, 1400), (2300, 1400)]));
+        let started = Instant::now();
+        while received.try_recv().is_err() {
+            assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
+            pump(&mut display, &mut compositor, Duration::from_millis(1));
+        }
+        pump(&mut display, &mut compositor, Duration::from_millis(200));
+        stop.send(()).unwrap();
+        while !thread.is_finished() {
+            pump(&mut display, &mut compositor, Duration::from_millis(1));
+        }
+        assert_eq!(
+            thread.join().unwrap(),
+            2,
+            "the map configure, then one more for the new commit size and none for repeats"
+        );
     }
 }

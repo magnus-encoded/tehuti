@@ -279,6 +279,22 @@ pub struct KeyboardConfig {
     pub terminal: Option<bool>,
     /// Legacy option, accepted without opening on level changes.
     pub open_on_app_level: Option<bool>,
+    /// Left-stick push depth, in thousandths (500 to 1000), from which a held stick keeps picking words (default 800).
+    pub word_repeat_from: Option<u16>,
+    /// Milliseconds a deep push waits before it keeps picking words (default 350).
+    pub word_repeat_delay_ms: Option<u16>,
+    /// Words a second at the shallowest repeating push (default 2).
+    pub word_min_rate: Option<u16>,
+    /// Words a second at a full push (default 10).
+    pub word_max_rate: Option<u16>,
+    /// Milliseconds a held D-pad direction waits before repeating (default 300).
+    pub repeat_delay_ms: Option<u16>,
+    /// Keys a second when a held D-pad direction starts repeating (default 12).
+    pub repeat_rate: Option<u16>,
+    /// Keys a second a held D-pad direction speeds up to (default 30).
+    pub repeat_max_rate: Option<u16>,
+    /// Milliseconds of repeating until the top rate is reached (default 2000).
+    pub repeat_ramp_ms: Option<u16>,
 }
 
 /// The fraction of a window's colour retained while dimmed.
@@ -521,6 +537,8 @@ pub struct Context {
     warnings: Vec<String>,
     skipped_phrases: Vec<String>,
     unmatched_speech: Option<UnmatchedSpeech>,
+    /// Normalized prefix phrases to whether they type the rest of the utterance.
+    text_prefixes: std::collections::HashMap<String, bool>,
     launch_phrases: Vec<(String, String)>,
     favourites: Vec<String>,
     invoke: Vec<String>,
@@ -861,7 +879,42 @@ impl Context {
         self.mapped_speech_action(phrase)
             .or_else(|| self.folded_speech_action(phrase))
             .or_else(|| self.plural_speech_action(phrase))
+            .or_else(|| self.prefix_speech_action(phrase).flatten())
             .or_else(|| self.unmatched_speech_action(phrase))
+    }
+
+    /// What a `text_after` prefix rule makes of the phrase: `None` when no rule
+    /// names the phrase's first words, `Some(None)` when the context opts out
+    /// (`none = true`) or nothing follows the key, otherwise the rest typed.
+    #[must_use]
+    pub fn prefix_speech_action(&self, phrase: &str) -> Option<Option<Action>> {
+        let normalized = normalize_phrase(phrase);
+        let (key, enabled) = self.text_prefixes.iter().find(|(key, _)| {
+            normalized
+                .strip_prefix(key.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })?;
+        if !enabled {
+            return Some(None);
+        }
+        let mut rest = phrase;
+        for _ in key.split(' ') {
+            rest = rest.trim_start_matches(|character: char| !character.is_alphanumeric());
+            rest = rest.trim_start_matches(|character: char| {
+                character.is_alphanumeric() || character == '\'' || character == '\u{2019}'
+            });
+        }
+        let rest = rest.trim_start_matches(|character: char| {
+            character.is_whitespace() || matches!(character, ',' | ':' | ';')
+        });
+        if !rest.chars().any(char::is_alphanumeric) {
+            return Some(None);
+        }
+        Some(
+            Text::new(format!("{rest} "))
+                .ok()
+                .map(|text| Action::Text { text }),
+        )
     }
 
     /// The action of a mapped phrase only, ignoring `unmatched_speech`.
@@ -1238,6 +1291,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
     validate_holds(&context)?;
     validate_keyboard_button(context.keyboard.button)?;
+    validate_word_picking(&context.keyboard)?;
+    validate_keyboard_repeat(&context.keyboard)?;
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
     let hotwords = take_hotwords(&mut context.speech)?;
@@ -1247,7 +1302,14 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut warnings = Vec::new();
     let mut skipped_phrases = Vec::new();
     let mut launch_phrases = Vec::new();
+    let mut text_prefixes = std::collections::HashMap::new();
     for (mapped, value) in context.speech {
+        if let Some(enabled) = prefix_rule(&value) {
+            let key = normalized_speech_phrase(&mapped)
+                .map_err(|message| format!("speech phrase skipped: {message}"))?;
+            text_prefixes.extend([(key, enabled)]);
+            continue;
+        }
         let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
         let normalized = match accept_phrase(&speech, &mapped) {
             Ok(normalized) => normalized,
@@ -1280,6 +1342,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         favourites: context.favourites,
         invoke: validate_invoke_words(context.invoke)?,
         unmatched_speech: context.unmatched_speech,
+        text_prefixes,
         keyboard: context.keyboard,
         dim: context.dim,
         key_hold_ms: validate_key_hold(context.key_hold_ms)?,
@@ -1340,6 +1403,43 @@ fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_keyboard_repeat(keyboard: &KeyboardConfig) -> Result<(), String> {
+    for (name, rate) in [
+        ("repeat_rate", keyboard.repeat_rate),
+        ("repeat_max_rate", keyboard.repeat_max_rate),
+    ] {
+        if rate.is_some_and(|rate| !(1..=1000).contains(&rate)) {
+            return Err(format!(
+                "keyboard {name} must be between 1 and 1000 keys a second"
+            ));
+        }
+    }
+    if keyboard.repeat_ramp_ms == Some(0) {
+        return Err("keyboard repeat_ramp_ms must be at least 1".into());
+    }
+    Ok(())
+}
+
+fn validate_word_picking(keyboard: &KeyboardConfig) -> Result<(), String> {
+    for (name, rate) in [
+        ("word_min_rate", keyboard.word_min_rate),
+        ("word_max_rate", keyboard.word_max_rate),
+    ] {
+        if rate.is_some_and(|rate| !(1..=1000).contains(&rate)) {
+            return Err(format!(
+                "keyboard {name} must be between 1 and 1000 words a second"
+            ));
+        }
+    }
+    if keyboard
+        .word_repeat_from
+        .is_some_and(|from| !(500..=1000).contains(&from))
+    {
+        return Err("keyboard word_repeat_from must be between 500 and 1000".into());
+    }
+    Ok(())
+}
+
 /// Removes the `hotwords` array from the `[speech]` table; a `hotwords` phrase
 /// mapped to a table stays a phrase.
 fn take_hotwords(speech: &mut toml::Table) -> Result<Vec<String>, String> {
@@ -1361,6 +1461,19 @@ fn take_hotwords(speech: &mut toml::Table) -> Result<Vec<String>, String> {
             | toml::Value::Table(_) => Err("speech hotwords must be strings".to_owned()),
         })
         .collect()
+}
+
+/// `{ text_after = true }` enables a prefix rule and `{ none = true }` opts out of an inherited one.
+fn prefix_rule(value: &toml::Value) -> Option<bool> {
+    let table = value.as_table()?;
+    if table.len() != 1 {
+        return None;
+    }
+    match (table.get("text_after"), table.get("none")) {
+        (Some(toml::Value::Boolean(true)), None) => Some(true),
+        (None, Some(toml::Value::Boolean(true))) => Some(false),
+        _ => None,
+    }
 }
 
 fn speech_entry(

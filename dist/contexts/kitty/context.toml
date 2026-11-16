@@ -1,0 +1,16 @@
+app_id = "kitty"
+unmatched_speech = "type"
+
+[buttons]
+left_bumper = { key = "tab", mods = ["ctrl", "shift"] }
+right_bumper = { key = "tab", mods = ["ctrl"] }
+
+[speech]
+"new tab" = { key = "t", mods = ["ctrl", "shift"] }
+"new tap" = { key = "t", mods = ["ctrl", "shift"] }
+"close tab" = { key = "q", mods = ["ctrl", "shift"] }
+"close tap" = { key = "q", mods = ["ctrl", "shift"] }
+"next tab" = { key = "right", mods = ["ctrl", "shift"] }
+"next tap" = { key = "right", mods = ["ctrl", "shift"] }
+"previous tab" = { key = "left", mods = ["ctrl", "shift"] }
+"previous tap" = { key = "left", mods = ["ctrl", "shift"] }

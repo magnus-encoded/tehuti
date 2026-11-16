@@ -36,6 +36,8 @@ enum Delivery {
         result: Result<Vec<Action>, String>,
         submission_id: Option<u64>,
     },
+    /// The plugin handled the request itself: no actions and no fallback.
+    Handled(tehuti_core::plugin::RequestKey),
     Notice(Vec<Action>),
     PadOverrides(Vec<tehuti_protocol::PadOverride>),
     /// The plugin replaced its speech hotwords.
@@ -380,17 +382,25 @@ impl Session {
         }
         self.complete_decision(&message);
         match message {
-            Message::Response(response) => vec![Delivery::Reply {
-                key: tehuti_core::plugin::RequestKey {
+            Message::Response(response) => {
+                let key = tehuti_core::plugin::RequestKey {
                     plugin: self.plugin,
                     request_id: response.request_id,
-                },
-                result: match response.result {
-                    ResultValue::Actions(actions) => Ok(actions),
-                    ResultValue::Initialized(_) => Err("result must be an action list".into()),
-                },
-                submission_id: None,
-            }],
+                };
+                vec![match response.result {
+                    ResultValue::Handled(_) => Delivery::Handled(key),
+                    ResultValue::Actions(actions) => Delivery::Reply {
+                        key,
+                        result: Ok(actions),
+                        submission_id: None,
+                    },
+                    ResultValue::Initialized(_) => Delivery::Reply {
+                        key,
+                        result: Err("result must be an action list".into()),
+                        submission_id: None,
+                    },
+                }]
+            }
             Message::Error(response) => vec![Delivery::Reply {
                 key: tehuti_core::plugin::RequestKey {
                     plugin: self.plugin,
@@ -1279,6 +1289,7 @@ fn deliver(
                     tracing::warn!(%error, "plugin rejection dropped");
                 }
             }
+            Delivery::Handled(key) => compositor.plugin_handled(key),
             Delivery::PadOverrides(overrides) => {
                 let plugin = reader.borrow().plugin;
                 compositor.set_pad_overrides(plugin, overrides);
