@@ -145,7 +145,10 @@ fn menu_entries(scene: &Value) -> Result<(Vec<String>, usize), Box<dyn Error>> {
         .iter()
         .position(|line| line.starts_with("> "))
         .ok_or("the system menu is asking for confirmation")?;
-    let labels = lines.iter().map(|line| line.get(2..).unwrap_or_default().to_owned()).collect();
+    let labels = lines
+        .iter()
+        .map(|line| line.get(2..).unwrap_or_default().to_owned())
+        .collect();
     Ok((labels, selected))
 }
 
@@ -155,7 +158,12 @@ fn menu_select(socket: &Path, label: &str) -> Result<Value, Box<dyn Error>> {
     let target = labels
         .iter()
         .position(|entry| entry.eq_ignore_ascii_case(label))
-        .ok_or_else(|| format!("no system menu entry labelled {label:?}; entries: {}", labels.join(", ")))?;
+        .ok_or_else(|| {
+            format!(
+                "no system menu entry labelled {label:?}; entries: {}",
+                labels.join(", ")
+            )
+        })?;
     let down = (target + labels.len() - selected) % labels.len();
     let (steps, name) = if down <= labels.len() - down {
         (down, "dpad_down")
