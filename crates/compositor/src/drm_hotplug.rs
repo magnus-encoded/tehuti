@@ -37,6 +37,9 @@ pub fn publish_output(
     use smithay::output::{Output, PhysicalProperties, Subpixel};
     use smithay::utils::Transform;
     if let Some((output, global)) = previous {
+        for stale in output.modes().into_iter().filter(|old| *old != mode) {
+            output.delete_mode(stale);
+        }
         output.change_current_state(Some(mode), Some(smithay::utils::Transform::Normal), None, None);
         crate::scale::apply(&output, mode, scale);
         output.set_preferred(mode);
