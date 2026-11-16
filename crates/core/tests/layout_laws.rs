@@ -2300,6 +2300,33 @@ mod layout_laws {
         Ok(())
     }
 
+    /// Shrunk NN.9 counterexample (#755): fullscreen, maximize and unfullscreen on three
+    /// columns, then an unfocused window opens and closes.
+    #[test]
+    fn nn_9_replay_closing_restores_the_view_after_fullscreen_and_maximize() -> Result<(), LayoutError> {
+        let config = LayoutConfig {
+            gaps: 0.0,
+            border: 0.0,
+            default_column_width: Some(PresetSize::Proportion(0.1)),
+            ..LayoutConfig::default()
+        };
+        let mut world = World::single(config, geometry_at(0.0, 0.0, 800.0, 600.0, 0.0))?;
+        world.run(&[
+            Step::Open,
+            Step::Open,
+            Step::Open,
+            Step::Run(Command::ToggleFullscreen),
+            Step::Run(Command::MaximizeColumn),
+            Step::Run(Command::ToggleFullscreen),
+        ])?;
+        let before = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
+        let window = world.open_with(WindowRules { open_focused: Some(false), ..WindowRules::default() })?;
+        world.close(window)?;
+        let after = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
+        assert_eq!(before, after);
+        Ok(())
+    }
+
     /// Shrunk NV.2 counterexample: after closes, the NN.9 restored view leaves the focused
     /// column off centre under "always".
     #[test]
