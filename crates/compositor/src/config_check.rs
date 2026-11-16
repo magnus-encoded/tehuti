@@ -198,22 +198,21 @@ fn report_unreachable_speech(
     report: &mut Report,
     loaded: &[(PathBuf, tehuti_protocol::Context)],
     claimed: impl Fn(&str) -> Option<String>,
-    reason: &str,
 ) {
     for (path, context) in loaded {
         let mut unreachable: Vec<_> = context
             .speech_mappings()
-            .filter_map(|mapping| claimed(mapping.phrase).map(|word| (mapping, word)))
+            .filter_map(|mapping| claimed(mapping.phrase).map(|reason| (mapping, reason)))
             .collect();
         unreachable.sort_by_key(|(mapping, _)| mapping.phrase);
-        for (mapping, word) in unreachable {
+        for (mapping, reason) in unreachable {
             report.push(
                 path,
                 Severity::Warning,
                 format!(
                     "[speech] {:?} never fires: {}",
                     mapping.phrase,
-                    reason.replace("{word}", &word)
+                    reason
                 ),
             );
         }
@@ -225,14 +224,18 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
     report_unreachable_speech(
         report,
         loaded,
-        |phrase| tehuti_core::unit_verbs::reserved_word(phrase).map(str::to_owned),
-        "core owns this reserved unit verb {word:?}",
+        |phrase| {
+            tehuti_core::unit_verbs::reserved_word(phrase)
+                .map(|word| format!("core owns this reserved unit verb {word:?}"))
+        },
     );
     report_unreachable_speech(
         report,
         loaded,
-        |phrase| tehuti_core::invoke::slash_command(phrase, []).map(|_| String::new()),
-        "the built-in invoke verb types it as a slash command",
+        |phrase| {
+            tehuti_core::invoke::slash_command(phrase, [])
+                .map(|_| "the built-in invoke verb types it as a slash command".to_owned())
+        },
     );
     for shadowing in shadowed(&contexts) {
         match shadowing {
