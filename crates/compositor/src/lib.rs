@@ -11,6 +11,7 @@ pub mod input;
 pub mod instance;
 pub mod skill_install;
 pub mod state;
+pub mod status;
 
 pub mod contexts;
 pub mod width_rewrite;

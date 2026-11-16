@@ -160,6 +160,16 @@ fn print_version() -> Result<ExitCode, Box<dyn Error>> {
             env!("TEHUTI_BUILD_DATE")
         )
     )?;
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty());
+    writeln!(
+        std::io::stdout().lock(),
+        "{}",
+        tehuti::status::gather(
+            runtime.as_deref().map(std::path::Path::new),
+            std::path::Path::new("/proc"),
+            std::path::Path::new("/dev/dri"),
+        )
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
