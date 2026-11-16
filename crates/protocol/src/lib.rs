@@ -1199,7 +1199,12 @@ fn key_error(source: &str, error: &toml::de::Error) -> String {
     if message.contains("MappingAction")
         && let Some(bad) = unknown_key_name(source)
     {
-        return format!("unknown key name {bad:?}; see docs/contexts.md for the valid names");
+        let mut lines = message.lines();
+        let mut kept: Vec<&str> = lines.next().into_iter().collect();
+        kept.extend(lines.filter(|line| line.contains('|')));
+        let detail = format!("unknown key name {bad:?}; see docs/contexts.md for the valid names");
+        kept.push(&detail);
+        return kept.join("\n");
     }
     message
 }
