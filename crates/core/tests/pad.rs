@@ -33,6 +33,47 @@ mod tests {
     }
 
     #[test]
+    fn the_wii_remote_is_its_own_pad_by_vendor_product_and_node_name() {
+        let remote = Identity::for_node(0x057e, 0x0306, "Nintendo Wii Remote");
+        assert_eq!(remote.family, PadFamily::Remote);
+        assert_eq!(remote.family.button(Role::Confirm), ButtonName::South);
+        assert_eq!(remote.family.button(Role::Back), ButtonName::East);
+        assert_eq!(remote.family.button(Role::Keyboard), ButtonName::North);
+        assert_eq!(remote.model_name("Nintendo Wii Remote"), "WII REMOTE");
+        for (button, label) in [
+            (ButtonName::South, "2"),
+            (ButtonName::East, "1"),
+            (ButtonName::North, "A"),
+            (ButtonName::Record, "B"),
+            (ButtonName::Start, "+"),
+            (ButtonName::Select, "−"),
+            (ButtonName::Guide, "Home"),
+        ] {
+            assert_eq!(remote.family.label(button), label);
+        }
+    }
+
+    #[test]
+    fn nodes_that_share_the_wii_remote_id_are_not_the_remote() {
+        for name in [
+            "Nintendo Wii Remote Classic Controller",
+            "Nintendo Wii Remote Nunchuk",
+            "Nintendo Wii Remote Accelerometer",
+            "Nintendo Wii Remote IR",
+        ] {
+            assert_eq!(
+                Identity::for_node(0x057e, 0x0306, name).family,
+                PadFamily::Nintendo,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            Identity::for_node(0x057e, 0x0330, "Nintendo Wii Remote").family,
+            PadFamily::Nintendo
+        );
+    }
+
+    #[test]
     fn nintendo_devices_confirm_on_printed_a_and_back_on_printed_b() {
         let identity = Identity::for_device(0x057e, 0x2009);
         assert_eq!(identity.family, PadFamily::Nintendo);

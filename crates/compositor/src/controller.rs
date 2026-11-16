@@ -22,7 +22,7 @@ pub fn numbered_controllers(
     devices
         .into_iter()
         .map(|(_, name, vendor, product)| {
-            let model = tehuti_core::pad::Identity::for_device(vendor, product).model_name(&name);
+            let model = tehuti_core::pad::Identity::for_node(vendor, product, &name).model_name(&name);
             let count = counts.entry(model.clone()).or_default();
             *count = count.saturating_add(1);
             tehuti_core::dispatch::ControllerInfo {
@@ -54,7 +54,11 @@ pub fn open_grabbed(
         })
         .filter_map(|(path, mut device)| match grab_nonblocking(&mut device) {
             Ok(()) => {
-                let mut translator = DpadHat::for_device(device.input_id().vendor(), device.input_id().product());
+                let mut translator = DpadHat::for_node(
+                    device.input_id().vendor(),
+                    device.input_id().product(),
+                    device.name().unwrap_or_default(),
+                );
                 if let Ok(axes) = device.get_absinfo() {
                     for (axis, info) in axes {
                         translator.set_trigger_range(axis, info.minimum(), info.maximum());
@@ -840,7 +844,11 @@ impl EvdevPad {
     #[must_use]
     pub fn identity(&self) -> tehuti_core::pad::Identity {
         let input_id = self.handles.events.input_id();
-        tehuti_core::pad::Identity::for_device(input_id.vendor(), input_id.product())
+        tehuti_core::pad::Identity::for_node(
+            input_id.vendor(),
+            input_id.product(),
+            self.handles.events.name().unwrap_or_default(),
+        )
     }
 }
 
@@ -1271,6 +1279,16 @@ impl DpadHat {
         }
     }
 
+    /// Like [`Self::for_device`], with the node name that tells a Wii remote's buttons node from
+    /// the extension nodes that share its id.
+    #[must_use]
+    pub fn for_node(vendor: u16, product: u16, name: &str) -> Self {
+        Self {
+            identity: tehuti_core::pad::Identity::for_node(vendor, product, name),
+            ..Self::default()
+        }
+    }
+
     /// Records the device's reported range for a trigger axis; other axes are ignored.
     pub const fn set_trigger_range(&mut self, axis: AbsoluteAxisCode, minimum: i32, maximum: i32) {
         let trigger = match axis {
@@ -1284,7 +1302,27 @@ impl DpadHat {
         }
     }
 
+    /// Moves a key onto the position its pad family reads it from.
+    ///
+    /// The Wii remote is held sideways, so its d-pad turns a quarter turn anticlockwise (its
+    /// up arm points left), 2 and 1 take the confirm and back positions, A the keyboard
+    /// position, B push-to-talk, and + and − Menu and View.
     const fn face_code(&self, code: KeyCode) -> KeyCode {
+        if matches!(self.identity.family, tehuti_core::pad::PadFamily::Remote) {
+            return match code {
+                KeyCode::BTN_2 => KeyCode::BTN_SOUTH,
+                KeyCode::BTN_1 => KeyCode::BTN_EAST,
+                KeyCode::BTN_SOUTH => KeyCode::BTN_NORTH,
+                KeyCode::BTN_EAST => KeyCode::KEY_RECORD,
+                KeyCode::KEY_NEXT => KeyCode::BTN_START,
+                KeyCode::KEY_PREVIOUS => KeyCode::BTN_SELECT,
+                KeyCode::KEY_UP => KeyCode::BTN_DPAD_LEFT,
+                KeyCode::KEY_RIGHT => KeyCode::BTN_DPAD_UP,
+                KeyCode::KEY_DOWN => KeyCode::BTN_DPAD_RIGHT,
+                KeyCode::KEY_LEFT => KeyCode::BTN_DPAD_DOWN,
+                _ => code,
+            };
+        }
         match (self.identity.swap_north_west, code) {
             (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
             (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
@@ -2000,4 +2038,74 @@ fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
     .clamp(-1000, 1000);
     let travel = normalized.abs().saturating_sub(150).max(0).saturating_mul(1000) / 850;
     i16::try_from(travel.saturating_mul(normalized.signum())).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::DpadHat;
+    use evdev::{EventType, InputEvent, KeyCode};
+    use tehuti_protocol::{ButtonName, ButtonState, Event};
+
+    fn remote() -> DpadHat {
+        DpadHat::for_node(0x057e, 0x0306, "Nintendo Wii Remote")
+    }
+
+    fn press(hat: &mut DpadHat, code: KeyCode) -> Vec<Event> {
+        hat.translate(&InputEvent::new(EventType::KEY.0, code.code(), 1).destructure())
+    }
+
+    #[test]
+    fn the_sideways_remote_reads_its_buttons_from_the_standard_positions() {
+        let mut hat = remote();
+        for (code, name) in [
+            (KeyCode::BTN_2, ButtonName::South),
+            (KeyCode::BTN_1, ButtonName::East),
+            (KeyCode::BTN_SOUTH, ButtonName::North),
+            (KeyCode::BTN_EAST, ButtonName::Record),
+            (KeyCode::KEY_NEXT, ButtonName::Start),
+            (KeyCode::KEY_PREVIOUS, ButtonName::Select),
+            (KeyCode::BTN_MODE, ButtonName::Guide),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sideways_remote_turns_its_dpad_a_quarter_turn_anticlockwise() {
+        let mut hat = remote();
+        for (code, name) in [
+            (KeyCode::KEY_UP, ButtonName::DpadLeft),
+            (KeyCode::KEY_RIGHT, ButtonName::DpadUp),
+            (KeyCode::KEY_DOWN, ButtonName::DpadRight),
+            (KeyCode::KEY_LEFT, ButtonName::DpadDown),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_classic_controller_on_the_remote_keeps_its_own_buttons() {
+        let mut hat = DpadHat::for_node(0x057e, 0x0306, "Nintendo Wii Remote Classic Controller");
+        assert_eq!(
+            press(&mut hat, KeyCode::BTN_SOUTH),
+            vec![Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed
+            }]
+        );
+    }
 }
