@@ -228,11 +228,86 @@ fn holding_a_direction_repeats_after_a_delay() {
     assert_eq!(keyboard.highlight(), (0, 2));
     assert!(!keyboard.tick(Duration::from_millis(1)));
     assert_eq!(keyboard.highlight(), (0, 3));
-    assert!(!keyboard.tick(REPEAT_INTERVAL.saturating_mul(2)));
+    assert!(!keyboard.tick(Duration::from_millis(170)));
     assert_eq!(keyboard.highlight(), (0, 5));
     let _released = keyboard.button(ButtonName::DpadRight, ButtonState::Released, true);
     assert!(!keyboard.tick(Duration::from_secs(1)));
     assert_eq!(keyboard.highlight(), (0, 5));
+}
+
+/// Millisecond times, after the press, at which the highlight moved while a direction stayed held.
+fn held_move_times(keyboard: &mut Keyboard, held_for_ms: u64) -> Vec<u64> {
+    let _pressed = keyboard.button(ButtonName::DpadRight, ButtonState::Pressed, true);
+    let mut previous = keyboard.highlight();
+    let mut times = Vec::new();
+    for now in 1..=held_for_ms {
+        let _talk = keyboard.tick(Duration::from_millis(1));
+        if keyboard.highlight() != previous {
+            previous = keyboard.highlight();
+            times.push(now);
+        }
+    }
+    times
+}
+
+#[test]
+fn a_held_direction_first_repeats_after_300_ms() {
+    let mut keyboard = opened();
+    let times = held_move_times(&mut keyboard, 1000);
+    assert_eq!(times.first(), Some(&300));
+}
+
+#[test]
+fn a_held_direction_starts_at_about_12_keys_a_second() {
+    let mut keyboard = opened();
+    let times = held_move_times(&mut keyboard, 1000);
+    let gap = times
+        .get(1)
+        .zip(times.first())
+        .map(|(second, first)| second.saturating_sub(*first));
+    assert!(matches!(gap, Some(82..=84)), "first repeat gap was {gap:?} ms");
+}
+
+#[test]
+fn a_held_direction_speeds_up_and_never_slows() {
+    let mut keyboard = opened();
+    let times = held_move_times(&mut keyboard, 5000);
+    let gaps: Vec<u64> = times
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [first, second] => Some(second.saturating_sub(*first)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        gaps.windows(2).all(|pair| match pair {
+            [earlier, later] => *later <= earlier.saturating_add(1),
+            _ => true,
+        }),
+        "gaps must not grow: {gaps:?}"
+    );
+    let (first, last) = (
+        gaps.first().copied().unwrap_or(0),
+        gaps.last().copied().unwrap_or(u64::MAX),
+    );
+    assert!(
+        last.saturating_mul(2) <= first,
+        "expected at least double speed, first {first} ms last {last} ms"
+    );
+}
+
+#[test]
+fn releasing_and_pressing_again_restarts_the_slow_pace() {
+    let mut keyboard = opened();
+    let _times = held_move_times(&mut keyboard, 3000);
+    let _released = keyboard.button(ButtonName::DpadRight, ButtonState::Released, true);
+    let times = held_move_times(&mut keyboard, 1000);
+    assert_eq!(times.first(), Some(&300));
+    let gap = times
+        .get(1)
+        .zip(times.first())
+        .map(|(second, first)| second.saturating_sub(*first));
+    assert!(matches!(gap, Some(82..=84)), "gap after re-press was {gap:?} ms");
 }
 
 #[test]
@@ -302,6 +377,81 @@ fn a_held_stick_picks_only_one_word() {
         keyboard.left_stick(-900, 0);
     }
     assert_eq!(keyboard.picked_word(), Some(8..13));
+}
+
+fn long_draft() -> Keyboard {
+    with_draft(&"word ".repeat(150))
+}
+
+/// How many words the left stick picks while held at `x` for `held_ms`, ticking by one millisecond.
+fn picks_while_held(keyboard: &mut Keyboard, x: i16, held_ms: u64) -> usize {
+    let mut picks = 0_usize;
+    let mut previous = keyboard.picked_word();
+    keyboard.left_stick(x, 0);
+    for _ in 0..=held_ms {
+        if keyboard.picked_word() != previous {
+            picks = picks.saturating_add(1);
+            previous = keyboard.picked_word();
+        }
+        let _talk = keyboard.tick(Duration::from_millis(1));
+        keyboard.left_stick(x, 0);
+    }
+    picks
+}
+
+#[test]
+fn a_gentle_stick_push_steps_one_word_however_long_it_is_held() {
+    for depth in [-500, -600, -700] {
+        let mut keyboard = long_draft();
+        assert_eq!(picks_while_held(&mut keyboard, depth, 3000), 1, "depth {depth}");
+    }
+}
+
+#[test]
+fn a_full_stick_push_skips_words_quickly() {
+    let mut keyboard = long_draft();
+    let picks = picks_while_held(&mut keyboard, -1000, 2000);
+    assert!(picks >= 10, "a full push picked only {picks} words in 2 s");
+}
+
+#[test]
+fn a_deeper_push_never_skips_slower() {
+    let rate = |depth: i16| picks_while_held(&mut long_draft(), depth.saturating_neg(), 3000);
+    assert!(rate(1000) > rate(850));
+    assert!(rate(850) > 1);
+}
+
+proptest! {
+    #[test]
+    fn picking_speed_never_falls_as_the_push_deepens(shallow in 500_i16..=1000, extra in 0_i16..=500) {
+        let deep = shallow.saturating_add(extra).min(1000);
+        let slow = picks_while_held(&mut long_draft(), shallow.saturating_neg(), 2500);
+        let fast = picks_while_held(&mut long_draft(), deep.saturating_neg(), 2500);
+        prop_assert!(fast >= slow, "depth {shallow} picked {slow}, depth {deep} picked {fast}");
+    }
+}
+
+#[test]
+fn easing_the_stick_back_stops_the_skipping() {
+    let mut keyboard = long_draft();
+    let _fast = picks_while_held(&mut keyboard, -1000, 1500);
+    let settled = keyboard.picked_word();
+    keyboard.left_stick(-700, 0);
+    let _eased = keyboard.tick(Duration::from_secs(1));
+    assert_eq!(keyboard.picked_word(), settled);
+    keyboard.left_stick(0, 0);
+    let _centred = keyboard.tick(Duration::from_secs(1));
+    assert_eq!(keyboard.picked_word(), settled);
+}
+
+#[test]
+fn a_stick_held_after_the_keyboard_closes_picks_nothing() {
+    let mut keyboard = long_draft();
+    keyboard.left_stick(-1000, 0);
+    keyboard.close();
+    let before = keyboard.picked_word();
+    let _talk = keyboard.tick(Duration::from_secs(2));
+    assert_eq!(keyboard.picked_word(), before);
 }
 
 #[test]

@@ -35,6 +35,17 @@ pub fn reserved_word(phrase: &str) -> Option<&'static str> {
         .map(|(verb, _)| verb.trim_end())
 }
 
+/// "new" followed by query words: a creation request that any focused context's own phrase outranks.
+#[must_use]
+pub fn new_request(phrase: &str) -> Option<LauncherRequest> {
+    let normalized = tehuti_protocol::normalize_phrase(phrase);
+    let query = normalized.strip_prefix("new ")?;
+    Some(LauncherRequest {
+        kind: DestinationKind::Creation,
+        query: query.into(),
+    })
+}
+
 /// Recognizes a whole verb followed by one or more query words.
 #[must_use]
 pub fn launcher_request(phrase: &str) -> Option<LauncherRequest> {

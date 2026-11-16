@@ -307,6 +307,36 @@ pub struct Call {
 pub enum ResultValue {
     Initialized(Initialized),
     Actions(Vec<Action>),
+    /// A speech reply `{"handled": true}`: the plugin acted, so no fallback notice shows.
+    Handled(HandledReply),
+}
+
+/// The marker object `{"handled": true}`; `false` is not a valid reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandledReply;
+
+impl Serialize for HandledReply {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("handled", &true)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for HandledReply {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            handled: bool,
+        }
+        if Fields::deserialize(deserializer)?.handled {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("handled must be true"))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,7 +421,9 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
             result: serde_json::Value,
         }
         let envelope: Envelope = serde_json::from_value(value).map_err(|error| error.to_string())?;
-        let result = if envelope.result.is_object() {
+        let result = if envelope.result.get("handled").is_some() {
+            ResultValue::Handled(serde_json::from_value(envelope.result).map_err(|error| error.to_string())?)
+        } else if envelope.result.is_object() {
             ResultValue::Initialized(
                 serde_json::from_value(envelope.result).map_err(|error| error.to_string())?,
             )

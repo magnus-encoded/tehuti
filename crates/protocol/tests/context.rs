@@ -339,6 +339,49 @@ restart = { restart = false }"
     }
 
     #[test]
+    fn kitty_context_maps_bumpers_and_tab_speech() {
+        use tehuti_protocol::{Action, ButtonName, Modifier};
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../dist/contexts/kitty/context.toml"
+        );
+        let text = std::fs::read_to_string(path);
+        assert!(text.is_ok(), "dist/contexts/kitty/context.toml must exist");
+        let context = parse_context(&text.unwrap()).unwrap();
+        assert_eq!(context.app_id(), "kitty");
+        for (button, key, mods) in [
+            (
+                ButtonName::LeftBumper,
+                KeyName::Tab,
+                vec![Modifier::Ctrl, Modifier::Shift],
+            ),
+            (ButtonName::RightBumper, KeyName::Tab, vec![Modifier::Ctrl]),
+        ] {
+            assert_eq!(context.action_for(button), Some(Action::Key { key, mods }));
+        }
+        let ctrl_shift = vec![Modifier::Ctrl, Modifier::Shift];
+        for (phrase, key) in [
+            ("new tab", KeyName::T),
+            ("close tab", KeyName::Q),
+            ("next tab", KeyName::Right),
+            ("previous tab", KeyName::Left),
+            ("new tap", KeyName::T),
+            ("close tap", KeyName::Q),
+            ("next tap", KeyName::Right),
+            ("previous tap", KeyName::Left),
+        ] {
+            assert_eq!(
+                context.speech_action(phrase),
+                Some(Action::Key {
+                    key,
+                    mods: ctrl_shift.clone()
+                }),
+                "{phrase}"
+            );
+        }
+    }
+
+    #[test]
     fn key_modifiers_are_optional_and_unknown_modifiers_are_rejected() {
         use tehuti_protocol::{Action, Modifier};
         let chord: Action = serde_json::from_str(r#"{"type":"key","key":"Left","mods":["alt"]}"#).unwrap();
