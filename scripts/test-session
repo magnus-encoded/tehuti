@@ -120,6 +120,13 @@ echo "$now"
                 self.assertEqual(code, 0)
                 self.assertEqual(trace, ['tehuti', 'plasma', 'tehuti'])
 
+    def test_busy_display_with_active_plasma_waits_instead_of_restarting(self):
+        code, trace, log = self.run_session(
+            [4, 21], plasma_statuses=[1], plasma_active_statuses=[0, 3])
+        self.assertEqual(trace, ['tehuti', 'sleep 3', 'plasma', 'sleep 3', 'plasma'])
+        self.assertIn('Plasma workspace already active; waiting for it to stop', log)
+        self.assertEqual(log.count('Tehuti exited with status 4'), 1)
+
     def test_three_recent_failures_stay_in_plasma(self):
         code, trace, log = self.run_session(
             [1, 1, 1, 21], [100, 130, 160], plasma_statuses=[0, 0, 1, 1])

@@ -32,6 +32,7 @@ pub mod desktop;
 
 pub mod backend;
 
+pub mod drm_holders;
 pub mod drm_hotplug;
 pub mod frame_recovery;
 pub mod watchdog;
