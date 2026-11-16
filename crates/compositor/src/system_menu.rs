@@ -6,8 +6,24 @@ use tehuti_core::menu::Command;
 
 const COMMANDS: [&str; 5] = ["log_out", "plasma", "reboot", "shut_down", "task_monitor"];
 
-static TASK_MONITOR: std::sync::LazyLock<Vec<String>> =
-    std::sync::LazyLock::new(|| vec!["plasma-systemmonitor".to_owned()]);
+/// The Task Monitor programs tried in order when `menu.toml` sets none: the first whose
+/// programs are all installed wins. Nothing is ever installed on the user's behalf.
+const TASK_MONITORS: [&[&str]; 2] = [&["kitty", "btop"], &["plasma-systemmonitor"]];
+
+/// What the failure notice says when no Task Monitor program is installed.
+const TASK_MONITOR_MISSING: &str = "install btop and kitty, or plasma-systemmonitor";
+
+/// Whether `program` is an executable file in one of the directories of `search_path`.
+#[must_use]
+pub fn is_installed(program: &str, search_path: &std::ffi::OsStr) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(search_path)
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .any(|directory| {
+            std::fs::metadata(directory.join(program))
+                .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        })
+}
 
 /// How long a started menu command is watched for a failing exit.
 const EXIT_WATCH: Duration = Duration::from_secs(5);
@@ -111,6 +127,7 @@ impl Config {
                     command,
                     Command::Plasma | Command::Reboot | Command::ShutDown | Command::TaskMonitor
                 ) && self.session_exit_status(*command).is_none()
+                    && *command != Command::TaskMonitor
                     && self.argv(*command).is_none()
             })
             .collect()
@@ -153,11 +170,7 @@ impl Config {
             | Command::Screenshot
             | Command::Settings => self.commands.get(command.key()),
         };
-        match configured {
-            Some(argv) => argv.split_first(),
-            None if command == Command::TaskMonitor => TASK_MONITOR.split_first(),
-            None => None,
-        }
+        configured.and_then(|argv| argv.split_first())
     }
 
     /// Passes one configured command to the executor.
@@ -169,6 +182,32 @@ impl Config {
         command: Command,
         spawn: impl FnOnce(&str, &[String]) -> io::Result<()>,
     ) -> io::Result<()> {
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        self.run_with(command, |program| is_installed(program, &search_path), spawn)
+    }
+
+    /// Like [`Self::run`], with `installed` telling which programs the Task Monitor default may use.
+    ///
+    /// # Errors
+    /// The command is disabled, no default program is installed, or the executor failed.
+    pub fn run_with(
+        &self,
+        command: Command,
+        installed: impl Fn(&str) -> bool,
+        spawn: impl FnOnce(&str, &[String]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if command == Command::TaskMonitor && !self.commands.contains_key(command.key()) {
+            let choice = TASK_MONITORS
+                .iter()
+                .find(|programs| programs.iter().all(|program| installed(program)))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, TASK_MONITOR_MISSING))?;
+            let (program, rest) = choice
+                .split_first()
+                .ok_or_else(|| io::Error::other("empty task monitor"))?;
+            let rest: Vec<String> = rest.iter().map(|word| (*word).to_owned()).collect();
+            return spawn(program, &rest)
+                .map_err(|error| io::Error::new(error.kind(), format!("{program}: {error}")));
+        }
         let (program, args) = self
             .argv(command)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "menu command is not configured"))?;

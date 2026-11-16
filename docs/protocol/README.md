@@ -130,8 +130,11 @@ Commands run without a shell, with the compositor's `WAYLAND_DISPLAY`;
 session and power actions require confirmation.
 
 Without overrides, Log Out and Switch to Plasma stop Tehuti with session exit
-statuses 21 and 20. Task Monitor launches `plasma-systemmonitor` when installed;
-a failed launch shows a notice naming the program.
+statuses 21 and 20. Task Monitor launches `btop` in `kitty` when both are
+installed, else `plasma-systemmonitor`; `task_monitor = [...]` overrides both.
+Programs are detected on `PATH` and never installed. When none is found, the
+notice reads "install btop and kitty, or plasma-systemmonitor". A launch that
+fails shows a notice naming the program.
 Reboot and Shut Down have no built-in command, because power commands differ per
 machine; the menu shows them only once `menu.toml` sets them, for example
 `reboot = ["systemctl", "reboot"]` and `shut_down = ["systemctl", "poweroff"]`.
