@@ -451,7 +451,8 @@ task_monitor = ["/bin/sh", "-c", "printf '%s %s' \"$WAYLAND_DISPLAY\" \"$DISPLAY
             state: ButtonState::Released,
         });
         let count = if std::env::var("TEHUTI_TEST_CUSTOM_MENU").as_deref() == Ok("yes") {
-            tehuti_core::menu::ITEMS.len()
+            // The close row stays hidden while nothing holds the display.
+            tehuti_core::menu::ITEMS.len() - 1
         } else {
             5
         };

@@ -111,6 +111,8 @@ pub struct Compositor {
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
     menu_config: crate::system_menu::Config,
+    display_holders: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    holders_scanned: Instant,
     menu_failures: (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>),
     settings_display: crate::settings::Display,
     bar_font_store: Option<crate::display_mode_store::Store>,
@@ -261,6 +263,8 @@ impl Compositor {
         let pointer = seat.add_pointer();
         let mut compositor = Self {
             menu_config: crate::system_menu::Config::default(),
+            display_holders: None,
+            holders_scanned: Instant::now(),
             menu_failures: std::sync::mpsc::channel(),
             start_time: Instant::now(),
             pointer,
@@ -457,30 +461,57 @@ impl Compositor {
     }
 
     /// Raises the notice for skipped menu entries and gives the core the configured entries.
+    /// Where `/proc` is read and which device to look for holders of.
+    pub fn set_display_holders(&mut self, proc_root: std::path::PathBuf, device: std::path::PathBuf) {
+        self.display_holders = Some((proc_root, device));
+        self.refresh_menu_hidden();
+    }
+
+    /// Processes other than Tehuti holding the display device.
+    fn display_holders(&self) -> Vec<crate::drm_holders::Holder> {
+        self.display_holders
+            .as_ref()
+            .map_or_default(|(proc_root, device)| {
+                crate::drm_holders::closable(&crate::drm_holders::find(proc_root, device), std::process::id())
+            })
+    }
+
+    /// Menu rows with nothing to do: the close row shows only while a holder exists.
+    fn menu_hidden(&self) -> Vec<tehuti_core::menu::Command> {
+        let mut hidden = self.menu_config.hidden();
+        if self.display_holders().is_empty() {
+            hidden.push(tehuti_core::menu::Command::CloseHolder);
+        }
+        hidden
+    }
+
+    fn refresh_menu_hidden(&mut self) {
+        let hidden = self.menu_hidden();
+        self.dispatch.core_mut().set_menu_hidden(hidden);
+    }
+
     fn announce_menu_config(&mut self) {
         let notices = self.menu_config.notices().join("\n");
         if !notices.is_empty() {
             tracing::warn!(%notices, "invalid menu entries skipped");
             self.show_notice(&notices);
         }
+        let hidden = self.menu_hidden();
         self.dispatch
             .core_mut()
             .set_menu_entries(self.menu_config.labels());
-        self.dispatch
-            .core_mut()
-            .set_menu_hidden(self.menu_config.hidden());
+        self.dispatch.core_mut().set_menu_hidden(hidden);
     }
 
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {
         crate::speech_vocabulary::configure_projects(&mut contexts, &self.launcher.paths().projects);
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
+        let hidden = self.menu_hidden();
         self.dispatch
             .core_mut()
             .set_menu_entries(self.menu_config.labels());
-        self.dispatch
-            .core_mut()
-            .set_menu_hidden(self.menu_config.hidden());
+        self.dispatch.core_mut().set_menu_hidden(hidden);
         self.window_focus = None;
         self.sync_window_focus();
         self.rebuild_destinations();
@@ -648,7 +679,7 @@ impl Compositor {
     fn rebuild_destinations(&mut self) {
         match self.launcher.rebuild(
             self.dispatch.core().contexts(),
-            &self.menu_config.hidden(),
+            &self.menu_hidden(),
             &self.placement.snapshot(),
         ) {
             Ok(app_names) => {
@@ -884,6 +915,12 @@ impl Compositor {
         self.release_due_keys();
         self.keep_invitation();
         self.poll_recording();
+        if self.display_holders.is_some()
+            && self.holders_scanned.elapsed() >= core::time::Duration::from_secs(2)
+        {
+            self.holders_scanned = Instant::now();
+            self.refresh_menu_hidden();
+        }
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
@@ -1821,7 +1858,15 @@ impl Compositor {
             self.apply(&Action::Restart);
             return;
         }
+        if command == tehuti_core::menu::Command::CloseHolder {
+            self.close_display_holders();
+            return;
+        }
         if let Some(status) = self.menu_config.session_exit_status(command) {
+            if let Some(warning) = crate::drm_holders::warning(&self.display_holders()) {
+                tracing::warn!(%warning, "leaving the session with clients holding the display");
+                self.show_notice(&warning);
+            }
             self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
             self.session_exit_status = Some(status);
             self.quit_requested = true;
@@ -1839,6 +1884,30 @@ impl Compositor {
             tracing::warn!(?command, %error, "system menu command failed");
             self.show_notice(&format!("{label} FAILED: {error}"));
         }
+    }
+
+    fn close_display_holders(&mut self) {
+        let closed = crate::drm_holders::close(
+            &self.display_holders(),
+            std::process::id(),
+            crate::drm_holders::terminate,
+        );
+        let mut lines: Vec<String> = closed
+            .closed
+            .iter()
+            .map(|holder| format!("CLOSED {} (pid {})", holder.command, holder.pid))
+            .collect();
+        lines.extend(
+            closed.failed.iter().map(|(holder, error)| {
+                format!("CLOSE FAILED {} (pid {}): {error}", holder.command, holder.pid)
+            }),
+        );
+        if lines.is_empty() {
+            lines.push("NO PROGRAM HOLDS THE DISPLAY".into());
+        }
+        tracing::info!(?lines, "closed display holders");
+        self.show_notice(&lines.join("\n"));
+        self.refresh_menu_hidden();
     }
 
     fn poll_menu_failures(&mut self) {
