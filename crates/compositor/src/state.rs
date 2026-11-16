@@ -4126,6 +4126,52 @@ mod tests {
         assert!(!is_down(&compositor, 9));
     }
 
+    fn hold_ms_after_tap(compositor: &mut Compositor, focus: &str) -> u64 {
+        compositor.speech_context = Some(focus.to_owned());
+        u64::try_from(compositor.key_hold().as_millis()).unwrap()
+    }
+
+    fn context(source: &str) -> tehuti_protocol::Context {
+        tehuti_protocol::parse_context(source).unwrap()
+    }
+
+    #[test]
+    fn key_hold_falls_back_from_own_context_to_global_to_default() {
+        let (_display, mut compositor) = compositor();
+        compositor.set_contexts(vec![
+            context("app_id = '*'\nkey_hold_ms = 80\nbuttons = {}\n"),
+            context("app_id = 'org.example.Slow'\nkey_hold_ms = 120\nbuttons = {}\n"),
+            context("app_id = 'org.example.Plain'\nbuttons = {}\n"),
+        ]);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Plain"), 80);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Slow"), 120);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Plain"), 80);
+        compositor.set_contexts(vec![context("app_id = 'org.example.Plain'\nbuttons = {}\n")]);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Plain"), 40);
+    }
+
+    #[test]
+    fn hold_changes_when_focus_moves_to_a_context_without_one() {
+        let (_display, mut compositor) = compositor();
+        compositor.set_contexts(vec![
+            context("app_id = 'org.example.Slow'\nkey_hold_ms = 120\nbuttons = {}\n"),
+            context("app_id = 'org.example.Plain'\nbuttons = {}\n"),
+        ]);
+        let key = smithay::input::keyboard::Keycode::new(9);
+        compositor.speech_context = Some("org.example.Slow".to_owned());
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(120));
+        compositor.release_due_keys();
+        compositor.speech_context = Some("org.example.Plain".to_owned());
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(39));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+        compositor.advance_clocks(Duration::from_millis(1));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 9));
+    }
+
     #[test]
     fn double_tap_is_not_released_by_the_first_hold() {
         let (_display, mut compositor) = compositor();

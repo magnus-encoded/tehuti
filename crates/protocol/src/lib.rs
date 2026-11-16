@@ -1232,6 +1232,7 @@ fn key_error(source: &str, error: &toml::de::Error) -> String {
 /// phrase or a held key has mods or belongs to a phrase. A phrase that
 /// normalizes to nothing or to the same text as an earlier phrase is dropped
 /// with a warning instead; the rest of the context loads.
+#[expect(clippy::too_many_lines, reason = "one pass over every context.toml field")]
 pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut context: ContextFile = toml::from_str(source).map_err(|error| key_error(source, &error))?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
@@ -1243,7 +1244,8 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut speech: std::collections::HashMap<String, SpeechEntry> =
         std::collections::HashMap::with_capacity(context.speech.len());
     let mut speech_variants = std::collections::HashMap::with_capacity(context.speech.len());
-    let (mut warnings, mut skipped_phrases) = (Vec::new(), Vec::new());
+    let mut warnings = Vec::new();
+    let mut skipped_phrases = Vec::new();
     let mut launch_phrases = Vec::new();
     for (mapped, value) in context.speech {
         let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
