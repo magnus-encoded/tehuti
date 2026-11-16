@@ -173,7 +173,13 @@ mod tests {
         let socket = root.path().join("runtime/tehuti-drive.sock");
         let start = drive(
             &socket,
-            &["start", config.to_str().unwrap(), "--headless", "--size", "320x240"],
+            &[
+                "start",
+                config.to_str().unwrap(),
+                "--headless",
+                "--size",
+                "320x240",
+            ],
         );
         assert!(
             start.status.success(),
