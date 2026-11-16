@@ -80,6 +80,9 @@ version, shown here as `0.0.0`:
 {"jsonrpc":"2.0","id":0,"result":{"protocol_version":0,"encoding":"json","events":["button","focus"]}}
 ```
 
+`events` may name any of `button`, `focus` and `speech`; a speech-only plugin
+replies `["speech"]` and never receives button requests.
+
 Only version 0 and encoding `json` are supported. The deadline is two seconds
 from session creation, before the request is queued, not from receipt by the
 plugin. A reply received at or after the deadline, or with another version or
@@ -200,7 +203,10 @@ hangs has a 250-millisecond latency budget. Pipe reads and writes are nonblockin
 and bounded, including when a child stops reading or floods stdout.
 
 Speech decisions are requests to the first matching initialized `speech`
-subscriber, with a two-second deadline and the same action reply shape:
+subscriber. Speech and button requests route alike: the manifest `app_ids` must
+contain the focused application id, exactly and case sensitively, and a plugin
+may subscribe to `speech` without `button`. A verb plugin has no `app_ids` and
+is chosen by its spoken verb instead. Each request has a two-second deadline and the same action reply shape:
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"speech","params":{"text":"confirm"}}
@@ -358,7 +364,10 @@ limit: the whole JSON line must fit the line limit, counting UTF-8 bytes and
 JSON escapes. Text-input commits split at character boundaries into at most
 4000 bytes. Keyboard fallback skips characters absent from the keymap and
 logs them; a newline becomes Enter. Without a focused client, key and text
-actions have no effect.
+actions have no effect. X11 clients run through `xwayland-satellite`, which
+receives the same configured keymap as Wayland clients (tested), so key taps
+reach them as ordinary key events. Text-input-v3 is a Wayland protocol and an
+X11 client may not enable it; text then arrives through the keyboard fallback.
 
 Contexts can launch an installed desktop entry, close the focused window, or
 show an overlay notice. Both pressed-button and exact phrase mappings accept
