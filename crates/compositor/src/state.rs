@@ -2348,9 +2348,10 @@ impl Compositor {
                 .filter(|context| context.app_id() == "*")
                 .find_map(tehuti_protocol::Context::key_hold_ms)
         };
-        own.or_else(global).map_or(tehuti_core::tap_hold::TAP_HOLD, |millis| {
-            core::time::Duration::from_millis(u64::from(millis))
-        })
+        own.or_else(global)
+            .map_or(tehuti_core::tap_hold::TAP_HOLD, |millis| {
+                core::time::Duration::from_millis(u64::from(millis))
+            })
     }
 
     fn tap_held(&mut self, keycode: Keycode, modifiers: &[Keycode]) {
