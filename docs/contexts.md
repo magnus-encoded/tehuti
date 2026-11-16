@@ -366,6 +366,10 @@ password fields keep the space. B closes it; Menu types the draft, presses Enter
 With an empty draft Menu presses only Enter. Closing drops the draft by
 default; `keep_draft = true` in `[keyboard]` keeps it between openings.
 A different text field still clears it.
+Holding a D-pad direction moves the highlight after `repeat_delay_ms` (300),
+then at `repeat_rate` keys a second (12), speeding up to `repeat_max_rate`
+(30) over `repeat_ramp_ms` (2000). All four are `[keyboard]` options with no
+settings slider, and edits reload without a restart.
 The draft row sits below the keys, beside the powerline, and shows a window
 of text around the caret or picked word.
 The legacy `button` and `open_on_app_level` options remain accepted but

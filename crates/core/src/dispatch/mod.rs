@@ -631,6 +631,7 @@ fn sync_keyboard_config(state: &mut State) {
     state.settings.pad_family = state.core.pad_family();
     state.mouse.pad_family = state.core.pad_family();
     state.keyboard.set_keep_draft(state.core.keep_keyboard_draft());
+    state.keyboard.set_repeat(state.core.keyboard_repeat());
     let terminal = state.terminal_field || state.core.terminal_config().0;
     if terminal != state.keyboard.terminal() {
         state.keyboard.set_terminal(terminal);
