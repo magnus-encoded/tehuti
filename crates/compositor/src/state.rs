@@ -316,7 +316,7 @@ impl Compositor {
             recording_runtime: None,
             timeline_level: crate::timeline_level::TimelineLevel::default(),
             last_kept_sticks: None,
-            close_invitation_written: crate::timeline_level::CloseWritten::No,
+            close_invitation_written: crate::timeline_level::CloseWritten::Not,
             capture_source: crate::screenshot::CaptureSource::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
@@ -1252,7 +1252,7 @@ impl Compositor {
             }
             self.close_invitation_written = crate::timeline_level::CloseWritten::Yes;
         } else if !matches!(input, DispatchInput::Tick { .. }) {
-            self.close_invitation_written = crate::timeline_level::CloseWritten::No;
+            self.close_invitation_written = crate::timeline_level::CloseWritten::Not;
             self.record_debug("input", &input);
         }
         let elapsed = dispatch_elapsed(&input);

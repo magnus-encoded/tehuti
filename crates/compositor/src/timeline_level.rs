@@ -9,7 +9,7 @@ pub const STICK_THRESHOLD: i16 = 50;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CloseWritten {
     #[default]
-    No,
+    Not,
     Yes,
 }
 
