@@ -200,7 +200,11 @@ log_out = []",
 
     #[test]
     fn task_monitor_falls_back_to_plasma_systemmonitor() {
-        for installed in [&["plasma-systemmonitor"][..], &["btop", "plasma-systemmonitor"], &["kitty", "plasma-systemmonitor"]] {
+        for installed in [
+            &["plasma-systemmonitor"][..],
+            &["btop", "plasma-systemmonitor"],
+            &["kitty", "plasma-systemmonitor"],
+        ] {
             let argv = launched(&Config::default(), installed).unwrap();
             assert_eq!(argv, ["plasma-systemmonitor"], "{installed:?}");
         }
