@@ -1177,10 +1177,25 @@ fn unknown_key_name(source: &str) -> Option<String> {
                 table.values().find_map(walk)
             }
             toml::Value::Array(items) => items.iter().find_map(walk),
-            _ => None,
+            toml::Value::String(_)
+            | toml::Value::Integer(_)
+            | toml::Value::Float(_)
+            | toml::Value::Boolean(_)
+            | toml::Value::Datetime(_) => None,
         }
     }
     walk(&toml::from_str::<toml::Value>(source).ok()?)
+}
+
+/// The TOML error, or one naming the unknown key the untagged mapping enum hid.
+fn name_unknown_key(source: &str, error: &toml::de::Error) -> String {
+    let message = error.to_string();
+    if message.contains("MappingAction")
+        && let Some(bad) = unknown_key_name(source)
+    {
+        return format!("unknown key name {bad:?}; see docs/contexts.md for the valid names");
+    }
+    message
 }
 
 /// Parses a context at the configuration boundary.
@@ -1191,15 +1206,7 @@ fn unknown_key_name(source: &str) -> Option<String> {
 /// normalizes to nothing or to the same text as an earlier phrase is dropped
 /// with a warning instead; the rest of the context loads.
 pub fn parse_context(source: &str) -> Result<Context, String> {
-    let mut context: ContextFile = toml::from_str(source).map_err(|error| {
-        let message = error.to_string();
-        if message.contains("MappingAction")
-            && let Some(bad) = unknown_key_name(source)
-        {
-            return format!("unknown key name {bad:?}; see docs/contexts.md for the valid names");
-        }
-        message
-    })?;
+    let mut context: ContextFile = toml::from_str(source).map_err(|error| name_unknown_key(source, &error))?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
     validate_holds(&context)?;
     validate_keyboard_button(context.keyboard.button)?;
