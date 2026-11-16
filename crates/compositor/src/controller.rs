@@ -540,6 +540,10 @@ impl MirrorCopy {
 
     /// A frame that lets go of every key and hat the virtual controller shows as held.
     fn release(&mut self) -> Option<Vec<evdev::InputEvent>> {
+        self.menu_down = false;
+        self.view_down = false;
+        self.chord_key = None;
+        self.chord_live = false;
         if self.held.is_empty() {
             return None;
         }

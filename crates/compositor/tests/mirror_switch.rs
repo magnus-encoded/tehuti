@@ -480,19 +480,19 @@ mod tests {
         let (mut first, first_handles) = pad("first", &log);
         let (mut second, second_handles) = pad("second", &log);
         let (first_path, second_path) = (Path::new("/dev/input/event1"), Path::new("/dev/input/event2"));
-        let mut sync = |to: &Path, first: &mut EvdevPad<Synthetic>, second: &mut EvdevPad<Synthetic>| {
+        let sync = |target: &Path, one: &mut EvdevPad<Synthetic>, two: &mut EvdevPad<Synthetic>| {
             sync_mirrors(
-                &mut [(first_path, first), (second_path, second)],
+                &mut [(first_path, one), (second_path, two)],
                 true,
-                Some(to),
+                Some(target),
                 &mut None,
                 &|_| false,
             )
         };
-        let _ = sync(first_path, &mut first, &mut second);
+        drop(sync(first_path, &mut first, &mut second));
         queue(&first_handles, KeyCode::BTN_START, 1);
         first.pump_mirror(&mut |_, _| false).unwrap();
-        let _ = sync(second_path, &mut first, &mut second);
+        drop(sync(second_path, &mut first, &mut second));
         queue(&second_handles, KeyCode::BTN_SELECT, 1);
         second.pump_mirror(&mut |_, _| false).unwrap();
         assert!(
