@@ -161,10 +161,10 @@ impl Table {
             .enumerate()
         {
             let number = index.saturating_add(1).to_string();
-            let (name, extra_names) = match workspace.name.clone() {
-                Some(name) => (name, Vec::new()),
-                None => (format!("Workspace {number}"), vec![number]),
-            };
+            let (name, extra_names) = workspace.name.clone().map_or_else(
+                || (format!("Workspace {number}"), vec![number.clone()]),
+                |name| (name, Vec::new()),
+            );
             self.insert(Destination {
                 name,
                 extra_names,
