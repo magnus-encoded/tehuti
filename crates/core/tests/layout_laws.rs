@@ -2027,11 +2027,23 @@ mod layout_laws {
 
     #[test]
     fn expanding_a_fullscreen_column_keeps_its_output_edge_anchor() {
-        let config = LayoutConfig { struts: Struts { left: -12.0, right: 0.0, top: 0.0, bottom: 0.0 }, ..LayoutConfig::default() };
+        let config = LayoutConfig {
+            struts: Struts {
+                left: -12.0,
+                right: 0.0,
+                top: 0.0,
+                bottom: 0.0,
+            },
+            ..LayoutConfig::default()
+        };
         let mut world = World::single(config, geometry_at(0.0, 0.0, 800.0, 600.0, 0.0)).unwrap();
-        world.run(&[Step::Open, Step::Run(Command::ToggleFullscreen)]).unwrap();
+        world
+            .run(&[Step::Open, Step::Run(Command::ToggleFullscreen)])
+            .unwrap();
         let anchored = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
-        world.run(&[Step::Run(Command::ExpandColumnToAvailableWidth)]).unwrap();
+        world
+            .run(&[Step::Run(Command::ExpandColumnToAvailableWidth)])
+            .unwrap();
         let after = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
         assert_eq!(anchored, after);
     }

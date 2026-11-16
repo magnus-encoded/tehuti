@@ -1508,8 +1508,11 @@ impl Layout {
                     #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
                     {
                         // A fullscreen column keeps its output-edge anchor.
-                        self.outputs[output].workspaces[active].view =
-                            if fullscreen { working.x.add(anchor) } else { start.sub(config.gaps) };
+                        self.outputs[output].workspaces[active].view = if fullscreen {
+                            working.x.add(anchor)
+                        } else {
+                            start.sub(config.gaps)
+                        };
                     }
                 }
             }
