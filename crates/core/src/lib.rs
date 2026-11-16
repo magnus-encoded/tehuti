@@ -69,6 +69,7 @@ pub struct State {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UndoHold {
     button: ButtonName,
+    level: Level,
     held: core::time::Duration,
     next: core::time::Duration,
 }
@@ -116,6 +117,9 @@ impl State {
 
     /// Starts, ends and advances the Backspace repeat of a held undo button.
     fn repeat_undo(&mut self, event: &Event, undone: bool) -> Vec<Action> {
+        if self.menu.is_some() || self.undo_hold.is_some_and(|hold| hold.level != self.level) {
+            self.undo_hold = None;
+        }
         match event {
             Event::Button {
                 name,
@@ -123,6 +127,7 @@ impl State {
             } if undone => {
                 self.undo_hold = Some(UndoHold {
                     button: *name,
+                    level: self.level,
                     held: core::time::Duration::ZERO,
                     next: self.keyboard_repeat().delay(),
                 });
@@ -395,6 +400,7 @@ impl State {
     /// Swaps the contexts and keeps focus, held buttons and pending plugin decisions.
     pub fn replace_contexts(&mut self, contexts: Vec<Context>) {
         self.contexts = contexts;
+        self.undo_hold = None;
         self.refresh_ticker();
         self.refresh_labels();
     }
@@ -538,6 +544,7 @@ impl State {
 
     /// Cancels controller holds when the device disconnects or the seat pauses.
     pub fn controller_disconnected(&mut self) {
+        self.undo_hold = None;
         self.guide_held = None;
         self.guide_tap = None;
         self.start_held = false;

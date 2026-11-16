@@ -244,4 +244,59 @@ mod undo_dictation {
             assert_eq!(context.action_for(ButtonName::West), Some(Action::UndoDictation));
         }
     }
+
+    fn stopped(state: State) -> bool {
+        tick(state, 5000).1.is_empty()
+    }
+
+    #[test]
+    fn a_focus_change_stops_the_repeat() {
+        let (state, _) = press_x(terminal());
+        let (state, _) = step(
+            state,
+            &Event::Focus {
+                app_id: Some("terminal".into()),
+                title: "other".into(),
+            },
+        );
+        assert!(stopped(state));
+    }
+
+    #[test]
+    fn a_disconnect_stops_the_repeat() {
+        let (mut state, _) = press_x(terminal());
+        state.controller_disconnected();
+        assert!(stopped(state));
+    }
+
+    #[test]
+    fn a_context_reload_stops_the_repeat() {
+        let (mut state, _) = press_x(terminal());
+        state.replace_contexts(Vec::new());
+        assert!(stopped(state));
+    }
+
+    #[test]
+    fn opening_the_menu_stops_the_repeat() {
+        let (mut state, _) = press_x(terminal());
+        for button_state in [ButtonState::Pressed, ButtonState::Released] {
+            state = step(
+                state,
+                &Event::Button {
+                    name: ButtonName::Guide,
+                    state: button_state,
+                },
+            )
+            .0;
+        }
+        assert!(stopped(state));
+    }
+
+    #[test]
+    fn a_stalled_hour_yields_at_most_64_backspaces() {
+        let (state, _) = press_x(terminal());
+        let (state, actions) = tick(state, 3_600_000);
+        assert!((1..=64).contains(&actions.len()), "{}", actions.len());
+        assert!(tick(state, 3_600_000).1.len() <= 64);
+    }
 }
