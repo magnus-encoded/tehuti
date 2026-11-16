@@ -613,7 +613,7 @@ alone are forwarded as usual. The chord is built in; contexts cannot change it.
 Guide stays reserved for Tehuti: hold it for 500 ms to open the system menu;
 Guide+Start held for three seconds quits.
 
-The pad's `push_to_talk` list defines a chord in passthrough mode. A chord
+The pad's `push_to_talk` list defines a chord in passthrough mode. While such a context is focused, its list replaces the global `push_to_talk` list: the global buttons pass to the application like any other button. Contexts without the list keep the global one. A chord
 containing View cancels the solo hold and records while the complete chord is
 held. If View is the only push-to-talk button, capture starts and stops only
 on a release before 500 ms. A solo hold never starts capture.

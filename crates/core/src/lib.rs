@@ -587,6 +587,9 @@ impl State {
         if let Some(binding) = self.controller_talk {
             return binding == button;
         }
+        if let Some(own) = focused_context(self).and_then(Context::own_push_to_talk) {
+            return own.contains(&button);
+        }
         global_context(self).map_or(button == ButtonName::Record, |context| {
             context.push_to_talk(button)
         })
