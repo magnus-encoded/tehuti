@@ -91,14 +91,17 @@ def chosen_source():
         return None
 
 
-def list_sources():
-    """The pinned source, else the settings choice, else every capture device, else the default."""
+def list_sources(missing=None):
+    """The pinned source, else the settings choice, else every capture device, else the default.
+
+    `missing` is called with the saved source name when it is not among the capture devices."""
     pinned = os.environ.get("TEHUTI_SPEECH_SOURCE")
     if pinned:
         return [pinned]
     choice = chosen_source()
     if choice == "auto":
         return [None]
+    listed = True
     try:
         listing = subprocess.run(
             ["pw-dump"],
@@ -108,8 +111,11 @@ def list_sources():
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"speech source listing failed: {error}", file=sys.stderr, flush=True)
         names = []
+        listed = False
     if choice in names:
         return [choice]
+    if missing is not None and choice not in (None, "all", "auto") and listed:
+        missing(choice)
     return names or [None]
 
 
@@ -170,10 +176,10 @@ def choose(recordings):
 
 
 class Speech:
-    def __init__(self, model, sources=list_sources):
+    def __init__(self, model, sources=None):
         self.model = model
         self.hotwords = ""
-        self.sources = sources
+        self.sources = sources or (lambda: list_sources(self.warn_missing_source))
         self.tails = speech_tails(os.environ.get("TEHUTI_SPEECH_TAIL_MS"))
         self.releasing = None
         self.capture = None
@@ -193,6 +199,10 @@ class Speech:
             if len(self.model.hf_tokenizer.encode(" " + candidate, add_special_tokens=False).ids) <= MAX_HOTWORD_TOKENS:
                 words.append(word)
         self.hotwords = ", ".join(words)
+
+    def warn_missing_source(self, name):
+        log(f"saved source {name} is missing; capturing from the other sources", level="WARN")
+        reply({"warning": "source missing"})
 
     def cancel_tail(self):
         if self.releasing is not None:

@@ -18,6 +18,7 @@ struct Running {
     output: VecDeque<u8>,
     input: Vec<u8>,
     ready: bool,
+    source_missing: bool,
     device: Option<SpeechDevice>,
     vocabulary: Option<Vec<u8>>,
     age: core::time::Duration,
@@ -100,6 +101,7 @@ impl SpeechProcess {
                 output: VecDeque::new(),
                 input: Vec::new(),
                 ready: false,
+                source_missing: false,
                 device: None,
                 vocabulary: (!self.vocabulary.is_empty()).then(|| self.vocabulary.clone()),
                 age: core::time::Duration::ZERO,
@@ -204,6 +206,9 @@ impl SpeechProcess {
         running.age = running.age.saturating_add(elapsed);
         match running.poll() {
             Ok(inputs) => {
+                if std::mem::take(&mut running.source_missing) {
+                    self.notices.push_back("Saved mic missing, using another");
+                }
                 if self.outage && running.ready {
                     self.outage = false;
                     self.notices.push_back("Speech is back");
@@ -263,7 +268,10 @@ impl Running {
                 Ok(count) => {
                     for byte in bytes.get(..count).unwrap_or_default() {
                         if *byte == b'\n' {
-                            if let Some(input) = parse_reply(&self.input) {
+                            if is_source_missing(&self.input) {
+                                tracing::warn!("saved microphone is missing; speech captures from another source");
+                                self.source_missing = true;
+                            } else if let Some(input) = parse_reply(&self.input) {
                                 if input == SpeechInput::Available {
                                     self.device = parse_ready_device(&self.input);
                                     tracing::info!(device = ?self.device, "speech sidecar ready");
@@ -335,6 +343,12 @@ fn parse_ready_device(bytes: &[u8]) -> Option<SpeechDevice> {
         device: device_token(value.get("device")?)?,
         compute_type: device_token(value.get("compute_type")?)?,
     })
+}
+
+/// The sidecar's warning that the microphone saved in settings is not present.
+fn is_source_missing(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .is_ok_and(|value| value == serde_json::json!({ "warning": "source missing" }))
 }
 
 fn parse_reply(bytes: &[u8]) -> Option<SpeechInput> {
@@ -422,6 +436,14 @@ mod tests {
                 reason: SpeechFailure::Transcription
             })
         );
+    }
+
+    #[test]
+    fn source_missing_warning_is_recognised_and_is_not_a_speech_input() {
+        assert!(is_source_missing(br#"{"warning":"source missing"}"#));
+        assert!(!is_source_missing(br#"{"warning":"other"}"#));
+        assert!(!is_source_missing(br#"{"session":1,"error":"silent"}"#));
+        assert_eq!(parse_reply(br#"{"warning":"source missing"}"#), None);
     }
 
     #[test]
