@@ -89,7 +89,8 @@ A cursor and “MOUSE MODE” notice show the mode. Exiting mouse mode or losing
 the controller releases held mouse buttons. Holding Guide+Start for three seconds
 still quits in mouse mode.
 
-Speech phrases map to the same key or text actions:
+Speech phrases map to the same key or text actions, and also to `launch`, `close`
+and `notify` (see the [protocol](protocol/README.md)):
 
 ```toml
 [speech]
@@ -100,12 +101,13 @@ confirm = { key = "enter" }
 `hotwords = ["..."]` in `[speech]` lists words that prime recognition while the context is focused,
 together with the `*` context's. It is not a phrase.
 
-Phrase matching ignores case, surrounding whitespace and trailing punctuation.
+Phrase matching ignores case, surrounding whitespace and trailing punctuation
+(plugin `app_ids` and button names, by contrast, are case sensitive).
 When no phrase matches exactly, numbers 0 to 20 match their words and hyphens and
 word breaks are ignored ("bay-3" and "bay3" match "Bay three"); then a plain plural
 or singular of a last word of four or more letters matches. A phrase matched by
 fold or plural takes the utterance before spoken keys do, as exact phrases already do.
-The first initialized plugin subscribed to speech for the focused application replaces these mappings.
+The first initialized plugin subscribed to speech whose `app_ids` contain the focused application id replaces these mappings; it need not subscribe to buttons.
 Set top-level `unmatched_speech = "type"` before any TOML table to type unmatched
 speech into the focused window, followed by one space. Mapped phrases still win.
 The transcript keeps its original casing and punctuation. Empty or whitespace-only
