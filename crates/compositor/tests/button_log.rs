@@ -64,6 +64,6 @@ mod button_log {
 
     #[test]
     fn info_logs_no_button_lines() {
-        assert!(press_and_release(Level::INFO).is_empty());
+        assert_eq!(press_and_release(Level::INFO).len(), 0);
     }
 }
