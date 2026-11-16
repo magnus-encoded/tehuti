@@ -155,6 +155,9 @@ mod client_state_requests {
         first_size: (i32, i32),
         first_count: usize,
         after_maximize: usize,
+        maximized: Option<(i32, i32, Vec<u32>)>,
+        restored: Option<Vec<u32>>,
+        tile_size: (i32, i32),
         echoed: usize,
         after_unmaximize: usize,
         fullscreen: Option<Vec<u32>>,
@@ -241,9 +244,11 @@ mod client_state_requests {
         report: &mut Report,
     ) {
         let mut count = app.configures.len();
+        report.tile_size = app.configures.last().map(|c| (c.0, c.1)).unwrap();
         toplevel.set_maximized();
         settle(queue, app, shm, surface);
         report.after_maximize = app.configures.len().saturating_sub(count);
+        report.maximized = app.configures.last().cloned();
         count = app.configures.len();
         app.echo_maximize = Some(toplevel.clone());
         toplevel.set_maximized();
@@ -260,6 +265,7 @@ mod client_state_requests {
         toplevel.unset_maximized();
         settle(queue, app, shm, surface);
         report.after_unmaximize = app.configures.len().saturating_sub(count);
+        report.restored = app.configures.last().map(|configure| configure.2.clone());
         toplevel.set_fullscreen(None);
         settle(queue, app, shm, surface);
         report.fullscreen = app.configures.last().map(|configure| configure.2.clone());
@@ -336,6 +342,20 @@ mod client_state_requests {
             assert!(report.first.contains(&state), "{report:?}");
         }
         assert_eq!(report.after_maximize, 1, "maximize gets exactly one configure");
+        let (width, height, states) = report.maximized.clone().unwrap();
+        assert!(
+            states.contains(&u32::from(xdg_toplevel::State::Maximized)),
+            "a maximize request hears Maximized: {report:?}"
+        );
+        assert_eq!((width, height), report.tile_size, "at the tile size: {report:?}");
+        assert!(
+            !report
+                .restored
+                .clone()
+                .unwrap()
+                .contains(&u32::from(xdg_toplevel::State::Maximized)),
+            "unmaximize drops it: {report:?}"
+        );
         assert!(
             report.echoed <= 2,
             "a client that re-asks after every configure and commits the output size settles: {report:?}"
