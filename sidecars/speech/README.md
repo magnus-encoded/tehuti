@@ -64,7 +64,13 @@ Commands and replies are one JSON object per line, capped at 64 KiB:
 {"session":0,"text":"confirm"}
 {"session":1,"error":"model failed"}
 {"session":2,"error":"silent"}
+{"warning":"source missing"}
 ```
+
+The `source missing` warning is sent at most once per sidecar run, when the
+microphone saved in settings is not among the capture devices; the sidecar
+falls back to the other sources and the compositor shows "Saved mic missing,
+using another".
 
 An `error` reply shows SPEECH FAILED instead of NO SPEECH MAPPING. The
 `silent` error shows MIC SILENT: the sidecar sends it without transcribing
