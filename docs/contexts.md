@@ -114,6 +114,49 @@ Without the option, unmatched speech shows “No speech mapping” for three
 seconds above the client without changing focus. Record (Share) controls push-to-talk
 by default. Configured push-to-talk buttons never reach context mappings.
 
+## Shared sections
+
+Contexts reuse a section without copying it. A shared section is a TOML file at
+`~/.config/tehuti/shared/<name>.toml` that belongs to no application. Nothing in
+it applies until a context opts in with a top-level `include`, unlike the `*`
+global context, which applies to everything.
+
+Tabs on the shoulder buttons, shared by two applications:
+
+```toml
+# shared/tabs.toml
+[buttons.left_bumper]
+key = "tab"
+mods = ["shift"]
+
+[buttons.right_bumper]
+key = "tab"
+```
+
+```toml
+# kitty/context.toml (firefox/context.toml says the same)
+app_id = "kitty"
+include = ["tabs"]
+```
+
+An included file holds what a context would: top-level keys and tables. Its
+entries are added to the context. A binding or phrase the context itself defines
+wins over the included one, and `tehuti --check-config` warns that the shared
+one is replaced. Names use letters, digits, `-` and `_`; `context` is reserved.
+Shared sections cannot include other shared sections. An include naming a
+section that does not exist is an error and skips that context; `--check-config`
+then lists the shared sections that exist. Editing a shared file reloads the
+contexts like editing a context does.
+
+`tehuti config share <context> <section> [--as <name>]` moves a section out of
+`<context>/context.toml` into `shared/<name>.toml` and puts the include in its
+place. `<section>` is a dotted path such as `buttons.left_bumper`, and the name
+defaults to its last part. The command refuses when `shared/<name>.toml` exists
+and asks for another name with `--as`; it never overwrites. It keeps the
+previous context file as `context.toml.bak` (then `.bak.2`, and so on). The
+context file is rewritten from its parsed form, so its comments are not kept;
+the backup has them.
+
 ## Legacy favourites key
 
 The global context may still contain a top-level `favourites` list. Tehuti

@@ -65,6 +65,8 @@ pub mod display_mode_store;
 pub mod input_choice_store;
 mod screenshot;
 pub mod settings;
+pub mod shared_sections;
+pub mod shared_sections;
 pub mod system_menu;
 
 pub mod desktop_hints;

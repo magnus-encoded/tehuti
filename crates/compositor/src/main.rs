@@ -162,16 +162,39 @@ fn print_version() -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn default_config_directory() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .ok_or("neither XDG_CONFIG_HOME nor HOME is set")?
+        .join("tehuti"))
+}
+
+const CONFIG_USAGE: &str = "usage: tehuti config share <context> <section> [--as <name>]";
+
+/// `tehuti config share`: moves a section of a context into a shared section.
+fn config_command(arguments: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn Error>> {
+    use std::io::Write;
+    let words: Vec<&str> = arguments
+        .iter()
+        .map(|word| word.to_str().ok_or(CONFIG_USAGE))
+        .collect::<Result<_, _>>()?;
+    let (context, section, name) = match words.as_slice() {
+        ["share", context, section] => (*context, *section, None),
+        ["share", context, section, "--as", name] => (*context, *section, Some(*name)),
+        _ => return Err(CONFIG_USAGE.into()),
+    };
+    let report = tehuti::shared_sections::share(&default_config_directory()?, context, section, name)?;
+    writeln!(std::io::stdout().lock(), "{report}")?;
+    Ok(ExitCode::SUCCESS)
+}
+
 fn check_config(mut arguments: impl Iterator<Item = std::ffi::OsString>) -> Result<ExitCode, Box<dyn Error>> {
     use std::io::Write;
     let directory = match arguments.next() {
         Some(directory) => PathBuf::from(directory),
-        None => std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .ok_or("neither XDG_CONFIG_HOME nor HOME is set")?
-            .join("tehuti"),
+        None => default_config_directory()?,
     };
     if arguments.next().is_some() {
         return Err("usage: tehuti --check-config [config-directory]".into());
@@ -251,6 +274,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         Ok(tehuti::cli::Invocation::Help) => return print_usage(),
         Ok(tehuti::cli::Invocation::Version) => return print_version(),
         Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
+        Ok(tehuti::cli::Invocation::Config(rest)) => return config_command(&rest),
         Ok(tehuti::cli::Invocation::InstallSkill(path)) => return install_skill(path),
         Ok(tehuti::cli::Invocation::Session {
             context_directory,

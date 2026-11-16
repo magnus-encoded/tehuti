@@ -36,7 +36,7 @@ pub fn load_files(directory: &Path) -> Vec<(PathBuf, Context)> {
     });
     let mut files = Vec::new();
     for path in paths {
-        match load_one(&path) {
+        match load_one(&path, directory) {
             Ok(Some(context)) => files.push((path, context)),
             Ok(None) => {}
             Err(error) => tracing::warn!(%error, "context skipped"),
@@ -65,7 +65,7 @@ pub struct Reloaded {
 pub fn reload(directory: &Path) -> Result<Reloaded, LoadError> {
     let mut reloaded = Reloaded::default();
     for path in context_paths(directory, true)? {
-        match load_one(&path) {
+        match load_one(&path, directory) {
             Ok(Some(context)) => {
                 reloaded
                     .phrase_warnings
@@ -106,7 +106,7 @@ pub fn load_each(directory: &Path) -> Result<Vec<FileOutcome>, LoadError> {
     Ok(context_paths(directory, true)?
         .into_iter()
         .filter_map(|path| {
-            load_one(&path)
+            load_one(&path, directory)
                 .map(|loaded| loaded.map(|context| (path, context)))
                 .transpose()
         })
@@ -197,14 +197,18 @@ fn context_paths(directory: &Path, strict: bool) -> Result<Vec<PathBuf>, LoadErr
     Ok(paths)
 }
 
-fn load_one(path: &Path) -> Result<Option<Context>, LoadError> {
+fn load_one(path: &Path, directory: &Path) -> Result<Option<Context>, LoadError> {
     let failed = |message: String| LoadError {
         path: path.to_path_buf(),
         message,
     };
     match read_context(path) {
         Ok(source) => {
-            let context = parse_context(&source).map_err(failed)?;
+            let resolved = crate::shared_sections::resolve(&source, directory).map_err(failed)?;
+            let context = parse_context(&resolved.source).map_err(failed)?;
+            for warning in &resolved.overridden {
+                tracing::warn!(path = %path.display(), %warning, "context shared section");
+            }
             for warning in context.warnings() {
                 tracing::warn!(path = %path.display(), %warning, "context speech phrase");
             }
@@ -256,6 +260,7 @@ pub struct ContextWatch {
     directory: PathBuf,
     watcher: Rc<OwnedFd>,
     top: i32,
+    shared: Option<i32>,
     debounce: Debounce,
 }
 
@@ -295,10 +300,11 @@ impl ContextWatch {
             inotify::CreateFlags::NONBLOCK | inotify::CreateFlags::CLOEXEC,
         )?);
         let top = inotify::add_watch(&*watcher, directory, WATCH_FLAGS)?;
-        let context_watch = Self {
+        let mut context_watch = Self {
             directory: directory.to_path_buf(),
             watcher: Rc::clone(&watcher),
             top,
+            shared: None,
             debounce: Debounce::default(),
         };
         context_watch.watch_children();
@@ -325,7 +331,9 @@ impl ContextWatch {
                     let overflow = event
                         .events()
                         .contains(rustix::fs::inotify::ReadFlags::QUEUE_OVERFLOW);
-                    if relevant(name, is_directory, event.wd() == self.top, overflow) {
+                    let in_shared = self.shared == Some(event.wd());
+                    let shared_file = in_shared && name.is_some_and(|name| name.ends_with(b".toml"));
+                    if shared_file || relevant(name, is_directory, event.wd() == self.top, overflow) {
                         self.debounce.changed(Instant::now());
                     }
                 }
@@ -338,7 +346,13 @@ impl ContextWatch {
         }
     }
 
-    fn watch_children(&self) {
+    fn watch_children(&mut self) {
+        self.shared = rustix::fs::inotify::add_watch(
+            &*self.watcher,
+            crate::shared_sections::shared_directory(&self.directory),
+            WATCH_FLAGS,
+        )
+        .ok();
         let paths = match context_paths(&self.directory, false) {
             Ok(paths) => paths,
             Err(error) => {
@@ -364,7 +378,7 @@ impl ContextWatch {
     }
 }
 
-fn read_context(path: &Path) -> io::Result<String> {
+pub(crate) fn read_context(path: &Path) -> io::Result<String> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
