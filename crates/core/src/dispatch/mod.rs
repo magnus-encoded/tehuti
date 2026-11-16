@@ -1427,6 +1427,13 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         effects.push(Effect::OpenLauncher(request));
         return;
     }
+    if let Event::Speech { text } = &event
+        && let Some(request) = crate::unit_verbs::new_request(text.as_str())
+        && !state.core.context_maps_speech(text.as_str())
+    {
+        effects.push(Effect::OpenLauncher(request));
+        return;
+    }
     if let Event::Tick { elapsed } = &event
         && let Takeback::Holding(held) = &mut state.takeback
     {
