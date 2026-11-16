@@ -43,9 +43,9 @@ const FALLBACK: Profile = Profile {
 /// extension reuses the id under a longer name, so the name is part of the match.
 const WII_REMOTE_ID: (u16, u16) = (0x057e, 0x0306);
 const WII_REMOTE_NODE: &str = "Nintendo Wii Remote";
-/// Held sideways, the remote's own d-pad, 1 and 2 are the whole pad. The input layer remaps
-/// its buttons onto the standard positions, so the standard roles apply: 2 confirms, 1 goes
-/// back and A opens the keyboard. B carries push-to-talk as Record.
+/// Held sideways and used alone, 1 and 2 are the pad: 1 confirms, 2 goes back, A opens the
+/// keyboard and + carries push-to-talk as Record. The input layer remaps the buttons onto the
+/// standard positions, so the standard roles apply. B is left unmapped.
 const REMOTE: Profile = Profile {
     vendor: 0x057e,
     identity: Identity {
@@ -55,6 +55,19 @@ const REMOTE: Profile = Profile {
     },
     roles: STANDARD_ROLES,
     faces: &REMOTE_FACES,
+    labels: REMOTE_LABELS,
+};
+/// With a nunchuk or another pad attached, A confirms and B goes back, 1 opens the keyboard and
+/// + still carries push-to-talk. 2 is left unmapped.
+const REMOTE_PAIRED: Profile = Profile {
+    vendor: 0x057e,
+    identity: Identity {
+        family: PadFamily::RemotePaired,
+        swap_north_west: false,
+        model: Some("WII REMOTE"),
+    },
+    roles: STANDARD_ROLES,
+    faces: &REMOTE_PAIRED_FACES,
     labels: REMOTE_LABELS,
 };
 const PROFILES: [Profile; 3] = [
@@ -113,6 +126,17 @@ impl Identity {
         identity
     }
 
+    /// The same pad once a nunchuk or another pad is attached beside it, or alone again.
+    #[must_use]
+    pub const fn with_companion(mut self, companion: bool) -> Self {
+        self.family = match (self.family, companion) {
+            (PadFamily::Remote | PadFamily::RemotePaired, true) => PadFamily::RemotePaired,
+            (PadFamily::Remote | PadFamily::RemotePaired, false) => PadFamily::Remote,
+            (family, _) => family,
+        };
+        self
+    }
+
     /// Like [`Self::for_device`], with the node name that tells a Wii remote's buttons node
     /// from the extension nodes that share its id.
     #[must_use]
@@ -138,9 +162,16 @@ pub enum PadFamily {
     Symbols,
     Nintendo,
     Remote,
+    RemotePaired,
 }
 
 impl PadFamily {
+    /// True for a Wii remote in either layout.
+    #[must_use]
+    pub const fn is_remote(self) -> bool {
+        matches!(self, Self::Remote | Self::RemotePaired)
+    }
+
     #[must_use]
     pub fn button(self, role: Role) -> ButtonName {
         let profile = self.profile();
@@ -158,8 +189,10 @@ impl PadFamily {
     }
 
     fn profile(self) -> &'static Profile {
-        if self == Self::Remote {
-            return &REMOTE;
+        match self {
+            Self::Remote => return &REMOTE,
+            Self::RemotePaired => return &REMOTE_PAIRED,
+            Self::Letters | Self::Symbols | Self::Nintendo => {}
         }
         PROFILES
             .iter()
@@ -299,14 +332,14 @@ const NINTENDO_LABELS: &[(ButtonName, &str)] = &[
 const REMOTE_FACES: [FaceGlyph; 3] = [
     FaceGlyph {
         button: ButtonName::South,
-        label: "2",
-        shape: Shape::Disc('2'),
+        label: "1",
+        shape: Shape::Disc('1'),
         colour: Rgb::WHITE,
     },
     FaceGlyph {
         button: ButtonName::East,
-        label: "1",
-        shape: Shape::Disc('1'),
+        label: "2",
+        shape: Shape::Disc('2'),
         colour: Rgb::WHITE,
     },
     FaceGlyph {
@@ -317,10 +350,30 @@ const REMOTE_FACES: [FaceGlyph; 3] = [
     },
 ];
 
+const REMOTE_PAIRED_FACES: [FaceGlyph; 3] = [
+    FaceGlyph {
+        button: ButtonName::South,
+        label: "A",
+        shape: Shape::Disc('A'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::East,
+        label: "B",
+        shape: Shape::Disc('B'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::North,
+        label: "1",
+        shape: Shape::Disc('1'),
+        colour: Rgb::WHITE,
+    },
+];
+
 const REMOTE_LABELS: &[(ButtonName, &str)] = &[
     (ButtonName::Select, "−"),
-    (ButtonName::Start, "+"),
-    (ButtonName::Record, "B"),
+    (ButtonName::Record, "+"),
     (ButtonName::Guide, "Home"),
 ];
 

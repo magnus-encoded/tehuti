@@ -41,16 +41,35 @@ mod tests {
         assert_eq!(remote.family.button(Role::Keyboard), ButtonName::North);
         assert_eq!(remote.model_name("Nintendo Wii Remote"), "WII REMOTE");
         for (button, label) in [
-            (ButtonName::South, "2"),
-            (ButtonName::East, "1"),
+            (ButtonName::South, "1"),
+            (ButtonName::East, "2"),
             (ButtonName::North, "A"),
-            (ButtonName::Record, "B"),
-            (ButtonName::Start, "+"),
+            (ButtonName::Record, "+"),
             (ButtonName::Select, "−"),
             (ButtonName::Guide, "Home"),
         ] {
             assert_eq!(remote.family.label(button), label);
         }
+    }
+
+    #[test]
+    fn with_a_companion_the_remote_confirms_on_a_and_goes_back_on_b() {
+        let paired = Identity::for_node(0x057e, 0x0306, "Nintendo Wii Remote").with_companion(true);
+        assert_eq!(paired.family, PadFamily::RemotePaired);
+        for (button, label) in [
+            (ButtonName::South, "A"),
+            (ButtonName::East, "B"),
+            (ButtonName::North, "1"),
+            (ButtonName::Record, "+"),
+            (ButtonName::Select, "−"),
+        ] {
+            assert_eq!(paired.family.label(button), label);
+        }
+        assert_eq!(paired.with_companion(false).family, PadFamily::Remote);
+        assert_eq!(
+            Identity::for_device(0x057e, 0x2009).with_companion(true).family,
+            PadFamily::Nintendo
+        );
     }
 
     #[test]

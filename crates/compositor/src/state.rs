@@ -1235,7 +1235,7 @@ impl Compositor {
             tehuti_core::pad::PadFamily::Letters => "Share",
             tehuti_core::pad::PadFamily::Symbols => "Create",
             tehuti_core::pad::PadFamily::Nintendo => "Capture",
-            tehuti_core::pad::PadFamily::Remote => "B",
+            tehuti_core::pad::PadFamily::Remote | tehuti_core::pad::PadFamily::RemotePaired => "+",
         });
         let invitation = tehuti_core::launcher::Launcher::invitation(button);
         let _rejection = self.dispatch(DispatchInput::Launcher(Box::new(invitation)));

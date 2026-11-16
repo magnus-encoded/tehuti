@@ -86,6 +86,20 @@ pub fn open_grabbed(
         .collect()
 }
 
+/// True while a Wii remote's nunchuk extension node exists; it has no south button, so it is
+/// never opened as a pad, and its name is read from sysfs instead.
+#[must_use]
+pub fn nunchuk_present() -> bool {
+    std::fs::read_dir("/sys/class/input")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            std::fs::read_to_string(entry.path().join("name"))
+                .is_ok_and(|name| name.trim() == "Nintendo Wii Remote Nunchuk")
+        })
+}
+
 /// Opens the input devices that could be pads. Opening and closing a device is slow on some kernels
 /// (closing waits for an RCU grace period), and the scan runs every few hundred milliseconds,
 /// so devices that sysfs says have no south face button are never opened.
@@ -843,12 +857,12 @@ impl EvdevPad {
 
     #[must_use]
     pub fn identity(&self) -> tehuti_core::pad::Identity {
-        let input_id = self.handles.events.input_id();
-        tehuti_core::pad::Identity::for_node(
-            input_id.vendor(),
-            input_id.product(),
-            self.handles.events.name().unwrap_or_default(),
-        )
+        self.translator.identity
+    }
+
+    /// Tells a Wii remote whether another pad or a nunchuk is attached beside it.
+    pub const fn set_companion(&mut self, companion: bool) {
+        self.translator.set_companion(companion);
     }
 }
 
@@ -1302,26 +1316,44 @@ impl DpadHat {
         }
     }
 
+    /// Switches a Wii remote between its alone and paired layouts; other pads ignore it.
+    pub const fn set_companion(&mut self, companion: bool) {
+        self.identity = self.identity.with_companion(companion);
+    }
+
     /// Moves a key onto the position its pad family reads it from.
     ///
     /// The Wii remote is held sideways, so its d-pad turns a quarter turn anticlockwise (its
-    /// up arm points left), 2 and 1 take the confirm and back positions, A the keyboard
-    /// position, B push-to-talk, and + and − Menu and View.
+    /// up arm points left). Alone, 1 confirms, 2 goes back and A opens the keyboard; with a
+    /// companion A confirms, B goes back and 1 opens the keyboard. + is push-to-talk and − View
+    /// either way. The leftover buttons map to a code nothing reads.
     const fn face_code(&self, code: KeyCode) -> KeyCode {
-        if matches!(self.identity.family, tehuti_core::pad::PadFamily::Remote) {
-            return match code {
-                KeyCode::BTN_2 => KeyCode::BTN_SOUTH,
-                KeyCode::BTN_1 => KeyCode::BTN_EAST,
-                KeyCode::BTN_SOUTH => KeyCode::BTN_NORTH,
-                KeyCode::BTN_EAST => KeyCode::KEY_RECORD,
-                KeyCode::KEY_NEXT => KeyCode::BTN_START,
-                KeyCode::KEY_PREVIOUS => KeyCode::BTN_SELECT,
-                KeyCode::KEY_UP => KeyCode::BTN_DPAD_LEFT,
-                KeyCode::KEY_RIGHT => KeyCode::BTN_DPAD_UP,
-                KeyCode::KEY_DOWN => KeyCode::BTN_DPAD_RIGHT,
-                KeyCode::KEY_LEFT => KeyCode::BTN_DPAD_DOWN,
-                _ => code,
-            };
+        use tehuti_core::pad::PadFamily;
+        let unmapped = KeyCode::BTN_TRIGGER_HAPPY1;
+        let dpad = match code {
+            KeyCode::KEY_UP => Some(KeyCode::BTN_DPAD_LEFT),
+            KeyCode::KEY_RIGHT => Some(KeyCode::BTN_DPAD_UP),
+            KeyCode::KEY_DOWN => Some(KeyCode::BTN_DPAD_RIGHT),
+            KeyCode::KEY_LEFT => Some(KeyCode::BTN_DPAD_DOWN),
+            _ => None,
+        };
+        match (self.identity.family, code) {
+            (PadFamily::Remote | PadFamily::RemotePaired, _) if dpad.is_some() => {
+                return match dpad {
+                    Some(turned) => turned,
+                    None => code,
+                };
+            }
+            (PadFamily::Remote | PadFamily::RemotePaired, KeyCode::KEY_NEXT) => return KeyCode::KEY_RECORD,
+            (PadFamily::Remote | PadFamily::RemotePaired, KeyCode::KEY_PREVIOUS) => return KeyCode::BTN_SELECT,
+            (PadFamily::Remote, KeyCode::BTN_1) => return KeyCode::BTN_SOUTH,
+            (PadFamily::Remote, KeyCode::BTN_2) => return KeyCode::BTN_EAST,
+            (PadFamily::Remote, KeyCode::BTN_SOUTH) => return KeyCode::BTN_NORTH,
+            (PadFamily::Remote, KeyCode::BTN_EAST) => return unmapped,
+            (PadFamily::RemotePaired, KeyCode::BTN_SOUTH | KeyCode::BTN_EAST) => return code,
+            (PadFamily::RemotePaired, KeyCode::BTN_1) => return KeyCode::BTN_NORTH,
+            (PadFamily::RemotePaired, KeyCode::BTN_2) => return unmapped,
+            _ => {}
         }
         match (self.identity.swap_north_west, code) {
             (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
@@ -2058,11 +2090,10 @@ mod remote_tests {
     fn the_sideways_remote_reads_its_buttons_from_the_standard_positions() {
         let mut hat = remote();
         for (code, name) in [
-            (KeyCode::BTN_2, ButtonName::South),
-            (KeyCode::BTN_1, ButtonName::East),
+            (KeyCode::BTN_1, ButtonName::South),
+            (KeyCode::BTN_2, ButtonName::East),
             (KeyCode::BTN_SOUTH, ButtonName::North),
-            (KeyCode::BTN_EAST, ButtonName::Record),
-            (KeyCode::KEY_NEXT, ButtonName::Start),
+            (KeyCode::KEY_NEXT, ButtonName::Record),
             (KeyCode::KEY_PREVIOUS, ButtonName::Select),
             (KeyCode::BTN_MODE, ButtonName::Guide),
         ] {
@@ -2075,6 +2106,31 @@ mod remote_tests {
                 "{code:?}"
             );
         }
+    }
+
+    #[test]
+    fn with_a_companion_the_remote_confirms_on_a_and_goes_back_on_b() {
+        let mut hat = remote();
+        hat.set_companion(true);
+        for (code, name) in [
+            (KeyCode::BTN_SOUTH, ButtonName::South),
+            (KeyCode::BTN_EAST, ButtonName::East),
+            (KeyCode::BTN_1, ButtonName::North),
+            (KeyCode::KEY_NEXT, ButtonName::Record),
+            (KeyCode::KEY_PREVIOUS, ButtonName::Select),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+        assert!(press(&mut hat, KeyCode::BTN_2).is_empty());
+        hat.set_companion(false);
+        assert!(press(&mut hat, KeyCode::BTN_EAST).is_empty());
     }
 
     #[test]
