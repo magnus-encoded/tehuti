@@ -208,6 +208,16 @@ fn load_one(path: &Path) -> Result<Option<Context>, LoadError> {
             for warning in context.warnings() {
                 tracing::warn!(path = %path.display(), %warning, "context speech phrase");
             }
+            for mapping in context.speech_mappings() {
+                if let Some(word) = tehuti_core::unit_verbs::reserved_word(mapping.phrase) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        phrase = mapping.phrase,
+                        word,
+                        "context speech phrase starts with a reserved launcher word and never fires"
+                    );
+                }
+            }
             Ok(Some(context))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
