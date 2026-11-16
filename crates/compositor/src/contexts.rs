@@ -260,7 +260,8 @@ pub struct ContextWatch {
     directory: PathBuf,
     watcher: Rc<OwnedFd>,
     top: i32,
-    shared: Option<i32>,
+    /// The shared folder and its subfolders.
+    shared: Vec<i32>,
     debounce: Debounce,
 }
 
@@ -304,7 +305,7 @@ impl ContextWatch {
             directory: directory.to_path_buf(),
             watcher: Rc::clone(&watcher),
             top,
-            shared: None,
+            shared: Vec::new(),
             debounce: Debounce::default(),
         };
         context_watch.watch_children();
@@ -331,8 +332,9 @@ impl ContextWatch {
                     let overflow = event
                         .events()
                         .contains(rustix::fs::inotify::ReadFlags::QUEUE_OVERFLOW);
-                    let in_shared = self.shared == Some(event.wd());
-                    let shared_file = in_shared && name.is_some_and(|name| name.ends_with(b".toml"));
+                    let in_shared = self.shared.contains(&event.wd());
+                    let shared_file =
+                        in_shared && (is_directory || name.is_some_and(|name| name.ends_with(b".toml")));
                     if shared_file || relevant(name, is_directory, event.wd() == self.top, overflow) {
                         self.debounce.changed(Instant::now());
                     }
@@ -347,12 +349,17 @@ impl ContextWatch {
     }
 
     fn watch_children(&mut self) {
-        self.shared = rustix::fs::inotify::add_watch(
-            &*self.watcher,
-            crate::shared_sections::shared_directory(&self.directory),
-            WATCH_FLAGS,
-        )
-        .ok();
+        let shared = crate::shared_sections::shared_directory(&self.directory);
+        let folders = std::fs::read_dir(&shared)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir());
+        self.shared = core::iter::once(shared)
+            .chain(folders)
+            .filter_map(|path| rustix::fs::inotify::add_watch(&*self.watcher, path, WATCH_FLAGS).ok())
+            .collect();
         let paths = match context_paths(&self.directory, false) {
             Ok(paths) => paths,
             Err(error) => {

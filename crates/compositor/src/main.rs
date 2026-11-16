@@ -171,7 +171,7 @@ fn default_config_directory() -> Result<PathBuf, Box<dyn Error>> {
         .join("tehuti"))
 }
 
-const CONFIG_USAGE: &str = "usage: tehuti config share <context> <section> [--as <name>]";
+const CONFIG_USAGE: &str = "usage: tehuti config share <context> <section>... [--as <name>]";
 
 /// `tehuti config share`: moves a section of a context into a shared section.
 fn config_command(arguments: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn Error>> {
@@ -180,12 +180,18 @@ fn config_command(arguments: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn 
         .iter()
         .map(|word| word.to_str().ok_or(CONFIG_USAGE))
         .collect::<Result<_, _>>()?;
-    let (context, section, name) = match words.as_slice() {
-        ["share", context, section] => (*context, *section, None),
-        ["share", context, section, "--as", name] => (*context, *section, Some(*name)),
+    let (context, sections, name) = match words.as_slice() {
+        ["share", context, rest @ ..] => match rest {
+            [sections @ .., "--as", name] if !sections.contains(&"--as") => (*context, sections, Some(*name)),
+            sections if !sections.contains(&"--as") => (*context, sections, None),
+            _ => return Err(CONFIG_USAGE.into()),
+        },
         _ => return Err(CONFIG_USAGE.into()),
     };
-    let report = tehuti::shared_sections::share(&default_config_directory()?, context, section, name)?;
+    if sections.is_empty() {
+        return Err(CONFIG_USAGE.into());
+    }
+    let report = tehuti::shared_sections::share(&default_config_directory()?, context, sections, name)?;
     writeln!(std::io::stdout().lock(), "{report}")?;
     Ok(ExitCode::SUCCESS)
 }

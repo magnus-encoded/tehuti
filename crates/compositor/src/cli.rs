@@ -9,7 +9,7 @@ usage: tehuti <context-directory> [application] [arguments...]
        tehuti --version | -V
        tehuti --check-config [config-directory]
        tehuti --install-skill [path]
-       tehuti config share <context> <section> [--as <name>]
+       tehuti config share <context> <section>... [--as <name>]
 ";
 
 /// What one run of the binary does.

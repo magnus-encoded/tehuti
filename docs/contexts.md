@@ -121,41 +121,49 @@ Contexts reuse a section without copying it. A shared section is a TOML file at
 it applies until a context opts in with a top-level `include`, unlike the `*`
 global context, which applies to everything.
 
-Tabs on the shoulder buttons, shared by two applications:
+Name a shared section after the key convention it carries, not after an app. A
+name is one word or `folder/word` (letters, digits, `-` and `_`; at most one
+folder; `context` is reserved). Kitty and alacritty both take tab switching on
+the shoulder buttons from `shared/tabs/ctrl-tab.toml`; a browser that switches
+tabs with Ctrl+PageUp would include `tabs/ctrl-pageup`.
 
 ```toml
-# shared/tabs.toml
+# shared/tabs/ctrl-tab.toml
 [buttons.left_bumper]
 key = "tab"
-mods = ["shift"]
+mods = ["ctrl", "shift"]
 
 [buttons.right_bumper]
 key = "tab"
+mods = ["ctrl"]
 ```
 
 ```toml
-# kitty/context.toml (firefox/context.toml says the same)
+# kitty/context.toml (alacritty/context.toml says the same)
 app_id = "kitty"
-include = ["tabs"]
+include = ["tabs/ctrl-tab"]
 ```
 
-An included file holds what a context would: top-level keys and tables. Its
-entries are added to the context. A binding or phrase the context itself defines
-wins over the included one, and `tehuti --check-config` warns that the shared
-one is replaced. Names use letters, digits, `-` and `_`; `context` is reserved.
+An included file holds what a context would: top-level keys and tables. The
+context's own entries merge over it field by field: a field the context writes
+replaces the shared one, and every field it leaves out comes from the shared
+section. If the context above also had `[buttons.left_bumper]` with
+`key = "t"`, that button would send Ctrl+Shift+T. `tehuti --check-config` lists
+each overridden field as a warning. Earlier includes win over later ones.
 Shared sections cannot include other shared sections. An include naming a
 section that does not exist is an error and skips that context; `--check-config`
 then lists the shared sections that exist. Editing a shared file reloads the
 contexts like editing a context does.
 
-`tehuti config share <context> <section> [--as <name>]` moves a section out of
-`<context>/context.toml` into `shared/<name>.toml` and puts the include in its
-place. `<section>` is a dotted path such as `buttons.left_bumper`, and the name
-defaults to its last part. The command refuses when `shared/<name>.toml` exists
-and asks for another name with `--as`; it never overwrites. It keeps the
-previous context file as `context.toml.bak` (then `.bak.2`, and so on). The
-context file is rewritten from its parsed form, so its comments are not kept;
-the backup has them.
+`tehuti config share <context> <section>... [--as <name>]` moves one or more
+sections out of `<context>/context.toml` into one shared file and puts the
+include in their place. Each `<section>` is a dotted path such as
+`buttons.left_bumper`. With one path the name defaults to its last part; with
+several, `--as` is required. `--as tabs/ctrl-tab` writes
+`shared/tabs/ctrl-tab.toml`. The command refuses when that file exists and asks
+for another name; it never overwrites. The context file is edited in place, so
+its comments stay, and the previous file is kept as `context.toml.bak` (then
+`.bak.2`, and so on).
 
 ### Type prefix
 

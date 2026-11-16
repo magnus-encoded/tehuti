@@ -1,12 +1,15 @@
 //! Sections shared between contexts: `shared/<name>.toml`, opted into with `include = ["<name>"]`.
+//!
+//! A name is one word or `folder/word`; words use letters, digits, `-` and `_`.
 
 use std::path::{Path, PathBuf};
 use toml::{Table, Value};
+use toml_edit::{DocumentMut, Item};
 
 /// The folder of shared sections inside a config directory.
 const DIRECTORY: &str = "shared";
 
-/// A shared section cannot take this name: `shared/context.toml` would read as a context.
+/// A word of a shared name cannot be this: `shared/context.toml` would read as a context.
 const RESERVED: &str = "context";
 
 /// A context with its includes merged in.
@@ -14,7 +17,7 @@ const RESERVED: &str = "context";
 pub struct Resolved {
     /// The context source to parse; unchanged when the context includes nothing.
     pub source: String,
-    /// Shared bindings the context's own entry replaced, one line each.
+    /// Shared fields the context's own entry replaced, one line each.
     pub overridden: Vec<String>,
 }
 
@@ -26,26 +29,50 @@ pub fn shared_directory(directory: &Path) -> PathBuf {
 /// The names of the shared sections that exist, sorted.
 #[must_use]
 pub fn names(directory: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(shared_directory(directory)) else {
-        return Vec::new();
+    let root = shared_directory(directory);
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return found;
     };
-    let mut names: Vec<String> = entries
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            let stem = path.file_stem()?.to_str()?.to_owned();
-            (path.extension()? == "toml" && valid_name(&stem)).then_some(stem)
-        })
-        .collect();
-    names.sort();
-    names
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            let Some(folder) = path.file_name().and_then(|name| name.to_str()).map(str::to_owned) else {
+                continue;
+            };
+            let inner = std::fs::read_dir(&path)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok);
+            for file in inner {
+                if let Some(word) = toml_stem(&file.path()) {
+                    found.push(format!("{folder}/{word}"));
+                }
+            }
+        } else if let Some(word) = toml_stem(&path) {
+            found.push(word);
+        }
+    }
+    found.retain(|name| valid_name(name));
+    found.sort();
+    found
+}
+
+fn toml_stem(path: &Path) -> Option<String> {
+    (path.extension()? == "toml").then(|| path.file_stem()?.to_str().map(str::to_owned))?
+}
+
+fn valid_word(word: &str) -> bool {
+    word != RESERVED
+        && !word.is_empty()
+        && word
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
 }
 
 fn valid_name(name: &str) -> bool {
-    name != RESERVED
-        && !name.is_empty()
-        && name
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
+    let words: Vec<&str> = name.split('/').collect();
+    words.len() <= 2 && words.iter().all(|word| valid_word(word))
 }
 
 fn shared_path(directory: &Path, name: &str) -> PathBuf {
@@ -53,6 +80,8 @@ fn shared_path(directory: &Path, name: &str) -> PathBuf {
 }
 
 /// Merges the shared sections a context includes into its source.
+///
+/// The context's own fields win; fields it does not write come from the shared sections.
 ///
 /// # Errors
 ///
@@ -72,14 +101,14 @@ pub fn resolve(source: &str, directory: &Path) -> Result<Resolved, String> {
     let Value::Array(items) = include else {
         return Err("include must be a list of shared section names".into());
     };
-    let mut sections = Vec::new();
+    let mut overridden = Vec::new();
     for item in items {
         let Value::String(name) = item else {
             return Err("include must be a list of shared section names".into());
         };
-        sections.push((name.clone(), read_section(directory, &name)?));
+        let section = read_section(directory, &name)?;
+        merge(&mut context, section, &mut Vec::new(), &name, &mut overridden);
     }
-    let overridden = merge(&mut context, sections);
     let merged = toml::to_string(&context).map_err(|error| error.to_string())?;
     Ok(Resolved {
         source: merged,
@@ -117,57 +146,54 @@ fn read_section(directory: &Path, name: &str) -> Result<Table, String> {
     Ok(table)
 }
 
-/// Adds each section's entries to `context`; an entry already there stays and is reported.
-///
-/// Entries are the top-level keys, and the keys of a top-level table such as one button or one
-/// speech phrase, so a context can replace a single binding of an included `[buttons]` table.
-fn merge(context: &mut Table, sections: Vec<(String, Table)>) -> Vec<String> {
-    let mut overridden = Vec::new();
-    for (name, section) in sections {
-        for (key, value) in section {
-            match (context.get_mut(&key), value) {
-                (None, value) => {
-                    let _previous = context.insert(key, value);
-                }
-                (Some(Value::Table(own)), Value::Table(shared)) => {
-                    for (child, entry) in shared {
-                        if own.contains_key(&child) {
-                            overridden.push(format!(
-                                "{key}.{child} from shared section {name:?} is replaced by the context's own"
-                            ));
-                        } else {
-                            let _previous = own.insert(child, entry);
-                        }
-                    }
-                }
-                (Some(_), _) => overridden.push(format!(
-                    "{key} from shared section {name:?} is replaced by the context's own"
-                )),
+/// Adds the shared fields the context lacks, at every table depth. A field the context
+/// already writes stays and is reported by its dotted path.
+fn merge(own: &mut Table, shared: Table, path: &mut Vec<String>, name: &str, overridden: &mut Vec<String>) {
+    for (key, value) in shared {
+        path.push(key.clone());
+        match (own.get_mut(&key), value) {
+            (None, value) => {
+                let _previous = own.insert(key, value);
             }
+            (Some(Value::Table(inner)), Value::Table(shared_inner)) => {
+                merge(inner, shared_inner, path, name, overridden);
+            }
+            (Some(_), _) => overridden.push(format!(
+                "{} from shared section {name:?} is replaced by the context's own",
+                path.join(".")
+            )),
         }
+        let _popped = path.pop();
     }
-    overridden
 }
 
-/// Moves `section` (a dotted path such as `buttons.left_bumper`) out of the context folder's
+/// Moves `sections` (dotted paths such as `buttons.left_bumper`) out of the context folder's
 /// `context.toml` into `shared/<name>.toml`, leaving an include. Returns a report line.
 ///
-/// The name defaults to the last part of the path. Nothing is overwritten: the context file is
-/// first copied to a backup next to it.
+/// The name defaults to the last part of a single path; several paths need a name. Nothing is
+/// overwritten: the context file is first copied to a backup next to it, and its comments stay.
 ///
 /// # Errors
 ///
-/// The context or section is missing, the name is invalid or taken, or a file cannot be written.
-pub fn share(directory: &Path, context: &str, section: &str, name: Option<&str>) -> Result<String, String> {
+/// The context or a section is missing, the name is invalid or taken, no name was given for
+/// several paths, or a file cannot be written.
+pub fn share(
+    directory: &Path,
+    context: &str,
+    sections: &[&str],
+    name: Option<&str>,
+) -> Result<String, String> {
     if context.is_empty() || context.contains(['/', '\\']) || context == ".." || context == "." {
         return Err(format!("{context:?} is not a context folder name"));
     }
-    let path: Vec<&str> = section.split('.').collect();
-    let last = path.last().copied().unwrap_or_default();
-    let name = name.unwrap_or(last);
+    let name = match (name, sections) {
+        (Some(name), _) => name,
+        (None, [only]) => only.rsplit('.').next().unwrap_or_default(),
+        (None, _) => return Err("sharing several paths needs a name: add --as NAME".into()),
+    };
     if !valid_name(name) {
         return Err(format!(
-            "{name:?} is not a valid shared section name: use letters, digits, - and _ (not {RESERVED:?}); choose one with --as NAME"
+            "{name:?} is not a valid shared section name: use letters, digits, - and _, with at most one folder (not {RESERVED:?}); choose one with --as NAME"
         ));
     }
     let target = shared_path(directory, name);
@@ -178,56 +204,79 @@ pub fn share(directory: &Path, context: &str, section: &str, name: Option<&str>)
     }
     let file = directory.join(context).join("context.toml");
     let original = std::fs::read_to_string(&file).map_err(|error| format!("{}: {error}", file.display()))?;
-    let mut table: Table = original
+    let mut document: DocumentMut = original
         .parse()
-        .map_err(|error: toml::de::Error| format!("{}: {error}", file.display()))?;
-    let moved =
-        take(&mut table, &path).ok_or_else(|| format!("{} has no section {section:?}", file.display()))?;
-    let mut shared = Table::new();
-    let mut nested = moved;
-    for key in path.iter().rev() {
-        let mut parent = Table::new();
-        let _previous = parent.insert((*key).to_owned(), nested);
-        nested = Value::Table(parent);
+        .map_err(|error: toml_edit::TomlError| format!("{}: {error}", file.display()))?;
+    let mut shared = DocumentMut::new();
+    for section in sections {
+        let path: Vec<&str> = section.split('.').collect();
+        let moved = take(document.as_item_mut(), &path)
+            .ok_or_else(|| format!("{} has no section {section:?}", file.display()))?;
+        put(shared.as_item_mut(), &path, moved);
     }
-    if let Value::Table(whole) = nested {
-        shared = whole;
-    }
-    let mut includes = match table.remove("include") {
-        Some(Value::Array(items)) => items,
-        Some(_) => return Err(format!("{}: include must be a list", file.display())),
-        None => Vec::new(),
-    };
-    includes.push(Value::String(name.to_owned()));
-    let _previous = table.insert("include".into(), Value::Array(includes));
-    let rewritten = toml::to_string(&table).map_err(|error| error.to_string())?;
-    let shared_text = toml::to_string(&shared).map_err(|error| error.to_string())?;
+    add_include(&mut document, name).map_err(|error| format!("{}: {error}", file.display()))?;
     let backup = backup_path(&file);
     std::fs::write(&backup, &original).map_err(|error| format!("{}: {error}", backup.display()))?;
-    std::fs::create_dir_all(shared_directory(directory)).map_err(|error| error.to_string())?;
-    write_new(&target, &shared_text)?;
-    std::fs::write(&file, rewritten).map_err(|error| format!("{}: {error}", file.display()))?;
+    if let Some(folder) = target.parent() {
+        std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
+    }
+    write_new(&target, &shared.to_string())?;
+    std::fs::write(&file, document.to_string()).map_err(|error| format!("{}: {error}", file.display()))?;
     Ok(format!(
-        "Moved {section} to {} and included it as {name:?}; the previous file is kept at {}",
+        "Moved {} to {} and included it as {name:?}; the previous file is kept at {}",
+        sections.join(", "),
         target.display(),
         backup.display()
     ))
 }
 
-/// Removes and returns the value at the dotted path, dropping tables it leaves empty.
-fn take(table: &mut Table, path: &[&str]) -> Option<Value> {
-    let (first, rest) = path.split_first()?;
-    if rest.is_empty() {
-        return table.remove(*first);
+fn add_include(document: &mut DocumentMut, name: &str) -> Result<(), String> {
+    match document.get_mut("include") {
+        Some(item) => item.as_array_mut().ok_or("include must be a list")?.push(name),
+        None => {
+            let mut list = toml_edit::Array::new();
+            list.push(name);
+            let _previous = document.insert("include", toml_edit::value(list));
+        }
     }
-    let Value::Table(child) = table.get_mut(*first)? else {
-        return None;
-    };
+    Ok(())
+}
+
+/// Removes and returns the item at the path, dropping tables it leaves empty.
+fn take(item: &mut Item, path: &[&str]) -> Option<Item> {
+    let (first, rest) = path.split_first()?;
+    let table = item.as_table_like_mut()?;
+    if rest.is_empty() {
+        return table.remove(first);
+    }
+    let child = table.get_mut(first)?;
     let taken = take(child, rest)?;
-    if child.is_empty() {
-        let _removed = table.remove(*first);
+    if child.as_table_like().is_some_and(toml_edit::TableLike::is_empty) {
+        let _removed = table.remove(first);
     }
     Some(taken)
+}
+
+/// Places `value` at the path, creating the tables above it without headers of their own.
+fn put(item: &mut Item, path: &[&str], value: Item) {
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
+    let Some(table) = item.as_table_like_mut() else {
+        return;
+    };
+    if rest.is_empty() {
+        let _previous = table.insert(first, value);
+        return;
+    }
+    if !table.contains_key(first) {
+        let mut parent = toml_edit::Table::new();
+        parent.set_implicit(true);
+        let _previous = table.insert(first, Item::Table(parent));
+    }
+    if let Some(child) = table.get_mut(first) {
+        put(child, rest, value);
+    }
 }
 
 fn write_new(path: &Path, text: &str) -> Result<(), String> {
