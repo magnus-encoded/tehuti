@@ -48,6 +48,7 @@ pub(crate) struct LoopData {
     pacing: LoopPacing,
     context_watch: Option<tehuti::contexts::ContextWatch>,
     applications_watch: Option<tehuti::applications_watch::ApplicationsWatch>,
+    menu_watch: Option<tehuti::menu_watch::MenuWatch>,
     driver: Option<tehuti::driver::Driver>,
     frames: Frames,
 }
@@ -424,8 +425,10 @@ fn start_session(
         .transpose()?;
 
     let applications_watch = insert_applications_watch(&event_loop, &compositor.destination_paths().data);
+    let menu_watch = insert_menu_watch(&event_loop);
     let mut data = LoopData {
         applications_watch,
+        menu_watch,
         display,
         compositor,
         controllers,
@@ -589,6 +592,7 @@ fn run(
             advance_time(data);
             reload_contexts(data);
             reload_desktop_entries(data);
+            reload_menu(data);
             if data.driver.is_none() {
                 reconnect_controller(data, &handle);
             }
@@ -859,6 +863,30 @@ fn insert_applications_watch(
         |error| warn!(%error, "applications watch unavailable; desktop entries reload only on restart"),
     )
     .ok()
+}
+
+/// Watches the menu config; a failure leaves the menu loaded until restart.
+fn insert_menu_watch(event_loop: &EventLoop<'static, LoopData>) -> Option<tehuti::menu_watch::MenuWatch> {
+    let path = tehuti::system_menu::config_path()
+        .inspect_err(|error| warn!(%error, "no menu config path; the menu reloads only on restart"))
+        .ok()?;
+    tehuti::menu_watch::MenuWatch::insert(&event_loop.handle(), &path, |data: &mut LoopData| {
+        data.menu_watch.as_mut()
+    })
+    .inspect_err(|error| warn!(%error, "menu watch unavailable; the menu reloads only on restart"))
+    .ok()
+}
+
+/// Reloads the system menu once a burst of edits to its config has gone quiet.
+fn reload_menu(data: &mut LoopData) {
+    if data
+        .menu_watch
+        .as_mut()
+        .is_some_and(|watch| watch.poll(std::time::Instant::now()))
+    {
+        data.compositor
+            .reload_menu_config(tehuti::system_menu::load());
+    }
 }
 
 /// Rebuilds destinations once a burst of desktop entry edits has gone quiet.

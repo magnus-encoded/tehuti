@@ -349,19 +349,7 @@ impl Compositor {
             Ok(config) => compositor.menu_config = config,
             Err(error) => compositor.show_notice(&format!("MENU CONFIG: {error}")),
         }
-        let notices = compositor.menu_config.notices().join("\n");
-        if !notices.is_empty() {
-            tracing::warn!(%notices, "invalid menu entries skipped");
-            compositor.show_notice(&notices);
-        }
-        compositor
-            .dispatch
-            .core_mut()
-            .set_menu_entries(compositor.menu_config.labels());
-        compositor
-            .dispatch
-            .core_mut()
-            .set_menu_hidden(compositor.menu_config.hidden());
+        compositor.announce_menu_config();
         compositor.rebuild_destinations();
         Ok(compositor)
     }
@@ -451,7 +439,33 @@ impl Compositor {
     }
 
     /// Replaces the system menu with a freshly loaded config; a failed load keeps the old menu.
-    pub fn reload_menu_config(&mut self, _loaded: std::io::Result<crate::system_menu::Config>) {}
+    pub fn reload_menu_config(&mut self, loaded: std::io::Result<crate::system_menu::Config>) {
+        match loaded {
+            Ok(config) => {
+                self.menu_config = config;
+                self.announce_menu_config();
+                self.rebuild_destinations();
+            }
+            Err(error) => {
+                tracing::warn!(%error, "menu config reload failed; keeping the previous menu");
+                self.show_notice(&format!(
+                    "MENU CONFIG: {}",
+                    crate::contexts::short_error(&error.to_string())
+                ));
+            }
+        }
+    }
+
+    /// Raises the notice for skipped menu entries and gives the core the configured entries.
+    fn announce_menu_config(&mut self) {
+        let notices = self.menu_config.notices().join("\n");
+        if !notices.is_empty() {
+            tracing::warn!(%notices, "invalid menu entries skipped");
+            self.show_notice(&notices);
+        }
+        self.dispatch.core_mut().set_menu_entries(self.menu_config.labels());
+        self.dispatch.core_mut().set_menu_hidden(self.menu_config.hidden());
+    }
 
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {

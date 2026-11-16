@@ -152,10 +152,11 @@ Each table requires a nonempty label without control characters, a nonempty
 string argv with a nonblank program and no NUL characters, and an integer order.
 Custom entries follow all built-ins, sorted by ascending order; equal orders keep
 file order. Custom commands run on one Confirm press.
-The menu config loads at startup. Invalid entries produce a notice naming the
-entry and are skipped; valid entries remain available. Invalid TOML disables the
-file and produces a notice. `--check-config` reports the same errors.
-Restart Tehuti to apply menu edits.
+The menu config loads at startup and reloads when the file changes. Invalid
+entries produce a notice naming the entry and are skipped; valid entries remain
+available. Invalid TOML at startup disables the file and produces a notice; on a
+reload it keeps the previous menu and produces the notice. `--check-config`
+reports the same errors.
 
 Reply once with the same id and a list of actions:
 
