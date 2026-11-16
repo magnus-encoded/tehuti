@@ -1096,17 +1096,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 effects.push(Effect::OpenLauncher(request));
                 return;
             }
-            let (actions, route, press) = step_routed(&mut state.core, &event, active);
-            effects.push(Effect::DispatchPlugin {
-                event: press.clone().unwrap_or_else(|| event.clone()),
-                route,
-            });
-            frame.awaiting = Some(Await::PluginRequest {
-                event,
-                actions,
-                route,
-                press,
-            });
+            frame.awaiting = Some(plugin_decision(&mut state.core, event, active, effects));
         }
         (
             Await::PluginRequest {
@@ -1147,6 +1137,21 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             let _aborted = state.frames.pop();
             effects.push(Effect::InvalidReply);
         }
+    }
+}
+
+/// Steps core for an event and asks the plugin to decide it.
+fn plugin_decision(core: &mut crate::State, event: Event, active: bool, effects: &mut Vec<Effect>) -> Await {
+    let (actions, route, press) = step_routed(core, &event, active);
+    effects.push(Effect::DispatchPlugin {
+        event: press.clone().unwrap_or_else(|| event.clone()),
+        route,
+    });
+    Await::PluginRequest {
+        event,
+        actions,
+        route,
+        press,
     }
 }
 
