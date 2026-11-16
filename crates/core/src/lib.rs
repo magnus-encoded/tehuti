@@ -57,6 +57,7 @@ pub struct State {
     pad_family: pad::PadFamily,
     controller_talk: Option<ButtonName>,
     app_names: Vec<(String, String)>,
+    plugin_invoke_words: Vec<String>,
     sticks: stick_actions::StickActions,
     /// Characters of the last dictated phrase, while nothing else was typed after it.
     dictated: Option<usize>,
@@ -190,6 +191,7 @@ impl State {
             pad_family: pad::PadFamily::Letters,
             controller_talk: None,
             app_names: Vec::new(),
+            plugin_invoke_words: Vec::new(),
             sticks: stick_actions::StickActions::default(),
             dictated: None,
         };
@@ -327,6 +329,17 @@ impl State {
         self.contexts = contexts;
         self.refresh_ticker();
         self.refresh_labels();
+    }
+
+    /// The extra invoke words application plugins currently supply.
+    #[must_use]
+    pub fn plugin_invoke_words(&self) -> &[String] {
+        &self.plugin_invoke_words
+    }
+
+    /// Replaces the extra invoke words application plugins supply for the focused window.
+    pub fn set_plugin_invoke_words(&mut self, words: Vec<String>) {
+        self.plugin_invoke_words = words;
     }
 
     /// Supplies each application's desktop entry `Name`, keyed by app id.
@@ -641,7 +654,8 @@ fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
     let known = [focused_context(state), global_context(state)]
         .into_iter()
         .flatten()
-        .flat_map(|context| context.invoke_words().iter().map(String::as_str));
+        .flat_map(|context| context.invoke_words().iter().map(String::as_str))
+        .chain(state.plugin_invoke_words.iter().map(String::as_str));
     let typed = invoke::slash_command(transcript.as_str(), known)?;
     tehuti_protocol::Text::new(typed)
         .ok()

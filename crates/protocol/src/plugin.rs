@@ -205,6 +205,11 @@ pub enum Method {
     SpeechHints {
         hotwords: Vec<String>,
     },
+    /// Replaces the sending application plugin's slash-command words for the built-in `invoke` verb.
+    #[serde(rename = "invoke.words")]
+    InvokeWords {
+        words: Vec<String>,
+    },
     Focus {
         app_id: Option<String>,
         title: String,
@@ -234,6 +239,9 @@ pub enum Method {
 /// The longest powerline status a plugin may set, in characters.
 pub const MAX_STATUS_CHARS: usize = 32;
 
+/// The most invoke words one `invoke.words` notice may set.
+pub const MAX_INVOKE_WORDS: usize = 128;
+
 /// The most overrides one `pad_overrides` notice may set.
 pub const MAX_PAD_OVERRIDES: usize = 64;
 
@@ -251,6 +259,10 @@ fn validate_notice(method: &Method) -> Result<(), String> {
     match method {
         Method::PadOverrides { overrides } => validate_pad_overrides(overrides),
         Method::Verbs { verbs } => validate_verbs(verbs),
+        Method::InvokeWords { words } if words.len() > MAX_INVOKE_WORDS => {
+            Err(format!("at most {MAX_INVOKE_WORDS} invoke words are accepted"))
+        }
+        Method::InvokeWords { words } => crate::validate_invoke_words(words.clone()).map(|_| ()),
         Method::Status { text: Some(text) }
             if text.chars().count() > MAX_STATUS_CHARS || text.chars().any(char::is_control) =>
         {

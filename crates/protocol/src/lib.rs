@@ -1380,7 +1380,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
 }
 
 /// An invoke word is a slash-command name: lowercase letters and digits joined by single hyphens.
-fn validate_invoke_words(words: Vec<String>) -> Result<Vec<String>, String> {
+pub(crate) fn validate_invoke_words(words: Vec<String>) -> Result<Vec<String>, String> {
     for word in &words {
         let valid = !word.is_empty()
             && word.split('-').all(|part| {

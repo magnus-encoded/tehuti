@@ -235,6 +235,21 @@ Context `[speech] hotwords` and plugin hints share a cap of 64 entries, context
 words first. Over the cap the plugin's last entries are dropped and a warning
 is logged once.
 
+### Invoke words
+
+An application plugin adds slash-command words to the built-in `invoke` verb
+with a notice. It replaces the plugin's list, can be sent at any time, and
+applies while a window of the plugin's applications is focused. A restart
+clears it, and so does a crash:
+
+```json
+{"jsonrpc":"2.0","method":"invoke.words","params":{"words":["usage","code-review"]}}
+```
+
+Each word is lowercase letters and digits joined by single hyphens, and a
+notice holds at most 128 words. Spoken words snap to these words as they do
+to a context's `invoke` words, which are tried first.
+
 ### Verbs
 
 A verb plugin (`"kind": "verb"`) extends Tehuti itself. It hears, in any
