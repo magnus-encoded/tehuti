@@ -15,12 +15,12 @@ mod shared_sections {
         std::fs::write(path, text).unwrap();
     }
 
-    fn app(id: &str, extra: &str) -> String {
-        format!("app_id = '{id}'\n{extra}")
+    fn app(name: &str, extra: &str) -> String {
+        format!("app_id = '{name}'\n{extra}")
     }
 
-    fn find<'a>(loaded: &'a [tehuti_protocol::Context], id: &str) -> Option<&'a tehuti_protocol::Context> {
-        loaded.iter().find(|context| context.app_id() == id)
+    fn find<'a>(loaded: &'a [tehuti_protocol::Context], name: &str) -> Option<&'a tehuti_protocol::Context> {
+        loaded.iter().find(|context| context.app_id() == name)
     }
 
     fn share(directory: &Path, arguments: &[&str]) -> std::process::Output {
@@ -101,7 +101,7 @@ mod shared_sections {
             "kitty/context.toml",
             &app("kitty", "include = ['missing']\n"),
         );
-        assert!(contexts::load(directory.path()).is_empty());
+        assert_eq!(contexts::load(directory.path()).len(), 0);
         let report = check(directory.path());
         assert!(report.has_errors(), "{report}");
         let text = report.to_string();
@@ -119,7 +119,7 @@ mod shared_sections {
             "kitty/context.toml",
             &app("kitty", "include = ['outer']\n"),
         );
-        assert!(contexts::load(directory.path()).is_empty());
+        assert_eq!(contexts::load(directory.path()).len(), 0);
         let report = check(directory.path());
         assert!(report.has_errors(), "{report}");
         assert!(report.to_string().contains("outer"), "{report}");
