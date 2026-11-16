@@ -111,11 +111,12 @@ mod applications_watch {
             data: vec![data.clone()],
         });
         let mut event_loop: calloop::EventLoop<'static, Looped> = calloop::EventLoop::try_new().unwrap();
-        let watch =
-            ApplicationsWatch::insert(&event_loop.handle(), std::slice::from_ref(&data), |looped: &mut Looped| {
-                looped.watch.as_mut()
-            })
-            .unwrap();
+        let watch = ApplicationsWatch::insert(
+            &event_loop.handle(),
+            std::slice::from_ref(&data),
+            |looped: &mut Looped| looped.watch.as_mut(),
+        )
+        .unwrap();
         let mut looped = Looped { watch: Some(watch) };
         let applications = data.join("applications");
         std::fs::create_dir(&applications).unwrap();
