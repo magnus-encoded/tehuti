@@ -159,9 +159,9 @@ restart = { restart = false }"
     fn key_hold_ms_is_optional_and_between_one_and_a_thousand() {
         let base = "app_id = 'org.example.Game'\nbuttons = {}\n";
         assert_eq!(parse_context(base).unwrap().key_hold_ms(), None);
-        for ms in [1_u32, 40, 120, 1000] {
-            let context = parse_context(&format!("key_hold_ms = {ms}\n{base}")).unwrap();
-            assert_eq!(context.key_hold_ms(), Some(ms));
+        for millis in [1_u32, 40, 120, 1000] {
+            let context = parse_context(&format!("key_hold_ms = {millis}\n{base}")).unwrap();
+            assert_eq!(context.key_hold_ms(), Some(millis));
         }
         for bad in ["0", "1001", "-5", "'40'", "40.5"] {
             let error = parse_context(&format!("key_hold_ms = {bad}\n{base}"));
