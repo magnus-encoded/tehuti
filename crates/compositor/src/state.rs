@@ -2395,7 +2395,28 @@ impl Compositor {
         }
     }
 
+    /// The hold time the focused context sets for key taps, else the global context's, else the default.
+    fn key_hold(&self) -> core::time::Duration {
+        let own = self
+            .speech_context
+            .as_deref()
+            .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &self.speech_title))
+            .and_then(tehuti_protocol::Context::key_hold_ms);
+        let global = || {
+            self.contexts()
+                .iter()
+                .filter(|context| context.app_id() == "*")
+                .find_map(tehuti_protocol::Context::key_hold_ms)
+        };
+        own.or_else(global)
+            .map_or(tehuti_core::tap_hold::TAP_HOLD, |millis| {
+                core::time::Duration::from_millis(u64::from(millis))
+            })
+    }
+
     fn tap_held(&mut self, keycode: Keycode, modifiers: &[Keycode]) {
+        let hold = self.key_hold();
+        self.taps.set_hold(hold);
         let events = self.taps.tap(self.clock_elapsed(), keycode, modifiers);
         self.apply_tap_events(events);
     }
@@ -4084,6 +4105,71 @@ mod tests {
         compositor.release_due_keys();
         assert!(!is_down(&compositor, 9));
         assert_eq!(compositor.release_timer_fired(), None);
+    }
+
+    #[test]
+    fn the_focused_context_sets_how_long_a_tap_is_held() {
+        let (_display, mut compositor) = compositor();
+        let context =
+            tehuti_protocol::parse_context("app_id = 'org.example.Game'\nkey_hold_ms = 120\nbuttons = {}\n")
+                .unwrap();
+        compositor.set_contexts(vec![context]);
+        compositor.speech_context = Some("org.example.Game".to_owned());
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
+
+        compositor.advance_clocks(Duration::from_millis(119));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+
+        compositor.advance_clocks(Duration::from_millis(1));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 9));
+    }
+
+    fn hold_ms_after_tap(compositor: &mut Compositor, focus: &str) -> u64 {
+        compositor.speech_context = Some(focus.to_owned());
+        u64::try_from(compositor.key_hold().as_millis()).unwrap()
+    }
+
+    fn context(source: &str) -> tehuti_protocol::Context {
+        tehuti_protocol::parse_context(source).unwrap()
+    }
+
+    #[test]
+    fn key_hold_falls_back_from_own_context_to_global_to_default() {
+        let (_display, mut compositor) = compositor();
+        compositor.set_contexts(vec![
+            context("app_id = '*'\nkey_hold_ms = 80\nbuttons = {}\n"),
+            context("app_id = 'org.example.Slow'\nkey_hold_ms = 120\nbuttons = {}\n"),
+            context("app_id = 'org.example.Plain'\nbuttons = {}\n"),
+        ]);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Plain"), 80);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Slow"), 120);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Plain"), 80);
+        compositor.set_contexts(vec![context("app_id = 'org.example.Plain'\nbuttons = {}\n")]);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Plain"), 40);
+    }
+
+    #[test]
+    fn hold_changes_when_focus_moves_to_a_context_without_one() {
+        let (_display, mut compositor) = compositor();
+        compositor.set_contexts(vec![
+            context("app_id = 'org.example.Slow'\nkey_hold_ms = 120\nbuttons = {}\n"),
+            context("app_id = 'org.example.Plain'\nbuttons = {}\n"),
+        ]);
+        let key = smithay::input::keyboard::Keycode::new(9);
+        compositor.speech_context = Some("org.example.Slow".to_owned());
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(120));
+        compositor.release_due_keys();
+        compositor.speech_context = Some("org.example.Plain".to_owned());
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(39));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+        compositor.advance_clocks(Duration::from_millis(1));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 9));
     }
 
     #[test]

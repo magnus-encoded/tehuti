@@ -526,6 +526,7 @@ pub struct Context {
     invoke: Vec<String>,
     keyboard: KeyboardConfig,
     dim: DimConfig,
+    key_hold_ms: Option<u32>,
     push_to_talk: Vec<ButtonName>,
     window: WindowConfig,
     log: LogConfig,
@@ -640,6 +641,12 @@ impl Context {
     #[must_use]
     pub const fn log_window_size(&self) -> bool {
         self.log.window_size
+    }
+
+    /// How long this context holds each key tap, in milliseconds, when it sets one.
+    #[must_use]
+    pub const fn key_hold_ms(&self) -> Option<u32> {
+        self.key_hold_ms
     }
 
     #[must_use]
@@ -1015,6 +1022,8 @@ struct ContextFile {
     keyboard: KeyboardConfig,
     #[serde(default)]
     dim: DimConfig,
+    #[serde(default)]
+    key_hold_ms: Option<u32>,
     #[serde(default = "default_push_to_talk")]
     push_to_talk: Vec<ButtonName>,
     #[serde(default)]
@@ -1161,6 +1170,13 @@ fn parse_label(label: Option<Text>) -> Result<Option<String>, String> {
     Ok(label)
 }
 
+fn validate_key_hold(value: Option<u32>) -> Result<Option<u32>, String> {
+    if value.is_some_and(|millis| !(1..=1000).contains(&millis)) {
+        return Err("key_hold_ms must be between 1 and 1000".to_owned());
+    }
+    Ok(value)
+}
+
 /// The first `key = "..."` value in `source` that names no key.
 fn unknown_key_name(source: &str) -> Option<String> {
     fn walk(value: &toml::Value) -> Option<String> {
@@ -1216,6 +1232,7 @@ fn key_error(source: &str, error: &toml::de::Error) -> String {
 /// phrase or a held key has mods or belongs to a phrase. A phrase that
 /// normalizes to nothing or to the same text as an earlier phrase is dropped
 /// with a warning instead; the rest of the context loads.
+#[expect(clippy::too_many_lines, reason = "one pass over every context.toml field")]
 pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut context: ContextFile = toml::from_str(source).map_err(|error| key_error(source, &error))?;
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
@@ -1265,6 +1282,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         unmatched_speech: context.unmatched_speech,
         keyboard: context.keyboard,
         dim: context.dim,
+        key_hold_ms: validate_key_hold(context.key_hold_ms)?,
         push_to_talk: context.push_to_talk,
         pad: context.pad,
         pointer: context.pointer,
