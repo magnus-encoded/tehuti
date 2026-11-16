@@ -341,7 +341,10 @@ restart = { restart = false }"
     #[test]
     fn kitty_context_maps_bumpers_and_tab_speech() {
         use tehuti_protocol::{Action, ButtonName, Modifier};
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../dist/contexts/kitty/context.toml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../dist/contexts/kitty/context.toml"
+        );
         let text = std::fs::read_to_string(path);
         assert!(text.is_ok(), "dist/contexts/kitty/context.toml must exist");
         let context = parse_context(&text.unwrap()).unwrap();
