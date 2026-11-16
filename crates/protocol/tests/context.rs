@@ -253,13 +253,8 @@ restart = { restart = false }"
     }
 
     #[test]
-    fn favourites_preserve_order_and_default_to_empty() {
-        let plain = parse_context("app_id = '*'\n[buttons]").unwrap();
-        assert_eq!(plain.favourites(), Vec::<String>::new());
-        let configured =
-            parse_context("app_id = '*'\nfavourites = ['reader.desktop', 'browser.desktop']\n[buttons]")
-                .unwrap();
-        assert_eq!(configured.favourites(), ["reader.desktop", "browser.desktop"]);
+    fn legacy_favourites_key_still_loads() {
+        assert!(parse_context("app_id = '*'\nfavourites = ['reader.desktop']\n[buttons]").is_ok());
         assert!(parse_context("app_id = '*'\nfavorite = ['reader.desktop']\n[buttons]").is_err());
     }
 
@@ -702,6 +697,23 @@ restart = { restart = false }"
         let first =
             parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"Hello\" = { key = 'enter' }").unwrap();
         assert_eq!(context.speech_action("hello"), first.speech_action("hello"));
+    }
+
+    #[test]
+    fn the_phrase_written_first_wins_whatever_its_alphabetical_order() {
+        let context = parse_context(
+            "app_id = 'foot'\n[buttons]\n[speech]\n\"zed.\" = { key = 'enter' }\n\"Zed\" = { key = 'tab' }",
+        )
+        .unwrap();
+        assert_eq!(context.skipped_phrases().len(), 1);
+        assert!(
+            context.skipped_phrases()[0].starts_with("speech phrase \"Zed\" skipped"),
+            "{:?}",
+            context.skipped_phrases()
+        );
+        let first =
+            parse_context("app_id = 'foot'\n[buttons]\n[speech]\n\"zed.\" = { key = 'enter' }").unwrap();
+        assert_eq!(context.speech_action("zed"), first.speech_action("zed"));
     }
 
     #[test]

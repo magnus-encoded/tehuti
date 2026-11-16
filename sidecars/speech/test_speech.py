@@ -586,6 +586,34 @@ time.sleep(60)
                         path.write_text(choice + "\n")
                     self.assertEqual(module.list_sources(), expected)
 
+    def test_a_missing_saved_source_is_reported_and_falls_back(self):
+        listing = json.dumps([{"type": "PipeWire:Interface:Node",
+                               "info": {"props": {"node.name": "front", "media.class": "Audio/Source"}}}]).encode()
+        dump = types.SimpleNamespace(stdout=listing)
+        for choice, missing in [("unplugged", ["unplugged"]), ("front", []), ("all", []), ("auto", []), (None, [])]:
+            with self.subTest(choice=choice), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}), \
+                    patch.object(module.subprocess, "run", return_value=dump):
+                os.environ.pop("TEHUTI_SPEECH_SOURCE", None)
+                (Path(directory) / "tehuti").mkdir()
+                if choice is not None:
+                    (Path(directory) / "tehuti" / "speech-source").write_text(choice + "\n")
+                seen = []
+                self.assertEqual(module.list_sources(seen.append), ["front"] if choice != "auto" else [None])
+                self.assertEqual(seen, missing)
+
+    def test_speech_warns_in_log_and_to_the_compositor_when_the_saved_source_is_missing(self):
+        speech = module.Speech(object())
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}), contextlib.redirect_stdout(output):
+            speech.warn_missing_source("unplugged")
+            speech.warn_missing_source("unplugged")
+            logged = Path(directory, "log").read_text()
+        self.assertEqual(json.loads(output.getvalue()), {"warning": "source missing"})
+        self.assertIn("WARN speech: saved source unplugged is missing", logged)
+        self.assertEqual(logged.count("WARN"), 1)
+
     def test_all_sources_record_at_once_and_failed_sources_are_skipped(self):
         class Model:
             def transcribe(self, path, **options):

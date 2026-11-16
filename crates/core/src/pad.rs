@@ -39,6 +39,37 @@ const FALLBACK: Profile = Profile {
     faces: &LETTER_FACES,
     labels: LETTER_LABELS,
 };
+/// The Wii remote's USB-style id and the name of its buttons node. Its Classic Controller
+/// extension reuses the id under a longer name, so the name is part of the match.
+const WII_REMOTE_ID: (u16, u16) = (0x057e, 0x0306);
+const WII_REMOTE_NODE: &str = "Nintendo Wii Remote";
+/// Held sideways and used alone, 1 and 2 are the pad: 1 confirms, 2 goes back, A opens the
+/// keyboard and + carries push-to-talk as Record. The input layer remaps the buttons onto the
+/// standard positions, so the standard roles apply. B is left unmapped.
+const REMOTE: Profile = Profile {
+    vendor: 0x057e,
+    identity: Identity {
+        family: PadFamily::Remote,
+        swap_north_west: false,
+        model: Some("WII REMOTE"),
+    },
+    roles: STANDARD_ROLES,
+    faces: &REMOTE_FACES,
+    labels: REMOTE_LABELS,
+};
+/// With a nunchuk or another pad attached, A confirms and B goes back, 1 opens the keyboard and
+/// + still carries push-to-talk. 2 is left unmapped.
+const REMOTE_PAIRED: Profile = Profile {
+    vendor: 0x057e,
+    identity: Identity {
+        family: PadFamily::RemotePaired,
+        swap_north_west: false,
+        model: Some("WII REMOTE"),
+    },
+    roles: STANDARD_ROLES,
+    faces: &REMOTE_PAIRED_FACES,
+    labels: REMOTE_LABELS,
+};
 const PROFILES: [Profile; 3] = [
     Profile {
         vendor: 0x057e,
@@ -95,6 +126,27 @@ impl Identity {
         identity
     }
 
+    /// The same pad once a nunchuk or another pad is attached beside it, or alone again.
+    #[must_use]
+    pub const fn with_companion(mut self, companion: bool) -> Self {
+        self.family = match (self.family, companion) {
+            (PadFamily::Remote | PadFamily::RemotePaired, true) => PadFamily::RemotePaired,
+            (PadFamily::Remote | PadFamily::RemotePaired, false) => PadFamily::Remote,
+            (family, _) => family,
+        };
+        self
+    }
+
+    /// Like [`Self::for_device`], with the node name that tells a Wii remote's buttons node
+    /// from the extension nodes that share its id.
+    #[must_use]
+    pub fn for_node(vendor: u16, product: u16, name: &str) -> Self {
+        if (vendor, product) == WII_REMOTE_ID && name == WII_REMOTE_NODE {
+            return REMOTE.identity;
+        }
+        Self::for_device(vendor, product)
+    }
+
     #[must_use]
     pub fn model_name(self, kernel_name: &str) -> String {
         self.model
@@ -109,9 +161,17 @@ pub enum PadFamily {
     Letters,
     Symbols,
     Nintendo,
+    Remote,
+    RemotePaired,
 }
 
 impl PadFamily {
+    /// True for a Wii remote in either layout.
+    #[must_use]
+    pub const fn is_remote(self) -> bool {
+        matches!(self, Self::Remote | Self::RemotePaired)
+    }
+
     #[must_use]
     pub fn button(self, role: Role) -> ButtonName {
         let profile = self.profile();
@@ -129,6 +189,11 @@ impl PadFamily {
     }
 
     fn profile(self) -> &'static Profile {
+        match self {
+            Self::Remote => return &REMOTE,
+            Self::RemotePaired => return &REMOTE_PAIRED,
+            Self::Letters | Self::Symbols | Self::Nintendo => {}
+        }
         PROFILES
             .iter()
             .find(|profile| profile.identity.family == self)
@@ -262,6 +327,54 @@ const NINTENDO_LABELS: &[(ButtonName, &str)] = &[
     (ButtonName::Record, "Capture"),
     (ButtonName::LeftStick, "LS"),
     (ButtonName::RightStick, "RS"),
+];
+
+const REMOTE_FACES: [FaceGlyph; 3] = [
+    FaceGlyph {
+        button: ButtonName::South,
+        label: "1",
+        shape: Shape::Disc('1'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::East,
+        label: "2",
+        shape: Shape::Disc('2'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::North,
+        label: "A",
+        shape: Shape::Disc('A'),
+        colour: Rgb::WHITE,
+    },
+];
+
+const REMOTE_PAIRED_FACES: [FaceGlyph; 3] = [
+    FaceGlyph {
+        button: ButtonName::South,
+        label: "A",
+        shape: Shape::Disc('A'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::East,
+        label: "B",
+        shape: Shape::Disc('B'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::North,
+        label: "1",
+        shape: Shape::Disc('1'),
+        colour: Rgb::WHITE,
+    },
+];
+
+const REMOTE_LABELS: &[(ButtonName, &str)] = &[
+    (ButtonName::Select, "−"),
+    (ButtonName::Record, "+"),
+    (ButtonName::Guide, "Home"),
 ];
 
 const SYMBOL_FACES: [FaceGlyph; 4] = [

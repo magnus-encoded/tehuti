@@ -793,7 +793,8 @@ fn insert_controllers(
     tokens: &mut BTreeMap<PathBuf, calloop::RegistrationToken>,
 ) {
     let attached = controllers.keys().cloned().collect();
-    for (path, pad) in controller::open_grabbed(virtual_pad, &attached) {
+    let opened = controller::open_grabbed(virtual_pad, &attached);
+    for (path, pad) in opened {
         let registration = pad
             .as_fd()
             .try_clone_to_owned()
@@ -827,6 +828,13 @@ fn insert_controllers(
             }
             Err(error) => warn!(%error, "controller registration failed; retrying"),
         }
+    }
+    let companion = controller::nunchuk_present()
+        || controllers
+            .values()
+            .any(|controller| !controller.pad.identity().family.is_remote());
+    for controller in controllers.values_mut() {
+        controller.pad.set_companion(companion);
     }
 }
 

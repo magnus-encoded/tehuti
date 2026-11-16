@@ -22,7 +22,7 @@ pub fn numbered_controllers(
     devices
         .into_iter()
         .map(|(_, name, vendor, product)| {
-            let model = tehuti_core::pad::Identity::for_device(vendor, product).model_name(&name);
+            let model = tehuti_core::pad::Identity::for_node(vendor, product, &name).model_name(&name);
             let count = counts.entry(model.clone()).or_default();
             *count = count.saturating_add(1);
             tehuti_core::dispatch::ControllerInfo {
@@ -54,7 +54,11 @@ pub fn open_grabbed(
         })
         .filter_map(|(path, mut device)| match grab_nonblocking(&mut device) {
             Ok(()) => {
-                let mut translator = DpadHat::for_device(device.input_id().vendor(), device.input_id().product());
+                let mut translator = DpadHat::for_node(
+                    device.input_id().vendor(),
+                    device.input_id().product(),
+                    device.name().unwrap_or_default(),
+                );
                 if let Ok(axes) = device.get_absinfo() {
                     for (axis, info) in axes {
                         translator.set_trigger_range(axis, info.minimum(), info.maximum());
@@ -80,6 +84,20 @@ pub fn open_grabbed(
             }
         })
         .collect()
+}
+
+/// True while a Wii remote's nunchuk extension node exists; it has no south button, so it is
+/// never opened as a pad, and its name is read from sysfs instead.
+#[must_use]
+pub fn nunchuk_present() -> bool {
+    std::fs::read_dir("/sys/class/input")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            std::fs::read_to_string(entry.path().join("name"))
+                .is_ok_and(|name| name.trim() == "Nintendo Wii Remote Nunchuk")
+        })
 }
 
 /// Opens the input devices that could be pads. Opening and closing a device is slow on some kernels
@@ -855,9 +873,13 @@ impl EvdevPad {
     }
 
     #[must_use]
-    pub fn identity(&self) -> tehuti_core::pad::Identity {
-        let input_id = self.handles.events.input_id();
-        tehuti_core::pad::Identity::for_device(input_id.vendor(), input_id.product())
+    pub const fn identity(&self) -> tehuti_core::pad::Identity {
+        self.translator.identity
+    }
+
+    /// Tells a Wii remote whether another pad or a nunchuk is attached beside it.
+    pub const fn set_companion(&mut self, companion: bool) {
+        self.translator.set_companion(companion);
     }
 }
 
@@ -1300,6 +1322,16 @@ impl DpadHat {
         }
     }
 
+    /// Like [`Self::for_device`], with the node name that tells a Wii remote's buttons node from
+    /// the extension nodes that share its id.
+    #[must_use]
+    pub fn for_node(vendor: u16, product: u16, name: &str) -> Self {
+        Self {
+            identity: tehuti_core::pad::Identity::for_node(vendor, product, name),
+            ..Self::default()
+        }
+    }
+
     /// Records the device's reported range for a trigger axis; other axes are ignored.
     pub const fn set_trigger_range(&mut self, axis: AbsoluteAxisCode, minimum: i32, maximum: i32) {
         let trigger = match axis {
@@ -1313,10 +1345,44 @@ impl DpadHat {
         }
     }
 
+    /// Switches a Wii remote between its alone and paired layouts; other pads ignore it.
+    pub const fn set_companion(&mut self, companion: bool) {
+        self.identity = self.identity.with_companion(companion);
+    }
+
+    /// Moves a key onto the position its pad family reads it from.
+    ///
+    /// The Wii remote is held sideways, so its d-pad turns a quarter turn anticlockwise (its
+    /// up arm points left). Alone, 1 confirms, 2 goes back and A opens the keyboard; with a
+    /// companion A confirms, B goes back and 1 opens the keyboard. + is push-to-talk and − View
+    /// either way. The leftover buttons map to a code nothing reads.
     const fn face_code(&self, code: KeyCode) -> KeyCode {
-        match (self.identity.swap_north_west, code) {
-            (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
-            (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+        use tehuti_core::pad::PadFamily;
+        let unmapped = KeyCode::BTN_TRIGGER_HAPPY1;
+        let paired = match self.identity.family {
+            PadFamily::Remote => false,
+            PadFamily::RemotePaired => true,
+            PadFamily::Letters | PadFamily::Symbols | PadFamily::Nintendo => {
+                return match (self.identity.swap_north_west, code) {
+                    (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
+                    (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+                    _ => code,
+                };
+            }
+        };
+        match code {
+            KeyCode::KEY_UP => KeyCode::BTN_DPAD_LEFT,
+            KeyCode::KEY_RIGHT => KeyCode::BTN_DPAD_UP,
+            KeyCode::KEY_DOWN => KeyCode::BTN_DPAD_RIGHT,
+            KeyCode::KEY_LEFT => KeyCode::BTN_DPAD_DOWN,
+            KeyCode::KEY_NEXT => KeyCode::KEY_RECORD,
+            KeyCode::KEY_PREVIOUS => KeyCode::BTN_SELECT,
+            KeyCode::BTN_1 if paired => KeyCode::BTN_NORTH,
+            KeyCode::BTN_1 => KeyCode::BTN_SOUTH,
+            KeyCode::BTN_2 if paired => unmapped,
+            KeyCode::BTN_2 => KeyCode::BTN_EAST,
+            KeyCode::BTN_SOUTH if !paired => KeyCode::BTN_NORTH,
+            KeyCode::BTN_EAST if !paired => unmapped,
             _ => code,
         }
     }
@@ -2029,4 +2095,98 @@ fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
     .clamp(-1000, 1000);
     let travel = normalized.abs().saturating_sub(150).max(0).saturating_mul(1000) / 850;
     i16::try_from(travel.saturating_mul(normalized.signum())).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::DpadHat;
+    use evdev::{EventType, InputEvent, KeyCode};
+    use tehuti_protocol::{ButtonName, ButtonState, Event};
+
+    fn remote() -> DpadHat {
+        DpadHat::for_node(0x057e, 0x0306, "Nintendo Wii Remote")
+    }
+
+    fn press(hat: &mut DpadHat, code: KeyCode) -> Vec<Event> {
+        hat.translate(&InputEvent::new(EventType::KEY.0, code.code(), 1).destructure())
+    }
+
+    #[test]
+    fn the_sideways_remote_reads_its_buttons_from_the_standard_positions() {
+        let mut hat = remote();
+        for (code, name) in [
+            (KeyCode::BTN_1, ButtonName::South),
+            (KeyCode::BTN_2, ButtonName::East),
+            (KeyCode::BTN_SOUTH, ButtonName::North),
+            (KeyCode::KEY_NEXT, ButtonName::Record),
+            (KeyCode::KEY_PREVIOUS, ButtonName::Select),
+            (KeyCode::BTN_MODE, ButtonName::Guide),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_a_companion_the_remote_confirms_on_a_and_goes_back_on_b() {
+        let mut hat = remote();
+        hat.set_companion(true);
+        for (code, name) in [
+            (KeyCode::BTN_SOUTH, ButtonName::South),
+            (KeyCode::BTN_EAST, ButtonName::East),
+            (KeyCode::BTN_1, ButtonName::North),
+            (KeyCode::KEY_NEXT, ButtonName::Record),
+            (KeyCode::KEY_PREVIOUS, ButtonName::Select),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+        assert_eq!(press(&mut hat, KeyCode::BTN_2), Vec::<Event>::new());
+        hat.set_companion(false);
+        assert_eq!(press(&mut hat, KeyCode::BTN_EAST), Vec::<Event>::new());
+    }
+
+    #[test]
+    fn the_sideways_remote_turns_its_dpad_a_quarter_turn_anticlockwise() {
+        let mut hat = remote();
+        for (code, name) in [
+            (KeyCode::KEY_UP, ButtonName::DpadLeft),
+            (KeyCode::KEY_RIGHT, ButtonName::DpadUp),
+            (KeyCode::KEY_DOWN, ButtonName::DpadRight),
+            (KeyCode::KEY_LEFT, ButtonName::DpadDown),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_classic_controller_on_the_remote_keeps_its_own_buttons() {
+        let mut hat = DpadHat::for_node(0x057e, 0x0306, "Nintendo Wii Remote Classic Controller");
+        assert_eq!(
+            press(&mut hat, KeyCode::BTN_SOUTH),
+            vec![Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed
+            }]
+        );
+    }
 }
