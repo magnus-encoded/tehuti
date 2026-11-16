@@ -67,9 +67,13 @@ mod shared_sections {
     }
 
     #[test]
-    fn a_binding_in_the_context_wins_over_an_included_one_and_check_config_warns() {
+    fn a_context_entry_merges_over_the_shared_one_field_by_field() {
         let directory = tempfile::tempdir().unwrap();
-        write(directory.path(), "shared/tabs.toml", TABS);
+        write(
+            directory.path(),
+            "shared/tabs.toml",
+            "[buttons.left_bumper]\nkey = 'tab'\nmods = ['shift']\n",
+        );
         write(
             directory.path(),
             "kitty/context.toml",
@@ -79,17 +83,23 @@ mod shared_sections {
             ),
         );
         let loaded = contexts::load(directory.path());
+        let expected = tehuti_protocol::parse_context(&app(
+            "expected",
+            "[buttons.left_bumper]\nkey = 'escape'\nmods = ['shift']\n",
+        ))
+        .unwrap();
         assert_eq!(
-            find(&loaded, "kitty").unwrap().key_for(ButtonName::LeftBumper),
-            Some(KeyName::Escape)
+            find(&loaded, "kitty").unwrap().action_for(ButtonName::LeftBumper),
+            expected.action_for(ButtonName::LeftBumper)
         );
         let report = check(directory.path());
         assert!(!report.has_errors(), "{report}");
         let text = report.to_string();
         assert!(
-            text.contains("warning") && text.contains("buttons.left_bumper") && text.contains("tabs"),
+            text.contains("warning") && text.contains("buttons.left_bumper.key") && text.contains("tabs"),
             "{text}"
         );
+        assert!(!text.contains("buttons.left_bumper.mods"), "{text}");
     }
 
     #[test]
@@ -123,6 +133,102 @@ mod shared_sections {
         let report = check(directory.path());
         assert!(report.has_errors(), "{report}");
         assert!(report.to_string().contains("outer"), "{report}");
+    }
+
+    #[test]
+    fn shared_names_may_hold_one_folder_level_and_context_is_reserved() {
+        let directory = tempfile::tempdir().unwrap();
+        write(directory.path(), "shared/tabs/ctrl-tab.toml", TABS);
+        write(
+            directory.path(),
+            "kitty/context.toml",
+            &app("kitty", "include = ['tabs/ctrl-tab']\n"),
+        );
+        let loaded = contexts::load(directory.path());
+        assert_eq!(
+            find(&loaded, "kitty").unwrap().key_for(ButtonName::LeftBumper),
+            Some(KeyName::Tab)
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+        assert!(
+            report.to_string().contains("shared sections: tabs/ctrl-tab"),
+            "{report}"
+        );
+        for name in ["a/b/c", "context", "tabs/context"] {
+            write(
+                directory.path(),
+                "other/context.toml",
+                &app("other", &format!("include = ['{name}']\n")),
+            );
+            assert!(check(directory.path()).has_errors(), "{name}");
+        }
+    }
+
+    #[test]
+    fn share_takes_several_paths_into_one_file_and_requires_as() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("tehuti");
+        let original = app(
+            "kitty",
+            "[buttons.left_bumper]\nkey = 'tab'\n[buttons.right_bumper]\nkey = 'enter'\n",
+        );
+        write(&directory, "kitty/context.toml", &original);
+        let without = share(
+            &directory,
+            &["kitty", "buttons.left_bumper", "buttons.right_bumper"],
+        );
+        assert!(!without.status.success());
+        assert!(String::from_utf8_lossy(&without.stderr).contains("--as"));
+        assert_eq!(
+            std::fs::read_to_string(directory.join("kitty/context.toml")).unwrap(),
+            original
+        );
+        let output = share(
+            &directory,
+            &[
+                "kitty",
+                "buttons.left_bumper",
+                "buttons.right_bumper",
+                "--as",
+                "tabs/ctrl-tab",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let shared = std::fs::read_to_string(directory.join("shared/tabs/ctrl-tab.toml")).unwrap();
+        assert!(
+            shared.contains("left_bumper") && shared.contains("right_bumper"),
+            "{shared}"
+        );
+        let loaded = contexts::load(&directory);
+        let kitty = find(&loaded, "kitty").unwrap();
+        assert_eq!(kitty.key_for(ButtonName::LeftBumper), Some(KeyName::Tab));
+        assert_eq!(kitty.key_for(ButtonName::RightBumper), Some(KeyName::Enter));
+    }
+
+    #[test]
+    fn share_keeps_the_comments_of_the_context_file() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("tehuti");
+        write(
+            &directory,
+            "kitty/context.toml",
+            "# my terminal\napp_id = 'kitty'\n\n[buttons.left_bumper] # tabs\nkey = 'tab'\n\n# the rest\n[buttons.east]\nkey = 'enter'\n",
+        );
+        let output = share(&directory, &["kitty", "buttons.left_bumper", "--as", "tabs"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rewritten = std::fs::read_to_string(directory.join("kitty/context.toml")).unwrap();
+        assert!(rewritten.contains("# my terminal"), "{rewritten}");
+        assert!(rewritten.contains("# the rest"), "{rewritten}");
+        assert!(rewritten.contains("include"), "{rewritten}");
     }
 
     #[test]
