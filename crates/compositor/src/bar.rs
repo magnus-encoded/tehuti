@@ -487,3 +487,32 @@ const fn bgra(colour: ticker::Rgb) -> [u8; 4] {
     let ticker::Rgb(red, green, blue) = colour;
     [blue, green, red, 255]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tehuti_core::ticker::{Entry, Piece};
+
+    #[test]
+    fn the_ticker_is_drawn_twice_as_tall_as_its_strip() {
+        let entries = [Entry {
+            trigger: vec![Piece::Key("A".into())],
+            result: vec![Piece::Text("queue".into())],
+        }];
+        let strip = crate::ticker_strip::Strip::paint(&entries);
+        let height = 32;
+        let mut canvas = Canvas {
+            font: tehuti_core::bar::Font::Bitmap,
+            width: 400,
+            height,
+            pixels: vec![0; 400 * height * 4],
+        };
+        canvas.ticker(&strip, 0, (0, 400), 1);
+        let rows = canvas
+            .pixels
+            .chunks_exact(400 * 4)
+            .filter(|row| row.iter().any(|byte| *byte != 0))
+            .count();
+        assert_eq!(rows, crate::ticker_strip::HEIGHT * 2);
+    }
+}
