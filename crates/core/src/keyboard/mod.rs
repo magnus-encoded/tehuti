@@ -1082,7 +1082,7 @@ impl Keyboard {
     }
 
     /// Follows a deep horizontal push so a held stick keeps picking; anything else stops it.
-    fn hold_stick(&mut self, x: i16, horizontal: bool, deflection: u16) {
+    const fn hold_stick(&mut self, x: i16, horizontal: bool, deflection: u16) {
         if !horizontal || deflection < self.word_repeat.from {
             self.held_stick = None;
             return;
