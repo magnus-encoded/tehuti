@@ -459,7 +459,10 @@ steps = [{ icon = "globe", target = { kind = "action", value = { type = "notice"
         compositor.host_key(Keycode::new(KEY_LEFTMETA + 8), true);
         assert!(compositor.guide_held(), "Meta is Guide");
         compositor.release_host_keys();
-        assert!(!compositor.guide_held(), "a device removal must not leave Guide held");
+        assert!(
+            !compositor.guide_held(),
+            "a device removal must not leave Guide held"
+        );
         Ok(())
     }
 
