@@ -592,7 +592,6 @@ fn run(
             advance_time(data);
             reload_contexts(data);
             reload_desktop_entries(data);
-            reload_menu(data);
             if data.driver.is_none() {
                 reconnect_controller(data, &handle);
             }
@@ -888,7 +887,7 @@ fn reload_menu(data: &mut LoopData) {
     }
 }
 
-/// Rebuilds destinations once a burst of desktop entry edits has gone quiet.
+/// Rebuilds destinations once a burst of desktop entry edits has gone quiet, then checks the menu config.
 fn reload_desktop_entries(data: &mut LoopData) {
     if data
         .applications_watch
@@ -897,6 +896,7 @@ fn reload_desktop_entries(data: &mut LoopData) {
     {
         data.compositor.refresh_destinations();
     }
+    reload_menu(data);
 }
 
 /// Reloads contexts once a burst of edits has gone quiet.
