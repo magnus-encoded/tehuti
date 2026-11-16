@@ -158,7 +158,7 @@ pub struct Compositor {
     /// Last stick reading kept for the timeline at `info`.
     last_kept_sticks: Option<[i16; 4]>,
     /// Whether the last timeline input written was `CloseInvitation`.
-    close_invitation_written: bool,
+    close_invitation_written: crate::timeline_level::CloseWritten,
     pub(crate) capture_source: crate::screenshot::CaptureSource,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
@@ -316,7 +316,7 @@ impl Compositor {
             recording_runtime: None,
             timeline_level: crate::timeline_level::TimelineLevel::default(),
             last_kept_sticks: None,
-            close_invitation_written: false,
+            close_invitation_written: crate::timeline_level::CloseWritten::No,
             capture_source: crate::screenshot::CaptureSource::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
@@ -1245,14 +1245,14 @@ impl Compositor {
                 self.record_sample("input", "sticks", sticks);
             }
         } else if matches!(input, DispatchInput::CloseInvitation) {
-            let repeat = self.close_invitation_written
+            let repeat = self.close_invitation_written == crate::timeline_level::CloseWritten::Yes
                 && self.timeline_level == crate::timeline_level::TimelineLevel::Info;
             if !repeat {
                 self.record_debug("input", &input);
             }
-            self.close_invitation_written = true;
+            self.close_invitation_written = crate::timeline_level::CloseWritten::Yes;
         } else if !matches!(input, DispatchInput::Tick { .. }) {
-            self.close_invitation_written = false;
+            self.close_invitation_written = crate::timeline_level::CloseWritten::No;
             self.record_debug("input", &input);
         }
         let elapsed = dispatch_elapsed(&input);

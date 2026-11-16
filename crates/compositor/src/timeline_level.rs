@@ -5,6 +5,14 @@ use std::path::{Path, PathBuf};
 /// Stick travel, in thousandths, a stick must move from the last kept reading to be written at `info`.
 pub const STICK_THRESHOLD: i16 = 50;
 
+/// Whether the last timeline input written was an invitation close.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CloseWritten {
+    #[default]
+    No,
+    Yes,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TimelineLevel {
     /// No per-frame events: sticks only past a threshold, no repeated invitation closes.
@@ -52,13 +60,13 @@ impl TimelineLevel {
 }
 
 fn read(path: &Path) -> TimelineLevel {
-    match std::fs::read_to_string(path) {
-        Ok(text) => TimelineLevel::parse(&text).unwrap_or_else(|error| {
-            tracing::warn!(%error, path = %path.display(), "recording config ignored; timeline stays at info");
-            TimelineLevel::Info
-        }),
-        Err(_) => TimelineLevel::Info,
-    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return TimelineLevel::Info;
+    };
+    TimelineLevel::parse(&text).unwrap_or_else(|error| {
+        tracing::warn!(%error, path = %path.display(), "recording config ignored; timeline stays at info");
+        TimelineLevel::Info
+    })
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -86,7 +94,7 @@ mod tests {
 
         #[test]
         fn info_drops_jitter_below_the_threshold(last in reading(), jitter in prop::array::uniform4(0_i16..STICK_THRESHOLD)) {
-            let now = [0, 1, 2, 3].map(|axis| (last[axis] + jitter[axis]).min(1000));
+            let now = [0, 1, 2, 3].map(|axis| last[axis].saturating_add(jitter[axis]).min(1000));
             prop_assume!(now != [0; 4]);
             prop_assert!(!TimelineLevel::Info.keeps_sticks(Some(last), now));
         }
@@ -94,7 +102,7 @@ mod tests {
         #[test]
         fn info_keeps_a_move_past_the_threshold(last in reading(), axis in 0_usize..4) {
             let mut now = last;
-            now[axis] = if last[axis] > 0 { last[axis] - STICK_THRESHOLD } else { last[axis] + STICK_THRESHOLD };
+            now[axis] = if last[axis] > 0 { last[axis].saturating_sub(STICK_THRESHOLD) } else { last[axis].saturating_add(STICK_THRESHOLD) };
             prop_assert!(TimelineLevel::Info.keeps_sticks(Some(last), now));
         }
     }
