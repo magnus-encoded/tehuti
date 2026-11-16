@@ -12,6 +12,11 @@ mod recording_smoke {
     const PROBE: &str = "RECORDING_SMOKE_PROBE";
     const TEST: &str = "a_real_ffmpeg_take_has_moving_frames_wall_length_and_a_stop_line";
 
+    #[expect(clippy::print_stderr, reason = "the skip must be visible in the test output")]
+    fn skip(reason: &str) {
+        eprintln!("SKIPPED: {reason}");
+    }
+
     fn find(program: &str) -> Option<std::path::PathBuf> {
         let path = std::env::var_os("PATH")?;
         std::env::split_paths(&path)
@@ -31,13 +36,11 @@ mod recording_smoke {
             return;
         }
         let (Some(ffmpeg), Some(ffprobe)) = (find("ffmpeg"), find("ffprobe")) else {
-            eprintln!(
-                "SKIPPED: ffmpeg or ffprobe is not on PATH; install the ffmpeg package to run this smoke test"
-            );
+            skip("ffmpeg or ffprobe is not on PATH; install the ffmpeg package to run this smoke test");
             return;
         };
         let Some(python) = find("python3") else {
-            eprintln!("SKIPPED: python3 is not on PATH; it stands in for the audio server");
+            skip("python3 is not on PATH; it stands in for the audio server");
             return;
         };
         let directory = tempfile::tempdir().unwrap();
@@ -99,12 +102,13 @@ mod recording_smoke {
         let mut step: u8 = 0;
         while started.elapsed() < Duration::from_secs(4) {
             step = step.wrapping_add(7);
-            *colour.borrow_mut() = image::Rgba([step, step.wrapping_mul(3), 255 - step, 255]);
+            *colour.borrow_mut() =
+                image::Rgba([step, step.wrapping_mul(3), 255_u8.saturating_sub(step), 255]);
             compositor.advance_time();
             std::thread::sleep(Duration::from_millis(50));
         }
         compositor.say(Text::new("stop recording".into()).unwrap());
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now().checked_add(Duration::from_secs(15)).unwrap();
         while !compositor
             .visible_notice_text()
             .is_some_and(|text| text.starts_with("RECORDING SAVED:") || text.starts_with("RECORDING FAILED:"))
