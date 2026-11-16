@@ -170,10 +170,7 @@ impl Config {
             | Command::Screenshot
             | Command::Settings => self.commands.get(command.key()),
         };
-        match configured {
-            Some(argv) => argv.split_first(),
-            None => None,
-        }
+        configured.and_then(|argv| argv.split_first())
     }
 
     /// Passes one configured command to the executor.
@@ -200,15 +197,15 @@ impl Config {
         spawn: impl FnOnce(&str, &[String]) -> io::Result<()>,
     ) -> io::Result<()> {
         if command == Command::TaskMonitor && !self.commands.contains_key(command.key()) {
-            let argv = TASK_MONITORS
+            let choice = TASK_MONITORS
                 .iter()
-                .find(|argv| argv.iter().all(|program| installed(program)))
+                .find(|programs| programs.iter().all(|program| installed(program)))
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, TASK_MONITOR_MISSING))?;
-            let (program, args) = argv
+            let (program, rest) = choice
                 .split_first()
                 .ok_or_else(|| io::Error::other("empty task monitor"))?;
-            let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-            return spawn(program, &args)
+            let rest: Vec<String> = rest.iter().map(|word| (*word).to_owned()).collect();
+            return spawn(program, &rest)
                 .map_err(|error| io::Error::new(error.kind(), format!("{program}: {error}")));
         }
         let (program, args) = self
