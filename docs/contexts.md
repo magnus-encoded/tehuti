@@ -250,8 +250,8 @@ when only warnings remain. It never starts a session.
 
 ### Fuzzy speech matching
 
-Whisper often spells a phrase loosely, such as "Åpne Pokeman Rød" for
-"Åpne Pokémon Rød". Fuzzy matching, off by default, gives such a transcript
+Whisper often spells a phrase loosely, such as "Open Pokeman Red" for
+"Open Pokémon Red". Fuzzy matching, off by default, gives such a transcript
 the action of the one phrase it is close to:
 
 ```toml
@@ -272,14 +272,14 @@ less the Damerau-Levenshtein distance per character of the longer key.
 
 Spaces are also ignored without stripping endings, so "Super Tux" matches
 "SuperTux". A bare one-word name can match one word or two joined words
-inside a sentence, such as "Hun er supertux"; that score is capped at 0.9.
+inside a sentence, such as "It is supertux"; that score is capped at 0.9.
 
 A phrase also needs:
 
 - five letters or more in both keys, so "Ned" or "Hva" never match loosely;
 - with two words or more on both sides, first words that are close, at the
   threshold or within one edit; comparison with spaces also requires close
-  remaining words, so "Åpne panseret" cannot ride on "Åpne";
+  remaining words, so "Open the hood" cannot ride on "Open";
 - a lead of 0.05 over every phrase with another action, so a transcript
   between two phrases matches neither;
 - a similarity of 0.9 or more when it closes a window, quits, or launches an
@@ -343,7 +343,7 @@ Backspace ⌫ and the arrow keys ←↑→↓, and a chord shows `Ctrl` + `O`. A
 `hold = true` key adds a dim `hold`. Push-to-talk buttons show a microphone,
 and a passthrough context shows `Pad → app` with its push-to-talk chord.
 Phrases with the same action share one entry, such as
-`"Lagre" / "Lagre spillet" → 💾`; entries with icons come first.
+`"Save" / "Save game" → 💾`; entries with icons come first.
 
 A context can say what its keys do in the application, taken from the
 application's own settings. `[ticker.names]` maps a Tehuti key name, as in
@@ -390,7 +390,7 @@ A phrase can name its icon:
 
 ```toml
 [speech]
-"Lagre spillet." = { key = "f1", mods = ["shift"], icon = "💾" }
+"Save game." = { key = "f1", mods = ["shift"], icon = "💾" }
 ```
 
 Without one, closing gets ❌, `toggle-fullscreen` ⛶, launchers whose desktop
