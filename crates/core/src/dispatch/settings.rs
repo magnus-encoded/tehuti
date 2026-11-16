@@ -51,6 +51,8 @@ pub struct Settings {
     pub selected: usize,
     pub current: usize,
     pub modes: Vec<String>,
+    /// Whether the Resolution row is expanded into its mode list.
+    pub resolution_open: bool,
     pub wallpapers: Vec<String>,
     pub wallpaper_locked: Vec<bool>,
     pub wallpaper_selected: usize,
@@ -165,6 +167,7 @@ impl Settings {
             effects.push(Effect::WallpaperPreview(self.wallpaper_current));
         }
         self.page = Page::Categories;
+        self.resolution_open = false;
     }
 
     fn end_preview(&mut self, effects: &mut Vec<Effect>) {
@@ -183,6 +186,7 @@ impl Settings {
             effects.push(Effect::WallpaperPreview(self.wallpaper_current));
         }
         self.page = Page::Categories;
+        self.resolution_open = false;
     }
 
     pub(super) fn event(&mut self, event: &Event, effects: &mut Vec<Effect>) -> bool {
@@ -284,6 +288,7 @@ impl Settings {
             name if name == self.pad_family.button(Role::Confirm) => match self.category {
                 Category::Display => {
                     self.page = Page::Display;
+                    self.resolution_open = false;
                     self.selected = self.current;
                 }
                 Category::Input => {
@@ -487,7 +492,42 @@ impl Settings {
         false
     }
 
+    /// The collapsed Resolution row and the expanded list's way out; true when `name` was used.
+    fn resolution_button(&mut self, name: ButtonName) -> bool {
+        if self.remaining.is_some() {
+            return false;
+        }
+        let rows = self.modes.len();
+        if self.resolution_open {
+            if name != self.pad_family.button(Role::Back) {
+                return false;
+            }
+            self.resolution_open = false;
+            self.selected = self.current;
+            return true;
+        }
+        if self.selected < rows {
+            if name == self.pad_family.button(Role::Confirm) {
+                self.resolution_open = true;
+                self.selected = self.current;
+            } else if matches!(name, ButtonName::DpadDown | ButtonName::DpadRight) {
+                self.selected = rows;
+            } else if !matches!(name, ButtonName::DpadUp | ButtonName::DpadLeft) {
+                return false;
+            }
+            return true;
+        }
+        if self.selected == rows && name == ButtonName::DpadUp && rows > 0 {
+            self.selected = self.current;
+            return true;
+        }
+        false
+    }
+
     fn display_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        if self.resolution_button(name) {
+            return;
+        }
         if self.selected == self.modes.len().saturating_add(1)
             && self.remaining.is_none()
             && (matches!(name, ButtonName::DpadLeft | ButtonName::DpadRight)
@@ -566,6 +606,7 @@ impl Default for Settings {
             selected: 0,
             current: 0,
             modes: Vec::new(),
+            resolution_open: false,
             wallpapers: Vec::new(),
             wallpaper_locked: Vec::new(),
             wallpaper_selected: 0,
