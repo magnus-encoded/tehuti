@@ -1005,7 +1005,7 @@ impl Compositor {
     }
     /// Whether core dispatch believes Guide is down.
     #[must_use]
-    pub fn guide_held(&self) -> bool {
+    pub const fn guide_held(&self) -> bool {
         self.dispatch.core().guide_held()
     }
 
