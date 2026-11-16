@@ -231,13 +231,12 @@ pub fn share(
 }
 
 fn add_include(document: &mut DocumentMut, name: &str) -> Result<(), String> {
-    match document.get_mut("include") {
-        Some(item) => item.as_array_mut().ok_or("include must be a list")?.push(name),
-        None => {
-            let mut list = toml_edit::Array::new();
-            list.push(name);
-            let _previous = document.insert("include", toml_edit::value(list));
-        }
+    if let Some(item) = document.get_mut("include") {
+        item.as_array_mut().ok_or("include must be a list")?.push(name);
+    } else {
+        let mut list = toml_edit::Array::new();
+        list.push(name);
+        let _previous = document.insert("include", toml_edit::value(list));
     }
     Ok(())
 }
