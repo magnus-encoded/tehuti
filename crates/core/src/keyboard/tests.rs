@@ -315,7 +315,7 @@ fn picks_while_held(keyboard: &mut Keyboard, x: i16, held_ms: u64) -> usize {
     keyboard.left_stick(x, 0);
     for _ in 0..=held_ms {
         if keyboard.picked_word() != previous {
-            picks += 1;
+            picks = picks.saturating_add(1);
             previous = keyboard.picked_word();
         }
         let _talk = keyboard.tick(Duration::from_millis(1));
@@ -326,9 +326,9 @@ fn picks_while_held(keyboard: &mut Keyboard, x: i16, held_ms: u64) -> usize {
 
 #[test]
 fn a_gentle_stick_push_steps_one_word_however_long_it_is_held() {
-    for depth in [500, 600, 700] {
+    for depth in [-500, -600, -700] {
         let mut keyboard = long_draft();
-        assert_eq!(picks_while_held(&mut keyboard, -depth, 3000), 1, "depth {depth}");
+        assert_eq!(picks_while_held(&mut keyboard, depth, 3000), 1, "depth {depth}");
     }
 }
 
@@ -341,7 +341,7 @@ fn a_full_stick_push_skips_words_quickly() {
 
 #[test]
 fn a_deeper_push_never_skips_slower() {
-    let rate = |depth: i16| picks_while_held(&mut long_draft(), -depth, 3000);
+    let rate = |depth: i16| picks_while_held(&mut long_draft(), depth.saturating_neg(), 3000);
     assert!(rate(1000) > rate(850));
     assert!(rate(850) > 1);
 }
@@ -350,8 +350,8 @@ proptest! {
     #[test]
     fn picking_speed_never_falls_as_the_push_deepens(shallow in 500_i16..=1000, extra in 0_i16..=500) {
         let deep = shallow.saturating_add(extra).min(1000);
-        let slow = picks_while_held(&mut long_draft(), -shallow, 2500);
-        let fast = picks_while_held(&mut long_draft(), -deep, 2500);
+        let slow = picks_while_held(&mut long_draft(), shallow.saturating_neg(), 2500);
+        let fast = picks_while_held(&mut long_draft(), deep.saturating_neg(), 2500);
         prop_assert!(fast >= slow, "depth {shallow} picked {slow}, depth {deep} picked {fast}");
     }
 }
@@ -362,10 +362,10 @@ fn easing_the_stick_back_stops_the_skipping() {
     let _fast = picks_while_held(&mut keyboard, -1000, 1500);
     let settled = keyboard.picked_word();
     keyboard.left_stick(-700, 0);
-    let _talk = keyboard.tick(Duration::from_secs(1));
+    let _eased = keyboard.tick(Duration::from_secs(1));
     assert_eq!(keyboard.picked_word(), settled);
     keyboard.left_stick(0, 0);
-    let _talk = keyboard.tick(Duration::from_secs(1));
+    let _centred = keyboard.tick(Duration::from_secs(1));
     assert_eq!(keyboard.picked_word(), settled);
 }
 

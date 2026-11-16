@@ -3585,7 +3585,7 @@ fn word_picks_held(toml: &str, depth: i16) -> usize {
     let state = with_open_keyboard(&mut world, configured(vec![context], "editor"));
     let mut state = world.run(state, speech_event(&"word ".repeat(150)));
     let held = Input::Sticks(Sticks {
-        left: (-depth, 0),
+        left: (depth.saturating_neg(), 0),
         right: (0, 0),
     });
     state = world.run(state, held.clone());
@@ -3599,7 +3599,7 @@ fn word_picks_held(toml: &str, depth: i16) -> usize {
             },
         );
         if state.keyboard().picked_word() != previous {
-            picks += 1;
+            picks = picks.saturating_add(1);
             previous = state.keyboard().picked_word();
         }
     }
