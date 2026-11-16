@@ -179,6 +179,7 @@ class Speech:
     def __init__(self, model, sources=None):
         self.model = model
         self.hotwords = ""
+        self.warned_missing = False
         self.sources = sources or (lambda: list_sources(self.warn_missing_source))
         self.tails = speech_tails(os.environ.get("TEHUTI_SPEECH_TAIL_MS"))
         self.releasing = None
@@ -201,6 +202,9 @@ class Speech:
         self.hotwords = ", ".join(words)
 
     def warn_missing_source(self, name):
+        if self.warned_missing:
+            return
+        self.warned_missing = True
         log(f"saved source {name} is missing; capturing from the other sources", level="WARN")
         reply({"warning": "source missing"})
 

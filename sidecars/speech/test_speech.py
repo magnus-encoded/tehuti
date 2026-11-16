@@ -608,9 +608,11 @@ time.sleep(60)
         with tempfile.TemporaryDirectory() as directory, patch.dict(
                 os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}), contextlib.redirect_stdout(output):
             speech.warn_missing_source("unplugged")
+            speech.warn_missing_source("unplugged")
             logged = Path(directory, "log").read_text()
         self.assertEqual(json.loads(output.getvalue()), {"warning": "source missing"})
         self.assertIn("WARN speech: saved source unplugged is missing", logged)
+        self.assertEqual(logged.count("WARN"), 1)
 
     def test_all_sources_record_at_once_and_failed_sources_are_skipped(self):
         class Model:
