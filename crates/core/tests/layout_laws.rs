@@ -24,6 +24,17 @@
 )]
 mod layout_laws {
     use proptest::prelude::*;
+
+    /// Laws whose preconditions are `prop_assume!`d (not generated) reject many
+    /// cases; the default budget of 1024 global rejects aborts them at 5000
+    /// cases. Scale it with the case count so the law still gets its cases.
+    fn assume_heavy() -> ProptestConfig {
+        let base = ProptestConfig::default();
+        ProptestConfig {
+            max_global_rejects: base.cases.saturating_mul(20).max(1024),
+            ..base
+        }
+    }
     use tehuti_core::layout::{
         CenterFocusedColumn, ColumnDisplay, ColumnView, Command, Direction, Layout, LayoutConfig,
         LayoutError, OutputGeometry, OutputId, OutputView, PresetSize, Rect, SizeChange, Snapshot, Struts,
@@ -685,6 +696,7 @@ mod layout_laws {
     // NW: column widths and presets.
 
     proptest! {
+        #![proptest_config(assume_heavy())]
         #[test]
         fn nw_1_a_column_width_is_a_proportion_or_a_fixed_size(
             config in config_strategy(),
@@ -1241,6 +1253,7 @@ mod layout_laws {
     // NWS: workspaces stacked vertically.
 
     proptest! {
+        #![proptest_config(assume_heavy())]
         #[test]
         fn nws_1_to_nws_5_each_output_keeps_its_empty_workspaces_in_place(
             config in config_strategy(),
@@ -2137,6 +2150,7 @@ mod layout_laws {
     }
 
     proptest! {
+        #![proptest_config(assume_heavy())]
         #[test]
         fn nv_1_never_scrolls_the_minimum_to_the_nearest_edge(
             config in with_center(CenterFocusedColumn::Never),
