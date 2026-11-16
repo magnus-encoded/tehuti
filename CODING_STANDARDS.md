@@ -53,6 +53,7 @@ A test states a rule about behaviour. It never computes its expected value by co
 - Tests go through public seams. They never reach into private state, mock internal modules or assert on call order between internal functions.
 - Every documented promise has an automated test, except where a spec or ADR says it is checked by hand.
 - No test needs a real device, uinput, display or microphone. Core tests drive the pure step with generated events; compositor tests use the synthetic pad.
+- CI checks that a PR's new tests fail without its source change: `scripts/check-red-test` restores the base version of the changed `crates/*/src` files and runs the added tests; at least one must fail (a build failure counts). Label a PR `no-red-test` to skip the job (docs, refactors).
 - Mutation testing measures this: a surviving mutant is a missing test.
 
 ## Separable concerns

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Passes when a test the PR adds fails with the base commit's version of the PR's source files.
+# Usage: check-red-test BASE_COMMIT   (run in a checkout of the PR head; CARGO overrides cargo)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+base=${1:?usage: check-red-test BASE_COMMIT}
+cargo=${CARGO:-cargo}
+is_test() {
+    [[ $1 == crates/*/tests/*.rs || $1 == crates/*/src/*tests.rs || $1 == crates/*/src/*/tests.rs || $1 == crates/*/src/*/tests/*.rs ]]
+}
+tests=()
+sources=()
+while IFS=$'\t' read -r status path; do
+    [[ $path == crates/*.rs ]] || continue
+    if is_test "$path"; then
+        [ "$status" = D ] && continue
+        tests+=("$path")
+    elif [[ $path == crates/*/src/* && $status != A ]]; then
+        sources+=("$path")
+    fi
+done < <(git diff --name-status --no-renames "$base" HEAD)
+names=()
+for file in ${tests[@]+"${tests[@]}"}; do
+    while IFS= read -r name; do names+=("$name"); done < <(
+        git diff -U0 "$base" HEAD -- "$file" | sed -nE 's/^\+[[:space:]]*(pub )?(async )?fn ([A-Za-z0-9_]+).*/\3/p')
+done
+if [ "${#names[@]}" -eq 0 ]; then
+    echo "check-red-test: the PR adds or changes no test function; skipping."
+    exit 0
+fi
+if [ "${#sources[@]}" -eq 0 ]; then
+    echo "check-red-test: the PR changes no existing source file under crates/*/src; skipping."
+    exit 0
+fi
+trap 'git checkout -q HEAD -- "${sources[@]}"' EXIT
+for file in "${sources[@]}"; do
+    if git cat-file -e "$base:$file" 2>/dev/null; then git show "$base:$file" >"$file"; fi
+done
+echo "check-red-test: running ${#names[@]} test name(s) against base sources: ${names[*]}"
+if XKB_DEFAULT_LAYOUT=us "$cargo" test --workspace --locked -- --test-threads=1 "${names[@]}"; then
+    echo "check-red-test: every added test passes without the source change." >&2
+    echo "Make a test fail on the old code, or label the PR no-red-test (docs, refactors)." >&2
+    exit 1
+fi
+echo "check-red-test: at least one added test fails without the source change (a build failure counts)."

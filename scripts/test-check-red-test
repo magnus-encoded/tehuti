@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Checks scripts/check-red-test on fixture PR diffs with a stub cargo.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# Stub cargo: the test run fails while src/lib.rs holds the old behaviour.
+cat >"$work/cargo-stub" <<'STUB'
+#!/usr/bin/env bash
+echo "$@" >>"$STUB_LOG"
+if grep -q old crates/a/src/lib.rs; then exit 101; fi
+exit 0
+STUB
+chmod +x "$work/cargo-stub"
+export CARGO="$work/cargo-stub" STUB_LOG="$work/log"
+mkdir "$work/repo"
+cd "$work/repo"
+git init -q -b main
+git config user.email t@example.com
+git config user.name t
+mkdir -p crates/a/src crates/a/tests scripts
+echo old >crates/a/src/lib.rs
+echo 'fn existing() {}' >crates/a/tests/t.rs
+cp "$root/scripts/check-red-test" scripts/
+git add -A
+git commit -qm base
+base=$(git rev-parse HEAD)
+
+run() { scripts/check-red-test "$base" >"$work/out" 2>&1; }
+fail() { echo "test-check-red-test: $1" >&2; cat "$work/out" >&2; exit 1; }
+
+# Fixture 1: a fix with a test that fails on the old source: the job passes.
+echo new >crates/a/src/lib.rs
+printf 'fn existing() {}\n#[test]\nfn added_test() {}\n' >crates/a/tests/t.rs
+git commit -qam fix
+run || fail "fix with a red test should pass"
+grep -q added_test "$work/log" || fail "added test name not passed to cargo"
+grep -q new crates/a/src/lib.rs || fail "source not restored"
+
+# Fixture 2: the added test also passes on the old source: the job fails.
+git checkout -q -B pr2 "$base"
+echo new >crates/a/src/lib.rs
+printf 'fn existing() {}\nfn weak_test() {}\n' >crates/a/tests/t.rs
+git commit -qam weak
+printf '#!/usr/bin/env bash\nexit 0\n' >"$work/cargo-stub"
+if run; then fail "a test that passes on base should fail the job"; fi
+grep -q 'passes without' "$work/out" || fail "no explanation printed"
+
+# Fixture 3: no test changed: skipped.
+git checkout -q -B pr3 "$base"
+echo new >crates/a/src/lib.rs
+git commit -qam src-only
+run || fail "no test change should skip"
+grep -q skipping "$work/out" || fail "skip not announced"
+echo "test-check-red-test: ok"

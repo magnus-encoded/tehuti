@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 scripts/forbidden-paths
 scripts/test-forbidden-paths
+scripts/test-check-red-test
 if [ -n "$(find crates -name Cargo.toml 2>/dev/null)" ]; then
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
