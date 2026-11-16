@@ -3168,6 +3168,10 @@ impl Compositor {
     fn set_layout_state(toplevel: &ToplevelSurface, tile: &tehuti_core::layout::TileView, focused: bool) {
         let tiled = !tile.fullscreen_requested;
         toplevel.with_pending_state(|pending| {
+            // A maximize request is answered at the tile size and stays reported
+            // until the client unmaximizes, so it reads every tile configure as
+            // still maximized instead of as a restore to fight.
+            let maximized = tiled && pending.states.contains(xdg_toplevel::State::Maximized);
             pending.size = Some(
                 smithay::utils::Size::<f64, smithay::utils::Logical>::from((
                     tile.requested_client.width,
@@ -3182,7 +3186,7 @@ impl Compositor {
                 (xdg_toplevel::State::TiledRight, tiled),
                 (xdg_toplevel::State::TiledTop, tiled),
                 (xdg_toplevel::State::TiledBottom, tiled),
-                (xdg_toplevel::State::Maximized, false),
+                (xdg_toplevel::State::Maximized, maximized),
             ] {
                 if enabled {
                     let _changed = pending.states.set(state);
@@ -3197,8 +3201,22 @@ impl Compositor {
     ///
     /// Fullscreen requests go through the layout; maximize requests keep the
     /// tile and only hear its current size and states.
-    fn answer_state_request(&mut self, surface: &ToplevelSurface, fullscreen: Option<bool>) {
+    fn answer_state_request(
+        &mut self,
+        surface: &ToplevelSurface,
+        fullscreen: Option<bool>,
+        maximized: Option<bool>,
+    ) {
         let mapped = self.placement.window(surface.wl_surface()).is_some();
+        if let Some(maximized) = maximized {
+            surface.with_pending_state(|pending| {
+                let _changed = if maximized {
+                    pending.states.set(xdg_toplevel::State::Maximized)
+                } else {
+                    pending.states.unset(xdg_toplevel::State::Maximized)
+                };
+            });
+        }
         if let Some(fullscreen) = fullscreen
             && let Err(error) = self.placement.fullscreen(surface.wl_surface(), fullscreen)
         {
@@ -3220,6 +3238,33 @@ impl Compositor {
             let _serial = surface.send_configure();
         }
         self.place_layout();
+    }
+
+    /// Sends the tile configure again after a client commits a new size that
+    /// is not its tile, so an oversized client is asked back.
+    ///
+    /// Skipped while a configure awaits its ack: that one already asks, and a
+    /// client that answers every configure with a new size would never settle.
+    fn ask_back_to_tile(&self, root: &WlSurface, window: &LayoutWindow) {
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        if !toplevel.is_initial_configure_sent()
+            || window.client_geometry().size == window.layout_size()
+            || !Self::awaits_answer(toplevel)
+        {
+            return;
+        }
+        if let Some(placed) = self
+            .placement
+            .placed(|_| 0.0)
+            .iter()
+            .find(|placed| placed.key == root)
+            && let Some((tile, _)) = &placed.tile
+        {
+            Self::set_layout_state(toplevel, tile, placed.focused);
+            let _serial = toplevel.send_configure();
+        }
     }
 
     /// A request that changes nothing still deserves one configure, unless the
@@ -3543,9 +3588,10 @@ impl CompositorHandler for Compositor {
                 self.log_window_size(&window, old, requested, "client request");
             }
             window.on_commit();
+            let previous_size = window.replace_committed_size(window.client_geometry().size);
             self.log_window_size(
                 &window,
-                window.replace_committed_size(window.client_geometry().size),
+                previous_size,
                 window.client_geometry().size,
                 "client commit",
             );
@@ -3561,6 +3607,9 @@ impl CompositorHandler for Compositor {
                 && !toplevel.is_initial_configure_sent()
             {
                 let _serial = toplevel.send_configure();
+            }
+            if previous_size != window.client_geometry().size {
+                self.ask_back_to_tile(&root, &window);
             }
         }
         self.record_surface_change();
@@ -3764,11 +3813,11 @@ impl XdgShellHandler for Compositor {
     fn new_toplevel(&mut self, _surface: ToplevelSurface) {}
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        self.answer_state_request(&surface, None);
+        self.answer_state_request(&surface, None, Some(true));
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        self.answer_state_request(&surface, None);
+        self.answer_state_request(&surface, None, Some(false));
     }
 
     fn fullscreen_request(
@@ -3776,11 +3825,11 @@ impl XdgShellHandler for Compositor {
         surface: ToplevelSurface,
         _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
-        self.answer_state_request(&surface, Some(true));
+        self.answer_state_request(&surface, Some(true), None);
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        self.answer_state_request(&surface, Some(false));
+        self.answer_state_request(&surface, Some(false), None);
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {

@@ -287,6 +287,14 @@ pub struct KeyboardConfig {
     pub word_min_rate: Option<u16>,
     /// Words a second at a full push (default 10).
     pub word_max_rate: Option<u16>,
+    /// Milliseconds a held D-pad direction waits before repeating (default 300).
+    pub repeat_delay_ms: Option<u16>,
+    /// Keys a second when a held D-pad direction starts repeating (default 12).
+    pub repeat_rate: Option<u16>,
+    /// Keys a second a held D-pad direction speeds up to (default 30).
+    pub repeat_max_rate: Option<u16>,
+    /// Milliseconds of repeating until the top rate is reached (default 2000).
+    pub repeat_ramp_ms: Option<u16>,
 }
 
 /// The fraction of a window's colour retained while dimmed.
@@ -1247,6 +1255,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_holds(&context)?;
     validate_keyboard_button(context.keyboard.button)?;
     validate_word_picking(&context.keyboard)?;
+    validate_keyboard_repeat(&context.keyboard)?;
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
     let hotwords = take_hotwords(&mut context.speech)?;
@@ -1365,6 +1374,19 @@ fn validate_word_picking(keyboard: &KeyboardConfig) -> Result<(), String> {
         .is_some_and(|from| !(500..=1000).contains(&from))
     {
         return Err("keyboard word_repeat_from must be between 500 and 1000".into());
+fn validate_keyboard_repeat(keyboard: &KeyboardConfig) -> Result<(), String> {
+    for (name, rate) in [
+        ("repeat_rate", keyboard.repeat_rate),
+        ("repeat_max_rate", keyboard.repeat_max_rate),
+    ] {
+        if rate.is_some_and(|rate| !(1..=1000).contains(&rate)) {
+            return Err(format!(
+                "keyboard {name} must be between 1 and 1000 keys a second"
+            ));
+        }
+    }
+    if keyboard.repeat_ramp_ms == Some(0) {
+        return Err("keyboard repeat_ramp_ms must be at least 1".into());
     }
     Ok(())
 }

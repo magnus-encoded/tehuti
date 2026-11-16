@@ -371,6 +371,10 @@ A gentle left-stick push steps one word. A push deeper than `word_repeat_from`
 `word_min_rate` words a second (2) up to `word_max_rate` (10) at a full push.
 These are `[keyboard]` options with no settings slider, and edits reload
 without a restart.
+Holding a D-pad direction moves the highlight after `repeat_delay_ms` (300),
+then at `repeat_rate` keys a second (12), speeding up to `repeat_max_rate`
+(30) over `repeat_ramp_ms` (2000). All four are `[keyboard]` options with no
+settings slider, and edits reload without a restart.
 The draft row sits below the keys, beside the powerline, and shows a window
 of text around the caret or picked word.
 The legacy `button` and `open_on_app_level` options remain accepted but

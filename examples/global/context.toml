@@ -15,6 +15,11 @@ button = "Y"
 # word_repeat_delay_ms = 350
 # word_min_rate = 2
 # word_max_rate = 10
+# D-pad hold repeat: delay, start and top rate (keys a second), ramp time.
+# repeat_delay_ms = 300
+# repeat_rate = 12
+# repeat_max_rate = 30
+# repeat_ramp_ms = 2000
 
 [speech]
 "Wider." = { layout = "switch-preset-column-width" }

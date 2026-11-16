@@ -221,6 +221,9 @@ impl State {
     /// Resolves the left-stick word-picking speeds over the global context.
     #[must_use]
     pub fn keyboard_word_repeat(&self) -> keyboard::WordRepeat {
+    /// Resolves the D-pad hold-repeat speeds over the global context.
+    #[must_use]
+    pub fn keyboard_repeat(&self) -> keyboard::Repeat {
         let global = self.contexts.iter().find(|context| context.app_id() == "*");
         let active = focused_context(self);
         let pick = |field: fn(&tehuti_protocol::KeyboardConfig) -> Option<u16>| {
@@ -233,6 +236,11 @@ impl State {
             pick(|config| config.word_repeat_delay_ms),
             pick(|config| config.word_min_rate),
             pick(|config| config.word_max_rate),
+        keyboard::Repeat::new(
+            pick(|config| config.repeat_delay_ms),
+            pick(|config| config.repeat_rate),
+            pick(|config| config.repeat_max_rate),
+            pick(|config| config.repeat_ramp_ms),
         )
     }
 
