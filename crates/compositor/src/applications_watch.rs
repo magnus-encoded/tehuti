@@ -102,7 +102,7 @@ impl ApplicationsWatch {
                 && let Some(parent) = directory.parent()
             {
                 // Until `applications` appears, its creation is seen on the data directory.
-                let _ = inotify::add_watch(&*self.watcher, parent, WATCH_FLAGS);
+                inotify::add_watch(&*self.watcher, parent, WATCH_FLAGS).ok();
             }
             self.watch_tree(directory, 0);
         }
