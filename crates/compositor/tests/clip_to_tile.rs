@@ -293,7 +293,7 @@ mod clip_to_tile {
         while !thread.is_finished() {
             pump(&mut display, &mut compositor, Duration::from_millis(1));
         }
-        thread.join().unwrap();
+        let _configures = thread.join().unwrap();
     }
 
     #[test]
