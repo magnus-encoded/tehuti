@@ -47,6 +47,8 @@ mod clip_to_tile {
     struct App {
         configured: Vec<(i32, i32)>,
         acked: Vec<usize>,
+        drawn: bool,
+        configures_after_draw: usize,
     }
 
     impl Dispatch<WlRegistry, GlobalListContents> for App {
@@ -86,6 +88,7 @@ mod clip_to_tile {
             if let xdg_surface::Event::Configure { serial } = event {
                 surface.ack_configure(serial);
                 app.acked.push(*index);
+                app.configures_after_draw = app.configures_after_draw.saturating_add(usize::from(app.drawn));
             }
         }
     }
@@ -134,7 +137,8 @@ mod clip_to_tile {
         surface.commit();
     }
 
-    fn client(stream: UnixStream, count: usize, ready: &mpsc::Sender<()>, stop: &mpsc::Receiver<()>) {
+    /// Runs the client and returns how many configures arrived after its first draw.
+    fn client(stream: UnixStream, count: usize, ready: &mpsc::Sender<()>, stop: &mpsc::Receiver<()>) -> usize {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
         let handle = queue.handle();
@@ -158,6 +162,7 @@ mod clip_to_tile {
             for index in core::mem::take(&mut app.acked) {
                 let (surface, xdg, _) = &windows[index];
                 draw(&shm, surface, xdg, &handle, (2200, 1400));
+                app.drawn = true;
             }
             let _dispatched = queue.roundtrip(&mut app).unwrap();
             if !announced && app.acked.is_empty() {
@@ -165,6 +170,7 @@ mod clip_to_tile {
                 announced = true;
             }
         }
+        app.configures_after_draw
     }
 
     fn pump(display: &mut Display<Compositor>, compositor: &mut Compositor, duration: Duration) {
@@ -283,5 +289,35 @@ mod clip_to_tile {
             pump(&mut display, &mut compositor, Duration::from_millis(1));
         }
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn oversized_commit_is_asked_back_to_its_tile_once() {
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        attach_output(&display, &mut compositor);
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (ready, received) = mpsc::channel();
+        let (stop, stopped) = mpsc::channel();
+        let thread = thread::spawn(move || client(stream, 1, &ready, &stopped));
+        let started = Instant::now();
+        while received.try_recv().is_err() {
+            assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
+            pump(&mut display, &mut compositor, Duration::from_millis(1));
+        }
+        pump(&mut display, &mut compositor, Duration::from_millis(200));
+        stop.send(()).unwrap();
+        while !thread.is_finished() {
+            pump(&mut display, &mut compositor, Duration::from_millis(1));
+        }
+        assert_eq!(
+            thread.join().unwrap(),
+            1,
+            "one tile configure per new commit size, however often the client redraws"
+        );
     }
 }
