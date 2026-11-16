@@ -563,7 +563,8 @@ inspect the surface content for letterboxing.
 `{ undo_dictation = true }` on a button or phrase deletes exactly the text of
 the last phrase Tehuti typed from speech, when nothing else was typed since.
 Later presses, and a press with no dictation to undo, send one Backspace each,
-so a terminal can bind it where Backspace was.
+so a terminal can bind it where Backspace was. Holding the button repeats
+Backspace like a held key, at the `[keyboard]` repeat speeds.
 
 ```toml
 [buttons]
