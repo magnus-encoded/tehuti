@@ -112,7 +112,7 @@ mod applications_watch {
         });
         let mut event_loop: calloop::EventLoop<'static, Looped> = calloop::EventLoop::try_new().unwrap();
         let watch =
-            ApplicationsWatch::insert(&event_loop.handle(), &[data.clone()], |looped: &mut Looped| {
+            ApplicationsWatch::insert(&event_loop.handle(), std::slice::from_ref(&data), |looped: &mut Looped| {
                 looped.watch.as_mut()
             })
             .unwrap();
