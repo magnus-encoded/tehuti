@@ -279,6 +279,14 @@ pub struct KeyboardConfig {
     pub terminal: Option<bool>,
     /// Legacy option, accepted without opening on level changes.
     pub open_on_app_level: Option<bool>,
+    /// Left-stick push depth, in thousandths (500 to 1000), from which a held stick keeps picking words (default 800).
+    pub word_repeat_from: Option<u16>,
+    /// Milliseconds a deep push waits before it keeps picking words (default 350).
+    pub word_repeat_delay_ms: Option<u16>,
+    /// Words a second at the shallowest repeating push (default 2).
+    pub word_min_rate: Option<u16>,
+    /// Words a second at a full push (default 10).
+    pub word_max_rate: Option<u16>,
     /// Milliseconds a held D-pad direction waits before repeating (default 300).
     pub repeat_delay_ms: Option<u16>,
     /// Keys a second when a held D-pad direction starts repeating (default 12).
@@ -1246,6 +1254,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     validate_push_to_talk(context.pad.push_to_talk.as_deref())?;
     validate_holds(&context)?;
     validate_keyboard_button(context.keyboard.button)?;
+    validate_word_picking(&context.keyboard)?;
     validate_keyboard_repeat(&context.keyboard)?;
     validate_app_id(&context.app_id)?;
     validate_title(&context.app_id, context.title.as_deref())?;
@@ -1362,6 +1371,26 @@ fn validate_keyboard_repeat(keyboard: &KeyboardConfig) -> Result<(), String> {
     }
     if keyboard.repeat_ramp_ms == Some(0) {
         return Err("keyboard repeat_ramp_ms must be at least 1".into());
+    }
+    Ok(())
+}
+
+fn validate_word_picking(keyboard: &KeyboardConfig) -> Result<(), String> {
+    for (name, rate) in [
+        ("word_min_rate", keyboard.word_min_rate),
+        ("word_max_rate", keyboard.word_max_rate),
+    ] {
+        if rate.is_some_and(|rate| !(1..=1000).contains(&rate)) {
+            return Err(format!(
+                "keyboard {name} must be between 1 and 1000 words a second"
+            ));
+        }
+    }
+    if keyboard
+        .word_repeat_from
+        .is_some_and(|from| !(500..=1000).contains(&from))
+    {
+        return Err("keyboard word_repeat_from must be between 500 and 1000".into());
     }
     Ok(())
 }
