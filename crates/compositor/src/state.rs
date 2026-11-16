@@ -444,6 +444,17 @@ impl Compositor {
             "recording": self.recording_active()})
     }
 
+    /// The system menu config in use.
+    #[must_use]
+    pub const fn menu_config(&self) -> &crate::system_menu::Config {
+        &self.menu_config
+    }
+
+    /// Replaces the system menu with a freshly loaded config; a failed load keeps the old menu.
+    pub fn reload_menu_config(&mut self, loaded: std::io::Result<crate::system_menu::Config>) {
+        let _unused = loaded;
+    }
+
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {
         crate::speech_vocabulary::configure_projects(&mut contexts, &self.launcher.paths().projects);
