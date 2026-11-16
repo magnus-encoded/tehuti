@@ -244,7 +244,11 @@ mod client_state_requests {
         report: &mut Report,
     ) {
         let mut count = app.configures.len();
-        report.tile_size = app.configures.last().map(|c| (c.0, c.1)).unwrap();
+        report.tile_size = app
+            .configures
+            .last()
+            .map(|configure| (configure.0, configure.1))
+            .unwrap();
         toplevel.set_maximized();
         settle(queue, app, shm, surface);
         report.after_maximize = app.configures.len().saturating_sub(count);
