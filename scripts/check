@@ -6,7 +6,11 @@ if [ "${1:-}" = --quick ]; then
     # Pre-push floor: fmt plus clippy on crates changed against origin/main. Not a substitute for the full gate.
     cargo fmt --all --check
     args=
-    for dir in $(git diff --name-only origin/main...HEAD -- 'crates/*/*' | cut -d/ -f2 | sort -u); do
+    dirs=$(git diff --name-only origin/main...HEAD -- 'crates/*/*' | cut -d/ -f2 | sort -u)
+    if git diff --name-only origin/main...HEAD | grep -qxE 'Cargo\.(toml|lock)'; then
+        dirs=$(ls crates)
+    fi
+    for dir in $dirs; do
         [ -f "crates/$dir/Cargo.toml" ] || continue
         name=$(sed -n 's/^name *= *"\(.*\)"/\1/p' "crates/$dir/Cargo.toml" | head -n1)
         args="$args -p $name"
