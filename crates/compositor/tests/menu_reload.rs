@@ -100,7 +100,9 @@ mod menu_reload {
         let mut dispatch_until = |limit: Duration| {
             let start = Instant::now();
             while start.elapsed() < limit {
-                event_loop.dispatch(Duration::from_millis(20), &mut looped).unwrap();
+                event_loop
+                    .dispatch(Duration::from_millis(20), &mut looped)
+                    .unwrap();
                 if looped.watch.as_mut().unwrap().poll(far()) {
                     return true;
                 }
