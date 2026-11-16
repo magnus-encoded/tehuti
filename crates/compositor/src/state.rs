@@ -79,6 +79,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::InputChoices { .. }
         | DispatchInput::Speech(_)
         | DispatchInput::PluginReply { .. }
+        | DispatchInput::PluginHandled { .. }
         | DispatchInput::PluginExited { .. }
         | DispatchInput::TextField { .. }
         | DispatchInput::ControllerDisconnected
@@ -583,6 +584,10 @@ impl Compositor {
         result: Result<Vec<Action>, String>,
     ) -> Option<tehuti_core::plugin::Rejection> {
         self.dispatch(DispatchInput::PluginReply { key, result })
+    }
+
+    pub(crate) fn plugin_handled(&mut self, key: tehuti_core::plugin::RequestKey) {
+        drop(self.dispatch(DispatchInput::PluginHandled { key }));
     }
 
     pub fn set_speech(&mut self, mut process: crate::speech::SpeechProcess) {
