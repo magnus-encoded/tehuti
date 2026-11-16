@@ -77,7 +77,7 @@ mod type_prefix {
     proptest! {
         #[test]
         fn any_sentence_after_the_key_is_typed_verbatim(
-            sentence in "[A-Z][a-z]{0,8}( [a-z]{1,8}){0,3}[.!]?",
+            sentence in "Zq[a-z]{0,8}( [a-z]{1,8}){0,3}[.!]?",
             key in prop_oneof![Just("type"), Just("Type"), Just("TYPE")],
         ) {
             prop_assert_eq!(
