@@ -214,7 +214,15 @@ fn parse_entry(value: &toml::Value) -> Result<Entry, String> {
 /// # Errors
 /// The file could not be read or contains invalid TOML.
 pub fn load() -> io::Result<Config> {
-    match std::fs::read_to_string(config_path()?) {
+    load_from(&config_path()?)
+}
+
+/// Loads and validates the menu commands in `path`; a missing file gives the defaults.
+///
+/// # Errors
+/// The file could not be read or contains invalid TOML.
+pub fn load_from(path: &std::path::Path) -> io::Result<Config> {
+    match std::fs::read_to_string(path) {
         Ok(text) => Config::parse(&text),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
         Err(error) => Err(error),
@@ -233,7 +241,11 @@ fn validate_argv(argv: &[String], allow_empty: bool) -> Result<(), String> {
     }
 }
 
-fn config_path() -> io::Result<PathBuf> {
+/// Where the menu config is read from: `TEHUTI_MENU_CONFIG`, else `menu.toml` in the config directory.
+///
+/// # Errors
+/// No configuration directory can be determined.
+pub fn config_path() -> io::Result<PathBuf> {
     if let Some(path) = std::env::var_os("TEHUTI_MENU_CONFIG") {
         return Ok(path.into());
     }

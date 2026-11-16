@@ -87,6 +87,7 @@ pub mod adjuster;
 pub mod applications_watch;
 pub mod driver;
 mod driver_shot;
+pub mod menu_watch;
 pub mod volume;
 
 pub mod readback;
