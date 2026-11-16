@@ -14,6 +14,7 @@ mod tests {
 
     /// Every frame each virtual pad sent, and how many existed at once.
     #[derive(Debug, Default)]
+    #[expect(clippy::struct_excessive_bools, reason = "independent fault switches")]
     struct Log {
         frames: Vec<Sent>,
         live: usize,
@@ -22,6 +23,10 @@ mod tests {
         refuse: bool,
         /// The physical pad is unplugged: reads fail with ENODEV.
         gone: bool,
+        /// Reads fail with this errno instead, when set.
+        read_errno: Option<i32>,
+        /// Writes to a virtual pad fail.
+        write_fails: bool,
         unsigned_axes: bool,
         grabs: usize,
         ungrabs: usize,
@@ -31,6 +36,9 @@ mod tests {
 
     impl MirrorSink for Sink {
         fn emit(&mut self, frame: &[InputEvent]) -> io::Result<()> {
+            if self.1.borrow().write_fails {
+                return Err(io::Error::from_raw_os_error(5));
+            }
             let frame = frame
                 .iter()
                 .map(|event| (event.event_type().0, event.code(), event.value()))
@@ -112,6 +120,9 @@ mod tests {
         fn fetch_raw(&mut self) -> io::Result<Vec<InputEvent>> {
             if self.log.borrow().gone {
                 return Err(io::Error::from_raw_os_error(19));
+            }
+            if let Some(errno) = self.log.borrow().read_errno {
+                return Err(io::Error::from_raw_os_error(errno));
             }
             let mut raw = self.raw.borrow_mut();
             let count = raw.len().min(2);
@@ -1060,6 +1071,78 @@ mod tests {
                 vec![(EventType::KEY.0, KeyCode::BTN_EAST.code(), 1)]
             ))
         );
+    }
+
+    #[test]
+    fn a_virtual_pad_write_error_keeps_the_physical_pad_and_discards_the_virtual_one() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let path = Path::new("/dev/input/event1");
+        let (mut only, handles) = pad("pad", &log);
+        let _sync = sync_mirrors(&mut [(path, &mut only)], true, Some(path), &mut None, &|_| false);
+        log.borrow_mut().write_fails = true;
+        queue(&handles, KeyCode::BTN_SOUTH, 1);
+        let _result = only.pump_mirror(&mut |_, _| false);
+        assert!(!only.lost(), "the physical pad still works");
+        assert!(only.mirror_unavailable());
+        assert!(
+            only.detach_virtual_pad().is_none(),
+            "a possibly broken pad is not kept"
+        );
+    }
+
+    #[test]
+    fn a_read_error_other_than_device_gone_loses_the_pad_and_keeps_the_virtual_pad() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let path = Path::new("/dev/input/event1");
+        let (mut only, _handles) = pad("pad", &log);
+        let _sync = sync_mirrors(&mut [(path, &mut only)], true, Some(path), &mut None, &|_| false);
+        log.borrow_mut().read_errno = Some(5);
+        assert!(only.pump_mirror(&mut |_, _| false).is_err());
+        assert!(only.lost());
+        let kept = only.detach_virtual_pad();
+        assert!(kept.is_some());
+        assert_eq!(log.borrow().live, 1);
+    }
+
+    #[test]
+    fn a_drop_with_no_mirror_and_no_held_button_is_lost_quietly() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut only, _handles) = pad("pad", &log);
+        log.borrow_mut().gone = true;
+        assert!(only.pump_mirror(&mut |_, _| panic!("nothing was held")).is_ok());
+        assert!(only.detach_virtual_pad().is_none());
+    }
+
+    #[test]
+    fn one_of_two_pads_dropping_leaves_the_other_and_one_virtual_pad() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (first_path, second_path) = (Path::new("/dev/input/event1"), Path::new("/dev/input/event2"));
+        let (mut first, _a) = pad("first", &log);
+        let (mut second, handles) = pad("second", &log);
+        let _sync = sync_mirrors(
+            &mut [(first_path, &mut first), (second_path, &mut second)],
+            true,
+            Some(second_path),
+            &mut None,
+            &|_| false,
+        );
+        queue(&handles, KeyCode::BTN_SOUTH, 1);
+        second.pump_mirror(&mut |_, _| false).unwrap();
+        assert_eq!(log.borrow().most_live, 1);
+        log.borrow_mut().read_errno = Some(19);
+        assert!(second.pump_mirror(&mut |_, _| false).is_err());
+        let mut spare = second.detach_virtual_pad();
+        log.borrow_mut().read_errno = None;
+        let _resync = sync_mirrors(
+            &mut [(first_path, &mut first)],
+            true,
+            Some(first_path),
+            &mut spare,
+            &|_| false,
+        );
+        assert!(first.mirrored() && spare.is_none());
+        let log = log.borrow();
+        assert_eq!((log.created, log.live, log.most_live), (1, 1, 1));
     }
 
     #[test]

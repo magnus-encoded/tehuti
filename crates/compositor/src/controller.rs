@@ -321,6 +321,23 @@ pub fn mirror_wanted(mirrored: bool, active: Option<&std::path::Path>, path: &st
     mirrored && active == Some(path)
 }
 
+/// Why copying pending input stopped.
+enum Copy {
+    /// The physical pad could not be read.
+    Read(io::Error),
+    /// The virtual pad could not be written.
+    Write(io::Error),
+}
+
+/// Parks `kept` as the spare unless one is already parked; the extra virtual pad is dropped.
+pub fn keep_spare(spare: &mut Option<VirtualPad>, kept: VirtualPad) {
+    if spare.is_some() {
+        warn!("a spare virtual pad is already parked; dropping the extra one");
+    } else {
+        *spare = Some(kept);
+    }
+}
+
 /// What [`sync_mirrors`] changed.
 #[derive(Debug, Default)]
 pub struct MirrorSync {
@@ -1007,11 +1024,23 @@ impl<D: PadDevice> EvdevPad<D> {
         if self.lost {
             return Ok(());
         }
-        let copied = self.copy_pending(&mut *consume);
-        if copied.is_err() {
-            self.lose(consume);
+        match self.copy_pending(&mut *consume) {
+            Ok(()) => Ok(()),
+            Err(Copy::Read(error)) => {
+                self.lose(consume);
+                Err(error)
+            }
+            Err(Copy::Write(error)) => {
+                // The physical pad still works; only the virtual one is suspect, so it is not kept.
+                warn!(%error, "virtual pad write failed; passing the physical pad through");
+                self.mirror = None;
+                self.mirror_failed = true;
+                for button in core::mem::take(&mut self.plugin_held) {
+                    let _kept = consume(button, ButtonState::Released);
+                }
+                Ok(())
+            }
         }
-        copied
     }
 
     /// Whether a failed read lost this physical pad.
@@ -1035,12 +1064,12 @@ impl<D: PadDevice> EvdevPad<D> {
         }
     }
 
-    fn copy_pending(&mut self, consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool) -> io::Result<()> {
+    fn copy_pending(&mut self, consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool) -> Result<(), Copy> {
         if self.mirror.is_none() && self.plugin_held.is_empty() {
             return Ok(());
         }
         loop {
-            let raw = self.handles.events().fetch_raw()?;
+            let raw = self.handles.events().fetch_raw().map_err(Copy::Read)?;
             if raw.is_empty() {
                 break;
             }
@@ -1058,7 +1087,7 @@ impl<D: PadDevice> EvdevPad<D> {
                         kept
                     };
                     if let Some(frame) = mirror.copy.take(event, &mut self.translator, &mut track) {
-                        mirror.device.emit(&frame)?;
+                        mirror.device.emit(&frame).map_err(Copy::Write)?;
                         let first_after_focus = self.first_emit_after_focus.take();
                         tracing::debug!(target: "pad_latency", stage = "emit", at_us = timestamp_us(std::time::SystemTime::now()), read_us = timestamp_us(read_at), physical_us = timestamp_us(event.timestamp()), first_after_focus = first_after_focus.is_some(), since_focus_us = first_after_focus.map_or(0, |focus| focus.elapsed().as_micros()));
                     }
@@ -1458,6 +1487,39 @@ mod mirror_tests {
 
     fn key(code: KeyCode, value: i32) -> InputEvent {
         InputEvent::new(EventType::KEY.0, code.code(), value)
+    }
+
+    struct Counted(std::rc::Rc<core::cell::Cell<usize>>);
+
+    impl super::MirrorSink for Counted {
+        fn emit(&mut self, _frame: &[InputEvent]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.set(self.0.get().saturating_add(1));
+        }
+    }
+
+    fn virtual_pad(drops: &std::rc::Rc<core::cell::Cell<usize>>) -> super::VirtualPad {
+        super::VirtualPad(super::Mirror {
+            device: Box::new(Counted(std::rc::Rc::clone(drops))),
+            copy: MirrorCopy::default(),
+            centres: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn parking_a_spare_keeps_the_one_already_parked() {
+        let drops = std::rc::Rc::default();
+        let mut spare = Some(virtual_pad(&drops));
+        super::keep_spare(&mut spare, virtual_pad(&drops));
+        assert!(spare.is_some());
+        assert_eq!(drops.get(), 1, "the extra virtual pad is dropped");
+        super::keep_spare(&mut None, virtual_pad(&drops));
+        assert_eq!(drops.get(), 2);
     }
 
     #[test]
