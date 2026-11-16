@@ -2267,6 +2267,8 @@ impl Compositor {
                 self.show_notice(text.as_str());
             }
             Action::ToggleTicker => self.dispatch.core_mut().toggle_ticker(),
+            // The core expands it into backspaces before any action reaches here.
+            Action::UndoDictation => {}
         }
     }
 

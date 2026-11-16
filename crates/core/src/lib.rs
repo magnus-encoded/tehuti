@@ -58,9 +58,48 @@ pub struct State {
     controller_talk: Option<ButtonName>,
     app_names: Vec<(String, String)>,
     sticks: stick_actions::StickActions,
+    /// Characters of the last dictated phrase, while nothing else was typed after it.
+    dictated: Option<usize>,
 }
 
 impl State {
+    /// Expands undo into backspaces and remembers what a spoken phrase typed, until anything else is typed.
+    fn track_dictation(&mut self, event: &Event, actions: Vec<Action>) -> Vec<Action> {
+        if matches!(event, Event::Focus { .. }) {
+            self.dictated = None;
+        }
+        let mut tracked = Vec::with_capacity(actions.len());
+        for action in actions {
+            match action {
+                Action::UndoDictation => {
+                    let count = self.dictated.take().unwrap_or(1);
+                    tracked.extend((0..count).map(|_| Action::Key {
+                        key: KeyName::Backspace,
+                        mods: Vec::new(),
+                    }));
+                }
+                Action::Text { ref text } => {
+                    self.dictated =
+                        matches!(event, Event::Speech { .. }).then(|| text.as_str().chars().count());
+                    tracked.push(action);
+                }
+                Action::Key { .. } | Action::KeyDown { .. } | Action::SecretRequest { .. } => {
+                    self.dictated = None;
+                    tracked.push(action);
+                }
+                Action::Launch { .. }
+                | Action::Close
+                | Action::Quit
+                | Action::Restart
+                | Action::Notice { .. }
+                | Action::Layout { .. }
+                | Action::KeyUp { .. }
+                | Action::ToggleTicker => tracked.push(action),
+            }
+        }
+        tracked
+    }
+
     pub fn set_menu_entries(&mut self, entries: Vec<String>) {
         self.menu_entries = entries;
     }
@@ -152,6 +191,7 @@ impl State {
             controller_talk: None,
             app_names: Vec::new(),
             sticks: stick_actions::StickActions::default(),
+            dictated: None,
         };
         state.refresh_ticker();
         state.refresh_labels();
@@ -519,6 +559,7 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     if let Some(release) = released {
         actions.insert(0, release);
     }
+    actions = next.track_dictation(event, actions);
     if matches!(event, Event::Focus { .. }) {
         next.bar.event(event);
     }
@@ -787,6 +828,9 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
                     })
                     .flatten();
             }
+        }
+        if tehuti_protocol::normalize_phrase(phrase) == "scratch that" {
+            return Some(Action::UndoDictation);
         }
         let focused = focused_context(state);
         let global = global_context(state);
