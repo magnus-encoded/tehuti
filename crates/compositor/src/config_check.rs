@@ -183,8 +183,7 @@ fn report_overridden_shared(
         let overridden = std::fs::read_to_string(path)
             .ok()
             .and_then(|source| crate::shared_sections::resolve(&source, directory).ok())
-            .map(|resolved| resolved.overridden)
-            .unwrap_or_default();
+            .map_or_default(|resolved| resolved.overridden);
         for message in overridden {
             report.push(path, Severity::Warning, message);
         }

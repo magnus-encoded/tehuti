@@ -80,8 +80,11 @@ pub fn resolve(source: &str, directory: &Path) -> Result<Resolved, String> {
         sections.push((name.clone(), read_section(directory, &name)?));
     }
     let overridden = merge(&mut context, sections);
-    let source = toml::to_string(&context).map_err(|error| error.to_string())?;
-    Ok(Resolved { source, overridden })
+    let merged = toml::to_string(&context).map_err(|error| error.to_string())?;
+    Ok(Resolved {
+        source: merged,
+        overridden,
+    })
 }
 
 fn read_section(directory: &Path, name: &str) -> Result<Table, String> {
