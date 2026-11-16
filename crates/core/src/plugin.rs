@@ -26,6 +26,10 @@ pub enum Input {
         key: RequestKey,
         result: Result<Vec<Action>, String>,
     },
+    /// The plugin completed the request itself: nothing runs and no fallback shows.
+    Handled {
+        key: RequestKey,
+    },
     Exited {
         plugin: usize,
     },
@@ -94,6 +98,7 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Action>, Option<Rejec
             (state, Vec::new(), None)
         }
         Input::Reply { key, result } => reply(state, key, result),
+        Input::Handled { key } => handled(state, key),
         Input::Exited { plugin } => {
             let actions = exit(&mut state, plugin);
             (state, actions, None)
@@ -165,6 +170,17 @@ pub fn validate_actions(actions: Vec<Action>, permissions: &[Permission]) -> Res
         }
     }
     Ok(actions)
+}
+
+fn handled(mut state: State, key: RequestKey) -> (State, Vec<Action>, Option<Rejection>) {
+    let Some(index) = state.pending.iter().position(|pending| pending.key == key) else {
+        return (state, Vec::new(), None);
+    };
+    let pending = state.pending.remove(index);
+    if pending.speech && pending.bar_generation == state.bar.generation {
+        state.bar.resolve(&[]);
+    }
+    (state, Vec::new(), None)
 }
 
 fn reply(

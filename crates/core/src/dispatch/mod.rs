@@ -84,6 +84,10 @@ pub enum Input {
         key: RequestKey,
         result: Result<Vec<Action>, String>,
     },
+    /// A plugin completed the request itself: no actions and no fallback.
+    PluginHandled {
+        key: RequestKey,
+    },
     PluginExited {
         plugin: usize,
     },
@@ -703,6 +707,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ControllerDisconnected
         | Input::FocusedWindowClosed) => state_input(state, &input),
         Input::PluginReply { key, result } => plugin_reply(state, key, result),
+        Input::PluginHandled { key } => plugin_handled(state, key),
         reply @ (Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -761,6 +766,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ControllerDisconnected
         | Input::FocusedWindowClosed
         | Input::PluginReply { .. }
+        | Input::PluginHandled { .. }
         | Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -823,6 +829,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::Speech(_)
         | Input::PluginExited { .. }
         | Input::PluginReply { .. }
+        | Input::PluginHandled { .. }
         | Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -881,6 +888,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ClockRead(_)
         | Input::Speech(_)
         | Input::PluginReply { .. }
+        | Input::PluginHandled { .. }
         | Input::PluginExited { .. }
         | Input::TextField { .. }
         | Input::ControllerDisconnected
@@ -910,6 +918,13 @@ fn plugin_reply(
     let mut effects: Vec<_> = actions.into_iter().map(Effect::PluginAction).collect();
     effects.extend(rejection.map(Effect::PluginRejected));
     (state, effects)
+}
+
+fn plugin_handled(mut state: State, key: RequestKey) -> (State, Vec<Effect>) {
+    let (next, _actions, _rejection) =
+        crate::plugin::step(state.core, crate::plugin::Input::Handled { key });
+    state.core = next;
+    (state, Vec::new())
 }
 
 fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
