@@ -521,6 +521,8 @@ pub struct Context {
     warnings: Vec<String>,
     skipped_phrases: Vec<String>,
     unmatched_speech: Option<UnmatchedSpeech>,
+    /// Normalized prefix phrases to whether they type the rest of the utterance.
+    text_prefixes: std::collections::HashMap<String, bool>,
     launch_phrases: Vec<(String, String)>,
     favourites: Vec<String>,
     invoke: Vec<String>,
@@ -861,7 +863,34 @@ impl Context {
         self.mapped_speech_action(phrase)
             .or_else(|| self.folded_speech_action(phrase))
             .or_else(|| self.plural_speech_action(phrase))
+            .or_else(|| self.prefix_speech_action(phrase).flatten())
             .or_else(|| self.unmatched_speech_action(phrase))
+    }
+
+    /// What a `text_after` prefix rule makes of the phrase: `None` when no rule
+    /// names the phrase's first words, `Some(None)` when the context opts out
+    /// (`none = true`) or nothing follows the key, otherwise the rest typed.
+    #[must_use]
+    pub fn prefix_speech_action(&self, phrase: &str) -> Option<Option<Action>> {
+        let normalized = normalize_phrase(phrase);
+        let (key, enabled) = self.text_prefixes.iter().find(|(key, _)| {
+            normalized
+                .strip_prefix(key.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })?;
+        if !enabled {
+            return Some(None);
+        }
+        let mut rest = phrase;
+        for _ in key.split(' ') {
+            rest = rest.trim_start_matches(|c: char| !c.is_alphanumeric());
+            rest = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '\'' || c == '\u{2019}');
+        }
+        let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | ';'));
+        if rest.trim().is_empty() {
+            return Some(None);
+        }
+        Some(Text::new(format!("{rest} ")).ok().map(|text| Action::Text { text }))
     }
 
     /// The action of a mapped phrase only, ignoring `unmatched_speech`.
@@ -1247,7 +1276,14 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
     let mut warnings = Vec::new();
     let mut skipped_phrases = Vec::new();
     let mut launch_phrases = Vec::new();
+    let mut text_prefixes = std::collections::HashMap::new();
     for (mapped, value) in context.speech {
+        if let Some(enabled) = prefix_rule(&value) {
+            let key = normalized_speech_phrase(&mapped)
+                .map_err(|message| format!("speech phrase skipped: {message}"))?;
+            drop(text_prefixes.insert(key, enabled));
+            continue;
+        }
         let entry = speech_entry(&mapped, value, &mut launch_phrases)?;
         let normalized = match accept_phrase(&speech, &mapped) {
             Ok(normalized) => normalized,
@@ -1280,6 +1316,7 @@ pub fn parse_context(source: &str) -> Result<Context, String> {
         favourites: context.favourites,
         invoke: validate_invoke_words(context.invoke)?,
         unmatched_speech: context.unmatched_speech,
+        text_prefixes,
         keyboard: context.keyboard,
         dim: context.dim,
         key_hold_ms: validate_key_hold(context.key_hold_ms)?,
@@ -1361,6 +1398,19 @@ fn take_hotwords(speech: &mut toml::Table) -> Result<Vec<String>, String> {
             | toml::Value::Table(_) => Err("speech hotwords must be strings".to_owned()),
         })
         .collect()
+}
+
+/// `{ text_after = true }` enables a prefix rule and `{ none = true }` opts out of an inherited one.
+fn prefix_rule(value: &toml::Value) -> Option<bool> {
+    let table = value.as_table()?;
+    if table.len() != 1 {
+        return None;
+    }
+    match (table.get("text_after"), table.get("none")) {
+        (Some(toml::Value::Boolean(true)), None) => Some(true),
+        (None, Some(toml::Value::Boolean(true))) => Some(false),
+        _ => None,
+    }
 }
 
 fn speech_entry(

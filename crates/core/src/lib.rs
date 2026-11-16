@@ -561,7 +561,7 @@ fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
 }
 
 /// Every exact match in chain order, then the built-in close, then folded
-/// matches, then plurals, then fuzzy, then unmatched dictation.
+/// matches, then plurals, then prefix rules, then fuzzy, then unmatched dictation.
 fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
     focused
         .and_then(|context| context.mapped_speech_action(phrase))
@@ -571,6 +571,12 @@ fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &st
         .or_else(|| global.and_then(|context| context.folded_speech_action(phrase)))
         .or_else(|| focused.and_then(|context| context.plural_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.plural_speech_action(phrase)))
+        .or_else(|| {
+            focused
+                .and_then(|context| context.prefix_speech_action(phrase))
+                .or_else(|| global.and_then(|context| context.prefix_speech_action(phrase)))
+                .flatten()
+        })
         .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.action))
         .or_else(|| focused.and_then(|context| context.unmatched_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.unmatched_speech_action(phrase)))
