@@ -164,11 +164,17 @@ fn menu_select(socket: &Path, label: &str) -> Result<Value, Box<dyn Error>> {
                 labels.join(", ")
             )
         })?;
-    let down = (target + labels.len() - selected) % labels.len();
-    let (steps, name) = if down <= labels.len() - down {
+    let count = labels.len();
+    let down = target
+        .saturating_add(count)
+        .saturating_sub(selected)
+        .checked_rem(count)
+        .unwrap_or_default();
+    let up = count.saturating_sub(down);
+    let (steps, name) = if down <= up {
         (down, "dpad_down")
     } else {
-        (labels.len() - down, "dpad_up")
+        (up, "dpad_up")
     };
     for _ in 0..steps {
         let button = serde_json::from_value(json!(name))?;
