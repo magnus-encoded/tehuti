@@ -4027,6 +4027,26 @@ mod tests {
     }
 
     #[test]
+    fn the_focused_context_sets_how_long_a_tap_is_held() {
+        let (_display, mut compositor) = compositor();
+        let context = tehuti_protocol::parse_context(
+            "app_id = 'org.example.Game'\nkey_hold_ms = 120\nbuttons = {}\n",
+        )
+        .unwrap();
+        compositor.set_contexts(vec![context]);
+        compositor.speech_context = Some("org.example.Game".to_owned());
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
+
+        compositor.advance_clocks(Duration::from_millis(119));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+
+        compositor.advance_clocks(Duration::from_millis(1));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 9));
+    }
+
+    #[test]
     fn double_tap_is_not_released_by_the_first_hold() {
         let (_display, mut compositor) = compositor();
         let key = smithay::input::keyboard::Keycode::new(9);
