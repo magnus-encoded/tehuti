@@ -88,6 +88,12 @@ fn create_gpu(device_fd: &DrmDeviceFd, surface: &DrmSurface) -> Result<Gpu, Box<
         device.renderer().egl_context().dmabuf_render_formats(),
         &surface.plane_info().formats,
     );
+    if let Some(reason) = tehuti::rendering::scanout_mismatch(
+        device.renderer().egl_context().dmabuf_render_formats(),
+        &surface.plane_info().formats,
+    ) {
+        tracing::warn!(%reason, "GPU scanout format mismatch");
+    }
     let mut allocator = GbmAllocator::new(gbm, GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
     let (width, height) = surface.pending_mode().size();
     for format in formats {
@@ -154,6 +160,9 @@ pub(super) fn advertise(
     compositor: &mut Compositor,
 ) -> Result<(), Box<dyn Error>> {
     compositor.clear_capture_source();
+    if matches!(rendering, Rendering::Pixman(_)) {
+        compositor.disable_dmabuf(display);
+    }
     if let Rendering::Gles(gpu) = rendering {
         compositor.set_capture_source(&gpu.device, |device, compositor, clock| {
             tehuti::rendering::capture_frame(device.renderer_mut(), compositor, clock)
@@ -178,10 +187,38 @@ pub(super) fn advertise(
 }
 
 /// Draws the damage since `buffer` last held a frame; `None` when nothing changed.
+/// A GLES draw failure switches to pixman and redraws; the flag says it did.
 pub(super) fn draw(
     rendering: &mut DrmRendering,
     next: bool,
-    mut pass: Pass<'_>,
+    pass: &mut Pass<'_>,
+    output: &Output,
+    damage: &mut OutputDamageTracker,
+    compositor: &Compositor,
+    fallback: (&DrmDeviceFd, &DrmSurface),
+) -> Result<(Option<Drawn>, bool), Box<dyn Error>> {
+    let switched = core::cell::Cell::new(false);
+    let drawn = tehuti::rendering::draw_with_fall_back(
+        rendering,
+        |rendering| {
+            if switched.get() {
+                // The failed frame may have been counted; start the pixman buffers fresh.
+                pass.full = true;
+                *damage = OutputDamageTracker::from_output(output);
+            }
+            draw_once(rendering, next, pass, output, damage, compositor)
+        },
+        || create_software(fallback.0, fallback.1),
+        |_| switched.set(true),
+    )?;
+    let switched = switched.get();
+    Ok((drawn, switched))
+}
+
+fn draw_once(
+    rendering: &mut DrmRendering,
+    next: bool,
+    pass: &mut Pass<'_>,
     output: &Output,
     damage: &mut OutputDamageTracker,
     compositor: &Compositor,
@@ -196,7 +233,7 @@ pub(super) fn draw(
                 gpu.device.borrow_mut().renderer_mut(),
                 buffer,
                 &mut gpu.overlays,
-                &mut pass,
+                pass,
                 output,
                 damage,
                 compositor,
@@ -215,7 +252,7 @@ pub(super) fn draw(
                 &mut software.renderer,
                 buffer,
                 &mut software.overlays,
-                &mut pass,
+                pass,
                 output,
                 damage,
                 compositor,

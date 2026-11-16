@@ -49,8 +49,13 @@ impl Repeat {
         }
     }
 
+    /// How long a direction is held before it starts repeating.
+    pub(crate) const fn delay(self) -> Duration {
+        self.delay
+    }
+
     /// Time to the next move after repeating for `held`: faster the longer the hold.
-    fn interval(self, held: Duration) -> Duration {
+    pub(crate) fn interval(self, held: Duration) -> Duration {
         let ramp = self.ramp.as_micros().max(1);
         let progress = held.as_micros().min(ramp);
         let climb = u128::from(self.max_rate.saturating_sub(self.rate));

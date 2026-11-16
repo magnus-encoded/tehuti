@@ -459,15 +459,39 @@ struct ConnectedSurface {
     listed_modes: Vec<Mode>,
 }
 
+/// Connected connectors in the order a rescan tries them: the configured fallback comes last.
+fn connected_in_try_order(
+    device: &DrmDevice,
+    resources: &smithay::reexports::drm::control::ResourceHandles,
+) -> Result<Vec<(connector::Handle, connector::Info)>, Box<dyn Error>> {
+    let mut connected = Vec::new();
+    for handle in resources.connectors() {
+        let connector = device.get_connector(*handle, true)?;
+        if connector.state() == connector::State::Connected {
+            connected.push((*handle, connector));
+        }
+    }
+    let names: Vec<String> = connected
+        .iter()
+        .map(|(_, connector)| {
+            tehuti::output_choice::connector_name(connector.interface(), connector.interface_id())
+        })
+        .collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let fallback = tehuti::output_choice::fallback_from_env();
+    let mut pool: Vec<_> = connected.into_iter().map(Some).collect();
+    Ok(tehuti::output_choice::try_order(&name_refs, fallback.as_deref())
+        .into_iter()
+        .filter_map(|slot| pool.get_mut(slot).and_then(Option::take))
+        .collect())
+}
+
 fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn Error>> {
     let request = std::env::var("TEHUTI_MODE").ok();
     let parsed = request.as_deref().and_then(mode::Request::parse);
     let resources = device.resource_handles()?;
-    for handle in resources.connectors() {
-        let connector = device.get_connector(*handle, true)?;
-        if connector.state() != connector::State::Connected {
-            continue;
-        }
+    let connected = connected_in_try_order(device, &resources)?;
+    for (handle, connector) in &connected {
         let listed: Vec<_> = connector
             .modes()
             .iter()
@@ -711,7 +735,7 @@ impl Scanout {
         self.modeset = true;
         // Keep the confirmed scanout alive until the preview is confirmed or reverted.
         let retained = self.rollback.take();
-        match self.render_frame(data) {
+        match self.render_frame(data, device) {
             Ok(()) => {
                 self.recovery.reset();
                 if !reverting {
@@ -852,7 +876,7 @@ impl Scanout {
         let mut mode_error = None;
         let result = mode::retry(
             &mut (&mut *self, &mut *data),
-            |(tty, data)| tty.render_frame(data),
+            |(tty, data)| tty.render_frame(data, device),
             |(tty, data), error| {
                 tty.damage = OutputDamageTracker::from_output(&tty.output);
                 if tty.recovery.fallback_attempted() || tty.reject_preview(data)? || !tty.modeset {
@@ -877,19 +901,24 @@ impl Scanout {
         Ok(retry)
     }
 
-    fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
+    fn render_frame(&mut self, data: &mut LoopData, device: &DrmDevice) -> Result<(), Box<dyn Error>> {
         let started = std::time::Instant::now();
-        let drawn = render::draw(
+        let (drawn, switched) = render::draw(
             &mut self.renderer,
             self.next,
-            render::Pass {
+            &mut render::Pass {
                 drawn: &mut self.drawn,
                 full: self.modeset,
             },
             &self.output,
             &mut self.damage,
             &data.compositor,
+            (device.device_fd(), &self.surface),
         )?;
+        if switched {
+            advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
+            self.modeset = true;
+        }
         self.statistics.count(drawn.is_some());
         let Some(drawn) = drawn else {
             trace!(elapsed = ?started.elapsed(), "DRM frame unchanged");

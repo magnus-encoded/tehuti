@@ -7,6 +7,91 @@ mod tests {
     use tehuti::rendering::{Rendering, initialize, scanout_formats};
 
     #[test]
+    fn gpu_failure_after_startup_falls_back_once() {
+        let mut rendering: Rendering<u8, u8> = Rendering::Gles(1);
+        assert_eq!(rendering.fall_back(|| Ok::<_, ()>(2)), Ok(true));
+        assert!(matches!(rendering, Rendering::Pixman(2)));
+        assert_eq!(rendering.fall_back(|| Ok::<_, ()>(3)), Ok(false));
+        assert!(matches!(rendering, Rendering::Pixman(2)));
+    }
+
+    fn run(
+        rendering: &mut Rendering<u8, u8>,
+        draw_fails: bool,
+        submit_fails: bool,
+    ) -> (Result<u8, String>, bool) {
+        let mut switched = false;
+        let drawn = tehuti::rendering::draw_with_fall_back(
+            rendering,
+            |rendering| match rendering {
+                Rendering::Gles(_) if draw_fails => Err("draw".to_owned()),
+                Rendering::Gles(value) | Rendering::Pixman(value) => Ok(*value),
+            },
+            || Ok::<_, String>(9),
+            |_| switched = true,
+        );
+        // Submitting happens outside the seam, so its failure never reaches it.
+        let result = drawn.and_then(|value| {
+            if submit_fails {
+                Err("submit".to_owned())
+            } else {
+                Ok(value)
+            }
+        });
+        (result, switched)
+    }
+
+    #[test]
+    fn a_draw_failure_switches_to_pixman_and_redraws() {
+        let mut rendering = Rendering::Gles(1);
+        assert_eq!(run(&mut rendering, true, false), (Ok(9), true));
+        assert!(matches!(rendering, Rendering::Pixman(9)));
+    }
+
+    #[test]
+    fn a_submit_failure_keeps_the_gpu_renderer() {
+        let mut rendering = Rendering::Gles(1);
+        assert_eq!(
+            run(&mut rendering, false, true),
+            (Err("submit".to_owned()), false)
+        );
+        assert!(matches!(rendering, Rendering::Gles(1)));
+    }
+
+    #[test]
+    fn a_pixman_draw_failure_is_not_retried() {
+        let mut rendering: Rendering<u8, u8> = Rendering::Pixman(1);
+        let result = tehuti::rendering::draw_with_fall_back(
+            &mut rendering,
+            |_| Err::<u8, _>("draw".to_owned()),
+            || Ok::<_, String>(9),
+            |_| panic!("no switch from pixman"),
+        );
+        assert_eq!(result, Err("draw".to_owned()));
+    }
+
+    #[test]
+    fn failed_fall_back_keeps_the_gpu_renderer() {
+        let mut rendering: Rendering<u8, u8> = Rendering::Gles(1);
+        assert_eq!(rendering.fall_back(|| Err::<u8, _>("no")), Err("no"));
+        assert!(matches!(rendering, Rendering::Gles(1)));
+    }
+
+    #[test]
+    fn mismatch_is_reported_only_when_no_format_matches() {
+        let renderer = FormatSet::from_iter([Format {
+            code: Fourcc::Xrgb8888,
+            modifier: Modifier::Invalid,
+        }]);
+        let plane = FormatSet::from_iter([Format {
+            code: Fourcc::Xrgb8888,
+            modifier: Modifier::Linear,
+        }]);
+        assert!(tehuti::rendering::scanout_mismatch(&renderer, &plane).is_some());
+        assert!(tehuti::rendering::scanout_mismatch(&renderer, &renderer).is_none());
+    }
+
+    #[test]
     fn gpu_success_never_initializes_pixman() {
         let software_called = Cell::new(false);
         let selected = initialize(

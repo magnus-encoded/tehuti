@@ -61,7 +61,21 @@ pub struct State {
     sticks: stick_actions::StickActions,
     /// Characters of the last dictated phrase, while nothing else was typed after it.
     dictated: Option<usize>,
+    /// The button whose undo press is still held, so it repeats Backspace.
+    undo_hold: Option<UndoHold>,
 }
+
+/// A held undo button: how long it has been down and when its next Backspace is due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UndoHold {
+    button: ButtonName,
+    level: Level,
+    held: core::time::Duration,
+    next: core::time::Duration,
+}
+
+/// Most Backspaces one tick may owe, so a stalled clock cannot flood the focused window.
+const MAX_REPEATS_PER_TICK: usize = 64;
 
 impl State {
     /// Expands undo into backspaces and remembers what a spoken phrase typed, until anything else is typed.
@@ -99,6 +113,64 @@ impl State {
             }
         }
         tracked
+    }
+
+    /// Starts, ends and advances the Backspace repeat of a held undo button.
+    fn repeat_undo(&mut self, event: &Event, undone: bool) -> Vec<Action> {
+        if self.menu.is_some() || self.undo_hold.is_some_and(|hold| hold.level != self.level) {
+            self.undo_hold = None;
+        }
+        match event {
+            Event::Button {
+                name,
+                state: ButtonState::Pressed,
+            } if undone => {
+                self.undo_hold = Some(UndoHold {
+                    button: *name,
+                    level: self.level,
+                    held: core::time::Duration::ZERO,
+                    next: self.keyboard_repeat().delay(),
+                });
+            }
+            Event::Button {
+                name,
+                state: ButtonState::Released,
+            } => {
+                if self.undo_hold.is_some_and(|hold| hold.button == *name) {
+                    self.undo_hold = None;
+                }
+            }
+            Event::Focus { .. } => self.undo_hold = None,
+            Event::Tick { elapsed } => {
+                let repeat = self.keyboard_repeat();
+                let delay = repeat.delay();
+                let Some(hold) = &mut self.undo_hold else {
+                    return Vec::new();
+                };
+                hold.held = hold.held.saturating_add(*elapsed);
+                let mut due = 0;
+                while hold.held >= hold.next && due < MAX_REPEATS_PER_TICK {
+                    due = due.saturating_add(1);
+                    hold.next = hold
+                        .next
+                        .saturating_add(repeat.interval(hold.next.saturating_sub(delay)));
+                }
+                if hold.held >= hold.next {
+                    // A stalled clock owes more than the cap: drop the backlog.
+                    hold.next = hold
+                        .held
+                        .saturating_add(repeat.interval(hold.held.saturating_sub(delay)));
+                }
+                return (0..due)
+                    .map(|_| Action::Key {
+                        key: KeyName::Backspace,
+                        mods: Vec::new(),
+                    })
+                    .collect();
+            }
+            Event::Button { .. } | Event::Speech { .. } => {}
+        }
+        Vec::new()
     }
 
     pub fn set_menu_entries(&mut self, entries: Vec<String>) {
@@ -194,6 +266,7 @@ impl State {
             plugin_invoke_words: Vec::new(),
             sticks: stick_actions::StickActions::default(),
             dictated: None,
+            undo_hold: None,
         };
         state.refresh_ticker();
         state.refresh_labels();
@@ -327,6 +400,7 @@ impl State {
     /// Swaps the contexts and keeps focus, held buttons and pending plugin decisions.
     pub fn replace_contexts(&mut self, contexts: Vec<Context>) {
         self.contexts = contexts;
+        self.undo_hold = None;
         self.refresh_ticker();
         self.refresh_labels();
     }
@@ -470,6 +544,7 @@ impl State {
 
     /// Cancels controller holds when the device disconnects or the seat pauses.
     pub fn controller_disconnected(&mut self) {
+        self.undo_hold = None;
         self.guide_held = None;
         self.guide_tap = None;
         self.start_held = false;
@@ -511,6 +586,9 @@ impl State {
     pub fn push_to_talk(&self, button: ButtonName) -> bool {
         if let Some(binding) = self.controller_talk {
             return binding == button;
+        }
+        if let Some(own) = focused_context(self).and_then(Context::own_push_to_talk) {
+            return own.contains(&button);
         }
         global_context(self).map_or(button == ButtonName::Record, |context| {
             context.push_to_talk(button)
@@ -572,7 +650,9 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     if let Some(release) = released {
         actions.insert(0, release);
     }
+    let undone = actions.contains(&Action::UndoDictation);
     actions = next.track_dictation(event, actions);
+    actions.extend(next.repeat_undo(event, undone));
     if matches!(event, Event::Focus { .. }) {
         next.bar.event(event);
     }
