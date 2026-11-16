@@ -1345,7 +1345,9 @@ impl DpadHat {
                 };
             }
             (PadFamily::Remote | PadFamily::RemotePaired, KeyCode::KEY_NEXT) => return KeyCode::KEY_RECORD,
-            (PadFamily::Remote | PadFamily::RemotePaired, KeyCode::KEY_PREVIOUS) => return KeyCode::BTN_SELECT,
+            (PadFamily::Remote | PadFamily::RemotePaired, KeyCode::KEY_PREVIOUS) => {
+                return KeyCode::BTN_SELECT;
+            }
             (PadFamily::Remote, KeyCode::BTN_1) => return KeyCode::BTN_SOUTH,
             (PadFamily::Remote, KeyCode::BTN_2) => return KeyCode::BTN_EAST,
             (PadFamily::Remote, KeyCode::BTN_SOUTH) => return KeyCode::BTN_NORTH,
