@@ -160,12 +160,14 @@ impl Table {
             .flat_map(|output| &output.workspaces)
             .enumerate()
         {
+            let number = index.saturating_add(1).to_string();
+            let (name, extra_names) = match workspace.name.clone() {
+                Some(name) => (name, Vec::new()),
+                None => (format!("Workspace {number}"), vec![number]),
+            };
             self.insert(Destination {
-                name: workspace
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| index.saturating_add(1).to_string()),
-                extra_names: Vec::new(),
+                name,
+                extra_names,
                 routes: vec![route("desktop", Target::Workspace(workspace.workspace.0))],
                 source: Source::Workspace,
                 settings: false,
