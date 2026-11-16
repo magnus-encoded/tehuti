@@ -83,3 +83,70 @@ pub fn is_busy(error: &(dyn core::error::Error + 'static)) -> bool {
     }
     false
 }
+
+/// Holders Tehuti may close: never itself and never the init process.
+#[must_use]
+pub fn closable(holders: &[Holder], own_pid: u32) -> Vec<Holder> {
+    holders
+        .iter()
+        .filter(|holder| holder.pid != own_pid && holder.pid != 1)
+        .cloned()
+        .collect()
+}
+
+/// The holders whose `/proc` entry belongs to `uid`; others cannot be signalled anyway.
+#[must_use]
+pub fn owned_by(proc_root: &Path, holders: &[Holder], uid: u32) -> Vec<Holder> {
+    use std::os::unix::fs::MetadataExt;
+    holders
+        .iter()
+        .filter(|holder| {
+            std::fs::metadata(proc_root.join(holder.pid.to_string())).is_ok_and(|entry| entry.uid() == uid)
+        })
+        .cloned()
+        .collect()
+}
+
+/// What closing the holders did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Closed {
+    pub closed: Vec<Holder>,
+    pub failed: Vec<(Holder, String)>,
+}
+
+/// Asks each closable holder to end through `send`, collecting what happened.
+pub fn close(holders: &[Holder], own_pid: u32, mut send: impl FnMut(u32) -> std::io::Result<()>) -> Closed {
+    let mut outcome = Closed::default();
+    for holder in closable(holders, own_pid) {
+        match send(holder.pid) {
+            Ok(()) => outcome.closed.push(holder),
+            Err(error) => outcome.failed.push((holder, error.to_string())),
+        }
+    }
+    outcome
+}
+
+/// The notice for a session about to leave while `holders` could take the card.
+#[must_use]
+pub fn warning(holders: &[Holder]) -> Option<String> {
+    if holders.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = holders
+        .iter()
+        .map(|holder| format!("{} (pid {})", holder.command, holder.pid))
+        .collect();
+    Some(format!("STILL HOLDING THE DISPLAY: {}", names.join(", ")))
+}
+
+/// Asks `pid` to end with SIGTERM, which the program may handle or ignore.
+///
+/// # Errors
+/// The pid is invalid or the signal was refused.
+pub fn terminate(pid: u32) -> std::io::Result<()> {
+    let pid = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid process id"))?;
+    rustix::process::kill_process(pid, rustix::process::Signal::TERM).map_err(std::io::Error::from)
+}

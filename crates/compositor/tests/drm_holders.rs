@@ -88,3 +88,85 @@ mod holders {
         assert!(!is_busy(&other));
     }
 }
+
+#[cfg(test)]
+mod closing {
+    use tehuti::drm_holders::{Closed, Holder, closable, close, warning};
+
+    fn holder(pid: u32, command: &str) -> Holder {
+        Holder {
+            pid,
+            command: command.into(),
+        }
+    }
+
+    #[test]
+    fn tehuti_and_init_are_never_closable() {
+        let holders = [holder(1, "init"), holder(50, "self"), holder(900, "player")];
+        assert_eq!(closable(&holders, 50), vec![holder(900, "player")]);
+    }
+
+    #[test]
+    fn closing_signals_each_closable_holder_once_and_reports_failures() {
+        let holders = [holder(50, "self"), holder(300, "kept"), holder(900, "player")];
+        let mut signalled = Vec::new();
+        let closed = close(&holders, 50, |pid| {
+            signalled.push(pid);
+            if pid == 300 {
+                Err(std::io::Error::from_raw_os_error(1))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(signalled, [300, 900]);
+        assert_eq!(closed.closed, vec![holder(900, "player")]);
+        assert_eq!(closed.failed.len(), 1);
+        assert_eq!(closed.failed[0].0, holder(300, "kept"));
+        assert_eq!(close(&[], 50, |_| panic!("nothing to close")), Closed::default());
+    }
+
+    #[test]
+    fn the_handoff_warning_names_each_holder_and_is_silent_without_any() {
+        assert_eq!(warning(&[]), None);
+        let text = warning(&[holder(900, "player"), holder(12, "clock")]).unwrap();
+        assert!(text.contains("player") && text.contains("900"), "{text}");
+        assert!(text.contains("clock") && text.contains("12"), "{text}");
+    }
+
+    #[test]
+    fn terminate_ends_a_program_that_handles_the_signal_by_default() {
+        let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        tehuti::drm_holders::terminate(child.id()).unwrap();
+        let status = child.wait().unwrap();
+        assert!(!status.success());
+        assert!(tehuti::drm_holders::terminate(0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod ownership {
+    use std::os::unix::fs::MetadataExt;
+    use tehuti::drm_holders::{Holder, owned_by};
+
+    #[test]
+    fn only_holders_of_the_given_user_remain() {
+        let proc_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(proc_root.path().join("900")).unwrap();
+        let mine = std::fs::metadata(proc_root.path().join("900")).unwrap().uid();
+        let holders = [
+            Holder {
+                pid: 900,
+                command: "player".into(),
+            },
+            Holder {
+                pid: 901,
+                command: "gone".into(),
+            },
+        ];
+        assert_eq!(
+            owned_by(proc_root.path(), &holders, mine),
+            vec![holders[0].clone()]
+        );
+        assert_eq!(owned_by(proc_root.path(), &holders, mine + 1), vec![]);
+    }
+}

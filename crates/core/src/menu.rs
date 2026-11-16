@@ -12,6 +12,7 @@ pub enum Command {
     ShutDown,
     TaskMonitor,
     Settings,
+    CloseHolder,
     Screenshot,
     StartRecording,
     StopRecording,
@@ -39,6 +40,7 @@ impl Command {
             Self::ShutDown => ("shut_down", "SHUT DOWN"),
             Self::TaskMonitor => ("task_monitor", "TASK MONITOR"),
             Self::Settings => ("settings", "SETTINGS"),
+            Self::CloseHolder => ("close_holder", "CLOSE DISPLAY HOLDER"),
             Self::Screenshot => ("screenshot", "SCREENSHOT"),
             Self::StartRecording => ("start_recording", "START RECORDING"),
             Self::ToggleRecording => ("toggle_recording", "START RECORDING"),
@@ -48,7 +50,7 @@ impl Command {
     }
 }
 
-pub const ITEMS: [Command; 9] = [
+pub const ITEMS: [Command; 10] = [
     Command::LogOut,
     Command::Restart,
     Command::Plasma,
@@ -56,6 +58,7 @@ pub const ITEMS: [Command; 9] = [
     Command::ShutDown,
     Command::TaskMonitor,
     Command::Settings,
+    Command::CloseHolder,
     Command::Screenshot,
     Command::ToggleRecording,
 ];

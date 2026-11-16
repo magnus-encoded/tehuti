@@ -384,13 +384,17 @@ fn create_output_reporting_busy(
     compositor: &mut Compositor,
 ) -> Result<(Tty, smithay::backend::drm::DrmDeviceNotifier), Box<dyn Error>> {
     match create_output(session, &path, display, compositor) {
+        Ok(created) => {
+            compositor.set_display_holders("/proc".into(), path);
+            Ok(created)
+        }
         Err(error) if tehuti::drm_holders::is_busy(&*error) => {
             Err(Box::new(tehuti::drm_holders::DeviceBusy {
                 holders: tehuti::drm_holders::find(std::path::Path::new("/proc"), &path),
                 device: path,
             }))
         }
-        other => other,
+        Err(error) => Err(error),
     }
 }
 
