@@ -2320,7 +2320,10 @@ mod layout_laws {
             Step::Run(Command::ToggleFullscreen),
         ])?;
         let before = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
-        let window = world.open_with(WindowRules { open_focused: Some(false), ..WindowRules::default() })?;
+        let window = world.open_with(WindowRules {
+            open_focused: Some(false),
+            ..WindowRules::default()
+        })?;
         world.close(window)?;
         let after = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
         assert_eq!(before, after);
