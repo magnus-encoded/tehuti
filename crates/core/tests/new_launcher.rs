@@ -9,7 +9,7 @@ mod new_launcher {
     };
     use tehuti_protocol::{Action, Event, KeyName, Text, parse_context};
 
-    fn drive(mut state: State, event: Event) -> (State, Vec<Effect>) {
+    fn drive(mut state: State, event: Event, plugin: bool) -> (State, Vec<Effect>) {
         let mut input = Input::Event {
             event,
             elapsed: Duration::ZERO,
@@ -21,7 +21,7 @@ mod new_launcher {
             input = Input::Resume;
             for effect in effects {
                 if matches!(effect, Effect::QueryPlugin(_)) {
-                    input = Input::PluginActive(false);
+                    input = Input::PluginActive(plugin);
                 } else if matches!(effect, Effect::DispatchPlugin { .. }) {
                     input = Input::PluginRequest(None);
                 } else if effect == Effect::ReadClock {
@@ -52,18 +52,45 @@ mod new_launcher {
                 app_id: focus.map(Into::into),
                 title: String::new(),
             },
+            false,
         )
         .0
     }
 
     fn say(state: State, phrase: &str) -> Vec<Effect> {
+        say_with(state, phrase, false)
+    }
+
+    fn say_with(state: State, phrase: &str, plugin: bool) -> Vec<Effect> {
         drive(
             state,
             Event::Speech {
                 text: Text::new(phrase.into()).unwrap(),
             },
+            plugin,
         )
         .1
+    }
+
+    #[test]
+    fn a_plugin_that_handles_speech_keeps_new_tab() {
+        let effects = say_with(world(&[], None), "new tab", true);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::OpenLauncher(_))),
+            "{effects:?}"
+        );
+        assert!(
+            effects.iter().any(|effect| matches!(
+                effect,
+                Effect::DispatchPlugin {
+                    event: Event::Speech { .. },
+                    ..
+                }
+            )),
+            "{effects:?}"
+        );
     }
 
     fn creation(query: &str) -> Effect {
