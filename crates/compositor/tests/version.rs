@@ -32,13 +32,18 @@ mod version {
             assert!(output.stderr.is_empty(), "{output:?}");
             let text = String::from_utf8(output.stdout).unwrap();
             assert_eq!(
-                text,
+                text.lines().next().unwrap(),
                 format!(
-                    "tehuti {} ({} {})\n",
+                    "tehuti {} ({} {})",
                     option_env!("TEHUTI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
                     env!("TEHUTI_GIT_HASH"),
                     env!("TEHUTI_BUILD_DATE")
                 )
+            );
+            assert!(text.contains("session: unknown"), "{text}");
+            assert!(
+                text.contains("drm holders:") && text.contains("sockets:"),
+                "{text}"
             );
             let hash = env!("TEHUTI_GIT_HASH");
             assert!(hash == "unknown" || hash.len() >= 9);

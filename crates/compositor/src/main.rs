@@ -160,6 +160,16 @@ fn print_version() -> Result<ExitCode, Box<dyn Error>> {
             env!("TEHUTI_BUILD_DATE")
         )
     )?;
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty());
+    writeln!(
+        std::io::stdout().lock(),
+        "{}",
+        tehuti::status::gather(
+            runtime.as_deref().map(std::path::Path::new),
+            std::path::Path::new("/proc"),
+            std::path::Path::new("/dev/dri"),
+        )
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -256,6 +266,8 @@ fn insert_backend(
 /// Exit codes for a start refused before any session setup.
 const EXIT_USAGE: u8 = 2;
 const EXIT_ALREADY_RUNNING: u8 = 3;
+/// Another process holds the DRM device; restarting cannot help until it is closed.
+const EXIT_DEVICE_BUSY: u8 = 4;
 
 fn print_usage() -> Result<ExitCode, Box<dyn Error>> {
     use std::io::Write;
@@ -314,7 +326,13 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             return refuse(&error, code);
         }
     };
-    start_session(&context_directory, program, application, headless, backend)
+    match start_session(&context_directory, program, application, headless, backend) {
+        Err(error) if error.is::<tehuti::drm_holders::DeviceBusy>() => {
+            error!("{error}");
+            refuse(&error, EXIT_DEVICE_BUSY)
+        }
+        result => result,
+    }
 }
 
 #[expect(clippy::too_many_lines, reason = "speech spawn stays in startup")]

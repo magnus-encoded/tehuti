@@ -13,7 +13,7 @@ use smithay::{
         session::{Event, Session, libseat::LibSeatSession},
         udev::{UdevBackend, primary_gpu},
     },
-    output::{Output, PhysicalProperties, Subpixel},
+    output::Output,
     reexports::{
         calloop::{EventLoop, RegistrationToken},
         drm::control::{Device, Mode, ModeTypeFlags, connector, framebuffer},
@@ -122,7 +122,7 @@ pub(crate) fn insert(
     let path = primary_gpu(session.seat())?
         .or_else(|| udev.device_list().next().map(|(_, path)| path.to_owned()))
         .ok_or("no DRM device on seat")?;
-    let (initialized_tty, drm_notifier) = create_output(session, &path, display, compositor)?;
+    let (initialized_tty, drm_notifier) = create_output_reporting_busy(session, path, display, compositor)?;
     let tty = Rc::new(RefCell::new(initialized_tty));
     let seat_token = insert_seat(event_loop, notifier, &tty)?;
     let keyboard_token = insert_keyboard(event_loop, &tty)?;
@@ -364,30 +364,34 @@ fn insert_seat(
 }
 
 /// The DRM output at its mode and `TEHUTI_SCALE`, advertised to clients.
-fn drm_output(display: &DisplayHandle, mode: Mode) -> (Output, GlobalId) {
-    let output = Output::new(
-        "tehuti-drm".into(),
-        PhysicalProperties {
-            size: (0, 0).into(),
-            subpixel: Subpixel::Unknown,
-            make: "Tehuti".into(),
-            model: "DRM".into(),
-        },
-    );
-    let global = output.create_global::<Compositor>(display);
-    output.change_current_state(
-        Some(mode.into()),
-        Some(Transform::Normal),
-        None,
-        Some((0, 0).into()),
-    );
-    tehuti::scale::apply(
-        &output,
+fn drm_output(
+    display: &DisplayHandle,
+    previous: Option<(Output, GlobalId)>,
+    mode: Mode,
+) -> (Output, GlobalId) {
+    tehuti::drm_hotplug::publish_output(
+        display,
+        previous,
         mode.into(),
         tehuti::scale::from_env(i32::from(mode.size().0)),
-    );
-    output.set_preferred(mode.into());
-    (output, global)
+    )
+}
+
+fn create_output_reporting_busy(
+    session: LibSeatSession,
+    path: std::path::PathBuf,
+    display: &DisplayHandle,
+    compositor: &mut Compositor,
+) -> Result<(Tty, smithay::backend::drm::DrmDeviceNotifier), Box<dyn Error>> {
+    match create_output(session, &path, display, compositor) {
+        Err(error) if tehuti::drm_holders::is_busy(&*error) => {
+            Err(Box::new(tehuti::drm_holders::DeviceBusy {
+                holders: tehuti::drm_holders::find(std::path::Path::new("/proc"), &path),
+                device: path,
+            }))
+        }
+        other => other,
+    }
 }
 
 fn create_output(
@@ -409,7 +413,7 @@ fn create_output(
     advertise(&mut renderer, display, compositor);
     let mode = surface.pending_mode();
 
-    let (output, global) = drm_output(display, mode);
+    let (output, global) = drm_output(display, None, mode);
     compositor.space.map_output(&output, (0, 0));
     compositor.output = Some(output.clone());
     compositor.configure_display_modes(
@@ -538,13 +542,11 @@ impl Tty {
         if let Err(error) = self.device.reset_state() {
             warn!(%error, "DRM state reset failed during connector rescan");
         }
-        if let Some(scanout) = self.scanout.take() {
+        // The global stays advertised across the rescan: clients (the X11 helper) must not see it go.
+        let previous = self.scanout.take().map(|scanout| {
             data.compositor.space.unmap_output(&scanout.output);
-            data.display
-                .handle()
-                .remove_global::<Compositor>(scanout.global.clone());
-            drop(scanout);
-        }
+            (scanout.output.clone(), scanout.global)
+        });
         data.compositor.output = None;
         data.compositor.configure_display_modes(Vec::new(), 0);
         match connected_surface(&mut self.device) {
@@ -556,7 +558,7 @@ impl Tty {
             }) => {
                 advertise(&mut renderer, &data.display.handle(), &mut data.compositor);
                 let mode = surface.pending_mode();
-                let (output, global) = drm_output(&data.display.handle(), mode);
+                let (output, global) = drm_output(&data.display.handle(), previous, mode);
                 data.compositor.space.map_output(&output, (0, 0));
                 data.compositor.output = Some(output.clone());
                 data.compositor.configure_display_modes(
@@ -577,6 +579,9 @@ impl Tty {
                 ));
             }
             Err(error) => {
+                if let Some((_, global)) = previous {
+                    data.display.handle().remove_global::<Compositor>(global);
+                }
                 warn!(%error, "DRM connector rescan found no usable output; waiting for a device change");
             }
         }
