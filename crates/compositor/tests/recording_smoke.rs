@@ -28,7 +28,9 @@ fn a_real_ffmpeg_take_has_moving_frames_wall_length_and_a_stop_line() {
         return;
     }
     let (Some(ffmpeg), Some(ffprobe)) = (find("ffmpeg"), find("ffprobe")) else {
-        eprintln!("SKIPPED: ffmpeg or ffprobe is not on PATH; install the ffmpeg package to run this smoke test");
+        eprintln!(
+            "SKIPPED: ffmpeg or ffprobe is not on PATH; install the ffmpeg package to run this smoke test"
+        );
         return;
     };
     let Some(python) = find("python3") else {
@@ -110,7 +112,9 @@ fn record_in_probe() {
     }
     let notice = compositor.visible_notice_text();
     assert!(
-        notice.as_ref().is_some_and(|text| text.starts_with("RECORDING SAVED:")),
+        notice
+            .as_ref()
+            .is_some_and(|text| text.starts_with("RECORDING SAVED:")),
         "notice: {notice:?}"
     );
 }
@@ -124,7 +128,11 @@ fn check_take(folder: &Path, ffmpeg: &Path, ffprobe: &Path) {
         .args(["-map", "0:v:0", "-f", "framemd5", "-"])
         .output()
         .unwrap();
-    assert!(hashes.status.success(), "{}", String::from_utf8_lossy(&hashes.stderr));
+    assert!(
+        hashes.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hashes.stderr)
+    );
     let text = String::from_utf8_lossy(&hashes.stdout);
     let frames: Vec<&str> = text
         .lines()
@@ -141,16 +149,28 @@ fn check_take(folder: &Path, ffmpeg: &Path, ffprobe: &Path) {
     );
     // 2. The media length is close to the wall time of the take.
     let timeline = std::fs::read_to_string(folder.join("timeline.jsonl")).unwrap();
-    let last: serde_json::Value = serde_json::from_str(timeline.lines().last().expect("timeline is empty")).unwrap();
+    let last: serde_json::Value =
+        serde_json::from_str(timeline.lines().last().expect("timeline is empty")).unwrap();
     // 3. The timeline ends with a stop line.
     assert_eq!(last["kind"], "stop", "timeline must end with a stop line: {last}");
     let wall = Duration::from_millis(last["time_ms"].as_u64().unwrap());
     let probe = Command::new(ffprobe)
-        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
         .arg(&video)
         .output()
         .unwrap();
-    assert!(probe.status.success(), "{}", String::from_utf8_lossy(&probe.stderr));
+    assert!(
+        probe.status.success(),
+        "{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
     let media = Duration::from_secs_f64(String::from_utf8_lossy(&probe.stdout).trim().parse().unwrap());
     assert!(wall >= Duration::from_millis(3500), "take too short: {wall:?}");
     assert!(
