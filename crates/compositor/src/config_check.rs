@@ -209,11 +209,7 @@ fn report_unreachable_speech(
             report.push(
                 path,
                 Severity::Warning,
-                format!(
-                    "[speech] {:?} never fires: {}",
-                    mapping.phrase,
-                    reason
-                ),
+                format!("[speech] {:?} never fires: {reason}", mapping.phrase),
             );
         }
     }
