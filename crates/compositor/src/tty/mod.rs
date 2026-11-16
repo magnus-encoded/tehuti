@@ -27,6 +27,8 @@ use tracing::{info, trace, warn};
 
 struct Tty {
     keyboard: tehuti::backend::EscapeKeyboard,
+    /// Whether a key arrived since the last device removal, so the first one after a re-attach is logged.
+    keyboard_seen: bool,
     libinput: smithay::reexports::input::Libinput,
     scanout: Option<Scanout>,
     device: DrmDevice,
@@ -260,7 +262,14 @@ fn insert_keyboard(
             if !data.seat_active {
                 return;
             }
+            if let InputEvent::DeviceAdded { device } = &event {
+                info!(name = %smithay::backend::input::Device::name(device), "input device added");
+            }
             if let InputEvent::Keyboard { event } = event {
+                if !keyboard_tty.borrow().keyboard_seen {
+                    info!("keyboard input resumed");
+                    keyboard_tty.borrow_mut().keyboard_seen = true;
+                }
                 let key = u32::from(event.key_code()).saturating_sub(8);
                 let escape = keyboard_tty
                     .borrow_mut()
@@ -282,7 +291,9 @@ fn insert_keyboard(
                         data.pacing.input_arrived = true;
                     }
                 }
-            } else if matches!(event, InputEvent::DeviceRemoved { .. }) {
+            } else if let InputEvent::DeviceRemoved { device } = &event {
+                info!(name = %smithay::backend::input::Device::name(device), "input device removed");
+                keyboard_tty.borrow_mut().keyboard_seen = false;
                 keyboard_tty.borrow_mut().keyboard = tehuti::backend::EscapeKeyboard::default();
                 data.compositor.release_host_keys();
             } else {
@@ -413,6 +424,7 @@ fn create_output(
     let scanout = Scanout::new(surface, renderer, remaining_modes, listed_modes, output, global);
     let tty = Tty {
         keyboard: tehuti::backend::EscapeKeyboard::default(),
+        keyboard_seen: false,
         libinput,
         scanout: Some(scanout),
         device,
