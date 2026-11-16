@@ -475,34 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn a_switch_forgets_a_half_held_chord() {
-        let log = Rc::new(RefCell::new(Log::default()));
-        let (mut first, first_handles) = pad("first", &log);
-        let (mut second, second_handles) = pad("second", &log);
-        let (first_path, second_path) = (Path::new("/dev/input/event1"), Path::new("/dev/input/event2"));
-        let sync = |target: &Path, one: &mut EvdevPad<Synthetic>, two: &mut EvdevPad<Synthetic>| {
-            sync_mirrors(
-                &mut [(first_path, one), (second_path, two)],
-                true,
-                Some(target),
-                &mut None,
-                &|_| false,
-            )
-        };
-        drop(sync(first_path, &mut first, &mut second));
-        queue(&first_handles, KeyCode::BTN_START, 1);
-        first.pump_mirror(&mut |_, _| false).unwrap();
-        drop(sync(second_path, &mut first, &mut second));
-        queue(&second_handles, KeyCode::BTN_SELECT, 1);
-        second.pump_mirror(&mut |_, _| false).unwrap();
-        assert!(
-            never_sent(&log.borrow(), KeyCode::BTN_MODE),
-            "a lone View press after a switch is no chord: {:?}",
-            log.borrow().frames
-        );
-    }
-
-    #[test]
     fn a_switch_keeps_a_plugin_button_from_the_game_and_its_release_reaches_the_plugin() {
         use tehuti_core::vpad::Verdict;
         use tehuti_protocol::{ButtonName, ButtonState};

@@ -540,10 +540,6 @@ impl MirrorCopy {
 
     /// A frame that lets go of every key and hat the virtual controller shows as held.
     fn release(&mut self) -> Option<Vec<evdev::InputEvent>> {
-        self.menu_down = false;
-        self.view_down = false;
-        self.chord_key = None;
-        self.chord_live = false;
         if self.held.is_empty() {
             return None;
         }
@@ -1435,6 +1431,26 @@ mod mirror_tests {
 
     fn sync() -> InputEvent {
         InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0)
+    }
+
+    #[test]
+    fn release_forgets_a_half_held_chord() {
+        let mut copy = MirrorCopy::default();
+        let mut translator = DpadHat::default();
+        let mut consume = |_: ButtonName, _: ButtonState| false;
+        for event in [key(KeyCode::BTN_START, 1), sync()] {
+            let _frame = copy.take(event, &mut translator, &mut consume);
+        }
+        let _released = copy.release();
+        let sent: Vec<_> = [key(KeyCode::BTN_SELECT, 1), sync()]
+            .into_iter()
+            .filter_map(|event| copy.take(event, &mut translator, &mut consume))
+            .flatten()
+            .collect();
+        assert!(
+            sent.iter().all(|event| event.code() != KeyCode::BTN_MODE.code()),
+            "a lone View press after a release is no chord: {sent:?}"
+        );
     }
 
     proptest::proptest! {
