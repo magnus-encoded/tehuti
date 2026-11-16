@@ -17,11 +17,10 @@ impl MenuWatch {
     ///
     /// Fails when inotify is unavailable or the directory cannot be watched.
     pub fn insert<D: 'static>(
-        handle: &LoopHandle<'static, D>,
-        path: &Path,
-        watch: fn(&mut D) -> Option<&mut Self>,
+        _handle: &LoopHandle<'static, D>,
+        _path: &Path,
+        _watch: fn(&mut D) -> Option<&mut Self>,
     ) -> Result<Self, Box<dyn core::error::Error>> {
-        let _unused = (handle, path, watch);
         Ok(Self {
             debounce: Debounce::default(),
         })

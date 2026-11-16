@@ -451,9 +451,7 @@ impl Compositor {
     }
 
     /// Replaces the system menu with a freshly loaded config; a failed load keeps the old menu.
-    pub fn reload_menu_config(&mut self, loaded: std::io::Result<crate::system_menu::Config>) {
-        let _unused = loaded;
-    }
+    pub fn reload_menu_config(&mut self, _loaded: std::io::Result<crate::system_menu::Config>) {}
 
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {
