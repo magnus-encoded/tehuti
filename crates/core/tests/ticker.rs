@@ -90,6 +90,15 @@ right_stick = { ticker = "toggle" }
     }
 
     #[test]
+    fn a_bound_paddle_shows_in_the_ticker_on_every_pad() {
+        let contexts = contexts(&["app_id = 'editor'\n[buttons]\npaddle_2 = { key = 'x' }"]);
+        for family in [PadFamily::Letters, PadFamily::Symbols, PadFamily::Nintendo] {
+            let shown = texts(&ticker::entries(&contexts, Some("editor"), family, Level::App));
+            assert!(shown.contains(&"P2 -> [X]".to_owned()), "{shown:?}");
+        }
+    }
+
+    #[test]
     fn buttons_use_the_pads_names_and_fall_back_to_the_global_context() {
         let contexts = contexts(&[GLOBAL, GAME]);
         assert_eq!(

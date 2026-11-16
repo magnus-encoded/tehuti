@@ -259,6 +259,10 @@ pub fn handle(menu: &mut Option<Menu>, event: &Event) -> Option<Command> {
         | ButtonName::Start
         | ButtonName::LeftStick
         | ButtonName::RightStick
+        | ButtonName::Paddle1
+        | ButtonName::Paddle2
+        | ButtonName::Paddle3
+        | ButtonName::Paddle4
         | ButtonName::DpadLeft
         | ButtonName::DpadRight => {}
     }

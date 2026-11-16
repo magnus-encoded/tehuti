@@ -687,7 +687,7 @@ proptest! {
             prop_assert_eq!(&world.trace, &normal.trace, "other buttons keep normal plugin and mapping routing");
         }
         let clicks: Vec<_> = world.trace.into_iter().filter(|effect| matches!(effect, Effect::Click { .. })).collect();
-        let button = match name { ButtonName::South => Some(PointerButton::Left), ButtonName::East => Some(PointerButton::Right), ButtonName::North | ButtonName::West | ButtonName::LeftBumper | ButtonName::RightBumper | ButtonName::LeftTrigger | ButtonName::RightTrigger | ButtonName::Select | ButtonName::Record | ButtonName::Start | ButtonName::Guide | ButtonName::LeftStick | ButtonName::RightStick | ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight => None };
+        let button = if name == ButtonName::South { Some(PointerButton::Left) } else if name == ButtonName::East { Some(PointerButton::Right) } else { None };
         let expected = button.map_or_else(Vec::new, |button| vec![Effect::Click { button, pressed: true }, Effect::Click { button, pressed: false }]);
         prop_assert_eq!(clicks, expected);
     }
@@ -2674,6 +2674,31 @@ fn controller_ptt_uses_global_buttons_and_defaults_to_share() {
             })),
             !talks
         );
+    }
+}
+
+#[test]
+fn a_paddle_named_by_string_talks_when_configured() {
+    for (setting, label, talks) in [
+        ("push_to_talk = ['paddle_1']", "paddle_1", true),
+        ("push_to_talk = ['paddle_4']", "paddle_4", true),
+        ("push_to_talk = ['paddle_4']", "paddle_1", false),
+    ] {
+        let name: ButtonName = toml::Value::String(label.into()).try_into().unwrap();
+        let context = tehuti_protocol::parse_context(&format!(
+            "app_id = '*'\n{setting}\n[buttons]\npaddle_1 = {{ key = 'enter' }}\npaddle_4 = {{ key = 'enter' }}"
+        ))
+        .unwrap();
+        let mut world = World::default();
+        let state = State::new(crate::State::with_contexts(vec![context]));
+        let state = world.run(state, Input::Speech(SpeechInput::Available));
+        let state = world.run(state, pad_button(name, ButtonState::Pressed));
+        let _state = world.run(state, pad_button(name, ButtonState::Released));
+        let started = world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SpeechCommand(SpeechEffect::Start { .. })));
+        assert_eq!(started, talks, "{setting}, {name:?}");
     }
 }
 

@@ -1450,6 +1450,12 @@ fn trigger_event(trigger: &mut Trigger, value: i32, name: ButtonName) -> Vec<Eve
         .collect()
 }
 
+/// Back paddles: `BTN_GRIPL`, `BTN_GRIPR`, `BTN_GRIPL2` and `BTN_GRIPR2` (0x224-0x227).
+const PADDLE_1: KeyCode = KeyCode::new(0x224);
+const PADDLE_2: KeyCode = KeyCode::new(0x225);
+const PADDLE_3: KeyCode = KeyCode::new(0x226);
+const PADDLE_4: KeyCode = KeyCode::new(0x227);
+
 /// Parses an evdev key event. Autorepeat (value 2) and unknown codes give `None`.
 const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
     let state = match value {
@@ -1474,6 +1480,10 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
         KeyCode::BTN_DPAD_DOWN => ButtonName::DpadDown,
         KeyCode::BTN_DPAD_LEFT => ButtonName::DpadLeft,
         KeyCode::BTN_DPAD_RIGHT => ButtonName::DpadRight,
+        PADDLE_1 => ButtonName::Paddle1,
+        PADDLE_2 => ButtonName::Paddle2,
+        PADDLE_3 => ButtonName::Paddle3,
+        PADDLE_4 => ButtonName::Paddle4,
         _ => return None,
     };
     Some(Event::Button { name, state })
@@ -2142,6 +2152,22 @@ mod remote_tests {
 
     fn press(hat: &mut DpadHat, code: KeyCode) -> Vec<Event> {
         hat.translate(&InputEvent::new(EventType::KEY.0, code.code(), 1).destructure())
+    }
+
+    #[test]
+    fn back_paddles_map_from_their_evdev_codes() {
+        for (code, expected) in [
+            (0x224, "Paddle1"),
+            (0x225, "Paddle2"),
+            (0x226, "Paddle3"),
+            (0x227, "Paddle4"),
+        ] {
+            assert_eq!(
+                format!("{:?}", super::parse_button(KeyCode::new(code), 1)),
+                format!("Some(Button {{ name: {expected}, state: Pressed }})"),
+                "{code:#x}"
+            );
+        }
     }
 
     #[test]

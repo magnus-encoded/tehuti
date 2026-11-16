@@ -314,7 +314,11 @@ impl Settings {
             | ButtonName::Start
             | ButtonName::Guide
             | ButtonName::LeftStick
-            | ButtonName::RightStick => {}
+            | ButtonName::RightStick
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4 => {}
         }
     }
 
@@ -375,6 +379,10 @@ impl Settings {
             | ButtonName::Guide
             | ButtonName::LeftStick
             | ButtonName::RightStick
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4
             | ButtonName::DpadDown
             | ButtonName::DpadRight => {}
         }
@@ -420,7 +428,11 @@ impl Settings {
             | ButtonName::Start
             | ButtonName::Guide
             | ButtonName::LeftStick
-            | ButtonName::RightStick => return,
+            | ButtonName::RightStick
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4 => return,
         };
         self.change_input(forward, effects);
     }
@@ -569,6 +581,10 @@ impl Settings {
             | ButtonName::Guide
             | ButtonName::LeftStick
             | ButtonName::RightStick
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4
             | ButtonName::DpadUp
             | ButtonName::DpadDown
             | ButtonName::DpadLeft

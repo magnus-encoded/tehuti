@@ -117,7 +117,7 @@ impl Piece {
 }
 
 /// The order buttons appear in; Guide is reserved for Tehuti and never listed.
-const BUTTONS: [ButtonName; 17] = [
+const BUTTONS: [ButtonName; 21] = [
     ButtonName::South,
     ButtonName::East,
     ButtonName::West,
@@ -135,6 +135,10 @@ const BUTTONS: [ButtonName; 17] = [
     ButtonName::Select,
     ButtonName::Start,
     ButtonName::Record,
+    ButtonName::Paddle1,
+    ButtonName::Paddle2,
+    ButtonName::Paddle3,
+    ButtonName::Paddle4,
 ];
 
 /// Recognisable actions and the icon each gets when its mapping names none.
@@ -541,6 +545,10 @@ const fn column_action(button: ButtonName) -> Option<Action> {
         | ButtonName::Guide
         | ButtonName::LeftStick
         | ButtonName::RightStick
+        | ButtonName::Paddle1
+        | ButtonName::Paddle2
+        | ButtonName::Paddle3
+        | ButtonName::Paddle4
         | ButtonName::DpadUp
         | ButtonName::DpadDown
         | ButtonName::DpadLeft
