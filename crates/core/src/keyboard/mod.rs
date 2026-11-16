@@ -42,10 +42,10 @@ impl Repeat {
     ) -> Self {
         let rate = rate.unwrap_or(REPEAT_RATE).max(1);
         Self {
-            delay: delay_ms.map_or(REPEAT_DELAY, |ms| Duration::from_millis(u64::from(ms))),
+            delay: delay_ms.map_or(REPEAT_DELAY, |millis| Duration::from_millis(u64::from(millis))),
             rate,
             max_rate: max_rate.unwrap_or(REPEAT_MAX_RATE).max(rate),
-            ramp: ramp_ms.map_or(REPEAT_RAMP, |ms| Duration::from_millis(u64::from(ms))),
+            ramp: ramp_ms.map_or(REPEAT_RAMP, |millis| Duration::from_millis(u64::from(millis))),
         }
     }
 
