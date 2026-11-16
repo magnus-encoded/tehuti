@@ -1328,6 +1328,10 @@ impl Layout {
             }
         }
         self.normalize();
+        if restoring_fullscreen {
+            // The saved view predates any width change made while fullscreen: keep the column on the output.
+            let _centred = self.reveal(output, None, false);
+        }
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         if (!restoring_fullscreen || self.must_center(output))
             && (command != Command::ExpandColumnToAvailableWidth
