@@ -59,7 +59,10 @@ mod shared_sections {
             find(&loaded, "kitty").unwrap().key_for(ButtonName::LeftBumper),
             Some(KeyName::Tab)
         );
-        assert_eq!(find(&loaded, "other").unwrap().key_for(ButtonName::LeftBumper), None);
+        assert_eq!(
+            find(&loaded, "other").unwrap().key_for(ButtonName::LeftBumper),
+            None
+        );
         assert_eq!(find(&loaded, "*").unwrap().key_for(ButtonName::LeftBumper), None);
     }
 
@@ -70,7 +73,10 @@ mod shared_sections {
         write(
             directory.path(),
             "kitty/context.toml",
-            &app("kitty", "include = ['tabs']\n[buttons.left_bumper]\nkey = 'escape'\n"),
+            &app(
+                "kitty",
+                "include = ['tabs']\n[buttons.left_bumper]\nkey = 'escape'\n",
+            ),
         );
         let loaded = contexts::load(directory.path());
         assert_eq!(
@@ -129,11 +135,21 @@ mod shared_sections {
         );
         write(&directory, "kitty/context.toml", &original);
         let output = share(&directory, &["kitty", "buttons.left_bumper", "--as", "tabs"]);
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let shared = std::fs::read_to_string(directory.join("shared/tabs.toml")).unwrap();
-        assert!(shared.contains("left_bumper") && shared.contains("tab"), "{shared}");
+        assert!(
+            shared.contains("left_bumper") && shared.contains("tab"),
+            "{shared}"
+        );
         let rewritten = std::fs::read_to_string(directory.join("kitty/context.toml")).unwrap();
-        assert!(rewritten.contains("include") && rewritten.contains("tabs"), "{rewritten}");
+        assert!(
+            rewritten.contains("include") && rewritten.contains("tabs"),
+            "{rewritten}"
+        );
         let backups: Vec<_> = std::fs::read_dir(directory.join("kitty"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -157,7 +173,11 @@ mod shared_sections {
             &app("kitty", "[buttons.left_bumper]\nkey = 'tab'\n"),
         );
         let output = share(&directory, &["kitty", "buttons.left_bumper"]);
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(directory.join("shared/left_bumper.toml").is_file());
     }
 
@@ -167,7 +187,11 @@ mod shared_sections {
         let directory = root.path().join("tehuti");
         let original = app("kitty", "[buttons.left_bumper]\nkey = 'tab'\n");
         write(&directory, "kitty/context.toml", &original);
-        write(&directory, "shared/tabs.toml", "[buttons.right_bumper]\nkey = 'enter'\n");
+        write(
+            &directory,
+            "shared/tabs.toml",
+            "[buttons.right_bumper]\nkey = 'enter'\n",
+        );
         let output = share(&directory, &["kitty", "buttons.left_bumper", "--as", "tabs"]);
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("--as"));
