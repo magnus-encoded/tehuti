@@ -27,6 +27,8 @@ use tracing::{info, trace, warn};
 
 struct Tty {
     keyboard: tehuti::backend::EscapeKeyboard,
+    /// Whether a key arrived since the last device removal, so the first one after a re-attach is logged.
+    keyboard_seen: bool,
     libinput: smithay::reexports::input::Libinput,
     scanout: Option<Scanout>,
     device: DrmDevice,
@@ -422,6 +424,7 @@ fn create_output(
     let scanout = Scanout::new(surface, renderer, remaining_modes, listed_modes, output, global);
     let tty = Tty {
         keyboard: tehuti::backend::EscapeKeyboard::default(),
+        keyboard_seen: false,
         libinput,
         scanout: Some(scanout),
         device,
