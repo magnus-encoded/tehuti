@@ -2,6 +2,19 @@
 # The full gate CI runs: format, lints, tests, prose rules.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [ "${1:-}" = --quick ]; then
+    # Pre-push floor: fmt plus clippy on crates changed against origin/main. Not a substitute for the full gate.
+    cargo fmt --all --check
+    args=
+    for dir in $(git diff --name-only origin/main...HEAD -- 'crates/*/*' | cut -d/ -f2 | sort -u); do
+        [ -f "crates/$dir/Cargo.toml" ] || continue
+        name=$(sed -n 's/^name *= *"\(.*\)"/\1/p' "crates/$dir/Cargo.toml" | head -n1)
+        args="$args -p $name"
+    done
+    # shellcheck disable=SC2086
+    [ -z "$args" ] || cargo clippy -j1 $args --all-targets --locked -- -D warnings
+    exit
+fi
 scripts/forbidden-paths
 scripts/test-forbidden-paths
 if [ -n "$(find crates -name Cargo.toml 2>/dev/null)" ]; then
@@ -17,4 +30,6 @@ scripts/test-install-release
 scripts/test-tehuti-update
 python3 -m unittest discover -s scripts -p 'test_*.py'
 scripts/test-session
+scripts/test-pr-body
+scripts/test-pre-push
 scripts/prose-lint
