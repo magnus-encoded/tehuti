@@ -163,7 +163,7 @@ mod step {
     fn snake_case(debug: &str) -> String {
         let mut name = String::new();
         for (index, letter) in debug.chars().enumerate() {
-            if index > 0 && letter.is_uppercase() {
+            if index > 0 && (letter.is_uppercase() || letter.is_ascii_digit()) {
                 name.push('_');
             }
             name.extend(letter.to_lowercase());
