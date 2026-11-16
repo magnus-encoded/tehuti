@@ -40,7 +40,10 @@ mod type_prefix {
     #[test]
     fn bare_key_types_nothing() {
         let actions = say(&[GLOBAL, APP], "terminal", "Type.");
-        assert!(matches!(actions.as_slice(), [Action::Notice { .. }]), "{actions:?}");
+        assert!(
+            matches!(actions.as_slice(), [Action::Notice { .. }]),
+            "{actions:?}"
+        );
     }
 
     #[test]
@@ -53,7 +56,10 @@ mod type_prefix {
     fn context_opts_out_with_none() {
         let app = "app_id = 'terminal'\n[buttons]\n[speech]\n'type' = { none = true }";
         let actions = say(&[GLOBAL, app], "terminal", "Type hello, World.");
-        assert!(matches!(actions.as_slice(), [Action::Notice { .. }]), "{actions:?}");
+        assert!(
+            matches!(actions.as_slice(), [Action::Notice { .. }]),
+            "{actions:?}"
+        );
     }
 
     #[test]
