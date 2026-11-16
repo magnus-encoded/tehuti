@@ -624,6 +624,8 @@ impl Keyboard {
     /// Sets how a held left stick keeps picking words; a push in progress keeps its pace.
     pub const fn set_word_repeat(&mut self, repeat: WordRepeat) {
         self.word_repeat = repeat;
+    }
+
     /// Sets how a held D-pad direction repeats; a hold in progress keeps its pace.
     pub const fn set_repeat(&mut self, repeat: Repeat) {
         self.repeat_speed = repeat;

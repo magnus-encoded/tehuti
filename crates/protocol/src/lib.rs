@@ -1358,6 +1358,23 @@ fn validate_keyboard_button(button: Option<ButtonName>) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_keyboard_repeat(keyboard: &KeyboardConfig) -> Result<(), String> {
+    for (name, rate) in [
+        ("repeat_rate", keyboard.repeat_rate),
+        ("repeat_max_rate", keyboard.repeat_max_rate),
+    ] {
+        if rate.is_some_and(|rate| !(1..=1000).contains(&rate)) {
+            return Err(format!(
+                "keyboard {name} must be between 1 and 1000 keys a second"
+            ));
+        }
+    }
+    if keyboard.repeat_ramp_ms == Some(0) {
+        return Err("keyboard repeat_ramp_ms must be at least 1".into());
+    }
+    Ok(())
+}
+
 fn validate_word_picking(keyboard: &KeyboardConfig) -> Result<(), String> {
     for (name, rate) in [
         ("word_min_rate", keyboard.word_min_rate),
@@ -1374,19 +1391,6 @@ fn validate_word_picking(keyboard: &KeyboardConfig) -> Result<(), String> {
         .is_some_and(|from| !(500..=1000).contains(&from))
     {
         return Err("keyboard word_repeat_from must be between 500 and 1000".into());
-fn validate_keyboard_repeat(keyboard: &KeyboardConfig) -> Result<(), String> {
-    for (name, rate) in [
-        ("repeat_rate", keyboard.repeat_rate),
-        ("repeat_max_rate", keyboard.repeat_max_rate),
-    ] {
-        if rate.is_some_and(|rate| !(1..=1000).contains(&rate)) {
-            return Err(format!(
-                "keyboard {name} must be between 1 and 1000 keys a second"
-            ));
-        }
-    }
-    if keyboard.repeat_ramp_ms == Some(0) {
-        return Err("keyboard repeat_ramp_ms must be at least 1".into());
     }
     Ok(())
 }
