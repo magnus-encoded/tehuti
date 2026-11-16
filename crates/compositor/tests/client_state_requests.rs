@@ -353,10 +353,13 @@ mod client_state_requests {
     }
 
     #[test]
-    fn windowed_client_drawing_its_requested_size_gets_stable_configure() {
+    fn windowed_client_drawing_its_own_size_is_asked_back_to_its_tile_once() {
         let report = run(false, true);
         assert_eq!(report.first_count, 1, "{report:?}");
-        assert_eq!(report.windowed_configures, 0, "{report:?}");
+        assert_eq!(
+            report.windowed_configures, 1,
+            "one tile configure for the new size, then it settles: {report:?}"
+        );
     }
 
     #[test]
