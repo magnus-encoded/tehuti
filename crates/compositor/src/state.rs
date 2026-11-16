@@ -2693,7 +2693,10 @@ impl Compositor {
         ];
         let consumed = core::mem::take(&mut self.consumed_host_keys);
         for (code, name) in arrows {
-            if consumed.iter().any(|key| key.raw().saturating_sub(XKB_KEYCODE_OFFSET) == code) {
+            if consumed
+                .iter()
+                .any(|key| key.raw().saturating_sub(XKB_KEYCODE_OFFSET) == code)
+            {
                 self.handle(&Event::Button {
                     name,
                     state: ButtonState::Released,
