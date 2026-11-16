@@ -474,23 +474,14 @@ fn connected_in_try_order(
     let names: Vec<String> = connected
         .iter()
         .map(|(_, connector)| {
-            tehuti::output_choice::connector_name(
-                &format!("{:?}", connector.interface()),
-                connector.interface_id(),
-            )
+            tehuti::output_choice::connector_name(connector.interface(), connector.interface_id())
         })
         .collect();
     let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let fallback = tehuti::output_choice::fallback_from_env();
-    let mut slots: Vec<_> = tehuti::output_choice::try_order(&name_refs, fallback.as_deref())
-        .into_iter()
-        .map(Some)
-        .collect();
-    slots.shrink_to_fit();
     let mut pool: Vec<_> = connected.into_iter().map(Some).collect();
-    Ok(slots
+    Ok(tehuti::output_choice::try_order(&name_refs, fallback.as_deref())
         .into_iter()
-        .flatten()
         .filter_map(|slot| pool.get_mut(slot).and_then(Option::take))
         .collect())
 }

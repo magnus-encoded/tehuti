@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use tehuti::output_choice::{connector_name, fallback_from_config, try_order};
+    use tehuti::output_choice::{connector_name, try_order};
 
     fn first<'a>(connected: &[&'a str], fallback: Option<&str>) -> Option<&'a str> {
         try_order(connected, fallback)
@@ -31,17 +31,6 @@ mod tests {
             first(&["HDMI-A-1", "HDMI-A-2"], Some("HDMI-A-1")),
             Some("HDMI-A-2")
         );
-    }
-
-    #[test]
-    fn config_reads_the_output_fallback() {
-        assert_eq!(
-            fallback_from_config("[output]\nfallback = \"HDMI-A-1\"\n"),
-            Some("HDMI-A-1".to_owned())
-        );
-        assert_eq!(fallback_from_config("[output]\nfallback = \"\"\n"), None);
-        assert_eq!(fallback_from_config("[speech]\nx = 1\n"), None);
-        assert_eq!(fallback_from_config("not toml ["), None);
     }
 
     proptest! {
@@ -72,9 +61,36 @@ mod tests {
     }
 
     #[test]
-    fn connector_names_follow_the_kernel() {
-        assert_eq!(connector_name("HDMIA", 1), "HDMI-A-1");
-        assert_eq!(connector_name("DisplayPort", 3), "DP-3");
-        assert_eq!(connector_name("EmbeddedDisplayPort", 1), "eDP-1");
+    fn connector_names_follow_the_kernel_for_every_interface() {
+        use smithay::reexports::drm::control::connector::Interface::{
+            Component, Composite, DPI, DSI, DVIA, DVID, DVII, DisplayPort, EmbeddedDisplayPort, HDMIA, HDMIB,
+            LVDS, NinePinDIN, SPI, SVideo, TV, USB, Unknown, VGA, Virtual, Writeback,
+        };
+        let expected = [
+            (Unknown, "Unknown"),
+            (VGA, "VGA"),
+            (DVII, "DVI-I"),
+            (DVID, "DVI-D"),
+            (DVIA, "DVI-A"),
+            (Composite, "Composite"),
+            (SVideo, "SVIDEO"),
+            (LVDS, "LVDS"),
+            (Component, "Component"),
+            (NinePinDIN, "DIN"),
+            (DisplayPort, "DP"),
+            (HDMIA, "HDMI-A"),
+            (HDMIB, "HDMI-B"),
+            (TV, "TV"),
+            (EmbeddedDisplayPort, "eDP"),
+            (Virtual, "Virtual"),
+            (DSI, "DSI"),
+            (DPI, "DPI"),
+            (Writeback, "Writeback"),
+            (SPI, "SPI"),
+            (USB, "USB"),
+        ];
+        for (interface, kernel) in expected {
+            assert_eq!(connector_name(interface, 7), format!("{kernel}-7"));
+        }
     }
 }

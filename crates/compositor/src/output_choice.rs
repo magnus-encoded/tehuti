@@ -1,14 +1,6 @@
 //! Which connected DRM connector to try first, given the configured fallback.
 
-/// Reads `[output] fallback = "<connector name>"` from `config.toml` source text.
-///
-/// A missing table, a missing key, an empty name or unparsable text all mean "no fallback".
-#[must_use]
-pub fn fallback_from_config(source: &str) -> Option<String> {
-    let table = toml::from_str::<toml::Table>(source).ok()?;
-    let name = table.get("output")?.as_table()?.get("fallback")?.as_str()?.trim();
-    (!name.is_empty()).then(|| name.to_owned())
-}
+use smithay::reexports::drm::control::connector::Interface;
 
 /// Indices into `connected` in the order a rescan should try them.
 ///
@@ -24,29 +16,42 @@ pub fn try_order(connected: &[&str], fallback: Option<&str>) -> Vec<usize> {
     rest.into_iter().map(|(index, _)| index).collect()
 }
 
-/// The configured fallback connector name, read from `$XDG_CONFIG_HOME/tehuti/config.toml`.
+/// The configured fallback connector name, from `$XDG_CONFIG_HOME/tehuti/fallback-output`.
+///
+/// The file holds one connector name; a missing, empty or unreadable file means no fallback.
 #[must_use]
 pub fn fallback_from_env() -> Option<String> {
-    let path = crate::display_mode_store::config_root()
+    let store = crate::display_mode_store::Store::from_env()
         .ok()?
-        .join("tehuti/config.toml");
-    fallback_from_config(&std::fs::read_to_string(path).ok()?)
+        .sibling("fallback-output");
+    store.read().ok().flatten().filter(|name| !name.is_empty())
 }
 
-/// The kernel's connector name, such as `HDMI-A-1`, from the interface's variant name and id.
+/// The kernel's connector name, such as `HDMI-A-1`, from the interface and its number.
 #[must_use]
-pub fn connector_name(interface: &str, number: u32) -> String {
+pub fn connector_name(interface: Interface, number: u32) -> String {
     let kernel = match interface {
-        "DVII" => "DVI-I",
-        "DVID" => "DVI-D",
-        "DVIA" => "DVI-A",
-        "SVideo" => "SVIDEO",
-        "NinePinDIN" => "DIN",
-        "DisplayPort" => "DP",
-        "HDMIA" => "HDMI-A",
-        "HDMIB" => "HDMI-B",
-        "EmbeddedDisplayPort" => "eDP",
-        other => other,
+        Interface::VGA => "VGA",
+        Interface::DVII => "DVI-I",
+        Interface::DVID => "DVI-D",
+        Interface::DVIA => "DVI-A",
+        Interface::Composite => "Composite",
+        Interface::SVideo => "SVIDEO",
+        Interface::LVDS => "LVDS",
+        Interface::Component => "Component",
+        Interface::NinePinDIN => "DIN",
+        Interface::DisplayPort => "DP",
+        Interface::HDMIA => "HDMI-A",
+        Interface::HDMIB => "HDMI-B",
+        Interface::TV => "TV",
+        Interface::EmbeddedDisplayPort => "eDP",
+        Interface::Virtual => "Virtual",
+        Interface::DSI => "DSI",
+        Interface::DPI => "DPI",
+        Interface::Writeback => "Writeback",
+        Interface::SPI => "SPI",
+        Interface::USB => "USB",
+        Interface::Unknown | _ => "Unknown",
     };
     format!("{kernel}-{number}")
 }
