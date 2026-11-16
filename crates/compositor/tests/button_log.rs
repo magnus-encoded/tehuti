@@ -5,8 +5,8 @@ mod button_log {
     use smithay::reexports::wayland_server::Display;
     use std::sync::{Arc, Mutex};
     use tehuti::state::Compositor;
-    use tracing::Level;
     use tehuti_protocol::{ButtonName, ButtonState, Event};
+    use tracing::Level;
 
     #[derive(Debug, Clone, Default)]
     struct Logs(Arc<Mutex<Vec<u8>>>);
@@ -53,7 +53,10 @@ mod button_log {
     fn debug_logs_one_press_and_one_release_naming_the_button_and_who_took_it() {
         let lines = press_and_release(Level::DEBUG);
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[0].contains("Pressed") && lines[1].contains("Released"), "{lines:?}");
+        assert!(
+            lines[0].contains("Pressed") && lines[1].contains("Released"),
+            "{lines:?}"
+        );
         assert!(lines.iter().all(|line| line.contains("South")), "{lines:?}");
         assert!(lines.iter().all(|line| line.contains("taken_by=")), "{lines:?}");
         assert!(lines.iter().all(|line| line.contains("controller=")), "{lines:?}");

@@ -108,8 +108,14 @@ mod tests {
     #[test]
     fn config_text_picks_the_level() {
         assert_eq!(TimelineLevel::parse(""), Ok(TimelineLevel::Info));
-        assert_eq!(TimelineLevel::parse("timeline = \"debug\""), Ok(TimelineLevel::Debug));
-        assert_eq!(TimelineLevel::parse("timeline = \"info\""), Ok(TimelineLevel::Info));
+        assert_eq!(
+            TimelineLevel::parse("timeline = \"debug\""),
+            Ok(TimelineLevel::Debug)
+        );
+        assert_eq!(
+            TimelineLevel::parse("timeline = \"info\""),
+            Ok(TimelineLevel::Info)
+        );
         assert!(TimelineLevel::parse("timeline = \"loud\"").is_err());
     }
 }
