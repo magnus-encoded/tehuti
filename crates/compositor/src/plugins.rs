@@ -83,6 +83,8 @@ struct Session {
     verbs: Vec<String>,
     /// The hotwords the plugin last sent; a restart starts empty.
     hints: Vec<String>,
+    /// The invoke words the plugin last sent; a restart starts empty.
+    invoke_words: Vec<String>,
 }
 
 impl Drop for Process {
@@ -442,6 +444,10 @@ impl Session {
                 self.hints = hotwords;
                 vec![Delivery::SpeechHints]
             }
+            Method::InvokeWords { words } => {
+                self.invoke_words = words;
+                vec![Delivery::SpeechHints]
+            }
             Method::Adjuster { .. }
             | Method::Initialize(_)
             | Method::Button { .. }
@@ -595,6 +601,20 @@ impl Plugins {
     pub(crate) fn status(&self) -> Option<String> {
         self.focused_ready()
             .find_map(|entry| entry.session.as_ref()?.borrow().status_text.clone())
+    }
+
+    /// Invoke words of the initialized application plugins that cover `app_id`, in manifest order.
+    pub(crate) fn invoke_words(&self, app_id: &str) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.manifest.kind == PluginKind::Application
+                    && entry.manifest.app_ids.iter().any(|name| name == app_id)
+            })
+            .filter_map(|entry| entry.session.as_ref())
+            .filter(|session| session.borrow().status == Status::Ready)
+            .flat_map(|session| session.borrow().invoke_words.clone())
+            .collect()
     }
 
     /// Hotwords of the initialized application plugins that cover `app_id`, in manifest order.
@@ -1062,6 +1082,7 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
         status_text: None,
         verbs: manifest.verbs.clone(),
         hints: Vec::new(),
+        invoke_words: Vec::new(),
     }));
     session.borrow_mut().queue_initialize()?;
     Ok((session, stdout))
@@ -1351,6 +1372,7 @@ fn fuzz_session() -> io::Result<Session> {
         status_text: None,
         verbs: Vec::new(),
         hints: Vec::new(),
+        invoke_words: Vec::new(),
     })
 }
 
@@ -1560,6 +1582,7 @@ mod tests {
                 status_text: None,
                 verbs: manifest.verbs.clone(),
                 hints: Vec::new(),
+                invoke_words: Vec::new(),
             })))
         }
 
@@ -1764,6 +1787,36 @@ mod tests {
             assert!(
                 !plugins.active(&speech("ada sum up")),
                 "the refused verb never routes"
+            );
+        }
+
+        #[test]
+        fn an_application_plugins_invoke_words_replace_and_apply_to_its_applications() {
+            let plugins = verb_plugins(&[]);
+            let notice = |words: &[&str]| {
+                Message::Call(Call {
+                    jsonrpc: RpcVersion::Two,
+                    request_id: None,
+                    method: Method::InvokeWords {
+                        words: words.iter().map(|word| (*word).to_owned()).collect(),
+                    },
+                })
+            };
+            let session = plugins.entries[1].session.clone().unwrap();
+            let _first = session.borrow_mut().message(notice(&["usage", "code-review"]));
+            let deliveries = session.borrow_mut().message(notice(&["usage"]));
+            assert!(
+                matches!(deliveries.as_slice(), [Delivery::SpeechHints]),
+                "a notice refreshes the focused window's words"
+            );
+            assert_eq!(
+                plugins.invoke_words("test"),
+                ["usage"],
+                "the second list replaces"
+            );
+            assert!(
+                plugins.invoke_words("other").is_empty(),
+                "only covered applications"
             );
         }
 
