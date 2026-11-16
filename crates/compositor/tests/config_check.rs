@@ -24,6 +24,25 @@ mod config_check {
     }
 
     #[test]
+    fn duplicate_normalized_speech_phrases_are_an_error() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Go' = { key = 'enter' }\n'go.' = { key = 'tab' }\n",
+        );
+        let report = check(directory.path());
+        assert!(report.has_errors(), "{report}");
+        assert!(report.to_string().contains("normalize to"), "{report}");
+    }
+
+    #[test]
+    fn shipped_contexts_have_no_duplicate_or_empty_speech_phrases() {
+        let report = check(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dist/contexts"));
+        assert!(!report.has_errors(), "{report}");
+    }
+
+    #[test]
     fn check_config_rejects_a_key_hold_outside_one_to_a_thousand() {
         for (value, rejected) in [("0", true), ("1001", true), ("1", false), ("1000", false)] {
             let directory = tempfile::tempdir().unwrap();
