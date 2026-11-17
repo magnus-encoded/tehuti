@@ -863,8 +863,7 @@ impl Compositor {
     /// Whether Tehuti holds `button` from the virtual pad; reads only, so a new mirror can ask.
     #[must_use]
     pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
-        (button == tehuti_protocol::ButtonName::Guide
-            && self.dispatch.core().level() == tehuti_core::Level::Columns)
+        (button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded())
             || self.virtual_pad_talk.contains(&button)
             || self
                 .plugins
@@ -908,9 +907,8 @@ impl Compositor {
             .plugins
             .as_mut()
             .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk));
-        // At the app level Guide reaches the game and Tehuti acts too; at the columns level it stays local.
-        let local_guide = button == tehuti_protocol::ButtonName::Guide
-            && self.dispatch.core().level() == tehuti_core::Level::Columns;
+        // Guide reaches the application only at the app level and only when the context forwards it.
+        let local_guide = button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded();
         talk || plugin || local_guide
     }
 

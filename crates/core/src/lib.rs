@@ -208,6 +208,13 @@ impl State {
         self.passthrough() && focused_context(self).is_some_and(Context::virtual_pad)
     }
 
+    /// Whether a Guide press reaches the application through the virtual pad: only at the app level, and only
+    /// when the focused context asks for it. Everywhere else Guide stays with Tehuti.
+    #[must_use]
+    pub fn guide_forwarded(&self) -> bool {
+        self.passthrough() && focused_context(self).is_some_and(Context::forward_guide)
+    }
+
     /// Whether `app_id` and `title` name the focused window.
     pub(crate) fn has_focus(&self, app_id: Option<&str>, title: &str) -> bool {
         self.focused_app_id.as_deref() == app_id && self.focused_title == title

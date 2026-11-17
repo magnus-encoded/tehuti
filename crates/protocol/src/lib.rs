@@ -607,6 +607,8 @@ struct PadConfig {
     #[serde(default, rename = "virtual")]
     virtual_pad: bool,
     #[serde(default)]
+    forward_guide: bool,
+    #[serde(default)]
     push_to_talk: Option<Vec<ButtonName>>,
 }
 
@@ -855,6 +857,12 @@ impl Context {
     #[must_use]
     pub const fn virtual_pad(&self) -> bool {
         self.pad.passthrough && self.pad.virtual_pad
+    }
+
+    /// Whether a Guide tap at the app level also reaches the application, for a stream client that needs it.
+    #[must_use]
+    pub const fn forward_guide(&self) -> bool {
+        self.pad.passthrough && self.pad.virtual_pad && self.pad.forward_guide
     }
 
     #[must_use]
