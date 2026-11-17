@@ -487,11 +487,20 @@ time.sleep(60)
             self.assertEqual(module.transcript([segment]), "")
             self.assertIn("repetition-loop", Path(directory, "log").read_text())
 
-    def test_short_phrase_loop_is_dropped(self):
-        segment = types.SimpleNamespace(text="go down " * 8, no_speech_prob=0, avg_logprob=0)
+    def test_phrase_and_punctuation_variant_loops_are_dropped_and_logged(self):
+        for text in ["go down " * 12, "open the file " * 8, "Invoke; invoke\u2026 INVOKE, " * 8]:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as directory, patch.dict(
+                    os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+                segment = types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), "")
+                self.assertIn("repetition-loop", Path(directory, "log").read_text())
+
+    def test_repeat_boundary_seven_passes_and_eight_drops(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
                 os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
-            self.assertEqual(module.transcript([segment]), "")
+            for count, expected in [(7, "down " * 7), (8, "")]:
+                segment = types.SimpleNamespace(text="down " * count, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), expected.strip())
 
     def test_deliberate_repeats_and_diluted_repeats_go_through(self):
         for text in ["down down down", "down down down down",

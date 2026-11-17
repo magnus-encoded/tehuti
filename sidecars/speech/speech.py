@@ -29,7 +29,7 @@ HALLUCINATION = re.compile(
 )
 
 
-LOOP_MIN_REPEATS = 5
+LOOP_MIN_REPEATS = 8
 LOOP_MAX_PHRASE = 3
 LOOP_MIN_SHARE = 0.6
 
@@ -37,6 +37,7 @@ LOOP_MIN_SHARE = 0.6
 def repetition_loop(words):
     """True when one word or short phrase repeats LOOP_MIN_REPEATS+ times in a row
     and those repeats make up most of the words."""
+    words = [word for word in (re.sub(r"\W", "", w.lower()) for w in words) if word]
     for size in range(1, LOOP_MAX_PHRASE + 1):
         start = 0
         while start + size * LOOP_MIN_REPEATS <= len(words):
