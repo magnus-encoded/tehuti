@@ -60,6 +60,25 @@ mod guide_mode {
     }
 
     #[test]
+    fn guide_with_the_dpad_does_nothing_in_app_mode_but_moves_in_tehuti_mode() {
+        let chord = [
+            button(ButtonName::Guide, ButtonState::Pressed),
+            button(ButtonName::DpadDown, ButtonState::Pressed),
+            button(ButtonName::DpadDown, ButtonState::Released),
+            button(ButtonName::Guide, ButtonState::Released),
+        ];
+        let (state, actions) = run(game("guide = 'app'"), &chord);
+        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(state.level(), Level::App);
+        let (_, actions) = run(game(""), &chord);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::Layout { .. }))
+        );
+    }
+
+    #[test]
     fn the_escape_chord_quits_in_app_mode() {
         let mut events = vec![
             button(ButtonName::Guide, ButtonState::Pressed),

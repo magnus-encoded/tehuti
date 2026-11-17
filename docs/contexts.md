@@ -662,6 +662,10 @@ has focus, and Tehuti ignores it. Guide+Start held for three seconds always
 belongs to Tehuti and quits, in every mode; Start is never forwarded in that
 chord. When a window whose context sets `guide = "app"` gains focus, a notice says
 that Guide goes to the app and names Guide+Start as the way out.
+Menu and View pressed together send a Guide press to the stream, held as long
+as the chord is held, so holding the chord for 3 s opens the stream's system
+menu. The button that completes the chord stays out of the stream; Menu or View
+alone are forwarded as usual. The chord is built in; contexts cannot change it.
 Guide stays reserved for Tehuti: hold it for 500 ms to open the system menu;
 Guide+Start held for three seconds quits.
 

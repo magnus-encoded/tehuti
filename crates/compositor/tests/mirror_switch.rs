@@ -793,6 +793,45 @@ mod tests {
     }
 
     #[test]
+    fn the_chord_start_stays_out_whichever_button_is_released_first() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        for guide_first in [true, false] {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = talk_compositor_with(&display.handle(), "['record']", "guide = 'app'");
+            let log = Rc::new(RefCell::new(Log::default()));
+            let (mut pad, handles) = pad("game", &log);
+            assert!(
+                pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                    .unwrap()
+            );
+            let releases = if guide_first {
+                [(KeyCode::BTN_MODE, 0), (KeyCode::BTN_START, 0)]
+            } else {
+                [(KeyCode::BTN_START, 0), (KeyCode::BTN_MODE, 0)]
+            };
+            // Both presses arrive in one batch, before the core has seen either.
+            queue(&handles, KeyCode::BTN_MODE, 1);
+            queue(&handles, KeyCode::BTN_START, 1);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(&mut compositor, &mut pad).unwrap();
+            for (key, value) in releases {
+                queue(&handles, key, value);
+                pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                    .unwrap();
+                route(&mut compositor, &mut pad).unwrap();
+            }
+            assert!(
+                never_sent(&log.borrow(), KeyCode::BTN_START),
+                "guide_first {guide_first}: neither Start press nor release reaches the stream"
+            );
+            assert_eq!(values(&log.borrow(), KeyCode::BTN_MODE), vec![1, 0]);
+        }
+    }
+
+    #[test]
     fn a_long_guide_hold_at_the_app_level_reaches_the_game_as_a_held_press() {
         use smithay::reexports::wayland_server::Display;
         use tehuti::{input::route, state::Compositor};
