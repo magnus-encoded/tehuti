@@ -29,13 +29,41 @@ HALLUCINATION = re.compile(
 )
 
 
+LOOP_MIN_REPEATS = 8
+LOOP_MAX_PHRASE = 3
+LOOP_MIN_SHARE = 0.6
+
+
+def repetition_loop(words):
+    """True when one word or short phrase repeats LOOP_MIN_REPEATS+ times in a row
+    and those repeats make up most of the words."""
+    words = [word for word in (re.sub(r"\W", "", w.lower()) for w in words) if word]
+    for size in range(1, LOOP_MAX_PHRASE + 1):
+        start = 0
+        while start + size * LOOP_MIN_REPEATS <= len(words):
+            unit = words[start:start + size]
+            end = start + size
+            while words[end:end + size] == unit:
+                end += size
+            repeats = (end - start) // size
+            if repeats >= LOOP_MIN_REPEATS and (end - start) / len(words) >= LOOP_MIN_SHARE:
+                return True
+            start += 1
+    return False
+
+
 def transcript(segments):
     text = " ".join(
         segment.text.strip() for segment in segments
         if not (segment.no_speech_prob > 0.6 and segment.avg_logprob < -1.0)
     ).strip()
     normalized = " ".join(re.sub(r"[.!?,'\"]", "", text.lower()).replace("-", " ").split())
-    return "" if HALLUCINATION.fullmatch(normalized) else text
+    if HALLUCINATION.fullmatch(normalized):
+        return ""
+    if repetition_loop(normalized.split()):
+        log(f"dropped repetition-loop transcript ({len(normalized.split())} words): {text[:60]!r}")
+        return ""
+    return text
 
 
 def until(segments, abort):

@@ -479,6 +479,36 @@ time.sleep(60)
                 segment = types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)
                 self.assertEqual(module.transcript([segment]), text)
 
+    def test_repetition_loop_of_primed_verbs_is_dropped_and_logged(self):
+        loop = "build. " + "Invoke. " * 70
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            segment = types.SimpleNamespace(text=loop, no_speech_prob=0, avg_logprob=0)
+            self.assertEqual(module.transcript([segment]), "")
+            self.assertIn("repetition-loop", Path(directory, "log").read_text())
+
+    def test_phrase_and_punctuation_variant_loops_are_dropped_and_logged(self):
+        for text in ["go down " * 12, "open the file " * 8, "Invoke; invoke\u2026 INVOKE, " * 8]:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as directory, patch.dict(
+                    os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+                segment = types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), "")
+                self.assertIn("repetition-loop", Path(directory, "log").read_text())
+
+    def test_repeat_boundary_seven_passes_and_eight_drops(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            for count, expected in [(7, "down " * 7), (8, "")]:
+                segment = types.SimpleNamespace(text="down " * count, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), expected.strip())
+
+    def test_deliberate_repeats_and_diluted_repeats_go_through(self):
+        for text in ["down down down", "down down down down",
+                     "scroll down down down down then open the file and save it now"]:
+            with self.subTest(text=text):
+                segment = types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), text)
+
     def test_segments_need_both_silence_indicators_to_be_dropped(self):
         segments = [
             types.SimpleNamespace(text="discard", no_speech_prob=0.61, avg_logprob=-1.01),
