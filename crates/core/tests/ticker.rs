@@ -286,6 +286,27 @@ right_stick = { ticker = "toggle" }
     }
 
     #[test]
+    fn columns_level_talk_label_names_the_context_own_chord() {
+        let contexts = contexts(&[
+            "app_id = '*'\npush_to_talk = ['start']\n[buttons]",
+            "app_id = 'game'\n[buttons]\n[pad]\npush_to_talk = ['select', 'left_bumper']",
+        ]);
+        let entries = texts(&ticker::entries(
+            &contexts,
+            Some("game"),
+            PadFamily::Letters,
+            Level::Columns,
+        ));
+        let talk: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.contains('\u{1f3a4}'))
+            .collect();
+        assert!(talk.iter().any(|entry| entry.starts_with("View")), "{entries:?}");
+        assert!(talk.iter().any(|entry| entry.starts_with("LB")), "{entries:?}");
+        assert!(!talk.iter().any(|entry| entry.starts_with("Menu")), "{entries:?}");
+    }
+
+    #[test]
     fn columns_level_lists_buttons_for_a_passthrough_context() {
         let contexts = contexts(&[GLOBAL, "app_id = 'game'\n[buttons]\n[pad]\npassthrough = true"]);
         let entries = texts(&ticker::entries(
