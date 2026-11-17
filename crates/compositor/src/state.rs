@@ -908,7 +908,8 @@ impl Compositor {
             .as_mut()
             .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk));
         // Guide reaches the application only at the app level and only when the context forwards it.
-        let local_guide = button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded();
+        let local_guide =
+            button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded();
         talk || plugin || local_guide
     }
 

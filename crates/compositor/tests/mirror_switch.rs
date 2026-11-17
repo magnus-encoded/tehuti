@@ -742,9 +742,16 @@ mod tests {
                     .unwrap();
                 route(&mut compositor, &mut pad).unwrap();
             }
-            assert_eq!(compositor.pad_passthrough(), app_level, "step {step}: local level");
+            assert_eq!(
+                compositor.pad_passthrough(),
+                app_level,
+                "step {step}: local level"
+            );
         }
-        assert!(never_sent(&log.borrow(), KeyCode::BTN_MODE), "Guide stays with Tehuti");
+        assert!(
+            never_sent(&log.borrow(), KeyCode::BTN_MODE),
+            "Guide stays with Tehuti"
+        );
     }
 
     #[test]
