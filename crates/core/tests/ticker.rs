@@ -297,7 +297,10 @@ right_stick = { ticker = "toggle" }
             PadFamily::Letters,
             Level::Columns,
         ));
-        let talk: Vec<_> = entries.iter().filter(|entry| entry.contains('\u{1f3a4}')).collect();
+        let talk: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.contains('\u{1f3a4}'))
+            .collect();
         assert!(talk.iter().any(|entry| entry.starts_with("View")), "{entries:?}");
         assert!(talk.iter().any(|entry| entry.starts_with("LB")), "{entries:?}");
         assert!(!talk.iter().any(|entry| entry.starts_with("Menu")), "{entries:?}");
