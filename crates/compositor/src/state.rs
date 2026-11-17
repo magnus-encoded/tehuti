@@ -910,7 +910,11 @@ impl Compositor {
         // Guide reaches the application only at the app level and only when the context forwards it.
         let local_guide =
             button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded();
-        talk || plugin || local_guide
+        // Start pressed while Guide is held belongs to the escape chord in every mode.
+        let chord_start = button == tehuti_protocol::ButtonName::Start
+            && state == tehuti_protocol::ButtonState::Pressed
+            && self.dispatch.core().guide_held();
+        talk || plugin || local_guide || chord_start
     }
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {

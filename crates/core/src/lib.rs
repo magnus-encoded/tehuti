@@ -1,6 +1,9 @@
 //! The pure core step: state and one event in, state and actions out.
 
-use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, KeyName, LayoutAction};
+use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, GuideMode, KeyName, LayoutAction};
+
+/// Shown once per focus on a window whose context gives Guide to the application.
+const GUIDE_APP_NOTICE: &str = "GUIDE GOES TO THE APP. HOLD GUIDE+START 3 S TO QUIT TEHUTI";
 
 /// The longest Guide press that still counts as a tap.
 pub const GUIDE_TAP_WINDOW: core::time::Duration = core::time::Duration::from_millis(500);
@@ -208,11 +211,20 @@ impl State {
         self.passthrough() && focused_context(self).is_some_and(Context::virtual_pad)
     }
 
-    /// Whether a Guide press reaches the application through the virtual pad: only at the app level, and only
-    /// when the focused context asks for it. Everywhere else Guide stays with Tehuti.
+    /// Who receives Guide now: the focused context's choice at the app level, else Tehuti alone.
+    #[must_use]
+    pub fn guide_mode(&self) -> GuideMode {
+        if self.passthrough() {
+            focused_context(self).map_or(GuideMode::Tehuti, Context::guide_mode)
+        } else {
+            GuideMode::Tehuti
+        }
+    }
+
+    /// Whether a Guide press reaches the application through the virtual pad.
     #[must_use]
     pub fn guide_forwarded(&self) -> bool {
-        self.passthrough() && focused_context(self).is_some_and(Context::forward_guide)
+        self.guide_mode() != GuideMode::Tehuti
     }
 
     /// Whether `app_id` and `title` name the focused window.
@@ -678,9 +690,16 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         return (state, actions, false);
     }
     if let Event::Focus { app_id, title } = event {
-        let actions = plugin::expire(&mut state, core::time::Duration::MAX);
+        let mut actions = plugin::expire(&mut state, core::time::Duration::MAX);
+        let changed = state.focused_app_id != *app_id || state.focused_title != *title;
         state.focused_app_id.clone_from(app_id);
         state.focused_title.clone_from(title);
+        if changed
+            && focused_context(&state).is_some_and(|context| context.guide_mode() == GuideMode::App)
+            && let Ok(text) = tehuti_protocol::Text::new(GUIDE_APP_NOTICE.into())
+        {
+            actions.push(Action::Notice { text });
+        }
         return (state, actions, false);
     }
     if menu_button_release(&mut state, event) {
@@ -1074,7 +1093,13 @@ fn menu_input(state: &mut State, event: &Event) -> Option<menu::Command> {
 }
 
 fn guide_button(state: &mut State, button_state: ButtonState) {
+    // In "app" mode Guide belongs to the application; only the escape chord still watches it.
+    let ours = state.guide_mode() != GuideMode::App;
     match button_state {
+        ButtonState::Pressed if !ours => {
+            let _held = state.guide_held.get_or_insert(core::time::Duration::ZERO);
+        }
+        ButtonState::Released if !ours => state.guide_held = None,
         ButtonState::Pressed => {
             if state.menu.take().is_some() {
                 state.guide_tap = None;
@@ -1143,7 +1168,9 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             name:
                 name @ (ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight),
             state: button_state,
-        } if state.guide_held.is_some() || state.chord_buttons.contains(name) => {
+        } if (state.guide_held.is_some() && state.guide_mode() != GuideMode::App)
+            || state.chord_buttons.contains(name) =>
+        {
             Some(guide_dpad(state, *name, *button_state))
         }
         Event::Button {

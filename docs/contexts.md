@@ -651,12 +651,17 @@ between windows with the same application id. Title updates keep the mode.
 
 A short View press still reaches the passthrough application directly.
 In normal handling, short presses retain View's single and double tap actions.
-In a passthrough context Guide stays with Tehuti: a tap changes the level and the
-application never sees it. A stream client that needs the tap too sets
-`forward_guide = true` beside `virtual = true`; then a Guide tap at the app level
-reaches the stream and Tehuti acts on it as well, and at the columns level Guide
-is never forwarded. Four taps then walk the (local, remote) levels: (app, app),
-(columns, columns), (app, columns), (columns, app), then (app, app) again.
+In a passthrough context with `virtual = true`, `[pad] guide` chooses who receives
+Guide. The default, `"tehuti"`, keeps Guide with Tehuti: a tap changes the level
+and the application never sees it. `"both"` is for stream clients: at the app
+level a Guide tap reaches the stream and Tehuti acts on it too, and at the
+columns level Guide is never forwarded. Four taps then walk the (local, remote)
+levels: (app, app), (columns, columns), (app, columns), (columns, app), then
+(app, app) again. `"app"` gives Guide only to the application while that window
+has focus, and Tehuti ignores it. Guide+Start held for three seconds always
+belongs to Tehuti and quits, in every mode; Start is never forwarded in that
+chord. When a window whose context sets `guide = "app"` gains focus, a notice says
+that Guide goes to the app and names Guide+Start as the way out.
 Guide stays reserved for Tehuti: hold it for 500 ms to open the system menu;
 Guide+Start held for three seconds quits.
 

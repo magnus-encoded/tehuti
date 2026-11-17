@@ -598,6 +598,19 @@ struct PointerConfig {
     physical: bool,
 }
 
+/// Who receives the Guide button while a passthrough context with a virtual pad has focus.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GuideMode {
+    /// Tehuti keeps Guide; the application gets nothing.
+    #[default]
+    Tehuti,
+    /// Tehuti acts on Guide and the virtual pad also gets the press and release.
+    Both,
+    /// Guide goes only to the application; Tehuti ignores it, except in the escape chord.
+    App,
+}
+
 /// Controller ownership options for an application.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -607,7 +620,7 @@ struct PadConfig {
     #[serde(default, rename = "virtual")]
     virtual_pad: bool,
     #[serde(default)]
-    forward_guide: bool,
+    guide: GuideMode,
     #[serde(default)]
     push_to_talk: Option<Vec<ButtonName>>,
 }
@@ -859,10 +872,14 @@ impl Context {
         self.pad.passthrough && self.pad.virtual_pad
     }
 
-    /// Whether a Guide tap at the app level also reaches the application, for a stream client that needs it.
+    /// Who receives Guide in this context; only a passthrough context with a virtual pad can change it.
     #[must_use]
-    pub const fn forward_guide(&self) -> bool {
-        self.pad.passthrough && self.pad.virtual_pad && self.pad.forward_guide
+    pub const fn guide_mode(&self) -> GuideMode {
+        if self.pad.passthrough && self.pad.virtual_pad {
+            self.pad.guide
+        } else {
+            GuideMode::Tehuti
+        }
     }
 
     #[must_use]
