@@ -452,7 +452,9 @@ fn button_entries(
     pad: PadFamily,
     level: crate::Level,
 ) -> Vec<Entry> {
-    let talk = global.map_or(&[ButtonName::Record][..], Context::push_to_talk_buttons);
+    let talk = active.and_then(Context::own_push_to_talk).unwrap_or_else(|| {
+        global.map_or(&[ButtonName::Record][..], Context::push_to_talk_buttons)
+    });
     if level == crate::Level::App && active.is_some_and(Context::passthrough) {
         let mut entries = vec![Entry {
             trigger: vec![Piece::Text("Pad".into())],
