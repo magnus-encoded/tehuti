@@ -8,7 +8,7 @@ connects its stdin and stdout to pipes. Obey these rules:
 - Escape newlines inside strings.
 - Write logs to stderr.
 
-Each incoming line must contain at most 65,536 bytes before the newline.
+Each incoming line contains at most 65,536 bytes before the newline.
 The output queue of the core holds at most 65,536 bytes, including newlines.
 The core logs an event that does not fit. It then declines the event through
 the captured fallback.
@@ -77,7 +77,7 @@ the core sends an unknown method to a plugin, the plugin can reply with error
 -32601 or stay silent. Both mean declined.
 
 The core ignores valid plugin `initialize`, `button`, `speech`, `verb`,
-`focus`, `adjuster` and `pad_input` calls. A plugin must send only replies and
+`focus`, `adjuster` and `pad_input` calls. A plugin sends only replies and
 these notices: `actions`, `speech.hints`, `invoke.words`, `verbs`,
 `pad_overrides` and `status`. It can also send `submit_actions` requests.
 
@@ -167,7 +167,7 @@ These rules apply to the buttons:
 - B or Guide closes the menu.
 - Holding Guide and Start together for three seconds requests Quit. This also
   applies while the menu is open. If you release either button early, the
-  escape is cancelled.
+  escape chord is cancelled.
 - Start does not route while Guide is held.
 - Outside overlays, South presses send Enter. If the active context maps
   South, they use that mapping. They never reach plugins. South releases can
@@ -324,7 +324,7 @@ no focus notices, no application speech.
 
 The core tries speech routes in this order:
 
-1. The own phrases of Tehuti (such as `open ...` and the escape).
+1. The own phrases of Tehuti (such as `open ...` and the escape chord).
 2. Verbs.
 3. Application plugins and context phrases.
 
@@ -604,7 +604,7 @@ whitespace. Empty lists and duplicate entries are allowed. Events are
 
 `kind` is `application` (the default) or `verb`. It sets which permissions a
 plugin can request. An application plugin serves its `app_ids` while one of
-them has focus. It declares no `verbs`. A verb plugin must meet these rules:
+them has focus. It declares no `verbs`. A verb plugin follows these rules:
 
 - It lists its starting `verbs`.
 - It has empty `app_ids`.
@@ -617,7 +617,7 @@ them has focus. It declares no `verbs`. A verb plugin must meet these rules:
 {"kind":"verb","verbs":["ada"],"executable":"./chief.py","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]}
 ```
 
-A plugin that needs both behaviours must ship as two plugins.
+A plugin that needs both behaviours ships as two plugins.
 
 The core reads only direct entries with the case-sensitive extension `.json`.
 There is no recursive search and no glob expansion. The core rejects manifest
@@ -715,7 +715,7 @@ A manifest can register up to 32 named adjusters ahead of time:
 Names normalize like speech phrases. Each name must be unique within the
 manifest and must contain at most 24 characters after normalization. `volume`
 is reserved. Ranges use signed 32-bit integers, with `minimum < maximum`.
-`value` must be inside the range. The core rejects a manifest with unknown
+`value` is inside the range. The core rejects a manifest with unknown
 fields or invalid ranges.
 
 The user says a registered name. The gauge for that name opens when exactly
