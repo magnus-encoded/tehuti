@@ -681,6 +681,24 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     (next, actions, routed)
 }
 
+/// Records the focused window and shows the Guide notice when focus lands on an `app` guide context.
+fn focus_changed(state: &mut State, event: &Event) -> Vec<Action> {
+    let Event::Focus { app_id, title } = event else {
+        return Vec::new();
+    };
+    let mut actions = plugin::expire(state, core::time::Duration::MAX);
+    let changed = state.focused_app_id != *app_id || state.focused_title != *title;
+    state.focused_app_id.clone_from(app_id);
+    state.focused_title.clone_from(title);
+    if changed
+        && focused_context(state).is_some_and(|context| context.guide_mode() == GuideMode::App)
+        && let Ok(text) = tehuti_protocol::Text::new(GUIDE_APP_NOTICE.into())
+    {
+        actions.push(Action::Notice { text });
+    }
+    actions
+}
+
 fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Action>, bool) {
     if let Event::Tick { elapsed } = event {
         let mut actions = plugin::expire(&mut state, *elapsed);
@@ -689,17 +707,8 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         }
         return (state, actions, false);
     }
-    if let Event::Focus { app_id, title } = event {
-        let mut actions = plugin::expire(&mut state, core::time::Duration::MAX);
-        let changed = state.focused_app_id != *app_id || state.focused_title != *title;
-        state.focused_app_id.clone_from(app_id);
-        state.focused_title.clone_from(title);
-        if changed
-            && focused_context(&state).is_some_and(|context| context.guide_mode() == GuideMode::App)
-            && let Ok(text) = tehuti_protocol::Text::new(GUIDE_APP_NOTICE.into())
-        {
-            actions.push(Action::Notice { text });
-        }
+    if matches!(event, Event::Focus { .. }) {
+        let actions = focus_changed(&mut state, event);
         return (state, actions, false);
     }
     if menu_button_release(&mut state, event) {
