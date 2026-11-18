@@ -192,6 +192,8 @@ pub struct Compositor {
     /// Host keys a Meta chord consumed, so their release is consumed too.
     consumed_host_keys: Vec<Keycode>,
     virtual_pad_buttons: Vec<tehuti_protocol::ButtonName>,
+    /// Buttons pressed with Guide held (Start for the escape chord); the stream sees neither their press nor their release.
+    chord_buttons: Vec<tehuti_protocol::ButtonName>,
     virtual_pad_talk: Vec<tehuti_protocol::ButtonName>,
     display: DisplayHandle,
 }
@@ -347,6 +349,7 @@ impl Compositor {
             meta_held: Vec::new(),
             consumed_host_keys: Vec::new(),
             virtual_pad_buttons: Vec::new(),
+            chord_buttons: Vec::new(),
             virtual_pad_talk: Vec::new(),
             display: display.clone(),
         };
@@ -857,6 +860,7 @@ impl Compositor {
     /// Forgets held physical buttons when the virtual pad starts.
     pub fn reset_virtual_pad(&mut self) {
         self.virtual_pad_buttons.clear();
+        self.chord_buttons.clear();
         self.virtual_pad_talk.clear();
         if let Some(plugins) = &mut self.plugins {
             plugins.reset_pad();
@@ -866,8 +870,8 @@ impl Compositor {
     /// Whether Tehuti holds `button` from the virtual pad; reads only, so a new mirror can ask.
     #[must_use]
     pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
-        (button == tehuti_protocol::ButtonName::Guide
-            && self.dispatch.core().level() == tehuti_core::Level::Columns)
+        (button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded())
+            || self.chord_buttons.contains(&button)
             || self.virtual_pad_talk.contains(&button)
             || self
                 .plugins
@@ -911,10 +915,28 @@ impl Compositor {
             .plugins
             .as_mut()
             .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk));
-        // At the app level Guide reaches the game and Tehuti acts too; at the columns level it stays local.
-        let local_guide = button == tehuti_protocol::ButtonName::Guide
-            && self.dispatch.core().level() == tehuti_core::Level::Columns;
-        talk || plugin || local_guide
+        // Guide reaches the application only at the app level and only when the context forwards it.
+        let local_guide =
+            button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded();
+        // Start pressed while Guide is held belongs to the escape chord in every mode, and so does its release.
+        // Guide is read from this hook's own held list: a batch of raw events reaches here before the core sees any.
+        let chord_start = if button != tehuti_protocol::ButtonName::Start {
+            false
+        } else if state == tehuti_protocol::ButtonState::Pressed {
+            if self
+                .virtual_pad_buttons
+                .contains(&tehuti_protocol::ButtonName::Guide)
+                && !self.chord_buttons.contains(&button)
+            {
+                self.chord_buttons.push(button);
+            }
+            self.chord_buttons.contains(&button)
+        } else {
+            let chorded = self.chord_buttons.contains(&button);
+            self.chord_buttons.retain(|held| *held != button);
+            chorded
+        };
+        talk || plugin || local_guide || chord_start
     }
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {

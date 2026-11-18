@@ -234,6 +234,20 @@ impl Canvas {
     }
 }
 
+/// The running version and short commit SHA, as `v0.134.1 · 1a2b3c4`.
+#[must_use]
+fn version_line(version: &str, commit: &str) -> String {
+    format!("v{version} \u{b7} {commit}")
+}
+
+#[must_use]
+fn build_line() -> String {
+    version_line(
+        option_env!("TEHUTI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+        env!("TEHUTI_GIT_HASH"),
+    )
+}
+
 #[must_use]
 pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<MemoryRenderBuffer> {
     if !settings.open {
@@ -257,6 +271,9 @@ pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<Mem
     );
     canvas.rectangle(80, 166, 1120, 2, CYAN);
     canvas.text(80, 190, "POP THE HOOD", 2, AMBER);
+    if settings.page == Page::Categories {
+        canvas.text(1200 - 24 * 15, 186, &build_line(), 3, WHITE);
+    }
     canvas.contents(settings, speech);
     if let Some(remaining) = settings.remaining {
         canvas.ring(remaining);
@@ -288,6 +305,18 @@ mod tests {
         utils::{Rectangle, Transform},
     };
     use tehuti_protocol::{Event, Text};
+
+    #[test]
+    fn the_top_page_shows_the_compiled_in_version_and_commit() {
+        assert_eq!(
+            super::version_line("0.134.1", "1a2b3c4"),
+            "v0.134.1 \u{b7} 1a2b3c4"
+        );
+        let line = super::build_line();
+        let version = option_env!("TEHUTI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+        assert_eq!(line, format!("v{version} \u{b7} {}", env!("TEHUTI_GIT_HASH")));
+        assert_ne!(env!("TEHUTI_GIT_HASH"), "");
+    }
 
     #[test]
     fn native_artwork_has_smooth_text_and_countdown_edges() -> Result<(), Box<dyn core::error::Error>> {

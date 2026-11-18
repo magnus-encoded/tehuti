@@ -17,6 +17,10 @@ PENDING = {"launcher-empty", "launcher-window"}  # #379 owns launcher layout.
 REVIEW = {"menu", "settings-display", "settings-display-font", "settings-input"}  # Captured for review in the artefact; no golden yet.
 
 
+# The settings page prints the commit it was built from; ignore that line.
+MASKED = {"settings.png": (820, 180, 1200, 224)}
+
+
 def compare(actual, expected, diff):
     with Image.open(actual) as captured, Image.open(expected) as golden:
         same_size = captured.size == golden.size
@@ -25,6 +29,10 @@ def compare(actual, expected, diff):
         baseline = Image.new("RGB", size)
         current.paste(captured.convert("RGB"))
         baseline.paste(golden.convert("RGB"))
+        box = MASKED.get(Path(actual).name)
+        if box:
+            for image in (current, baseline):
+                image.paste((0, 0, 0), box)
         delta = ImageChops.difference(current, baseline)
         ImageEnhance.Brightness(delta).enhance(8).save(diff)
         # Every channel of every pixel must remain within three levels.
