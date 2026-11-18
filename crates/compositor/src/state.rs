@@ -73,6 +73,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::DisplayScale(_)
         | DispatchInput::ModeApplied(_)
         | DispatchInput::ControllerBindings(_)
+        | DispatchInput::ControllerDeadzones(_)
         | DispatchInput::ActiveController(_)
         | DispatchInput::Controllers(_)
         | DispatchInput::Microphones(_)
@@ -1665,6 +1666,11 @@ impl Compositor {
             std::collections::BTreeMap::new()
         });
         let _bindings_rejection = self.dispatch(DispatchInput::ControllerBindings(bindings));
+        let deadzones = store.controller_deadzones().unwrap_or_else(|error| {
+            tracing::warn!(%error, "controller deadzones unreadable; using the default");
+            std::collections::BTreeMap::new()
+        });
+        let _deadzones_rejection = self.dispatch(DispatchInput::ControllerDeadzones(deadzones));
         self.input_choices = Some(store);
         let _rejection = self.dispatch(DispatchInput::InputChoices {
             controller,
@@ -1691,6 +1697,12 @@ impl Compositor {
     #[must_use]
     pub fn controller_chosen(&self, key: &str) -> bool {
         !self.disabled_controllers.iter().any(|disabled| disabled == key)
+    }
+
+    /// The stick deadzone of the pad with this stable key, in thousandths of full travel.
+    #[must_use]
+    pub fn controller_deadzone(&self, key: &str) -> u16 {
+        self.settings().input.deadzone(key)
     }
 
     pub fn activate_controller(&mut self, name: String) {
@@ -1902,6 +1914,7 @@ impl Compositor {
             | DispatchEffect::WallpaperSave(_)
             | DispatchEffect::SettingsController(_)
             | DispatchEffect::PersistControllerTalk(_, _)
+            | DispatchEffect::PersistControllerDeadzone(_, _)
             | DispatchEffect::PersistController(_)
             | DispatchEffect::SettingsMicrophone(_)
             | DispatchEffect::SettingsControllerEnabled { .. }
@@ -2208,6 +2221,11 @@ impl Compositor {
                 if let Some(name) = self.settings().input.active_controller.clone() {
                     self.activate_controller(name);
                 }
+            }
+            DispatchEffect::PersistControllerDeadzone(name, deadzone) => {
+                tracing::info!(%name, deadzone, "controller deadzone set");
+                let deadzones = self.settings().input.controller_deadzones.clone();
+                self.save_input_choice(|store| store.set_controller_deadzones(&deadzones));
             }
             DispatchEffect::PersistController(choice) => self.choose_controller(&choice, true),
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),

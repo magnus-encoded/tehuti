@@ -430,6 +430,14 @@ impl Canvas {
                 self.tile_text((x, y, side, side), &lines, points, WHITE);
             }
         }
+        let deadzone = (CONTROLLER_SETTINGS_ROW, TALK_OPTIONS.len().saturating_add(1));
+        if let Some((x, y)) = self.tile_frame(grid, deadzone, focus, true) {
+            let lines = [
+                "DEADZONE".to_owned(),
+                format!("{}%", input.deadzone(&controller.key).checked_div(10).unwrap_or_default()),
+            ];
+            self.tile_text((x, y, side, side), &lines, points, WHITE);
+        }
     }
 
     fn microphone_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {

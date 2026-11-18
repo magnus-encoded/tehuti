@@ -510,6 +510,7 @@ impl Settings {
                 };
                 match focus.col.checked_sub(1) {
                     None => self.toggle_controller(name, effects),
+                    Some(index) if index == TALK_OPTIONS.len() => self.step_deadzone(name, effects),
                     Some(index) => {
                         if let Some(option) = TALK_OPTIONS.get(index).copied() {
                             self.choose_talk(option, effects);
@@ -567,6 +568,13 @@ impl Settings {
             self.input.microphone = choice.clone();
             effects.push(Effect::SettingsMicrophone(choice));
         }
+    }
+
+    /// Moves the pad's stick deadzone to the next step and saves it.
+    fn step_deadzone(&mut self, name: String, effects: &mut Vec<Effect>) {
+        let next = self.input.next_deadzone(&name);
+        let _previous = self.input.controller_deadzones.insert(name.clone(), next);
+        effects.push(Effect::PersistControllerDeadzone(name, next));
     }
 
     fn choose_talk(&mut self, option: Option<ButtonName>, effects: &mut Vec<Effect>) {

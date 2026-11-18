@@ -303,6 +303,10 @@ pub struct EvdevPad<D = Device> {
     first_emit_after_focus: Option<std::time::Instant>,
     plugin_held: Vec<ButtonName>,
     buffered: Vec<Event>,
+    /// This pad's stick deadzone in thousandths of full travel, for its own reading and for forwarding.
+    deadzone: u16,
+    /// The pad's axis ranges, read once when forwarding needs them: code, minimum, maximum.
+    ranges: Vec<(u16, i32, i32)>,
 }
 
 /// The virtual controller presented to the application, with inputs kept from it.
@@ -1151,6 +1155,11 @@ impl<D: PadDevice> EvdevPad<D> {
             let read_at = std::time::SystemTime::now();
             for event in raw {
                 tracing::debug!(target: "pad_latency", stage = "read", at_us = timestamp_us(read_at), physical_us = timestamp_us(event.timestamp()));
+                let event = if self.mirror.is_some() {
+                    self.deadzoned(event)
+                } else {
+                    event
+                };
                 if let Some(mirror) = &mut self.mirror {
                     let plugin_held = &mut self.plugin_held;
                     let mut track = |button, state| {
@@ -1216,7 +1225,34 @@ impl<D: PadDevice> EvdevPad<D> {
             first_emit_after_focus: None,
             plugin_held: Vec::new(),
             buffered: Vec::new(),
+            deadzone: DEFAULT_DEADZONE,
+            ranges: Vec::new(),
         }
+    }
+
+    /// Sets the stick deadzone, in thousandths of full travel, for this pad's reading and forwarding.
+    pub const fn set_deadzone(&mut self, deadzone: u16) {
+        self.deadzone = deadzone;
+    }
+
+    /// The event with a stick value inside the deadzone moved to the centre and the rest rescaled; others unchanged.
+    fn deadzoned(&mut self, event: evdev::InputEvent) -> evdev::InputEvent {
+        if event.event_type() != evdev::EventType::ABSOLUTE || !is_stick_axis(AbsoluteAxisCode(event.code())) {
+            return event;
+        }
+        if self.ranges.is_empty()
+            && let Ok(axes) = self.handles.probe().get_absinfo()
+        {
+            self.ranges = axes
+                .into_iter()
+                .map(|(axis, info)| (axis.0, info.minimum(), info.maximum()))
+                .collect();
+        }
+        let Some((_, minimum, maximum)) = self.ranges.iter().find(|(code, _, _)| *code == event.code()) else {
+            return event;
+        };
+        let value = deadzoned_value(event.value(), *minimum, *maximum, self.deadzone);
+        evdev::InputEvent::new(event.event_type().0, event.code(), value)
     }
 
     /// Samples the current calibrated stick axes, including a 15 percent deadzone.
@@ -1226,7 +1262,7 @@ impl<D: PadDevice> EvdevPad<D> {
         use evdev::AbsoluteAxisCode;
         let mut sticks = tehuti_core::dispatch::Sticks::default();
         for (axis, info) in self.handles.probe().get_absinfo()? {
-            let value = stick_axis(info.value(), info.minimum(), info.maximum());
+            let value = stick_axis(info.value(), info.minimum(), info.maximum(), self.deadzone);
             match axis {
                 AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
                 AbsoluteAxisCode::ABS_Y => sticks.left.1 = value,
@@ -2129,15 +2165,60 @@ mod tests {
 
     #[test]
     fn stick_calibration_handles_deadzone_extremes_and_invalid_ranges() {
-        assert_eq!(stick_axis(0, -32768, 32767), 0);
-        assert_eq!(stick_axis(4000, -32768, 32767), 0);
-        assert_eq!(stick_axis(-32768, -32768, 32767), -1000);
-        assert_eq!(stick_axis(32767, -32768, 32767), 1000);
-        assert_eq!(stick_axis(128, 0, 255), 0);
-        assert_eq!(stick_axis(0, 0, 255), -1000);
-        assert_eq!(stick_axis(255, 0, 255), 1000);
-        assert_eq!(stick_axis(10, 10, 10), 0);
-        assert_eq!(stick_axis(10, 20, 10), 0);
+        assert_eq!(stick_axis(0, -32768, 32767, 150), 0);
+        assert_eq!(stick_axis(4000, -32768, 32767, 150), 0);
+        assert_eq!(stick_axis(-32768, -32768, 32767, 150), -1000);
+        assert_eq!(stick_axis(32767, -32768, 32767, 150), 1000);
+        assert_eq!(stick_axis(128, 0, 255, 150), 0);
+        assert_eq!(stick_axis(0, 0, 255, 150), -1000);
+        assert_eq!(stick_axis(255, 0, 255, 150), 1000);
+        assert_eq!(stick_axis(10, 10, 10, 150), 0);
+        assert_eq!(stick_axis(10, 20, 10, 150), 0);
+    }
+
+    #[test]
+    fn a_larger_deadzone_swallows_a_pad_that_rests_off_centre() {
+        // A pad resting 24% off centre reads zero under a 25% deadzone, and still reaches full travel.
+        assert_eq!(stick_axis(-3410, -32768, 32767, 150), 0);
+        assert!(stick_axis(-9000, -32768, 32767, 150) < 0);
+        assert_eq!(stick_axis(7799, -32768, 32767, 250), 0);
+        assert_eq!(stick_axis(32767, -32768, 32767, 250), 1000);
+        assert!(stick_axis(4000, -32768, 32767, 0) > 0);
+    }
+
+    #[test]
+    fn forwarded_sticks_sit_at_the_centre_inside_the_deadzone_and_reach_the_ends() {
+        assert_eq!(deadzoned_value(120, 0, 255, 150), 127);
+        assert_eq!(deadzoned_value(-3410, -32768, 32767, 250), 0);
+        assert_eq!(deadzoned_value(32767, -32768, 32767, 250), 32767);
+        assert_eq!(deadzoned_value(-32768, -32768, 32767, 250), -32768);
+        assert_eq!(deadzoned_value(4000, -32768, 32767, 0), 4000);
+        assert_eq!(deadzoned_value(9, 5, 5, 250), 9);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn deadzoned_sticks_stay_in_range_keep_order_and_rest_at_the_centre(
+            minimum in -40000_i32..0,
+            span in 2_i32..70000,
+            deadzone in 0_u16..500,
+            first in 0_i32..70000,
+            second in 0_i32..70000,
+        ) {
+            let maximum = minimum.saturating_add(span);
+            let at = |raw: i32| minimum.saturating_add(raw.rem_euclid(span.saturating_add(1)));
+            let (a, b) = (at(first), at(second));
+            let (low, high) = (a.min(b), a.max(b));
+            let (moved_low, moved_high) = (
+                deadzoned_value(low, minimum, maximum, deadzone),
+                deadzoned_value(high, minimum, maximum, deadzone),
+            );
+            proptest::prop_assert!((minimum..=maximum).contains(&moved_low));
+            proptest::prop_assert!(moved_low <= moved_high);
+            let centre = minimum.midpoint(maximum);
+            proptest::prop_assert_eq!(deadzoned_value(centre, minimum, maximum, deadzone), centre);
+            proptest::prop_assert_eq!(deadzoned_value(low, minimum, maximum, 0), low);
+        }
     }
 
     #[test]
@@ -2274,7 +2355,46 @@ pub fn watch(mut state: Watchdog, input: WatchInput) -> (Watchdog, WatchVerdict)
     }
 }
 
-fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
+/// The deadzone of a pad with no saved choice, in thousandths of full travel.
+const DEFAULT_DEADZONE: u16 = tehuti_core::dispatch::DEFAULT_DEADZONE;
+
+fn is_stick_axis(axis: AbsoluteAxisCode) -> bool {
+    [
+        AbsoluteAxisCode::ABS_X,
+        AbsoluteAxisCode::ABS_Y,
+        AbsoluteAxisCode::ABS_RX,
+        AbsoluteAxisCode::ABS_RY,
+    ]
+    .contains(&axis)
+}
+
+/// A stick value with the deadzone cut out: inside it the stick sits at its centre,
+/// outside it the rest of the travel is stretched to reach the ends.
+#[must_use]
+pub fn deadzoned_value(value: i32, minimum: i32, maximum: i32, deadzone: u16) -> i32 {
+    let half = i64::from(maximum).saturating_sub(i64::from(minimum)) / 2;
+    if half <= 0 || deadzone == 0 {
+        return value;
+    }
+    let centre = i64::from(minimum.midpoint(maximum));
+    let delta = i64::from(value).saturating_sub(centre);
+    let limit = half.saturating_mul(i64::from(deadzone.min(900))) / 1000;
+    if delta.abs() <= limit {
+        return i32::try_from(centre).unwrap_or(value);
+    }
+    let stretched = delta
+        .abs()
+        .saturating_sub(limit)
+        .saturating_mul(half)
+        .checked_div(half.saturating_sub(limit))
+        .unwrap_or_default()
+        .saturating_mul(delta.signum());
+    i32::try_from(centre.saturating_add(stretched))
+        .map_or(value, |moved| moved.clamp(minimum, maximum))
+}
+
+fn stick_axis(value: i32, minimum: i32, maximum: i32, deadzone: u16) -> i16 {
+    let deadzone = i64::from(deadzone.min(900));
     let range = i64::from(maximum).saturating_sub(i64::from(minimum));
     if range <= 0 {
         return 0;
@@ -2286,7 +2406,13 @@ fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
         .unwrap_or_default()
         .saturating_sub(1000))
     .clamp(-1000, 1000);
-    let travel = normalized.abs().saturating_sub(150).max(0).saturating_mul(1000) / 850;
+    let travel = normalized
+        .abs()
+        .saturating_sub(deadzone)
+        .max(0)
+        .saturating_mul(1000)
+        .checked_div(1000_i64.saturating_sub(deadzone))
+        .unwrap_or_default();
     i16::try_from(travel.saturating_mul(normalized.signum())).unwrap_or_default()
 }
 
