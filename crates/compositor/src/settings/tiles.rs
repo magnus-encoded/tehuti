@@ -128,9 +128,9 @@ mod tests {
         fn shown_tiles_are_squares_inside_the_area_and_none_overlap(
             rows in prop::collection::vec(0_usize..16, 0..6),
             caption in 0_usize..30,
-            at in (0_usize..6, 0_usize..16),
+            spot in (0_usize..6, 0_usize..16),
         ) {
-            let focus = clamp(&rows, Focus { row: at.0, col: at.1 });
+            let focus = clamp(&rows, Focus { row: spot.0, col: spot.1 });
             let grid = Grid::new(&rows, caption, focus);
             let side = grid.side();
             let origins = cells(&grid, &rows);
@@ -162,9 +162,9 @@ mod tests {
         #[test]
         fn the_focused_tile_is_always_in_view(
             rows in prop::collection::vec(1_usize..40, 1..5),
-            at in (0_usize..5, 0_usize..40),
+            spot in (0_usize..5, 0_usize..40),
         ) {
-            let focus = clamp(&rows, Focus { row: at.0, col: at.1 });
+            let focus = clamp(&rows, Focus { row: spot.0, col: spot.1 });
             let grid = Grid::new(&rows, 20, focus);
             prop_assert!(grid.origin(focus.row, focus.col).is_some());
         }
@@ -178,7 +178,7 @@ mod tests {
             let focus = clamp(&rows, Focus { row: 0, col });
             let grid = Grid::new(&rows, 0, focus);
             let step = grid.side().saturating_add(GAP);
-            let shown: Vec<usize> = (0..length).filter_map(|col| grid.origin(0, col).map(|(x, _)| x)).collect();
+            let shown: Vec<usize> = (0..length).filter_map(|index| grid.origin(0, index).map(|(x, _)| x)).collect();
             prop_assert_eq!(shown[0], AREA.0);
             for pair in shown.windows(2) {
                 prop_assert_eq!(pair[1].saturating_sub(pair[0]), step);
