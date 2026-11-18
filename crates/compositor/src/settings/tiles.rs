@@ -201,8 +201,8 @@ mod tests {
             let focus = clamp(&rows, Focus { row: spot.0, col: spot.1 });
             let grid = Grid::input(&rows, focus);
             for (row, length) in rows.iter().enumerate() {
-                prop_assert!(grid.origin(row, 0).is_some(), "row {row} hidden with focus {focus:?}");
-                prop_assert!(*length > 0);
+                let col = if row == focus.row { focus.col } else { 0 };
+                prop_assert!(*length > 0 && grid.origin(row, col).is_some(), "row {row} hidden with focus {focus:?}");
             }
         }
 
