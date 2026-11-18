@@ -487,7 +487,11 @@ impl Canvas {
                 }
                 let words = if enabled { label } else { format!("{label} OFF") };
                 let mut lines = vec![words];
-                lines.extend(microphone.and_then(|known| known.relay).map(|state| state.label().to_owned()));
+                lines.extend(
+                    microphone
+                        .and_then(|known| known.relay)
+                        .map(|state| state.label().to_owned()),
+                );
                 let below = y.saturating_add(side.saturating_mul(7) / 10);
                 self.tile_text((x, below, side, side / 4), &lines, points, colour);
             }
