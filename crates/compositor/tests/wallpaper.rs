@@ -369,6 +369,22 @@ mod collection {
     }
 
     #[test]
+    fn user_sets_are_sorted_and_broken_files_do_not_hide_other_sets() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let folder = directory.path().join("config/wallpapers");
+        for (set, name) in [("Evening", "Moon"), ("Dawn", "Sun")] {
+            std::fs::create_dir_all(folder.join(set))?;
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 0, 0, 255]))
+                .save(folder.join(set).join(format!("{name}.png")))?;
+        }
+        std::fs::write(folder.join("Dawn/broken.png"), "invalid")?;
+        let collection = Collection::discover(&[], Store::new(directory.path().join("config/wallpaper")), 0, false);
+        assert_eq!(collection.names(), ["user/Dawn/Sun.png", "user/Evening/Moon.png"]);
+        assert_eq!(collection.locks(), [false, false]);
+        Ok(())
+    }
+
+    #[test]
     fn release_default_shows_locked_future_thumbnails() -> Result<(), Box<dyn Error>> {
         let directory = tempfile::tempdir()?;
         for (name, color) in [
