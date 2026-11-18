@@ -79,7 +79,7 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
         def drive(*command):
             result = subprocess.run([str(args.binaries.resolve() / "tehuti-drive"), "--socket", str(socket), *command],
                                     check=True, capture_output=True, text=True, timeout=30,
-                                    env={**os.environ, "XDG_PICTURES_DIR": str(work / "pictures"), "XKB_DEFAULT_LAYOUT": "us", "XKB_DEFAULT_VARIANT": "", "XKB_DEFAULT_OPTIONS": "", **({"TEHUTI_DRIVE_WALLPAPER_SEED": str(wallpaper_seed)} if wallpaper_seed else {})})
+                                    env={**os.environ, "XDG_PICTURES_DIR": str(work / "pictures"), "XKB_DEFAULT_LAYOUT": "us", "XKB_DEFAULT_VARIANT": "", "XKB_DEFAULT_OPTIONS": "", **({"TEHUTI_DRIVE_WALLPAPER_SEED": str(wallpaper_seed), "XDG_DATA_DIRS": str(work / "empty-data")} if wallpaper_seed else {})})
             return json.loads(result.stdout)
 
         def capture(name, condition):
@@ -195,13 +195,22 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             drive("say", "pop the hood")
             for button in ("dpad_down", "dpad_down", "A"):
                 tap(button)
-            drive("wait-for", "/wallpaper/choices/14", '"user/Dawn/Sun.png"')
+            def wait_wallpaper(identity):
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    drive("clock", "advance", "0")
+                    if identity in drive("scene", "--json")["wallpaper"]["choices"]:
+                        return
+                    time.sleep(0.05)
+                raise AssertionError(f"wallpaper did not arrive: {identity}")
+
+            wait_wallpaper("user/Dawn/Sun.png")
             time.sleep(2)
             capture("settings-wallpaper", lambda s: s["overlays"]["settings"])
             tap("dpad_down")
             capture("settings-wallpaper-user", lambda s: s["overlays"]["settings"])
             drive("say", "gotta catch em all")
-            drive("wait-for", "/wallpaper/choices/17", '"bundled/hidden/uno.png"')
+            wait_wallpaper("bundled/hidden/uno.png")
             time.sleep(2)
             tap("dpad_down")
             capture("settings-wallpaper-hidden", lambda s: s["overlays"]["settings"])
