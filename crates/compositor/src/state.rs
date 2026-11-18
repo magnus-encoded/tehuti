@@ -1670,8 +1670,15 @@ impl Compositor {
 
     /// Whether input from the pad named `name` drives Tehuti.
     #[must_use]
-    pub fn controller_chosen(&self, name: &str) -> bool {
-        !self.disabled_controllers.iter().any(|disabled| disabled == name)
+    pub fn controller_chosen(&self, key: &str) -> bool {
+        let name = self
+            .settings()
+            .input
+            .controllers
+            .iter()
+            .find(|controller| controller.key == key)
+            .map_or(key, |controller| controller.name.as_str());
+        !self.disabled_controllers.iter().any(|disabled| disabled == key)
             && crate::input::chosen(&self.controller_choice, &self.controller_names, name)
     }
 

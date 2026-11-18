@@ -302,15 +302,9 @@ impl Canvas {
         self.controller_row(settings, &grid, focus);
         self.controller_settings_row(settings, &grid, focus);
         self.microphone_row(settings, &grid, focus);
-        self.text(96, 630, "SPEECH RUNS ON", 2, WHITE);
-        let speech: String = speech.chars().take(36).collect();
-        self.text(
-            360,
-            626,
-            &speech,
-            3,
-            if speech.starts_with("CPU") { AMBER } else { CYAN },
-        );
+        self.text(760, 58, "SPEECH RUNS ON", 2, WHITE);
+        let speech: String = speech.chars().take(26).collect();
+        self.text(760, 88, &speech, 3, if speech.starts_with("CPU") { AMBER } else { CYAN });
     }
 
     /// Draws `parts`, boxes in 24ths of the tile side, from the tile's corner.
@@ -355,11 +349,11 @@ impl Canvas {
         let side = grid.side();
         let points = side.checked_div(14).unwrap_or(8).max(8);
         for (col, controller) in input.controllers.iter().enumerate() {
-            let enabled = input.controller_enabled(&controller.name);
+            let enabled = input.controller_enabled(&controller.key);
             let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_ROW, col), focus, enabled) else {
                 continue;
             };
-            let asking = input.pending_disable.as_deref() == Some(controller.name.as_str());
+            let asking = input.pending_disable.as_deref() == Some(controller.key.as_str());
             let colour = if asking {
                 AMBER
             } else if enabled {
@@ -376,7 +370,7 @@ impl Canvas {
                 colour,
             );
             self.caption((x, y), side, &controller.spoken_name(), colour);
-            if input.controller_in_use(&controller.name) {
+            if input.controller_in_use(&controller.key) {
                 self.rectangle(x.saturating_add(8), y.saturating_add(8), 10, 10, AMBER);
             }
         }
@@ -390,7 +384,7 @@ impl Canvas {
         };
         let side = grid.side();
         let points = side.checked_div(9).unwrap_or(8).max(8);
-        let enabled = input.controller_enabled(&controller.name);
+        let enabled = input.controller_enabled(&controller.key);
         if let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_SETTINGS_ROW, 0), focus, enabled) {
             let word = if enabled { "ENABLED" } else { "OFF" };
             let colour = if enabled { WHITE } else { DIM };

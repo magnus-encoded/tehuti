@@ -94,7 +94,7 @@ impl Settings {
     pub(super) fn configure_controllers(&mut self, controllers: Vec<super::ControllerInfo>) {
         let focused = self.input.focused_controller().cloned();
         self.input.controllers = settle(&self.input.controllers, controllers, |controller| {
-            (controller.name.clone(), controller.label.clone())
+            (controller.key.clone(), controller.label.clone())
         });
         if let Some(col) = focused.and_then(|tile| {
             self.input
@@ -109,7 +109,7 @@ impl Settings {
                 .input
                 .controllers
                 .iter()
-                .any(|controller| controller.name == *pending)
+                .any(|controller| controller.key == *pending)
         {
             self.input.pending_disable = None;
         }
@@ -498,13 +498,13 @@ impl Settings {
                     .input
                     .controllers
                     .get(focus.col)
-                    .map(|controller| controller.name.clone())
+                    .map(|controller| controller.key.clone())
                 {
                     self.toggle_controller(name, effects);
                 }
             }
             CONTROLLER_SETTINGS_ROW => {
-                let Some(name) = self.input.selected_controller().map(|pad| pad.name.clone()) else {
+                let Some(name) = self.input.selected_controller().map(|pad| pad.key.clone()) else {
                     return;
                 };
                 match focus.col.checked_sub(1) {
@@ -569,7 +569,7 @@ impl Settings {
     }
 
     fn choose_talk(&mut self, option: Option<ButtonName>, effects: &mut Vec<Effect>) {
-        let Some(name) = self.input.selected_controller().map(|pad| pad.name.clone()) else {
+        let Some(name) = self.input.selected_controller().map(|pad| pad.key.clone()) else {
             return;
         };
         if self.input.talk_choice() == option {
@@ -599,7 +599,15 @@ impl Settings {
             .controllers
             .iter()
             .find(|controller| controller.spoken_name() == target)
-            .map(|controller| controller.name.clone());
+            .or_else(|| {
+                let mut same = self
+                    .input
+                    .controllers
+                    .iter()
+                    .filter(|controller| tehuti_protocol::normalize_phrase(&controller.name) == target);
+                same.next().filter(|_| same.next().is_none())
+            })
+            .map(|controller| controller.key.clone());
         if let Some(name) = pad {
             effects.push(self.input.set_controller_enabled(name, enable));
             return true;

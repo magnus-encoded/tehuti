@@ -3,13 +3,13 @@
 use tehuti_core::tiles::Focus;
 
 /// Where tiles may go: left, top, width and height in reference pixels.
-const AREA: (usize, usize, usize, usize) = (80, 222, 1120, 400);
+const AREA: (usize, usize, usize, usize) = (80, 222, 1120, 420);
 const GAP: usize = 14;
 const LARGEST_SIDE: usize = 150;
-/// The side of a Display tile: about the width of the page title.
-pub(super) const DISPLAY_SIDE: usize = 180;
-/// The side of an Input tile: a little smaller, so a name fits under it and two rows show.
-pub(super) const INPUT_SIDE: usize = 168;
+/// The side of a Display tile: 15% of the 1280-wide reference, so it scales with the output.
+pub(super) const DISPLAY_SIDE: usize = 192;
+/// The side of an Input tile: a little smaller, so a name fits under it and two rows show at once.
+pub(super) const INPUT_SIDE: usize = 180;
 
 /// The square tiles of a page: one side for every tile, rows filled from the left.
 ///

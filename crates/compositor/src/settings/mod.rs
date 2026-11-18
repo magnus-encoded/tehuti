@@ -451,12 +451,14 @@ mod tests {
                 "Wireless Controller".into(),
                 0x054c,
                 0x09cc,
+                String::new(),
             ),
             (
                 "/dev/input/event9".into(),
                 "Xbox Controller".into(),
                 0x045e,
                 0x0b13,
+                String::new(),
             ),
         ])
     }
@@ -472,7 +474,7 @@ mod tests {
         let mut compositor = Compositor::new(&display.handle())?;
         compositor.load_input_choices(store.clone());
         compositor.configure_controllers(input_test_controllers());
-        compositor.activate_controller("Wireless Controller".into());
+        compositor.activate_controller("Wireless Controller#1".into());
         compositor.handle(&Event::Speech {
             text: Text::new("Pop the hood.".into())?,
         });
@@ -487,15 +489,15 @@ mod tests {
         assert!(compositor.settings_buffer((1024, 600)).is_some());
         press(&mut compositor, ButtonName::DpadRight);
         assert!(
-            compositor.controller_chosen("Xbox Controller"),
+            compositor.controller_chosen("Xbox Controller#1"),
             "moving disables nothing"
         );
         press(&mut compositor, ButtonName::South);
-        assert!(!compositor.controller_chosen("Xbox Controller"));
-        assert!(compositor.controller_chosen("Wireless Controller"));
-        assert_eq!(store.disabled_controllers()?, vec!["Xbox Controller".to_owned()]);
+        assert!(!compositor.controller_chosen("Xbox Controller#1"));
+        assert!(compositor.controller_chosen("Wireless Controller#1"));
+        assert_eq!(store.disabled_controllers()?, vec!["Xbox Controller#1".to_owned()]);
         press(&mut compositor, ButtonName::South);
-        assert!(compositor.controller_chosen("Xbox Controller"));
+        assert!(compositor.controller_chosen("Xbox Controller#1"));
         assert_eq!(store.disabled_controllers()?, Vec::<String>::new());
         press(&mut compositor, ButtonName::DpadDown);
         for _ in 0..3 {
@@ -503,7 +505,7 @@ mod tests {
         }
         press(&mut compositor, ButtonName::South);
         assert_eq!(
-            store.controller_bindings()?.get("Xbox Controller"),
+            store.controller_bindings()?.get("Xbox Controller#1"),
             Some(&ButtonName::Start)
         );
         press(&mut compositor, ButtonName::DpadDown);

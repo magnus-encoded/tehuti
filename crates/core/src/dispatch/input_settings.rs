@@ -13,10 +13,14 @@ pub enum ControllerChoice {
     Named(String),
 }
 
-/// A connected pad's saved kernel name and its visible, numbered label.
+/// A connected pad: its kernel name, a key that stays the same across reconnects, and its numbered label.
+///
+/// Settings kept per pad (enabled, push-to-talk) are keyed by `key`: the device's
+/// unique id when it has one, else its physical path, else its name and an index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerInfo {
     pub name: String,
+    pub key: String,
     pub label: String,
 }
 
@@ -24,6 +28,7 @@ impl From<&str> for ControllerInfo {
     fn from(name: &str) -> Self {
         Self {
             name: name.into(),
+            key: name.into(),
             label: format!("{} #1", name.to_uppercase()),
         }
     }
@@ -33,6 +38,7 @@ impl From<String> for ControllerInfo {
     fn from(name: String) -> Self {
         Self {
             label: format!("{} #1", name.to_uppercase()),
+            key: name.clone(),
             name,
         }
     }
@@ -79,10 +85,11 @@ impl ControllerInfo {
         }
     }
 
-    /// The name voice uses for this pad, and the caption under its tile.
+    /// The name voice uses for this pad, and the caption under its tile: the numbered label,
+    /// so pads of one model differ. The bare kernel name works too while it is unique.
     #[must_use]
     pub fn spoken_name(&self) -> String {
-        tehuti_protocol::normalize_phrase(&self.name)
+        tehuti_protocol::normalize_phrase(&self.label)
     }
 }
 
@@ -242,7 +249,7 @@ impl InputSettings {
     #[must_use]
     pub fn talk_choice(&self) -> Option<tehuti_protocol::ButtonName> {
         self.selected_controller()
-            .and_then(|pad| self.controller_bindings.get(&pad.name))
+            .and_then(|pad| self.controller_bindings.get(&pad.key))
             .copied()
     }
 

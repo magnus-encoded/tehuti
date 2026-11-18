@@ -809,7 +809,13 @@ fn sync_controller_names(data: &mut LoopData) {
         .iter()
         .map(|(path, controller)| {
             let (vendor, product) = controller.pad.usb_id();
-            (path.clone(), controller.pad.name().to_owned(), vendor, product)
+            (
+                path.clone(),
+                controller.pad.name().to_owned(),
+                vendor,
+                product,
+                controller.pad.device_identity(),
+            )
         })
         .collect();
     data.compositor
@@ -1008,6 +1014,23 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
     Ok(())
 }
 
+/// The key of each attached pad, by node path.
+fn controller_keys(controllers: &BTreeMap<PathBuf, AttachedController>) -> BTreeMap<PathBuf, String> {
+    controller::keyed_controllers(controllers.iter().map(|(path, controller)| {
+        let (vendor, product) = controller.pad.usb_id();
+        (
+            path.clone(),
+            controller.pad.name().to_owned(),
+            vendor,
+            product,
+            controller.pad.device_identity(),
+        )
+    }))
+    .into_iter()
+    .map(|(path, info)| (path, info.key))
+    .collect()
+}
+
 /// Routes pending events from every pad; failed registrations are removed on the next loop turn.
 ///
 /// Stick motion, and trigger motion that crosses no threshold, arrive as events the core never sees,
@@ -1017,15 +1040,17 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
+    let keys = controller_keys(&data.controllers);
     let mut event_controllers = Vec::new();
     let active = &mut data.active_pad;
     let spare = &mut data.spare_virtual_pad;
     let (events, removed) = input::drain_pads_handing_over(
         &mut data.controllers,
         |path, controller, event| {
-            let admitted = gate.admit(path, compositor.controller_chosen(controller.pad.name()), event);
+            let key = keys.get(path).map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
+            let admitted = gate.admit(path, compositor.controller_chosen(&key), event);
             if admitted {
-                event_controllers.push(controller.pad.name().to_owned());
+                event_controllers.push(key);
                 identity = Some(controller.pad.identity());
                 *active = Some(path.to_path_buf());
             }
@@ -1089,8 +1114,10 @@ fn advance_time(data: &mut LoopData) {
         return;
     }
     let mut sampled = tehuti_core::dispatch::Sticks::default();
-    for controller in data.controllers.values_mut() {
-        let chosen = data.compositor.controller_chosen(controller.pad.name());
+    let keys = controller_keys(&data.controllers);
+    for (path, controller) in &mut data.controllers {
+        let key = keys.get(path).map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
+        let chosen = data.compositor.controller_chosen(&key);
         match controller.pad.sticks() {
             Ok(sticks) => {
                 if chosen && sticks != tehuti_core::dispatch::Sticks::default() {

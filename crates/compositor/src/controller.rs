@@ -11,26 +11,52 @@ use tracing::warn;
 
 use crate::input::InputSource;
 
-/// Labels pads in path order, counting each model independently.
+/// One connected pad as the settings view needs it: its node path, kernel name, USB ids and
+/// the device's own unique id or physical path (empty when it reports neither).
+pub type PadDevice = (std::path::PathBuf, String, u16, u16, String);
+
+/// Labels pads in path order, counting each model independently, and gives each a key that
+/// survives a reconnect: the unique id or physical path when it is the pad's alone, else
+/// the kernel name with an index.
 #[must_use]
-pub fn numbered_controllers(
-    devices: impl IntoIterator<Item = (std::path::PathBuf, String, u16, u16)>,
-) -> Vec<tehuti_core::dispatch::ControllerInfo> {
+pub fn keyed_controllers(
+    devices: impl IntoIterator<Item = PadDevice>,
+) -> Vec<(std::path::PathBuf, tehuti_core::dispatch::ControllerInfo)> {
     let mut devices: Vec<_> = devices.into_iter().collect();
     devices.sort_by(|left, right| left.0.cmp(&right.0));
     let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut names = std::collections::BTreeMap::<String, usize>::new();
+    let identities: Vec<String> = devices.iter().map(|device| device.4.clone()).collect();
     devices
         .into_iter()
-        .map(|(_, name, vendor, product)| {
+        .map(|(path, name, vendor, product, identity)| {
             let model = tehuti_core::pad::Identity::for_node(vendor, product, &name).model_name(&name);
             let count = counts.entry(model.clone()).or_default();
             *count = count.saturating_add(1);
-            tehuti_core::dispatch::ControllerInfo {
+            let shared = !identity.is_empty() && identities.iter().filter(|other| **other == identity).count() > 1;
+            let index = names.entry(name.clone()).or_default();
+            *index = index.saturating_add(1);
+            let key = if identity.is_empty() || shared {
+                format!("{}#{index}", if identity.is_empty() { &name } else { &identity })
+            } else {
+                identity
+            };
+            let info = tehuti_core::dispatch::ControllerInfo {
                 name,
+                key,
                 label: format!("{model} #{count}"),
-            }
+            };
+            (path, info)
         })
         .collect()
+}
+
+/// [`keyed_controllers`] without the node paths.
+#[must_use]
+pub fn numbered_controllers(
+    devices: impl IntoIterator<Item = PadDevice>,
+) -> Vec<tehuti_core::dispatch::ControllerInfo> {
+    keyed_controllers(devices).into_iter().map(|(_, info)| info).collect()
 }
 
 /// Opens and grabs every pad with a south face button that no other program holds,
@@ -866,6 +892,18 @@ impl EvdevPad {
         self.handles.events.name().unwrap_or("unnamed")
     }
 
+    /// The unique id the pad reports, else its physical path, else nothing.
+    #[must_use]
+    pub fn device_identity(&self) -> String {
+        let events = &self.handles.events;
+        events
+            .unique_name()
+            .filter(|text| !text.is_empty())
+            .or_else(|| events.physical_path().filter(|text| !text.is_empty()))
+            .unwrap_or_default()
+            .to_owned()
+    }
+
     #[must_use]
     pub fn usb_id(&self) -> (u16, u16) {
         let input_id = self.handles.events.input_id();
@@ -1676,12 +1714,14 @@ mod tests {
                 "Xbox Wireless Controller".into(),
                 0x045e,
                 0x0b13,
+                String::new(),
             ),
             (
                 "/dev/input/event2".into(),
                 "Wireless Controller".into(),
                 0x054c,
                 0x09cc,
+                String::new(),
             ),
         ]);
         assert_eq!(pads[0].name, "Wireless Controller");
@@ -1698,12 +1738,14 @@ mod tests {
                 "Wireless Controller".into(),
                 0x054c,
                 0x05c4,
+                String::new(),
             ),
             (
                 "/dev/input/event2".into(),
                 "Wireless Controller".into(),
                 0x054c,
                 0x09cc,
+                String::new(),
             ),
         ]);
         assert_eq!(
