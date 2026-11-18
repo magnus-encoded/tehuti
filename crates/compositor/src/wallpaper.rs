@@ -844,11 +844,7 @@ pub fn unlock_hidden() -> std::io::Result<()> {
 pub fn thumbnail(index: usize, size: (u32, u32)) -> Option<image::RgbaImage> {
     let mut cache = wallpaper().lock().ok()?;
     let (identity, source) = cache.collection.as_ref()?.entries.get(index)?.clone();
-    let directory = std::env::var_os("XDG_CACHE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?
-        .join("tehuti/wallpaper-thumbnails");
+    let directory = crate::wallpaper_picker::cache_directory()?;
     let ping = cache.redraw.clone();
     cache.picker.image(index, size, source, identity, directory, ping)
 }

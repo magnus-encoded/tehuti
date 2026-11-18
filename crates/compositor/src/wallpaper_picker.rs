@@ -10,6 +10,108 @@ use std::{
 
 type Key = (u64, usize, u32, u32);
 
+const MEMORY_CAP: usize = 64 * 1024 * 1024;
+const DISK_CAP: u64 = 128 * 1024 * 1024;
+const DISK_MAX_AGE: core::time::Duration = core::time::Duration::from_secs(30 * 24 * 3600);
+
+/// Decoded thumbnails kept under a byte cap; the least recently used leave first.
+#[derive(Debug)]
+struct Memory {
+    entries: HashMap<Key, (image::RgbaImage, u64)>,
+    bytes: usize,
+    clock: u64,
+    cap: usize,
+}
+
+impl Memory {
+    fn new(cap: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            bytes: 0,
+            clock: 0,
+            cap,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+
+    fn get(&mut self, key: &Key) -> Option<image::RgbaImage> {
+        self.clock = self.clock.wrapping_add(1);
+        let clock = self.clock;
+        let (image, used) = self.entries.get_mut(key)?;
+        *used = clock;
+        Some(image.clone())
+    }
+
+    fn insert(&mut self, key: Key, image: image::RgbaImage) {
+        self.clock = self.clock.wrapping_add(1);
+        let size = image.as_raw().len();
+        if let Some((old, _)) = self.entries.insert(key, (image, self.clock)) {
+            self.bytes = self.bytes.saturating_sub(old.as_raw().len());
+        }
+        self.bytes = self.bytes.saturating_add(size);
+        while self.bytes > self.cap && self.entries.len() > 1 {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .filter(|(other, _)| **other != key)
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(other, _)| *other)
+            else {
+                break;
+            };
+            if let Some((evicted, _)) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(evicted.as_raw().len());
+            }
+        }
+    }
+}
+
+/// The thumbnail cache folder on disk.
+pub(super) fn cache_directory() -> Option<PathBuf> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .map(|base| base.join("tehuti/wallpaper-thumbnails"))
+}
+
+/// Removes leftovers and files unused for `max_age`, then the oldest files until `cap` bytes remain.
+fn prune_disk(directory: &Path, cap: u64, max_age: core::time::Duration) {
+    let Ok(files) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    let mut kept = Vec::new();
+    for file in files.filter_map(Result::ok) {
+        let path = file.path();
+        let Ok(meta) = file.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let stale = now.duration_since(modified).is_ok_and(|age| age > max_age);
+        if path.extension().is_some_and(|ext| ext == "tmp") || stale {
+            let _removed = std::fs::remove_file(&path);
+        } else {
+            kept.push((modified, meta.len(), path));
+        }
+    }
+    kept.sort();
+    let mut total: u64 = kept.iter().map(|(_, size, _)| *size).sum();
+    for (_, size, path) in kept {
+        if total <= cap {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(size);
+        }
+    }
+}
+
 #[derive(Debug)]
 enum Job {
     Refresh,
@@ -35,7 +137,7 @@ enum Reply {
 pub(super) struct Picker {
     requests: mpsc::SyncSender<(Job, Option<Ping>)>,
     replies: mpsc::Receiver<Reply>,
-    ready: HashMap<Key, image::RgbaImage>,
+    ready: Memory,
     pending: HashSet<Key>,
     failed: HashSet<Key>,
     pub(super) revision: u64,
@@ -54,7 +156,12 @@ impl Picker {
             .spawn(move || {
                 while let Ok((job, ping)) = jobs.recv() {
                     let reply = match job {
-                        Job::Refresh => Reply::Collection(Box::new(Collection::from_env())),
+                        Job::Refresh => {
+                            if let Some(directory) = cache_directory() {
+                                prune_disk(&directory, DISK_CAP, DISK_MAX_AGE);
+                            }
+                            Reply::Collection(Box::new(Collection::from_env()))
+                        }
                         Job::Thumbnail {
                             key,
                             source,
@@ -76,7 +183,7 @@ impl Picker {
         Self {
             requests,
             replies,
-            ready: HashMap::new(),
+            ready: Memory::new(MEMORY_CAP),
             pending: HashSet::new(),
             failed: HashSet::new(),
             revision: 0,
@@ -122,11 +229,7 @@ impl Picker {
                     let _removed = self.pending.remove(&key);
                     if key.0 == self.epoch {
                         if let Some(image) = image {
-                            let bytes: usize = self.ready.values().map(|cached| cached.as_raw().len()).sum();
-                            if bytes.saturating_add(image.as_raw().len()) > 64 * 1024 * 1024 {
-                                self.ready.clear();
-                            }
-                            let _previous = self.ready.insert(key, image);
+                            self.ready.insert(key, image);
                         } else {
                             let _inserted = self.failed.insert(key);
                         }
@@ -151,7 +254,7 @@ impl Picker {
         }
         let key = (self.epoch, index, size.0, size.1);
         if let Some(image) = self.ready.get(&key) {
-            return Some(image.clone());
+            return Some(image);
         }
         if !self.failed.contains(&key)
             && !self.pending.contains(&key)
@@ -191,6 +294,9 @@ pub(super) fn thumbnail(
     if let Some(image) =
         super::wallpaper::bounded_image(&path).filter(|image| (image.width(), image.height()) == size)
     {
+        if let Ok(file) = std::fs::File::options().write(true).open(&path) {
+            let _touched = file.set_modified(std::time::SystemTime::now());
+        }
         return Some(image.to_rgba8());
     }
     let image = source.image()?.to_rgba8();
@@ -294,4 +400,61 @@ fn area_resize(image: &image::RgbaImage, size: (u32, u32)) -> image::RgbaImage {
             alpha.round() as u8,
         ])
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tile(side: u32) -> image::RgbaImage {
+        image::RgbaImage::new(side, side)
+    }
+
+    #[test]
+    fn memory_evicts_least_recently_used_within_the_cap() {
+        let each = tile(10).as_raw().len();
+        let mut memory = Memory::new(each * 2);
+        memory.insert((0, 1, 10, 10), tile(10));
+        memory.insert((0, 2, 10, 10), tile(10));
+        assert!(memory.get(&(0, 1, 10, 10)).is_some());
+        memory.insert((0, 3, 10, 10), tile(10));
+        assert!(memory.get(&(0, 2, 10, 10)).is_none());
+        assert!(memory.get(&(0, 1, 10, 10)).is_some());
+        assert!(memory.get(&(0, 3, 10, 10)).is_some());
+        assert_eq!(memory.bytes, each * 2);
+    }
+
+    #[test]
+    fn memory_keeps_a_single_oversized_entry_and_tracks_replacement() {
+        let mut memory = Memory::new(10);
+        memory.insert((0, 1, 10, 10), tile(10));
+        memory.insert((0, 1, 10, 10), tile(10));
+        assert_eq!(memory.entries.len(), 1);
+        assert_eq!(memory.bytes, tile(10).as_raw().len());
+    }
+
+    #[test]
+    fn disk_prune_removes_leftovers_stale_and_oldest_over_the_cap() {
+        let directory = tempfile::tempdir().unwrap();
+        let write = |name: &str, age: u64| {
+            let path = directory.path().join(name);
+            std::fs::write(&path, [0_u8; 100]).unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(std::time::SystemTime::now() - core::time::Duration::from_secs(age))
+                .unwrap();
+        };
+        write("old.png", 1000);
+        write("mid.png", 100);
+        write("new.png", 10);
+        write("half.png.tmp", 1);
+        prune_disk(directory.path(), 200, core::time::Duration::from_secs(5000));
+        let mut left: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|file| file.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["mid.png", "new.png"]);
+        prune_disk(directory.path(), 200, core::time::Duration::from_secs(50));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 }
