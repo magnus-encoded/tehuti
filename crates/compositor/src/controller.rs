@@ -120,7 +120,12 @@ pub fn open_grabbed(
                     "controller face layout selected"
                 );
                 match Device::open(&path) {
-                    Ok(probe) => Some((path, EvdevPad::new(device, probe, translator))),
+                    Ok(probe) => {
+                        let sysfs = path.file_name().and_then(|node| {
+                            std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok()
+                        });
+                        Some((path, EvdevPad::new(device, probe, translator).with_sysfs(sysfs)))
+                    }
                     Err(error) => {
                         warn!(%error, "controller probe open failed; skipping it");
                         None
@@ -234,6 +239,78 @@ pub fn is_physical(bus: evdev::BusType, sysfs: Option<&std::path::Path>) -> bool
     })
 }
 
+/// What the kernel reports about a pad, enough to tell where it comes from.
+#[derive(Debug, Clone, Copy)]
+pub struct PadOrigin<'a> {
+    pub bus: evdev::BusType,
+    pub vendor: u16,
+    pub product: u16,
+    /// The canonical sysfs path of the event node, when it could be read.
+    pub sysfs: Option<&'a std::path::Path>,
+    pub name: &'a str,
+    pub phys: &'a str,
+    pub uniq: &'a str,
+}
+
+/// The wireless receivers that carry Xbox pads, by USB vendor and product id.
+const XBOX_RECEIVERS: [(u16, u16); 6] = [
+    (0x045e, 0x0291),
+    (0x045e, 0x02a9),
+    (0x045e, 0x0719),
+    (0x045e, 0x02e6),
+    (0x045e, 0x02fe),
+    (0x045e, 0x02f9),
+];
+
+/// Names the origin of a pad: cable, dongle, Bluetooth, streamed, or virtual.
+///
+/// Bluetooth needs proof: the device sits under a Bluetooth controller in sysfs, or `BlueZ` made it
+/// through UHID. A device under `/sys/devices/virtual/input` was made by a program through uinput
+/// and is never Bluetooth. Without a sysfs path only unambiguous signs count, else the origin is unknown.
+#[must_use]
+pub fn classify_origin(pad: &PadOrigin<'_>) -> tehuti_core::dispatch::Connection {
+    use tehuti_core::dispatch::Connection;
+    if pad.name == VIRTUAL_PAD_NAME {
+        return Connection::Tehuti;
+    }
+    let known_dongle = XBOX_RECEIVERS.contains(&(pad.vendor, pad.product));
+    let Some(path) = pad.sysfs else {
+        return match pad.bus.0 {
+            0x03 if known_dongle => Connection::Dongle,
+            0x03 => Connection::Usb,
+            _ => Connection::Unknown,
+        };
+    };
+    let part = |text: &str| {
+        path.components()
+            .any(|component| component.as_os_str().to_string_lossy().starts_with(text))
+    };
+    if path.starts_with("/sys/devices/virtual/misc/uhid") {
+        return if pad.bus == evdev::BusType::BUS_BLUETOOTH {
+            Connection::Bluetooth
+        } else {
+            Connection::Unknown
+        };
+    }
+    if path.starts_with("/sys/devices/virtual") {
+        let signs = format!("{} {} {}", pad.name, pad.phys, pad.uniq).to_lowercase();
+        return if signs.contains("sunshine") {
+            Connection::Streamed
+        } else {
+            Connection::VirtualOther
+        };
+    }
+    if part("hci") || part("bluetooth") {
+        Connection::Bluetooth
+    } else if known_dongle || part("xone") || part("gip") {
+        Connection::Dongle
+    } else if part("usb") {
+        Connection::Usb
+    } else {
+        Connection::Unknown
+    }
+}
+
 /// Device operations needed to acquire exclusive, nonblocking input.
 pub trait GrabDevice {
     /// Acquires exclusive input ownership.
@@ -298,6 +375,8 @@ pub struct EvdevPad<D = Device> {
     /// The virtual controller kept while hidden, so the application never sees it unplugged.
     parked: Option<Mirror>,
     mirror_failed: bool,
+    /// The canonical sysfs path of the event node, when known.
+    sysfs: Option<std::path::PathBuf>,
     /// The physical pad failed a read; it feeds nothing until the event loop drops it.
     lost: bool,
     first_emit_after_focus: Option<std::time::Instant>,
@@ -933,18 +1012,20 @@ impl EvdevPad {
             .to_owned()
     }
 
-    /// How the pad reaches the machine: the bus it reports, or a known radio dongle.
+    /// Where the pad comes from: cable, dongle, Bluetooth, streamed or virtual, else unknown.
     #[must_use]
     pub fn connection(&self) -> tehuti_core::dispatch::Connection {
-        use tehuti_core::dispatch::Connection;
-        let input_id = self.handles.events.input_id();
-        // The Xbox wireless adapter's product ids.
-        let dongle = input_id.vendor() == 0x045e && matches!(input_id.product(), 0x02e6 | 0x02fe | 0x02f9);
-        match input_id.bus_type().0 {
-            0x05 => Connection::Bluetooth,
-            _ if dongle => Connection::Dongle,
-            _ => Connection::Usb,
-        }
+        let events = &self.handles.events;
+        let input_id = events.input_id();
+        classify_origin(&PadOrigin {
+            bus: input_id.bus_type(),
+            vendor: input_id.vendor(),
+            product: input_id.product(),
+            sysfs: self.sysfs.as_deref(),
+            name: events.name().unwrap_or_default(),
+            phys: events.physical_path().unwrap_or_default(),
+            uniq: events.unique_name().unwrap_or_default(),
+        })
     }
 
     #[must_use]
@@ -1223,6 +1304,7 @@ impl<D: PadDevice> EvdevPad<D> {
             mirror: None,
             parked: None,
             mirror_failed: false,
+            sysfs: None,
             lost: false,
             first_emit_after_focus: None,
             plugin_held: Vec::new(),
@@ -1231,6 +1313,13 @@ impl<D: PadDevice> EvdevPad<D> {
             recentre: [0; 4],
             ranges: Vec::new(),
         }
+    }
+
+    /// Records where sysfs places the pad, so its origin can be told.
+    #[must_use]
+    pub fn with_sysfs(mut self, sysfs: Option<std::path::PathBuf>) -> Self {
+        self.sysfs = sysfs;
+        self
     }
 
     /// Sets the stick deadzone, in thousandths of full travel, for this pad's reading and forwarding.
@@ -1812,6 +1901,129 @@ mod mirror_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::{PadOrigin, classify_origin};
+    use evdev::BusType;
+    use tehuti_core::dispatch::Connection;
+
+    fn origin(bus: BusType, ids: (u16, u16), sysfs: Option<&str>, name: &str) -> Connection {
+        classify_origin(&PadOrigin {
+            bus,
+            vendor: ids.0,
+            product: ids.1,
+            sysfs: sysfs.map(std::path::Path::new),
+            name,
+            phys: "",
+            uniq: "",
+        })
+    }
+
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "a table of recorded sysfs samples")]
+    fn recorded_sysfs_samples_give_one_origin_each() {
+        let pad = (0x045e, 0x0b12);
+        let cases = [
+            (
+                BusType::BUS_USB,
+                pad,
+                "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3:1.0/input/input5/event4",
+                "Pad",
+                Connection::Usb,
+            ),
+            (
+                BusType::BUS_USB,
+                (0x045e, 0x0291),
+                "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0/input/input6/event5",
+                "Pad",
+                Connection::Dongle,
+            ),
+            (
+                BusType::BUS_VIRTUAL,
+                pad,
+                "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0/gip0/gip0.0/input/input7/event6",
+                "Pad",
+                Connection::Dongle,
+            ),
+            (
+                BusType::BUS_BLUETOOTH,
+                pad,
+                "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-4/1-4:1.0/bluetooth/hci0/hci0:11/0005:045E:0B13.0003/input/input9/event8",
+                "Pad",
+                Connection::Bluetooth,
+            ),
+            (
+                BusType::BUS_BLUETOOTH,
+                pad,
+                "/sys/devices/virtual/misc/uhid/0005:045E:0B13.0007/input/input30/event12",
+                "Pad",
+                Connection::Bluetooth,
+            ),
+            (
+                BusType::BUS_USB,
+                pad,
+                "/sys/devices/virtual/input/input23/event16",
+                "Sunshine X-Box One (virtual) pad",
+                Connection::Streamed,
+            ),
+            (
+                BusType::BUS_USB,
+                pad,
+                "/sys/devices/virtual/input/input24/event17",
+                "Some Emulated Pad",
+                Connection::VirtualOther,
+            ),
+            (
+                BusType::BUS_BLUETOOTH,
+                pad,
+                "/sys/devices/virtual/input/input25/event18",
+                "Some Emulated Pad",
+                Connection::VirtualOther,
+            ),
+            (
+                BusType::BUS_USB,
+                pad,
+                "/sys/devices/virtual/input/input26/event19",
+                super::VIRTUAL_PAD_NAME,
+                Connection::Tehuti,
+            ),
+        ];
+        for (bus, ids, path, name, expected) in cases {
+            assert_eq!(origin(bus, ids, Some(path), name), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn bluetooth_is_never_claimed_without_proof() {
+        let pad = (0x045e, 0x0b13);
+        assert_eq!(
+            origin(BusType::BUS_BLUETOOTH, pad, None, "Pad"),
+            Connection::Unknown
+        );
+        assert_eq!(
+            origin(
+                BusType::BUS_BLUETOOTH,
+                pad,
+                Some("/sys/devices/platform/odd/input/input1/event1"),
+                "Pad"
+            ),
+            Connection::Unknown
+        );
+        assert_eq!(origin(BusType::BUS_USB, pad, None, "Pad"), Connection::Usb);
+    }
+
+    #[test]
+    fn a_virtual_pad_naming_its_creator_in_phys_is_streamed() {
+        let pad = PadOrigin {
+            bus: BusType::BUS_USB,
+            vendor: 0x045e,
+            product: 0x0b12,
+            sysfs: Some(std::path::Path::new("/sys/devices/virtual/input/input23/event16")),
+            name: "Virtual Pad",
+            phys: "sunshine-gamepad-1",
+            uniq: "",
+        };
+        assert_eq!(classify_origin(&pad), Connection::Streamed);
+    }
+
     #[test]
     fn usb_ids_give_distinct_models_and_keep_kernel_names() {
         let pads = super::numbered_controllers(

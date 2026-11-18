@@ -25,7 +25,7 @@ pub struct ControllerInfo {
     pub connection: Connection,
 }
 
-/// How a pad reaches the machine; the tile shows it so identical pads can be told apart.
+/// Where a pad comes from; the tile shows it so the user sees which device is where.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Connection {
     #[default]
@@ -33,6 +33,44 @@ pub enum Connection {
     Bluetooth,
     /// A radio dongle that is not Bluetooth.
     Dongle,
+    /// A virtual device made by a game-streaming host.
+    Streamed,
+    /// A virtual device made by a program that could not be named.
+    VirtualOther,
+    /// Tehuti's own virtual pad.
+    Tehuti,
+    /// The source could not be told; the tile draws no glyph.
+    Unknown,
+}
+
+impl Connection {
+    /// The short caption line on the pad tile; empty when the source is unknown.
+    #[must_use]
+    pub const fn caption(self) -> &'static str {
+        match self {
+            Self::Usb => "USB CABLE",
+            Self::Bluetooth => "BLUETOOTH",
+            Self::Dongle => "WIRELESS DONGLE",
+            Self::Streamed => "STREAMED: SUNSHINE",
+            Self::VirtualOther => "VIRTUAL (OTHER APP)",
+            Self::Tehuti => "TEHUTI VIRTUAL PAD",
+            Self::Unknown => "",
+        }
+    }
+
+    /// The name of the glyph asset, or none when the source is unknown.
+    #[must_use]
+    pub const fn glyph(self) -> Option<&'static str> {
+        match self {
+            Self::Usb => Some("cable"),
+            Self::Bluetooth => Some("bluetooth"),
+            Self::Dongle => Some("dongle"),
+            Self::Streamed => Some("streamed"),
+            Self::VirtualOther => Some("virtual"),
+            Self::Tehuti => Some("tehuti"),
+            Self::Unknown => None,
+        }
+    }
 }
 
 impl From<&str> for ControllerInfo {
@@ -346,5 +384,30 @@ impl InputSettings {
                     |microphone| microphone.description.to_uppercase(),
                 ),
         }
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::Connection;
+
+    #[test]
+    fn every_known_origin_has_its_own_glyph_and_caption_and_unknown_has_none() {
+        let known = [
+            Connection::Usb,
+            Connection::Bluetooth,
+            Connection::Dongle,
+            Connection::Streamed,
+            Connection::VirtualOther,
+            Connection::Tehuti,
+        ];
+        let glyphs: std::collections::BTreeSet<_> =
+            known.iter().filter_map(|origin| origin.glyph()).collect();
+        let captions: std::collections::BTreeSet<_> = known.iter().map(|origin| origin.caption()).collect();
+        assert_eq!(glyphs.len(), known.len());
+        assert_eq!(captions.len(), known.len());
+        assert!(captions.iter().all(|caption| !caption.is_empty()));
+        assert_eq!(Connection::Unknown.glyph(), None);
+        assert_eq!(Connection::Unknown.caption(), "");
     }
 }
