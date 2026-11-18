@@ -3,10 +3,13 @@
 use super::{
     AMBER, CYAN, WHITE,
     canvas::Canvas,
-    tiles::{DISPLAY_SIDE, Grid, wrap},
+    tiles::{DISPLAY_SIDE, Grid, INPUT_SIDE, wrap},
 };
 use tehuti_core::{
-    dispatch::{Microphone, MicrophoneChoice, Settings, TALK_OPTIONS},
+    dispatch::{
+        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, MICROPHONE_ROW, MicKind, MicrophoneChoice, PadKind, Settings,
+        TALK_OPTIONS,
+    },
     tiles::{Focus, clamp},
 };
 
@@ -295,10 +298,10 @@ impl Canvas {
     pub(super) fn input(&mut self, settings: &Settings, speech: &str) {
         let rows = settings.input.rows();
         let focus = clamp(&rows, settings.input.focus);
-        let grid = Grid::new(&rows, CAPTION, focus, None);
+        let grid = Grid::new(&rows, CAPTION, focus, Some(INPUT_SIDE));
         self.controller_row(settings, &grid, focus);
+        self.controller_settings_row(settings, &grid, focus);
         self.microphone_row(settings, &grid, focus);
-        self.talk_row(settings, &grid, focus);
         self.text(96, 630, "SPEECH RUNS ON", 2, WHITE);
         let speech: String = speech.chars().take(36).collect();
         self.text(
@@ -310,13 +313,50 @@ impl Canvas {
         );
     }
 
+    /// Draws `parts`, boxes in 24ths of the tile side, from the tile's corner.
+    fn drawing(&mut self, corner: (usize, usize), side: usize, parts: &[Part], colour: [u8; 4]) {
+        let unit = |value: usize| value.saturating_mul(side).checked_div(24).unwrap_or(0);
+        for (left, top, width, height) in parts {
+            self.rectangle(
+                corner.0.saturating_add(unit(*left)),
+                corner.1.saturating_add(unit(*top)),
+                unit(*width).max(1),
+                unit(*height).max(1),
+                colour,
+            );
+        }
+    }
+
+    fn pad_drawing(&mut self, corner: (usize, usize), side: usize, kind: PadKind, colour: [u8; 4]) {
+        let parts: &[Part] = match kind {
+            PadKind::Xbox => &XBOX,
+            PadKind::PlayStation => &PLAYSTATION,
+            PadKind::Switch => &SWITCH,
+            PadKind::Generic => &GENERIC_PAD,
+        };
+        self.drawing(corner, side, parts, colour);
+        self.drawing(corner, side, pad_details(kind), FACE);
+    }
+
+    fn mic_drawing(&mut self, corner: (usize, usize), side: usize, kind: MicKind, colour: [u8; 4]) {
+        let parts: &[Part] = match kind {
+            MicKind::Headset => &HEADSET,
+            MicKind::Usb => &USB_MIC,
+            MicKind::Builtin => &CHIP,
+            MicKind::Network => &NETWORK,
+            MicKind::Phone => &PHONE,
+            MicKind::Generic => &CAPSULE_MIC,
+        };
+        self.drawing(corner, side, parts, colour);
+    }
+
     fn controller_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
         let input = &settings.input;
         let side = grid.side();
-        let points = side.checked_div(7).unwrap_or(8).max(8);
+        let points = side.checked_div(14).unwrap_or(8).max(8);
         for (col, controller) in input.controllers.iter().enumerate() {
             let enabled = input.controller_enabled(&controller.name);
-            let Some((x, y)) = self.tile_frame(grid, (0, col), focus, enabled) else {
+            let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_ROW, col), focus, enabled) else {
                 continue;
             };
             let asking = input.pending_disable.as_deref() == Some(controller.name.as_str());
@@ -327,16 +367,43 @@ impl Canvas {
             } else {
                 DIM
             };
+            self.pad_drawing((x, y), side, controller.kind(), colour);
+            let below = y.saturating_add(side).saturating_sub(side / 5);
             self.tile_text(
-                (x, y, side, side),
+                (x, below, side, side / 5),
                 core::slice::from_ref(&controller.label),
                 points,
                 colour,
             );
             self.caption((x, y), side, &controller.spoken_name(), colour);
             if input.controller_in_use(&controller.name) {
-                let bottom = y.saturating_add(side).saturating_sub(18);
-                self.rectangle(x.saturating_add(8), bottom, 10, 10, AMBER);
+                self.rectangle(x.saturating_add(8), y.saturating_add(8), 10, 10, AMBER);
+            }
+        }
+    }
+
+    /// The open controller's own settings: ENABLED, then its push-to-talk button.
+    fn controller_settings_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
+        let input = &settings.input;
+        let Some(controller) = input.selected_controller() else {
+            return;
+        };
+        let side = grid.side();
+        let points = side.checked_div(9).unwrap_or(8).max(8);
+        let enabled = input.controller_enabled(&controller.name);
+        if let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_SETTINGS_ROW, 0), focus, enabled) {
+            let word = if enabled { "ENABLED" } else { "OFF" };
+            let colour = if enabled { WHITE } else { DIM };
+            self.tile_text((x, y, side, side), &[word.to_owned()], points, colour);
+            self.caption((x, y), side, &controller.spoken_name(), colour);
+        }
+        for (index, option) in TALK_OPTIONS.into_iter().enumerate() {
+            let col = index.saturating_add(1);
+            let marked = input.talk_choice() == option;
+            if let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_SETTINGS_ROW, col), focus, marked) {
+                let label = tehuti_core::dispatch::InputSettings::talk_label(option);
+                let lines = ["TALK".to_owned(), label.to_owned()];
+                self.tile_text((x, y, side, side), &lines, points, WHITE);
             }
         }
     }
@@ -344,49 +411,62 @@ impl Canvas {
     fn microphone_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
         let input = &settings.input;
         let side = grid.side();
-        let points = side.checked_div(7).unwrap_or(8).max(8);
+        let points = side.checked_div(14).unwrap_or(8).max(8);
         for (col, choice) in input.microphone_options().iter().enumerate() {
             let marked = *choice == input.microphone;
-            if let Some((x, y)) = self.tile_frame(grid, (1, col), focus, marked) {
+            if let Some((x, y)) = self.tile_frame(grid, (MICROPHONE_ROW, col), focus, marked) {
                 let label = input.microphone_tile_label(choice);
-                let name = match choice {
-                    MicrophoneChoice::Named(node) => input
-                        .microphones
-                        .iter()
-                        .find(|microphone| microphone.name == *node)
-                        .map(Microphone::spoken_name),
+                let microphone = match choice {
+                    MicrophoneChoice::Named(node) => input.microphones.iter().find(|known| known.name == *node),
                     MicrophoneChoice::All | MicrophoneChoice::Auto => None,
                 };
                 let enabled = match choice {
                     MicrophoneChoice::Named(node) => input.microphone_enabled(node),
                     MicrophoneChoice::All | MicrophoneChoice::Auto => true,
                 };
-                let lines = if enabled {
-                    vec![label]
-                } else {
-                    vec![label, "OFF".to_owned()]
-                };
                 let colour = if enabled { WHITE } else { DIM };
-                self.tile_text((x, y, side, side), &lines, points, colour);
-                if let Some(name) = name {
-                    self.caption((x, y), side, &name, colour);
+                match (choice, microphone) {
+                    (MicrophoneChoice::All, _) => self.drawing((x, y), side, &ALL_MICS, colour),
+                    (MicrophoneChoice::Auto, _) => self.drawing((x, y), side, &AUTO_MIC, colour),
+                    (MicrophoneChoice::Named(_), Some(known)) => {
+                        self.mic_drawing((x, y), side, known.kind(), colour);
+                    }
+                    (MicrophoneChoice::Named(_), None) => self.mic_drawing((x, y), side, MicKind::Generic, DIM),
+                }
+                let words = if enabled { label } else { format!("{label} OFF") };
+                let below = y.saturating_add(side).saturating_sub(side / 5);
+                self.tile_text((x, below, side, side / 5), &[words], points, colour);
+                if let Some(known) = microphone {
+                    self.caption((x, y), side, &known.spoken_name(), colour);
                 }
             }
         }
     }
+}
 
-    fn talk_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
-        let input = &settings.input;
-        let side = grid.side();
-        let points = side.checked_div(7).unwrap_or(8).max(8);
-        let binding = input.binding_controller().is_some();
-        for (col, option) in TALK_OPTIONS.into_iter().enumerate() {
-            let marked = binding && input.talk_choice() == option;
-            if let Some((x, y)) = self.tile_frame(grid, (2, col), focus, marked) {
-                let label = tehuti_core::dispatch::InputSettings::talk_label(option);
-                let lines = ["TALK".to_owned(), label.to_owned()];
-                self.tile_text((x, y, side, side), &lines, points, WHITE);
-            }
-        }
+/// A box in 24ths of a tile side: left, top, width, height.
+type Part = (usize, usize, usize, usize);
+
+const GENERIC_PAD: [Part; 3] = [(3, 5, 18, 9), (3, 12, 4, 5), (17, 12, 4, 5)];
+const XBOX: [Part; 3] = [(3, 4, 18, 9), (3, 11, 5, 6), (16, 11, 5, 6)];
+const PLAYSTATION: [Part; 4] = [(3, 5, 18, 8), (3, 11, 5, 6), (16, 11, 5, 6), (9, 4, 6, 1)];
+const SWITCH: [Part; 2] = [(2, 3, 6, 14), (16, 3, 6, 14)];
+
+/// The details cut into a pad's body: sticks, d-pad and buttons.
+fn pad_details(kind: PadKind) -> &'static [Part] {
+    match kind {
+        PadKind::Xbox => &[(5, 6, 3, 3), (9, 10, 4, 1), (10, 9, 2, 3), (14, 10, 3, 3), (16, 6, 1, 1), (18, 6, 1, 1), (17, 5, 1, 1), (17, 7, 1, 1)],
+        PadKind::PlayStation => &[(10, 6, 4, 2), (5, 7, 3, 1), (6, 6, 1, 3), (16, 7, 1, 1), (18, 7, 1, 1), (17, 6, 1, 1), (17, 8, 1, 1), (8, 10, 3, 3), (13, 10, 3, 3)],
+        PadKind::Switch => &[(4, 5, 3, 3), (4, 11, 1, 3), (3, 12, 3, 1), (17, 6, 1, 1), (19, 6, 1, 1), (18, 5, 1, 1), (18, 7, 1, 1), (17, 11, 3, 3)],
+        PadKind::Generic => &[(6, 7, 1, 3), (5, 8, 3, 1), (15, 7, 2, 2), (17, 9, 2, 2)],
     }
 }
+
+const CAPSULE_MIC: [Part; 6] = [(10, 2, 4, 8), (8, 8, 1, 3), (15, 8, 1, 3), (8, 11, 8, 1), (11, 12, 2, 3), (8, 15, 8, 1)];
+const USB_MIC: [Part; 4] = [(10, 2, 4, 9), (11, 11, 2, 4), (9, 15, 6, 3), (11, 18, 2, 1)];
+const HEADSET: [Part; 7] = [(5, 3, 14, 1), (5, 3, 1, 7), (18, 3, 1, 7), (3, 8, 4, 7), (17, 8, 4, 7), (5, 14, 8, 1), (12, 13, 3, 2)];
+const CHIP: [Part; 7] = [(6, 4, 12, 11), (4, 6, 2, 1), (4, 9, 2, 1), (4, 12, 2, 1), (18, 6, 2, 1), (18, 9, 2, 1), (18, 12, 2, 1)];
+const NETWORK: [Part; 4] = [(10, 12, 4, 3), (8, 9, 8, 1), (5, 6, 14, 1), (2, 3, 20, 1)];
+const PHONE: [Part; 3] = [(8, 2, 8, 15), (11, 15, 2, 1), (9, 3, 6, 10)];
+const ALL_MICS: [Part; 3] = [(3, 5, 4, 8), (10, 3, 4, 10), (17, 5, 4, 8)];
+const AUTO_MIC: [Part; 5] = [(10, 3, 4, 8), (5, 5, 1, 8), (18, 5, 1, 8), (5, 5, 3, 1), (16, 13, 3, 1)];

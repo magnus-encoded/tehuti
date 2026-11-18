@@ -3,7 +3,7 @@
 use super::{
     Effect,
     input_settings::{
-        CONTROLLER_ROW, ControllerChoice, InputSettings, MICROPHONE_ROW, PUSH_TO_TALK_ROW, TALK_OPTIONS,
+        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, ControllerChoice, InputSettings, MICROPHONE_ROW, TALK_OPTIONS,
     },
 };
 use crate::pad::{PadFamily, Role};
@@ -141,6 +141,13 @@ impl Settings {
         } else {
             clamp(&rows, focus)
         };
+        if self.input.focus.row == CONTROLLER_ROW {
+            self.input.controller_cursor = self.input.focus.col;
+        }
+        self.input.controller_cursor = self
+            .input
+            .controller_cursor
+            .min(self.input.controllers.len().saturating_sub(1));
     }
 
     /// Restores saved choices.
@@ -364,6 +371,7 @@ impl Settings {
                 Category::Input => {
                     self.page = Page::Input;
                     self.input.focus = first(&self.input.rows());
+                    self.input.controller_cursor = 0;
                     self.input.pending_disable = None;
                     effects.push(Effect::ListMicrophones);
                 }
@@ -466,7 +474,17 @@ impl Settings {
             }
         } else if let Some(direction) = Direction::from_button(name) {
             self.input.pending_disable = None;
-            self.input.focus = step(&self.input.rows(), self.input.focus, direction);
+            let before = clamp(&self.input.rows(), self.input.focus);
+            let mut after = step(&self.input.rows(), self.input.focus, direction);
+            if before.row == CONTROLLER_ROW && after.row == CONTROLLER_SETTINGS_ROW {
+                after.col = 0;
+            } else if after.row == CONTROLLER_ROW {
+                if before.row == CONTROLLER_SETTINGS_ROW {
+                    after.col = self.input.controller_cursor;
+                }
+                self.input.controller_cursor = after.col;
+            }
+            self.input.focus = after;
         } else if name == self.pad_family.button(Role::Confirm) {
             self.apply_input_tile(effects);
         }
@@ -485,16 +503,24 @@ impl Settings {
                     self.toggle_controller(name, effects);
                 }
             }
+            CONTROLLER_SETTINGS_ROW => {
+                let Some(name) = self.input.selected_controller().map(|pad| pad.name.clone()) else {
+                    return;
+                };
+                match focus.col.checked_sub(1) {
+                    None => self.toggle_controller(name, effects),
+                    Some(index) => {
+                        if let Some(option) = TALK_OPTIONS.get(index).copied() {
+                            self.choose_talk(option, effects);
+                        }
+                    }
+                }
+            }
             MICROPHONE_ROW => match self.input.microphone_options().get(focus.col).cloned() {
                 Some(super::MicrophoneChoice::Named(name)) => self.toggle_microphone(name, effects),
                 Some(choice) => self.choose_microphone(choice, effects),
                 None => {}
             },
-            PUSH_TO_TALK_ROW => {
-                if let Some(option) = TALK_OPTIONS.get(focus.col).copied() {
-                    self.choose_talk(option, effects);
-                }
-            }
             _ => {}
         }
     }
@@ -543,7 +569,7 @@ impl Settings {
     }
 
     fn choose_talk(&mut self, option: Option<ButtonName>, effects: &mut Vec<Effect>) {
-        let Some(name) = self.input.binding_controller().map(str::to_owned) else {
+        let Some(name) = self.input.selected_controller().map(|pad| pad.name.clone()) else {
             return;
         };
         if self.input.talk_choice() == option {

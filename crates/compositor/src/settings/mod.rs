@@ -498,16 +498,15 @@ mod tests {
         assert!(compositor.controller_chosen("Xbox Controller"));
         assert_eq!(store.disabled_controllers()?, Vec::<String>::new());
         press(&mut compositor, ButtonName::DpadDown);
-        press(&mut compositor, ButtonName::DpadDown);
-        press(&mut compositor, ButtonName::DpadRight);
-        press(&mut compositor, ButtonName::DpadRight);
+        for _ in 0..3 {
+            press(&mut compositor, ButtonName::DpadRight);
+        }
         press(&mut compositor, ButtonName::South);
         assert_eq!(
-            store.controller_bindings()?.get("Wireless Controller"),
+            store.controller_bindings()?.get("Xbox Controller"),
             Some(&ButtonName::Start)
         );
-        press(&mut compositor, ButtonName::DpadLeft);
-        press(&mut compositor, ButtonName::DpadUp);
+        press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::South);
         assert_eq!(store.microphone()?, MicrophoneChoice::Auto);
         Ok(())

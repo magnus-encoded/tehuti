@@ -3247,7 +3247,7 @@ fn the_input_page_draws_and_navigates_while_the_microphone_listing_never_replies
     let mut world = World::default();
     let mut state = open_input(&mut world);
     assert!(world.trace.contains(&Effect::ListMicrophones));
-    assert_eq!(state.settings().input.rows(), [2, 2, 3]);
+    assert_eq!(state.settings().input.rows(), [2, 4, 2]);
     for button in [
         ButtonName::DpadRight,
         ButtonName::DpadDown,
@@ -3260,7 +3260,7 @@ fn the_input_page_draws_and_navigates_while_the_microphone_listing_never_replies
     }
     assert_eq!(
         state.settings().input.focus,
-        crate::tiles::Focus { row: 2, col: 1 }
+        crate::tiles::Focus { row: 2, col: 0 }
     );
     assert_eq!(state.settings().page, Page::Input);
 }
@@ -3463,6 +3463,7 @@ fn a_microphone_is_chosen_by_its_tile_or_its_voice_destination() {
         Input::Microphones(vec![microphone("alsa_input.analog", "Built-in Audio")]),
     );
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::DpadRight);
     let state = settings_button(&mut world, state, ButtonName::DpadRight);
     world.trace.clear();
@@ -3522,6 +3523,7 @@ proptest! {
         let known: Vec<Microphone> = first.iter().map(named).collect();
         let mut state = world.run(state, Input::Microphones(known.clone()));
         state = settings_button(&mut world, state, ButtonName::DpadDown);
+        state = settings_button(&mut world, state, ButtonName::DpadDown);
         let options = state.settings().input.microphone_options().len();
         for _ in 0..focus_col.min(options.saturating_sub(1)) {
             state = settings_button(&mut world, state, ButtonName::DpadRight);
@@ -3554,44 +3556,46 @@ proptest! {
 }
 
 #[test]
-fn per_controller_talk_follows_the_active_pad_and_can_restore_context_defaults() {
+fn push_to_talk_is_set_in_each_controllers_own_row_and_follows_the_pad_in_use() {
     let mut world = World::default();
-    let state = open_input(&mut world);
-    let state = world.run(state, Input::ActiveController("Elite".into()));
-    let mut state = settings_button(&mut world, state, ButtonName::DpadDown);
-    state = settings_button(&mut world, state, ButtonName::DpadDown);
-    assert_eq!(
-        state.settings().input.focus.row,
-        crate::dispatch::PUSH_TO_TALK_ROW
-    );
-    state = settings_button(&mut world, state, ButtonName::DpadRight);
-    state = settings_button(&mut world, state, ButtonName::DpadRight);
-    assert!(
-        !world
-            .trace
+    let mut state = open_input(&mut world);
+    let press = |world: &mut World, state: State, buttons: &[ButtonName]| {
+        buttons
             .iter()
-            .any(|effect| matches!(effect, Effect::PersistControllerTalk(_, _))),
+            .fold(state, |state, button| settings_button(world, state, *button))
+    };
+    // Down from the first pad opens its row: ENABLED, then CONTEXT, SHARE, MENU.
+    state = press(&mut world, state, &[ButtonName::DpadDown]);
+    assert_eq!(state.settings().input.focus, crate::tiles::Focus { row: 1, col: 0 });
+    state = press(&mut world, state, &[ButtonName::DpadRight, ButtonName::DpadRight, ButtonName::DpadRight]);
+    assert!(
+        !world.trace.iter().any(|effect| matches!(effect, Effect::PersistControllerTalk(_, _))),
         "moving saves nothing"
     );
-    state = settings_button(&mut world, state, ButtonName::South);
+    state = press(&mut world, state, &[ButtonName::South]);
     assert!(world.trace.contains(&Effect::PersistControllerTalk(
-        "Elite".into(),
+        "Wireless Controller".into(),
         Some(ButtonName::Start)
     )));
-    state = world.run(state, Input::ActiveController("Elite".into()));
+    // Up returns to that pad; the next pad has its own row.
+    state = press(&mut world, state, &[ButtonName::DpadUp, ButtonName::DpadRight, ButtonName::DpadDown]);
+    assert_eq!(state.settings().input.focus, crate::tiles::Focus { row: 1, col: 0 });
+    state = press(&mut world, state, &[ButtonName::DpadRight, ButtonName::DpadRight, ButtonName::South]);
+    assert!(world.trace.contains(&Effect::PersistControllerTalk(
+        "Xbox Controller".into(),
+        Some(ButtonName::Record)
+    )));
+    state = world.run(state, Input::ActiveController("Wireless Controller".into()));
     assert!(state.core().push_to_talk(ButtonName::Start));
-    assert_eq!(state.core().passthrough_push_to_talk(), [ButtonName::Start]);
     assert!(!state.core().push_to_talk(ButtonName::Record));
-    state = world.run(state, Input::ActiveController("Share pad".into()));
+    state = world.run(state, Input::ActiveController("Xbox Controller".into()));
     assert!(state.core().push_to_talk(ButtonName::Record));
     assert!(!state.core().push_to_talk(ButtonName::Start));
-    state = world.run(state, Input::ActiveController("Elite".into()));
-    state = settings_button(&mut world, state, ButtonName::DpadLeft);
-    state = settings_button(&mut world, state, ButtonName::DpadLeft);
-    state = settings_button(&mut world, state, ButtonName::South);
-    state = world.run(state, Input::ActiveController("Elite".into()));
-    assert!(state.core().push_to_talk(ButtonName::Record));
+    // CONTEXT on the first pad restores the context default.
+    state = press(&mut world, state, &[ButtonName::DpadUp, ButtonName::DpadLeft, ButtonName::DpadDown, ButtonName::DpadRight, ButtonName::South]);
+    state = world.run(state, Input::ActiveController("Wireless Controller".into()));
     assert!(!state.core().push_to_talk(ButtonName::Start));
+    assert!(!state.core().push_to_talk(ButtonName::Record));
 }
 
 fn hold_guide(world: &mut World, mut state: State) -> State {
@@ -6048,6 +6052,7 @@ fn confirming_a_chosen_microphone_turns_it_off_and_again_turns_it_on() {
         Input::Microphones(vec![microphone("alsa_input.analog", "Built-in Audio")]),
     );
     let mut state = settings_button(&mut world, state, ButtonName::DpadDown);
+    state = settings_button(&mut world, state, ButtonName::DpadDown);
     state = settings_button(&mut world, state, ButtonName::DpadRight);
     state = settings_button(&mut world, state, ButtonName::DpadRight);
     state = settings_button(&mut world, state, ButtonName::South);
@@ -6143,4 +6148,20 @@ proptest! {
         prop_assert_eq!(unique, every, "every rate still shows");
         prop_assert!(shown.contains(&current), "the active mode keeps its tile");
     }
+}
+
+#[test]
+fn tiles_pick_their_drawing_from_the_device_name() {
+    let kind = |name: &str| ControllerInfo::from(name).kind();
+    assert_eq!(kind("Microsoft Xbox One Controller"), PadKind::Xbox);
+    assert_eq!(kind("Wireless Controller"), PadKind::PlayStation);
+    assert_eq!(kind("Nintendo Switch Pro Controller"), PadKind::Switch);
+    assert_eq!(kind("Elite"), PadKind::Generic);
+    let mic = |name: &str, description: &str| microphone(name, description).kind();
+    assert_eq!(mic("bluez_input.AA", "Headset"), MicKind::Headset);
+    assert_eq!(mic("alsa_input.usb-Desk_Mic-00", "Desk Mic"), MicKind::Usb);
+    assert_eq!(mic("alsa_input.pci-0000_00_1f.3.analog-stereo", "Built-in Audio"), MicKind::Builtin);
+    assert_eq!(mic("rtp-source", "Living room stream"), MicKind::Network);
+    assert_eq!(mic("phone-1", "Phone mic"), MicKind::Phone);
+    assert_eq!(mic("other", "Other"), MicKind::Generic);
 }

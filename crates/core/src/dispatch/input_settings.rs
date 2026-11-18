@@ -38,7 +38,47 @@ impl From<String> for ControllerInfo {
     }
 }
 
+/// The drawing a controller tile shows, guessed from the pad's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadKind {
+    Xbox,
+    PlayStation,
+    Switch,
+    Generic,
+}
+
+/// The drawing a microphone tile shows, guessed from the source's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicKind {
+    Headset,
+    Usb,
+    /// A sound chip: analog or built-in capture.
+    Builtin,
+    /// A stream from the network, such as RTP.
+    Network,
+    Phone,
+    Generic,
+}
+
+fn mentions(text: &str, words: &[&str]) -> bool {
+    let lowered = text.to_lowercase();
+    words.iter().any(|word| lowered.contains(word))
+}
+
 impl ControllerInfo {
+    #[must_use]
+    pub fn kind(&self) -> PadKind {
+        if mentions(&self.name, &["xbox", "x-box"]) {
+            PadKind::Xbox
+        } else if mentions(&self.name, &["dualshock", "dualsense", "playstation", "wireless controller", "ps4", "ps5"]) {
+            PadKind::PlayStation
+        } else if mentions(&self.name, &["nintendo", "switch", "joy-con", "pro controller"]) {
+            PadKind::Switch
+        } else {
+            PadKind::Generic
+        }
+    }
+
     /// The name voice uses for this pad, and the caption under its tile.
     #[must_use]
     pub fn spoken_name(&self) -> String {
@@ -69,10 +109,11 @@ pub struct Microphone {
 
 /// The Input page's rows of tiles, top to bottom.
 pub const CONTROLLER_ROW: usize = 0;
-pub const MICROPHONE_ROW: usize = 1;
-pub const PUSH_TO_TALK_ROW: usize = 2;
+/// The row of settings for the controller that has focus: ENABLED, then the push-to-talk tiles.
+pub const CONTROLLER_SETTINGS_ROW: usize = 1;
+pub const MICROPHONE_ROW: usize = 2;
 
-/// The push-to-talk tiles: the context's own button, then the two a pad can lend.
+/// The push-to-talk tiles of a controller's row, after ENABLED: the context's own button, then the two a pad can lend.
 pub const TALK_OPTIONS: [Option<tehuti_protocol::ButtonName>; 3] = [
     None,
     Some(tehuti_protocol::ButtonName::Record),
@@ -80,6 +121,24 @@ pub const TALK_OPTIONS: [Option<tehuti_protocol::ButtonName>; 3] = [
 ];
 
 impl Microphone {
+    #[must_use]
+    pub fn kind(&self) -> MicKind {
+        let text = format!("{} {}", self.name, self.description);
+        if mentions(&text, &["rtp", "network", "tunnel", "stream", "raop"]) {
+            MicKind::Network
+        } else if mentions(&text, &["phone-", "smartphone", "android", "iphone", "phone mic"]) {
+            MicKind::Phone
+        } else if mentions(&text, &["headset", "headphone", "bluez", "arctis", "hands-free"]) {
+            MicKind::Headset
+        } else if mentions(&text, &["usb"]) {
+            MicKind::Usb
+        } else if mentions(&text, &["analog", "built-in", "builtin", "pci", "internal"]) {
+            MicKind::Builtin
+        } else {
+            MicKind::Generic
+        }
+    }
+
     /// The name voice uses for this microphone, and the caption under its tile.
     #[must_use]
     pub fn spoken_name(&self) -> String {
@@ -90,6 +149,8 @@ impl Microphone {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InputSettings {
     pub focus: Focus,
+    /// The controller tile whose settings row is open below it.
+    pub controller_cursor: usize,
     /// Connected pads: first seen first, late arrivals at the end.
     pub controllers: Vec<ControllerInfo>,
     /// The saved single-pad choice from before per-controller tiles.
@@ -108,21 +169,23 @@ pub struct InputSettings {
 }
 
 impl InputSettings {
+    /// The controller whose tile or settings row has focus.
     #[must_use]
-    pub fn binding_controller(&self) -> Option<&str> {
-        match &self.controller {
-            ControllerChoice::Named(name) => Some(name),
-            ControllerChoice::Auto => self.active_controller.as_deref(),
-        }
+    pub fn selected_controller(&self) -> Option<&ControllerInfo> {
+        self.controllers.get(self.controller_cursor)
     }
 
-    /// The tiles in each row; the controller row may be empty, the others never are.
+    /// The tiles in each row; the controller rows may be empty, the microphone row never is.
     #[must_use]
     pub fn rows(&self) -> [usize; 3] {
         [
             self.controllers.len(),
+            if self.controllers.is_empty() {
+                0
+            } else {
+                TALK_OPTIONS.len().saturating_add(1)
+            },
             self.microphone_options().len(),
-            TALK_OPTIONS.len(),
         ]
     }
 
@@ -175,11 +238,11 @@ impl InputSettings {
         Effect::SettingsControllerEnabled { name, enabled }
     }
 
-    /// The push-to-talk tile chosen for the pad whose button binding is shown.
+    /// The push-to-talk tile chosen for the pad whose row is open.
     #[must_use]
     pub fn talk_choice(&self) -> Option<tehuti_protocol::ButtonName> {
-        self.binding_controller()
-            .and_then(|name| self.controller_bindings.get(name))
+        self.selected_controller()
+            .and_then(|pad| self.controller_bindings.get(&pad.name))
             .copied()
     }
 
