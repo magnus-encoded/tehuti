@@ -511,6 +511,8 @@ mod tests {
             store.controller_bindings()?.get("Xbox Controller#1"),
             Some(&ButtonName::Start)
         );
+        press(&mut compositor, ButtonName::DpadLeft);
+        press(&mut compositor, ButtonName::DpadLeft);
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::South);
         assert_eq!(store.microphone()?, MicrophoneChoice::Auto);
