@@ -485,13 +485,11 @@ impl Settings {
                     self.toggle_controller(name, effects);
                 }
             }
-            MICROPHONE_ROW => {
-                match self.input.microphone_options().get(focus.col).cloned() {
-                    Some(super::MicrophoneChoice::Named(name)) => self.toggle_microphone(name, effects),
-                    Some(choice) => self.choose_microphone(choice, effects),
-                    None => {}
-                }
-            }
+            MICROPHONE_ROW => match self.input.microphone_options().get(focus.col).cloned() {
+                Some(super::MicrophoneChoice::Named(name)) => self.toggle_microphone(name, effects),
+                Some(choice) => self.choose_microphone(choice, effects),
+                None => {}
+            },
             PUSH_TO_TALK_ROW => {
                 if let Some(option) = TALK_OPTIONS.get(focus.col).copied() {
                     self.choose_talk(option, effects);

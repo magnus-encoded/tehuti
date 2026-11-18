@@ -55,10 +55,7 @@ impl Grid {
     /// The first tile of `row` that shows.
     fn first_shown(&self, row: usize) -> usize {
         if row == self.focus.row {
-            self.focus
-                .col
-                .saturating_add(1)
-                .saturating_sub(self.visible())
+            self.focus.col.saturating_add(1).saturating_sub(self.visible())
         } else {
             0
         }
