@@ -62,10 +62,10 @@ mod tiles {
             prop_assume!(rows[focus.row] > 0);
             for direction in [Direction::Upward, Direction::Downward] {
                 let moved = step(&rows, focus, direction);
-                if moved.row != focus.row {
-                    prop_assert_eq!(moved.col, focus.col.min(rows[moved.row].saturating_sub(1)));
-                } else {
+                if moved.row == focus.row {
                     prop_assert_eq!(moved, focus);
+                } else {
+                    prop_assert_eq!(moved.col, focus.col.min(rows[moved.row].saturating_sub(1)));
                 }
             }
         }
