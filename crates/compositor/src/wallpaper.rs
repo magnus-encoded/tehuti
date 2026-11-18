@@ -1021,23 +1021,21 @@ where
         .iter()
         .map(OutputRenderElements::Custom)
         .collect::<Vec<_>>();
-    let space = if compositor.wallpaper_preview_active() {
-        Vec::new()
-    } else {
-        space_render_elements(renderer, [&compositor.space], output, 1.0)?
-    };
-    elements.extend(
-        compositor
-            .focus_outline(output)
-            .into_iter()
-            .map(OutputRenderElements::Focus),
-    );
-    elements.extend(
-        crate::import_placeholder::elements(renderer, compositor, output)
-            .into_iter()
-            .map(OutputRenderElements::Focus),
-    );
-    elements.extend(space.into_iter().map(OutputRenderElements::Space));
+    if !compositor.wallpaper_preview_active() {
+        let space = space_render_elements(renderer, [&compositor.space], output, 1.0)?;
+        elements.extend(
+            compositor
+                .focus_outline(output)
+                .into_iter()
+                .map(OutputRenderElements::Focus),
+        );
+        elements.extend(
+            crate::import_placeholder::elements(renderer, compositor, output)
+                .into_iter()
+                .map(OutputRenderElements::Focus),
+        );
+        elements.extend(space.into_iter().map(OutputRenderElements::Space));
+    }
     if let Some(background) = background {
         elements.push(OutputRenderElements::Wallpaper(WallpaperElement(background)));
     }
