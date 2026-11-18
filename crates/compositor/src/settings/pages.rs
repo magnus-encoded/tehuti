@@ -321,7 +321,7 @@ impl Canvas {
     }
 
     /// Artwork centred in the upper part of a tile, leaving the bottom for words.
-    fn input_icon(&mut self, corner: (uart, uart), side: uart, icon: &'static str, colour: [u8; 4]) {
+    fn input_icon(&mut self, corner: (usize, usize), side: usize, icon: &'static str, colour: [u8; 4]) {
         let art = side.saturating_mul(5) / 8;
         self.svg_icon(
             (
