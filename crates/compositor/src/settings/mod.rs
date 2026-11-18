@@ -447,7 +447,7 @@ mod tests {
         let line = super::build_line();
         let version = option_env!("TEHUTI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
         assert_eq!(line, format!("v{version} \u{b7} {}", env!("TEHUTI_GIT_HASH")));
-        assert!(!env!("TEHUTI_GIT_HASH").is_empty());
+        assert_ne!(env!("TEHUTI_GIT_HASH"), "");
     }
 
     #[test]
