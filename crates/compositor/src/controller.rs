@@ -2208,9 +2208,9 @@ mod tests {
             second in 0_i32..70000,
         ) {
             let maximum = minimum.saturating_add(span);
-            let at = |raw: i32| minimum.saturating_add(raw.rem_euclid(span.saturating_add(1)));
-            let (a, b) = (at(first), at(second));
-            let (low, high) = (a.min(b), a.max(b));
+            let within = |raw: i32| minimum.saturating_add(raw.rem_euclid(span.saturating_add(1)));
+            let (one, other) = (within(first), within(second));
+            let (low, high) = (one.min(other), one.max(other));
             let (moved_low, moved_high) = (
                 deadzoned_value(low, minimum, maximum, deadzone),
                 deadzoned_value(high, minimum, maximum, deadzone),

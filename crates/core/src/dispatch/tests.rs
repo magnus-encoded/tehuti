@@ -3692,11 +3692,11 @@ proptest! {
     #[test]
     fn stepping_the_deadzone_always_lands_on_a_step(saved in 0_u16..500, presses in 1_usize..12) {
         let mut input = InputSettings::default();
-        input.controller_deadzones.insert("Pad".into(), saved);
+        let _previous = input.controller_deadzones.insert("Pad".into(), saved);
         for _ in 0..presses {
             let next = input.next_deadzone("Pad");
             prop_assert!(crate::dispatch::DEADZONE_STEPS.contains(&next));
-            input.controller_deadzones.insert("Pad".into(), next);
+            let _previous = input.controller_deadzones.insert("Pad".into(), next);
         }
     }
 }

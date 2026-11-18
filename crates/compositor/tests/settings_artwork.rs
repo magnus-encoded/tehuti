@@ -133,7 +133,7 @@ mod tests {
         settings.page = Page::Input;
         settings.input.controllers = vec!["Pad".into()];
         if let Some(deadzone) = deadzone {
-            settings.input.controller_deadzones.insert("Pad".into(), deadzone);
+            let _previous = settings.input.controller_deadzones.insert("Pad".into(), deadzone);
         }
         settings.input.focus = tehuti_core::tiles::Focus { row: 1, col: 4 };
         pixels_of(&settings)
