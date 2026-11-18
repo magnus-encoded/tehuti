@@ -5,7 +5,7 @@ use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::Transform,
 };
-use tehuti_core::dispatch::{Category, InputRow, Page, Settings};
+use tehuti_core::dispatch::{Category, Page, Settings};
 
 #[derive(Debug, Default)]
 pub(crate) struct Display {
@@ -24,16 +24,13 @@ pub struct Artwork {
 struct View {
     page: Page,
     category: Category,
-    row: InputRow,
-    controller: String,
-    microphone: String,
-    push_to_talk: String,
+    input: tehuti_core::dispatch::InputSettings,
     speech: String,
     hint: String,
-    selected: usize,
+    display_focus: tehuti_core::tiles::Focus,
+    display_resolution: usize,
     current: usize,
     modes: Vec<String>,
-    resolution_open: bool,
     wallpapers: Vec<String>,
     wallpaper_locked: Vec<bool>,
     wallpaper_selected: usize,
@@ -49,16 +46,13 @@ impl View {
         Self {
             page: settings.page,
             category: settings.category,
-            row: settings.input.row,
-            controller: settings.input.controller_label(),
-            microphone: settings.input.microphone_label(),
-            push_to_talk: settings.input.push_to_talk_label(),
+            input: settings.input.clone(),
             speech: speech.to_owned(),
             hint: settings.button_hint(),
-            selected: settings.selected,
+            display_focus: settings.display_focus,
+            display_resolution: settings.display_resolution,
             current: settings.current,
             modes: settings.modes.clone(),
-            resolution_open: settings.resolution_open,
             wallpapers: settings.wallpapers.clone(),
             wallpaper_locked: settings.wallpaper_locked.clone(),
             wallpaper_selected: settings.wallpaper_selected,
@@ -143,6 +137,8 @@ const AMBER: [u8; 4] = [56, 184, 255, 255];
 const WHITE: [u8; 4] = [244, 240, 225, 255];
 
 pub(crate) mod canvas;
+mod pages;
+mod tiles;
 use canvas::Canvas;
 
 impl Canvas {
@@ -174,134 +170,6 @@ impl Canvas {
             self.text(96, y.saturating_add(20), name, 5, WHITE);
             self.text(600, y.saturating_add(32), detail, 3, CYAN);
         }
-    }
-
-    fn display(&mut self, settings: &Settings) {
-        let scale_row = format!("SCALE {}  (LEFT / RIGHT)", settings.scale);
-        let font_row = format!("BAR FONT: {}  (LEFT / RIGHT)", settings.bar_font.label());
-        let label = |mode: &String| format!("{} HZ", mode.replace('x', " X ").replace('@', " / "));
-        // Collapsed, the whole mode list is the one Resolution row, selected as the current mode.
-        let (rows, selected, first): (Vec<String>, usize, usize) = if settings.resolution_open {
-            let rows = settings
-                .modes
-                .iter()
-                .map(label)
-                .chain([scale_row, font_row])
-                .collect();
-            (rows, settings.selected, settings.selected.saturating_sub(2))
-        } else {
-            let current = settings
-                .modes
-                .get(settings.current)
-                .map_or_else(|| "NONE".to_owned(), label);
-            let rows = vec![format!("RESOLUTION: {current}  (A)"), scale_row, font_row];
-            let selected = settings
-                .selected
-                .saturating_sub(settings.modes.len())
-                .saturating_add(1);
-            (
-                rows,
-                if settings.selected < settings.modes.len() {
-                    0
-                } else {
-                    selected
-                },
-                0,
-            )
-        };
-        for (row, (index, mode)) in rows.iter().enumerate().skip(first).take(5).enumerate() {
-            let y = 244usize.saturating_add(row.saturating_mul(64));
-            if index == selected {
-                self.rectangle(72, y.saturating_sub(12), 850, 54, [65, 43, 12, 255]);
-                self.rectangle(72, y.saturating_sub(12), 4, 54, CYAN);
-            }
-            self.text(96, y, mode, 4, WHITE);
-            if settings.resolution_open && index == settings.current && index < settings.modes.len() {
-                self.text(720, y.saturating_add(6), "ACTIVE", 2, CYAN);
-            }
-        }
-        if settings.modes.is_empty() {
-            self.text(96, 568, "NO DRIVER MODES AVAILABLE", 3, AMBER);
-        }
-        if let Some(mode) = settings.modes.get(settings.selected) {
-            self.mode_preview(mode);
-        }
-    }
-
-    fn mode_preview(&mut self, mode: &str) {
-        let Some((size, refresh)) = mode.split_once('@') else {
-            return;
-        };
-        let Some((width, height)) = size.split_once('x') else {
-            return;
-        };
-        let (Ok(width), Ok(height), Ok(refresh)) = (
-            width.parse::<usize>(),
-            height.parse::<usize>(),
-            refresh.parse::<f32>(),
-        ) else {
-            return;
-        };
-        if width == 0 || height == 0 {
-            return;
-        }
-        let preview_width = 200.min(width.saturating_mul(120).checked_div(height).unwrap_or_default());
-        let preview_height = 120.min(height.saturating_mul(200).checked_div(width).unwrap_or_default());
-        self.rectangle(960, 230, preview_width, 2, CYAN);
-        self.rectangle(960, 230, 2, preview_height, CYAN);
-        self.rectangle(
-            960,
-            230usize.saturating_add(preview_height),
-            preview_width,
-            2,
-            CYAN,
-        );
-        self.rectangle(
-            960usize.saturating_add(preview_width),
-            230,
-            2,
-            preview_height,
-            CYAN,
-        );
-        self.wave(960, 445, refresh);
-    }
-
-    fn input(&mut self, settings: &Settings, speech: &str) {
-        let rows = [
-            (
-                InputRow::Controller,
-                "CONTROLLER",
-                settings.input.controller_label(),
-            ),
-            (
-                InputRow::PushToTalk,
-                "PUSH TO TALK",
-                settings.input.push_to_talk_label(),
-            ),
-            (
-                InputRow::Microphone,
-                "MICROPHONE",
-                settings.input.microphone_label(),
-            ),
-        ];
-        for (index, (row, name, value)) in rows.into_iter().enumerate() {
-            let y = 230usize.saturating_add(index.saturating_mul(124));
-            if row == settings.input.row {
-                self.highlight(y, 108);
-            }
-            self.text(96, y.saturating_add(14), name, 4, WHITE);
-            let value: String = value.chars().take(36).collect();
-            self.text(96, y.saturating_add(66), &format!("<  {value}  >"), 3, CYAN);
-        }
-        self.text(96, 630, "SPEECH RUNS ON", 2, WHITE);
-        let speech: String = speech.chars().take(36).collect();
-        self.text(
-            360,
-            626,
-            &speech,
-            3,
-            if speech.starts_with("CPU") { AMBER } else { CYAN },
-        );
     }
 
     fn wallpaper(&mut self, settings: &Settings) {
@@ -431,8 +299,7 @@ mod tests {
         });
         for name in [
             tehuti_protocol::ButtonName::South,
-            tehuti_protocol::ButtonName::South,
-            tehuti_protocol::ButtonName::DpadDown,
+            tehuti_protocol::ButtonName::DpadRight,
             tehuti_protocol::ButtonName::South,
         ] {
             compositor.handle(&Event::Button {
@@ -595,9 +462,9 @@ mod tests {
     }
 
     #[test]
-    fn the_input_page_confirms_a_pad_and_saves_its_binding_and_microphone()
+    fn the_input_page_disables_a_pad_and_saves_it_with_its_binding_and_microphone()
     -> Result<(), Box<dyn core::error::Error>> {
-        use tehuti_core::dispatch::{ControllerChoice, MicrophoneChoice};
+        use tehuti_core::dispatch::MicrophoneChoice;
         use tehuti_protocol::{ButtonName, ButtonState};
         let directory = tempfile::tempdir()?;
         let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
@@ -605,6 +472,7 @@ mod tests {
         let mut compositor = Compositor::new(&display.handle())?;
         compositor.load_input_choices(store.clone());
         compositor.configure_controllers(input_test_controllers());
+        compositor.activate_controller("Wireless Controller".into());
         compositor.handle(&Event::Speech {
             text: Text::new("Pop the hood.".into())?,
         });
@@ -616,42 +484,45 @@ mod tests {
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::South);
         assert_eq!(compositor.settings().page, tehuti_core::dispatch::Page::Input);
-        assert_eq!(
-            compositor.settings().input.controller_label(),
-            "AUTO: DUALSHOCK 4 #1 +1"
-        );
         assert!(compositor.settings_buffer((1024, 600)).is_some());
         press(&mut compositor, ButtonName::DpadRight);
-        assert_eq!(compositor.settings().input.controller_label(), "DUALSHOCK 4 #1");
-        assert!(compositor.controller_chosen("Wireless Controller"));
-        assert!(compositor.controller_chosen("Xbox Controller"));
-        assert_eq!(
-            store.controller()?,
-            ControllerChoice::Auto,
-            "a preview is not saved"
+        assert!(
+            compositor.controller_chosen("Xbox Controller"),
+            "moving disables nothing"
         );
         press(&mut compositor, ButtonName::South);
-        assert_eq!(
-            store.controller()?,
-            ControllerChoice::Named("Wireless Controller".into())
-        );
         assert!(!compositor.controller_chosen("Xbox Controller"));
+        assert!(compositor.controller_chosen("Wireless Controller"));
+        assert_eq!(store.disabled_controllers()?, vec!["Xbox Controller".to_owned()]);
+        press(&mut compositor, ButtonName::South);
+        assert!(compositor.controller_chosen("Xbox Controller"));
+        assert!(store.disabled_controllers()?.is_empty());
+        press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::DpadRight);
         press(&mut compositor, ButtonName::DpadRight);
-        assert_eq!(compositor.settings().input.push_to_talk_label(), "MENU");
+        press(&mut compositor, ButtonName::South);
         assert_eq!(
             store.controller_bindings()?.get("Wireless Controller"),
             Some(&ButtonName::Start)
         );
-        press(&mut compositor, ButtonName::DpadDown);
-        press(&mut compositor, ButtonName::DpadRight);
+        press(&mut compositor, ButtonName::DpadUp);
+        press(&mut compositor, ButtonName::South);
         assert_eq!(store.microphone()?, MicrophoneChoice::Auto);
-        compositor.configure_controllers(vec!["Xbox Controller".into()]);
-        assert!(
-            compositor.controller_chosen("Xbox Controller"),
-            "every pad drives while the chosen one is away"
-        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_saved_disabled_pad_stays_disabled_after_a_restart() -> Result<(), Box<dyn core::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
+        store.set_disabled_controllers(&["Xbox Controller".to_owned()])?;
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.load_input_choices(store);
+        assert!(!compositor.controller_chosen("Xbox Controller"));
+        assert!(compositor.controller_chosen("Wireless Controller"));
+        assert!(!compositor.settings().input.controller_enabled("Xbox Controller"));
         Ok(())
     }
 }

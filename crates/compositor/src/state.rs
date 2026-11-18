@@ -123,6 +123,8 @@ pub struct Compositor {
     /// The pad that drives Tehuti; previews before confirmation too.
     controller_choice: tehuti_core::dispatch::ControllerChoice,
     controller_names: Vec<String>,
+    /// Pads the user turned off on the Input page.
+    disabled_controllers: Vec<String>,
     input_choices: Option<crate::input_choice_store::Store>,
     volume: Option<crate::volume::Backend>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
@@ -285,6 +287,7 @@ impl Compositor {
             bar_font_store: None,
             controller_choice: tehuti_core::dispatch::ControllerChoice::Auto,
             controller_names: Vec::new(),
+            disabled_controllers: Vec::new(),
             input_choices: None,
             volume: None,
             microphone_listing: None,
@@ -1628,6 +1631,11 @@ impl Compositor {
             tracing::warn!(%error, "saved microphone unreadable; using every microphone");
             tehuti_core::dispatch::MicrophoneChoice::All
         });
+        let disabled_controllers = store.disabled_controllers().unwrap_or_else(|error| {
+            tracing::warn!(%error, "disabled controllers unreadable; using every pad");
+            Vec::new()
+        });
+        self.disabled_controllers = disabled_controllers.clone();
         let bindings = store.controller_bindings().unwrap_or_else(|error| {
             tracing::warn!(%error, "controller bindings unreadable; using context defaults");
             std::collections::BTreeMap::new()
@@ -1638,6 +1646,7 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::InputChoices {
             controller,
             microphone,
+            disabled_controllers,
         });
     }
 
@@ -1657,7 +1666,8 @@ impl Compositor {
     /// Whether input from the pad named `name` drives Tehuti.
     #[must_use]
     pub fn controller_chosen(&self, name: &str) -> bool {
-        crate::input::chosen(&self.controller_choice, &self.controller_names, name)
+        !self.disabled_controllers.iter().any(|disabled| disabled == name)
+            && crate::input::chosen(&self.controller_choice, &self.controller_names, name)
     }
 
     pub fn activate_controller(&mut self, name: String) {
@@ -1814,6 +1824,7 @@ impl Compositor {
             | DispatchEffect::PersistControllerTalk(_, _)
             | DispatchEffect::PersistController(_)
             | DispatchEffect::SettingsMicrophone(_)
+            | DispatchEffect::SettingsControllerEnabled { .. }
             | DispatchEffect::ListMicrophones
             | DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::RunMenuCommand(_)
@@ -2119,6 +2130,12 @@ impl Compositor {
             }
             DispatchEffect::PersistController(choice) => self.choose_controller(choice, true),
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
+            DispatchEffect::SettingsControllerEnabled { name, enabled } => {
+                tracing::info!(%name, enabled, "controller enabled");
+                self.disabled_controllers = self.settings().input.disabled_controllers.clone();
+                let disabled = self.disabled_controllers.clone();
+                self.save_input_choice(|store| store.set_disabled_controllers(&disabled));
+            }
             DispatchEffect::ListMicrophones => {
                 self.microphone_listing = Some(crate::input_choice_store::list_microphones());
             }

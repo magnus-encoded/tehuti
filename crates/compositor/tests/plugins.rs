@@ -272,6 +272,7 @@ for line in sys.stdin:
             | Effect::PersistControllerTalk(_, _)
             | Effect::PersistController(_)
             | Effect::SettingsMicrophone(_)
+            | Effect::SettingsControllerEnabled { .. }
             | Effect::WallpaperPreview(_)
             | Effect::WallpaperSave(_)
             | Effect::UnlockWallpapers

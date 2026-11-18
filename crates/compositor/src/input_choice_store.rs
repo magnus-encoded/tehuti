@@ -75,6 +75,24 @@ impl Store {
     }
 
     /// # Errors
+    /// Returns read errors or invalid saved data.
+    pub fn disabled_controllers(&self) -> io::Result<Vec<String>> {
+        let Some(source) = self.line("controllers-disabled.json")? else {
+            return Ok(Vec::new());
+        };
+        serde_json::from_str(&source).map_err(io::Error::other)
+    }
+
+    /// # Errors
+    /// Returns serialization, file write and replacement errors.
+    pub fn set_disabled_controllers(&self, names: &[String]) -> io::Result<()> {
+        self.replace(
+            "controllers-disabled.json",
+            &serde_json::to_string(names).map_err(io::Error::other)?,
+        )
+    }
+
+    /// # Errors
     /// Returns read errors or invalid controller binding data.
     pub fn controller_bindings(
         &self,

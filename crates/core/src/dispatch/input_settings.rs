@@ -1,4 +1,7 @@
-//! The Input page of the settings view: which controller and which microphones to use.
+//! The Input page of the settings view: one tile per controller, microphone and push-to-talk button.
+
+use super::Effect;
+use crate::tiles::Focus;
 
 /// Which connected pad drives Tehuti.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -56,24 +59,34 @@ pub struct Microphone {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InputRow {
-    #[default]
-    Controller,
-    PushToTalk,
-    Microphone,
-}
+/// The Input page's rows of tiles, top to bottom.
+pub const CONTROLLER_ROW: usize = 0;
+pub const MICROPHONE_ROW: usize = 1;
+pub const PUSH_TO_TALK_ROW: usize = 2;
+
+/// The push-to-talk tiles: the context's own button, then the two a pad can lend.
+pub const TALK_OPTIONS: [Option<tehuti_protocol::ButtonName>; 3] = [
+    None,
+    Some(tehuti_protocol::ButtonName::Record),
+    Some(tehuti_protocol::ButtonName::Start),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InputSettings {
-    pub row: InputRow,
-    /// Connected pads in device path order.
+    pub focus: Focus,
+    /// Connected pads: first seen first, late arrivals at the end.
     pub controllers: Vec<ControllerInfo>,
+    /// The saved single-pad choice from before per-controller tiles.
     pub controller: ControllerChoice,
+    /// Capture sources: first seen first, late arrivals at the end.
     pub microphones: Vec<Microphone>,
     pub microphone: MicrophoneChoice,
     pub active_controller: Option<String>,
     pub controller_bindings: std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
+    /// Pad names that no longer drive Tehuti.
+    pub disabled_controllers: Vec<String>,
+    /// The in-use pad whose disabling waits for a second confirm.
+    pub pending_disable: Option<String>,
 }
 
 impl InputSettings {
@@ -85,32 +98,68 @@ impl InputSettings {
         }
     }
 
+    /// The tiles in each row; the controller row may be empty, the others never are.
     #[must_use]
-    pub fn push_to_talk_label(&self) -> String {
-        let Some(name) = self.binding_controller() else {
-            return "USE A CONTROLLER FIRST".into();
-        };
-        match self.controller_bindings.get(name) {
-            Some(tehuti_protocol::ButtonName::Start) => "MENU".into(),
-            Some(tehuti_protocol::ButtonName::Record) => "SHARE".into(),
-            _ => "CONTEXT DEFAULT".into(),
-        }
+    pub fn rows(&self) -> [usize; 3] {
+        [
+            self.controllers.len(),
+            self.microphone_options().len(),
+            TALK_OPTIONS.len(),
+        ]
     }
 
-    /// Auto, then each connected pad name once, then a saved pad that is not connected.
     #[must_use]
-    pub fn controller_options(&self) -> Vec<ControllerChoice> {
-        let mut options = vec![ControllerChoice::Auto];
-        for controller in &self.controllers {
-            let option = ControllerChoice::Named(controller.name.clone());
-            if !options.contains(&option) {
-                options.push(option);
-            }
+    pub fn controller_enabled(&self, name: &str) -> bool {
+        !self.disabled_controllers.iter().any(|disabled| disabled == name)
+    }
+
+    /// Whether `name` is the pad the user is driving Tehuti with right now.
+    #[must_use]
+    pub fn controller_in_use(&self, name: &str) -> bool {
+        self.active_controller.as_deref() == Some(name)
+    }
+
+    #[must_use]
+    pub fn focused_controller(&self) -> Option<&ControllerInfo> {
+        (self.focus.row == CONTROLLER_ROW)
+            .then(|| self.controllers.get(self.focus.col))
+            .flatten()
+    }
+
+    #[must_use]
+    pub fn focused_microphone(&self) -> Option<MicrophoneChoice> {
+        (self.focus.row == MICROPHONE_ROW)
+            .then(|| self.microphone_options().get(self.focus.col).cloned())
+            .flatten()
+    }
+
+    /// Records whether `name` drives Tehuti; the effect carries the change out.
+    pub(super) fn set_controller_enabled(&mut self, name: String, enabled: bool) -> Effect {
+        self.disabled_controllers.retain(|disabled| *disabled != name);
+        if !enabled {
+            self.disabled_controllers.push(name.clone());
         }
-        if !options.contains(&self.controller) {
-            options.push(self.controller.clone());
+        self.pending_disable = None;
+        Effect::SettingsControllerEnabled { name, enabled }
+    }
+
+    /// The push-to-talk tile chosen for the pad whose button binding is shown.
+    #[must_use]
+    pub fn talk_choice(&self) -> Option<tehuti_protocol::ButtonName> {
+        self.binding_controller()
+            .and_then(|name| self.controller_bindings.get(name))
+            .copied()
+    }
+
+    #[must_use]
+    pub fn talk_label(option: Option<tehuti_protocol::ButtonName>) -> &'static str {
+        if option == Some(tehuti_protocol::ButtonName::Start) {
+            "MENU"
+        } else if option == Some(tehuti_protocol::ButtonName::Record) {
+            "SHARE"
+        } else {
+            "CONTEXT"
         }
-        options
     }
 
     /// All, Auto, then each listed source, then a saved source that is not listed.
@@ -130,73 +179,18 @@ impl InputSettings {
     }
 
     #[must_use]
-    pub fn controller_label(&self) -> String {
-        match &self.controller {
-            ControllerChoice::Auto => {
-                if self.controllers.is_empty() {
-                    return "AUTO (NO PAD)".into();
-                }
-                let names: Vec<_> = self
-                    .controllers
-                    .iter()
-                    .map(|controller| controller.label.clone())
-                    .collect();
-                let full = format!("AUTO: {}", names.join(", "));
-                if full.chars().count() <= 36 {
-                    return full;
-                }
-                if names.len() == 1 {
-                    return full.chars().take(36).collect();
-                }
-                let suffix = format!(" +{}", names.len().saturating_sub(1));
-                let available = 36usize
-                    .saturating_sub("AUTO: ".len())
-                    .saturating_sub(suffix.len());
-                let first: String = names
-                    .first()
-                    .into_iter()
-                    .flat_map(|name| name.chars())
-                    .take(available)
-                    .collect();
-                format!("AUTO: {first}{suffix}")
-            }
-            ControllerChoice::Named(name) => self
-                .controllers
-                .iter()
-                .find(|controller| controller.name == *name)
-                .map_or_else(
-                    || format!("{} (OFF)", name.to_uppercase()),
-                    |controller| controller.label.clone(),
-                ),
-        }
-    }
-
-    #[must_use]
-    pub fn microphone_label(&self) -> String {
-        match &self.microphone {
-            MicrophoneChoice::All => "ALL MICROPHONES".into(),
-            MicrophoneChoice::Auto => "AUTO (SYSTEM DEFAULT)".into(),
+    pub fn microphone_tile_label(&self, choice: &MicrophoneChoice) -> String {
+        match choice {
+            MicrophoneChoice::All => "ALL".into(),
+            MicrophoneChoice::Auto => "AUTO".into(),
             MicrophoneChoice::Named(name) => self
                 .microphones
                 .iter()
                 .find(|microphone| microphone.name == *name)
                 .map_or_else(
-                    || format!("{} (OFF)", name.to_uppercase()),
+                    || name.to_uppercase(),
                     |microphone| microphone.description.to_uppercase(),
                 ),
         }
     }
-}
-
-/// The option after or before `current`; an unlisted current value counts as the first.
-pub(super) fn cycle<T: PartialEq + Clone>(options: &[T], current: &T, forward: bool) -> Option<T> {
-    let index = options.iter().position(|option| option == current).unwrap_or(0);
-    let next = if forward {
-        index.saturating_add(1).checked_rem(options.len())?
-    } else {
-        index
-            .checked_sub(1)
-            .unwrap_or_else(|| options.len().saturating_sub(1))
-    };
-    options.get(next).cloned()
 }
