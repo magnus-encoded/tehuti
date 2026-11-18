@@ -1770,8 +1770,8 @@ impl Compositor {
                 self.microphone_listing = None;
                 self.configure_controllers(vec![
                     pad("Xbox Wireless Controller", "xbox-1", Connection::Usb),
-                    pad("Xbox Wireless Controller", "xbox-2", Connection::Bluetooth),
-                    pad("Xbox Wireless Controller", "xbox-3", Connection::Dongle),
+                    pad("Switch Joy-Con", "switch-1", Connection::Bluetooth),
+                    pad("USB Gamepad", "generic-1", Connection::Dongle),
                     pad(
                         "DualSense Wireless Controller",
                         "dualsense-1",
@@ -1784,6 +1784,7 @@ impl Compositor {
                     mic("alsa_input.pci-analog", "Built-in Analog Stereo"),
                     mic("rtp-source", "Network RTP Stream"),
                     mic("phone-mic", "Phone Microphone"),
+                    mic("capture-source", "Capture Microphone"),
                 ]));
             }
             _ => return Err(format!("unknown fixture {name}")),

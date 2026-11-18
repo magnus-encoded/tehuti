@@ -172,7 +172,7 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             for button in ("dpad_down", "dpad_down"):
                 tap(button)
             capture("settings-input-mics", lambda s: s["overlays"]["settings"])
-            for _ in range(6):
+            for _ in range(7):
                 tap("dpad_right")
             capture("settings-input-mics-end", lambda s: s["overlays"]["settings"])
             tap("B")

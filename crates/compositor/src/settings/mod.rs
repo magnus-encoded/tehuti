@@ -137,6 +137,7 @@ const AMBER: [u8; 4] = [56, 184, 255, 255];
 const WHITE: [u8; 4] = [244, 240, 225, 255];
 
 pub(crate) mod canvas;
+mod input_icons;
 mod pages;
 mod tiles;
 use canvas::Canvas;
@@ -305,6 +306,55 @@ mod tests {
         utils::{Rectangle, Transform},
     };
     use tehuti_protocol::{Event, Text};
+
+    #[test]
+    fn input_silhouettes_have_smooth_edges_at_each_output_size() -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.show_fixture("input")?;
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        for name in [ButtonName::DpadDown, ButtonName::South] {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                compositor.handle(&Event::Button { name, state });
+            }
+        }
+        let input = &compositor.settings().input;
+        let grid = super::tiles::Grid::new(&input.rows(), 22, input.focus, Some(super::tiles::INPUT_SIDE));
+        let (left, top) = grid.origin(0, 0).ok_or("missing controller tile")?;
+        let side = grid.side();
+        for (width, height) in [(1280, 720), (1920, 1080), (3840, 2160)] {
+            let mut buffer = compositor
+                .settings_buffer((width, height))
+                .ok_or("missing Input artwork")?;
+            let width = usize::try_from(width)?;
+            let height = usize::try_from(height)?;
+            buffer.render().draw(|pixels| {
+                let colours: std::collections::HashSet<_> = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| {
+                        let x = index.checked_rem(width).unwrap_or_default().saturating_mul(1280) / width;
+                        let y = index.saturating_div(width).saturating_mul(720) / height;
+                        (left.saturating_add(side / 5)..left.saturating_add(side.saturating_mul(4) / 5))
+                            .contains(&x)
+                            && (top.saturating_add(side / 4)..top.saturating_add(side.saturating_mul(3) / 5))
+                                .contains(&y)
+                    })
+                    .map(|(_, pixel)| pixel.to_vec())
+                    .collect();
+                assert!(
+                    colours.len() > 30,
+                    "Input outlines have fractional coverage at {width}x{height}"
+                );
+            });
+        }
+        Ok(())
+    }
 
     #[test]
     fn the_top_page_shows_the_compiled_in_version_and_commit() {
