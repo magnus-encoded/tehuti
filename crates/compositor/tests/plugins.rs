@@ -233,6 +233,10 @@ for line in sys.stdin:
     }
 
     /// The reply a dispatch effect asks for, recording routed plugin events.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive list of the effects this harness leaves unanswered"
+    )]
     fn answer(
         effect: tehuti_core::dispatch::Effect,
         routed: &mut Vec<Event>,
