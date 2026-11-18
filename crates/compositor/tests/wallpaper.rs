@@ -378,7 +378,12 @@ mod collection {
                 .save(folder.join(set).join(format!("{name}.png")))?;
         }
         std::fs::write(folder.join("Dawn/broken.png"), "invalid")?;
-        let collection = Collection::discover(&[], Store::new(directory.path().join("config/wallpaper")), 0, false);
+        let collection = Collection::discover(
+            &[],
+            Store::new(directory.path().join("config/wallpaper")),
+            0,
+            false,
+        );
         assert_eq!(collection.names(), ["user/Dawn/Sun.png", "user/Evening/Moon.png"]);
         assert_eq!(collection.locks(), [false, false]);
         Ok(())
