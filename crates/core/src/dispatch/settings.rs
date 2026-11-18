@@ -416,7 +416,13 @@ impl Settings {
             .unwrap_or(0)
     }
 
-    pub(super) fn configure_wallpapers(&mut self, names: Vec<String>, locked: Vec<bool>, current: usize) {
+    pub(super) fn configure_wallpapers(
+        &mut self,
+        names: Vec<String>,
+        locked: Vec<bool>,
+        current: usize,
+        effects: &mut Vec<Effect>,
+    ) {
         let focused = self.wallpapers.get(self.wallpaper_selected).cloned();
         self.wallpapers = names;
         self.wallpaper_locked = locked;
@@ -428,6 +434,16 @@ impl Settings {
         } else {
             self.wallpaper_current
         };
+        if self.open
+            && self.page == Page::Wallpaper
+            && !self
+                .wallpaper_locked
+                .get(self.wallpaper_selected)
+                .copied()
+                .unwrap_or(true)
+        {
+            effects.push(Effect::WallpaperPreview(self.wallpaper_selected));
+        }
     }
 
     /// Named wallpaper rows, with stable collection indices for each tile.

@@ -96,7 +96,7 @@ impl Canvas {
         if let Ok(config) = crate::display_mode_store::config_root() {
             let folder = config.join("tehuti/wallpapers");
             self.text_box(
-                (80, 654, 1120, 24),
+                (80, 606, 1120, 24),
                 &format!("ADD SET FOLDERS IN {}", folder.display()),
                 2,
                 DIM,

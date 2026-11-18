@@ -211,7 +211,9 @@ pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<Mem
         WHITE,
     );
     canvas.rectangle(80, 166, 1120, 2, CYAN);
-    canvas.text(80, 190, "POP THE HOOD", 2, AMBER);
+    if settings.page != Page::Wallpaper {
+        canvas.text(80, 190, "POP THE HOOD", 2, AMBER);
+    }
     canvas.contents(settings, speech);
     if let Some(remaining) = settings.remaining {
         canvas.ring(remaining);
