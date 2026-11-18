@@ -18,13 +18,9 @@ const FACE_FOCUSED: [u8; 4] = [65, 43, 12, 255];
 const EDGE: [u8; 4] = [90, 70, 40, 255];
 const DIM: [u8; 4] = [120, 110, 95, 255];
 const SCREEN: [u8; 4] = [20, 14, 8, 255];
-const GLYPH_WIDTH: usize = 16;
-/// Each sample of the font tile's large letters is drawn as a block this wide.
-const MAGNIFY: usize = 4;
 /// Height kept under each Input tile for its name.
 const CAPTION: usize = 22;
 const CAPTION_POINTS: usize = 13;
-const SAMPLE: [char; 2] = ['A', 'a'];
 
 /// A tile's box in reference pixels: left, top, width, height.
 type Area = (usize, usize, usize, usize);
@@ -141,7 +137,7 @@ impl Canvas {
             }
         }
         if settings.modes.is_empty() {
-            self.text(96, 606, "NO DRIVER MODES AVAILABLE", 3, AMBER);
+            self.text(420, 190, "NO DRIVER MODES AVAILABLE", 2, AMBER);
         }
     }
 
@@ -252,42 +248,11 @@ impl Canvas {
         self.tile_text((x, below, side, remaining), &[format!("{step}X")], points, WHITE);
     }
 
-    /// One large sample, drawn by the font the tile stands for, and the font's name.
+    /// One large sample, drawn by the font the tile stands for at its physical size, and the font's name.
     fn font_tile(&mut self, corner: (usize, usize), side: usize, font: tehuti_core::bar::Font) {
         let (x, y) = corner;
-        let span = GLYPH_WIDTH.saturating_mul(MAGNIFY);
-        let left = x.saturating_add(side.saturating_sub(span.saturating_mul(SAMPLE.len())) / 2);
-        let top = y.saturating_add(side / 12);
-        for (index, character) in SAMPLE.into_iter().enumerate() {
-            let samples = crate::bar_font::coverage(character, font, true);
-            for (cell, alpha) in samples.iter().enumerate() {
-                if *alpha < 32 {
-                    continue;
-                }
-                let column = cell.checked_rem(GLYPH_WIDTH).unwrap_or(0);
-                let row = cell.checked_div(GLYPH_WIDTH).unwrap_or(0);
-                let shade = |face: u8, ink: u8| {
-                    let mixed = u16::from(face)
-                        .saturating_mul(u16::from(255_u8.saturating_sub(*alpha)))
-                        .saturating_add(u16::from(ink).saturating_mul(u16::from(*alpha)));
-                    u8::try_from(mixed.checked_div(255).unwrap_or(0)).unwrap_or(u8::MAX)
-                };
-                let colour = [
-                    shade(FACE[0], WHITE[0]),
-                    shade(FACE[1], WHITE[1]),
-                    shade(FACE[2], WHITE[2]),
-                    255,
-                ];
-                self.rectangle(
-                    left.saturating_add(index.saturating_mul(span))
-                        .saturating_add(column.saturating_mul(MAGNIFY)),
-                    top.saturating_add(row.saturating_mul(MAGNIFY)),
-                    MAGNIFY,
-                    MAGNIFY,
-                    colour,
-                );
-            }
-        }
+        let middle = (x.saturating_add(side / 2), y.saturating_add(side * 2 / 5));
+        self.sample_text(middle, "Aa", font, side / 2, WHITE);
         let points = side.checked_div(10).unwrap_or(8).max(8);
         let below = y.saturating_add(side).saturating_sub(side / 5);
         self.tile_text(

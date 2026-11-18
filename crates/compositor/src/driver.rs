@@ -37,6 +37,7 @@ pub enum Request {
     Say { text: String },
     Advance { milliseconds: u64 },
     Shot { path: PathBuf },
+    Fixture { name: String },
     Stop,
 }
 
@@ -189,7 +190,7 @@ impl Driver {
         compositor: &mut Compositor,
         request: Request,
     ) -> Result<Value, Box<dyn core::error::Error>> {
-        if !matches!(request, Request::Scene | Request::Shot { .. } | Request::Stop)
+        if !matches!(request, Request::Scene | Request::Shot { .. } | Request::Stop | Request::Fixture { .. })
             && compositor.secret_confirmation_text().is_some()
         {
             return Err("synthetic input cannot answer an approval prompt".into());
@@ -234,6 +235,7 @@ impl Driver {
                 });
             }
             Request::Shot { path } => crate::driver_shot::save(compositor, &path)?,
+            Request::Fixture { name } => compositor.show_fixture(&name)?,
             Request::Stop => self.stopped = true,
         }
         Ok(json!({}))

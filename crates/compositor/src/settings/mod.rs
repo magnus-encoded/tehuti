@@ -240,7 +240,7 @@ pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<Mem
         return None;
     }
     let mut canvas = Canvas::new(size)?;
-    canvas.rectangle(0, 0, WIDTH, HEIGHT, [20, 14, 8, 235]);
+    canvas.rectangle(0, 0, WIDTH, HEIGHT, [20, 14, 8, 255]);
     canvas.rectangle(48, 52, 6, 80, CYAN);
     canvas.text(80, 54, "TEHUTI / SYSTEM", 3, CYAN);
     canvas.text(

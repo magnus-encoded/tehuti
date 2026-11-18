@@ -1723,6 +1723,42 @@ impl Compositor {
         }
     }
 
+    /// Fills the Display or Input page with invented hardware for the visual run.
+    pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
+        let pad = |label: &str, key: &str| tehuti_core::dispatch::ControllerInfo {
+            name: label.to_owned(),
+            key: key.to_owned(),
+            label: format!("{} #{}", label.to_uppercase(), key.rsplit('-').next().unwrap_or("1")),
+        };
+        let mic = |name: &str, description: &str| tehuti_core::dispatch::Microphone {
+            name: name.to_owned(),
+            description: description.to_owned(),
+        };
+        match name {
+            "display" => {
+                let modes = ["1920x1080@60", "1920x1080@144", "2560x1080@60", "2560x1080@120", "1280x1024@60", "1280x1024@75"];
+                self.configure_display_modes(modes.map(str::to_owned).to_vec(), 0);
+            }
+            "input" => {
+                self.configure_controllers(vec![
+                    pad("Xbox Wireless Controller", "xbox-1"),
+                    pad("Xbox Wireless Controller", "xbox-2"),
+                    pad("Xbox Wireless Controller", "xbox-3"),
+                    pad("DualSense Wireless Controller", "dualsense-1"),
+                ]);
+                let _rejection = self.dispatch(DispatchInput::Microphones(vec![
+                    mic("bluez_input.headset", "Arctis Headset"),
+                    mic("alsa_input.usb-desk", "USB Desk Microphone"),
+                    mic("alsa_input.pci-analog", "Built-in Analog Stereo"),
+                    mic("rtp-source", "Network RTP Stream"),
+                    mic("phone-mic", "Phone Microphone"),
+                ]));
+            }
+            _ => return Err(format!("unknown fixture {name}")),
+        }
+        Ok(())
+    }
+
     pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
         let _rejection = self.dispatch(DispatchInput::DisplayModes { modes, current });
     }

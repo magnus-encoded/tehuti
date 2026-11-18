@@ -250,6 +250,66 @@ impl Canvas {
         }
     }
 
+    /// Draws `text` centred on `centre` in the bar font `choice`, `size` reference pixels tall,
+    /// rasterised at the physical size: outlines for the mono font, whole-pixel blocks for the bitmap font.
+    pub(crate) fn sample_text(
+        &mut self,
+        centre: (usize, usize),
+        text: &str,
+        choice: tehuti_core::bar::Font,
+        size: usize,
+        colour: [u8; 4],
+    ) {
+        let px = size as f32 * self.scale.1;
+        let block = (px / 12.0).floor().max(1.0) as usize;
+        let cell = (block.saturating_mul(8), block.saturating_mul(12));
+        let mut glyphs = Vec::new();
+        for character in text.chars() {
+            let mono = (choice == tehuti_core::bar::Font::LiberationMono)
+                .then(|| crate::bar_font::mono_raster(character, px))
+                .flatten();
+            glyphs.push(mono.map_or_else(
+                || {
+                    let samples = crate::bar_font::coverage(character, tehuti_core::bar::Font::Bitmap, false);
+                    let mut scaled = vec![0_u8; cell.0.saturating_mul(cell.1)];
+                    for (slot, coverage) in scaled.iter_mut().enumerate() {
+                        let column = slot.checked_rem(cell.0).unwrap_or(0).checked_div(block).unwrap_or(0);
+                        let row = slot.checked_div(cell.0).unwrap_or(0).checked_div(block).unwrap_or(0);
+                        *coverage = samples.get(row.saturating_mul(8).saturating_add(column)).copied().unwrap_or(0);
+                    }
+                    (0_i32, 0_i32, cell.0, cell.1, scaled, cell.0 as f32)
+                },
+                |(metrics, bitmap)| {
+                    (metrics.xmin, metrics.ymin, metrics.width, metrics.height, bitmap, metrics.advance_width)
+                },
+            ));
+        }
+        let total: f32 = glyphs.iter().map(|glyph| glyph.5).sum();
+        let mut pen = centre.0 as f32 * self.scale.0 - total / 2.0;
+        let top = centre.1 as f32 * self.scale.1 - px / 2.0;
+        let bitmapped = choice != tehuti_core::bar::Font::LiberationMono;
+        for (xmin, ymin, width, height, bitmap, advance) in glyphs {
+            let glyph_top = if bitmapped {
+                top + (px - height as f32) / 2.0
+            } else {
+                top + px * 0.8 - (ymin as f32 + height as f32)
+            };
+            for (index, coverage) in bitmap.iter().enumerate() {
+                if *coverage == 0 || width == 0 {
+                    continue;
+                }
+                let column = index.checked_rem(width).unwrap_or(0);
+                let row = index.checked_div(width).unwrap_or(0);
+                let x = (pen + xmin as f32 + column as f32).round();
+                let y = (glyph_top + row as f32).round();
+                if x >= 0.0 && y >= 0.0 {
+                    self.blend(x as usize, y as usize, colour, f32::from(*coverage) / 255.0);
+                }
+            }
+            pen += advance;
+        }
+    }
+
     /// A sine wave `width` wide from `start` (left, middle), with a cycle for about every 15 Hz.
     pub(crate) fn wave_across(&mut self, start: (usize, usize), width: usize, hertz: f32) {
         let amplitude = width as f32 / 6.0;
