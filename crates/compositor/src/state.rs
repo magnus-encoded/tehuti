@@ -1635,7 +1635,7 @@ impl Compositor {
             tracing::warn!(%error, "disabled controllers unreadable; using every pad");
             Vec::new()
         });
-        self.disabled_controllers = disabled_controllers.clone();
+        self.disabled_controllers.clone_from(&disabled_controllers);
         let bindings = store.controller_bindings().unwrap_or_else(|error| {
             tracing::warn!(%error, "controller bindings unreadable; using context defaults");
             std::collections::BTreeMap::new()

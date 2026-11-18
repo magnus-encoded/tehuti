@@ -29,7 +29,7 @@ impl Grid {
             .unwrap_or(0);
         Self {
             rows: rows.to_vec(),
-            side: by_width.min(by_height).min(LARGEST_SIDE).max(1),
+            side: by_width.min(by_height).clamp(1, LARGEST_SIDE),
         }
     }
 

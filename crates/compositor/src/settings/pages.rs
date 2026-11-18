@@ -66,19 +66,19 @@ impl Canvas {
     }
 
     /// Centres up to three wrapped lines in `area`.
-    fn tile_text(&mut self, area: Area, lines: &[String], size: usize, colour: [u8; 4]) {
+    fn tile_text(&mut self, area: Area, lines: &[String], points: usize, colour: [u8; 4]) {
         let (left, top, width, height) = area;
         let per_line = width
             .saturating_sub(12)
             .saturating_mul(10)
-            .checked_div(size.saturating_mul(6))
+            .checked_div(points.saturating_mul(6))
             .unwrap_or(1);
         let wrapped: Vec<String> = lines
             .iter()
             .flat_map(|line| wrap(line, per_line, 3))
             .take(3)
             .collect();
-        let line_height = size.saturating_mul(6).checked_div(5).unwrap_or(size);
+        let line_height = points.saturating_mul(6).checked_div(5).unwrap_or(points);
         let last = wrapped.len().saturating_sub(1);
         let middle = (
             left.saturating_mul(2).saturating_add(width),
@@ -93,7 +93,7 @@ impl Canvas {
             } else {
                 middle.1.saturating_add(offset)
             };
-            self.centred((middle.0, centre_y), line, size, colour);
+            self.centred((middle.0, centre_y), line, points, colour);
         }
     }
 
@@ -122,7 +122,7 @@ impl Canvas {
 
     fn resolution_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
         let side = grid.side();
-        let size = side.checked_div(4).unwrap_or(8).max(8);
+        let points = side.checked_div(4).unwrap_or(8).max(8);
         let active = settings.modes.get(settings.current);
         let active_resolution = active.and_then(|mode| mode.split('@').next());
         for (col, name) in settings.resolutions().iter().enumerate() {
@@ -130,7 +130,7 @@ impl Canvas {
             if let Some((x, y)) = self.tile_frame(grid, (0, col), focus, marked) {
                 let (width, height) = name.split_once('x').unwrap_or((name.as_str(), ""));
                 let lines = [width.to_owned(), height.to_owned()];
-                self.tile_text((x, y, side, side), &lines, size, WHITE);
+                self.tile_text((x, y, side, side), &lines, points, WHITE);
             }
         }
     }
@@ -138,7 +138,7 @@ impl Canvas {
     /// The refresh rates of the resolution that has focus.
     fn refresh_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
         let side = grid.side();
-        let size = side.checked_div(4).unwrap_or(8).max(8);
+        let points = side.checked_div(4).unwrap_or(8).max(8);
         let modes = settings.refresh_modes(settings.display_resolution);
         for (col, mode) in modes.into_iter().enumerate() {
             if let Some((x, y)) = self.tile_frame(grid, (1, col), focus, mode == settings.current) {
@@ -148,7 +148,7 @@ impl Canvas {
                     .and_then(|name| name.split_once('@'))
                     .map_or("", |(_, rate)| rate);
                 let lines = [rate.to_owned(), "HZ".to_owned()];
-                self.tile_text((x, y, side, side), &lines, size, WHITE);
+                self.tile_text((x, y, side, side), &lines, points, WHITE);
             }
         }
     }
@@ -177,8 +177,8 @@ impl Canvas {
         );
         let below = top.saturating_add(screen_height);
         let remaining = y.saturating_add(side).saturating_sub(below);
-        let size = side.checked_div(4).unwrap_or(8).max(8);
-        self.tile_text((x, below, side, remaining), &[format!("{step}X")], size, WHITE);
+        let points = side.checked_div(4).unwrap_or(8).max(8);
+        self.tile_text((x, below, side, remaining), &[format!("{step}X")], points, WHITE);
     }
 
     /// Sample letters and the bar's own symbols, drawn by the font the tile stands for.
@@ -202,11 +202,11 @@ impl Canvas {
             }
         }
         let caption_top = y.saturating_add(side).saturating_sub(34);
-        let size = side.checked_div(9).unwrap_or(8).max(8);
+        let points = side.checked_div(9).unwrap_or(8).max(8);
         self.tile_text(
             (x, caption_top, side, 30),
             &[font.label().to_uppercase()],
-            size,
+            points,
             CYAN,
         );
     }
@@ -232,7 +232,7 @@ impl Canvas {
     fn controller_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
         let input = &settings.input;
         let side = grid.side();
-        let size = side.checked_div(7).unwrap_or(8).max(8);
+        let points = side.checked_div(7).unwrap_or(8).max(8);
         for (col, controller) in input.controllers.iter().enumerate() {
             let enabled = input.controller_enabled(&controller.name);
             let Some((x, y)) = self.tile_frame(grid, (0, col), focus, enabled) else {
@@ -246,7 +246,12 @@ impl Canvas {
             } else {
                 DIM
             };
-            self.tile_text((x, y, side, side), &[controller.label.clone()], size, colour);
+            self.tile_text(
+                (x, y, side, side),
+                core::slice::from_ref(&controller.label),
+                points,
+                colour,
+            );
             if input.controller_in_use(&controller.name) {
                 let bottom = y.saturating_add(side).saturating_sub(18);
                 self.rectangle(x.saturating_add(8), bottom, 10, 10, AMBER);
@@ -257,12 +262,12 @@ impl Canvas {
     fn microphone_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
         let input = &settings.input;
         let side = grid.side();
-        let size = side.checked_div(7).unwrap_or(8).max(8);
+        let points = side.checked_div(7).unwrap_or(8).max(8);
         for (col, choice) in input.microphone_options().iter().enumerate() {
             let marked = *choice == input.microphone;
             if let Some((x, y)) = self.tile_frame(grid, (1, col), focus, marked) {
                 let label = input.microphone_tile_label(choice);
-                self.tile_text((x, y, side, side), &[label], size, WHITE);
+                self.tile_text((x, y, side, side), &[label], points, WHITE);
             }
         }
     }
@@ -270,14 +275,14 @@ impl Canvas {
     fn talk_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
         let input = &settings.input;
         let side = grid.side();
-        let size = side.checked_div(7).unwrap_or(8).max(8);
+        let points = side.checked_div(7).unwrap_or(8).max(8);
         let binding = input.binding_controller().is_some();
         for (col, option) in TALK_OPTIONS.into_iter().enumerate() {
             let marked = binding && input.talk_choice() == option;
             if let Some((x, y)) = self.tile_frame(grid, (2, col), focus, marked) {
                 let label = tehuti_core::dispatch::InputSettings::talk_label(option);
                 let lines = ["TALK".to_owned(), label.to_owned()];
-                self.tile_text((x, y, side, side), &lines, size, WHITE);
+                self.tile_text((x, y, side, side), &lines, points, WHITE);
             }
         }
     }

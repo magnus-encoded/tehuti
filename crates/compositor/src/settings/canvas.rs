@@ -429,20 +429,6 @@ impl Canvas {
         }
     }
 
-    pub(crate) fn wave(&mut self, x: usize, y: usize, hertz: f32) {
-        let wavelength = 2400.0 / hertz.clamp(1.0, 1000.0);
-        for column in 0..150 {
-            let offset = (column as f32 / wavelength * core::f32::consts::TAU).sin() * 10.0;
-            self.rectangle(
-                x.saturating_add(column),
-                (y as f32 + offset) as usize,
-                2,
-                2,
-                super::CYAN,
-            );
-        }
-    }
-
     pub(crate) fn countdown(&mut self, remaining: Duration) {
         let fraction = remaining.as_secs_f32() / 15.0;
         let pixel_width = 1.0 / self.scale.0.min(self.scale.1);
