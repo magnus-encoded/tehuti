@@ -3,7 +3,7 @@
 use super::{
     AMBER, CYAN, WHITE,
     canvas::Canvas,
-    tiles::{DISPLAY_SIDE, Grid, wrap},
+    tiles::{DISPLAY_SIDE, Grid, ellipsize, per_line, wrap},
 };
 use tehuti_core::{
     dispatch::{
@@ -68,14 +68,10 @@ impl Canvas {
     /// Centres up to three wrapped lines in `area`.
     fn tile_text(&mut self, area: Area, lines: &[String], points: usize, colour: [u8; 4]) {
         let (left, top, width, height) = area;
-        let per_line = width
-            .saturating_sub(12)
-            .saturating_mul(10)
-            .checked_div(points.saturating_mul(6))
-            .unwrap_or(1);
+        let columns = per_line(width, points);
         let wrapped: Vec<String> = lines
             .iter()
-            .flat_map(|line| wrap(line, per_line, 3))
+            .flat_map(|line| wrap(line, columns, 3))
             .take(3)
             .collect();
         let line_height = points.saturating_mul(6).checked_div(5).unwrap_or(points);
@@ -311,7 +307,8 @@ impl Canvas {
                 .saturating_sub(side / 12)
                 .saturating_mul(2),
         );
-        self.centred(middle, text, points, colour);
+        let fitted = ellipsize(text, per_line(side, points));
+        self.centred(middle, &fitted, points, colour);
     }
 
     /// A thin outline around a tile, for the pad that the focused settings row edits.
