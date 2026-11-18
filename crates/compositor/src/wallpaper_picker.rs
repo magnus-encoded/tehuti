@@ -42,6 +42,7 @@ pub(super) struct Picker {
     epoch: u64,
     refreshing: bool,
     refresh_requested: bool,
+    found: Option<Collection>,
 }
 
 impl Picker {
@@ -82,6 +83,7 @@ impl Picker {
             epoch: 0,
             refreshing: false,
             refresh_requested: false,
+            found: None,
         }
     }
 
@@ -99,7 +101,13 @@ impl Picker {
     }
 
     pub(super) fn poll(&mut self) -> Option<Collection> {
-        let mut collection = None;
+        self.drain();
+        self.send_refresh(None);
+        self.found.take()
+    }
+
+    /// Takes in finished replies; a rescan result waits in `found` for the next `poll`.
+    pub(super) fn drain(&mut self) {
         while let Ok(reply) = self.replies.try_recv() {
             match reply {
                 Reply::Collection(found) => {
@@ -108,7 +116,7 @@ impl Picker {
                     self.ready.clear();
                     self.pending.clear();
                     self.failed.clear();
-                    collection = Some(*found);
+                    self.found = Some(*found);
                 }
                 Reply::Thumbnail(key, image) => {
                     let _removed = self.pending.remove(&key);
@@ -127,8 +135,6 @@ impl Picker {
             }
             self.revision = self.revision.wrapping_add(1);
         }
-        self.send_refresh(None);
-        collection
     }
 
     pub(super) fn image(

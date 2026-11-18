@@ -489,6 +489,19 @@ fn load_hidden_sets(
                 );
             }
         }
+        let mut names: Vec<String> = names.into_iter().collect();
+        // Counting order first (uno, dos, tres), then the rest alphabetically.
+        let rank = |name: &String| {
+            let stem = std::path::Path::new(name)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
+            ["uno", "dos", "tres"]
+                .iter()
+                .position(|word| *word == stem)
+                .unwrap_or(usize::MAX)
+        };
+        names.sort_by_key(rank);
         for name in names.into_iter().take(256) {
             if let Some(source) = bundled_source(roots, packs, &name) {
                 entries.push((format!("bundled/{name}"), source));
@@ -791,7 +804,10 @@ pub fn refresh() {
 
 #[must_use]
 pub fn revision() -> u64 {
-    wallpaper().lock().map_or(0, |cache| cache.picker.revision)
+    wallpaper().lock().map_or(0, |mut cache| {
+        cache.picker.drain();
+        cache.picker.revision
+    })
 }
 
 #[must_use]

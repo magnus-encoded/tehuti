@@ -55,6 +55,7 @@ impl Canvas {
                     12,
                     if focused { CYAN } else { EDGE },
                 );
+                self.rounded_rectangle((x, y, grid.side(), grid.side()), 8, FACE);
                 let locked = settings.wallpaper_locked.get(*index).copied().unwrap_or(true);
                 let size = self.thumbnail_size(x, y, grid.side());
                 if let Some(image) = crate::wallpaper::thumbnail(*index, size) {
@@ -63,11 +64,10 @@ impl Canvas {
                 self.wallpaper_caption(settings, *index, (x, y), grid.side(), locked);
             }
         }
-        if let Ok(config) = crate::display_mode_store::config_root() {
-            let folder = config.join("tehuti/wallpapers");
+        if !settings.wallpapers.iter().any(|name| name.starts_with("user/")) {
             self.text_box(
                 (80, 606, 1120, 24),
-                &format!("ADD SET FOLDERS IN {}", folder.display()),
+                "ADD SET FOLDERS IN ~/.config/tehuti/wallpapers",
                 2,
                 DIM,
             );
