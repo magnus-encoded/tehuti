@@ -92,6 +92,26 @@ impl Store {
         )
     }
 
+    /// Microphone node names the user turned off.
+    ///
+    /// # Errors
+    /// Returns read errors or invalid saved data.
+    pub fn disabled_microphones(&self) -> io::Result<Vec<String>> {
+        let Some(source) = self.line("microphones-disabled.json")? else {
+            return Ok(Vec::new());
+        };
+        serde_json::from_str(&source).map_err(io::Error::other)
+    }
+
+    /// # Errors
+    /// Returns serialization, file write and replacement errors.
+    pub fn set_disabled_microphones(&self, names: &[String]) -> io::Result<()> {
+        self.replace(
+            "microphones-disabled.json",
+            &serde_json::to_string(names).map_err(io::Error::other)?,
+        )
+    }
+
     /// # Errors
     /// Returns read errors or invalid controller binding data.
     pub fn controller_bindings(
@@ -265,6 +285,19 @@ mod tests {
         reopened.set_controller(&ControllerChoice::Auto)?;
         assert!(!directory.path().join("tehuti/controller").exists());
         assert_eq!(reopened.controller()?, ControllerChoice::Auto);
+        Ok(())
+    }
+
+    #[test]
+    fn off_microphones_survive_reopening() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::new(directory.path().to_path_buf());
+        assert_eq!(store.disabled_microphones()?, Vec::<String>::new());
+        store.set_disabled_microphones(&["alsa_input.analog".to_owned()])?;
+        assert_eq!(
+            Store::new(directory.path().to_path_buf()).disabled_microphones()?,
+            vec!["alsa_input.analog".to_owned()]
+        );
         Ok(())
     }
 

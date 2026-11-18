@@ -38,6 +38,14 @@ impl From<String> for ControllerInfo {
     }
 }
 
+impl ControllerInfo {
+    /// The name voice uses for this pad, and the caption under its tile.
+    #[must_use]
+    pub fn spoken_name(&self) -> String {
+        tehuti_protocol::normalize_phrase(&self.name)
+    }
+}
+
 /// Which capture sources push-to-talk records.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum MicrophoneChoice {
@@ -71,6 +79,14 @@ pub const TALK_OPTIONS: [Option<tehuti_protocol::ButtonName>; 3] = [
     Some(tehuti_protocol::ButtonName::Start),
 ];
 
+impl Microphone {
+    /// The name voice uses for this microphone, and the caption under its tile.
+    #[must_use]
+    pub fn spoken_name(&self) -> String {
+        tehuti_protocol::normalize_phrase(&self.description)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InputSettings {
     pub focus: Focus,
@@ -85,6 +101,8 @@ pub struct InputSettings {
     pub controller_bindings: std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
     /// Pad names the user turned off.
     pub disabled_controllers: Vec<String>,
+    /// Microphone node names the user turned off; never recorded, also under ALL.
+    pub disabled_microphones: Vec<String>,
     /// The in-use pad whose disabling waits for a second confirm.
     pub pending_disable: Option<String>,
 }
@@ -111,6 +129,20 @@ impl InputSettings {
     #[must_use]
     pub fn controller_enabled(&self, name: &str) -> bool {
         !self.disabled_controllers.iter().any(|disabled| disabled == name)
+    }
+
+    #[must_use]
+    pub fn microphone_enabled(&self, name: &str) -> bool {
+        !self.disabled_microphones.iter().any(|disabled| disabled == name)
+    }
+
+    /// Records whether the microphone `name` is used; the effect carries the change out.
+    pub(super) fn set_microphone_enabled(&mut self, name: String, enabled: bool) -> Effect {
+        self.disabled_microphones.retain(|disabled| *disabled != name);
+        if !enabled {
+            self.disabled_microphones.push(name.clone());
+        }
+        Effect::SettingsMicrophoneEnabled { name, enabled }
     }
 
     /// Whether `name` is the pad the user is driving Tehuti with right now.

@@ -1636,6 +1636,10 @@ impl Compositor {
             Vec::new()
         });
         self.disabled_controllers.clone_from(&disabled_controllers);
+        let disabled_microphones = store.disabled_microphones().unwrap_or_else(|error| {
+            tracing::warn!(%error, "disabled microphones unreadable; using every microphone");
+            Vec::new()
+        });
         let bindings = store.controller_bindings().unwrap_or_else(|error| {
             tracing::warn!(%error, "controller bindings unreadable; using context defaults");
             std::collections::BTreeMap::new()
@@ -1647,6 +1651,7 @@ impl Compositor {
             controller,
             microphone,
             disabled_controllers,
+            disabled_microphones,
         });
     }
 
@@ -1825,6 +1830,7 @@ impl Compositor {
             | DispatchEffect::PersistController(_)
             | DispatchEffect::SettingsMicrophone(_)
             | DispatchEffect::SettingsControllerEnabled { .. }
+            | DispatchEffect::SettingsMicrophoneEnabled { .. }
             | DispatchEffect::ListMicrophones
             | DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::RunMenuCommand(_)
@@ -2135,6 +2141,11 @@ impl Compositor {
                 self.disabled_controllers = self.settings().input.disabled_controllers.clone();
                 let disabled = self.disabled_controllers.clone();
                 self.save_input_choice(|store| store.set_disabled_controllers(&disabled));
+            }
+            DispatchEffect::SettingsMicrophoneEnabled { name, enabled } => {
+                tracing::info!(%name, enabled, "microphone enabled");
+                let disabled = self.settings().input.disabled_microphones.clone();
+                self.save_input_choice(|store| store.set_disabled_microphones(&disabled));
             }
             DispatchEffect::ListMicrophones => {
                 self.microphone_listing = Some(crate::input_choice_store::list_microphones());

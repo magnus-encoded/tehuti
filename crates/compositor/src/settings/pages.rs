@@ -6,7 +6,7 @@ use super::{
     tiles::{Grid, wrap},
 };
 use tehuti_core::{
-    dispatch::{Settings, TALK_OPTIONS},
+    dispatch::{Microphone, MicrophoneChoice, Settings, TALK_OPTIONS},
     tiles::{Focus, clamp},
 };
 
@@ -17,6 +17,9 @@ const DIM: [u8; 4] = [120, 110, 95, 255];
 const SCREEN: [u8; 4] = [20, 14, 8, 255];
 const GLYPH_WIDTH: usize = 16;
 const GLYPH_HEIGHT: usize = 24;
+/// Height kept under each Input tile for its name.
+const CAPTION: usize = 22;
+const CAPTION_POINTS: usize = 13;
 const SAMPLE_LINES: [&str; 2] = ["Aa09", "\u{1f50a}\u{1f4c2}\u{1f4be}"];
 
 /// A tile's box in reference pixels: left, top, width, height.
@@ -65,6 +68,24 @@ impl Canvas {
         Some((x, y))
     }
 
+    /// The short name under a tile: one line, cut to the tile's width.
+    fn caption(&mut self, corner: (usize, usize), side: usize, name: &str, colour: [u8; 4]) {
+        let per_line = side
+            .saturating_mul(10)
+            .checked_div(CAPTION_POINTS.saturating_mul(6))
+            .unwrap_or(1);
+        let line: String = name.to_uppercase().chars().take(per_line).collect();
+        let middle = (
+            corner.0.saturating_mul(2).saturating_add(side),
+            corner
+                .1
+                .saturating_mul(2)
+                .saturating_add(side.saturating_mul(2))
+                .saturating_add(CAPTION),
+        );
+        self.centred(middle, &line, CAPTION_POINTS, colour);
+    }
+
     /// Centres up to three wrapped lines in `area`.
     fn tile_text(&mut self, area: Area, lines: &[String], points: usize, colour: [u8; 4]) {
         let (left, top, width, height) = area;
@@ -99,8 +120,8 @@ impl Canvas {
 
     pub(super) fn display(&mut self, settings: &Settings) {
         let rows = settings.display_rows();
-        let grid = Grid::new(&rows);
         let focus = clamp(&rows, settings.display_focus);
+        let grid = Grid::new(&rows, 0, focus);
         self.resolution_row(settings, &grid, focus);
         self.refresh_row(settings, &grid, focus);
         for (col, step) in settings.scale_steps().into_iter().enumerate() {
@@ -213,8 +234,8 @@ impl Canvas {
 
     pub(super) fn input(&mut self, settings: &Settings, speech: &str) {
         let rows = settings.input.rows();
-        let grid = Grid::new(&rows);
         let focus = clamp(&rows, settings.input.focus);
+        let grid = Grid::new(&rows, CAPTION, focus);
         self.controller_row(settings, &grid, focus);
         self.microphone_row(settings, &grid, focus);
         self.talk_row(settings, &grid, focus);
@@ -252,6 +273,7 @@ impl Canvas {
                 points,
                 colour,
             );
+            self.caption((x, y), side, &controller.spoken_name(), colour);
             if input.controller_in_use(&controller.name) {
                 let bottom = y.saturating_add(side).saturating_sub(18);
                 self.rectangle(x.saturating_add(8), bottom, 10, 10, AMBER);
@@ -267,7 +289,28 @@ impl Canvas {
             let marked = *choice == input.microphone;
             if let Some((x, y)) = self.tile_frame(grid, (1, col), focus, marked) {
                 let label = input.microphone_tile_label(choice);
-                self.tile_text((x, y, side, side), &[label], points, WHITE);
+                let name = match choice {
+                    MicrophoneChoice::Named(node) => input
+                        .microphones
+                        .iter()
+                        .find(|microphone| microphone.name == *node)
+                        .map(Microphone::spoken_name),
+                    MicrophoneChoice::All | MicrophoneChoice::Auto => None,
+                };
+                let enabled = match choice {
+                    MicrophoneChoice::Named(node) => input.microphone_enabled(node),
+                    MicrophoneChoice::All | MicrophoneChoice::Auto => true,
+                };
+                let lines = if enabled {
+                    vec![label]
+                } else {
+                    vec![label, "OFF".to_owned()]
+                };
+                let colour = if enabled { WHITE } else { DIM };
+                self.tile_text((x, y, side, side), &lines, points, colour);
+                if let Some(name) = name {
+                    self.caption((x, y), side, &name, colour);
+                }
             }
         }
     }

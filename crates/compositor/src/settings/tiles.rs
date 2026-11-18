@@ -1,35 +1,41 @@
 //! Equal square tiles for the Display and Input settings pages.
 
+use tehuti_core::tiles::Focus;
+
 /// Where tiles may go: left, top, width and height in reference pixels.
 const AREA: (usize, usize, usize, usize) = (80, 222, 1120, 380);
 const GAP: usize = 14;
 const LARGEST_SIDE: usize = 150;
 
 /// The square tiles of a page: one side for every tile, rows filled from the left.
+///
+/// A row that is wider than the area scrolls sideways at the same tile size,
+/// just far enough to keep the focused tile in view; the other rows rest at
+/// their start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Grid {
     rows: Vec<usize>,
     side: usize,
+    caption: usize,
+    focus: Focus,
 }
 
 impl Grid {
     /// A grid with `rows[row]` tiles in each row; empty rows take no room.
-    pub(super) fn new(rows: &[usize]) -> Self {
+    /// `caption` is the height kept under every tile for its name.
+    pub(super) fn new(rows: &[usize], caption: usize, focus: Focus) -> Self {
         let bands = rows.iter().filter(|length| **length > 0).count().max(1);
-        let widest = rows.iter().copied().max().unwrap_or(0).max(1);
-        let by_width = AREA
-            .2
-            .saturating_sub(GAP.saturating_mul(widest.saturating_sub(1)))
-            .checked_div(widest)
-            .unwrap_or(0);
         let by_height = AREA
             .3
             .saturating_sub(GAP.saturating_mul(bands.saturating_sub(1)))
             .checked_div(bands)
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .saturating_sub(caption);
         Self {
             rows: rows.to_vec(),
-            side: by_width.min(by_height).clamp(1, LARGEST_SIDE),
+            side: by_height.clamp(1, LARGEST_SIDE),
+            caption,
+            focus,
         }
     }
 
@@ -37,16 +43,42 @@ impl Grid {
         self.side
     }
 
-    /// The top-left corner of a tile, or none when the row has no such tile.
+    /// How many tiles of a row show at once.
+    fn visible(&self) -> usize {
+        AREA.2
+            .saturating_add(GAP)
+            .checked_div(self.side.saturating_add(GAP))
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    /// The first tile of `row` that shows.
+    fn first_shown(&self, row: usize) -> usize {
+        if row == self.focus.row {
+            self.focus
+                .col
+                .saturating_add(1)
+                .saturating_sub(self.visible())
+        } else {
+            0
+        }
+    }
+
+    /// The top-left corner of a tile, or none when the row has no such tile or it is scrolled out of view.
     pub(super) fn origin(&self, row: usize, col: usize) -> Option<(usize, usize)> {
         if col >= self.rows.get(row).copied()? {
             return None;
         }
+        let shown = col.checked_sub(self.first_shown(row))?;
+        if shown >= self.visible() {
+            return None;
+        }
         let band = self.rows.iter().take(row).filter(|length| **length > 0).count();
         let step = self.side.saturating_add(GAP);
+        let band_step = step.saturating_add(self.caption);
         Some((
-            AREA.0.saturating_add(col.saturating_mul(step)),
-            AREA.1.saturating_add(band.saturating_mul(step)),
+            AREA.0.saturating_add(shown.saturating_mul(step)),
+            AREA.1.saturating_add(band.saturating_mul(band_step)),
         ))
     }
 }
@@ -84,6 +116,7 @@ pub(super) fn wrap(label: &str, per_line: usize, max_lines: usize) -> Vec<String
 mod tests {
     use super::{AREA, GAP, Grid, wrap};
     use proptest::prelude::*;
+    use tehuti_core::tiles::{Focus, clamp};
 
     fn cells(grid: &Grid, rows: &[usize]) -> Vec<(usize, usize)> {
         rows.iter()
@@ -95,16 +128,18 @@ mod tests {
 
     proptest! {
         #[test]
-        fn every_tile_is_one_square_inside_the_area_and_none_overlap(
+        fn shown_tiles_are_squares_inside_the_area_and_none_overlap(
             rows in prop::collection::vec(0_usize..16, 0..6),
+            caption in 0_usize..30,
+            at in (0_usize..6, 0_usize..16),
         ) {
-            let grid = Grid::new(&rows);
+            let focus = clamp(&rows, Focus { row: at.0, col: at.1 });
+            let grid = Grid::new(&rows, caption, focus);
             let side = grid.side();
             let origins = cells(&grid, &rows);
-            prop_assert_eq!(origins.len(), rows.iter().sum::<usize>());
             for (x, y) in &origins {
                 prop_assert!(*x >= AREA.0 && x.saturating_add(side) <= AREA.0.saturating_add(AREA.2));
-                prop_assert!(*y >= AREA.1 && y.saturating_add(side) <= AREA.1.saturating_add(AREA.3));
+                prop_assert!(*y >= AREA.1 && y.saturating_add(side).saturating_add(caption) <= AREA.1.saturating_add(AREA.3));
             }
             for (index, first) in origins.iter().enumerate() {
                 for second in origins.iter().skip(index.saturating_add(1)) {
@@ -115,16 +150,41 @@ mod tests {
         }
 
         #[test]
-        fn rows_fill_from_the_left_with_equal_steps(
-            rows in prop::collection::vec(1_usize..16, 1..5),
+        fn tile_size_does_not_shrink_when_a_row_grows(
+            rows in prop::collection::vec(1_usize..4, 1..5),
+            extra in 0_usize..30,
         ) {
-            let grid = Grid::new(&rows);
-            for (row, length) in rows.iter().enumerate() {
-                for col in 0..*length {
-                    let (x, _) = grid.origin(row, col).unwrap_or_default();
-                    prop_assert_eq!(x, AREA.0.saturating_add(col.saturating_mul(grid.side().saturating_add(GAP))));
-                }
-                prop_assert_eq!(grid.origin(row, *length), None);
+            let mut longer = rows.clone();
+            longer[0] = longer[0].saturating_add(extra);
+            prop_assert_eq!(
+                Grid::new(&rows, 0, Focus::default()).side(),
+                Grid::new(&longer, 0, Focus::default()).side()
+            );
+        }
+
+        #[test]
+        fn the_focused_tile_is_always_in_view(
+            rows in prop::collection::vec(1_usize..40, 1..5),
+            at in (0_usize..5, 0_usize..40),
+        ) {
+            let focus = clamp(&rows, Focus { row: at.0, col: at.1 });
+            let grid = Grid::new(&rows, 20, focus);
+            prop_assert!(grid.origin(focus.row, focus.col).is_some());
+        }
+
+        #[test]
+        fn shown_tiles_have_equal_steps_and_a_scrolled_row_ends_at_the_focus(
+            length in 1_usize..40,
+            col in 0_usize..40,
+        ) {
+            let rows = [length];
+            let focus = clamp(&rows, Focus { row: 0, col });
+            let grid = Grid::new(&rows, 0, focus);
+            let step = grid.side().saturating_add(GAP);
+            let shown: Vec<usize> = (0..length).filter_map(|col| grid.origin(0, col).map(|(x, _)| x)).collect();
+            prop_assert_eq!(shown[0], AREA.0);
+            for pair in shown.windows(2) {
+                prop_assert_eq!(pair[1].saturating_sub(pair[0]), step);
             }
         }
 

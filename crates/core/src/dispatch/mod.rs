@@ -64,6 +64,7 @@ pub enum Input {
         controller: ControllerChoice,
         microphone: MicrophoneChoice,
         disabled_controllers: Vec<String>,
+        disabled_microphones: Vec<String>,
     },
     /// Elapsed wall time since the previous tick.
     Tick {
@@ -159,6 +160,11 @@ pub enum Effect {
     SettingsMicrophone(MicrophoneChoice),
     /// Whether the named pad drives Tehuti; the compositor saves it and gates the pad.
     SettingsControllerEnabled {
+        name: String,
+        enabled: bool,
+    },
+    /// Whether the named microphone is used; the compositor saves it for the speech sidecar.
+    SettingsMicrophoneEnabled {
         name: String,
         enabled: bool,
     },
@@ -885,9 +891,13 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             controller,
             microphone,
             disabled_controllers,
-        } => state
-            .settings
-            .restore_input(controller, microphone, disabled_controllers),
+            disabled_microphones,
+        } => state.settings.restore_input(
+            controller,
+            microphone,
+            disabled_controllers,
+            disabled_microphones,
+        ),
         Input::Menu(_)
         | Input::Launcher(_)
         | Input::CloseInvitation

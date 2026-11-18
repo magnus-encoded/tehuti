@@ -119,6 +119,17 @@ def chosen_source():
         return None
 
 
+def disabled_sources():
+    """Microphone node names turned off in Tehuti's settings; never recorded, also under "all"."""
+    root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    try:
+        with open(os.path.join(root, "tehuti", "microphones-disabled.json"), encoding="utf-8") as saved:
+            names = json.load(saved)
+    except (OSError, ValueError):
+        return set()
+    return {name for name in names if isinstance(name, str)} if isinstance(names, list) else set()
+
+
 def list_sources(missing=None):
     """The pinned source, else the settings choice, else every capture device, else the default.
 
@@ -140,11 +151,13 @@ def list_sources(missing=None):
         print(f"speech source listing failed: {error}", file=sys.stderr, flush=True)
         names = []
         listed = False
-    if choice in names:
+    off = disabled_sources()
+    enabled = [name for name in names if name not in off]
+    if choice in enabled:
         return [choice]
-    if missing is not None and choice not in (None, "all", "auto") and listed:
+    if missing is not None and choice not in (None, "all", "auto") and choice not in off and listed:
         missing(choice)
-    return names or [None]
+    return enabled if names else [None]
 
 
 def speech_tails(value):

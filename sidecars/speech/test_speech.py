@@ -616,6 +616,25 @@ time.sleep(60)
                         path.write_text(choice + "\n")
                     self.assertEqual(module.list_sources(), expected)
 
+    def test_turned_off_microphones_are_never_listed_even_under_all(self):
+        listing = json.dumps([{"type": "PipeWire:Interface:Node",
+                               "info": {"props": {"node.name": name, "media.class": "Audio/Source"}}}
+                              for name in ["front", "headset"]]).encode()
+        dump = types.SimpleNamespace(stdout=listing)
+        cases = [("all", ["front"]), ("front", ["front"]), ("headset", ["front"]),
+                 ("all", []), ("all", ["front", "headset"])]
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}), \
+                patch.object(module.subprocess, "run", return_value=dump):
+            os.environ.pop("TEHUTI_SPEECH_SOURCE", None)
+            (Path(directory) / "tehuti").mkdir()
+            for choice, off in cases:
+                with self.subTest(choice=choice, off=off):
+                    (Path(directory) / "tehuti" / "speech-source").write_text(choice + "\n")
+                    (Path(directory) / "tehuti" / "microphones-disabled.json").write_text(json.dumps(off))
+                    expected = [name for name in ["front", "headset"] if name not in off]
+                    self.assertEqual(module.list_sources(), expected)
+
     def test_a_missing_saved_source_is_reported_and_falls_back(self):
         listing = json.dumps([{"type": "PipeWire:Interface:Node",
                                "info": {"props": {"node.name": "front", "media.class": "Audio/Source"}}}]).encode()

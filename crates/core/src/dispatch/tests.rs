@@ -109,6 +109,7 @@ impl World {
                     | Effect::PersistController(_)
                     | Effect::SettingsMicrophone(_)
                     | Effect::SettingsControllerEnabled { .. }
+                    | Effect::SettingsMicrophoneEnabled { .. }
                     | Effect::ListMicrophones
                     | Effect::RunMenuCommand(_)
                     | Effect::PasswordSpeechIgnored
@@ -3198,6 +3199,7 @@ fn input_effects(world: &World) -> Vec<Effect> {
                     | Effect::PersistController(_)
                     | Effect::SettingsMicrophone(_)
                     | Effect::SettingsControllerEnabled { .. }
+                    | Effect::SettingsMicrophoneEnabled { .. }
             )
         })
         .cloned()
@@ -3475,15 +3477,25 @@ fn a_microphone_is_chosen_by_its_tile_or_its_voice_destination() {
     let state = say(&mut world, state, "built-in audio off");
     assert_eq!(
         input_effects(&world),
-        vec![Effect::SettingsMicrophone(MicrophoneChoice::All)]
+        vec![
+            Effect::SettingsMicrophoneEnabled {
+                name: "alsa_input.analog".into(),
+                enabled: false
+            },
+            Effect::SettingsMicrophone(MicrophoneChoice::All)
+        ]
     );
     world.trace.clear();
     let state = say(&mut world, state, "Built-in Audio on");
     assert_eq!(
         input_effects(&world),
-        vec![Effect::SettingsMicrophone(MicrophoneChoice::Named(
-            "alsa_input.analog".into()
-        ))]
+        vec![
+            Effect::SettingsMicrophoneEnabled {
+                name: "alsa_input.analog".into(),
+                enabled: true
+            },
+            Effect::SettingsMicrophone(MicrophoneChoice::Named("alsa_input.analog".into()))
+        ]
     );
     assert_eq!(state.settings().page, Page::Input);
 }
@@ -6025,4 +6037,86 @@ fn an_unmapped_new_phrase_is_consumed_before_the_core_step() {
             .iter()
             .any(|effect| matches!(effect, Effect::Apply(_)))
     );
+}
+
+#[test]
+fn confirming_a_chosen_microphone_turns_it_off_and_again_turns_it_on() {
+    let mut world = World::default();
+    let state = open_input(&mut world);
+    let state = world.run(
+        state,
+        Input::Microphones(vec![microphone("alsa_input.analog", "Built-in Audio")]),
+    );
+    let mut state = settings_button(&mut world, state, ButtonName::DpadDown);
+    state = settings_button(&mut world, state, ButtonName::DpadRight);
+    state = settings_button(&mut world, state, ButtonName::DpadRight);
+    state = settings_button(&mut world, state, ButtonName::South);
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(
+        input_effects(&world),
+        vec![
+            Effect::SettingsMicrophoneEnabled {
+                name: "alsa_input.analog".into(),
+                enabled: false
+            },
+            Effect::SettingsMicrophone(MicrophoneChoice::All)
+        ]
+    );
+    assert!(!state.settings().input.microphone_enabled("alsa_input.analog"));
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert_eq!(
+        input_effects(&world),
+        vec![Effect::SettingsMicrophoneEnabled {
+            name: "alsa_input.analog".into(),
+            enabled: true
+        }]
+    );
+    assert!(state.settings().input.microphone_enabled("alsa_input.analog"));
+}
+
+#[test]
+fn restored_off_microphones_stay_off_until_turned_on() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::InputChoices {
+            controller: ControllerChoice::Auto,
+            microphone: MicrophoneChoice::All,
+            disabled_controllers: Vec::new(),
+            disabled_microphones: vec!["alsa_input.analog".into()],
+        },
+    );
+    assert!(!state.settings().input.microphone_enabled("alsa_input.analog"));
+    assert!(state.settings().input.microphone_enabled("other"));
+}
+
+proptest! {
+    #[test]
+    fn every_controller_and_microphone_is_reachable_by_its_spoken_name(
+        pads in prop::collection::btree_set("[A-Z][a-z]{2,8}( [A-Z][a-z]{2,8})?", 1..4),
+        mics in prop::collection::btree_set("[A-Z][a-z]{2,8}( [0-9]{1,2})?", 1..4),
+    ) {
+        let mut world = World::default();
+        let state = world.run(State::default(), Input::Controllers(pads.iter().cloned().map(ControllerInfo::from).collect()));
+        let state = world.run(
+            state,
+            Input::Microphones(mics.iter().map(|name| microphone(&format!("node.{name}"), name)).collect()),
+        );
+        let state = settings_event(&mut world, state, Event::Speech { text: Text::new("Pop the hood.".into()).unwrap() });
+        let state = settings_button(&mut world, state, ButtonName::DpadDown);
+        let mut state = settings_button(&mut world, state, ButtonName::South);
+        for pad in &state.settings().input.controllers.clone() {
+            world.trace.clear();
+            state = say(&mut world, state, &format!("{} off", pad.spoken_name()));
+            prop_assert_eq!(input_effects(&world).len(), 1);
+        }
+        for mic in &state.settings().input.microphones.clone() {
+            world.trace.clear();
+            state = say(&mut world, state, &format!("{} off", mic.spoken_name()));
+            prop_assert!(!input_effects(&world).is_empty());
+            prop_assert!(!state.settings().input.microphone_enabled(&mic.name));
+        }
+    }
 }

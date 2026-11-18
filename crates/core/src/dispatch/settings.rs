@@ -149,10 +149,12 @@ impl Settings {
         controller: ControllerChoice,
         microphone: super::MicrophoneChoice,
         disabled_controllers: Vec<String>,
+        disabled_microphones: Vec<String>,
     ) {
         self.input.controller = controller;
         self.input.microphone = microphone;
         self.input.disabled_controllers = disabled_controllers;
+        self.input.disabled_microphones = disabled_microphones;
     }
 
     #[must_use]
@@ -484,8 +486,10 @@ impl Settings {
                 }
             }
             MICROPHONE_ROW => {
-                if let Some(choice) = self.input.microphone_options().get(focus.col).cloned() {
-                    self.choose_microphone(choice, effects);
+                match self.input.microphone_options().get(focus.col).cloned() {
+                    Some(super::MicrophoneChoice::Named(name)) => self.toggle_microphone(name, effects),
+                    Some(choice) => self.choose_microphone(choice, effects),
+                    None => {}
                 }
             }
             PUSH_TO_TALK_ROW => {
@@ -508,6 +512,29 @@ impl Settings {
             return;
         }
         effects.push(self.input.set_controller_enabled(name, !enabled));
+    }
+
+    /// A named microphone: an off one turns on, an on one is chosen, the chosen one turns off.
+    fn toggle_microphone(&mut self, name: String, effects: &mut Vec<Effect>) {
+        let choice = super::MicrophoneChoice::Named(name.clone());
+        if !self.input.microphone_enabled(&name) {
+            effects.push(self.input.set_microphone_enabled(name, true));
+        } else if self.input.microphone != choice {
+            self.choose_microphone(choice, effects);
+        } else {
+            self.silence_microphone(name, effects);
+        }
+    }
+
+    /// Turns a microphone off; an off microphone is never the single chosen one.
+    fn silence_microphone(&mut self, name: String, effects: &mut Vec<Effect>) {
+        let chosen = self.input.microphone == super::MicrophoneChoice::Named(name.clone());
+        if self.input.microphone_enabled(&name) {
+            effects.push(self.input.set_microphone_enabled(name, false));
+        }
+        if chosen {
+            self.choose_microphone(super::MicrophoneChoice::All, effects);
+        }
     }
 
     fn choose_microphone(&mut self, choice: super::MicrophoneChoice, effects: &mut Vec<Effect>) {
@@ -547,7 +574,7 @@ impl Settings {
             .input
             .controllers
             .iter()
-            .find(|controller| tehuti_protocol::normalize_phrase(&controller.name) == target)
+            .find(|controller| controller.spoken_name() == target)
             .map(|controller| controller.name.clone());
         if let Some(name) = pad {
             effects.push(self.input.set_controller_enabled(name, enable));
@@ -557,15 +584,18 @@ impl Settings {
             .input
             .microphones
             .iter()
-            .find(|microphone| tehuti_protocol::normalize_phrase(&microphone.description) == target)
-            .map(|microphone| super::MicrophoneChoice::Named(microphone.name.clone()));
-        let Some(choice) = microphone else {
+            .find(|microphone| microphone.spoken_name() == target)
+            .map(|microphone| microphone.name.clone());
+        let Some(name) = microphone else {
             return false;
         };
         if enable {
-            self.choose_microphone(choice, effects);
-        } else if self.input.microphone == choice {
-            self.choose_microphone(super::MicrophoneChoice::All, effects);
+            if !self.input.microphone_enabled(&name) {
+                effects.push(self.input.set_microphone_enabled(name.clone(), true));
+            }
+            self.choose_microphone(super::MicrophoneChoice::Named(name), effects);
+        } else {
+            self.silence_microphone(name, effects);
         }
         true
     }
