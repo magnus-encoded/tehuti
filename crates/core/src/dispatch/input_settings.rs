@@ -22,6 +22,17 @@ pub struct ControllerInfo {
     pub name: String,
     pub key: String,
     pub label: String,
+    pub connection: Connection,
+}
+
+/// How a pad reaches the machine; the tile shows it so identical pads can be told apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Connection {
+    #[default]
+    Usb,
+    Bluetooth,
+    /// A radio dongle that is not Bluetooth.
+    Dongle,
 }
 
 impl From<&str> for ControllerInfo {
@@ -30,6 +41,7 @@ impl From<&str> for ControllerInfo {
             name: name.into(),
             key: name.into(),
             label: format!("{} #1", name.to_uppercase()),
+            connection: Connection::default(),
         }
     }
 }
@@ -39,6 +51,7 @@ impl From<String> for ControllerInfo {
         Self {
             label: format!("{} #1", name.to_uppercase()),
             key: name.clone(),
+            connection: Connection::default(),
             name,
         }
     }

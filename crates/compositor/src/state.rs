@@ -1750,7 +1750,8 @@ impl Compositor {
     /// # Errors
     /// Names the fixture when it is not known.
     pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
-        let pad = |label: &str, key: &str| tehuti_core::dispatch::ControllerInfo {
+        let pad = |label: &str, key: &str, connection| tehuti_core::dispatch::ControllerInfo {
+            connection,
             name: label.to_owned(),
             key: key.to_owned(),
             label: format!(
@@ -1763,6 +1764,7 @@ impl Compositor {
             name: node.to_owned(),
             description: description.to_owned(),
         };
+        use tehuti_core::dispatch::Connection;
         match name {
             "display" => {
                 let modes = [
@@ -1777,10 +1779,14 @@ impl Compositor {
             }
             "input" => {
                 self.configure_controllers(vec![
-                    pad("Xbox Wireless Controller", "xbox-1"),
-                    pad("Xbox Wireless Controller", "xbox-2"),
-                    pad("Xbox Wireless Controller", "xbox-3"),
-                    pad("DualSense Wireless Controller", "dualsense-1"),
+                    pad("Xbox Wireless Controller", "xbox-1", Connection::Usb),
+                    pad("Xbox Wireless Controller", "xbox-2", Connection::Bluetooth),
+                    pad("Xbox Wireless Controller", "xbox-3", Connection::Dongle),
+                    pad(
+                        "DualSense Wireless Controller",
+                        "dualsense-1",
+                        Connection::Bluetooth,
+                    ),
                 ]);
                 let _rejection = self.dispatch(DispatchInput::Microphones(vec![
                     mic("bluez_input.headset", "Arctis Headset"),

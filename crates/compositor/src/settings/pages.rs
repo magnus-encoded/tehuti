@@ -7,8 +7,8 @@ use super::{
 };
 use tehuti_core::{
     dispatch::{
-        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, MICROPHONE_ROW, MicKind, MicrophoneChoice, PadKind,
-        Settings, TALK_OPTIONS,
+        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, MICROPHONE_ROW, MicKind, MicrophoneChoice,
+        PadKind, Settings, TALK_OPTIONS,
     },
     tiles::{Focus, clamp},
 };
@@ -320,6 +320,37 @@ impl Canvas {
         self.drawing(corner, side, pad_details(kind), FACE);
     }
 
+    /// A small picture of how the pad connects, in a tile's corner.
+    fn connection_glyph(
+        &mut self,
+        corner: (usize, usize),
+        side: usize,
+        connection: Connection,
+        colour: [u8; 4],
+    ) {
+        let art: &[&str] = match connection {
+            Connection::Usb => &[".#####.", ".#.#.#.", ".#####.", "...#...", "...#..."],
+            Connection::Bluetooth => &[
+                "..#..", "..##.", "#.#.#", ".###.", "..#..", ".###.", "#.#.#", "..##.", "..#..",
+            ],
+            Connection::Dongle => &["#.#.....", ".#.#####", ".#.#####", "#.#....."],
+        };
+        let cell = side.checked_div(45).unwrap_or(2).max(2);
+        for (row, line) in art.iter().enumerate() {
+            for (column, mark) in line.chars().enumerate() {
+                if mark == '#' {
+                    self.rectangle(
+                        corner.0.saturating_add(column.saturating_mul(cell)),
+                        corner.1.saturating_add(row.saturating_mul(cell)),
+                        cell,
+                        cell,
+                        colour,
+                    );
+                }
+            }
+        }
+    }
+
     fn mic_drawing(&mut self, corner: (usize, usize), side: usize, kind: MicKind, colour: [u8; 4]) {
         let parts: &[Part] = match kind {
             MicKind::Headset => &HEADSET,
@@ -357,9 +388,20 @@ impl Canvas {
                 points,
                 colour,
             );
-            self.caption((x, y), side, &controller.spoken_name(), colour);
+            self.connection_glyph(
+                (x.saturating_add(8), y.saturating_add(8)),
+                side,
+                controller.connection,
+                colour,
+            );
             if input.controller_in_use(&controller.key) {
-                self.rectangle(x.saturating_add(8), y.saturating_add(8), 10, 10, AMBER);
+                self.rectangle(
+                    x.saturating_add(side).saturating_sub(40),
+                    y.saturating_add(8),
+                    10,
+                    10,
+                    AMBER,
+                );
             }
         }
     }
@@ -435,7 +477,7 @@ type Part = (usize, usize, usize, usize);
 
 const GENERIC_PAD: [Part; 3] = [(3, 5, 18, 9), (3, 12, 4, 5), (17, 12, 4, 5)];
 const XBOX: [Part; 3] = [(3, 4, 18, 9), (3, 11, 5, 6), (16, 11, 5, 6)];
-const PLAYSTATION: [Part; 4] = [(3, 5, 18, 8), (3, 11, 5, 6), (16, 11, 5, 6), (9, 4, 6, 1)];
+const PLAYSTATION: [Part; 4] = [(3, 5, 18, 8), (3, 12, 4, 6), (17, 12, 4, 6), (8, 3, 8, 1)];
 const SWITCH: [Part; 2] = [(2, 3, 6, 14), (16, 3, 6, 14)];
 
 /// The details cut into a pad's body: sticks, d-pad and buttons.
@@ -452,13 +494,13 @@ const fn pad_details(kind: PadKind) -> &'static [Part] {
             (17, 7, 1, 1),
         ],
         PadKind::PlayStation => &[
-            (10, 6, 4, 2),
-            (5, 7, 3, 1),
-            (6, 6, 1, 3),
-            (16, 7, 1, 1),
-            (18, 7, 1, 1),
-            (17, 6, 1, 1),
-            (17, 8, 1, 1),
+            (8, 5, 8, 3),
+            (4, 7, 3, 1),
+            (5, 6, 1, 3),
+            (17, 7, 1, 1),
+            (19, 7, 1, 1),
+            (18, 6, 1, 1),
+            (18, 8, 1, 1),
             (8, 10, 3, 3),
             (13, 10, 3, 3),
         ],

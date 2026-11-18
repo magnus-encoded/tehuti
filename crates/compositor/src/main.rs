@@ -815,6 +815,7 @@ fn sync_controller_names(data: &mut LoopData) {
                 vendor,
                 product,
                 controller.pad.device_identity(),
+                controller.pad.connection(),
             )
         })
         .collect();
@@ -1024,6 +1025,7 @@ fn controller_keys(controllers: &BTreeMap<PathBuf, AttachedController>) -> BTree
             vendor,
             product,
             controller.pad.device_identity(),
+            controller.pad.connection(),
         )
     }))
     .into_iter()

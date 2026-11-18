@@ -13,7 +13,14 @@ use crate::input::InputSource;
 
 /// One connected pad as the settings view needs it: its node path, kernel name, USB ids and
 /// the device's own unique id or physical path (empty when it reports neither).
-pub type ConnectedPad = (std::path::PathBuf, String, u16, u16, String);
+pub type ConnectedPad = (
+    std::path::PathBuf,
+    String,
+    u16,
+    u16,
+    String,
+    tehuti_core::dispatch::Connection,
+);
 
 /// Labels pads in path order, counting each model independently.
 ///
@@ -30,7 +37,7 @@ pub fn keyed_controllers(
     let identities: Vec<String> = devices.iter().map(|device| device.4.clone()).collect();
     devices
         .into_iter()
-        .map(|(path, name, vendor, product, identity)| {
+        .map(|(path, name, vendor, product, identity, connection)| {
             let model = tehuti_core::pad::Identity::for_node(vendor, product, &name).model_name(&name);
             let count = counts.entry(model.clone()).or_default();
             *count = count.saturating_add(1);
@@ -47,6 +54,7 @@ pub fn keyed_controllers(
                 name,
                 key,
                 label: format!("{model} #{count}"),
+                connection,
             };
             (path, info)
         })
@@ -909,6 +917,20 @@ impl EvdevPad {
             .to_owned()
     }
 
+    /// How the pad reaches the machine: the bus it reports, or a known radio dongle.
+    #[must_use]
+    pub fn connection(&self) -> tehuti_core::dispatch::Connection {
+        use tehuti_core::dispatch::Connection;
+        let input_id = self.handles.events.input_id();
+        // The Xbox wireless adapter's product ids.
+        let dongle = input_id.vendor() == 0x045e && matches!(input_id.product(), 0x02e6 | 0x02fe | 0x02f9);
+        match input_id.bus_type().0 {
+            0x05 => Connection::Bluetooth,
+            _ if dongle => Connection::Dongle,
+            _ => Connection::Usb,
+        }
+    }
+
     #[must_use]
     pub fn usb_id(&self) -> (u16, u16) {
         let input_id = self.handles.events.input_id();
@@ -1720,6 +1742,7 @@ mod tests {
                 0x045e,
                 0x0b13,
                 String::new(),
+                tehuti_core::dispatch::Connection::Usb,
             ),
             (
                 "/dev/input/event2".into(),
@@ -1727,12 +1750,27 @@ mod tests {
                 0x054c,
                 0x09cc,
                 String::new(),
+                tehuti_core::dispatch::Connection::Usb,
             ),
         ]);
         assert_eq!(pads[0].name, "Wireless Controller");
         assert_eq!(pads[0].label, "DUALSHOCK 4 #1");
         assert_eq!(pads[1].name, "Xbox Wireless Controller");
         assert_eq!(pads[1].label, "XBOX CONTROLLER #1");
+    }
+
+    #[test]
+    fn a_pads_connection_reaches_its_tile_info() {
+        use tehuti_core::dispatch::Connection;
+        let pads = super::numbered_controllers([(
+            "/dev/input/event9".into(),
+            "Xbox Wireless Controller".into(),
+            0x045e,
+            0x0b13,
+            String::new(),
+            Connection::Bluetooth,
+        )]);
+        assert_eq!(pads[0].connection, Connection::Bluetooth);
     }
 
     #[test]
@@ -1744,6 +1782,7 @@ mod tests {
                 0x054c,
                 0x05c4,
                 String::new(),
+                tehuti_core::dispatch::Connection::Usb,
             ),
             (
                 "/dev/input/event2".into(),
@@ -1751,6 +1790,7 @@ mod tests {
                 0x054c,
                 0x09cc,
                 String::new(),
+                tehuti_core::dispatch::Connection::Usb,
             ),
         ]);
         assert_eq!(

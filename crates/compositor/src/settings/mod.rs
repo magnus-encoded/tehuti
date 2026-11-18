@@ -481,6 +481,7 @@ mod tests {
                 0x054c,
                 0x09cc,
                 String::new(),
+                tehuti_core::dispatch::Connection::Usb,
             ),
             (
                 "/dev/input/event9".into(),
@@ -488,6 +489,7 @@ mod tests {
                 0x045e,
                 0x0b13,
                 String::new(),
+                tehuti_core::dispatch::Connection::Usb,
             ),
         ])
     }

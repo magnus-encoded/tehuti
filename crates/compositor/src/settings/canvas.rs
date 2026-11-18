@@ -340,18 +340,26 @@ impl Canvas {
 
     /// A sine wave `width` wide from `start` (left, middle), with a cycle for about every 15 Hz.
     pub(crate) fn wave_across(&mut self, start: (usize, usize), width: usize, hertz: f32) {
-        let amplitude = width as f32 / 6.0;
-        let cycles = (hertz / 15.0).clamp(1.0, 40.0);
-        for column in 0..width {
-            let phase = column as f32 / width as f32 * cycles * core::f32::consts::TAU;
-            let offset = phase.sin() * amplitude;
-            self.rectangle(
-                start.0.saturating_add(column),
-                (start.1 as f32 + offset).max(0.0) as usize,
-                2,
-                3,
-                super::CYAN,
-            );
+        let cycles = (hertz / 30.0).clamp(1.0, 8.0);
+        let left = start.0 as f32 * self.scale.0;
+        let span = (width as f32 * self.scale.0).max(1.0);
+        let amplitude = width as f32 / 6.0 * self.scale.1;
+        let middle = start.1 as f32 * self.scale.1;
+        let half = (1.0 * self.scale.1).max(1.0);
+        let height = |column: f32| {
+            let phase = (column - left) / span * cycles * core::f32::consts::TAU;
+            middle - phase.sin() * amplitude
+        };
+        let first = left.floor() as usize;
+        let last = (left + span).ceil() as usize;
+        for column in first..last {
+            let (here, next) = (height(column as f32), height(column as f32 + 1.0));
+            let low = here.min(next) - half;
+            let high = here.max(next) + half;
+            for row in (low.floor().max(0.0) as usize)..(high.ceil().max(0.0) as usize) {
+                let covered = (high.min(row as f32 + 1.0) - low.max(row as f32)).clamp(0.0, 1.0);
+                self.blend(column, row, super::CYAN, covered);
+            }
         }
     }
 
