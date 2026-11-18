@@ -181,7 +181,8 @@ impl Collection {
             })
             .as_deref()
             == Some("1");
-        let mut entries = load_entries(roots, release, true);
+        let packs = load_packs(roots);
+        let mut entries = load_entries(roots, &packs, release, true);
         let legacy = load_legacy(roots, &mut entries);
         load_user_sets(store.sibling("wallpapers").path(), &mut entries);
         if store
@@ -192,7 +193,7 @@ impl Collection {
             .as_deref()
             == Some("1")
         {
-            load_hidden_sets(roots, &mut entries);
+            load_hidden_sets(roots, &packs, &mut entries);
         }
         let locked = entry_locks(&entries, release, all || unlocked);
         let saved = store.read().unwrap_or_else(|error| {
@@ -272,7 +273,8 @@ impl Collection {
     pub fn unlock_hidden(&mut self) -> std::io::Result<()> {
         self.store.sibling("wallpapers-hidden-unlocked").write("1")?;
         if !self.entries.iter().any(|(name, _)| name.starts_with("bundled/")) {
-            load_hidden_sets(&self.roots, &mut self.entries);
+            let packs = load_packs(&self.roots);
+            load_hidden_sets(&self.roots, &packs, &mut self.entries);
             self.locked.resize(self.entries.len(), false);
         }
         Ok(())
@@ -432,26 +434,46 @@ fn bounded_reader(reader: impl std::io::BufRead + std::io::Seek) -> Option<image
     reader.decode().ok()
 }
 
-fn bundled_source(roots: &[PathBuf], name: &str) -> Option<Source> {
-    roots.iter().find_map(|root| {
-        crate::wallpaper_pack::Pack::read(&root.join("wallpapers.pak"))
-            .ok()
+fn load_packs(roots: &[PathBuf]) -> Vec<Option<crate::wallpaper_pack::Pack>> {
+    roots
+        .iter()
+        .map(|root| crate::wallpaper_pack::Pack::read(&root.join("wallpapers.pak")).ok())
+        .collect()
+}
+
+fn bundled_source(
+    roots: &[PathBuf],
+    packs: &[Option<crate::wallpaper_pack::Pack>],
+    name: &str,
+) -> Option<Source> {
+    let filename = if CODENAMES.contains(&name) {
+        format!("{name}.png")
+    } else {
+        name.to_owned()
+    };
+    roots.iter().zip(packs).find_map(|(root, pack)| {
+        pack.as_ref()
             .and_then(|pack| {
                 pack.bytes(name)
                     .map(|bytes| Source::Bytes(std::sync::Arc::new(bytes.to_vec())))
             })
+            .filter(|source| source.image().is_some())
             .or_else(|| {
-                let path = root.join("wallpapers").join(name);
+                let path = root.join("wallpapers").join(&filename);
                 bounded_image(&path).map(|_| Source::File(path))
             })
     })
 }
 
-fn load_hidden_sets(roots: &[PathBuf], entries: &mut Vec<(String, Source)>) {
+fn load_hidden_sets(
+    roots: &[PathBuf],
+    packs: &[Option<crate::wallpaper_pack::Pack>],
+    entries: &mut Vec<(String, Source)>,
+) {
     for set in BUNDLED_SETS {
         let mut names = std::collections::BTreeSet::new();
-        for root in roots {
-            if let Ok(pack) = crate::wallpaper_pack::Pack::read(&root.join("wallpapers.pak")) {
+        for (root, pack) in roots.iter().zip(packs) {
+            if let Some(pack) = pack {
                 names.extend(
                     pack.names()
                         .filter(|name| name.starts_with(&format!("{set}/")))
@@ -468,7 +490,7 @@ fn load_hidden_sets(roots: &[PathBuf], entries: &mut Vec<(String, Source)>) {
             }
         }
         for name in names.into_iter().take(256) {
-            if let Some(source) = bundled_source(roots, &name).filter(|source| source.image().is_some()) {
+            if let Some(source) = bundled_source(roots, packs, &name) {
                 entries.push((format!("bundled/{name}"), source));
             }
         }
@@ -488,27 +510,17 @@ fn entry_locks(entries: &[(String, Source)], release: usize, unlocked: bool) -> 
         .collect()
 }
 
-fn load_entries(roots: &[PathBuf], release: usize, all: bool) -> Vec<(String, Source)> {
+fn load_entries(
+    roots: &[PathBuf],
+    packs: &[Option<crate::wallpaper_pack::Pack>],
+    release: usize,
+    all: bool,
+) -> Vec<(String, Source)> {
     CODENAMES
         .iter()
         .enumerate()
         .filter(|(index, _)| all || *index <= release)
-        .filter_map(|(_, name)| {
-            let source = roots.iter().find_map(|root| {
-                crate::wallpaper_pack::Pack::read(&root.join("wallpapers.pak"))
-                    .ok()
-                    .and_then(|pack| {
-                        pack.bytes(name)
-                            .map(|bytes| Source::Bytes(std::sync::Arc::new(bytes.to_vec())))
-                    })
-                    .filter(|source| source.image().is_some())
-                    .or_else(|| {
-                        let path = root.join("wallpapers").join(format!("{name}.png"));
-                        bounded_image(&path).map(|_| Source::File(path))
-                    })
-            })?;
-            Some(((*name).to_owned(), source))
-        })
+        .filter_map(|(_, name)| bundled_source(roots, packs, name).map(|source| ((*name).to_owned(), source)))
         .collect()
 }
 
