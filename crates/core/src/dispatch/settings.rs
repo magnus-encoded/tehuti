@@ -223,9 +223,6 @@ impl Settings {
             self.status = Status::Switching;
             effects.push(Effect::SettingsMode(previous));
         }
-        if let Some(previous) = self.previous_controller.take() {
-            self.input.controller = previous;
-        }
     }
 
     fn back(&mut self, effects: &mut Vec<Effect>) {
