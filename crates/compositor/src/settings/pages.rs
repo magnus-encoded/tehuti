@@ -74,7 +74,18 @@ impl Canvas {
             .saturating_mul(10)
             .checked_div(CAPTION_POINTS.saturating_mul(6))
             .unwrap_or(1);
-        let line: String = name.to_uppercase().chars().take(per_line).collect();
+        let upper = name.to_uppercase();
+        let line = if upper.chars().count() <= per_line {
+            upper
+        } else {
+            // Keep the last word: it is what tells identical pads apart.
+            let tail = upper.rsplit(' ').next().unwrap_or("");
+            let head: String = upper
+                .chars()
+                .take(per_line.saturating_sub(tail.chars().count()).saturating_sub(3))
+                .collect();
+            format!("{}.. {tail}", head.trim_end())
+        };
         let middle = (
             corner.0.saturating_mul(2).saturating_add(side),
             corner
