@@ -42,6 +42,14 @@ pub(super) fn raster(
         "switch" => include_str!("../../assets/input/switch.svg"),
         "usb-mic" => include_str!("../../assets/input/usb-mic.svg"),
         "xbox" => include_str!("../../assets/input/xbox.svg"),
+        "button-menu" => include_str!("../../assets/input/button-menu.svg"),
+        "button-share" => include_str!("../../assets/input/button-share.svg"),
+        "button-view" => include_str!("../../assets/input/button-view.svg"),
+        "streamed" => include_str!("../../assets/input/streamed.svg"),
+        "tehuti" => include_str!("../../assets/input/tehuti.svg"),
+        "toggle-off" => include_str!("../../assets/input/toggle-off.svg"),
+        "toggle-on" => include_str!("../../assets/input/toggle-on.svg"),
+        "virtual" => include_str!("../../assets/input/virtual.svg"),
         _ => return None,
     };
     let [blue, green, red, _] = colour;

@@ -3,7 +3,7 @@
 use super::{
     AMBER, CYAN, WHITE,
     canvas::Canvas,
-    tiles::{DISPLAY_SIDE, Grid, INPUT_SIDE, wrap},
+    tiles::{DISPLAY_SIDE, Grid, wrap},
 };
 use tehuti_core::{
     dispatch::{
@@ -17,6 +17,8 @@ const FACE: [u8; 4] = [36, 26, 14, 255];
 const FACE_FOCUSED: [u8; 4] = [65, 43, 12, 255];
 const EDGE: [u8; 4] = [90, 70, 40, 255];
 const DIM: [u8; 4] = [120, 110, 95, 255];
+/// The outline of the pad whose settings row has focus: dimmer than the focus outline.
+const SELECTED: [u8; 4] = [150, 128, 36, 255];
 const SCREEN: [u8; 4] = [20, 14, 8, 255];
 /// Height kept under each Input tile for its name.
 const CAPTION: usize = 22;
@@ -280,7 +282,7 @@ impl Canvas {
     pub(super) fn input(&mut self, settings: &Settings, speech: &str) {
         let rows = settings.input.rows();
         let focus = clamp(&rows, settings.input.focus);
-        let grid = Grid::new(&rows, CAPTION, focus, Some(INPUT_SIDE));
+        let grid = Grid::input(&rows, focus);
         self.controller_row(settings, &grid, focus);
         self.controller_settings_row(settings, &grid, focus);
         self.microphone_row(settings, &grid, focus);
@@ -305,6 +307,7 @@ impl Canvas {
         self.input_icon(corner, side, icon, colour);
     }
 
+    /// The origin glyph in a tile's corner; nothing when the source is unknown.
     fn connection_glyph(
         &mut self,
         corner: (usize, usize),
@@ -312,24 +315,46 @@ impl Canvas {
         connection: Connection,
         colour: [u8; 4],
     ) {
-        let icon = match connection {
-            Connection::Usb => "cable",
-            Connection::Bluetooth => "bluetooth",
-            Connection::Dongle => "dongle",
-        };
-        self.svg_icon(corner, side / 7, icon, colour);
+        if let Some(icon) = connection.glyph() {
+            self.svg_icon(corner, side / 6, icon, colour);
+        }
     }
 
+    /// Artwork centred in the upper part of a tile, leaving the bottom for words.
     fn input_icon(&mut self, corner: (usize, usize), side: usize, icon: &'static str, colour: [u8; 4]) {
+        let size = side.saturating_mul(5) / 8;
         self.svg_icon(
             (
-                corner.0.saturating_add(side / 10),
-                corner.1.saturating_add(side / 16),
+                corner.0.saturating_add(side.saturating_sub(size) / 2),
+                corner.1.saturating_add(side / 12),
             ),
-            side.saturating_mul(4) / 5,
+            size,
             icon,
             colour,
         );
+    }
+
+    /// One small line centred on the bottom of a tile.
+    fn tile_foot(&mut self, corner: (usize, usize), side: usize, text: &str, points: usize, colour: [u8; 4]) {
+        let middle = (
+            corner.0.saturating_mul(2).saturating_add(side),
+            corner
+                .1
+                .saturating_add(side)
+                .saturating_sub(side / 12)
+                .saturating_mul(2),
+        );
+        self.centred(middle, text, points, colour);
+    }
+
+    /// A thin outline around a tile, for the pad that the focused settings row edits.
+    fn selected_outline(&mut self, corner: (usize, usize), side: usize) {
+        let (x, y) = corner;
+        let far = |origin: usize| origin.saturating_add(side).saturating_sub(3);
+        self.rectangle(x, y, side, 3, SELECTED);
+        self.rectangle(x, far(y), side, 3, SELECTED);
+        self.rectangle(x, y, 3, side, SELECTED);
+        self.rectangle(far(x), y, 3, side, SELECTED);
     }
 
     fn mic_drawing(&mut self, corner: (usize, usize), side: usize, kind: MicKind, colour: [u8; 4]) {
@@ -361,13 +386,22 @@ impl Canvas {
             } else {
                 DIM
             };
+            if focus.row == CONTROLLER_SETTINGS_ROW && input.controller_cursor == col {
+                self.selected_outline((x, y), side);
+            }
             self.pad_drawing((x, y), side, controller.kind(), colour);
-            let below = y.saturating_add(side).saturating_sub(side / 5);
             self.tile_text(
-                (x, below, side, side / 5),
+                (x, y.saturating_add(side.saturating_mul(7) / 10), side, side / 4),
                 core::slice::from_ref(&controller.label),
                 points,
                 colour,
+            );
+            self.tile_foot(
+                (x, y),
+                side,
+                controller.connection.caption(),
+                points.saturating_sub(1).max(7),
+                if asking { AMBER } else { DIM },
             );
             self.connection_glyph(
                 (x.saturating_add(8), y.saturating_add(8)),
@@ -394,21 +428,51 @@ impl Canvas {
             return;
         };
         let side = grid.side();
-        let points = side.checked_div(9).unwrap_or(8).max(8);
+        let points = side.checked_div(10).unwrap_or(8).max(8);
         let enabled = input.controller_enabled(&controller.key);
+        if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0) {
+            let step = side.saturating_add(14);
+            let width = step
+                .saturating_mul(TALK_OPTIONS.len().saturating_add(1))
+                .saturating_sub(14);
+            self.centred(
+                (
+                    x.saturating_mul(2).saturating_add(width),
+                    y.saturating_sub(22).saturating_mul(2),
+                ),
+                &controller.spoken_name().to_uppercase(),
+                CAPTION_POINTS,
+                WHITE,
+            );
+        }
         if let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_SETTINGS_ROW, 0), focus, enabled) {
-            let word = if enabled { "ENABLED" } else { "OFF" };
             let colour = if enabled { WHITE } else { DIM };
-            self.tile_text((x, y, side, side), &[word.to_owned()], points, colour);
-            self.caption((x, y), side, &controller.spoken_name(), colour);
+            self.input_icon(
+                (x, y),
+                side,
+                if enabled { "toggle-on" } else { "toggle-off" },
+                colour,
+            );
+            self.tile_foot(
+                (x, y),
+                side,
+                if enabled { "ENABLED" } else { "OFF" },
+                points,
+                colour,
+            );
         }
         for (index, option) in TALK_OPTIONS.into_iter().enumerate() {
             let col = index.saturating_add(1);
             let marked = input.talk_choice() == option;
             if let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_SETTINGS_ROW, col), focus, marked) {
+                let icon = match option {
+                    None => "button-view",
+                    Some(tehuti_protocol::ButtonName::Record) => "button-share",
+                    Some(_) => "button-menu",
+                };
                 let label = tehuti_core::dispatch::InputSettings::talk_label(option);
-                let lines = ["TALK".to_owned(), label.to_owned()];
-                self.tile_text((x, y, side, side), &lines, points, WHITE);
+                self.input_icon((x, y), side, icon, WHITE);
+                self.tile_foot((x, y), side, &format!("TALK {label}"), points, WHITE);
             }
         }
     }
@@ -443,8 +507,8 @@ impl Canvas {
                     }
                 }
                 let words = if enabled { label } else { format!("{label} OFF") };
-                let below = y.saturating_add(side).saturating_sub(side / 5);
-                self.tile_text((x, below, side, side / 5), &[words], points, colour);
+                let below = y.saturating_add(side.saturating_mul(7) / 10);
+                self.tile_text((x, below, side, side / 4), &[words], points, colour);
                 if let Some(known) = microphone {
                     self.caption((x, y), side, &known.spoken_name(), colour);
                 }

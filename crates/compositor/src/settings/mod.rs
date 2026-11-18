@@ -322,7 +322,7 @@ mod tests {
             }
         }
         let input = &compositor.settings().input;
-        let grid = super::tiles::Grid::new(&input.rows(), 22, input.focus, Some(super::tiles::INPUT_SIDE));
+        let grid = super::tiles::Grid::input(&input.rows(), input.focus);
         let (left, top) = grid.origin(0, 0).ok_or("missing controller tile")?;
         let side = grid.side();
         for (width, height) in [(1280, 720), (1920, 1080), (3840, 2160)] {
@@ -340,9 +340,9 @@ mod tests {
                     .filter(|(index, _)| {
                         let x = index.checked_rem(width).unwrap_or_default().saturating_mul(1280) / width;
                         let y = index.saturating_div(width).saturating_mul(720) / height;
-                        (left.saturating_add(side / 5)..left.saturating_add(side.saturating_mul(4) / 5))
+                        (left.saturating_add(side / 4)..left.saturating_add(side.saturating_mul(3) / 4))
                             .contains(&x)
-                            && (top.saturating_add(side / 4)..top.saturating_add(side.saturating_mul(3) / 5))
+                            && (top.saturating_add(side / 10)..top.saturating_add(side.saturating_mul(3) / 5))
                                 .contains(&y)
                     })
                     .map(|(_, pixel)| pixel.to_vec())

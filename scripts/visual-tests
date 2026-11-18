@@ -14,7 +14,7 @@ from PIL import Image, ImageChops, ImageEnhance
 ROOT = Path(__file__).resolve().parent.parent
 GOLDENS = ROOT / "tests/visual/goldens"
 PENDING = {"launcher-empty", "launcher-window"}  # #379 owns launcher layout.
-REVIEW = {"menu", "settings-display", "settings-display-font", "settings-input", "settings-input-mics", "settings-input-mics-end"}  # Captured for review in the artefact; no golden yet.
+REVIEW = {"menu", "settings-display", "settings-display-font", "settings-input", "settings-input-options", "settings-input-mics", "settings-input-mics-end"}  # Captured for review in the artefact; no golden yet.
 
 
 # The settings page prints the commit it was built from; ignore that line.
@@ -169,8 +169,9 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             for button in ("dpad_up", "dpad_up", "dpad_right"):
                 tap(button)
             capture("settings-input", lambda s: s["overlays"]["settings"])
-            for button in ("dpad_down", "dpad_down"):
-                tap(button)
+            tap("dpad_down")
+            capture("settings-input-options", lambda s: s["overlays"]["settings"])
+            tap("dpad_down")
             capture("settings-input-mics", lambda s: s["overlays"]["settings"])
             for _ in range(7):
                 tap("dpad_right")

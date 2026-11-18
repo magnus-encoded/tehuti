@@ -1770,13 +1770,16 @@ impl Compositor {
                 self.microphone_listing = None;
                 self.configure_controllers(vec![
                     pad("Xbox Wireless Controller", "xbox-1", Connection::Usb),
-                    pad("Switch Joy-Con", "switch-1", Connection::Bluetooth),
-                    pad("USB Gamepad", "generic-1", Connection::Dongle),
+                    pad("Switch Joy-Con", "switch-2", Connection::Bluetooth),
+                    pad("USB Gamepad", "generic-3", Connection::Dongle),
                     pad(
                         "DualSense Wireless Controller",
-                        "dualsense-1",
-                        Connection::Bluetooth,
+                        "dualsense-4",
+                        Connection::Streamed,
                     ),
+                    pad("Xbox Wireless Controller", "xbox-5", Connection::VirtualOther),
+                    pad("Xbox Wireless Controller", "xbox-6", Connection::Tehuti),
+                    pad("Generic Pad", "generic-7", Connection::Unknown),
                 ]);
                 let _rejection = self.dispatch(DispatchInput::Microphones(vec![
                     mic("bluez_input.headset", "Arctis Headset"),
