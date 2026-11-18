@@ -364,6 +364,9 @@ impl Compositor {
         }
         compositor.announce_menu_config();
         compositor.rebuild_destinations();
+        if crate::wallpaper::selection_missing() {
+            compositor.show_notice("SAVED WALLPAPER MISSING; USING AVAILABLE WALLPAPER");
+        }
         Ok(compositor)
     }
 

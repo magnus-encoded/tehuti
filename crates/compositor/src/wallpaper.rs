@@ -760,6 +760,16 @@ pub fn unlock() -> std::io::Result<(Vec<String>, Vec<bool>, usize)> {
     Ok(cache.choices())
 }
 
+#[must_use]
+pub fn selection_missing() -> bool {
+    wallpaper().lock().is_ok_and(|cache| {
+        cache
+            .collection
+            .as_ref()
+            .is_some_and(Collection::selection_missing)
+    })
+}
+
 pub fn refresh() {
     if let Ok(mut cache) = wallpaper().lock() {
         let ping = cache.redraw.clone();
