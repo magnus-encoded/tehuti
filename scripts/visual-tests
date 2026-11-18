@@ -142,6 +142,7 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             capture("settings", lambda s: s["overlays"]["settings"])
             def tap(button):
                 drive("clock", "advance", "1000")
+                drive("release", button)
                 drive("press", button)
                 time.sleep(0.5)
 
