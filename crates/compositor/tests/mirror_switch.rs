@@ -147,7 +147,9 @@ mod tests {
             hat: Rc::clone(&hat),
             log: Rc::clone(log),
         };
-        let pad = EvdevPad::new(device(&raw, &held), device(&raw, &held), DpadHat::default());
+        let mut pad = EvdevPad::new(device(&raw, &held), device(&raw, &held), DpadHat::default());
+        // These tests follow raw values through the mirror; the deadzone has its own tests below.
+        pad.set_deadzone(0);
         (pad, Handles { raw, held, hat })
     }
 
@@ -376,6 +378,43 @@ mod tests {
         KeyCode::BTN_DPAD_LEFT,
         KeyCode::BTN_DPAD_RIGHT,
     ];
+
+    /// The ABS_X the application sees after the pad sends `raw` with this deadzone.
+    fn forwarded_x(deadzone: u16, raw: i32) -> Option<i32> {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut controller, handles) = pad("pad", &log);
+        controller.set_deadzone(deadzone);
+        assert!(controller.set_mirror(true, &|_| false).unwrap());
+        handles
+            .raw
+            .borrow_mut()
+            .extend(axis(AbsoluteAxisCode::ABS_X, raw));
+        controller.pump_mirror(&mut |_, _| false).unwrap();
+        shown(&log.borrow())
+            .get(&(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0))
+            .copied()
+    }
+
+    #[test]
+    fn a_pad_resting_off_centre_reads_as_centred_inside_its_deadzone_and_still_reaches_the_ends() {
+        let centred = forwarded_x(250, 0);
+        assert!(centred.is_some());
+        assert_eq!(
+            forwarded_x(250, 20),
+            centred,
+            "20% off centre is inside a 25% deadzone"
+        );
+        assert_ne!(
+            forwarded_x(0, 20),
+            centred,
+            "without a deadzone the drift passes through"
+        );
+        assert_eq!(
+            forwarded_x(250, 100),
+            forwarded_x(0, 100),
+            "full travel still reaches the end"
+        );
+    }
 
     #[test]
     fn mirror_drops_non_gamepad_input_from_held_state_and_live_frames() {
