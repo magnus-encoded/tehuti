@@ -1750,6 +1750,7 @@ impl Compositor {
     /// # Errors
     /// Names the fixture when it is not known.
     pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
+        use tehuti_core::dispatch::Connection;
         let pad = |label: &str, key: &str, connection| tehuti_core::dispatch::ControllerInfo {
             connection,
             name: label.to_owned(),
@@ -1764,7 +1765,6 @@ impl Compositor {
             name: node.to_owned(),
             description: description.to_owned(),
         };
-        use tehuti_core::dispatch::Connection;
         match name {
             "display" => {
                 let modes = [

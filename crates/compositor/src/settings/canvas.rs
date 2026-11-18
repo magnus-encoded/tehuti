@@ -348,7 +348,7 @@ impl Canvas {
         let half = (1.0 * self.scale.1).max(1.0);
         let height = |column: f32| {
             let phase = (column - left) / span * cycles * core::f32::consts::TAU;
-            middle - phase.sin() * amplitude
+            (-phase.sin()).mul_add(amplitude, middle)
         };
         let first = left.floor() as usize;
         let last = (left + span).ceil() as usize;
