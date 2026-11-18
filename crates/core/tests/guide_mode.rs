@@ -70,9 +70,9 @@ mod guide_mode {
         let (state, actions) = run(game("guide = 'app'"), &chord);
         assert!(actions.is_empty(), "{actions:?}");
         assert_eq!(state.level(), Level::App);
-        let (_, actions) = run(game(""), &chord);
+        let (_, tehuti_actions) = run(game(""), &chord);
         assert!(
-            actions
+            tehuti_actions
                 .iter()
                 .any(|action| matches!(action, Action::Layout { .. }))
         );
@@ -104,9 +104,12 @@ mod guide_mode {
         );
         let notices: Vec<_> = actions
             .iter()
-            .filter_map(|action| match action {
-                Action::Notice { text } => Some(text.as_str().to_owned()),
-                _ => None,
+            .filter_map(|action| {
+                if let Action::Notice { text } = action {
+                    Some(text.as_str().to_owned())
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(notices.len(), 1);
