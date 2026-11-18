@@ -3696,7 +3696,7 @@ proptest! {
         for _ in 0..presses {
             let next = input.next_deadzone("Pad");
             prop_assert!(crate::dispatch::DEADZONE_STEPS.contains(&next));
-            let _previous = input.controller_deadzones.insert("Pad".into(), next);
+            let _replaced = input.controller_deadzones.insert("Pad".into(), next);
         }
     }
 }
