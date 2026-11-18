@@ -534,7 +534,7 @@ impl Settings {
         }
     }
 
-    fn connect_remote(&mut self, col: usize, effects: &mut Vec<Effect>) {
+    fn connect_remote(&self, col: usize, effects: &mut Vec<Effect>) {
         if let Some(host) = self.input.remote_hosts.get(col).cloned() {
             effects.push(Effect::ConnectRemoteMicrophone { host });
         }
