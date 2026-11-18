@@ -3555,30 +3555,24 @@ proptest! {
     }
 }
 
+fn press_all(world: &mut World, state: State, buttons: &[ButtonName]) -> State {
+    buttons
+        .iter()
+        .fold(state, |current, button| settings_button(world, current, *button))
+}
+
 #[test]
-fn push_to_talk_is_set_in_each_controllers_own_row_and_follows_the_pad_in_use() {
+fn push_to_talk_is_set_in_each_controllers_own_row() {
+    use ButtonName::{DpadDown, DpadRight, DpadUp, South};
     let mut world = World::default();
-    let mut state = open_input(&mut world);
-    let press = |world: &mut World, state: State, buttons: &[ButtonName]| {
-        buttons
-            .iter()
-            .fold(state, |state, button| settings_button(world, state, *button))
-    };
+    let state = open_input(&mut world);
     // Down from the first pad opens its row: ENABLED, then CONTEXT, SHARE, MENU.
-    state = press(&mut world, state, &[ButtonName::DpadDown]);
+    let state = press_all(&mut world, state, &[DpadDown]);
     assert_eq!(
         state.settings().input.focus,
         crate::tiles::Focus { row: 1, col: 0 }
     );
-    state = press(
-        &mut world,
-        state,
-        &[
-            ButtonName::DpadRight,
-            ButtonName::DpadRight,
-            ButtonName::DpadRight,
-        ],
-    );
+    let state = press_all(&mut world, state, &[DpadRight, DpadRight, DpadRight]);
     assert!(
         !world
             .trace
@@ -3586,49 +3580,48 @@ fn push_to_talk_is_set_in_each_controllers_own_row_and_follows_the_pad_in_use() 
             .any(|effect| matches!(effect, Effect::PersistControllerTalk(_, _))),
         "moving saves nothing"
     );
-    state = press(&mut world, state, &[ButtonName::South]);
+    let state = press_all(&mut world, state, &[South]);
     assert!(world.trace.contains(&Effect::PersistControllerTalk(
         "Wireless Controller".into(),
         Some(ButtonName::Start)
     )));
     // Up returns to that pad; the next pad has its own row.
-    state = press(
-        &mut world,
-        state,
-        &[ButtonName::DpadUp, ButtonName::DpadRight, ButtonName::DpadDown],
-    );
+    let state = press_all(&mut world, state, &[DpadUp, DpadRight, DpadDown]);
     assert_eq!(
         state.settings().input.focus,
         crate::tiles::Focus { row: 1, col: 0 }
     );
-    state = press(
-        &mut world,
-        state,
-        &[ButtonName::DpadRight, ButtonName::DpadRight, ButtonName::South],
-    );
+    let _state = press_all(&mut world, state, &[DpadRight, DpadRight, South]);
     assert!(world.trace.contains(&Effect::PersistControllerTalk(
         "Xbox Controller".into(),
         Some(ButtonName::Record)
     )));
-    state = world.run(state, Input::ActiveController("Wireless Controller".into()));
+}
+
+#[test]
+fn push_to_talk_follows_the_pad_in_use_and_context_restores_the_default() {
+    use ButtonName::{DpadDown, DpadLeft, DpadRight, DpadUp, South};
+    let mut world = World::default();
+    let state = open_input(&mut world);
+    let state = press_all(
+        &mut world,
+        state,
+        &[DpadDown, DpadRight, DpadRight, DpadRight, South],
+    );
+    let state = press_all(
+        &mut world,
+        state,
+        &[DpadUp, DpadRight, DpadDown, DpadRight, DpadRight, South],
+    );
+    let mut state = world.run(state, Input::ActiveController("Wireless Controller".into()));
     assert!(state.core().push_to_talk(ButtonName::Start));
     assert!(!state.core().push_to_talk(ButtonName::Record));
     state = world.run(state, Input::ActiveController("Xbox Controller".into()));
     assert!(state.core().push_to_talk(ButtonName::Record));
     assert!(!state.core().push_to_talk(ButtonName::Start));
     // CONTEXT on the first pad restores the context default.
-    state = press(
-        &mut world,
-        state,
-        &[
-            ButtonName::DpadUp,
-            ButtonName::DpadLeft,
-            ButtonName::DpadDown,
-            ButtonName::DpadRight,
-            ButtonName::South,
-        ],
-    );
-    state = world.run(state, Input::ActiveController("Wireless Controller".into()));
+    let state = press_all(&mut world, state, &[DpadUp, DpadLeft, DpadDown, DpadRight, South]);
+    let state = world.run(state, Input::ActiveController("Wireless Controller".into()));
     assert!(!state.core().push_to_talk(ButtonName::Start));
     assert!(!state.core().push_to_talk(ButtonName::Record));
 }

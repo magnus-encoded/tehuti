@@ -250,6 +250,23 @@ impl Canvas {
         }
     }
 
+    /// A sine wave `width` wide from `start` (left, middle), with a cycle for about every 15 Hz.
+    pub(crate) fn wave_across(&mut self, start: (usize, usize), width: usize, hertz: f32) {
+        let amplitude = width as f32 / 6.0;
+        let cycles = (hertz / 15.0).clamp(1.0, 40.0);
+        for column in 0..width {
+            let phase = column as f32 / width as f32 * cycles * core::f32::consts::TAU;
+            let offset = phase.sin() * amplitude;
+            self.rectangle(
+                start.0.saturating_add(column),
+                (start.1 as f32 + offset).max(0.0) as usize,
+                2,
+                3,
+                super::CYAN,
+            );
+        }
+    }
+
     pub(crate) fn rectangle(&mut self, x: usize, y: usize, width: usize, height: usize, color: [u8; 4]) {
         let left = x as f32 * self.scale.0;
         let top = y as f32 * self.scale.1;
