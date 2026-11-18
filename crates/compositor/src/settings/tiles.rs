@@ -178,8 +178,7 @@ pub(super) fn wrap(label: &str, per_line: usize, max_lines: usize) -> Vec<String
     if lines.len() > max_lines && max_lines > 0 {
         lines.truncate(max_lines);
         if let Some(last) = lines.last_mut() {
-            let kept: String = last.chars().take(per_line.saturating_sub(2)).collect();
-            *last = format!("{}..", kept.trim_end());
+            *last = ellipsize(&format!("{last} .."), per_line);
         }
     }
     lines.truncate(max_lines);
