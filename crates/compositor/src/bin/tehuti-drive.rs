@@ -116,7 +116,9 @@ fn parse_action(
         "shot" => Request::Shot {
             path: next(arguments)?.into(),
         },
-        "fixture" => Request::Fixture { name: next(arguments)? },
+        "fixture" => Request::Fixture {
+            name: next(arguments)?,
+        },
         "clock" => {
             if next(arguments)? != "advance" {
                 return Err("use clock advance MS".into());

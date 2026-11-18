@@ -190,8 +190,10 @@ impl Driver {
         compositor: &mut Compositor,
         request: Request,
     ) -> Result<Value, Box<dyn core::error::Error>> {
-        if !matches!(request, Request::Scene | Request::Shot { .. } | Request::Stop | Request::Fixture { .. })
-            && compositor.secret_confirmation_text().is_some()
+        if !matches!(
+            request,
+            Request::Scene | Request::Shot { .. } | Request::Stop | Request::Fixture { .. }
+        ) && compositor.secret_confirmation_text().is_some()
         {
             return Err("synthetic input cannot answer an approval prompt".into());
         }

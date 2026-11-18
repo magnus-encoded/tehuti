@@ -273,14 +273,32 @@ impl Canvas {
                     let samples = crate::bar_font::coverage(character, tehuti_core::bar::Font::Bitmap, false);
                     let mut scaled = vec![0_u8; cell.0.saturating_mul(cell.1)];
                     for (slot, coverage) in scaled.iter_mut().enumerate() {
-                        let column = slot.checked_rem(cell.0).unwrap_or(0).checked_div(block).unwrap_or(0);
-                        let row = slot.checked_div(cell.0).unwrap_or(0).checked_div(block).unwrap_or(0);
-                        *coverage = samples.get(row.saturating_mul(8).saturating_add(column)).copied().unwrap_or(0);
+                        let column = slot
+                            .checked_rem(cell.0)
+                            .unwrap_or(0)
+                            .checked_div(block)
+                            .unwrap_or(0);
+                        let row = slot
+                            .checked_div(cell.0)
+                            .unwrap_or(0)
+                            .checked_div(block)
+                            .unwrap_or(0);
+                        *coverage = samples
+                            .get(row.saturating_mul(8).saturating_add(column))
+                            .copied()
+                            .unwrap_or(0);
                     }
                     (0_i32, 0_i32, cell.0, cell.1, scaled, cell.0 as f32)
                 },
                 |(metrics, bitmap)| {
-                    (metrics.xmin, metrics.ymin, metrics.width, metrics.height, bitmap, metrics.advance_width)
+                    (
+                        metrics.xmin,
+                        metrics.ymin,
+                        metrics.width,
+                        metrics.height,
+                        bitmap,
+                        metrics.advance_width,
+                    )
                 },
             ));
         }

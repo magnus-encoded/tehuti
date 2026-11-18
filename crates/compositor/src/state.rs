@@ -1728,7 +1728,11 @@ impl Compositor {
         let pad = |label: &str, key: &str| tehuti_core::dispatch::ControllerInfo {
             name: label.to_owned(),
             key: key.to_owned(),
-            label: format!("{} #{}", label.to_uppercase(), key.rsplit('-').next().unwrap_or("1")),
+            label: format!(
+                "{} #{}",
+                label.to_uppercase(),
+                key.rsplit('-').next().unwrap_or("1")
+            ),
         };
         let mic = |name: &str, description: &str| tehuti_core::dispatch::Microphone {
             name: name.to_owned(),
@@ -1736,7 +1740,14 @@ impl Compositor {
         };
         match name {
             "display" => {
-                let modes = ["1920x1080@60", "1920x1080@144", "2560x1080@60", "2560x1080@120", "1280x1024@60", "1280x1024@75"];
+                let modes = [
+                    "1920x1080@60",
+                    "1920x1080@144",
+                    "2560x1080@60",
+                    "2560x1080@120",
+                    "1280x1024@60",
+                    "1280x1024@75",
+                ];
                 self.configure_display_modes(modes.map(str::to_owned).to_vec(), 0);
             }
             "input" => {
