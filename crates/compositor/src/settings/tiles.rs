@@ -154,11 +154,11 @@ mod tests {
         fn shown_tiles_are_squares_inside_the_area_and_none_overlap(
             rows in prop::collection::vec(0_usize..16, 0..6),
             caption in 0_usize..30,
-            side in prop::option::of(1_usize..260),
+            fixed in prop::option::of(1_usize..260),
             spot in (0_usize..6, 0_usize..16),
         ) {
             let focus = clamp(&rows, Focus { row: spot.0, col: spot.1 });
-            let grid = Grid::new(&rows, caption, focus, side);
+            let grid = Grid::new(&rows, caption, focus, fixed);
             let side = grid.side();
             let origins = cells(&grid, &rows);
             for (x, y) in &origins {

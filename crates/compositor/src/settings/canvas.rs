@@ -229,36 +229,6 @@ impl Canvas {
         );
     }
 
-    /// Draws a `width`-column grid of coverage samples with its corner at (`x`, `y`), one reference pixel a sample.
-    pub(crate) fn coverage_cell(
-        &mut self,
-        x: usize,
-        y: usize,
-        width: usize,
-        samples: &[u8],
-        colour: [u8; 4],
-    ) {
-        let unit = self.scale.0.min(self.scale.1).round().max(1.0) as usize;
-        let left = (x as f32 * self.scale.0).round() as usize;
-        let top = (y as f32 * self.scale.1).round() as usize;
-        for (index, alpha) in samples.iter().enumerate() {
-            let column = index.checked_rem(width).unwrap_or_default();
-            let row = index.checked_div(width).unwrap_or_default();
-            for vertical in 0..unit {
-                for horizontal in 0..unit {
-                    self.blend(
-                        left.saturating_add(column.saturating_mul(unit))
-                            .saturating_add(horizontal),
-                        top.saturating_add(row.saturating_mul(unit))
-                            .saturating_add(vertical),
-                        colour,
-                        f32::from(*alpha) / 255.0,
-                    );
-                }
-            }
-        }
-    }
-
     pub(crate) fn image(&mut self, x: usize, y: usize, image: &image::RgbaImage) {
         for (column, row, pixel) in image.enumerate_pixels() {
             self.blend(

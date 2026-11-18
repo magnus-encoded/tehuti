@@ -15,9 +15,10 @@ use crate::input::InputSource;
 /// the device's own unique id or physical path (empty when it reports neither).
 pub type ConnectedPad = (std::path::PathBuf, String, u16, u16, String);
 
-/// Labels pads in path order, counting each model independently, and gives each a key that
-/// survives a reconnect: the unique id or physical path when it is the pad's alone, else
-/// the kernel name with an index.
+/// Labels pads in path order, counting each model independently.
+///
+/// Each pad also gets a key that survives a reconnect: the unique id or physical path
+/// when it is the pad's alone, else the kernel name with an index.
 #[must_use]
 pub fn keyed_controllers(
     devices: impl IntoIterator<Item = ConnectedPad>,

@@ -19,7 +19,6 @@ const EDGE: [u8; 4] = [90, 70, 40, 255];
 const DIM: [u8; 4] = [120, 110, 95, 255];
 const SCREEN: [u8; 4] = [20, 14, 8, 255];
 const GLYPH_WIDTH: usize = 16;
-const GLYPH_HEIGHT: usize = 24;
 /// Each sample of the font tile's large letters is drawn as a block this wide.
 const MAGNIFY: usize = 4;
 /// Height kept under each Input tile for its name.
@@ -166,17 +165,17 @@ impl Canvas {
     }
 
     /// An outline with the display's aspect ratio, as large as the tile's upper part allows.
-    fn shape(&mut self, corner: (usize, usize), side: usize, size: (usize, usize)) {
-        if size.0 == 0 || size.1 == 0 {
+    fn shape(&mut self, corner: (usize, usize), side: usize, ratio: (usize, usize)) {
+        if ratio.0 == 0 || ratio.1 == 0 {
             return;
         }
         let room = (side.saturating_sub(side / 4), side.saturating_sub(side / 2));
         let width = room
             .0
-            .min(room.1.saturating_mul(size.0).checked_div(size.1).unwrap_or(0));
+            .min(room.1.saturating_mul(ratio.0).checked_div(ratio.1).unwrap_or(0));
         let height = room
             .1
-            .min(room.0.saturating_mul(size.1).checked_div(size.0).unwrap_or(0));
+            .min(room.0.saturating_mul(ratio.1).checked_div(ratio.0).unwrap_or(0));
         let left = corner.0.saturating_add(side.saturating_sub(width) / 2);
         let top = corner
             .1
@@ -214,31 +213,14 @@ impl Canvas {
                     .and_then(|name| name.split_once('@'))
                     .map_or("", |(_, rate)| rate);
                 if let Ok(hertz) = rate.parse::<f32>() {
-                    self.frequency((x, y), side, hertz);
+                    let width = side.saturating_sub(side / 4);
+                    let left = x.saturating_add(side.saturating_sub(width) / 2);
+                    let middle = y.saturating_add(side.saturating_mul(2) / 5);
+                    self.wave_across((left, middle), width, hertz);
                 }
                 let below = y.saturating_add(side).saturating_sub(side / 5);
                 self.tile_text((x, below, side, side / 5), &[format!("{rate} HZ")], points, WHITE);
             }
-        }
-    }
-
-    /// A sine wave across the tile with a cycle for about every 15 Hz.
-    fn frequency(&mut self, corner: (usize, usize), side: usize, hertz: f32) {
-        let width = side.saturating_sub(side / 4);
-        let left = corner.0.saturating_add(side.saturating_sub(width) / 2);
-        let middle = corner.1.saturating_add(side * 2 / 5);
-        let amplitude = (side as f32) / 7.0;
-        let cycles = (hertz / 15.0).clamp(1.0, 40.0);
-        for column in 0..width {
-            let phase = column as f32 / width as f32 * cycles * core::f32::consts::TAU;
-            let offset = phase.sin() * amplitude;
-            self.rectangle(
-                left.saturating_add(column),
-                (middle as f32 + offset).max(0.0) as usize,
-                2,
-                3,
-                CYAN,
-            );
         }
     }
 
@@ -285,9 +267,10 @@ impl Canvas {
                 let column = cell.checked_rem(GLYPH_WIDTH).unwrap_or(0);
                 let row = cell.checked_div(GLYPH_WIDTH).unwrap_or(0);
                 let shade = |face: u8, ink: u8| {
-                    let mixed =
-                        u16::from(face) * u16::from(255 - *alpha) + u16::from(ink) * u16::from(*alpha);
-                    u8::try_from(mixed / 255).unwrap_or(u8::MAX)
+                    let mixed = u16::from(face)
+                        .saturating_mul(u16::from(255_u8.saturating_sub(*alpha)))
+                        .saturating_add(u16::from(ink).saturating_mul(u16::from(*alpha)));
+                    u8::try_from(mixed.checked_div(255).unwrap_or(0)).unwrap_or(u8::MAX)
                 };
                 let colour = [
                     shade(FACE[0], WHITE[0]),
@@ -454,7 +437,7 @@ impl Canvas {
                         self.mic_drawing((x, y), side, known.kind(), colour);
                     }
                     (MicrophoneChoice::Named(_), None) => {
-                        self.mic_drawing((x, y), side, MicKind::Generic, DIM)
+                        self.mic_drawing((x, y), side, MicKind::Generic, DIM);
                     }
                 }
                 let words = if enabled { label } else { format!("{label} OFF") };
@@ -477,7 +460,7 @@ const PLAYSTATION: [Part; 4] = [(3, 5, 18, 8), (3, 11, 5, 6), (16, 11, 5, 6), (9
 const SWITCH: [Part; 2] = [(2, 3, 6, 14), (16, 3, 6, 14)];
 
 /// The details cut into a pad's body: sticks, d-pad and buttons.
-fn pad_details(kind: PadKind) -> &'static [Part] {
+const fn pad_details(kind: PadKind) -> &'static [Part] {
     match kind {
         PadKind::Xbox => &[
             (5, 6, 3, 3),
