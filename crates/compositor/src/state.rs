@@ -1729,7 +1729,7 @@ impl Compositor {
         match listing.try_recv() {
             Ok(hosts) => {
                 self.remote_host_listing = None;
-                let _rejection = self.dispatch(DispatchInput::RemoteHosts(hosts));
+                let _hosts_rejection = self.dispatch(DispatchInput::RemoteHosts(hosts));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.remote_host_listing = None,
@@ -1754,6 +1754,7 @@ impl Compositor {
     ///
     /// # Errors
     /// Names the fixture when it is not known.
+    #[expect(clippy::too_many_lines, reason = "each fixture lists its invented hardware inline")]
     pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
         use tehuti_core::dispatch::Connection;
         let pad = |label: &str, key: &str, connection| tehuti_core::dispatch::ControllerInfo {
@@ -1812,7 +1813,7 @@ impl Compositor {
                     },
                 ]));
                 self.remote_host_listing = None;
-                let _rejection = self.dispatch(DispatchInput::RemoteHosts(vec![
+                let _hosts_rejection = self.dispatch(DispatchInput::RemoteHosts(vec![
                     "desk-pc".to_owned(),
                     "laptop.tail1234.ts.net".to_owned(),
                 ]));

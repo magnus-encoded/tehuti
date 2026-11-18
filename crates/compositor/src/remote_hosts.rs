@@ -24,10 +24,9 @@ pub fn tailnet_peers(status: &serde_json::Value) -> Vec<String> {
                 .map(|value| value.trim_end_matches('.'))
                 .filter(|value| !value.is_empty())
         };
-        if let Some(host) = text("DNSName").or_else(|| text("HostName")) {
-            if !hosts.iter().any(|known| known == host) {
-                hosts.push(host.to_owned());
-            }
+        let name = text("DNSName").or_else(|| text("HostName"));
+        if let Some(host) = name.filter(|host| !hosts.iter().any(|known| known == host)) {
+            hosts.push(host.to_owned());
         }
     }
     hosts.sort();
@@ -103,7 +102,9 @@ mod tests {
 
     #[test]
     fn a_stopped_tailscale_gives_no_suggestions() {
-        assert!(tailnet_peers(&serde_json::json!({"BackendState": "Stopped", "Peer": null})).is_empty());
-        assert!(tailnet_peers(&serde_json::json!({})).is_empty());
+        let none = Vec::<String>::new();
+        let stopped = serde_json::json!({"BackendState": "Stopped", "Peer": null});
+        assert_eq!(tailnet_peers(&stopped), none);
+        assert_eq!(tailnet_peers(&serde_json::json!({})), none);
     }
 }
