@@ -483,6 +483,12 @@ enum SecretPrompt {
     Visible,
 }
 
+impl From<bool> for SecretPrompt {
+    fn from(visible: bool) -> Self {
+        if visible { Self::Visible } else { Self::Hidden }
+    }
+}
+
 /// How long focus may rest on no window before a passthrough window gives up the pad.
 /// Helper surfaces flicker focus away several times a second, each gap far shorter.
 pub const FOCUS_GAP_GRACE: Duration = Duration::from_millis(500);
@@ -804,13 +810,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
 fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
-        Input::SecretPrompt(visible) => {
-            state.secret_prompt = if *visible {
-                SecretPrompt::Visible
-            } else {
-                SecretPrompt::Hidden
-            }
-        }
+        Input::SecretPrompt(visible) => state.secret_prompt = SecretPrompt::from(*visible),
         Input::Sticks(sticks) => adjuster_sticks(&mut state, *sticks),
         Input::TextField {
             active,
