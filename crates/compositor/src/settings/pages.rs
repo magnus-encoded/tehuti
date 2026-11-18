@@ -18,6 +18,9 @@ const FACE_FOCUSED: [u8; 4] = [65, 43, 12, 255];
 const EDGE: [u8; 4] = [90, 70, 40, 255];
 /// The corner radius of every tile, in reference pixels.
 const TILE_RADIUS: usize = 14;
+/// Height kept under each wallpaper tile for its name.
+const CAPTION: usize = 22;
+const CAPTION_POINTS: usize = 13;
 const DIM: [u8; 4] = [120, 110, 95, 255];
 /// The origin line on a pad tile: quiet, but readable.
 const ORIGIN_TEXT: [u8; 4] = [190, 175, 150, 255];
@@ -75,6 +78,34 @@ impl Canvas {
                 DIM,
             );
         }
+    }
+
+    /// The short name under a tile: one line, cut to the tile's width.
+    fn caption(&mut self, corner: (usize, usize), side: usize, name: &str, colour: [u8; 4]) {
+        let per_line = side
+            .saturating_mul(10)
+            .checked_div(CAPTION_POINTS.saturating_mul(6))
+            .unwrap_or(1);
+        let upper = name.to_uppercase();
+        let line = if upper.chars().count() <= per_line {
+            upper
+        } else {
+            let tail = upper.rsplit(' ').next().unwrap_or("");
+            let head: String = upper
+                .chars()
+                .take(per_line.saturating_sub(tail.chars().count()).saturating_sub(3))
+                .collect();
+            format!("{}.. {tail}", head.trim_end())
+        };
+        let middle = (
+            corner.0.saturating_mul(2).saturating_add(side),
+            corner
+                .1
+                .saturating_mul(2)
+                .saturating_add(side.saturating_mul(2))
+                .saturating_add(CAPTION),
+        );
+        self.centred(middle, &line, CAPTION_POINTS, colour);
     }
 
     fn wallpaper_caption(
