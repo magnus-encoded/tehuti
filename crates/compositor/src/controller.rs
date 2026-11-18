@@ -1237,7 +1237,8 @@ impl<D: PadDevice> EvdevPad<D> {
 
     /// The event with a stick value inside the deadzone moved to the centre and the rest rescaled; others unchanged.
     fn deadzoned(&mut self, event: evdev::InputEvent) -> evdev::InputEvent {
-        if event.event_type() != evdev::EventType::ABSOLUTE || !is_stick_axis(AbsoluteAxisCode(event.code())) {
+        if event.event_type() != evdev::EventType::ABSOLUTE || !is_stick_axis(AbsoluteAxisCode(event.code()))
+        {
             return event;
         }
         if self.ranges.is_empty()
@@ -1248,7 +1249,8 @@ impl<D: PadDevice> EvdevPad<D> {
                 .map(|(axis, info)| (axis.0, info.minimum(), info.maximum()))
                 .collect();
         }
-        let Some((_, minimum, maximum)) = self.ranges.iter().find(|(code, _, _)| *code == event.code()) else {
+        let Some((_, minimum, maximum)) = self.ranges.iter().find(|(code, _, _)| *code == event.code())
+        else {
             return event;
         };
         let value = deadzoned_value(event.value(), *minimum, *maximum, self.deadzone);
@@ -2389,8 +2391,7 @@ pub fn deadzoned_value(value: i32, minimum: i32, maximum: i32, deadzone: u16) ->
         .checked_div(half.saturating_sub(limit))
         .unwrap_or_default()
         .saturating_mul(delta.signum());
-    i32::try_from(centre.saturating_add(stretched))
-        .map_or(value, |moved| moved.clamp(minimum, maximum))
+    i32::try_from(centre.saturating_add(stretched)).map_or(value, |moved| moved.clamp(minimum, maximum))
 }
 
 fn stick_axis(value: i32, minimum: i32, maximum: i32, deadzone: u16) -> i16 {

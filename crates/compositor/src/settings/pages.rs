@@ -434,7 +434,13 @@ impl Canvas {
         if let Some((x, y)) = self.tile_frame(grid, deadzone, focus, true) {
             let lines = [
                 "DEADZONE".to_owned(),
-                format!("{}%", input.deadzone(&controller.key).checked_div(10).unwrap_or_default()),
+                format!(
+                    "{}%",
+                    input
+                        .deadzone(&controller.key)
+                        .checked_div(10)
+                        .unwrap_or_default()
+                ),
             ];
             self.tile_text((x, y, side, side), &lines, points, WHITE);
         }

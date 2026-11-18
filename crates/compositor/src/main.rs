@@ -1114,7 +1114,9 @@ fn advance_time(data: &mut LoopData) {
             .get(path)
             .map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
         let chosen = data.compositor.controller_chosen(&key);
-        controller.pad.set_deadzone(data.compositor.controller_deadzone(&key));
+        controller
+            .pad
+            .set_deadzone(data.compositor.controller_deadzone(&key));
         match controller.pad.sticks() {
             Ok(sticks) => {
                 if chosen && sticks != tehuti_core::dispatch::Sticks::default() {

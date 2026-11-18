@@ -3649,7 +3649,11 @@ fn the_deadzone_tile_steps_the_open_pads_deadzone_and_wraps() {
     let mut world = World::default();
     let state = open_input(&mut world);
     assert_eq!(state.settings().input.deadzone("Wireless Controller"), 150);
-    let mut state = press_all(&mut world, state, &[DpadDown, DpadRight, DpadRight, DpadRight, DpadRight]);
+    let mut state = press_all(
+        &mut world,
+        state,
+        &[DpadDown, DpadRight, DpadRight, DpadRight, DpadRight],
+    );
     assert_eq!(
         state.settings().input.focus,
         crate::tiles::Focus { row: 1, col: 4 }
@@ -3675,7 +3679,10 @@ fn a_saved_deadzone_is_restored_and_a_value_off_the_steps_moves_up() {
     let state = open_input(&mut world);
     let state = world.run(
         state,
-        Input::ControllerDeadzones(std::collections::BTreeMap::from([("Xbox Controller".to_owned(), 120)])),
+        Input::ControllerDeadzones(std::collections::BTreeMap::from([(
+            "Xbox Controller".to_owned(),
+            120,
+        )])),
     );
     assert_eq!(state.settings().input.deadzone("Xbox Controller"), 120);
     assert_eq!(state.settings().input.next_deadzone("Xbox Controller"), 150);

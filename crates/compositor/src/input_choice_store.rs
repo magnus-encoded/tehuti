@@ -356,11 +356,15 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let store = Store::new(directory.path().to_path_buf());
         assert!(store.controller_deadzones()?.is_empty());
-        let deadzones = std::collections::BTreeMap::from([("Elite".to_owned(), 250), ("Plain".to_owned(), 0)]);
+        let deadzones =
+            std::collections::BTreeMap::from([("Elite".to_owned(), 250), ("Plain".to_owned(), 0)]);
         store.set_controller_deadzones(&deadzones)?;
         let reopened = Store::new(directory.path().to_path_buf());
         assert_eq!(reopened.controller_deadzones()?, deadzones);
-        std::fs::write(directory.path().join("controller-deadzone.json"), r#"{"Pad":900}"#)?;
+        std::fs::write(
+            directory.path().join("controller-deadzone.json"),
+            r#"{"Pad":900}"#,
+        )?;
         assert!(reopened.controller_deadzones().is_err());
         Ok(())
     }

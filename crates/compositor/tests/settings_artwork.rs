@@ -147,7 +147,8 @@ mod tests {
     }
 
     #[test]
-    fn the_deadzone_tile_sits_fifth_in_the_controller_row_with_its_own_value() -> Result<(), Box<dyn core::error::Error>> {
+    fn the_deadzone_tile_sits_fifth_in_the_controller_row_with_its_own_value()
+    -> Result<(), Box<dyn core::error::Error>> {
         let default = deadzone_row(None)?;
         // Row 1 starts below the first row; the fifth tile is 4 steps of 194 in.
         let tile = (80 + 4 * 194, 222 + 194, 180, 226);

@@ -229,7 +229,10 @@ impl InputSettings {
     /// The stick deadzone of the pad with this key, in thousandths of full travel.
     #[must_use]
     pub fn deadzone(&self, key: &str) -> u16 {
-        self.controller_deadzones.get(key).copied().unwrap_or(DEFAULT_DEADZONE)
+        self.controller_deadzones
+            .get(key)
+            .copied()
+            .unwrap_or(DEFAULT_DEADZONE)
     }
 
     /// The next deadzone after the pad's current one, wrapping round; a value off the steps moves to the next larger step.
