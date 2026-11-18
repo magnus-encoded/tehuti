@@ -83,7 +83,7 @@ pub struct InputSettings {
     pub microphone: MicrophoneChoice,
     pub active_controller: Option<String>,
     pub controller_bindings: std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
-    /// Pad names that no longer drive Tehuti.
+    /// Pad names the user turned off.
     pub disabled_controllers: Vec<String>,
     /// The in-use pad whose disabling waits for a second confirm.
     pub pending_disable: Option<String>,
