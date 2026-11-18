@@ -31,6 +31,7 @@ struct Request {
     size: Size<i32, Physical>,
     redraw: Option<Ping>,
     image: Option<image::DynamicImage>,
+    replace_image: bool,
     generation: u64,
 }
 
@@ -118,11 +119,46 @@ pub const CODENAMES: &[&str] = &[
 ];
 const CURRENT_RELEASE: usize = 0;
 
+pub const BUNDLED_SETS: &[&str] = &["hidden"];
+
+#[derive(Debug, Clone)]
+pub(super) enum Source {
+    File(PathBuf),
+    Bytes(std::sync::Arc<Vec<u8>>),
+}
+
+impl Source {
+    pub(super) fn image(&self) -> Option<image::DynamicImage> {
+        match self {
+            Self::File(path) => bounded_image(path),
+            Self::Bytes(bytes) => bounded_reader(std::io::Cursor::new(bytes.as_slice())),
+        }
+    }
+
+    pub(super) fn stamp(&self) -> u64 {
+        use core::hash::{Hash as _, Hasher as _};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        match self {
+            Self::File(path) => {
+                path.hash(&mut hash);
+                if let Ok(metadata) = path.metadata() {
+                    metadata.len().hash(&mut hash);
+                    metadata.modified().ok().hash(&mut hash);
+                }
+            }
+            Self::Bytes(bytes) => bytes.hash(&mut hash),
+        }
+        hash.finish()
+    }
+}
+
 #[derive(Debug)]
 pub struct Collection {
     locked: Vec<bool>,
-    thumbnails: Vec<image::RgbaImage>,
-    entries: Vec<(String, image::DynamicImage)>,
+    selection_missing: bool,
+    selection_read: Option<String>,
+    roots: Vec<PathBuf>,
+    entries: Vec<(String, Source)>,
     pub(crate) current: Option<usize>,
     wallpaper: Wallpaper,
     store: crate::display_mode_store::Store,
@@ -145,24 +181,21 @@ impl Collection {
             })
             .as_deref()
             == Some("1");
-        let mut entries = load_entries(roots, release, true);
-        let legacy = roots
-            .iter()
-            .find_map(|root| image::open(root.join("wallpaper.png")).ok())
-            .map(|image| {
-                let index = entries.len();
-                entries.push(("wallpaper.png".into(), image));
-                index
-            });
+        let packs = load_packs(roots);
+        let mut entries = load_entries(roots, &packs, release, true);
+        let legacy = load_legacy(roots, &mut entries);
+        load_user_sets(store.sibling("wallpapers").path(), &mut entries);
+        if store
+            .sibling("wallpapers-hidden-unlocked")
+            .read()
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("1")
+        {
+            load_hidden_sets(roots, &packs, &mut entries);
+        }
         let locked = entry_locks(&entries, release, all || unlocked);
-        let thumbnails = entries
-            .iter()
-            .map(|(_, image)| {
-                image
-                    .resize_to_fill(240, 135, image::imageops::FilterType::Lanczos3)
-                    .to_rgba8()
-            })
-            .collect();
         let saved = store.read().unwrap_or_else(|error| {
             tracing::warn!(%error, "wallpaper selection unavailable");
             None
@@ -181,10 +214,12 @@ impl Collection {
                     .and_then(|default| entries.iter().position(|(name, _)| name == default))
             })
             .or_else(|| locked.iter().position(|locked| !locked));
-        let image = current.and_then(|index| entries.get(index).map(|(_, image)| image.clone()));
+        let image = current.and_then(|index| entries.get(index).and_then(|(_, source)| source.image()));
         Self {
             locked,
-            thumbnails,
+            selection_missing: saved.is_some() && saved_current.is_none(),
+            selection_read: saved,
+            roots: roots.to_vec(),
             entries,
             current,
             wallpaper: Wallpaper {
@@ -233,14 +268,36 @@ impl Collection {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error when the hidden set unlock cannot be saved.
+    pub fn unlock_hidden(&mut self) -> std::io::Result<()> {
+        self.store.sibling("wallpapers-hidden-unlocked").write("1")?;
+        if !self.entries.iter().any(|(name, _)| name.starts_with("bundled/")) {
+            let packs = load_packs(&self.roots);
+            load_hidden_sets(&self.roots, &packs, &mut self.entries);
+            self.locked.resize(self.entries.len(), false);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn locks(&self) -> Vec<bool> {
         self.locked.clone()
     }
 
     #[must_use]
-    pub fn thumbnails(&self) -> &[image::RgbaImage] {
-        &self.thumbnails
+    pub const fn selection_missing(&self) -> bool {
+        self.selection_missing
+    }
+
+    /// Prepares a center-cropped, area-filtered thumbnail at physical dimensions.
+    #[must_use]
+    pub fn thumbnail(&self, index: usize, size: (u32, u32), cache: &Path) -> Option<image::RgbaImage> {
+        if size.0 == 0 || size.1 == 0 || size.0 > 2048 || size.1 > 2048 {
+            return None;
+        }
+        let (identity, source) = self.entries.get(index)?;
+        crate::wallpaper_picker::thumbnail(source, identity, size, cache)
     }
 
     #[must_use]
@@ -264,7 +321,11 @@ impl Collection {
             .entries
             .get(index)
             .ok_or_else(|| std::io::Error::other("wallpaper unavailable"))?;
-        self.wallpaper.image = Some(image.clone());
+        self.wallpaper.image = Some(
+            image
+                .image()
+                .ok_or_else(|| std::io::Error::other("wallpaper unreadable"))?,
+        );
         self.wallpaper.buffers.clear();
         Ok(())
     }
@@ -299,7 +360,157 @@ impl Collection {
     }
 }
 
-fn entry_locks(entries: &[(String, image::DynamicImage)], release: usize, unlocked: bool) -> Vec<bool> {
+fn load_legacy(roots: &[PathBuf], entries: &mut Vec<(String, Source)>) -> Option<usize> {
+    let source = roots.iter().find_map(|root| {
+        let path = root.join("wallpaper.png");
+        bounded_image(&path).map(|_| Source::File(path))
+    })?;
+    let index = entries.len();
+    entries.push(("wallpaper.png".into(), source));
+    Some(index)
+}
+
+fn load_user_sets(folder: &Path, entries: &mut Vec<(String, Source)>) {
+    let Ok(sets) = std::fs::read_dir(folder) else {
+        return;
+    };
+    let mut sets: Vec<_> = sets
+        .take(4096)
+        .filter_map(Result::ok)
+        .filter(|set| set.file_type().is_ok_and(|kind| kind.is_dir()))
+        .collect();
+    sets.sort_by_key(std::fs::DirEntry::file_name);
+    for set in sets.into_iter().take(64) {
+        let Ok(files) = std::fs::read_dir(set.path()) else {
+            continue;
+        };
+        let mut files: Vec<_> = files
+            .take(4096)
+            .filter_map(Result::ok)
+            .filter(|file| file.file_type().is_ok_and(|kind| kind.is_file()))
+            .collect();
+        files.sort_by_key(std::fs::DirEntry::file_name);
+        for file in files.into_iter().take(256) {
+            if entries.len() >= 512 {
+                return;
+            }
+            let path = file.path();
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(extension.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg")
+                })
+            {
+                continue;
+            }
+            let Some(set) = set.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(name) = file.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if set.chars().chain(name.chars()).any(char::is_control) {
+                continue;
+            }
+            if bounded_image(&path).is_some() {
+                entries.push((format!("user/{set}/{name}"), Source::File(path)));
+            }
+        }
+    }
+}
+
+pub(super) fn bounded_image(path: &Path) -> Option<image::DynamicImage> {
+    bounded_reader(std::io::BufReader::new(std::fs::File::open(path).ok()?))
+}
+
+fn bounded_reader(reader: impl std::io::BufRead + std::io::Seek) -> Option<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(reader).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().ok()
+}
+
+fn load_packs(roots: &[PathBuf]) -> Vec<Option<crate::wallpaper_pack::Pack>> {
+    roots
+        .iter()
+        .map(|root| crate::wallpaper_pack::Pack::read(&root.join("wallpapers.pak")).ok())
+        .collect()
+}
+
+fn bundled_source(
+    roots: &[PathBuf],
+    packs: &[Option<crate::wallpaper_pack::Pack>],
+    name: &str,
+) -> Option<Source> {
+    let filename = if CODENAMES.contains(&name) {
+        format!("{name}.png")
+    } else {
+        name.to_owned()
+    };
+    roots.iter().zip(packs).find_map(|(root, pack)| {
+        pack.as_ref()
+            .and_then(|pack| {
+                pack.bytes(name)
+                    .map(|bytes| Source::Bytes(std::sync::Arc::new(bytes.to_vec())))
+            })
+            .filter(|source| source.image().is_some())
+            .or_else(|| {
+                let path = root.join("wallpapers").join(&filename);
+                bounded_image(&path).map(|_| Source::File(path))
+            })
+    })
+}
+
+fn load_hidden_sets(
+    roots: &[PathBuf],
+    packs: &[Option<crate::wallpaper_pack::Pack>],
+    entries: &mut Vec<(String, Source)>,
+) {
+    for set in BUNDLED_SETS {
+        let mut names = std::collections::BTreeSet::new();
+        for (root, pack) in roots.iter().zip(packs) {
+            if let Some(pack) = pack {
+                names.extend(
+                    pack.names()
+                        .filter(|name| name.starts_with(&format!("{set}/")))
+                        .map(str::to_owned),
+                );
+            }
+            if let Ok(files) = std::fs::read_dir(root.join("wallpapers").join(set)) {
+                names.extend(
+                    files
+                        .filter_map(Result::ok)
+                        .filter(|file| file.file_type().is_ok_and(|kind| kind.is_file()))
+                        .filter_map(|file| file.file_name().to_str().map(|name| format!("{set}/{name}"))),
+                );
+            }
+        }
+        let mut names: Vec<String> = names.into_iter().collect();
+        // Counting order first (uno, dos, tres), then the rest alphabetically.
+        let rank = |name: &String| {
+            let stem = std::path::Path::new(name)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
+            ["uno", "dos", "tres"]
+                .iter()
+                .position(|word| *word == stem)
+                .unwrap_or(usize::MAX)
+        };
+        names.sort_by_key(rank);
+        for name in names.into_iter().take(256) {
+            if let Some(source) = bundled_source(roots, packs, &name) {
+                entries.push((format!("bundled/{name}"), source));
+            }
+        }
+    }
+}
+
+fn entry_locks(entries: &[(String, Source)], release: usize, unlocked: bool) -> Vec<bool> {
     entries
         .iter()
         .map(|(name, _)| {
@@ -312,37 +523,17 @@ fn entry_locks(entries: &[(String, image::DynamicImage)], release: usize, unlock
         .collect()
 }
 
-fn load_entries(roots: &[PathBuf], release: usize, all: bool) -> Vec<(String, image::DynamicImage)> {
-    let packs: Vec<_> = roots
-        .iter()
-        .map(|root| {
-            let path = root.join("wallpapers.pak");
-            match crate::wallpaper_pack::Pack::read(&path) {
-                Ok(pack) => Some(pack),
-                Err(error) => {
-                    if error.kind() != std::io::ErrorKind::NotFound {
-                        tracing::warn!(%error, path = %path.display(), "wallpaper pack unavailable");
-                    }
-                    None
-                }
-            }
-        })
-        .collect();
+fn load_entries(
+    roots: &[PathBuf],
+    packs: &[Option<crate::wallpaper_pack::Pack>],
+    release: usize,
+    all: bool,
+) -> Vec<(String, Source)> {
     CODENAMES
         .iter()
         .enumerate()
         .filter(|(index, _)| all || *index <= release)
-        .filter_map(|(_, name)| {
-            roots
-                .iter()
-                .zip(&packs)
-                .find_map(|(root, pack)| {
-                    pack.as_ref()
-                        .and_then(|pack| pack.image(name))
-                        .or_else(|| image::open(root.join("wallpapers").join(format!("{name}.png"))).ok())
-                })
-                .map(|image| ((*name).to_owned(), image))
-        })
+        .filter_map(|(_, name)| bundled_source(roots, packs, name).map(|source| ((*name).to_owned(), source)))
         .collect()
 }
 
@@ -356,6 +547,7 @@ pub struct WallpaperCache {
     collection: Option<Collection>,
     generation: u64,
     fresh: std::collections::HashSet<(i32, i32)>,
+    picker: crate::wallpaper_picker::Picker,
 }
 
 fn prepare_wallpapers(
@@ -369,10 +561,11 @@ fn prepare_wallpapers(
         size,
         redraw,
         image,
+        replace_image,
         generation,
     }) = sizes.recv()
     {
-        if generation != worker_generation && image.is_some() {
+        if generation != worker_generation && replace_image {
             wallpaper.image = image;
             wallpaper.buffers.clear();
         }
@@ -420,6 +613,7 @@ impl WallpaperCache {
             collection: None,
             generation: 0,
             fresh: std::collections::HashSet::new(),
+            picker: crate::wallpaper_picker::Picker::new(),
         }
     }
 
@@ -509,6 +703,7 @@ impl WallpaperCache {
                     .collection
                     .as_ref()
                     .map_or_else(|| None, |collection| collection.wallpaper.image.clone()),
+                replace_image: self.collection.is_some(),
                 generation: self.generation,
             }) {
                 Ok(()) => {}
@@ -591,9 +786,67 @@ pub fn unlock() -> std::io::Result<(Vec<String>, Vec<bool>, usize)> {
 }
 
 #[must_use]
-pub fn thumbnail(index: usize) -> Option<image::RgbaImage> {
-    let cache = wallpaper().lock().ok()?;
-    Some(cache.collection.as_ref()?.thumbnails().get(index)?.clone())
+pub fn selection_missing() -> bool {
+    wallpaper().lock().is_ok_and(|cache| {
+        cache
+            .collection
+            .as_ref()
+            .is_some_and(Collection::selection_missing)
+    })
+}
+
+pub fn refresh() {
+    if let Ok(mut cache) = wallpaper().lock() {
+        let ping = cache.redraw.clone();
+        cache.picker.refresh(ping);
+    }
+}
+
+#[must_use]
+pub fn revision() -> u64 {
+    wallpaper().lock().map_or(0, |mut cache| {
+        cache.picker.drain();
+        cache.picker.revision
+    })
+}
+
+#[must_use]
+pub fn poll() -> Option<(Vec<String>, Vec<bool>, usize, bool)> {
+    let mut cache = wallpaper().lock().ok()?;
+    let collection = cache.picker.poll()?;
+    if collection.store.read().ok().flatten() != collection.selection_read {
+        let ping = cache.redraw.clone();
+        cache.picker.refresh(ping);
+        return None;
+    }
+    let missing = collection.selection_missing();
+    cache.collection = Some(collection);
+    cache.generation = cache.generation.wrapping_add(1);
+    cache.fresh.clear();
+    cache.pending.clear();
+    let (names, locked, current) = cache.choices();
+    drop(cache);
+    Some((names, locked, current, missing))
+}
+
+/// # Errors
+/// Returns an error when the hidden set unlock cannot be saved.
+pub fn unlock_hidden() -> std::io::Result<()> {
+    let store = crate::display_mode_store::Store::new(
+        crate::display_mode_store::config_root()?.join("tehuti/wallpapers-hidden-unlocked"),
+    );
+    store.write("1")?;
+    refresh();
+    Ok(())
+}
+
+#[must_use]
+pub fn thumbnail(index: usize, size: (u32, u32)) -> Option<image::RgbaImage> {
+    let mut cache = wallpaper().lock().ok()?;
+    let (identity, source) = cache.collection.as_ref()?.entries.get(index)?.clone();
+    let directory = crate::wallpaper_picker::cache_directory()?;
+    let ping = cache.redraw.clone();
+    cache.picker.image(index, size, source, identity, directory, ping)
 }
 
 fn wallpaper() -> &'static Mutex<WallpaperCache> {
@@ -780,19 +1033,21 @@ where
         .iter()
         .map(OutputRenderElements::Custom)
         .collect::<Vec<_>>();
-    let space = space_render_elements(renderer, [&compositor.space], output, 1.0)?;
-    elements.extend(
-        compositor
-            .focus_outline(output)
-            .into_iter()
-            .map(OutputRenderElements::Focus),
-    );
-    elements.extend(
-        crate::import_placeholder::elements(renderer, compositor, output)
-            .into_iter()
-            .map(OutputRenderElements::Focus),
-    );
-    elements.extend(space.into_iter().map(OutputRenderElements::Space));
+    if !compositor.wallpaper_preview_active() {
+        let space = space_render_elements(renderer, [&compositor.space], output, 1.0)?;
+        elements.extend(
+            compositor
+                .focus_outline(output)
+                .into_iter()
+                .map(OutputRenderElements::Focus),
+        );
+        elements.extend(
+            crate::import_placeholder::elements(renderer, compositor, output)
+                .into_iter()
+                .map(OutputRenderElements::Focus),
+        );
+        elements.extend(space.into_iter().map(OutputRenderElements::Space));
+    }
     if let Some(background) = background {
         elements.push(OutputRenderElements::Wallpaper(WallpaperElement(background)));
     }

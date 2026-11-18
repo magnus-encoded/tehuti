@@ -3,7 +3,7 @@
 use super::{
     AMBER, CYAN, WHITE,
     canvas::Canvas,
-    tiles::{DISPLAY_SIDE, Grid, INPUT_SIDE, wrap},
+    tiles::{DISPLAY_SIDE, Grid, wrap},
 };
 use tehuti_core::{
     dispatch::{
@@ -16,56 +16,68 @@ use tehuti_core::{
 const FACE: [u8; 4] = [36, 26, 14, 255];
 const FACE_FOCUSED: [u8; 4] = [65, 43, 12, 255];
 const EDGE: [u8; 4] = [90, 70, 40, 255];
-const DIM: [u8; 4] = [120, 110, 95, 255];
-const SCREEN: [u8; 4] = [20, 14, 8, 255];
-/// Height kept under each Input tile for its name.
+/// The corner radius of every tile, in reference pixels.
+const TILE_RADIUS: usize = 14;
+/// Height kept under each wallpaper tile for its name.
 const CAPTION: usize = 22;
 const CAPTION_POINTS: usize = 13;
+const DIM: [u8; 4] = [120, 110, 95, 255];
+/// The origin line on a pad tile: quiet, but readable.
+const ORIGIN_TEXT: [u8; 4] = [190, 175, 150, 255];
+/// The outline of the pad whose settings row has focus: dimmer than the focus outline.
+const SELECTED: [u8; 4] = [150, 128, 36, 255];
+const SCREEN: [u8; 4] = [20, 14, 8, 255];
 
 /// A tile's box in reference pixels: left, top, width, height.
 type Area = (usize, usize, usize, usize);
 
 impl Canvas {
-    /// Draws the frame of tile (`row`, `col`) and returns its corner, or none when the row lacks it.
-    fn tile_frame(
-        &mut self,
-        grid: &Grid,
-        cell: (usize, usize),
-        focus: Focus,
-        marked: bool,
-    ) -> Option<(usize, usize)> {
-        let (x, y) = grid.origin(cell.0, cell.1)?;
-        let side = grid.side();
-        let focused = focus.row == cell.0 && focus.col == cell.1;
-        self.rectangle(x, y, side, side, if focused { FACE_FOCUSED } else { FACE });
-        let edge = if focused { CYAN } else { EDGE };
-        let thickness = if focused { 4 } else { 2 };
-        self.rectangle(x, y, side, thickness, edge);
-        self.rectangle(
-            x,
-            y.saturating_add(side).saturating_sub(thickness),
-            side,
-            thickness,
-            edge,
-        );
-        self.rectangle(x, y, thickness, side, edge);
-        self.rectangle(
-            x.saturating_add(side).saturating_sub(thickness),
-            y,
-            thickness,
-            side,
-            edge,
-        );
-        if marked {
-            self.rectangle(
-                x.saturating_add(side).saturating_sub(20),
-                y.saturating_add(8),
-                10,
-                10,
-                CYAN,
+    pub(super) fn wallpaper(&mut self, settings: &Settings) {
+        let rows = settings.wallpaper_rows();
+        let lengths: Vec<_> = rows.iter().map(|(_, entries)| entries.len()).collect();
+        let focus = settings.wallpaper_focus();
+        let grid = Grid::new(&lengths, 48, focus, Some(DISPLAY_SIDE));
+        if settings.wallpapers.is_empty() {
+            self.text(80, 290, "ADD PNG OR JPEG IMAGES IN SET FOLDERS", 3, AMBER);
+        }
+        for (row, (name, entries)) in rows.iter().enumerate() {
+            let mut title = false;
+            for (col, index) in entries.iter().enumerate() {
+                let Some((x, y)) = grid.origin(row, col) else {
+                    continue;
+                };
+                if !title {
+                    self.text(80, y.saturating_sub(28), &name.to_uppercase(), 2, WHITE);
+                    title = true;
+                }
+                let focused = focus.row == row && focus.col == col;
+                self.rounded_rectangle(
+                    (
+                        x.saturating_sub(4),
+                        y.saturating_sub(4),
+                        grid.side().saturating_add(8),
+                        grid.side().saturating_add(8),
+                    ),
+                    12,
+                    if focused { CYAN } else { EDGE },
+                );
+                self.rounded_rectangle((x, y, grid.side(), grid.side()), 8, FACE);
+                let locked = settings.wallpaper_locked.get(*index).copied().unwrap_or(true);
+                let size = self.thumbnail_size(x, y, grid.side());
+                if let Some(image) = crate::wallpaper::thumbnail(*index, size) {
+                    self.thumbnail(x, y, &image, locked);
+                }
+                self.wallpaper_caption(settings, *index, (x, y), grid.side(), locked);
+            }
+        }
+        if !settings.wallpapers.iter().any(|name| name.starts_with("user/")) {
+            self.text_box(
+                (80, 606, 1120, 24),
+                "ADD SET FOLDERS IN ~/.config/tehuti/wallpapers",
+                2,
+                DIM,
             );
         }
-        Some((x, y))
     }
 
     /// The short name under a tile: one line, cut to the tile's width.
@@ -78,7 +90,6 @@ impl Canvas {
         let line = if upper.chars().count() <= per_line {
             upper
         } else {
-            // Keep the last word: it is what tells identical pads apart.
             let tail = upper.rsplit(' ').next().unwrap_or("");
             let head: String = upper
                 .chars()
@@ -95,6 +106,80 @@ impl Canvas {
                 .saturating_add(CAPTION),
         );
         self.centred(middle, &line, CAPTION_POINTS, colour);
+    }
+
+    fn wallpaper_caption(
+        &mut self,
+        settings: &Settings,
+        index: usize,
+        corner: (usize, usize),
+        side: usize,
+        locked: bool,
+    ) {
+        let (x, y) = corner;
+        let identity = settings.wallpapers.get(index).map_or("", String::as_str);
+        let caption = if identity.starts_with("user/") || identity.starts_with("bundled/") {
+            std::path::Path::new(identity)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(identity)
+        } else {
+            identity
+        };
+        self.caption((x, y), side, caption, WHITE);
+        let badge = if locked {
+            "LOCKED"
+        } else if index == settings.wallpaper_current {
+            "SAVED"
+        } else {
+            ""
+        };
+        if !badge.is_empty() {
+            self.rectangle(x.saturating_add(8), y.saturating_add(8), 72, 22, SCREEN);
+            self.text(
+                x.saturating_add(12),
+                y.saturating_add(10),
+                badge,
+                2,
+                if locked { AMBER } else { CYAN },
+            );
+        }
+    }
+
+    /// Draws the frame of tile (`row`, `col`) and returns its corner, or none when the row lacks it.
+    fn tile_frame(
+        &mut self,
+        grid: &Grid,
+        cell: (usize, usize),
+        focus: Focus,
+        marked: bool,
+    ) -> Option<(usize, usize)> {
+        let (x, y) = grid.origin(cell.0, cell.1)?;
+        let side = grid.side();
+        let focused = focus.row == cell.0 && focus.col == cell.1;
+        let edge = if focused { CYAN } else { EDGE };
+        let thickness = if focused { 4 } else { 2 };
+        self.rounded_rectangle((x, y, side, side), TILE_RADIUS, edge);
+        self.rounded_rectangle(
+            (
+                x.saturating_add(thickness),
+                y.saturating_add(thickness),
+                side.saturating_sub(thickness.saturating_mul(2)),
+                side.saturating_sub(thickness.saturating_mul(2)),
+            ),
+            TILE_RADIUS.saturating_sub(thickness),
+            if focused { FACE_FOCUSED } else { FACE },
+        );
+        if marked {
+            self.rectangle(
+                x.saturating_add(side).saturating_sub(20),
+                y.saturating_add(8),
+                10,
+                10,
+                CYAN,
+            );
+        }
+        Some((x, y))
     }
 
     /// Centres up to three wrapped lines in `area`.
@@ -280,7 +365,7 @@ impl Canvas {
     pub(super) fn input(&mut self, settings: &Settings, speech: &str) {
         let rows = settings.input.rows();
         let focus = clamp(&rows, settings.input.focus);
-        let grid = Grid::new(&rows, CAPTION, focus, Some(INPUT_SIDE));
+        let grid = Grid::input(&rows, focus);
         self.controller_row(settings, &grid, focus);
         self.controller_settings_row(settings, &grid, focus);
         self.microphone_row(settings, &grid, focus);
@@ -295,32 +380,17 @@ impl Canvas {
         );
     }
 
-    /// Draws `parts`, boxes in 24ths of the tile side, from the tile's corner.
-    fn drawing(&mut self, corner: (usize, usize), side: usize, parts: &[Part], colour: [u8; 4]) {
-        let unit = |value: usize| value.saturating_mul(side).checked_div(24).unwrap_or(0);
-        for (left, top, width, height) in parts {
-            self.rectangle(
-                corner.0.saturating_add(unit(*left)),
-                corner.1.saturating_add(unit(*top)),
-                unit(*width).max(1),
-                unit(*height).max(1),
-                colour,
-            );
-        }
-    }
-
     fn pad_drawing(&mut self, corner: (usize, usize), side: usize, kind: PadKind, colour: [u8; 4]) {
-        let parts: &[Part] = match kind {
-            PadKind::Xbox => &XBOX,
-            PadKind::PlayStation => &PLAYSTATION,
-            PadKind::Switch => &SWITCH,
-            PadKind::Generic => &GENERIC_PAD,
+        let icon = match kind {
+            PadKind::Xbox => "xbox",
+            PadKind::PlayStation => "dualsense",
+            PadKind::Switch => "switch",
+            PadKind::Generic => "generic-pad",
         };
-        self.drawing(corner, side, parts, colour);
-        self.drawing(corner, side, pad_details(kind), FACE);
+        self.input_icon(corner, side, icon, colour);
     }
 
-    /// A small picture of how the pad connects, in a tile's corner.
+    /// The origin glyph in a tile's corner; nothing when the source is unknown.
     fn connection_glyph(
         &mut self,
         corner: (usize, usize),
@@ -328,39 +398,64 @@ impl Canvas {
         connection: Connection,
         colour: [u8; 4],
     ) {
-        let art: &[&str] = match connection {
-            Connection::Usb => &[".#####.", ".#.#.#.", ".#####.", "...#...", "...#..."],
-            Connection::Bluetooth => &[
-                "..#..", "..##.", "#.#.#", ".###.", "..#..", ".###.", "#.#.#", "..##.", "..#..",
-            ],
-            Connection::Dongle => &["#.#.....", ".#.#####", ".#.#####", "#.#....."],
-        };
-        let cell = side.checked_div(45).unwrap_or(2).max(2);
-        for (row, line) in art.iter().enumerate() {
-            for (column, mark) in line.chars().enumerate() {
-                if mark == '#' {
-                    self.rectangle(
-                        corner.0.saturating_add(column.saturating_mul(cell)),
-                        corner.1.saturating_add(row.saturating_mul(cell)),
-                        cell,
-                        cell,
-                        colour,
-                    );
-                }
-            }
+        if let Some(icon) = connection.glyph() {
+            self.svg_icon(corner, side.saturating_mul(2) / 7, icon, colour);
         }
     }
 
+    /// Artwork centred in the upper part of a tile, leaving the bottom for words.
+    fn input_icon(&mut self, corner: (usize, usize), side: usize, icon: &'static str, colour: [u8; 4]) {
+        let art = side.saturating_mul(4) / 7;
+        self.svg_icon(
+            (
+                corner.0.saturating_add(side.saturating_sub(art) / 2),
+                corner.1.saturating_add(side / 6),
+            ),
+            art,
+            icon,
+            colour,
+        );
+    }
+
+    /// One small line centred on the bottom of a tile.
+    fn tile_foot(&mut self, corner: (usize, usize), side: usize, text: &str, points: usize, colour: [u8; 4]) {
+        let middle = (
+            corner.0.saturating_mul(2).saturating_add(side),
+            corner
+                .1
+                .saturating_add(side)
+                .saturating_sub(side / 12)
+                .saturating_mul(2),
+        );
+        self.centred(middle, text, points, colour);
+    }
+
+    /// A thin outline around a tile, for the pad that the focused settings row edits.
+    fn selected_outline(&mut self, corner: (usize, usize), side: usize) {
+        let (x, y) = corner;
+        self.rounded_rectangle((x, y, side, side), TILE_RADIUS, SELECTED);
+        self.rounded_rectangle(
+            (
+                x.saturating_add(3),
+                y.saturating_add(3),
+                side.saturating_sub(6),
+                side.saturating_sub(6),
+            ),
+            TILE_RADIUS.saturating_sub(3),
+            FACE,
+        );
+    }
+
     fn mic_drawing(&mut self, corner: (usize, usize), side: usize, kind: MicKind, colour: [u8; 4]) {
-        let parts: &[Part] = match kind {
-            MicKind::Headset => &HEADSET,
-            MicKind::Usb => &USB_MIC,
-            MicKind::Builtin => &CHIP,
-            MicKind::Network => &NETWORK,
-            MicKind::Phone => &PHONE,
-            MicKind::Generic => &CAPSULE_MIC,
+        let icon = match kind {
+            MicKind::Headset => "headset",
+            MicKind::Usb => "usb-mic",
+            MicKind::Builtin => "builtin",
+            MicKind::Network => "network",
+            MicKind::Phone => "phone",
+            MicKind::Generic => "mic",
         };
-        self.drawing(corner, side, parts, colour);
+        self.input_icon(corner, side, icon, colour);
     }
 
     fn controller_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
@@ -380,13 +475,22 @@ impl Canvas {
             } else {
                 DIM
             };
+            if focus.row == CONTROLLER_SETTINGS_ROW && input.controller_cursor == col {
+                self.selected_outline((x, y), side);
+            }
             self.pad_drawing((x, y), side, controller.kind(), colour);
-            let below = y.saturating_add(side).saturating_sub(side / 5);
             self.tile_text(
-                (x, below, side, side / 5),
+                (x, y.saturating_add(side.saturating_mul(2) / 3), side, side / 4),
                 core::slice::from_ref(&controller.label),
                 points,
                 colour,
+            );
+            self.tile_foot(
+                (x, y),
+                side,
+                controller.connection.caption(),
+                points.max(8),
+                if asking { AMBER } else { ORIGIN_TEXT },
             );
             self.connection_glyph(
                 (x.saturating_add(8), y.saturating_add(8)),
@@ -413,21 +517,40 @@ impl Canvas {
             return;
         };
         let side = grid.side();
-        let points = side.checked_div(9).unwrap_or(8).max(8);
+        let points = side.checked_div(10).unwrap_or(8).max(8);
         let enabled = input.controller_enabled(&controller.key);
+        if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0) {
+            let heading = controller.spoken_name().to_uppercase();
+            self.text(x, y.saturating_sub(28), &heading, 2, AMBER);
+        }
         if let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_SETTINGS_ROW, 0), focus, enabled) {
-            let word = if enabled { "ENABLED" } else { "OFF" };
             let colour = if enabled { WHITE } else { DIM };
-            self.tile_text((x, y, side, side), &[word.to_owned()], points, colour);
-            self.caption((x, y), side, &controller.spoken_name(), colour);
+            self.input_icon(
+                (x, y),
+                side,
+                if enabled { "toggle-on" } else { "toggle-off" },
+                colour,
+            );
+            self.tile_foot(
+                (x, y),
+                side,
+                if enabled { "ENABLED" } else { "OFF" },
+                points,
+                colour,
+            );
         }
         for (index, option) in TALK_OPTIONS.into_iter().enumerate() {
             let col = index.saturating_add(1);
             let marked = input.talk_choice() == option;
             if let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_SETTINGS_ROW, col), focus, marked) {
+                let icon = match option {
+                    None => "button-view",
+                    Some(tehuti_protocol::ButtonName::Record) => "button-share",
+                    Some(_) => "button-menu",
+                };
                 let label = tehuti_core::dispatch::InputSettings::talk_label(option);
-                let lines = ["TALK".to_owned(), label.to_owned()];
-                self.tile_text((x, y, side, side), &lines, points, WHITE);
+                self.input_icon((x, y), side, icon, WHITE);
+                self.tile_foot((x, y), side, &format!("TALK {label}"), points, WHITE);
             }
         }
     }
@@ -452,8 +575,8 @@ impl Canvas {
                 };
                 let colour = if enabled { WHITE } else { DIM };
                 match (choice, microphone) {
-                    (MicrophoneChoice::All, _) => self.drawing((x, y), side, &ALL_MICS, colour),
-                    (MicrophoneChoice::Auto, _) => self.drawing((x, y), side, &AUTO_MIC, colour),
+                    (MicrophoneChoice::All, _) => self.input_icon((x, y), side, "all", colour),
+                    (MicrophoneChoice::Auto, _) => self.input_icon((x, y), side, "auto", colour),
                     (MicrophoneChoice::Named(_), Some(known)) => {
                         self.mic_drawing((x, y), side, known.kind(), colour);
                     }
@@ -462,96 +585,9 @@ impl Canvas {
                     }
                 }
                 let words = if enabled { label } else { format!("{label} OFF") };
-                let below = y.saturating_add(side).saturating_sub(side / 5);
-                self.tile_text((x, below, side, side / 5), &[words], points, colour);
-                if let Some(known) = microphone {
-                    self.caption((x, y), side, &known.spoken_name(), colour);
-                }
+                let below = y.saturating_add(side.saturating_mul(7) / 10);
+                self.tile_text((x, below, side, side / 4), &[words], points, colour);
             }
         }
     }
 }
-
-/// A box in 24ths of a tile side: left, top, width, height.
-type Part = (usize, usize, usize, usize);
-
-const GENERIC_PAD: [Part; 3] = [(3, 5, 18, 9), (3, 12, 4, 5), (17, 12, 4, 5)];
-const XBOX: [Part; 3] = [(3, 4, 18, 9), (3, 11, 5, 6), (16, 11, 5, 6)];
-const PLAYSTATION: [Part; 4] = [(3, 5, 18, 8), (3, 12, 4, 6), (17, 12, 4, 6), (8, 3, 8, 1)];
-const SWITCH: [Part; 2] = [(2, 3, 6, 14), (16, 3, 6, 14)];
-
-/// The details cut into a pad's body: sticks, d-pad and buttons.
-const fn pad_details(kind: PadKind) -> &'static [Part] {
-    match kind {
-        PadKind::Xbox => &[
-            (5, 6, 3, 3),
-            (9, 10, 4, 1),
-            (10, 9, 2, 3),
-            (14, 10, 3, 3),
-            (16, 6, 1, 1),
-            (18, 6, 1, 1),
-            (17, 5, 1, 1),
-            (17, 7, 1, 1),
-        ],
-        PadKind::PlayStation => &[
-            (8, 5, 8, 3),
-            (4, 7, 3, 1),
-            (5, 6, 1, 3),
-            (17, 7, 1, 1),
-            (19, 7, 1, 1),
-            (18, 6, 1, 1),
-            (18, 8, 1, 1),
-            (8, 10, 3, 3),
-            (13, 10, 3, 3),
-        ],
-        PadKind::Switch => &[
-            (4, 5, 3, 3),
-            (4, 11, 1, 3),
-            (3, 12, 3, 1),
-            (17, 6, 1, 1),
-            (19, 6, 1, 1),
-            (18, 5, 1, 1),
-            (18, 7, 1, 1),
-            (17, 11, 3, 3),
-        ],
-        PadKind::Generic => &[(6, 7, 1, 3), (5, 8, 3, 1), (15, 7, 2, 2), (17, 9, 2, 2)],
-    }
-}
-
-const CAPSULE_MIC: [Part; 6] = [
-    (10, 2, 4, 8),
-    (8, 8, 1, 3),
-    (15, 8, 1, 3),
-    (8, 11, 8, 1),
-    (11, 12, 2, 3),
-    (8, 15, 8, 1),
-];
-const USB_MIC: [Part; 4] = [(10, 2, 4, 9), (11, 11, 2, 4), (9, 15, 6, 3), (11, 18, 2, 1)];
-const HEADSET: [Part; 7] = [
-    (5, 3, 14, 1),
-    (5, 3, 1, 7),
-    (18, 3, 1, 7),
-    (3, 8, 4, 7),
-    (17, 8, 4, 7),
-    (5, 14, 8, 1),
-    (12, 13, 3, 2),
-];
-const CHIP: [Part; 7] = [
-    (6, 4, 12, 11),
-    (4, 6, 2, 1),
-    (4, 9, 2, 1),
-    (4, 12, 2, 1),
-    (18, 6, 2, 1),
-    (18, 9, 2, 1),
-    (18, 12, 2, 1),
-];
-const NETWORK: [Part; 4] = [(10, 12, 4, 3), (8, 9, 8, 1), (5, 6, 14, 1), (2, 3, 20, 1)];
-const PHONE: [Part; 3] = [(8, 2, 8, 15), (11, 15, 2, 1), (9, 3, 6, 10)];
-const ALL_MICS: [Part; 3] = [(3, 5, 4, 8), (10, 3, 4, 10), (17, 5, 4, 8)];
-const AUTO_MIC: [Part; 5] = [
-    (10, 3, 4, 8),
-    (5, 5, 1, 8),
-    (18, 5, 1, 8),
-    (5, 5, 3, 1),
-    (16, 13, 3, 1),
-];

@@ -39,6 +39,7 @@ struct View {
     scale: core::num::NonZeroU32,
     remaining: Option<Duration>,
     failed: bool,
+    wallpaper_revision: u64,
 }
 
 impl View {
@@ -67,6 +68,11 @@ impl View {
                 )
             }),
             failed: settings.failed(),
+            wallpaper_revision: if settings.page == Page::Wallpaper {
+                crate::wallpaper::revision()
+            } else {
+                0
+            },
         }
     }
 }
@@ -137,6 +143,7 @@ const AMBER: [u8; 4] = [56, 184, 255, 255];
 const WHITE: [u8; 4] = [244, 240, 225, 255];
 
 pub(crate) mod canvas;
+mod input_icons;
 mod pages;
 mod tiles;
 use canvas::Canvas;
@@ -169,53 +176,6 @@ impl Canvas {
             };
             self.text(96, y.saturating_add(20), name, 5, WHITE);
             self.text(600, y.saturating_add(32), detail, 3, CYAN);
-        }
-    }
-
-    fn wallpaper(&mut self, settings: &Settings) {
-        if settings.wallpapers.is_empty() {
-            self.text(96, 300, "NO WALLPAPERS AVAILABLE", 4, AMBER);
-            return;
-        }
-        let first = settings.wallpaper_selected.saturating_sub(2);
-        for (row, (index, name)) in settings
-            .wallpapers
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take(5)
-            .enumerate()
-        {
-            let y = 220usize.saturating_add(row.saturating_mul(72));
-            if index == settings.wallpaper_selected {
-                self.highlight(y, 64);
-            }
-            let locked = settings.wallpaper_locked.get(index).copied().unwrap_or(true);
-            self.text(
-                96,
-                y.saturating_add(12),
-                &name.to_uppercase(),
-                4,
-                if locked { AMBER } else { WHITE },
-            );
-            if locked {
-                self.text(560, y.saturating_add(18), "LOCKED", 2, AMBER);
-            }
-            if index == settings.wallpaper_current {
-                self.text(560, y.saturating_add(18), "SAVED", 2, CYAN);
-            }
-        }
-        if let Some(image) = crate::wallpaper::thumbnail(settings.wallpaper_selected) {
-            self.thumbnail(
-                760,
-                230,
-                &image,
-                settings
-                    .wallpaper_locked
-                    .get(settings.wallpaper_selected)
-                    .copied()
-                    .unwrap_or(true),
-            );
         }
     }
 
@@ -254,7 +214,15 @@ pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<Mem
         return None;
     }
     let mut canvas = Canvas::new(size)?;
-    canvas.rectangle(0, 0, WIDTH, HEIGHT, [20, 14, 8, 255]);
+    let opacity = if settings.page == Page::Wallpaper {
+        156
+    } else {
+        255
+    };
+    canvas.rectangle(0, 0, WIDTH, HEIGHT, [20, 14, 8, opacity]);
+    if settings.page == Page::Wallpaper {
+        canvas.square_reference();
+    }
     canvas.rectangle(48, 52, 6, 80, CYAN);
     canvas.text(80, 54, "TEHUTI / SYSTEM", 3, CYAN);
     canvas.text(
@@ -270,7 +238,9 @@ pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<Mem
         WHITE,
     );
     canvas.rectangle(80, 166, 1120, 2, CYAN);
-    canvas.text(80, 190, "POP THE HOOD", 2, AMBER);
+    if settings.page != Page::Wallpaper {
+        canvas.text(80, 190, "POP THE HOOD", 2, AMBER);
+    }
     if settings.page == Page::Categories {
         canvas.text(1200 - 24 * 15, 186, &build_line(), 3, WHITE);
     }
@@ -305,6 +275,56 @@ mod tests {
         utils::{Rectangle, Transform},
     };
     use tehuti_protocol::{Event, Text};
+
+    #[test]
+    fn input_silhouettes_have_smooth_edges_at_each_output_size() -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.show_fixture("input")?;
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        for name in [ButtonName::DpadDown, ButtonName::South] {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                compositor.handle(&Event::Button { name, state });
+            }
+        }
+        let input = &compositor.settings().input;
+        let grid = super::tiles::Grid::input(&input.rows(), input.focus);
+        let (left, top) = grid.origin(0, 0).ok_or("missing controller tile")?;
+        let side = grid.side();
+        for (width, height) in [(1280, 720), (1920, 1080), (3840, 2160)] {
+            let mut buffer = compositor
+                .settings_buffer((width, height))
+                .ok_or("missing Input artwork")?;
+            let width = usize::try_from(width)?;
+            let height = usize::try_from(height)?;
+            buffer.render().draw(|pixels| {
+                let colours: std::collections::HashSet<_> = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| {
+                        let x = index.checked_rem(width).unwrap_or_default().saturating_mul(1280) / width;
+                        let y = index.saturating_div(width).saturating_mul(720) / height;
+                        (left.saturating_add(side / 4)..left.saturating_add(side.saturating_mul(3) / 4))
+                            .contains(&x)
+                            && (top.saturating_add(side / 10)..top.saturating_add(side.saturating_mul(3) / 5))
+                                .contains(&y)
+                    })
+                    .map(|(_, pixel)| pixel.to_vec())
+                    .collect();
+                assert!(
+                    colours.len() > 30,
+                    "Input outlines have fractional coverage at {width}x{height}"
+                );
+                Ok::<_, Box<dyn core::error::Error>>(Vec::new())
+            })?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn the_top_page_shows_the_compiled_in_version_and_commit() {

@@ -364,6 +364,9 @@ impl Compositor {
         }
         compositor.announce_menu_config();
         compositor.rebuild_destinations();
+        if crate::wallpaper::selection_missing() {
+            compositor.show_notice("SAVED WALLPAPER MISSING; USING AVAILABLE WALLPAPER");
+        }
         Ok(compositor)
     }
 
@@ -439,6 +442,7 @@ impl Compositor {
         json!({"version": 1, "clock_ms": self.driver_elapsed.as_millis(), "windows": windows, "focus": focused,
             "level": format!("{:?}", self.dispatch.core().level()), "launcher": launcher,
             "overlays": {"keyboard": self.on_screen_keyboard().is_open(), "settings": self.settings().open, "menu": self.dispatch.core().menu().is_some()},
+            "wallpaper": {"choices": self.settings().wallpapers, "selected": self.settings().wallpaper_selected},
             "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar,
             "menu_text": self.dispatch.core().menu().map(|menu| menu.clone().with_recording(self.recording_active()).text()),
             "notices": tehuti_core::overlay::STACK.into_iter().filter_map(|layer| self.overlay_notice(layer)).collect::<Vec<_>>(),
@@ -1412,6 +1416,18 @@ impl Compositor {
         if previous != self.dispatch.core().level() {
             self.dim_elapsed = core::time::Duration::ZERO;
         }
+        if self.dispatch.busy() == 0
+            && let Some((names, locked, current, missing)) = crate::wallpaper::poll()
+        {
+            let _rejection = self.dispatch(DispatchInput::Wallpapers {
+                names,
+                locked,
+                current,
+            });
+            if missing {
+                self.show_notice("SAVED WALLPAPER MISSING; USING AVAILABLE WALLPAPER");
+            }
+        }
         self.update_window_dimming();
         self.reserve_keyboard_height();
         self.record_screen();
@@ -1770,13 +1786,16 @@ impl Compositor {
                 self.microphone_listing = None;
                 self.configure_controllers(vec![
                     pad("Xbox Wireless Controller", "xbox-1", Connection::Usb),
-                    pad("Xbox Wireless Controller", "xbox-2", Connection::Bluetooth),
-                    pad("Xbox Wireless Controller", "xbox-3", Connection::Dongle),
+                    pad("Switch Joy-Con", "switch-2", Connection::Bluetooth),
+                    pad("USB Gamepad", "generic-3", Connection::Dongle),
                     pad(
                         "DualSense Wireless Controller",
-                        "dualsense-1",
-                        Connection::Bluetooth,
+                        "dualsense-4",
+                        Connection::Streamed,
                     ),
+                    pad("Xbox Wireless Controller", "xbox-5", Connection::VirtualOther),
+                    pad("Xbox Wireless Controller", "xbox-6", Connection::Tehuti),
+                    pad("Generic Pad", "generic-7", Connection::Unknown),
                 ]);
                 let _rejection = self.dispatch(DispatchInput::Microphones(vec![
                     mic("bluez_input.headset", "Arctis Headset"),
@@ -1784,6 +1803,7 @@ impl Compositor {
                     mic("alsa_input.pci-analog", "Built-in Analog Stereo"),
                     mic("rtp-source", "Network RTP Stream"),
                     mic("phone-mic", "Phone Microphone"),
+                    mic("capture-source", "Capture Microphone"),
                 ]));
             }
             _ => return Err(format!("unknown fixture {name}")),
@@ -1814,6 +1834,10 @@ impl Compositor {
     #[must_use]
     pub const fn settings(&self) -> &tehuti_core::dispatch::Settings {
         self.dispatch.settings()
+    }
+
+    pub(crate) const fn wallpaper_preview_active(&self) -> bool {
+        self.settings().open && matches!(self.settings().page, tehuti_core::dispatch::Page::Wallpaper)
     }
 
     #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
@@ -1869,6 +1893,20 @@ impl Compositor {
             }
             DispatchEffect::PollSpeech(elapsed) => {
                 Some(DispatchInput::SpeechPolled(self.poll_speech(elapsed)))
+            }
+            DispatchEffect::RefreshWallpapers => {
+                crate::wallpaper::refresh();
+                None
+            }
+            DispatchEffect::UnlockHiddenWallpapers => {
+                match crate::wallpaper::unlock_hidden() {
+                    Ok(()) => self.show_notice("HIDDEN SET UNLOCKED"),
+                    Err(error) => {
+                        tracing::warn!(%error, "hidden set unlock failed");
+                        self.show_notice("UNLOCK NOT SAVED");
+                    }
+                }
+                None
             }
             DispatchEffect::UnlockWallpapers => {
                 match crate::wallpaper::unlock() {
@@ -2275,7 +2313,9 @@ impl Compositor {
             | DispatchEffect::ConfirmSecret(_)
             | DispatchEffect::SpeechCommand(_)
             | DispatchEffect::PollSpeech(_)
-            | DispatchEffect::UnlockWallpapers => {}
+            | DispatchEffect::UnlockWallpapers
+            | DispatchEffect::UnlockHiddenWallpapers
+            | DispatchEffect::RefreshWallpapers => {}
             DispatchEffect::Handle(event) => {
                 self.handle(&event);
             }

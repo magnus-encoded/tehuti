@@ -369,6 +369,112 @@ mod collection {
     }
 
     #[test]
+    fn user_sets_are_sorted_and_broken_files_do_not_hide_other_sets() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let folder = directory.path().join("config/wallpapers");
+        for (set, name) in [("Evening", "Moon"), ("Dawn", "Sun")] {
+            std::fs::create_dir_all(folder.join(set))?;
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 0, 0, 255]))
+                .save(folder.join(set).join(format!("{name}.png")))?;
+        }
+        std::fs::write(folder.join("Dawn/broken.png"), "invalid")?;
+        let collection = Collection::discover(
+            &[],
+            Store::new(directory.path().join("config/wallpaper")),
+            0,
+            false,
+        );
+        assert_eq!(collection.names(), ["user/Dawn/Sun.png", "user/Evening/Moon.png"]);
+        assert_eq!(collection.locks(), [false, false]);
+        Ok(())
+    }
+
+    #[test]
+    fn saved_user_file_keeps_identity_when_an_earlier_file_arrives() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let folder = directory.path().join("wallpapers/Dawn");
+        std::fs::create_dir_all(&folder)?;
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([70, 0, 0, 255])).save(folder.join("Sun.png"))?;
+        let store = || Store::new(directory.path().join("selection"));
+        let mut collection = Collection::discover(&[], store(), 0, false);
+        collection.select(0)?;
+        assert_eq!(store().read()?.as_deref(), Some("user/Dawn/Sun.png"));
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 0, 0, 255])).save(folder.join("Cloud.png"))?;
+        let mut reopened = Collection::discover(&[], store(), 0, false);
+        assert_eq!(red(&mut reopened)?, 70);
+        std::fs::remove_file(folder.join("Sun.png"))?;
+        let mut missing = Collection::discover(&[], store(), 0, false);
+        assert_eq!(red(&mut missing)?, 20);
+        assert!(missing.selection_missing());
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_set_requires_its_own_durable_unlock() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let hidden = directory.path().join("wallpapers/hidden");
+        std::fs::create_dir_all(&hidden)?;
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([90, 0, 0, 255])).save(hidden.join("uno.png"))?;
+        let roots = [directory.path().to_path_buf()];
+        let store = || Store::new(directory.path().join("config/selection"));
+        let mut collection = Collection::discover(&roots, store(), 0, true);
+        assert_eq!(collection.names(), Vec::<String>::new());
+        collection.unlock()?;
+        assert_eq!(collection.names(), Vec::<String>::new());
+        collection.unlock_hidden()?;
+        assert_eq!(collection.names(), ["bundled/hidden/uno.png"]);
+        let mut reopened = Collection::discover(&roots, store(), 0, false);
+        assert_eq!(reopened.names(), ["bundled/hidden/uno.png"]);
+        reopened.select(0)?;
+        assert_eq!(red(&mut reopened)?, 90);
+        Ok(())
+    }
+
+    #[test]
+    fn physical_thumbnails_average_pixels_and_invalidate_after_source_changes() -> Result<(), Box<dyn Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let folder = directory.path().join("wallpapers/Patterns");
+        std::fs::create_dir_all(&folder)?;
+        let path = folder.join("Grid.png");
+        let mut image = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+        image.put_pixel(0, 0, image::Rgba([255, 255, 255, 255]));
+        image.put_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        image.save(&path)?;
+        let collection = Collection::discover(&[], Store::new(directory.path().join("selection")), 0, false);
+        let cache = directory.path().join("cache");
+        let small = collection
+            .thumbnail(0, (1, 1), &cache)
+            .ok_or("missing thumbnail")?;
+        assert_eq!(small.get_pixel(0, 0).0, [128, 128, 128, 255]);
+        assert_eq!(std::fs::read_dir(&cache)?.count(), 1);
+        assert_eq!(
+            collection
+                .thumbnail(0, (1, 1), &cache)
+                .ok_or("cached thumbnail missing")?,
+            small
+        );
+        assert_eq!(
+            collection
+                .thumbnail(0, (7, 7), &cache)
+                .ok_or("large thumbnail missing")?
+                .dimensions(),
+            (7, 7)
+        );
+        image::RgbaImage::from_pixel(3, 3, image::Rgba([90, 0, 0, 255])).save(path)?;
+        assert_eq!(
+            collection
+                .thumbnail(0, (1, 1), &cache)
+                .ok_or("changed thumbnail missing")?
+                .get_pixel(0, 0)
+                .0,
+            [90, 0, 0, 255]
+        );
+        assert!(collection.thumbnail(0, (0, 1), &cache).is_none());
+        Ok(())
+    }
+
+    #[test]
     fn release_default_shows_locked_future_thumbnails() -> Result<(), Box<dyn Error>> {
         let directory = tempfile::tempdir()?;
         for (name, color) in [
@@ -385,14 +491,10 @@ mod collection {
         let mut first = Collection::discover(&roots, store(), 0, false);
         assert_eq!(first.names().len(), 5);
         assert_eq!(first.locks(), [false, true, true, true, true]);
-        assert_eq!(first.thumbnails().len(), 5);
-        assert_eq!(first.thumbnails()[4].dimensions(), (240, 135));
         assert_eq!(first.version(4), Some(4));
         assert!(first.select(4).is_err());
-        let thumbnail = first.thumbnails()[4].as_ptr();
         first.unlock()?;
         assert_eq!(first.locks(), [false; 5]);
-        assert_eq!(first.thumbnails()[4].as_ptr(), thumbnail);
         assert_eq!(red(&mut first)?, 10);
         std::fs::remove_file(directory.path().join("wallpapers-unlocked"))?;
         let mut fourth = Collection::discover(&roots, store(), 4, false);

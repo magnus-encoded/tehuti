@@ -152,6 +152,8 @@ pub enum Effect {
     WallpaperPreview(usize),
     WallpaperSave(usize),
     UnlockWallpapers,
+    UnlockHiddenWallpapers,
+    RefreshWallpapers,
     /// Routes pad input from the chosen controller only, until confirmed or reverted.
     SettingsController(ControllerChoice),
     PersistController(ControllerChoice),
@@ -876,7 +878,9 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             names,
             locked,
             current,
-        } => state.settings.configure_wallpapers(names, locked, current),
+        } => state
+            .settings
+            .configure_wallpapers(names, locked, current, &mut effects),
         Input::WallpaperSaved(index) => state.settings.wallpaper_saved(index),
         Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
         Input::ControllerBindings(bindings) => state.settings.input.controller_bindings = bindings,

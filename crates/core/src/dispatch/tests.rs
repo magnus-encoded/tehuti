@@ -104,6 +104,8 @@ impl World {
                     | Effect::WallpaperPreview(_)
                     | Effect::WallpaperSave(_)
                     | Effect::UnlockWallpapers
+                    | Effect::UnlockHiddenWallpapers
+                    | Effect::RefreshWallpapers
                     | Effect::SettingsController(_)
                     | Effect::PersistControllerTalk(_, _)
                     | Effect::PersistController(_)
@@ -1886,12 +1888,12 @@ fn wallpaper_preview_saves_and_cancel_restores_saved_choice() {
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
     assert_eq!(state.settings().page, Page::Wallpaper);
-    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::DpadRight);
     assert!(world.trace.contains(&Effect::WallpaperPreview(1)));
     let state = settings_button(&mut world, state, ButtonName::East);
     assert!(world.trace.contains(&Effect::WallpaperPreview(0)));
     let state = settings_button(&mut world, state, ButtonName::South);
-    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::DpadRight);
     let state = settings_button(&mut world, state, ButtonName::South);
     assert_eq!(state.settings().wallpaper_current, 1);
     assert!(world.trace.contains(&Effect::WallpaperSave(1)));
@@ -4556,7 +4558,7 @@ fn wallpaper_is_not_marked_saved_before_persistence_succeeds() {
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
-    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::DpadRight);
     world.wallpaper_save_fails = true;
     let state = settings_button(&mut world, state, ButtonName::South);
     assert!(world.trace.contains(&Effect::WallpaperSave(1)));
@@ -4585,7 +4587,7 @@ fn wallpaper_hints_and_save_follow_the_connected_pad_family() {
         state.settings().button_hint(),
         "D-PAD: PREVIEW   Cross: SAVE   Circle: CANCEL"
     );
-    let state = tap_button(&mut world, state, ButtonName::DpadDown);
+    let state = tap_button(&mut world, state, ButtonName::DpadRight);
     let state = tap_button(&mut world, state, ButtonName::South);
     assert_eq!(state.settings().wallpaper_current, 1);
     let state = tap_button(&mut world, state, ButtonName::East);
@@ -4608,7 +4610,7 @@ fn closing_wallpaper_settings_restores_preview_before_the_next_overlay() {
         let state = tap_button(&mut world, state, ButtonName::DpadDown);
         let state = tap_button(&mut world, state, ButtonName::DpadDown);
         let state = tap_button(&mut world, state, ButtonName::South);
-        let state = tap_button(&mut world, state, ButtonName::DpadDown);
+        let state = tap_button(&mut world, state, ButtonName::DpadRight);
         world.trace.clear();
         let state = if guide {
             hold_guide(&mut world, state)
@@ -6238,4 +6240,106 @@ fn tiles_pick_their_drawing_from_the_device_name() {
     assert_eq!(mic("rtp-source", "Living room stream"), MicKind::Network);
     assert_eq!(mic("phone-1", "Phone mic"), MicKind::Phone);
     assert_eq!(mic("other", "Other"), MicKind::Generic);
+}
+
+#[test]
+fn hidden_set_phrase_is_consumed_before_plugins_and_dictation() {
+    let mut world = World::default();
+    let state = settings_event(
+        &mut world,
+        State::default(),
+        Event::Speech {
+            text: Text::new(" Gotta catch em all. ".into()).unwrap(),
+        },
+    );
+    assert!(!state.settings().open);
+    assert!(world.trace.contains(&Effect::UnlockHiddenWallpapers));
+    assert!(!world.trace.iter().any(|effect| matches!(
+        effect,
+        Effect::DispatchPlugin { route: true, .. } | Effect::Apply(Action::Text { .. })
+    )));
+}
+
+#[test]
+fn wallpaper_directions_move_within_sets_and_between_rows() {
+    let mut world = World::default();
+    let mut state = world.run(
+        State::default(),
+        Input::Wallpapers {
+            names: vec![
+                "apteribis".into(),
+                "bostrychia".into(),
+                "user/Dawn/Sun.png".into(),
+                "user/Dawn/Sky.png".into(),
+                "user/Evening/Moon.png".into(),
+            ],
+            locked: vec![false; 5],
+            current: 0,
+        },
+    );
+    state = settings_event(
+        &mut world,
+        state,
+        Event::Speech {
+            text: Text::new("pop the hood".into()).unwrap(),
+        },
+    );
+    for button in [
+        ButtonName::DpadDown,
+        ButtonName::DpadDown,
+        ButtonName::South,
+        ButtonName::DpadRight,
+        ButtonName::DpadDown,
+    ] {
+        state = settings_button(&mut world, state, button);
+    }
+    assert_eq!(state.settings().wallpaper_selected, 3);
+    state = settings_button(&mut world, state, ButtonName::DpadDown);
+    assert_eq!(state.settings().wallpaper_selected, 4);
+}
+
+#[test]
+fn user_rows_do_not_merge_with_bundled_rows_that_have_the_same_caption() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Wallpapers {
+            names: vec![
+                "apteribis".into(),
+                "user/Tehuti codenames/Sun.png".into(),
+                "user/The hidden set/Moon.png".into(),
+                "bundled/hidden/uno.png".into(),
+            ],
+            locked: vec![false; 4],
+            current: 0,
+        },
+    );
+    let rows = state.settings().wallpaper_rows();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].1, [0]);
+    assert_eq!(rows[1].1, [1]);
+    assert_eq!(rows[2].1, [2]);
+    assert_eq!(rows[3].1, [3]);
+}
+
+#[test]
+fn discovered_wallpapers_join_the_row_end_without_reordering_known_tiles() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Wallpapers {
+            names: vec!["user/Dawn/Sun.png".into()],
+            locked: vec![false],
+            current: 0,
+        },
+    );
+    let state = world.run(
+        state,
+        Input::Wallpapers {
+            names: vec!["user/Dawn/Cloud.png".into(), "user/Dawn/Sun.png".into()],
+            locked: vec![false; 2],
+            current: 1,
+        },
+    );
+    assert_eq!(state.settings().wallpaper_rows()[1].1, [1, 0]);
 }

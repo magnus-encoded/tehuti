@@ -99,3 +99,5 @@ pub mod readback;
 
 pub mod recording_encoder;
 pub mod timeline_level;
+
+mod wallpaper_picker;

@@ -59,6 +59,7 @@ pub struct Settings {
     pub current: usize,
     pub modes: Vec<String>,
     pub wallpapers: Vec<String>,
+    wallpaper_order: Vec<String>,
     pub wallpaper_locked: Vec<bool>,
     pub wallpaper_selected: usize,
     pub wallpaper_current: usize,
@@ -273,6 +274,12 @@ impl Settings {
             return true;
         }
         if let Event::Speech { text } = event
+            && tehuti_protocol::normalize_phrase(text.as_str()) == "gotta catch em all"
+        {
+            effects.push(Effect::UnlockHiddenWallpapers);
+            return true;
+        }
+        if let Event::Speech { text } = event
             && is_open_phrase(text.as_str())
         {
             self.toggle(effects);
@@ -336,6 +343,7 @@ impl Settings {
         } else {
             self.end_preview(effects);
             self.open = true;
+            effects.push(Effect::RefreshWallpapers);
             self.page = Page::Categories;
         }
     }
@@ -409,11 +417,90 @@ impl Settings {
             .unwrap_or(0)
     }
 
-    pub(super) fn configure_wallpapers(&mut self, names: Vec<String>, locked: Vec<bool>, current: usize) {
+    pub(super) fn configure_wallpapers(
+        &mut self,
+        names: Vec<String>,
+        locked: Vec<bool>,
+        current: usize,
+        effects: &mut Vec<Effect>,
+    ) {
+        let focused = self.wallpapers.get(self.wallpaper_selected).cloned();
+        self.wallpaper_order = settle(&self.wallpaper_order, names.clone(), Clone::clone);
         self.wallpapers = names;
         self.wallpaper_locked = locked;
         self.wallpaper_current = current.min(self.wallpapers.len().saturating_sub(1));
-        self.wallpaper_selected = self.wallpaper_current;
+        self.wallpaper_selected = if self.open && self.page == Page::Wallpaper {
+            focused
+                .and_then(|name| self.wallpapers.iter().position(|entry| *entry == name))
+                .unwrap_or(self.wallpaper_current)
+        } else {
+            self.wallpaper_current
+        };
+        if self.open
+            && self.page == Page::Wallpaper
+            && !self
+                .wallpaper_locked
+                .get(self.wallpaper_selected)
+                .copied()
+                .unwrap_or(true)
+        {
+            effects.push(Effect::WallpaperPreview(self.wallpaper_selected));
+        }
+    }
+
+    /// Named wallpaper rows, with stable collection indices for each tile.
+    #[must_use]
+    pub fn wallpaper_rows(&self) -> Vec<(String, Vec<usize>)> {
+        let mut rows: Vec<(String, Vec<usize>)> = vec![("Tehuti codenames".to_owned(), Vec::new())];
+        let ordered = if self.wallpaper_order.is_empty() {
+            &self.wallpapers
+        } else {
+            &self.wallpaper_order
+        };
+        for name in ordered {
+            let Some(index) = self.wallpapers.iter().position(|entry| entry == name) else {
+                continue;
+            };
+            let key = wallpaper_row_key(name);
+            let row = if key.0.is_empty() {
+                0
+            } else {
+                rows.iter()
+                    .position(|(_, entries)| {
+                        entries
+                            .first()
+                            .and_then(|first| self.wallpapers.get(*first))
+                            .is_some_and(|entry| wallpaper_row_key(entry) == key)
+                    })
+                    .unwrap_or_else(|| {
+                        let caption = if key.0 == "bundled" {
+                            format!("The {} set", key.1)
+                        } else {
+                            key.1.to_owned()
+                        };
+                        rows.push((caption, Vec::new()));
+                        rows.len().saturating_sub(1)
+                    })
+            };
+            if let Some((_, entries)) = rows.get_mut(row) {
+                entries.push(index);
+            }
+        }
+        rows
+    }
+
+    #[must_use]
+    pub fn wallpaper_focus(&self) -> Focus {
+        self.wallpaper_rows()
+            .iter()
+            .enumerate()
+            .find_map(|(row, (_, entries))| {
+                entries
+                    .iter()
+                    .position(|index| *index == self.wallpaper_selected)
+                    .map(|col| Focus { row, col })
+            })
+            .unwrap_or_default()
     }
 
     pub(super) fn wallpaper_saved(&mut self, index: usize) {
@@ -423,48 +510,31 @@ impl Settings {
     }
 
     fn wallpaper_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
-        match name {
-            name if name == self.pad_family.button(Role::Back) => self.back(effects),
-            name if name == self.pad_family.button(Role::Confirm) && !self.wallpapers.is_empty() => {
+        if name == self.pad_family.button(Role::Back) {
+            self.back(effects);
+        } else if name == self.pad_family.button(Role::Confirm) {
+            if !self
+                .wallpaper_locked
+                .get(self.wallpaper_selected)
+                .copied()
+                .unwrap_or(true)
+            {
                 effects.push(Effect::WallpaperSave(self.wallpaper_selected));
             }
-            ButtonName::DpadUp | ButtonName::DpadLeft => {
-                if let Some(index) = (0..self.wallpaper_selected)
-                    .rev()
-                    .find(|index| !self.wallpaper_locked.get(*index).copied().unwrap_or(true))
-                {
-                    self.wallpaper_selected = index;
+        } else if let Some(direction) = Direction::from_button(name) {
+            let rows = self.wallpaper_rows();
+            let lengths: Vec<_> = rows.iter().map(|(_, entries)| entries.len()).collect();
+            let focus = step(&lengths, self.wallpaper_focus(), direction);
+            if let Some(index) = rows
+                .get(focus.row)
+                .and_then(|(_, entries)| entries.get(focus.col))
+                .copied()
+            {
+                self.wallpaper_selected = index;
+                if !self.wallpaper_locked.get(index).copied().unwrap_or(true) {
                     effects.push(Effect::WallpaperPreview(index));
                 }
             }
-            ButtonName::DpadDown | ButtonName::DpadRight if !self.wallpapers.is_empty() => {
-                if let Some(index) = (self.wallpaper_selected.saturating_add(1)..self.wallpapers.len())
-                    .find(|index| !self.wallpaper_locked.get(*index).copied().unwrap_or(true))
-                {
-                    self.wallpaper_selected = index;
-                    effects.push(Effect::WallpaperPreview(index));
-                }
-            }
-            ButtonName::South
-            | ButtonName::East
-            | ButtonName::North
-            | ButtonName::West
-            | ButtonName::LeftBumper
-            | ButtonName::RightBumper
-            | ButtonName::LeftTrigger
-            | ButtonName::RightTrigger
-            | ButtonName::Select
-            | ButtonName::Record
-            | ButtonName::Start
-            | ButtonName::Guide
-            | ButtonName::LeftStick
-            | ButtonName::RightStick
-            | ButtonName::Paddle1
-            | ButtonName::Paddle2
-            | ButtonName::Paddle3
-            | ButtonName::Paddle4
-            | ButtonName::DpadDown
-            | ButtonName::DpadRight => {}
         }
     }
 
@@ -782,6 +852,19 @@ impl Settings {
     }
 }
 
+fn wallpaper_row_key(identity: &str) -> (&str, &str) {
+    for namespace in ["user", "bundled"] {
+        if let Some(path) = identity
+            .strip_prefix(namespace)
+            .and_then(|path| path.strip_prefix('/'))
+            && let Some((set, _)) = path.split_once('/')
+        {
+            return (namespace, set);
+        }
+    }
+    ("", "")
+}
+
 /// The `WxH` part of a `WxH@R` mode.
 fn resolution_of(mode: &str) -> &str {
     mode.split_once('@').map_or(mode, |(size, _)| size)
@@ -811,6 +894,7 @@ impl Default for Settings {
             current: 0,
             modes: Vec::new(),
             wallpapers: Vec::new(),
+            wallpaper_order: Vec::new(),
             wallpaper_locked: Vec::new(),
             wallpaper_selected: 0,
             wallpaper_current: 0,

@@ -31,6 +31,9 @@ mod archive {
             image::RgbaImage::from_pixel(2, 2, image::Rgba([red, 0, 0, 255]))
                 .save(folder.join(format!("{name}.png")))?;
         }
+        std::fs::create_dir_all(folder.join("hidden"))?;
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([70, 0, 0, 255]))
+            .save(folder.join("hidden/uno.png"))?;
         wallpaper_pack::build(&folder, &root.join("wallpapers.pak"))?;
         std::fs::remove_dir_all(folder)?;
         Ok(())
@@ -138,6 +141,25 @@ mod archive {
         reopened.unlock()?;
         assert_eq!(reopened.names(), NAMES);
         assert_eq!(store().read()?.as_deref(), Some("threskiornis"));
+        Ok(())
+    }
+
+    #[test]
+    fn packed_hidden_set_appears_after_unlock_and_keeps_its_selection() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        pack(directory.path(), 91)?;
+        let roots = [directory.path().to_path_buf()];
+        let store = || Store::new(directory.path().join("config/wallpaper"));
+        let mut collection = Collection::discover(&roots, store(), 0, false);
+        assert_eq!(collection.names(), NAMES);
+        collection.unlock_hidden()?;
+        assert_eq!(
+            collection.names().last().map(String::as_str),
+            Some("bundled/hidden/uno.png")
+        );
+        collection.select(13)?;
+        assert_eq!(store().read()?.as_deref(), Some("bundled/hidden/uno.png"));
+        assert_eq!(red(&mut Collection::discover(&roots, store(), 0, false))?, 70);
         Ok(())
     }
 
