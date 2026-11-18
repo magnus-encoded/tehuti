@@ -68,7 +68,11 @@ impl View {
                 )
             }),
             failed: settings.failed(),
-            wallpaper_revision: crate::wallpaper::revision(),
+            wallpaper_revision: if settings.page == Page::Wallpaper {
+                crate::wallpaper::revision()
+            } else {
+                0
+            },
         }
     }
 }
