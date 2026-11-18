@@ -465,7 +465,7 @@ impl Canvas {
                 let below = y.saturating_add(side).saturating_sub(side / 5);
                 self.tile_text((x, below, side, side / 5), &[words], points, colour);
                 if let Some(known) = microphone {
-                    self.caption((x, y), side, &known.spoken_name(), colour);
+                    self.caption((x, y), side, &known.caption(), colour);
                 }
             }
         }

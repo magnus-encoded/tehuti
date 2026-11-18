@@ -135,6 +135,28 @@ pub struct Microphone {
     pub name: String,
     /// The `node.description` shown to the user.
     pub description: String,
+    /// Set when this source is the `AudioRelay` player's: whether a phone is connected.
+    pub relay: Option<RelayState>,
+}
+
+/// The connection of an `AudioRelay` source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayState {
+    /// A phone is sending sound.
+    Connected,
+    /// The player listens and no phone has connected.
+    Waiting,
+}
+
+impl RelayState {
+    /// The word shown under the tile.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Connected => "CONNECTED",
+            Self::Waiting => "WAITING",
+        }
+    }
 }
 
 /// The Input page's rows of tiles, top to bottom.
@@ -154,7 +176,9 @@ impl Microphone {
     #[must_use]
     pub fn kind(&self) -> MicKind {
         let text = format!("{} {}", self.name, self.description);
-        if mentions(&text, &["rtp", "network", "tunnel", "stream", "raop"]) {
+        if self.relay.is_some() {
+            MicKind::Phone
+        } else if mentions(&text, &["rtp", "network", "tunnel", "stream", "raop"]) {
             MicKind::Network
         } else if mentions(&text, &["phone-", "smartphone", "android", "iphone", "phone mic"]) {
             MicKind::Phone
@@ -173,6 +197,13 @@ impl Microphone {
     #[must_use]
     pub fn spoken_name(&self) -> String {
         tehuti_protocol::normalize_phrase(&self.description)
+    }
+
+    /// The text under the tile: the connection of an `AudioRelay` source, else the spoken name.
+    #[must_use]
+    pub fn caption(&self) -> String {
+        self.relay
+            .map_or_else(|| self.spoken_name(), |state| state.label().to_owned())
     }
 }
 
@@ -314,7 +345,13 @@ impl InputSettings {
                 .find(|microphone| microphone.name == *name)
                 .map_or_else(
                     || name.to_uppercase(),
-                    |microphone| microphone.description.to_uppercase(),
+                    |microphone| {
+                        if microphone.relay.is_some() {
+                            "AUDIORELAY".to_owned()
+                        } else {
+                            microphone.description.to_uppercase()
+                        }
+                    },
                 ),
         }
     }

@@ -1752,6 +1752,7 @@ impl Compositor {
         let mic = |node: &str, description: &str| tehuti_core::dispatch::Microphone {
             name: node.to_owned(),
             description: description.to_owned(),
+            relay: None,
         };
         match name {
             "display" => {

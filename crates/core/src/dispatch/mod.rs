@@ -14,7 +14,7 @@ use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 mod input_settings;
 pub use input_settings::{
     CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, ControllerChoice, ControllerInfo, InputSettings,
-    MICROPHONE_ROW, MicKind, Microphone, MicrophoneChoice, PadKind, TALK_OPTIONS,
+    MICROPHONE_ROW, MicKind, Microphone, MicrophoneChoice, PadKind, RelayState, TALK_OPTIONS,
 };
 
 mod settings;

@@ -3229,6 +3229,7 @@ fn microphone(name: &str, description: &str) -> Microphone {
     Microphone {
         name: name.into(),
         description: description.into(),
+        relay: None,
     }
 }
 
@@ -6238,4 +6239,19 @@ fn tiles_pick_their_drawing_from_the_device_name() {
     assert_eq!(mic("rtp-source", "Living room stream"), MicKind::Network);
     assert_eq!(mic("phone-1", "Phone mic"), MicKind::Phone);
     assert_eq!(mic("other", "Other"), MicKind::Generic);
+}
+
+#[test]
+fn an_audiorelay_source_is_labelled_with_its_connection() {
+    let mut relay = microphone("audiorelay-mic", "Phone One");
+    relay.relay = Some(RelayState::Connected);
+    let mut state = InputSettings::default();
+    state.microphones = vec![relay.clone(), microphone("alsa_input.desk", "Desk")];
+    let label = |name: &str| state.microphone_tile_label(&MicrophoneChoice::Named(name.into()));
+    assert_eq!(label("audiorelay-mic"), "AUDIORELAY");
+    assert_eq!(label("alsa_input.desk"), "DESK");
+    assert_eq!(relay.caption(), "CONNECTED");
+    relay.relay = Some(RelayState::Waiting);
+    assert_eq!(relay.caption(), "WAITING");
+    assert_eq!(microphone("x", "Desk Mic").caption(), "desk mic");
 }
