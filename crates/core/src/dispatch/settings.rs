@@ -469,7 +469,7 @@ impl Settings {
                     .position(|(_, entries)| {
                         entries
                             .first()
-                            .and_then(|index| self.wallpapers.get(*index))
+                            .and_then(|first| self.wallpapers.get(*first))
                             .is_some_and(|entry| wallpaper_row_key(entry) == key)
                     })
                     .unwrap_or_else(|| {
@@ -852,7 +852,6 @@ impl Settings {
     }
 }
 
-/// The `WxH` part of a `WxH@R` mode.
 fn wallpaper_row_key(identity: &str) -> (&str, &str) {
     for namespace in ["user", "bundled"] {
         if let Some(path) = identity
@@ -866,6 +865,7 @@ fn wallpaper_row_key(identity: &str) -> (&str, &str) {
     ("", "")
 }
 
+/// The `WxH` part of a `WxH@R` mode.
 fn resolution_of(mode: &str) -> &str {
     mode.split_once('@').map_or(mode, |(size, _)| size)
 }
