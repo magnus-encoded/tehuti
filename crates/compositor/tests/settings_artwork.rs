@@ -49,12 +49,13 @@ mod tests {
         settings.open = true;
         settings.page = Page::Display;
         settings.modes = vec!["1920x1080@60".into()];
+        settings.display_focus = tehuti_core::tiles::Focus { row: 3, col: 1 };
         let pixels = pixels_of(&settings)?;
-        let inked = (536..562)
-            .flat_map(|y| (88..150).map(move |x| (x, y)))
+        let inked = (440..540)
+            .flat_map(|y| (100..260).map(move |x| (x, y)))
             .filter(|(x, y)| pixel_at(&pixels, *x, *y) != FACE)
             .count();
-        assert!(inked > 50, "glyph samples are drawn inside the first font tile");
+        assert!(inked > 50, "the large sample is drawn inside the first font tile");
         Ok(())
     }
 
@@ -63,9 +64,9 @@ mod tests {
         let mut settings = Settings::default();
         settings.open = true;
         settings.page = Page::Input;
-        settings.input.focus = tehuti_core::tiles::Focus { row: 1, col: 0 };
+        settings.input.focus = tehuti_core::tiles::Focus { row: 2, col: 0 };
         let pixels = pixels_of(&settings)?;
-        for (x, y) in [(100, 223), (100, 370), (81, 300), (228, 300)] {
+        for (x, y) in [(100, 223), (100, 400), (81, 300), (258, 300)] {
             assert_eq!(
                 pixel_at(&pixels, x, y),
                 CYAN,
@@ -73,12 +74,12 @@ mod tests {
             );
         }
         assert_ne!(
-            pixel_at(&pixels, 100, 380),
+            pixel_at(&pixels, 100, 410),
             CYAN,
             "the tile is as tall as it is wide"
         );
         assert_ne!(
-            pixel_at(&pixels, 240, 300),
+            pixel_at(&pixels, 270, 300),
             CYAN,
             "the tile is as wide as it is tall"
         );
@@ -100,7 +101,7 @@ mod tests {
                 .filter(|(index, pixel)| {
                     let x = index.checked_rem(1280).unwrap_or_default();
                     let y = index.checked_div(1280).unwrap_or_default();
-                    (360..1200).contains(&x) && (620..650).contains(&y) && **pixel == colour
+                    (760..1270).contains(&x) && (84..120).contains(&y) && **pixel == colour
                 })
                 .count();
             Ok::<_, std::io::Error>(Vec::new())
