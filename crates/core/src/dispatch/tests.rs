@@ -6245,8 +6245,10 @@ fn tiles_pick_their_drawing_from_the_device_name() {
 fn an_audiorelay_source_is_labelled_with_its_connection() {
     let mut relay = microphone("audiorelay-mic", "Phone One");
     relay.relay = Some(RelayState::Connected);
-    let mut state = InputSettings::default();
-    state.microphones = vec![relay.clone(), microphone("alsa_input.desk", "Desk")];
+    let state = InputSettings {
+        microphones: vec![relay.clone(), microphone("alsa_input.desk", "Desk")],
+        ..InputSettings::default()
+    };
     let label = |name: &str| state.microphone_tile_label(&MicrophoneChoice::Named(name.into()));
     assert_eq!(label("audiorelay-mic"), "AUDIORELAY");
     assert_eq!(label("alsa_input.desk"), "DESK");
