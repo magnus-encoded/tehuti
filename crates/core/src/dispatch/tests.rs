@@ -4515,7 +4515,7 @@ fn wallpaper_is_not_marked_saved_before_persistence_succeeds() {
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::DpadDown);
     let state = settings_button(&mut world, state, ButtonName::South);
-    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::DpadRight);
     world.wallpaper_save_fails = true;
     let state = settings_button(&mut world, state, ButtonName::South);
     assert!(world.trace.contains(&Effect::WallpaperSave(1)));
@@ -4544,7 +4544,7 @@ fn wallpaper_hints_and_save_follow_the_connected_pad_family() {
         state.settings().button_hint(),
         "D-PAD: PREVIEW   Cross: SAVE   Circle: CANCEL"
     );
-    let state = tap_button(&mut world, state, ButtonName::DpadDown);
+    let state = tap_button(&mut world, state, ButtonName::DpadRight);
     let state = tap_button(&mut world, state, ButtonName::South);
     assert_eq!(state.settings().wallpaper_current, 1);
     let state = tap_button(&mut world, state, ButtonName::East);
@@ -4567,7 +4567,7 @@ fn closing_wallpaper_settings_restores_preview_before_the_next_overlay() {
         let state = tap_button(&mut world, state, ButtonName::DpadDown);
         let state = tap_button(&mut world, state, ButtonName::DpadDown);
         let state = tap_button(&mut world, state, ButtonName::South);
-        let state = tap_button(&mut world, state, ButtonName::DpadDown);
+        let state = tap_button(&mut world, state, ButtonName::DpadRight);
         world.trace.clear();
         let state = if guide {
             hold_guide(&mut world, state)
