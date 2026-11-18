@@ -14,7 +14,7 @@ from PIL import Image, ImageChops, ImageEnhance
 ROOT = Path(__file__).resolve().parent.parent
 GOLDENS = ROOT / "tests/visual/goldens"
 PENDING = {"launcher-empty", "launcher-window"}  # #379 owns launcher layout.
-REVIEW = {"menu", "settings-display", "settings-display-font", "settings-input", "settings-input-mics", "settings-input-mics-end"}  # Captured for review in the artefact; no golden yet.
+REVIEW = {"menu", "settings-display", "settings-display-font", "settings-input", "settings-input-mics", "settings-input-mics-end", "settings-wallpaper", "settings-wallpaper-user", "settings-wallpaper-hidden"}  # Captured for review in the artefact; no golden yet.
 
 
 # The settings page prints the commit it was built from; ignore that line.
@@ -74,11 +74,12 @@ name = "Library notes"
 steps = [{ icon = "book", target = { kind = "action", value = { type = "notice", text = "Notes" } } }]
 ''')
         socket = None
+        wallpaper_seed = None
 
         def drive(*command):
             result = subprocess.run([str(args.binaries.resolve() / "tehuti-drive"), "--socket", str(socket), *command],
                                     check=True, capture_output=True, text=True, timeout=30,
-                                    env={**os.environ, "XDG_PICTURES_DIR": str(work / "pictures"), "XKB_DEFAULT_LAYOUT": "us", "XKB_DEFAULT_VARIANT": "", "XKB_DEFAULT_OPTIONS": ""})
+                                    env={**os.environ, "XDG_PICTURES_DIR": str(work / "pictures"), "XKB_DEFAULT_LAYOUT": "us", "XKB_DEFAULT_VARIANT": "", "XKB_DEFAULT_OPTIONS": "", **({"TEHUTI_DRIVE_WALLPAPER_SEED": str(wallpaper_seed)} if wallpaper_seed else {})})
             return json.loads(result.stdout)
 
         def capture(name, condition):
@@ -180,6 +181,27 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             drive("say", "keyboard")
             drive("wait-for", "/overlays/keyboard", "true")
             capture("keyboard", lambda s: s["keyboard"])
+            drive("stop")
+            wallpaper_seed = work / "wallpaper-seed"
+            wallpaper_seed.mkdir()
+            shutil.copyfile(args.binaries / "wallpapers.pak", wallpaper_seed / "wallpapers.pak")
+            socket = work / "wallpaper/tehuti-drive.sock"
+            drive("start", str(contexts), "--headless", "--size", "1280x720")
+            user_set = socket.parent / "config/tehuti/wallpapers/Dawn"
+            user_set.mkdir(parents=True)
+            Image.new("RGB", (800, 400), (225, 150, 70)).save(user_set / "Sun.png")
+            Image.new("RGB", (400, 800), (90, 140, 200)).save(user_set / "Sky.jpg")
+            drive("say", "pop the hood")
+            for button in ("dpad_down", "dpad_down", "A"):
+                tap(button)
+            capture("settings-wallpaper", lambda s: s["overlays"]["settings"])
+            tap("dpad_down")
+            capture("settings-wallpaper-user", lambda s: s["overlays"]["settings"])
+            drive("say", "gotta catch em all")
+            time.sleep(0.5)
+            tap("dpad_down")
+            capture("settings-wallpaper-hidden", lambda s: s["overlays"]["settings"])
+
         finally:
             try:
                 if socket:

@@ -416,7 +416,7 @@ mod collection {
         std::fs::create_dir_all(&hidden)?;
         image::RgbaImage::from_pixel(2, 2, image::Rgba([90, 0, 0, 255])).save(hidden.join("uno.png"))?;
         let roots = [directory.path().to_path_buf()];
-        let store = || Store::new(directory.path().join("selection"));
+        let store = || Store::new(directory.path().join("config/selection"));
         let mut collection = Collection::discover(&roots, store(), 0, true);
         assert_eq!(collection.names(), Vec::<String>::new());
         collection.unlock()?;
