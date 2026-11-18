@@ -203,7 +203,11 @@ pub fn capture_sources(listing: &serde_json::Value) -> Vec<Microphone> {
         let relay = [Some(name), Some(description), text("application.name")]
             .into_iter()
             .flatten()
-            .any(|word| word.to_lowercase().replace([' ', '-', '_'], "").contains("audiorelay"))
+            .any(|word| {
+                word.to_lowercase()
+                    .replace([' ', '-', '_'], "")
+                    .contains("audiorelay")
+            })
             .then(|| {
                 if node.pointer("/info/state").and_then(serde_json::Value::as_str) == Some("running") {
                     RelayState::Connected
@@ -382,8 +386,14 @@ mod tests {
             {"type": "PipeWire:Interface:Node", "info": {"state": "running", "props": {
                 "node.name": "alsa_input.desk", "media.class": "Audio/Source"}}}
         ]);
-        let relays: Vec<_> = capture_sources(&listing).into_iter().map(|mic| mic.relay).collect();
-        assert_eq!(relays, vec![Some(RelayState::Connected), Some(RelayState::Waiting), None]);
+        let relays: Vec<_> = capture_sources(&listing)
+            .into_iter()
+            .map(|mic| mic.relay)
+            .collect();
+        assert_eq!(
+            relays,
+            vec![Some(RelayState::Connected), Some(RelayState::Waiting), None]
+        );
     }
 
     #[test]
