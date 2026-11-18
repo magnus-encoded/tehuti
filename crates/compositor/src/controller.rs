@@ -2264,10 +2264,10 @@ mod tests {
         ) {
             let maximum = minimum.saturating_add(span);
             let middle = minimum.midpoint(maximum);
-            let resting = middle.saturating_add(i32::try_from(i64::from(span) / 2 * i64::from(drift) / 1000).unwrap_or(0));
+            let resting = middle.saturating_add(i32::try_from(i64::from(span).saturating_mul(i64::from(drift)) / 2000).unwrap_or(0));
             let offset = rest_offset(resting, minimum, maximum);
             let moved = shifted_value(resting, offset, minimum, maximum);
-            let tolerance = span / 500 + 2;
+            let tolerance = (span / 500).saturating_add(2);
             proptest::prop_assert!(moved.abs_diff(middle) <= tolerance.unsigned_abs());
             let any = minimum.saturating_add(probe.rem_euclid(span.saturating_add(1)));
             proptest::prop_assert!((minimum..=maximum).contains(&shifted_value(any, offset, minimum, maximum)));
