@@ -2446,6 +2446,9 @@ pub fn rest_offset(value: i32, minimum: i32, maximum: i32) -> i16 {
 /// A stick value moved back by the rest offset, so the measured rest reads as the middle.
 #[must_use]
 pub fn shifted_value(value: i32, offset: i16, minimum: i32, maximum: i32) -> i32 {
+    if offset == 0 {
+        return value;
+    }
     let half = i64::from(maximum).saturating_sub(i64::from(minimum)) / 2;
     let shift = half.saturating_mul(i64::from(offset)) / 1000;
     i32::try_from(i64::from(value).saturating_sub(shift)).map_or(value, |moved| moved.clamp(minimum, maximum))
