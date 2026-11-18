@@ -13,14 +13,14 @@ use crate::input::InputSource;
 
 /// One connected pad as the settings view needs it: its node path, kernel name, USB ids and
 /// the device's own unique id or physical path (empty when it reports neither).
-pub type PadDevice = (std::path::PathBuf, String, u16, u16, String);
+pub type ConnectedPad = (std::path::PathBuf, String, u16, u16, String);
 
 /// Labels pads in path order, counting each model independently, and gives each a key that
 /// survives a reconnect: the unique id or physical path when it is the pad's alone, else
 /// the kernel name with an index.
 #[must_use]
 pub fn keyed_controllers(
-    devices: impl IntoIterator<Item = PadDevice>,
+    devices: impl IntoIterator<Item = ConnectedPad>,
 ) -> Vec<(std::path::PathBuf, tehuti_core::dispatch::ControllerInfo)> {
     let mut devices: Vec<_> = devices.into_iter().collect();
     devices.sort_by(|left, right| left.0.cmp(&right.0));
@@ -55,7 +55,7 @@ pub fn keyed_controllers(
 /// [`keyed_controllers`] without the node paths.
 #[must_use]
 pub fn numbered_controllers(
-    devices: impl IntoIterator<Item = PadDevice>,
+    devices: impl IntoIterator<Item = ConnectedPad>,
 ) -> Vec<tehuti_core::dispatch::ControllerInfo> {
     keyed_controllers(devices)
         .into_iter()
