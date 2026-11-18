@@ -368,10 +368,12 @@ impl Canvas {
 
 #[must_use]
 /// The running version and short commit SHA, as `v0.134.1 · 1a2b3c4`.
+#[must_use]
 fn version_line(version: &str, commit: &str) -> String {
     format!("v{version} \u{b7} {commit}")
 }
 
+#[must_use]
 fn build_line() -> String {
     version_line(
         option_env!("TEHUTI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
