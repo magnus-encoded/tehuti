@@ -15,7 +15,7 @@ mod tests {
         Ok(copy)
     }
 
-    fn at(pixels: &[[u8; 4]], x: usize, y: usize) -> [u8; 4] {
+    fn pixel_at(pixels: &[[u8; 4]], x: usize, y: usize) -> [u8; 4] {
         pixels
             .get(y.saturating_mul(1280).saturating_add(x))
             .copied()
@@ -31,12 +31,12 @@ mod tests {
         settings.modes = vec!["1920x1080@60".into(), "1920x1080@120".into()];
         let pixels = pixels_of(&settings)?;
         assert_eq!(
-            at(&pixels, 100, 223),
+            pixel_at(&pixels, 100, 223),
             CYAN,
             "the focused resolution tile has a cyan edge"
         );
         assert_ne!(
-            at(&pixels, 100, 321),
+            pixel_at(&pixels, 100, 321),
             CYAN,
             "the refresh tile below is not focused"
         );
@@ -52,7 +52,7 @@ mod tests {
         let pixels = pixels_of(&settings)?;
         let inked = (536..562)
             .flat_map(|y| (88..150).map(move |x| (x, y)))
-            .filter(|(x, y)| at(&pixels, *x, *y) != FACE)
+            .filter(|(x, y)| pixel_at(&pixels, *x, *y) != FACE)
             .count();
         assert!(inked > 50, "glyph samples are drawn inside the first font tile");
         Ok(())
@@ -66,10 +66,22 @@ mod tests {
         settings.input.focus = tehuti_core::tiles::Focus { row: 1, col: 0 };
         let pixels = pixels_of(&settings)?;
         for (x, y) in [(100, 223), (100, 370), (81, 300), (228, 300)] {
-            assert_eq!(at(&pixels, x, y), CYAN, "the focused tile's edge at {x},{y}");
+            assert_eq!(
+                pixel_at(&pixels, x, y),
+                CYAN,
+                "the focused tile's edge at {x},{y}"
+            );
         }
-        assert_ne!(at(&pixels, 100, 380), CYAN, "the tile is as tall as it is wide");
-        assert_ne!(at(&pixels, 240, 300), CYAN, "the tile is as wide as it is tall");
+        assert_ne!(
+            pixel_at(&pixels, 100, 380),
+            CYAN,
+            "the tile is as tall as it is wide"
+        );
+        assert_ne!(
+            pixel_at(&pixels, 240, 300),
+            CYAN,
+            "the tile is as wide as it is tall"
+        );
         Ok(())
     }
 
