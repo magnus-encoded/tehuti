@@ -76,6 +76,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::ActiveController(_)
         | DispatchInput::Controllers(_)
         | DispatchInput::Microphones(_)
+        | DispatchInput::RemoteHosts(_)
         | DispatchInput::InputChoices { .. }
         | DispatchInput::Speech(_)
         | DispatchInput::PluginReply { .. }
