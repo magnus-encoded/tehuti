@@ -691,6 +691,7 @@ fn size_read(mut state: State, value: Option<u32>) -> State {
     state
 }
 
+#[expect(clippy::too_many_lines, reason = "one exhaustive match over every input, each arm handing off")]
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::Menu(command) => {
