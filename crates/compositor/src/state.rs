@@ -121,7 +121,6 @@ pub struct Compositor {
     settings_display: crate::settings::Display,
     bar_font_store: Option<crate::display_mode_store::Store>,
     /// The pad that drives Tehuti; previews before confirmation too.
-    controller_choice: tehuti_core::dispatch::ControllerChoice,
     controller_names: Vec<String>,
     /// Pads the user turned off on the Input page.
     disabled_controllers: Vec<String>,
@@ -287,7 +286,6 @@ impl Compositor {
             ),
             settings_display: crate::settings::Display::default(),
             bar_font_store: None,
-            controller_choice: tehuti_core::dispatch::ControllerChoice::Auto,
             controller_names: Vec::new(),
             disabled_controllers: Vec::new(),
             input_choices: None,
@@ -1667,7 +1665,6 @@ impl Compositor {
             std::collections::BTreeMap::new()
         });
         let _bindings_rejection = self.dispatch(DispatchInput::ControllerBindings(bindings));
-        self.controller_choice = controller.clone();
         self.input_choices = Some(store);
         let _rejection = self.dispatch(DispatchInput::InputChoices {
             controller,
@@ -1690,18 +1687,10 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Controllers(controllers));
     }
 
-    /// Whether input from the pad named `name` drives Tehuti.
+    /// Whether input from the pad with this stable key drives Tehuti: every pad that is not turned off.
     #[must_use]
     pub fn controller_chosen(&self, key: &str) -> bool {
-        let name = self
-            .settings()
-            .input
-            .controllers
-            .iter()
-            .find(|controller| controller.key == key)
-            .map_or(key, |controller| controller.name.as_str());
         !self.disabled_controllers.iter().any(|disabled| disabled == key)
-            && crate::input::chosen(&self.controller_choice, &self.controller_names, name)
     }
 
     pub fn activate_controller(&mut self, name: String) {
@@ -1713,7 +1702,6 @@ impl Compositor {
         if persist {
             self.save_input_choice(|store| store.set_controller(&choice));
         }
-        self.controller_choice = choice;
     }
 
     fn choose_microphone(&mut self, choice: &tehuti_core::dispatch::MicrophoneChoice) {

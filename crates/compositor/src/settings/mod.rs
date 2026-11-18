@@ -474,24 +474,27 @@ mod tests {
     }
 
     fn input_test_controllers() -> Vec<tehuti_core::dispatch::ControllerInfo> {
-        crate::controller::numbered_controllers([
-            (
-                "/dev/input/event2".into(),
-                "Wireless Controller".into(),
-                0x054c,
-                0x09cc,
-                String::new(),
-                tehuti_core::dispatch::Connection::Usb,
-            ),
-            (
-                "/dev/input/event9".into(),
-                "Xbox Controller".into(),
-                0x045e,
-                0x0b13,
-                String::new(),
-                tehuti_core::dispatch::Connection::Usb,
-            ),
-        ])
+        crate::controller::numbered_controllers(
+            [
+                (
+                    "/dev/input/event2".into(),
+                    "Wireless Controller".into(),
+                    0x054c,
+                    0x09cc,
+                    String::new(),
+                    tehuti_core::dispatch::Connection::Usb,
+                ),
+                (
+                    "/dev/input/event9".into(),
+                    "Xbox Controller".into(),
+                    0x045e,
+                    0x0b13,
+                    String::new(),
+                    tehuti_core::dispatch::Connection::Usb,
+                ),
+            ],
+            &std::collections::BTreeMap::new(),
+        )
     }
 
     #[test]
@@ -547,6 +550,23 @@ mod tests {
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::South);
         assert_eq!(store.microphone()?, MicrophoneChoice::Auto);
+        Ok(())
+    }
+
+    #[test]
+    fn a_saved_single_pad_choice_never_rejects_other_enabled_pads() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
+        store.set_controller(&tehuti_core::dispatch::ControllerChoice::Named(
+            "Wireless Controller".into(),
+        ))?;
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.load_input_choices(store);
+        compositor.configure_controllers(input_test_controllers());
+        assert!(compositor.controller_chosen("Wireless Controller#1"));
+        assert!(compositor.controller_chosen("Xbox Controller#1"));
         Ok(())
     }
 
