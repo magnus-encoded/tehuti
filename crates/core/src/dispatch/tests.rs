@@ -6272,7 +6272,9 @@ fn a_late_host_list_adds_a_row_and_confirm_connects() {
     assert_eq!(state.settings().input.focus.row, REMOTE_ROW);
     world.trace.clear();
     let _state = settings_button(&mut world, state, ButtonName::South);
-    assert!(world
-        .trace
-        .contains(&Effect::ConnectRemoteMicrophone { host: "desk".into() }));
+    assert!(
+        world
+            .trace
+            .contains(&Effect::ConnectRemoteMicrophone { host: "desk".into() })
+    );
 }
