@@ -41,6 +41,7 @@ pub(super) struct Picker {
     pub(super) revision: u64,
     epoch: u64,
     refreshing: bool,
+    refresh_requested: bool,
 }
 
 impl Picker {
@@ -80,12 +81,20 @@ impl Picker {
             revision: 0,
             epoch: 0,
             refreshing: false,
+            refresh_requested: false,
         }
     }
 
     pub(super) fn refresh(&mut self, ping: Option<Ping>) {
-        if !self.refreshing && self.requests.try_send((Job::Refresh, ping)).is_ok() {
+        self.refresh_requested = true;
+        self.send_refresh(ping);
+    }
+
+    fn send_refresh(&mut self, ping: Option<Ping>) {
+        if self.refresh_requested && !self.refreshing && self.requests.try_send((Job::Refresh, ping)).is_ok()
+        {
             self.refreshing = true;
+            self.refresh_requested = false;
         }
     }
 
@@ -118,6 +127,7 @@ impl Picker {
             }
             self.revision = self.revision.wrapping_add(1);
         }
+        self.send_refresh(None);
         collection
     }
 
