@@ -24,7 +24,6 @@ const ORIGIN_TEXT: [u8; 4] = [190, 175, 150, 255];
 /// The outline of the pad whose settings row has focus: dimmer than the focus outline.
 const SELECTED: [u8; 4] = [150, 128, 36, 255];
 const SCREEN: [u8; 4] = [20, 14, 8, 255];
-/// Height kept under each Input tile for its name.
 
 /// A tile's box in reference pixels: left, top, width, height.
 type Area = (usize, usize, usize, usize);
