@@ -31,6 +31,7 @@ struct Request {
     size: Size<i32, Physical>,
     redraw: Option<Ping>,
     image: Option<image::DynamicImage>,
+    replace_image: bool,
     generation: u64,
 }
 
@@ -535,10 +536,11 @@ fn prepare_wallpapers(
         size,
         redraw,
         image,
+        replace_image,
         generation,
     }) = sizes.recv()
     {
-        if generation != worker_generation && image.is_some() {
+        if generation != worker_generation && replace_image {
             wallpaper.image = image;
             wallpaper.buffers.clear();
         }
@@ -676,6 +678,7 @@ impl WallpaperCache {
                     .collection
                     .as_ref()
                     .map_or_else(|| None, |collection| collection.wallpaper.image.clone()),
+                replace_image: self.collection.is_some(),
                 generation: self.generation,
             }) {
                 Ok(()) => {}

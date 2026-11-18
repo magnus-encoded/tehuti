@@ -194,11 +194,12 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             drive("say", "pop the hood")
             for button in ("dpad_down", "dpad_down", "A"):
                 tap(button)
+            time.sleep(2)
             capture("settings-wallpaper", lambda s: s["overlays"]["settings"])
             tap("dpad_down")
             capture("settings-wallpaper-user", lambda s: s["overlays"]["settings"])
             drive("say", "gotta catch em all")
-            time.sleep(0.5)
+            time.sleep(2)
             tap("dpad_down")
             capture("settings-wallpaper-hidden", lambda s: s["overlays"]["settings"])
 
