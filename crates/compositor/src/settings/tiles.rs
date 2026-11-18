@@ -6,12 +6,14 @@ use tehuti_core::tiles::Focus;
 const AREA: (usize, usize, usize, usize) = (80, 222, 1120, 380);
 const GAP: usize = 14;
 const LARGEST_SIDE: usize = 150;
+/// The side of a Display tile: about the width of the page title.
+pub(super) const DISPLAY_SIDE: usize = 180;
 
 /// The square tiles of a page: one side for every tile, rows filled from the left.
 ///
 /// A row that is wider than the area scrolls sideways at the same tile size,
 /// just far enough to keep the focused tile in view; the other rows rest at
-/// their start.
+/// their start. Rows that do not fit under each other scroll the same way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Grid {
     rows: Vec<usize>,
@@ -22,8 +24,9 @@ pub(super) struct Grid {
 
 impl Grid {
     /// A grid with `rows[row]` tiles in each row; empty rows take no room.
-    /// `caption` is the height kept under every tile for its name.
-    pub(super) fn new(rows: &[usize], caption: usize, focus: Focus) -> Self {
+    /// `caption` is the height kept under every tile for its name. With no
+    /// `side`, the tiles shrink until every row fits; with one, they keep it.
+    pub(super) fn new(rows: &[usize], caption: usize, focus: Focus, side: Option<usize>) -> Self {
         let bands = rows.iter().filter(|length| **length > 0).count().max(1);
         let by_height = AREA
             .3
@@ -33,7 +36,7 @@ impl Grid {
             .saturating_sub(caption);
         Self {
             rows: rows.to_vec(),
-            side: by_height.clamp(1, LARGEST_SIDE),
+            side: side.map_or_else(|| by_height.clamp(1, LARGEST_SIDE), |fixed| fixed.max(1)),
             caption,
             focus,
         }
@@ -50,6 +53,20 @@ impl Grid {
             .checked_div(self.side.saturating_add(GAP))
             .unwrap_or(1)
             .max(1)
+    }
+
+    /// How many rows of tiles show at once.
+    fn visible_bands(&self) -> usize {
+        AREA.3
+            .saturating_add(GAP)
+            .checked_div(self.side.saturating_add(self.caption).saturating_add(GAP))
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    /// Position of `row` among the rows that hold tiles.
+    fn band(&self, row: usize) -> usize {
+        self.rows.iter().take(row).filter(|length| **length > 0).count()
     }
 
     /// The first tile of `row` that shows.
@@ -70,12 +87,19 @@ impl Grid {
         if shown >= self.visible() {
             return None;
         }
-        let band = self.rows.iter().take(row).filter(|length| **length > 0).count();
+        let first_band = self
+            .band(self.focus.row)
+            .saturating_add(1)
+            .saturating_sub(self.visible_bands());
+        let shown_band = self.band(row).checked_sub(first_band)?;
+        if shown_band >= self.visible_bands() {
+            return None;
+        }
         let step = self.side.saturating_add(GAP);
         let band_step = step.saturating_add(self.caption);
         Some((
             AREA.0.saturating_add(shown.saturating_mul(step)),
-            AREA.1.saturating_add(band.saturating_mul(band_step)),
+            AREA.1.saturating_add(shown_band.saturating_mul(band_step)),
         ))
     }
 }
@@ -128,10 +152,11 @@ mod tests {
         fn shown_tiles_are_squares_inside_the_area_and_none_overlap(
             rows in prop::collection::vec(0_usize..16, 0..6),
             caption in 0_usize..30,
+            side in prop::option::of(1_usize..260),
             spot in (0_usize..6, 0_usize..16),
         ) {
             let focus = clamp(&rows, Focus { row: spot.0, col: spot.1 });
-            let grid = Grid::new(&rows, caption, focus);
+            let grid = Grid::new(&rows, caption, focus, side);
             let side = grid.side();
             let origins = cells(&grid, &rows);
             for (x, y) in &origins {
@@ -154,8 +179,8 @@ mod tests {
             let mut longer = rows.clone();
             longer[0] = longer[0].saturating_add(extra);
             prop_assert_eq!(
-                Grid::new(&rows, 0, Focus::default()).side(),
-                Grid::new(&longer, 0, Focus::default()).side()
+                Grid::new(&rows, 0, Focus::default(), None).side(),
+                Grid::new(&longer, 0, Focus::default(), None).side()
             );
         }
 
@@ -165,7 +190,7 @@ mod tests {
             spot in (0_usize..5, 0_usize..40),
         ) {
             let focus = clamp(&rows, Focus { row: spot.0, col: spot.1 });
-            let grid = Grid::new(&rows, 20, focus);
+            let grid = Grid::new(&rows, 20, focus, Some(super::DISPLAY_SIDE));
             prop_assert!(grid.origin(focus.row, focus.col).is_some());
         }
 
@@ -176,7 +201,7 @@ mod tests {
         ) {
             let rows = [length];
             let focus = clamp(&rows, Focus { row: 0, col });
-            let grid = Grid::new(&rows, 0, focus);
+            let grid = Grid::new(&rows, 0, focus, None);
             let step = grid.side().saturating_add(GAP);
             let shown: Vec<usize> = (0..length).filter_map(|index| grid.origin(0, index).map(|(x, _)| x)).collect();
             prop_assert_eq!(shown[0], AREA.0);

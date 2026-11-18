@@ -6120,3 +6120,27 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #[test]
+    fn equal_refresh_rates_show_once_and_keep_the_active_mode(
+        rates in prop::collection::vec(prop::sample::select(vec!["60", "119", "120", "144"]), 1..9),
+        current in 0_usize..9,
+    ) {
+        let mut world = World::default();
+        let modes: Vec<String> = rates.iter().map(|rate| format!("1920x1080@{rate}")).collect();
+        let current = current.min(modes.len().saturating_sub(1));
+        let state = open_display_with(&mut world, modes.clone(), current);
+        let shown = state.settings().refresh_modes(0);
+        let labels: Vec<&str> = shown.iter().map(|index| modes[*index].as_str()).collect();
+        let mut unique = labels.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        prop_assert_eq!(unique.len(), labels.len(), "no rate appears twice");
+        let mut every: Vec<&str> = modes.iter().map(String::as_str).collect();
+        every.sort_unstable();
+        every.dedup();
+        prop_assert_eq!(unique, every, "every rate still shows");
+        prop_assert!(shown.contains(&current), "the active mode keeps its tile");
+    }
+}

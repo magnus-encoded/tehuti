@@ -618,12 +618,26 @@ impl Settings {
         let Some(name) = names.get(resolution) else {
             return Vec::new();
         };
-        self.modes
-            .iter()
-            .enumerate()
-            .filter(|(_, mode)| resolution_of(mode) == name.as_str())
-            .map(|(index, _)| index)
-            .collect()
+        let mut shown: Vec<usize> = Vec::new();
+        for (index, mode) in self.modes.iter().enumerate() {
+            if resolution_of(mode) != name.as_str() {
+                continue;
+            }
+            let rate = rate_of(mode);
+            let twin = shown
+                .iter()
+                .position(|known| self.modes.get(*known).is_some_and(|other| rate_of(other) == rate));
+            match twin {
+                None => shown.push(index),
+                Some(place) if index == self.current => {
+                    if let Some(slot) = shown.get_mut(place) {
+                        *slot = index;
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        shown
     }
 
     /// The scale tiles: one to four, and the saved scale when it is larger.
@@ -737,6 +751,11 @@ impl Settings {
 /// The `WxH` part of a `WxH@R` mode.
 fn resolution_of(mode: &str) -> &str {
     mode.split_once('@').map_or(mode, |(size, _)| size)
+}
+
+/// The refresh text of a `WIDTHxHEIGHT@RATE` mode name.
+fn rate_of(mode: &str) -> &str {
+    mode.split_once('@').map_or("", |(_, rate)| rate)
 }
 
 fn is_open_phrase(text: &str) -> bool {
