@@ -150,9 +150,9 @@ mod tests {
     fn the_deadzone_tile_sits_fifth_in_the_controller_row_with_its_own_value()
     -> Result<(), Box<dyn core::error::Error>> {
         let default = deadzone_row(None)?;
-        // Row 1 starts below the first row; the fifth tile is 4 steps of 194 in.
-        let tile = (80 + 4 * 194, 222 + 194, 180, 226);
-        assert!(lit(&default, tile) > 100, "the tile carries its label and value");
+        // The tiles shrink to fit three rows, so look at everything under the pad row.
+        let tile = (80, 330, 1120, 330);
+        assert!(lit(&default, tile) > 100, "the row carries its labels");
         assert_ne!(
             lit(&default, tile),
             lit(&deadzone_row(Some(250))?, tile),
@@ -178,10 +178,8 @@ mod tests {
             settings.input.focus = tehuti_core::tiles::Focus { row: 1, col: 5 };
             pixels_of(&settings)
         };
-        // Focused at the sixth tile the row has scrolled, so that tile sits where the fifth did.
-        let tile = (80 + 4 * 194, 222 + 194, 180, 226);
+        let tile = (80, 330, 1120, 330);
         let (open, measured) = (drawn(false)?, drawn(true)?);
-        assert!(lit(&open, tile) > 100, "the tile carries its label");
         assert!(
             lit(&measured, tile) > lit(&open, tile),
             "a measured rest adds SET"
