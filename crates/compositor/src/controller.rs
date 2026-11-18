@@ -1849,6 +1849,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "a table of recorded sysfs samples")]
     fn recorded_sysfs_samples_give_one_origin_each() {
         let pad = (0x045e, 0x0b12);
         let cases = [
