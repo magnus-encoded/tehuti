@@ -37,6 +37,7 @@ pub(super) struct Picker {
     replies: mpsc::Receiver<Reply>,
     ready: HashMap<Key, image::RgbaImage>,
     pending: HashSet<Key>,
+    failed: HashSet<Key>,
     pub(super) revision: u64,
     epoch: u64,
     refreshing: bool,
@@ -75,6 +76,7 @@ impl Picker {
             replies,
             ready: HashMap::new(),
             pending: HashSet::new(),
+            failed: HashSet::new(),
             revision: 0,
             epoch: 0,
             refreshing: false,
@@ -96,18 +98,21 @@ impl Picker {
                     self.epoch = self.epoch.wrapping_add(1);
                     self.ready.clear();
                     self.pending.clear();
+                    self.failed.clear();
                     collection = Some(*found);
                 }
                 Reply::Thumbnail(key, image) => {
                     let _removed = self.pending.remove(&key);
-                    if key.0 == self.epoch
-                        && let Some(image) = image
-                    {
-                        let bytes: usize = self.ready.values().map(|cached| cached.as_raw().len()).sum();
-                        if bytes.saturating_add(image.as_raw().len()) > 64 * 1024 * 1024 {
-                            self.ready.clear();
+                    if key.0 == self.epoch {
+                        if let Some(image) = image {
+                            let bytes: usize = self.ready.values().map(|cached| cached.as_raw().len()).sum();
+                            if bytes.saturating_add(image.as_raw().len()) > 64 * 1024 * 1024 {
+                                self.ready.clear();
+                            }
+                            let _previous = self.ready.insert(key, image);
+                        } else {
+                            let _inserted = self.failed.insert(key);
                         }
-                        let _previous = self.ready.insert(key, image);
                     }
                 }
             }
@@ -132,7 +137,8 @@ impl Picker {
         if let Some(image) = self.ready.get(&key) {
             return Some(image.clone());
         }
-        if !self.pending.contains(&key)
+        if !self.failed.contains(&key)
+            && !self.pending.contains(&key)
             && self
                 .requests
                 .try_send((
