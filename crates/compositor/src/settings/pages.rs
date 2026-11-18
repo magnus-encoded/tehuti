@@ -400,7 +400,9 @@ impl Canvas {
         let side = grid.side();
         let points = side.checked_div(10).unwrap_or(8).max(8);
         let enabled = input.controller_enabled(&controller.key);
-        if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0) {
+        // With the pad row scrolled away, the page heading already sits where this one would.
+        let beside_pads = grid.origin(CONTROLLER_ROW, 0).is_some();
+        if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0).filter(|_| beside_pads) {
             let heading = controller.spoken_name().to_uppercase();
             self.text(x, y.saturating_sub(28), &heading, 2, AMBER);
         }
@@ -442,7 +444,8 @@ impl Canvas {
         let points = side.checked_div(14).unwrap_or(8).max(8);
         for (col, host) in settings.input.remote_hosts.iter().enumerate() {
             if let Some((x, y)) = self.tile_frame(grid, (REMOTE_ROW, col), focus, false) {
-                let lines = ["ADD REMOTE".to_owned(), host.to_uppercase()];
+                let host = ellipsize(&host.to_uppercase(), per_line(side, points));
+                let lines = ["ADD REMOTE".to_owned(), host];
                 self.input_icon((x, y), side, "remote", WHITE);
                 let below = y.saturating_add(side.saturating_mul(7) / 10);
                 self.tile_text((x, below, side, side / 4), &lines, points, WHITE);
