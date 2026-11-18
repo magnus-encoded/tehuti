@@ -431,6 +431,50 @@ mod collection {
     }
 
     #[test]
+    fn physical_thumbnails_average_pixels_and_invalidate_after_source_changes() -> Result<(), Box<dyn Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let folder = directory.path().join("wallpapers/Patterns");
+        std::fs::create_dir_all(&folder)?;
+        let path = folder.join("Grid.png");
+        let mut image = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+        image.put_pixel(0, 0, image::Rgba([255, 255, 255, 255]));
+        image.put_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        image.save(&path)?;
+        let collection = Collection::discover(&[], Store::new(directory.path().join("selection")), 0, false);
+        let cache = directory.path().join("cache");
+        let small = collection
+            .thumbnail(0, (1, 1), &cache)
+            .ok_or("missing thumbnail")?;
+        assert_eq!(small.get_pixel(0, 0).0, [128, 128, 128, 255]);
+        assert_eq!(std::fs::read_dir(&cache)?.count(), 1);
+        assert_eq!(
+            collection
+                .thumbnail(0, (1, 1), &cache)
+                .ok_or("cached thumbnail missing")?,
+            small
+        );
+        assert_eq!(
+            collection
+                .thumbnail(0, (7, 7), &cache)
+                .ok_or("large thumbnail missing")?
+                .dimensions(),
+            (7, 7)
+        );
+        image::RgbaImage::from_pixel(3, 3, image::Rgba([90, 0, 0, 255])).save(path)?;
+        assert_eq!(
+            collection
+                .thumbnail(0, (1, 1), &cache)
+                .ok_or("changed thumbnail missing")?
+                .get_pixel(0, 0)
+                .0,
+            [90, 0, 0, 255]
+        );
+        assert!(collection.thumbnail(0, (0, 1), &cache).is_none());
+        Ok(())
+    }
+
+    #[test]
     fn release_default_shows_locked_future_thumbnails() -> Result<(), Box<dyn Error>> {
         let directory = tempfile::tempdir()?;
         for (name, color) in [

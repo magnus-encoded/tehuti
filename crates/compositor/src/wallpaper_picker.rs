@@ -148,7 +148,12 @@ impl Picker {
     }
 }
 
-fn thumbnail(source: &Source, identity: &str, size: (u32, u32), cache: &Path) -> Option<image::RgbaImage> {
+pub(super) fn thumbnail(
+    source: &Source,
+    identity: &str,
+    size: (u32, u32),
+    cache: &Path,
+) -> Option<image::RgbaImage> {
     use std::hash::{Hash as _, Hasher as _};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     ("center-area-v1", identity, source.stamp(), size).hash(&mut hash);
@@ -229,28 +234,32 @@ fn area_resize(image: &image::RgbaImage, size: (u32, u32)) -> image::RgbaImage {
                 let overlap = (right.min(f64::from(col + 1)) - left.max(f64::from(col)))
                     * (bottom.min(f64::from(row + 1)) - top.max(f64::from(row)));
                 let pixel = image.get_pixel(col, row);
-                let alpha = f64::from(pixel.0[3]) / 255.0;
+                let [_, _, _, alpha] = pixel.0;
+                let alpha = f64::from(alpha) / 255.0;
                 for (channel, value) in channels.iter_mut().take(3).zip(pixel.0.iter()) {
                     *channel += f64::from(*value) * alpha * overlap;
                 }
-                channels[3] += f64::from(pixel.0[3]) * overlap;
+                if let Some(channel) = channels.last_mut() {
+                    *channel += alpha * 255.0 * overlap;
+                }
                 weight += overlap;
             }
         }
-        let alpha = channels[3] / weight;
+        let [red, green, blue, alpha] = channels;
+        let alpha = alpha / weight;
         image::Rgba([
             if alpha > 0.0 {
-                (channels[0] / weight * 255.0 / alpha).round() as u8
+                (red / weight * 255.0 / alpha).round() as u8
             } else {
                 0
             },
             if alpha > 0.0 {
-                (channels[1] / weight * 255.0 / alpha).round() as u8
+                (green / weight * 255.0 / alpha).round() as u8
             } else {
                 0
             },
             if alpha > 0.0 {
-                (channels[2] / weight * 255.0 / alpha).round() as u8
+                (blue / weight * 255.0 / alpha).round() as u8
             } else {
                 0
             },

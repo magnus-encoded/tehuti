@@ -155,6 +155,7 @@ impl Source {
 pub struct Collection {
     locked: Vec<bool>,
     selection_missing: bool,
+    selection_read: Option<String>,
     roots: Vec<PathBuf>,
     entries: Vec<(String, Source)>,
     pub(crate) current: Option<usize>,
@@ -225,6 +226,7 @@ impl Collection {
         Self {
             locked,
             selection_missing: saved.is_some() && saved_current.is_none(),
+            selection_read: saved,
             roots: roots.to_vec(),
             entries,
             current,
@@ -293,6 +295,16 @@ impl Collection {
     #[must_use]
     pub const fn selection_missing(&self) -> bool {
         self.selection_missing
+    }
+
+    /// Prepares a center-cropped, area-filtered thumbnail at physical dimensions.
+    #[must_use]
+    pub fn thumbnail(&self, index: usize, size: (u32, u32), cache: &Path) -> Option<image::RgbaImage> {
+        if size.0 == 0 || size.1 == 0 || size.0 > 2048 || size.1 > 2048 {
+            return None;
+        }
+        let (identity, source) = self.entries.get(index)?;
+        crate::wallpaper_picker::thumbnail(source, identity, size, cache)
     }
 
     #[must_use]
@@ -758,6 +770,11 @@ pub fn revision() -> u64 {
 pub fn poll() -> Option<(Vec<String>, Vec<bool>, usize, bool)> {
     let mut cache = wallpaper().lock().ok()?;
     let collection = cache.picker.poll()?;
+    if collection.store.read().ok().flatten() != collection.selection_read {
+        let ping = cache.redraw.clone();
+        cache.picker.refresh(ping);
+        return None;
+    }
     let missing = collection.selection_missing();
     cache.collection = Some(collection);
     cache.generation = cache.generation.wrapping_add(1);

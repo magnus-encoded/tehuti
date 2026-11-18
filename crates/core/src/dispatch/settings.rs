@@ -442,16 +442,14 @@ impl Settings {
                     name.strip_prefix("bundled/")
                         .and_then(|name| name.split_once('/').map(|(set, _)| format!("The {set} set")))
                 });
-            let row = match row_name {
-                None => 0,
-                Some(name) => rows
-                    .iter()
-                    .position(|(known, _)| *known == name)
+            let row = row_name.map_or(0, |row_name| {
+                rows.iter()
+                    .position(|(known, _)| *known == row_name)
                     .unwrap_or_else(|| {
-                        rows.push((name, Vec::new()));
+                        rows.push((row_name, Vec::new()));
                         rows.len().saturating_sub(1)
-                    }),
-            };
+                    })
+            });
             if let Some((_, entries)) = rows.get_mut(row) {
                 entries.push(index);
             }

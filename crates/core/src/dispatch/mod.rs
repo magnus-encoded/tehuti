@@ -878,7 +878,20 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             names,
             locked,
             current,
-        } => state.settings.configure_wallpapers(names, locked, current),
+        } => {
+            state.settings.configure_wallpapers(names, locked, current);
+            if state.settings.open
+                && state.settings.page == Page::Wallpaper
+                && !state
+                    .settings
+                    .wallpaper_locked
+                    .get(state.settings.wallpaper_selected)
+                    .copied()
+                    .unwrap_or(true)
+            {
+                effects.push(Effect::WallpaperPreview(state.settings.wallpaper_selected));
+            }
+        }
         Input::WallpaperSaved(index) => state.settings.wallpaper_saved(index),
         Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
         Input::ControllerBindings(bindings) => state.settings.input.controller_bindings = bindings,
