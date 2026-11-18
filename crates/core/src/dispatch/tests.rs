@@ -3623,7 +3623,7 @@ fn push_to_talk_follows_the_pad_in_use_and_context_restores_the_default() {
     let state = press_all(&mut world, state, &[DpadUp, DpadLeft, DpadDown, DpadRight, South]);
     let state = world.run(state, Input::ActiveController("Wireless Controller".into()));
     assert!(!state.core().push_to_talk(ButtonName::Start));
-    assert!(!state.core().push_to_talk(ButtonName::Record));
+    assert!(state.core().push_to_talk(ButtonName::Record));
 }
 
 fn hold_guide(world: &mut World, mut state: State) -> State {
