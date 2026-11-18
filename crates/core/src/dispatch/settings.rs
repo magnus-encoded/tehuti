@@ -529,12 +529,14 @@ impl Settings {
                 Some(choice) => self.choose_microphone(choice, effects),
                 None => {}
             },
-            REMOTE_ROW => {
-                if let Some(host) = self.input.remote_hosts.get(focus.col).cloned() {
-                    effects.push(Effect::ConnectRemoteMicrophone { host });
-                }
-            }
+            REMOTE_ROW => self.connect_remote(focus.col, effects),
             _ => {}
+        }
+    }
+
+    fn connect_remote(&mut self, col: usize, effects: &mut Vec<Effect>) {
+        if let Some(host) = self.input.remote_hosts.get(col).cloned() {
+            effects.push(Effect::ConnectRemoteMicrophone { host });
         }
     }
 
