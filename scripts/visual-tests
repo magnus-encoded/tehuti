@@ -184,6 +184,7 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             drive("stop")
             wallpaper_seed = work / "wallpaper-seed"
             wallpaper_seed.mkdir()
+            (wallpaper_seed / "wallpaper").write_text("apteribis")
             shutil.copyfile(args.binaries / "wallpapers.pak", wallpaper_seed / "wallpapers.pak")
             socket = work / "wallpaper/tehuti-drive.sock"
             drive("start", str(contexts), "--headless", "--size", "1280x720")
