@@ -506,6 +506,7 @@ mod tests {
             store.controller_bindings()?.get("Wireless Controller"),
             Some(&ButtonName::Start)
         );
+        press(&mut compositor, ButtonName::DpadLeft);
         press(&mut compositor, ButtonName::DpadUp);
         press(&mut compositor, ButtonName::South);
         assert_eq!(store.microphone()?, MicrophoneChoice::Auto);
