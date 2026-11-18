@@ -17,6 +17,8 @@ const FACE: [u8; 4] = [36, 26, 14, 255];
 const FACE_FOCUSED: [u8; 4] = [65, 43, 12, 255];
 const EDGE: [u8; 4] = [90, 70, 40, 255];
 const DIM: [u8; 4] = [120, 110, 95, 255];
+/// The origin line on a pad tile: quiet, but readable.
+const ORIGIN_TEXT: [u8; 4] = [190, 175, 150, 255];
 /// The outline of the pad whose settings row has focus: dimmer than the focus outline.
 const SELECTED: [u8; 4] = [150, 128, 36, 255];
 const SCREEN: [u8; 4] = [20, 14, 8, 255];
@@ -391,7 +393,7 @@ impl Canvas {
             }
             self.pad_drawing((x, y), side, controller.kind(), colour);
             self.tile_text(
-                (x, y.saturating_add(side.saturating_mul(7) / 10), side, side / 4),
+                (x, y.saturating_add(side.saturating_mul(2) / 3), side, side / 4),
                 core::slice::from_ref(&controller.label),
                 points,
                 colour,
@@ -400,8 +402,8 @@ impl Canvas {
                 (x, y),
                 side,
                 controller.connection.caption(),
-                points.saturating_sub(1).max(7),
-                if asking { AMBER } else { DIM },
+                points.max(8),
+                if asking { AMBER } else { ORIGIN_TEXT },
             );
             self.connection_glyph(
                 (x.saturating_add(8), y.saturating_add(8)),
@@ -431,16 +433,20 @@ impl Canvas {
         let points = side.checked_div(10).unwrap_or(8).max(8);
         let enabled = input.controller_enabled(&controller.key);
         if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0) {
-            let step = side.saturating_add(14);
-            let width = step
-                .saturating_mul(TALK_OPTIONS.len().saturating_add(1))
-                .saturating_sub(14);
+            let heading = controller.spoken_name().to_uppercase();
+            // Glyphs are about 0.64 of the point size wide, so the middle of a left-aligned line is half of that.
+            let half = heading
+                .chars()
+                .count()
+                .saturating_mul(CAPTION_POINTS)
+                .saturating_mul(32)
+                / 100;
             self.centred(
                 (
-                    x.saturating_mul(2).saturating_add(width),
+                    x.saturating_add(half).saturating_mul(2),
                     y.saturating_sub(22).saturating_mul(2),
                 ),
-                &controller.spoken_name().to_uppercase(),
+                &heading,
                 CAPTION_POINTS,
                 WHITE,
             );
