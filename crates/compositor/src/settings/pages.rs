@@ -17,7 +17,7 @@ const FACE: [u8; 4] = [36, 26, 14, 255];
 const FACE_FOCUSED: [u8; 4] = [65, 43, 12, 255];
 const EDGE: [u8; 4] = [90, 70, 40, 255];
 /// The corner radius of every tile, in reference pixels.
-const TILE_RADIUS: usize = 8;
+const TILE_RADIUS: usize = 14;
 const DIM: [u8; 4] = [120, 110, 95, 255];
 /// The origin line on a pad tile: quiet, but readable.
 const ORIGIN_TEXT: [u8; 4] = [190, 175, 150, 255];
@@ -282,17 +282,17 @@ impl Canvas {
         colour: [u8; 4],
     ) {
         if let Some(icon) = connection.glyph() {
-            self.svg_icon(corner, side / 3, icon, colour);
+            self.svg_icon(corner, side.saturating_mul(2) / 7, icon, colour);
         }
     }
 
     /// Artwork centred in the upper part of a tile, leaving the bottom for words.
     fn input_icon(&mut self, corner: (usize, usize), side: usize, icon: &'static str, colour: [u8; 4]) {
-        let art = side.saturating_mul(5) / 8;
+        let art = side.saturating_mul(4) / 7;
         self.svg_icon(
             (
                 corner.0.saturating_add(side.saturating_sub(art) / 2),
-                corner.1.saturating_add(side / 12),
+                corner.1.saturating_add(side / 6),
             ),
             art,
             icon,
