@@ -31,6 +31,10 @@ impl Store {
         Ok(Self::new(config_root()?.join("tehuti/display-mode")))
     }
 
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     pub(crate) fn sibling(&self, name: &str) -> Self {
         Self::new(self.path.with_file_name(name))
     }

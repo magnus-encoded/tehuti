@@ -389,30 +389,34 @@ impl Canvas {
         }
     }
 
+    pub(crate) fn thumbnail_size(&self, x: usize, y: usize, side: usize) -> (u32, u32) {
+        let left = (x as f32 * self.scale.0) as u32;
+        let top = (y as f32 * self.scale.1) as u32;
+        (
+            (((x.saturating_add(side)) as f32 * self.scale.0) as u32).saturating_sub(left),
+            (((y.saturating_add(side)) as f32 * self.scale.1) as u32).saturating_sub(top),
+        )
+    }
+
     pub(crate) fn thumbnail(&mut self, x: usize, y: usize, image: &image::RgbaImage, locked: bool) {
-        for row in
-            (y as f32 * self.scale.1) as usize..((y.saturating_add(135)) as f32 * self.scale.1) as usize
-        {
-            for column in
-                (x as f32 * self.scale.0) as usize..((x.saturating_add(240)) as f32 * self.scale.0) as usize
-            {
-                let source_x = ((column as f32 / self.scale.0 - x as f32) as u32).min(239);
-                let source_y = ((row as f32 / self.scale.1 - y as f32) as u32).min(134);
-                let pixel = image.get_pixel(source_x, source_y).0;
-                let [red, green, blue, alpha] = pixel;
-                let dim = if locked { 3 } else { 1 };
-                self.blend(
-                    column,
-                    row,
-                    [
-                        blue.checked_div(dim).unwrap_or_default(),
-                        green.checked_div(dim).unwrap_or_default(),
-                        red.checked_div(dim).unwrap_or_default(),
-                        alpha,
-                    ],
-                    1.0,
-                );
-            }
+        let left = (x as f32 * self.scale.0) as usize;
+        let top = (y as f32 * self.scale.1) as usize;
+        let width = image.width() as f32;
+        let height = image.height() as f32;
+        let radius = 8.0 * self.scale.0.min(self.scale.1);
+        for (column, row, pixel) in image.enumerate_pixels() {
+            let dx = (column as f32 + 0.5 - width / 2.0).abs() - (width / 2.0 - radius);
+            let dy = (row as f32 + 0.5 - height / 2.0).abs() - (height / 2.0 - radius);
+            let distance = dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - radius;
+            let coverage = (0.5 - distance).clamp(0.0, 1.0);
+            let [red, green, blue, alpha] = pixel.0;
+            let dim = if locked { 3 } else { 1 };
+            self.blend(
+                left.saturating_add(column as usize),
+                top.saturating_add(row as usize),
+                [blue / dim, green / dim, red / dim, alpha],
+                coverage,
+            );
         }
     }
 

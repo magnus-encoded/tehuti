@@ -39,6 +39,7 @@ struct View {
     scale: core::num::NonZeroU32,
     remaining: Option<Duration>,
     failed: bool,
+    wallpaper_revision: u64,
 }
 
 impl View {
@@ -67,6 +68,7 @@ impl View {
                 )
             }),
             failed: settings.failed(),
+            wallpaper_revision: crate::wallpaper::revision(),
         }
     }
 }
@@ -169,53 +171,6 @@ impl Canvas {
             };
             self.text(96, y.saturating_add(20), name, 5, WHITE);
             self.text(600, y.saturating_add(32), detail, 3, CYAN);
-        }
-    }
-
-    fn wallpaper(&mut self, settings: &Settings) {
-        if settings.wallpapers.is_empty() {
-            self.text(96, 300, "NO WALLPAPERS AVAILABLE", 4, AMBER);
-            return;
-        }
-        let first = settings.wallpaper_selected.saturating_sub(2);
-        for (row, (index, name)) in settings
-            .wallpapers
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take(5)
-            .enumerate()
-        {
-            let y = 220usize.saturating_add(row.saturating_mul(72));
-            if index == settings.wallpaper_selected {
-                self.highlight(y, 64);
-            }
-            let locked = settings.wallpaper_locked.get(index).copied().unwrap_or(true);
-            self.text(
-                96,
-                y.saturating_add(12),
-                &name.to_uppercase(),
-                4,
-                if locked { AMBER } else { WHITE },
-            );
-            if locked {
-                self.text(560, y.saturating_add(18), "LOCKED", 2, AMBER);
-            }
-            if index == settings.wallpaper_current {
-                self.text(560, y.saturating_add(18), "SAVED", 2, CYAN);
-            }
-        }
-        if let Some(image) = crate::wallpaper::thumbnail(settings.wallpaper_selected) {
-            self.thumbnail(
-                760,
-                230,
-                &image,
-                settings
-                    .wallpaper_locked
-                    .get(settings.wallpaper_selected)
-                    .copied()
-                    .unwrap_or(true),
-            );
         }
     }
 

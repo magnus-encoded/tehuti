@@ -30,6 +30,80 @@ const SAMPLE: [char; 2] = ['A', 'a'];
 type Area = (usize, usize, usize, usize);
 
 impl Canvas {
+    pub(super) fn wallpaper(&mut self, settings: &Settings) {
+        let rows = settings.wallpaper_rows();
+        let lengths: Vec<_> = rows.iter().map(|(_, entries)| entries.len()).collect();
+        let focus = settings.wallpaper_focus();
+        let grid = Grid::new(&lengths, 48, focus, Some(DISPLAY_SIDE));
+        if settings.wallpapers.is_empty() {
+            self.text(80, 290, "ADD PNG OR JPEG IMAGES IN SET FOLDERS", 3, AMBER);
+        }
+        for (row, (name, entries)) in rows.iter().enumerate() {
+            let mut title = false;
+            for (col, index) in entries.iter().enumerate() {
+                let Some((x, y)) = grid.origin(row, col) else {
+                    continue;
+                };
+                if !title {
+                    self.text(80, y.saturating_sub(28), &name.to_uppercase(), 2, WHITE);
+                    title = true;
+                }
+                let focused = focus.row == row && focus.col == col;
+                self.rounded_rectangle(
+                    (
+                        x.saturating_sub(4),
+                        y.saturating_sub(4),
+                        grid.side().saturating_add(8),
+                        grid.side().saturating_add(8),
+                    ),
+                    12,
+                    if focused { CYAN } else { EDGE },
+                );
+                let locked = settings.wallpaper_locked.get(*index).copied().unwrap_or(true);
+                let size = self.thumbnail_size(x, y, grid.side());
+                if let Some(image) = crate::wallpaper::thumbnail(*index, size) {
+                    self.thumbnail(x, y, &image, locked);
+                }
+                let identity = settings.wallpapers.get(*index).map_or("", String::as_str);
+                let caption = if identity.starts_with("user/") || identity.starts_with("bundled/") {
+                    std::path::Path::new(identity)
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(identity)
+                } else {
+                    identity
+                };
+                self.caption((x, y), grid.side(), caption, WHITE);
+                let badge = if locked {
+                    "LOCKED"
+                } else if *index == settings.wallpaper_current {
+                    "SAVED"
+                } else {
+                    ""
+                };
+                if !badge.is_empty() {
+                    self.rectangle(x.saturating_add(8), y.saturating_add(8), 72, 22, SCREEN);
+                    self.text(
+                        x.saturating_add(12),
+                        y.saturating_add(10),
+                        badge,
+                        2,
+                        if locked { AMBER } else { CYAN },
+                    );
+                }
+            }
+        }
+        if let Ok(config) = crate::display_mode_store::config_root() {
+            let folder = config.join("tehuti/wallpapers");
+            self.text_box(
+                (80, 654, 1120, 24),
+                &format!("ADD SET FOLDERS IN {}", folder.display()),
+                2,
+                DIM,
+            );
+        }
+    }
+
     /// Draws the frame of tile (`row`, `col`) and returns its corner, or none when the row lacks it.
     fn tile_frame(
         &mut self,

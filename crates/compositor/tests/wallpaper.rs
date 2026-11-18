@@ -390,6 +390,47 @@ mod collection {
     }
 
     #[test]
+    fn saved_user_file_keeps_identity_when_an_earlier_file_arrives() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let folder = directory.path().join("wallpapers/Dawn");
+        std::fs::create_dir_all(&folder)?;
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([70, 0, 0, 255])).save(folder.join("Sun.png"))?;
+        let store = || Store::new(directory.path().join("selection"));
+        let mut collection = Collection::discover(&[], store(), 0, false);
+        collection.select(0)?;
+        assert_eq!(store().read()?.as_deref(), Some("user/Dawn/Sun.png"));
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 0, 0, 255])).save(folder.join("Cloud.png"))?;
+        let mut reopened = Collection::discover(&[], store(), 0, false);
+        assert_eq!(red(&mut reopened)?, 70);
+        std::fs::remove_file(folder.join("Sun.png"))?;
+        let mut missing = Collection::discover(&[], store(), 0, false);
+        assert_eq!(red(&mut missing)?, 20);
+        assert!(missing.selection_missing());
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_set_requires_its_own_durable_unlock() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let hidden = directory.path().join("wallpapers/hidden");
+        std::fs::create_dir_all(&hidden)?;
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([90, 0, 0, 255])).save(hidden.join("uno.png"))?;
+        let roots = [directory.path().to_path_buf()];
+        let store = || Store::new(directory.path().join("selection"));
+        let mut collection = Collection::discover(&roots, store(), 0, true);
+        assert!(collection.names().is_empty());
+        collection.unlock()?;
+        assert!(collection.names().is_empty());
+        collection.unlock_hidden()?;
+        assert_eq!(collection.names(), ["bundled/hidden/uno.png"]);
+        let mut reopened = Collection::discover(&roots, store(), 0, false);
+        assert_eq!(reopened.names(), ["bundled/hidden/uno.png"]);
+        reopened.select(0)?;
+        assert_eq!(red(&mut reopened)?, 90);
+        Ok(())
+    }
+
+    #[test]
     fn release_default_shows_locked_future_thumbnails() -> Result<(), Box<dyn Error>> {
         let directory = tempfile::tempdir()?;
         for (name, color) in [
@@ -406,14 +447,10 @@ mod collection {
         let mut first = Collection::discover(&roots, store(), 0, false);
         assert_eq!(first.names().len(), 5);
         assert_eq!(first.locks(), [false, true, true, true, true]);
-        assert_eq!(first.thumbnails().len(), 5);
-        assert_eq!(first.thumbnails()[4].dimensions(), (240, 135));
         assert_eq!(first.version(4), Some(4));
         assert!(first.select(4).is_err());
-        let thumbnail = first.thumbnails()[4].as_ptr();
         first.unlock()?;
         assert_eq!(first.locks(), [false; 5]);
-        assert_eq!(first.thumbnails()[4].as_ptr(), thumbnail);
         assert_eq!(red(&mut first)?, 10);
         std::fs::remove_file(directory.path().join("wallpapers-unlocked"))?;
         let mut fourth = Collection::discover(&roots, store(), 4, false);

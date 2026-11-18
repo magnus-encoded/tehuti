@@ -152,6 +152,8 @@ pub enum Effect {
     WallpaperPreview(usize),
     WallpaperSave(usize),
     UnlockWallpapers,
+    UnlockHiddenWallpapers,
+    RefreshWallpapers,
     /// Routes pad input from the chosen controller only, until confirmed or reverted.
     SettingsController(ControllerChoice),
     PersistController(ControllerChoice),

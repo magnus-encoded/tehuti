@@ -1802,6 +1802,20 @@ impl Compositor {
             DispatchEffect::PollSpeech(elapsed) => {
                 Some(DispatchInput::SpeechPolled(self.poll_speech(elapsed)))
             }
+            DispatchEffect::RefreshWallpapers => {
+                crate::wallpaper::refresh();
+                None
+            }
+            DispatchEffect::UnlockHiddenWallpapers => {
+                match crate::wallpaper::unlock_hidden() {
+                    Ok(()) => self.show_notice("HIDDEN SET UNLOCKED"),
+                    Err(error) => {
+                        tracing::warn!(%error, "hidden set unlock failed");
+                        self.show_notice("UNLOCK NOT SAVED");
+                    }
+                }
+                None
+            }
             DispatchEffect::UnlockWallpapers => {
                 match crate::wallpaper::unlock() {
                     Ok(_) => self.show_notice("WALLPAPERS UNLOCKED"),
@@ -2190,6 +2204,16 @@ impl Compositor {
                 self.poll_microphones();
                 self.poll_menu_failures();
                 self.poll_volume();
+                if let Some((names, locked, current, missing)) = crate::wallpaper::poll() {
+                    let _rejection = self.dispatch(DispatchInput::Wallpapers {
+                        names,
+                        locked,
+                        current,
+                    });
+                    if missing {
+                        self.show_notice("SAVED WALLPAPER MISSING; USING AVAILABLE WALLPAPER");
+                    }
+                }
             }
             DispatchEffect::ConfirmPressed(pressed) => self.confirmation.confirm_pressed(pressed),
             DispatchEffect::ResetSecretFocus => {
@@ -2207,7 +2231,9 @@ impl Compositor {
             | DispatchEffect::ConfirmSecret(_)
             | DispatchEffect::SpeechCommand(_)
             | DispatchEffect::PollSpeech(_)
-            | DispatchEffect::UnlockWallpapers => {}
+            | DispatchEffect::UnlockWallpapers
+            | DispatchEffect::UnlockHiddenWallpapers
+            | DispatchEffect::RefreshWallpapers => {}
             DispatchEffect::Handle(event) => {
                 self.handle(&event);
             }

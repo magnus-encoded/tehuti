@@ -277,6 +277,8 @@ for line in sys.stdin:
             | Effect::WallpaperPreview(_)
             | Effect::WallpaperSave(_)
             | Effect::UnlockWallpapers
+            | Effect::UnlockHiddenWallpapers
+            | Effect::RefreshWallpapers
             | Effect::ListMicrophones
             | Effect::MovePointer { .. }
             | Effect::Scroll { .. }

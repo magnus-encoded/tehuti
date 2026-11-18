@@ -32,7 +32,7 @@ impl Pack {
         let mut count = [0; 2];
         file.read_exact(&mut count)?;
         let count = u16::from_le_bytes(count);
-        if usize::from(count) > super::wallpaper::CODENAMES.len() {
+        if usize::from(count) > 1024 {
             return Err(invalid());
         }
         let mut index = Vec::new();
@@ -46,11 +46,7 @@ impl Pack {
             let mut size = [0; 8];
             file.read_exact(&mut size)?;
             let size = u64::from_le_bytes(size);
-            if !super::wallpaper::CODENAMES.contains(&name.as_str())
-                || !names.insert(name.clone())
-                || size == 0
-                || size > MAX_BLOB
-            {
+            if !valid_name(&name) || !names.insert(name.clone()) || size == 0 || size > MAX_BLOB {
                 return Err(invalid());
             }
             index.push((name, size));
@@ -70,10 +66,26 @@ impl Pack {
         Ok(Self { blobs })
     }
 
+    pub(crate) fn bytes(&self, name: &str) -> Option<&[u8]> {
+        self.blobs.get(name).map(Vec::as_slice)
+    }
+
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        self.blobs.keys().map(String::as_str)
+    }
+
     #[must_use]
     pub fn image(&self, name: &str) -> Option<image::DynamicImage> {
         image::load_from_memory_with_format(self.blobs.get(name)?, image::ImageFormat::Png).ok()
     }
+}
+
+fn valid_name(name: &str) -> bool {
+    super::wallpaper::CODENAMES.contains(&name)
+        || super::wallpaper::BUNDLED_SETS.iter().any(|set| {
+            name.strip_prefix(&format!("{set}/"))
+                .is_some_and(|file| !file.is_empty() && !file.contains(['/', '\\']) && file.ends_with(".png"))
+        })
 }
 
 /// Builds an archive containing all release codenames from `<codename>.png` files.
@@ -88,8 +100,29 @@ pub fn build(folder: &Path, destination: &Path) -> io::Result<()> {
         }
         let _image =
             image::load_from_memory_with_format(&blob, image::ImageFormat::Png).map_err(io::Error::other)?;
-        blobs.push((*name, blob));
+        blobs.push(((*name).to_owned(), blob));
     }
+    for set in super::wallpaper::BUNDLED_SETS {
+        let files = match std::fs::read_dir(folder.join(set)) {
+            Ok(files) => files,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for file in files {
+            let file = file?;
+            let name = format!("{set}/{}", file.file_name().to_string_lossy());
+            if file.file_type()?.is_file() && valid_name(&name) {
+                let blob = std::fs::read(file.path())?;
+                if u64::try_from(blob.len()).map_err(|_| invalid())? > MAX_BLOB {
+                    return Err(invalid());
+                }
+                let _image = image::load_from_memory_with_format(&blob, image::ImageFormat::Png)
+                    .map_err(io::Error::other)?;
+                blobs.push((name, blob));
+            }
+        }
+    }
+    blobs.sort_by(|left, right| left.0.cmp(&right.0));
     let temporary = destination.with_extension("pak.tmp");
     let mut file = std::io::BufWriter::new(std::fs::File::create(&temporary)?);
     file.write_all(MAGIC)?;
