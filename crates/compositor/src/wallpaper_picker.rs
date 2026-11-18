@@ -12,7 +12,7 @@ type Key = (u64, usize, u32, u32);
 
 const MEMORY_CAP: usize = 64 * 1024 * 1024;
 const DISK_CAP: u64 = 128 * 1024 * 1024;
-const DISK_MAX_AGE: core::time::Duration = core::time::Duration::from_secs(30 * 24 * 3600);
+const DISK_MAX_AGE: core::time::Duration = core::time::Duration::from_hours(720);
 
 /// Decoded thumbnails kept under a byte cap; the least recently used leave first.
 #[derive(Debug)]
@@ -71,6 +71,10 @@ impl Memory {
 }
 
 /// The thumbnail cache folder on disk.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the collection and worker share the cache location"
+)]
 pub(super) fn cache_directory() -> Option<PathBuf> {
     std::env::var_os("XDG_CACHE_HOME")
         .filter(|value| !value.is_empty())
