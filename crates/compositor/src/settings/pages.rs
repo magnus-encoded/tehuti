@@ -444,6 +444,15 @@ impl Canvas {
             ];
             self.tile_text((x, y, side, side), &lines, points, WHITE);
         }
+        let recentre = (CONTROLLER_SETTINGS_ROW, TALK_OPTIONS.len().saturating_add(2));
+        let measured = input.controller_recentres.contains_key(&controller.key);
+        if let Some((x, y)) = self.tile_frame(grid, recentre, focus, measured) {
+            let mut lines = vec!["RECENTRE".to_owned()];
+            if measured {
+                lines.push("SET".to_owned());
+            }
+            self.tile_text((x, y, side, side), &lines, points, WHITE);
+        }
     }
 
     fn microphone_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {

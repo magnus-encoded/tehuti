@@ -160,4 +160,32 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn the_recentre_tile_is_the_last_of_the_row_and_shows_once_measured()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let drawn = |measured: bool| -> Result<Vec<[u8; 4]>, Box<dyn core::error::Error>> {
+            let mut settings = Settings::default();
+            settings.open = true;
+            settings.page = Page::Input;
+            settings.input.controllers = vec!["Pad".into()];
+            if measured {
+                let _previous = settings
+                    .input
+                    .controller_recentres
+                    .insert("Pad".into(), [-104, 238, 0, 0]);
+            }
+            settings.input.focus = tehuti_core::tiles::Focus { row: 1, col: 5 };
+            pixels_of(&settings)
+        };
+        // Focused at the sixth tile the row has scrolled, so that tile sits where the fifth did.
+        let tile = (80 + 4 * 194, 222 + 194, 180, 226);
+        let (open, measured) = (drawn(false)?, drawn(true)?);
+        assert!(lit(&open, tile) > 100, "the tile carries its label");
+        assert!(
+            lit(&measured, tile) > lit(&open, tile),
+            "a measured rest adds SET"
+        );
+        Ok(())
+    }
 }

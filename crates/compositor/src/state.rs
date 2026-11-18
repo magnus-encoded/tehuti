@@ -74,6 +74,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::ModeApplied(_)
         | DispatchInput::ControllerBindings(_)
         | DispatchInput::ControllerDeadzones(_)
+        | DispatchInput::ControllerRecentres(_)
         | DispatchInput::ActiveController(_)
         | DispatchInput::Controllers(_)
         | DispatchInput::Microphones(_)
@@ -125,6 +126,8 @@ pub struct Compositor {
     controller_names: Vec<String>,
     /// Pads the user turned off on the Input page.
     disabled_controllers: Vec<String>,
+    /// Pads whose rest the user asked to measure; the event loop answers from the pad.
+    recentre_requests: Vec<String>,
     input_choices: Option<crate::input_choice_store::Store>,
     volume: Option<crate::volume::Backend>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
@@ -289,6 +292,7 @@ impl Compositor {
             bar_font_store: None,
             controller_names: Vec::new(),
             disabled_controllers: Vec::new(),
+            recentre_requests: Vec::new(),
             input_choices: None,
             volume: None,
             microphone_listing: None,
@@ -1670,6 +1674,11 @@ impl Compositor {
             tracing::warn!(%error, "controller deadzones unreadable; using the default");
             std::collections::BTreeMap::new()
         });
+        let rests = store.controller_recentres().unwrap_or_else(|error| {
+            tracing::warn!(%error, "controller rests unreadable; using the middle");
+            std::collections::BTreeMap::new()
+        });
+        let _rests_rejection = self.dispatch(DispatchInput::ControllerRecentres(rests));
         let _deadzones_rejection = self.dispatch(DispatchInput::ControllerDeadzones(deadzones));
         self.input_choices = Some(store);
         let _rejection = self.dispatch(DispatchInput::InputChoices {
@@ -1703,6 +1712,30 @@ impl Compositor {
     #[must_use]
     pub fn controller_deadzone(&self, key: &str) -> u16 {
         self.settings().input.deadzone(key)
+    }
+
+    /// The pads the user asked to recentre since the last call.
+    pub fn take_recentre_requests(&mut self) -> Vec<String> {
+        core::mem::take(&mut self.recentre_requests)
+    }
+
+    /// Where the sticks of the pad with this stable key rest, in thousandths of half travel.
+    #[must_use]
+    pub fn controller_recentre(&self, key: &str) -> [i16; 4] {
+        self.settings()
+            .input
+            .controller_recentres
+            .get(key)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Keeps a measured rest for the pad and saves it.
+    pub fn store_recentre(&mut self, key: String, rest: [i16; 4]) {
+        let mut rests = self.settings().input.controller_recentres.clone();
+        let _previous = rests.insert(key, rest);
+        self.save_input_choice(|store| store.set_controller_recentres(&rests));
+        let _rejection = self.dispatch(DispatchInput::ControllerRecentres(rests));
     }
 
     pub fn activate_controller(&mut self, name: String) {
@@ -1915,6 +1948,7 @@ impl Compositor {
             | DispatchEffect::SettingsController(_)
             | DispatchEffect::PersistControllerTalk(_, _)
             | DispatchEffect::PersistControllerDeadzone(_, _)
+            | DispatchEffect::RecentreController(_)
             | DispatchEffect::PersistController(_)
             | DispatchEffect::SettingsMicrophone(_)
             | DispatchEffect::SettingsControllerEnabled { .. }
@@ -2227,6 +2261,7 @@ impl Compositor {
                 let deadzones = self.settings().input.controller_deadzones.clone();
                 self.save_input_choice(|store| store.set_controller_deadzones(&deadzones));
             }
+            DispatchEffect::RecentreController(name) => self.recentre_requests.push(name),
             DispatchEffect::PersistController(choice) => self.choose_controller(&choice, true),
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
             DispatchEffect::SettingsControllerEnabled { name, enabled } => {

@@ -59,6 +59,8 @@ pub enum Input {
     ControllerBindings(std::collections::BTreeMap<String, ButtonName>),
     /// The saved stick deadzones by pad key, in thousandths.
     ControllerDeadzones(std::collections::BTreeMap<String, u16>),
+    /// The saved stick rest offsets by pad key: X, Y, right X, right Y, in thousandths of half travel.
+    ControllerRecentres(std::collections::BTreeMap<String, [i16; 4]>),
     ActiveController(String),
     /// Reply to [`Effect::ListMicrophones`]: the capture sources found.
     Microphones(Vec<Microphone>),
@@ -161,6 +163,8 @@ pub enum Effect {
     PersistControllerTalk(String, Option<ButtonName>),
     /// Saves the stick deadzone, in thousandths, of the pad with this key.
     PersistControllerDeadzone(String, u16),
+    /// Measures where the pad's sticks rest now and keeps that as their centre.
+    RecentreController(String),
     /// Saves the capture sources the speech sidecar records from.
     SettingsMicrophone(MicrophoneChoice),
     /// Whether the named pad drives Tehuti; the compositor saves it and gates the pad.
@@ -719,6 +723,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ModeApplied(_)
         | Input::ControllerBindings(_)
         | Input::ControllerDeadzones(_)
+        | Input::ControllerRecentres(_)
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
@@ -784,6 +789,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ModeApplied(_)
         | Input::ControllerBindings(_)
         | Input::ControllerDeadzones(_)
+        | Input::ControllerRecentres(_)
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
@@ -842,6 +848,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::ModeApplied(_)
         | Input::ControllerBindings(_)
         | Input::ControllerDeadzones(_)
+        | Input::ControllerRecentres(_)
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
@@ -889,6 +896,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
         Input::ControllerBindings(bindings) => state.settings.input.controller_bindings = bindings,
         Input::ControllerDeadzones(deadzones) => state.settings.input.controller_deadzones = deadzones,
+        Input::ControllerRecentres(rests) => state.settings.input.controller_recentres = rests,
         Input::ActiveController(name) => {
             let binding = state.settings.input.controller_bindings.get(&name).copied();
             state.core.set_controller_push_to_talk(binding);

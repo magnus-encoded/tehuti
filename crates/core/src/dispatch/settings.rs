@@ -511,6 +511,9 @@ impl Settings {
                 match focus.col.checked_sub(1) {
                     None => self.toggle_controller(name, effects),
                     Some(index) if index == TALK_OPTIONS.len() => self.step_deadzone(name, effects),
+                    Some(index) if index == TALK_OPTIONS.len().saturating_add(1) => {
+                        effects.push(Effect::RecentreController(name));
+                    }
                     Some(index) => {
                         if let Some(option) = TALK_OPTIONS.get(index).copied() {
                             self.choose_talk(option, effects);

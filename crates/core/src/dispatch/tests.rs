@@ -107,6 +107,7 @@ impl World {
                     | Effect::SettingsController(_)
                     | Effect::PersistControllerTalk(_, _)
                     | Effect::PersistControllerDeadzone(_, _)
+                    | Effect::RecentreController(_)
                     | Effect::PersistController(_)
                     | Effect::SettingsMicrophone(_)
                     | Effect::SettingsControllerEnabled { .. }
@@ -3198,6 +3199,7 @@ fn input_effects(world: &World) -> Vec<Effect> {
                 Effect::SettingsController(_)
                     | Effect::PersistControllerTalk(_, _)
                     | Effect::PersistControllerDeadzone(_, _)
+                    | Effect::RecentreController(_)
                     | Effect::PersistController(_)
                     | Effect::SettingsMicrophone(_)
                     | Effect::SettingsControllerEnabled { .. }
@@ -3249,7 +3251,7 @@ fn the_input_page_draws_and_navigates_while_the_microphone_listing_never_replies
     let mut world = World::default();
     let mut state = open_input(&mut world);
     assert!(world.trace.contains(&Effect::ListMicrophones));
-    assert_eq!(state.settings().input.rows(), [2, 5, 2]);
+    assert_eq!(state.settings().input.rows(), [2, 6, 2]);
     for button in [
         ButtonName::DpadRight,
         ButtonName::DpadDown,
@@ -3670,6 +3672,43 @@ fn the_deadzone_tile_steps_the_open_pads_deadzone_and_wraps() {
         state.settings().input.deadzone("Xbox Controller"),
         150,
         "the other pad keeps the default"
+    );
+}
+
+#[test]
+fn the_recentre_tile_asks_for_a_measurement_and_a_saved_rest_is_restored() {
+    use ButtonName::{DpadDown, DpadRight, South};
+    let mut world = World::default();
+    let state = open_input(&mut world);
+    let state = press_all(
+        &mut world,
+        state,
+        &[DpadDown, DpadRight, DpadRight, DpadRight, DpadRight, DpadRight],
+    );
+    assert_eq!(
+        state.settings().input.focus,
+        crate::tiles::Focus { row: 1, col: 5 }
+    );
+    let state = press_all(&mut world, state, &[South]);
+    assert!(
+        world
+            .trace
+            .contains(&Effect::RecentreController("Wireless Controller".into()))
+    );
+    let state = world.run(
+        state,
+        Input::ControllerRecentres(std::collections::BTreeMap::from([(
+            "Wireless Controller".to_owned(),
+            [-104, 238, 0, 0],
+        )])),
+    );
+    assert_eq!(
+        state
+            .settings()
+            .input
+            .controller_recentres
+            .get("Wireless Controller"),
+        Some(&[-104, 238, 0, 0])
     );
 }
 

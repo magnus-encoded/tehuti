@@ -178,6 +178,36 @@ impl Store {
         )
     }
 
+    /// The saved stick rest offsets by pad key, in thousandths of half travel.
+    /// # Errors
+    /// Returns read errors or an offset beyond half the travel.
+    pub fn controller_recentres(&self) -> io::Result<std::collections::BTreeMap<String, [i16; 4]>> {
+        let Some(source) = self.line("controller-recentre.json")? else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+        let rests: std::collections::BTreeMap<String, [i16; 4]> =
+            serde_json::from_str(&source).map_err(io::Error::other)?;
+        if rests.values().flatten().any(|offset| offset.abs() > 500) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "controller rest must stay within half the travel",
+            ));
+        }
+        Ok(rests)
+    }
+
+    /// # Errors
+    /// Returns serialization, file write and replacement errors.
+    pub fn set_controller_recentres(
+        &self,
+        rests: &std::collections::BTreeMap<String, [i16; 4]>,
+    ) -> io::Result<()> {
+        self.replace(
+            "controller-recentre.json",
+            &serde_json::to_string(rests).map_err(io::Error::other)?,
+        )
+    }
+
     fn line(&self, name: &str) -> io::Result<Option<String>> {
         match std::fs::read_to_string(self.directory.join(name)) {
             Ok(value) => Ok(value
@@ -366,6 +396,25 @@ mod tests {
             r#"{"Pad":900}"#,
         )?;
         assert!(reopened.controller_deadzones().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn controller_rests_survive_reopening_and_reject_absurd_values() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::new(directory.path().to_path_buf());
+        assert!(store.controller_recentres()?.is_empty());
+        let rests = std::collections::BTreeMap::from([("Elite".to_owned(), [-104, 238, 0, 12])]);
+        store.set_controller_recentres(&rests)?;
+        assert_eq!(
+            Store::new(directory.path().to_path_buf()).controller_recentres()?,
+            rests
+        );
+        std::fs::write(
+            directory.path().join("controller-recentre.json"),
+            r#"{"Pad":[900,0,0,0]}"#,
+        )?;
+        assert!(store.controller_recentres().is_err());
         Ok(())
     }
 

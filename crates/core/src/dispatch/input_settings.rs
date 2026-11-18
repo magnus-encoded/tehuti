@@ -197,6 +197,8 @@ pub struct InputSettings {
     pub controller_bindings: std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
     /// Saved stick deadzones by pad key, in thousandths; a pad without one uses the default.
     pub controller_deadzones: std::collections::BTreeMap<String, u16>,
+    /// Where each pad's sticks rest, by pad key: X, Y, right X, right Y, in thousandths of half travel.
+    pub controller_recentres: std::collections::BTreeMap<String, [i16; 4]>,
     /// Pad names the user turned off.
     pub disabled_controllers: Vec<String>,
     /// Microphone node names the user turned off; never recorded, also under ALL.
@@ -220,7 +222,7 @@ impl InputSettings {
             if self.controllers.is_empty() {
                 0
             } else {
-                TALK_OPTIONS.len().saturating_add(2)
+                TALK_OPTIONS.len().saturating_add(3)
             },
             self.microphone_options().len(),
         ]
