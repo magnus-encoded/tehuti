@@ -274,6 +274,8 @@ for line in sys.stdin:
             | Effect::SettingsMicrophone(_)
             | Effect::SettingsControllerEnabled { .. }
             | Effect::SettingsMicrophoneEnabled { .. }
+            | Effect::ListRemoteHosts
+            | Effect::ConnectRemoteMicrophone { .. }
             | Effect::WallpaperPreview(_)
             | Effect::WallpaperSave(_)
             | Effect::UnlockWallpapers

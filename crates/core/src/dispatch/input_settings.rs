@@ -164,6 +164,8 @@ pub const CONTROLLER_ROW: usize = 0;
 /// The row of settings for the controller that has focus: ENABLED, then the push-to-talk tiles.
 pub const CONTROLLER_SETTINGS_ROW: usize = 1;
 pub const MICROPHONE_ROW: usize = 2;
+/// Hosts that may send a remote microphone; confirm connects to one.
+pub const REMOTE_ROW: usize = 3;
 
 /// The push-to-talk tiles of a controller's row, after ENABLED: the context's own button, then the two a pad can lend.
 pub const TALK_OPTIONS: [Option<tehuti_protocol::ButtonName>; 3] = [
@@ -225,6 +227,8 @@ pub struct InputSettings {
     pub disabled_controllers: Vec<String>,
     /// Microphone node names the user turned off; never recorded, also under ALL.
     pub disabled_microphones: Vec<String>,
+    /// Hosts offered for a remote microphone, as the tailnet reported them; empty until an answer comes.
+    pub remote_hosts: Vec<String>,
     /// The in-use pad whose disabling waits for a second confirm.
     pub pending_disable: Option<String>,
 }
@@ -238,7 +242,7 @@ impl InputSettings {
 
     /// The tiles in each row; the controller rows may be empty, the microphone row never is.
     #[must_use]
-    pub fn rows(&self) -> [usize; 3] {
+    pub fn rows(&self) -> [usize; 4] {
         [
             self.controllers.len(),
             if self.controllers.is_empty() {
@@ -247,6 +251,7 @@ impl InputSettings {
                 TALK_OPTIONS.len().saturating_add(1)
             },
             self.microphone_options().len(),
+            self.remote_hosts.len(),
         ]
     }
 

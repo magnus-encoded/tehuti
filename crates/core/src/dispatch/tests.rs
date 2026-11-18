@@ -111,6 +111,8 @@ impl World {
                     | Effect::SettingsControllerEnabled { .. }
                     | Effect::SettingsMicrophoneEnabled { .. }
                     | Effect::ListMicrophones
+                    | Effect::ListRemoteHosts
+                    | Effect::ConnectRemoteMicrophone { .. }
                     | Effect::RunMenuCommand(_)
                     | Effect::PasswordSpeechIgnored
                     | Effect::FocusGapExpired
@@ -3248,7 +3250,7 @@ fn the_input_page_draws_and_navigates_while_the_microphone_listing_never_replies
     let mut world = World::default();
     let mut state = open_input(&mut world);
     assert!(world.trace.contains(&Effect::ListMicrophones));
-    assert_eq!(state.settings().input.rows(), [2, 4, 2]);
+    assert_eq!(state.settings().input.rows(), [2, 4, 2, 0]);
     for button in [
         ButtonName::DpadRight,
         ButtonName::DpadDown,
@@ -6256,4 +6258,21 @@ fn an_audiorelay_source_is_labelled_with_its_connection() {
     relay.relay = Some(RelayState::Waiting);
     assert_eq!(relay.caption(), "WAITING");
     assert_eq!(microphone("x", "Desk Mic").caption(), "desk mic");
+}
+
+#[test]
+fn a_late_host_list_adds_a_row_and_confirm_connects() {
+    let mut world = World::default();
+    let state = open_input(&mut world);
+    let mut state = world.run(state, Input::RemoteHosts(vec!["desk".into(), "laptop".into()]));
+    assert_eq!(state.settings().input.rows()[REMOTE_ROW], 2);
+    for _ in 0..8 {
+        state = settings_button(&mut world, state, ButtonName::DpadDown);
+    }
+    assert_eq!(state.settings().input.focus.row, REMOTE_ROW);
+    world.trace.clear();
+    let _state = settings_button(&mut world, state, ButtonName::South);
+    assert!(world
+        .trace
+        .contains(&Effect::ConnectRemoteMicrophone { host: "desk".into() }));
 }

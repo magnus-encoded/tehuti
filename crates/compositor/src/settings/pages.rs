@@ -8,7 +8,7 @@ use super::{
 use tehuti_core::{
     dispatch::{
         CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, MICROPHONE_ROW, MicKind, MicrophoneChoice,
-        PadKind, Settings, TALK_OPTIONS,
+        PadKind, REMOTE_ROW, Settings, TALK_OPTIONS,
     },
     tiles::{Focus, clamp},
 };
@@ -284,6 +284,7 @@ impl Canvas {
         self.controller_row(settings, &grid, focus);
         self.controller_settings_row(settings, &grid, focus);
         self.microphone_row(settings, &grid, focus);
+        self.remote_row(settings, &grid, focus);
         self.text(760, 58, "SPEECH RUNS ON", 2, WHITE);
         let speech: String = speech.chars().take(26).collect();
         self.text(
@@ -427,6 +428,18 @@ impl Canvas {
             if let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_SETTINGS_ROW, col), focus, marked) {
                 let label = tehuti_core::dispatch::InputSettings::talk_label(option);
                 let lines = ["TALK".to_owned(), label.to_owned()];
+                self.tile_text((x, y, side, side), &lines, points, WHITE);
+            }
+        }
+    }
+
+    /// The hosts that could send a remote microphone; confirm connects.
+    fn remote_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
+        let side = grid.side();
+        let points = side.checked_div(14).unwrap_or(8).max(8);
+        for (col, host) in settings.input.remote_hosts.iter().enumerate() {
+            if let Some((x, y)) = self.tile_frame(grid, (REMOTE_ROW, col), focus, false) {
+                let lines = ["ADD REMOTE".to_owned(), host.to_uppercase()];
                 self.tile_text((x, y, side, side), &lines, points, WHITE);
             }
         }

@@ -14,7 +14,7 @@ use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 mod input_settings;
 pub use input_settings::{
     CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, ControllerChoice, ControllerInfo, InputSettings,
-    MICROPHONE_ROW, MicKind, Microphone, MicrophoneChoice, PadKind, RelayState, TALK_OPTIONS,
+    MICROPHONE_ROW, MicKind, Microphone, MicrophoneChoice, PadKind, REMOTE_ROW, RelayState, TALK_OPTIONS,
 };
 
 mod settings;
@@ -59,6 +59,8 @@ pub enum Input {
     ActiveController(String),
     /// Reply to [`Effect::ListMicrophones`]: the capture sources found.
     Microphones(Vec<Microphone>),
+    /// Reply to [`Effect::ListRemoteHosts`]: the online hosts that could send a microphone.
+    RemoteHosts(Vec<String>),
     /// The saved input choices, read at startup.
     InputChoices {
         controller: ControllerChoice,
@@ -170,6 +172,12 @@ pub enum Effect {
     },
     /// Lists capture sources; the compositor answers later with [`Input::Microphones`].
     ListMicrophones,
+    /// Lists hosts that could send a remote microphone; the compositor answers later with [`Input::RemoteHosts`].
+    ListRemoteHosts,
+    /// Connects the `AudioRelay` player to the host chosen in the Input page.
+    ConnectRemoteMicrophone {
+        host: String,
+    },
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
         x: i32,
@@ -710,6 +718,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
+        | Input::RemoteHosts(_)
         | Input::InputChoices { .. }) => settings_input(state, input),
         input @ (Input::Tick { .. }
         | Input::Event { .. }
@@ -774,6 +783,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
+        | Input::RemoteHosts(_)
         | Input::InputChoices { .. }
         | Input::SecretPrompt(_)
         | Input::Sticks(_)
@@ -837,6 +847,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
+        | Input::RemoteHosts(_)
         | Input::InputChoices { .. }
         | Input::Tick { .. }
         | Input::Event { .. }
@@ -887,6 +898,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         }
         Input::Controllers(names) => state.settings.configure_controllers(names),
         Input::Microphones(microphones) => state.settings.configure_microphones(microphones),
+        Input::RemoteHosts(hosts) => state.settings.configure_remote_hosts(hosts),
         Input::InputChoices {
             controller,
             microphone,
