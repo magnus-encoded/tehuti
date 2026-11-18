@@ -1778,6 +1778,8 @@ impl Compositor {
                 self.configure_display_modes(modes.map(str::to_owned).to_vec(), 0);
             }
             "input" => {
+                // The real listing must not answer over the invented sources.
+                self.microphone_listing = None;
                 self.configure_controllers(vec![
                     pad("Xbox Wireless Controller", "xbox-1", Connection::Usb),
                     pad("Xbox Wireless Controller", "xbox-2", Connection::Bluetooth),
