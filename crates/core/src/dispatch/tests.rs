@@ -3566,10 +3566,24 @@ fn push_to_talk_is_set_in_each_controllers_own_row_and_follows_the_pad_in_use() 
     };
     // Down from the first pad opens its row: ENABLED, then CONTEXT, SHARE, MENU.
     state = press(&mut world, state, &[ButtonName::DpadDown]);
-    assert_eq!(state.settings().input.focus, crate::tiles::Focus { row: 1, col: 0 });
-    state = press(&mut world, state, &[ButtonName::DpadRight, ButtonName::DpadRight, ButtonName::DpadRight]);
+    assert_eq!(
+        state.settings().input.focus,
+        crate::tiles::Focus { row: 1, col: 0 }
+    );
+    state = press(
+        &mut world,
+        state,
+        &[
+            ButtonName::DpadRight,
+            ButtonName::DpadRight,
+            ButtonName::DpadRight,
+        ],
+    );
     assert!(
-        !world.trace.iter().any(|effect| matches!(effect, Effect::PersistControllerTalk(_, _))),
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::PersistControllerTalk(_, _))),
         "moving saves nothing"
     );
     state = press(&mut world, state, &[ButtonName::South]);
@@ -3578,9 +3592,20 @@ fn push_to_talk_is_set_in_each_controllers_own_row_and_follows_the_pad_in_use() 
         Some(ButtonName::Start)
     )));
     // Up returns to that pad; the next pad has its own row.
-    state = press(&mut world, state, &[ButtonName::DpadUp, ButtonName::DpadRight, ButtonName::DpadDown]);
-    assert_eq!(state.settings().input.focus, crate::tiles::Focus { row: 1, col: 0 });
-    state = press(&mut world, state, &[ButtonName::DpadRight, ButtonName::DpadRight, ButtonName::South]);
+    state = press(
+        &mut world,
+        state,
+        &[ButtonName::DpadUp, ButtonName::DpadRight, ButtonName::DpadDown],
+    );
+    assert_eq!(
+        state.settings().input.focus,
+        crate::tiles::Focus { row: 1, col: 0 }
+    );
+    state = press(
+        &mut world,
+        state,
+        &[ButtonName::DpadRight, ButtonName::DpadRight, ButtonName::South],
+    );
     assert!(world.trace.contains(&Effect::PersistControllerTalk(
         "Xbox Controller".into(),
         Some(ButtonName::Record)
@@ -3592,7 +3617,17 @@ fn push_to_talk_is_set_in_each_controllers_own_row_and_follows_the_pad_in_use() 
     assert!(state.core().push_to_talk(ButtonName::Record));
     assert!(!state.core().push_to_talk(ButtonName::Start));
     // CONTEXT on the first pad restores the context default.
-    state = press(&mut world, state, &[ButtonName::DpadUp, ButtonName::DpadLeft, ButtonName::DpadDown, ButtonName::DpadRight, ButtonName::South]);
+    state = press(
+        &mut world,
+        state,
+        &[
+            ButtonName::DpadUp,
+            ButtonName::DpadLeft,
+            ButtonName::DpadDown,
+            ButtonName::DpadRight,
+            ButtonName::South,
+        ],
+    );
     state = world.run(state, Input::ActiveController("Wireless Controller".into()));
     assert!(!state.core().push_to_talk(ButtonName::Start));
     assert!(!state.core().push_to_talk(ButtonName::Record));
@@ -6160,7 +6195,10 @@ fn tiles_pick_their_drawing_from_the_device_name() {
     let mic = |name: &str, description: &str| microphone(name, description).kind();
     assert_eq!(mic("bluez_input.AA", "Headset"), MicKind::Headset);
     assert_eq!(mic("alsa_input.usb-Desk_Mic-00", "Desk Mic"), MicKind::Usb);
-    assert_eq!(mic("alsa_input.pci-0000_00_1f.3.analog-stereo", "Built-in Audio"), MicKind::Builtin);
+    assert_eq!(
+        mic("alsa_input.pci-0000_00_1f.3.analog-stereo", "Built-in Audio"),
+        MicKind::Builtin
+    );
     assert_eq!(mic("rtp-source", "Living room stream"), MicKind::Network);
     assert_eq!(mic("phone-1", "Phone mic"), MicKind::Phone);
     assert_eq!(mic("other", "Other"), MicKind::Generic);

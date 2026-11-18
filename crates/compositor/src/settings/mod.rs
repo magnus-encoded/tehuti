@@ -495,7 +495,10 @@ mod tests {
         press(&mut compositor, ButtonName::South);
         assert!(!compositor.controller_chosen("Xbox Controller#1"));
         assert!(compositor.controller_chosen("Wireless Controller#1"));
-        assert_eq!(store.disabled_controllers()?, vec!["Xbox Controller#1".to_owned()]);
+        assert_eq!(
+            store.disabled_controllers()?,
+            vec!["Xbox Controller#1".to_owned()]
+        );
         press(&mut compositor, ButtonName::South);
         assert!(compositor.controller_chosen("Xbox Controller#1"));
         assert_eq!(store.disabled_controllers()?, Vec::<String>::new());

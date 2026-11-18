@@ -1047,7 +1047,9 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     let (events, removed) = input::drain_pads_handing_over(
         &mut data.controllers,
         |path, controller, event| {
-            let key = keys.get(path).map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
+            let key = keys
+                .get(path)
+                .map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
             let admitted = gate.admit(path, compositor.controller_chosen(&key), event);
             if admitted {
                 event_controllers.push(key);
@@ -1116,7 +1118,9 @@ fn advance_time(data: &mut LoopData) {
     let mut sampled = tehuti_core::dispatch::Sticks::default();
     let keys = controller_keys(&data.controllers);
     for (path, controller) in &mut data.controllers {
-        let key = keys.get(path).map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
+        let key = keys
+            .get(path)
+            .map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
         let chosen = data.compositor.controller_chosen(&key);
         match controller.pad.sticks() {
             Ok(sticks) => {

@@ -33,7 +33,8 @@ pub fn keyed_controllers(
             let model = tehuti_core::pad::Identity::for_node(vendor, product, &name).model_name(&name);
             let count = counts.entry(model.clone()).or_default();
             *count = count.saturating_add(1);
-            let shared = !identity.is_empty() && identities.iter().filter(|other| **other == identity).count() > 1;
+            let shared =
+                !identity.is_empty() && identities.iter().filter(|other| **other == identity).count() > 1;
             let index = names.entry(name.clone()).or_default();
             *index = index.saturating_add(1);
             let key = if identity.is_empty() || shared {
@@ -56,7 +57,10 @@ pub fn keyed_controllers(
 pub fn numbered_controllers(
     devices: impl IntoIterator<Item = PadDevice>,
 ) -> Vec<tehuti_core::dispatch::ControllerInfo> {
-    keyed_controllers(devices).into_iter().map(|(_, info)| info).collect()
+    keyed_controllers(devices)
+        .into_iter()
+        .map(|(_, info)| info)
+        .collect()
 }
 
 /// Opens and grabs every pad with a south face button that no other program holds,

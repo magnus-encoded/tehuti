@@ -7,8 +7,8 @@ use super::{
 };
 use tehuti_core::{
     dispatch::{
-        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, MICROPHONE_ROW, MicKind, MicrophoneChoice, PadKind, Settings,
-        TALK_OPTIONS,
+        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, MICROPHONE_ROW, MicKind, MicrophoneChoice, PadKind,
+        Settings, TALK_OPTIONS,
     },
     tiles::{Focus, clamp},
 };
@@ -171,15 +171,34 @@ impl Canvas {
             return;
         }
         let room = (side.saturating_sub(side / 4), side.saturating_sub(side / 2));
-        let width = room.0.min(room.1.saturating_mul(size.0).checked_div(size.1).unwrap_or(0));
-        let height = room.1.min(room.0.saturating_mul(size.1).checked_div(size.0).unwrap_or(0));
+        let width = room
+            .0
+            .min(room.1.saturating_mul(size.0).checked_div(size.1).unwrap_or(0));
+        let height = room
+            .1
+            .min(room.0.saturating_mul(size.1).checked_div(size.0).unwrap_or(0));
         let left = corner.0.saturating_add(side.saturating_sub(width) / 2);
-        let top = corner.1.saturating_add(side / 12).saturating_add(room.1.saturating_sub(height) / 2);
+        let top = corner
+            .1
+            .saturating_add(side / 12)
+            .saturating_add(room.1.saturating_sub(height) / 2);
         let thickness = 3;
         self.rectangle(left, top, width, thickness, CYAN);
-        self.rectangle(left, top.saturating_add(height).saturating_sub(thickness), width, thickness, CYAN);
+        self.rectangle(
+            left,
+            top.saturating_add(height).saturating_sub(thickness),
+            width,
+            thickness,
+            CYAN,
+        );
         self.rectangle(left, top, thickness, height, CYAN);
-        self.rectangle(left.saturating_add(width).saturating_sub(thickness), top, thickness, height, CYAN);
+        self.rectangle(
+            left.saturating_add(width).saturating_sub(thickness),
+            top,
+            thickness,
+            height,
+            CYAN,
+        );
     }
 
     /// The refresh rates of the resolution that has focus.
@@ -266,7 +285,8 @@ impl Canvas {
                 let column = cell.checked_rem(GLYPH_WIDTH).unwrap_or(0);
                 let row = cell.checked_div(GLYPH_WIDTH).unwrap_or(0);
                 let shade = |face: u8, ink: u8| {
-                    let mixed = u16::from(face) * u16::from(255 - *alpha) + u16::from(ink) * u16::from(*alpha);
+                    let mixed =
+                        u16::from(face) * u16::from(255 - *alpha) + u16::from(ink) * u16::from(*alpha);
                     u8::try_from(mixed / 255).unwrap_or(u8::MAX)
                 };
                 let colour = [
@@ -304,7 +324,13 @@ impl Canvas {
         self.microphone_row(settings, &grid, focus);
         self.text(760, 58, "SPEECH RUNS ON", 2, WHITE);
         let speech: String = speech.chars().take(26).collect();
-        self.text(760, 88, &speech, 3, if speech.starts_with("CPU") { AMBER } else { CYAN });
+        self.text(
+            760,
+            88,
+            &speech,
+            3,
+            if speech.starts_with("CPU") { AMBER } else { CYAN },
+        );
     }
 
     /// Draws `parts`, boxes in 24ths of the tile side, from the tile's corner.
@@ -411,7 +437,9 @@ impl Canvas {
             if let Some((x, y)) = self.tile_frame(grid, (MICROPHONE_ROW, col), focus, marked) {
                 let label = input.microphone_tile_label(choice);
                 let microphone = match choice {
-                    MicrophoneChoice::Named(node) => input.microphones.iter().find(|known| known.name == *node),
+                    MicrophoneChoice::Named(node) => {
+                        input.microphones.iter().find(|known| known.name == *node)
+                    }
                     MicrophoneChoice::All | MicrophoneChoice::Auto => None,
                 };
                 let enabled = match choice {
@@ -425,7 +453,9 @@ impl Canvas {
                     (MicrophoneChoice::Named(_), Some(known)) => {
                         self.mic_drawing((x, y), side, known.kind(), colour);
                     }
-                    (MicrophoneChoice::Named(_), None) => self.mic_drawing((x, y), side, MicKind::Generic, DIM),
+                    (MicrophoneChoice::Named(_), None) => {
+                        self.mic_drawing((x, y), side, MicKind::Generic, DIM)
+                    }
                 }
                 let words = if enabled { label } else { format!("{label} OFF") };
                 let below = y.saturating_add(side).saturating_sub(side / 5);
@@ -449,18 +479,75 @@ const SWITCH: [Part; 2] = [(2, 3, 6, 14), (16, 3, 6, 14)];
 /// The details cut into a pad's body: sticks, d-pad and buttons.
 fn pad_details(kind: PadKind) -> &'static [Part] {
     match kind {
-        PadKind::Xbox => &[(5, 6, 3, 3), (9, 10, 4, 1), (10, 9, 2, 3), (14, 10, 3, 3), (16, 6, 1, 1), (18, 6, 1, 1), (17, 5, 1, 1), (17, 7, 1, 1)],
-        PadKind::PlayStation => &[(10, 6, 4, 2), (5, 7, 3, 1), (6, 6, 1, 3), (16, 7, 1, 1), (18, 7, 1, 1), (17, 6, 1, 1), (17, 8, 1, 1), (8, 10, 3, 3), (13, 10, 3, 3)],
-        PadKind::Switch => &[(4, 5, 3, 3), (4, 11, 1, 3), (3, 12, 3, 1), (17, 6, 1, 1), (19, 6, 1, 1), (18, 5, 1, 1), (18, 7, 1, 1), (17, 11, 3, 3)],
+        PadKind::Xbox => &[
+            (5, 6, 3, 3),
+            (9, 10, 4, 1),
+            (10, 9, 2, 3),
+            (14, 10, 3, 3),
+            (16, 6, 1, 1),
+            (18, 6, 1, 1),
+            (17, 5, 1, 1),
+            (17, 7, 1, 1),
+        ],
+        PadKind::PlayStation => &[
+            (10, 6, 4, 2),
+            (5, 7, 3, 1),
+            (6, 6, 1, 3),
+            (16, 7, 1, 1),
+            (18, 7, 1, 1),
+            (17, 6, 1, 1),
+            (17, 8, 1, 1),
+            (8, 10, 3, 3),
+            (13, 10, 3, 3),
+        ],
+        PadKind::Switch => &[
+            (4, 5, 3, 3),
+            (4, 11, 1, 3),
+            (3, 12, 3, 1),
+            (17, 6, 1, 1),
+            (19, 6, 1, 1),
+            (18, 5, 1, 1),
+            (18, 7, 1, 1),
+            (17, 11, 3, 3),
+        ],
         PadKind::Generic => &[(6, 7, 1, 3), (5, 8, 3, 1), (15, 7, 2, 2), (17, 9, 2, 2)],
     }
 }
 
-const CAPSULE_MIC: [Part; 6] = [(10, 2, 4, 8), (8, 8, 1, 3), (15, 8, 1, 3), (8, 11, 8, 1), (11, 12, 2, 3), (8, 15, 8, 1)];
+const CAPSULE_MIC: [Part; 6] = [
+    (10, 2, 4, 8),
+    (8, 8, 1, 3),
+    (15, 8, 1, 3),
+    (8, 11, 8, 1),
+    (11, 12, 2, 3),
+    (8, 15, 8, 1),
+];
 const USB_MIC: [Part; 4] = [(10, 2, 4, 9), (11, 11, 2, 4), (9, 15, 6, 3), (11, 18, 2, 1)];
-const HEADSET: [Part; 7] = [(5, 3, 14, 1), (5, 3, 1, 7), (18, 3, 1, 7), (3, 8, 4, 7), (17, 8, 4, 7), (5, 14, 8, 1), (12, 13, 3, 2)];
-const CHIP: [Part; 7] = [(6, 4, 12, 11), (4, 6, 2, 1), (4, 9, 2, 1), (4, 12, 2, 1), (18, 6, 2, 1), (18, 9, 2, 1), (18, 12, 2, 1)];
+const HEADSET: [Part; 7] = [
+    (5, 3, 14, 1),
+    (5, 3, 1, 7),
+    (18, 3, 1, 7),
+    (3, 8, 4, 7),
+    (17, 8, 4, 7),
+    (5, 14, 8, 1),
+    (12, 13, 3, 2),
+];
+const CHIP: [Part; 7] = [
+    (6, 4, 12, 11),
+    (4, 6, 2, 1),
+    (4, 9, 2, 1),
+    (4, 12, 2, 1),
+    (18, 6, 2, 1),
+    (18, 9, 2, 1),
+    (18, 12, 2, 1),
+];
 const NETWORK: [Part; 4] = [(10, 12, 4, 3), (8, 9, 8, 1), (5, 6, 14, 1), (2, 3, 20, 1)];
 const PHONE: [Part; 3] = [(8, 2, 8, 15), (11, 15, 2, 1), (9, 3, 6, 10)];
 const ALL_MICS: [Part; 3] = [(3, 5, 4, 8), (10, 3, 4, 10), (17, 5, 4, 8)];
-const AUTO_MIC: [Part; 5] = [(10, 3, 4, 8), (5, 5, 1, 8), (18, 5, 1, 8), (5, 5, 3, 1), (16, 13, 3, 1)];
+const AUTO_MIC: [Part; 5] = [
+    (10, 3, 4, 8),
+    (5, 5, 1, 8),
+    (18, 5, 1, 8),
+    (5, 5, 3, 1),
+    (16, 13, 3, 1),
+];

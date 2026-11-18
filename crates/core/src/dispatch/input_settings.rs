@@ -76,7 +76,17 @@ impl ControllerInfo {
     pub fn kind(&self) -> PadKind {
         if mentions(&self.name, &["xbox", "x-box"]) {
             PadKind::Xbox
-        } else if mentions(&self.name, &["dualshock", "dualsense", "playstation", "wireless controller", "ps4", "ps5"]) {
+        } else if mentions(
+            &self.name,
+            &[
+                "dualshock",
+                "dualsense",
+                "playstation",
+                "wireless controller",
+                "ps4",
+                "ps5",
+            ],
+        ) {
             PadKind::PlayStation
         } else if mentions(&self.name, &["nintendo", "switch", "joy-con", "pro controller"]) {
             PadKind::Switch

@@ -3,7 +3,8 @@
 use super::{
     Effect,
     input_settings::{
-        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, ControllerChoice, InputSettings, MICROPHONE_ROW, TALK_OPTIONS,
+        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, ControllerChoice, InputSettings, MICROPHONE_ROW,
+        TALK_OPTIONS,
     },
 };
 use crate::pad::{PadFamily, Role};
@@ -594,20 +595,19 @@ impl Settings {
         } else {
             return false;
         };
-        let pad = self
-            .input
-            .controllers
-            .iter()
-            .find(|controller| controller.spoken_name() == target)
-            .or_else(|| {
-                let mut same = self
-                    .input
-                    .controllers
-                    .iter()
-                    .filter(|controller| tehuti_protocol::normalize_phrase(&controller.name) == target);
-                same.next().filter(|_| same.next().is_none())
-            })
-            .map(|controller| controller.key.clone());
+        let pad =
+            self.input
+                .controllers
+                .iter()
+                .find(|controller| controller.spoken_name() == target)
+                .or_else(|| {
+                    let mut same =
+                        self.input.controllers.iter().filter(|controller| {
+                            tehuti_protocol::normalize_phrase(&controller.name) == target
+                        });
+                    same.next().filter(|_| same.next().is_none())
+                })
+                .map(|controller| controller.key.clone());
         if let Some(name) = pad {
             effects.push(self.input.set_controller_enabled(name, enable));
             return true;
