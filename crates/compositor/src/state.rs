@@ -1754,7 +1754,10 @@ impl Compositor {
     ///
     /// # Errors
     /// Names the fixture when it is not known.
-    #[expect(clippy::too_many_lines, reason = "each fixture lists its invented hardware inline")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each fixture lists its invented hardware inline"
+    )]
     pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
         use tehuti_core::dispatch::Connection;
         let pad = |label: &str, key: &str, connection| tehuti_core::dispatch::ControllerInfo {
