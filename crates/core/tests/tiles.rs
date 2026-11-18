@@ -7,10 +7,10 @@ mod tiles {
 
     fn directions() -> impl Strategy<Value = Direction> {
         prop::sample::select(vec![
-            Direction::Left,
-            Direction::Right,
-            Direction::Up,
-            Direction::Down,
+            Direction::Leftward,
+            Direction::Rightward,
+            Direction::Upward,
+            Direction::Downward,
         ])
     }
 
@@ -42,8 +42,8 @@ mod tiles {
         ) {
             let focus = clamp(&rows, Focus { row, col });
             prop_assume!(rows[focus.row] > 0);
-            let right = step(&rows, focus, Direction::Right);
-            let left = step(&rows, focus, Direction::Left);
+            let right = step(&rows, focus, Direction::Rightward);
+            let left = step(&rows, focus, Direction::Leftward);
             prop_assert_eq!(right.row, focus.row);
             prop_assert_eq!(left.row, focus.row);
             prop_assert!(right.col == focus.col || right.col == focus.col.saturating_add(1));
@@ -60,7 +60,7 @@ mod tiles {
         ) {
             let focus = clamp(&rows, Focus { row, col });
             prop_assume!(rows[focus.row] > 0);
-            for direction in [Direction::Up, Direction::Down] {
+            for direction in [Direction::Upward, Direction::Downward] {
                 let moved = step(&rows, focus, direction);
                 if moved.row != focus.row {
                     prop_assert_eq!(moved.col, focus.col.min(rows[moved.row].saturating_sub(1)));

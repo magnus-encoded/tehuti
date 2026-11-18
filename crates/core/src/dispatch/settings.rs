@@ -81,11 +81,10 @@ impl Settings {
         } else {
             match self.page {
                 Page::Categories => format!("D-PAD: MOVE   {confirm}: OPEN   {back}: CLOSE"),
-                Page::Display => format!("D-PAD: MOVE   {confirm}: APPLY   {back}: BACK"),
                 Page::Input if self.input.pending_disable.is_some() => {
                     format!("{confirm}: DISABLE THE PAD IN USE   {back}: KEEP IT")
                 }
-                Page::Input => format!("D-PAD: MOVE   {confirm}: APPLY   {back}: BACK"),
+                Page::Display | Page::Input => format!("D-PAD: MOVE   {confirm}: APPLY   {back}: BACK"),
                 Page::Wallpaper => format!("D-PAD: PREVIEW   {confirm}: SAVE   {back}: CANCEL"),
             }
         }

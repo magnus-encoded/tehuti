@@ -15,10 +15,10 @@ pub struct Focus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    Left,
-    Right,
-    Up,
-    Down,
+    Leftward,
+    Rightward,
+    Upward,
+    Downward,
 }
 
 impl Direction {
@@ -26,10 +26,10 @@ impl Direction {
     #[must_use]
     pub fn from_button(name: ButtonName) -> Option<Self> {
         [
-            (ButtonName::DpadLeft, Self::Left),
-            (ButtonName::DpadRight, Self::Right),
-            (ButtonName::DpadUp, Self::Up),
-            (ButtonName::DpadDown, Self::Down),
+            (ButtonName::DpadLeft, Self::Leftward),
+            (ButtonName::DpadRight, Self::Rightward),
+            (ButtonName::DpadUp, Self::Upward),
+            (ButtonName::DpadDown, Self::Downward),
         ]
         .into_iter()
         .find_map(|(button, direction)| (button == name).then_some(direction))
@@ -68,22 +68,22 @@ pub fn step(rows: &[usize], focus: Focus, direction: Direction) -> Focus {
         col: focus.col.min(length(row).saturating_sub(1)),
     };
     match direction {
-        Direction::Left => Focus {
+        Direction::Leftward => Focus {
             col: focus.col.saturating_sub(1),
             ..focus
         },
-        Direction::Right => Focus {
+        Direction::Rightward => Focus {
             col: focus
                 .col
                 .saturating_add(1)
                 .min(length(focus.row).saturating_sub(1)),
             ..focus
         },
-        Direction::Up => (0..focus.row)
+        Direction::Upward => (0..focus.row)
             .rev()
             .find(|row| length(*row) > 0)
             .map_or(focus, landing),
-        Direction::Down => (focus.row.saturating_add(1)..rows.len())
+        Direction::Downward => (focus.row.saturating_add(1)..rows.len())
             .find(|row| length(*row) > 0)
             .map_or(focus, landing),
     }

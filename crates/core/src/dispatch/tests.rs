@@ -2117,12 +2117,6 @@ fn confirmation_at_the_deadline_cannot_persist_the_expired_preview() {
     );
 }
 
-fn modes_of(count: usize) -> Vec<String> {
-    (0..count)
-        .map(|index| format!("{}x1080@60", index.saturating_add(1000)))
-        .collect()
-}
-
 fn mode_names(resolutions: &[(u32, Vec<u32>)]) -> Vec<String> {
     resolutions
         .iter()
@@ -2212,7 +2206,7 @@ proptest! {
     ) {
         let mut world = World::default();
         let modes = mode_names(&resolutions);
-        let mut state = open_display_with(&mut world, modes.clone(), 0);
+        let mut state = open_display_with(&mut world, modes, 0);
         let right = right.min(resolutions.len().saturating_sub(1));
         for _ in 0..right {
             state = settings_button(&mut world, state, ButtonName::DpadRight);
@@ -3292,7 +3286,7 @@ fn one_right_reaches_the_next_controller_without_changing_anything() {
         Some("Xbox Controller")
     );
     assert_eq!(input_effects(&world), Vec::<Effect>::new());
-    assert!(state.settings().input.disabled_controllers.is_empty());
+    assert_eq!(state.settings().input.disabled_controllers, Vec::<String>::new());
 }
 
 proptest! {
