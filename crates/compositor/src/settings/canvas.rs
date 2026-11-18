@@ -55,7 +55,7 @@ impl Canvas {
         })
     }
 
-    pub(crate) fn square_reference(&mut self) {
+    pub(crate) const fn square_reference(&mut self) {
         let scale = self.scale.0.min(self.scale.1);
         self.scale = (scale, scale);
     }
