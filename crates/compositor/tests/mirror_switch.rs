@@ -379,7 +379,7 @@ mod tests {
         KeyCode::BTN_DPAD_RIGHT,
     ];
 
-    /// The ABS_X the application sees after the pad sends `raw` with this deadzone.
+    /// The `ABS_X` the application sees after the pad sends `raw` with this deadzone.
     fn forwarded_x(deadzone: u16, raw: i32) -> Option<i32> {
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut controller, handles) = pad("pad", &log);
