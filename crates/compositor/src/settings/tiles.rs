@@ -8,8 +8,10 @@ const GAP: usize = 14;
 const LARGEST_SIDE: usize = 150;
 /// The side of a Display tile: 15% of the 1280-wide reference, so it scales with the output.
 pub(super) const DISPLAY_SIDE: usize = 192;
-/// The side of an Input tile: a little smaller, so a name fits under it and two rows show at once.
-pub(super) const INPUT_SIDE: usize = 180;
+/// The largest side of an Input tile; the page shrinks it until pads, their settings and microphones all show.
+const INPUT_SIDE_MAX: usize = 180;
+/// The height kept under every Input tile; the pad row's slot carries the settings row heading.
+pub(super) const INPUT_CAPTION: usize = 16;
 
 /// The square tiles of a page: one side for every tile, rows filled from the left.
 ///
@@ -29,19 +31,35 @@ impl Grid {
     /// `caption` is the height kept under every tile for its name. With no
     /// `side`, the tiles shrink until every row fits; with one, they keep it.
     pub(super) fn new(rows: &[usize], caption: usize, focus: Focus, side: Option<usize>) -> Self {
-        let bands = rows.iter().filter(|length| **length > 0).count().max(1);
-        let by_height = AREA
-            .3
-            .saturating_sub(GAP.saturating_mul(bands.saturating_sub(1)))
-            .checked_div(bands)
-            .unwrap_or(0)
-            .saturating_sub(caption);
         Self {
             rows: rows.to_vec(),
-            side: side.map_or_else(|| by_height.clamp(1, LARGEST_SIDE), |fixed| fixed.max(1)),
+            side: side.map_or_else(
+                || Self::fitting_side(rows, caption).clamp(1, LARGEST_SIDE),
+                |fixed| fixed.max(1),
+            ),
             caption,
             focus,
         }
+    }
+
+    /// The Input page's grid: tiles shrink from their largest side until every row shows at once.
+    pub(super) fn input(rows: &[usize], focus: Focus) -> Self {
+        Self {
+            rows: rows.to_vec(),
+            side: Self::fitting_side(rows, INPUT_CAPTION).clamp(1, INPUT_SIDE_MAX),
+            caption: INPUT_CAPTION,
+            focus,
+        }
+    }
+
+    /// The side at which every row with tiles fits under the others.
+    fn fitting_side(rows: &[usize], caption: usize) -> usize {
+        let bands = rows.iter().filter(|length| **length > 0).count().max(1);
+        AREA.3
+            .saturating_sub(GAP.saturating_mul(bands.saturating_sub(1)))
+            .checked_div(bands)
+            .unwrap_or(0)
+            .saturating_sub(caption)
     }
 
     pub(super) const fn side(&self) -> usize {
@@ -170,6 +188,21 @@ mod tests {
                     let apart = first.0.abs_diff(second.0) >= side || first.1.abs_diff(second.1) >= side;
                     prop_assert!(apart, "tiles {first:?} and {second:?} overlap");
                 }
+            }
+        }
+
+        #[test]
+        fn every_input_row_shows_whatever_has_focus(
+            pads in 1_usize..9,
+            microphones in 2_usize..14,
+            spot in (0_usize..3, 0_usize..14),
+        ) {
+            let rows = [pads, 4, microphones];
+            let focus = clamp(&rows, Focus { row: spot.0, col: spot.1 });
+            let grid = Grid::input(&rows, focus);
+            for (row, length) in rows.iter().enumerate() {
+                let col = if row == focus.row { focus.col } else { 0 };
+                prop_assert!(*length > 0 && grid.origin(row, col).is_some(), "row {row} hidden with focus {focus:?}");
             }
         }
 
