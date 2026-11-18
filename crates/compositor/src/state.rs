@@ -1416,6 +1416,18 @@ impl Compositor {
         if previous != self.dispatch.core().level() {
             self.dim_elapsed = core::time::Duration::ZERO;
         }
+        if self.dispatch.busy() == 0 {
+            if let Some((names, locked, current, missing)) = crate::wallpaper::poll() {
+                let _rejection = self.dispatch(DispatchInput::Wallpapers {
+                    names,
+                    locked,
+                    current,
+                });
+                if missing {
+                    self.show_notice("SAVED WALLPAPER MISSING; USING AVAILABLE WALLPAPER");
+                }
+            }
+        }
         self.update_window_dimming();
         self.reserve_keyboard_height();
         self.record_screen();
@@ -2280,16 +2292,6 @@ impl Compositor {
                 self.poll_microphones();
                 self.poll_menu_failures();
                 self.poll_volume();
-                if let Some((names, locked, current, missing)) = crate::wallpaper::poll() {
-                    let _rejection = self.dispatch(DispatchInput::Wallpapers {
-                        names,
-                        locked,
-                        current,
-                    });
-                    if missing {
-                        self.show_notice("SAVED WALLPAPER MISSING; USING AVAILABLE WALLPAPER");
-                    }
-                }
             }
             DispatchEffect::ConfirmPressed(pressed) => self.confirmation.confirm_pressed(pressed),
             DispatchEffect::ResetSecretFocus => {
