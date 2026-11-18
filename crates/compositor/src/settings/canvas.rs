@@ -60,6 +60,22 @@ impl Canvas {
         self.scale = (scale, scale);
     }
 
+    pub(super) fn svg_icon(
+        &mut self,
+        corner: (usize, usize),
+        side: usize,
+        icon: &'static str,
+        colour: [u8; 4],
+    ) {
+        let left = (corner.0 as f32 * self.scale.0).round() as usize;
+        let top = (corner.1 as f32 * self.scale.1).round() as usize;
+        let width = (side as f32 * self.scale.0).round() as u32;
+        let height = (side as f32 * self.scale.1).round() as u32;
+        if let Some(image) = super::input_icons::raster(icon, width, height, colour) {
+            self.image(left, top, &image);
+        }
+    }
+
     pub(crate) fn reference(&mut self, width: usize, height: usize) {
         self.scale = (
             self.width as f32 / width as f32,
