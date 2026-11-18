@@ -16,6 +16,8 @@ use tehuti_core::{
 const FACE: [u8; 4] = [36, 26, 14, 255];
 const FACE_FOCUSED: [u8; 4] = [65, 43, 12, 255];
 const EDGE: [u8; 4] = [90, 70, 40, 255];
+/// The corner radius of every tile, in reference pixels.
+const TILE_RADIUS: usize = 8;
 const DIM: [u8; 4] = [120, 110, 95, 255];
 /// The origin line on a pad tile: quiet, but readable.
 const ORIGIN_TEXT: [u8; 4] = [190, 175, 150, 255];
@@ -23,8 +25,6 @@ const ORIGIN_TEXT: [u8; 4] = [190, 175, 150, 255];
 const SELECTED: [u8; 4] = [150, 128, 36, 255];
 const SCREEN: [u8; 4] = [20, 14, 8, 255];
 /// Height kept under each Input tile for its name.
-const CAPTION: usize = 22;
-const CAPTION_POINTS: usize = 13;
 
 /// A tile's box in reference pixels: left, top, width, height.
 type Area = (usize, usize, usize, usize);
@@ -41,24 +41,18 @@ impl Canvas {
         let (x, y) = grid.origin(cell.0, cell.1)?;
         let side = grid.side();
         let focused = focus.row == cell.0 && focus.col == cell.1;
-        self.rectangle(x, y, side, side, if focused { FACE_FOCUSED } else { FACE });
         let edge = if focused { CYAN } else { EDGE };
         let thickness = if focused { 4 } else { 2 };
-        self.rectangle(x, y, side, thickness, edge);
-        self.rectangle(
-            x,
-            y.saturating_add(side).saturating_sub(thickness),
-            side,
-            thickness,
-            edge,
-        );
-        self.rectangle(x, y, thickness, side, edge);
-        self.rectangle(
-            x.saturating_add(side).saturating_sub(thickness),
-            y,
-            thickness,
-            side,
-            edge,
+        self.rounded_rectangle((x, y, side, side), TILE_RADIUS, edge);
+        self.rounded_rectangle(
+            (
+                x.saturating_add(thickness),
+                y.saturating_add(thickness),
+                side.saturating_sub(thickness.saturating_mul(2)),
+                side.saturating_sub(thickness.saturating_mul(2)),
+            ),
+            TILE_RADIUS.saturating_sub(thickness),
+            if focused { FACE_FOCUSED } else { FACE },
         );
         if marked {
             self.rectangle(
@@ -70,35 +64,6 @@ impl Canvas {
             );
         }
         Some((x, y))
-    }
-
-    /// The short name under a tile: one line, cut to the tile's width.
-    fn caption(&mut self, corner: (usize, usize), side: usize, name: &str, colour: [u8; 4]) {
-        let per_line = side
-            .saturating_mul(10)
-            .checked_div(CAPTION_POINTS.saturating_mul(6))
-            .unwrap_or(1);
-        let upper = name.to_uppercase();
-        let line = if upper.chars().count() <= per_line {
-            upper
-        } else {
-            // Keep the last word: it is what tells identical pads apart.
-            let tail = upper.rsplit(' ').next().unwrap_or("");
-            let head: String = upper
-                .chars()
-                .take(per_line.saturating_sub(tail.chars().count()).saturating_sub(3))
-                .collect();
-            format!("{}.. {tail}", head.trim_end())
-        };
-        let middle = (
-            corner.0.saturating_mul(2).saturating_add(side),
-            corner
-                .1
-                .saturating_mul(2)
-                .saturating_add(side.saturating_mul(2))
-                .saturating_add(CAPTION),
-        );
-        self.centred(middle, &line, CAPTION_POINTS, colour);
     }
 
     /// Centres up to three wrapped lines in `area`.
@@ -318,7 +283,7 @@ impl Canvas {
         colour: [u8; 4],
     ) {
         if let Some(icon) = connection.glyph() {
-            self.svg_icon(corner, side / 6, icon, colour);
+            self.svg_icon(corner, side / 3, icon, colour);
         }
     }
 
@@ -352,11 +317,17 @@ impl Canvas {
     /// A thin outline around a tile, for the pad that the focused settings row edits.
     fn selected_outline(&mut self, corner: (usize, usize), side: usize) {
         let (x, y) = corner;
-        let far = |origin: usize| origin.saturating_add(side).saturating_sub(3);
-        self.rectangle(x, y, side, 3, SELECTED);
-        self.rectangle(x, far(y), side, 3, SELECTED);
-        self.rectangle(x, y, 3, side, SELECTED);
-        self.rectangle(far(x), y, 3, side, SELECTED);
+        self.rounded_rectangle((x, y, side, side), TILE_RADIUS, SELECTED);
+        self.rounded_rectangle(
+            (
+                x.saturating_add(3),
+                y.saturating_add(3),
+                side.saturating_sub(6),
+                side.saturating_sub(6),
+            ),
+            TILE_RADIUS.saturating_sub(3),
+            FACE,
+        );
     }
 
     fn mic_drawing(&mut self, corner: (usize, usize), side: usize, kind: MicKind, colour: [u8; 4]) {
@@ -434,22 +405,7 @@ impl Canvas {
         let enabled = input.controller_enabled(&controller.key);
         if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0) {
             let heading = controller.spoken_name().to_uppercase();
-            // Glyphs are about 0.64 of the point size wide, so the middle of a left-aligned line is half of that.
-            let half = heading
-                .chars()
-                .count()
-                .saturating_mul(CAPTION_POINTS)
-                .saturating_mul(32)
-                / 100;
-            self.centred(
-                (
-                    x.saturating_add(half).saturating_mul(2),
-                    y.saturating_sub(22).saturating_mul(2),
-                ),
-                &heading,
-                CAPTION_POINTS,
-                WHITE,
-            );
+            self.text(x, y.saturating_sub(28), &heading, 2, AMBER);
         }
         if let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_SETTINGS_ROW, 0), focus, enabled) {
             let colour = if enabled { WHITE } else { DIM };
@@ -515,9 +471,6 @@ impl Canvas {
                 let words = if enabled { label } else { format!("{label} OFF") };
                 let below = y.saturating_add(side.saturating_mul(7) / 10);
                 self.tile_text((x, below, side, side / 4), &[words], points, colour);
-                if let Some(known) = microphone {
-                    self.caption((x, y), side, &known.spoken_name(), colour);
-                }
             }
         }
     }
