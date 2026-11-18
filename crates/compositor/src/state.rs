@@ -1697,10 +1697,10 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::ActiveController(name));
     }
 
-    fn choose_controller(&mut self, choice: tehuti_core::dispatch::ControllerChoice, persist: bool) {
+    fn choose_controller(&mut self, choice: &tehuti_core::dispatch::ControllerChoice, persist: bool) {
         tracing::info!(?choice, persist, "controller choice");
         if persist {
-            self.save_input_choice(|store| store.set_controller(&choice));
+            self.save_input_choice(|store| store.set_controller(choice));
         }
     }
 
@@ -2196,7 +2196,7 @@ impl Compositor {
             }
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
-            DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
+            DispatchEffect::SettingsController(choice) => self.choose_controller(&choice, false),
             DispatchEffect::PersistControllerTalk(controller_name, button) => {
                 let mut bindings = self.settings().input.controller_bindings.clone();
                 if let Some(button) = button {
@@ -2209,7 +2209,7 @@ impl Compositor {
                     self.activate_controller(name);
                 }
             }
-            DispatchEffect::PersistController(choice) => self.choose_controller(choice, true),
+            DispatchEffect::PersistController(choice) => self.choose_controller(&choice, true),
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
             DispatchEffect::SettingsControllerEnabled { name, enabled } => {
                 tracing::info!(%name, enabled, "controller enabled");
