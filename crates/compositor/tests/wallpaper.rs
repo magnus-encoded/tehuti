@@ -418,9 +418,9 @@ mod collection {
         let roots = [directory.path().to_path_buf()];
         let store = || Store::new(directory.path().join("selection"));
         let mut collection = Collection::discover(&roots, store(), 0, true);
-        assert!(collection.names().is_empty());
+        assert_eq!(collection.names(), Vec::<String>::new());
         collection.unlock()?;
-        assert!(collection.names().is_empty());
+        assert_eq!(collection.names(), Vec::<String>::new());
         collection.unlock_hidden()?;
         assert_eq!(collection.names(), ["bundled/hidden/uno.png"]);
         let mut reopened = Collection::discover(&roots, store(), 0, false);

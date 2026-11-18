@@ -59,6 +59,7 @@ pub struct Settings {
     pub current: usize,
     pub modes: Vec<String>,
     pub wallpapers: Vec<String>,
+    wallpaper_order: Vec<String>,
     pub wallpaper_locked: Vec<bool>,
     pub wallpaper_selected: usize,
     pub wallpaper_current: usize,
@@ -424,6 +425,7 @@ impl Settings {
         effects: &mut Vec<Effect>,
     ) {
         let focused = self.wallpapers.get(self.wallpaper_selected).cloned();
+        self.wallpaper_order = settle(&self.wallpaper_order, names.clone(), Clone::clone);
         self.wallpapers = names;
         self.wallpaper_locked = locked;
         self.wallpaper_current = current.min(self.wallpapers.len().saturating_sub(1));
@@ -449,23 +451,37 @@ impl Settings {
     /// Named wallpaper rows, with stable collection indices for each tile.
     #[must_use]
     pub fn wallpaper_rows(&self) -> Vec<(String, Vec<usize>)> {
-        let mut rows = vec![("Tehuti codenames".to_owned(), Vec::new())];
-        for (index, name) in self.wallpapers.iter().enumerate() {
-            let row_name = name
-                .strip_prefix("user/")
-                .and_then(|name| name.split_once('/').map(|(set, _)| set.to_owned()))
-                .or_else(|| {
-                    name.strip_prefix("bundled/")
-                        .and_then(|name| name.split_once('/').map(|(set, _)| format!("The {set} set")))
-                });
-            let row = row_name.map_or(0, |row_name| {
+        let mut rows: Vec<(String, Vec<usize>)> = vec![("Tehuti codenames".to_owned(), Vec::new())];
+        let ordered = if self.wallpaper_order.is_empty() {
+            &self.wallpapers
+        } else {
+            &self.wallpaper_order
+        };
+        for name in ordered {
+            let Some(index) = self.wallpapers.iter().position(|entry| entry == name) else {
+                continue;
+            };
+            let key = wallpaper_row_key(name);
+            let row = if key.0.is_empty() {
+                0
+            } else {
                 rows.iter()
-                    .position(|(known, _)| *known == row_name)
+                    .position(|(_, entries)| {
+                        entries
+                            .first()
+                            .and_then(|index| self.wallpapers.get(*index))
+                            .is_some_and(|entry| wallpaper_row_key(entry) == key)
+                    })
                     .unwrap_or_else(|| {
-                        rows.push((row_name, Vec::new()));
+                        let caption = if key.0 == "bundled" {
+                            format!("The {} set", key.1)
+                        } else {
+                            key.1.to_owned()
+                        };
+                        rows.push((caption, Vec::new()));
                         rows.len().saturating_sub(1)
                     })
-            });
+            };
             if let Some((_, entries)) = rows.get_mut(row) {
                 entries.push(index);
             }
@@ -837,6 +853,19 @@ impl Settings {
 }
 
 /// The `WxH` part of a `WxH@R` mode.
+fn wallpaper_row_key(identity: &str) -> (&str, &str) {
+    for namespace in ["user", "bundled"] {
+        if let Some(path) = identity
+            .strip_prefix(namespace)
+            .and_then(|path| path.strip_prefix('/'))
+            && let Some((set, _)) = path.split_once('/')
+        {
+            return (namespace, set);
+        }
+    }
+    ("", "")
+}
+
 fn resolution_of(mode: &str) -> &str {
     mode.split_once('@').map_or(mode, |(size, _)| size)
 }
@@ -865,6 +894,7 @@ impl Default for Settings {
             current: 0,
             modes: Vec::new(),
             wallpapers: Vec::new(),
+            wallpaper_order: Vec::new(),
             wallpaper_locked: Vec::new(),
             wallpaper_selected: 0,
             wallpaper_current: 0,

@@ -6297,3 +6297,49 @@ fn wallpaper_directions_move_within_sets_and_between_rows() {
     state = settings_button(&mut world, state, ButtonName::DpadDown);
     assert_eq!(state.settings().wallpaper_selected, 4);
 }
+
+#[test]
+fn user_rows_do_not_merge_with_bundled_rows_that_have_the_same_caption() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Wallpapers {
+            names: vec![
+                "apteribis".into(),
+                "user/Tehuti codenames/Sun.png".into(),
+                "user/The hidden set/Moon.png".into(),
+                "bundled/hidden/uno.png".into(),
+            ],
+            locked: vec![false; 4],
+            current: 0,
+        },
+    );
+    let rows = state.settings().wallpaper_rows();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].1, [0]);
+    assert_eq!(rows[1].1, [1]);
+    assert_eq!(rows[2].1, [2]);
+    assert_eq!(rows[3].1, [3]);
+}
+
+#[test]
+fn discovered_wallpapers_join_the_row_end_without_reordering_known_tiles() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::Wallpapers {
+            names: vec!["user/Dawn/Sun.png".into()],
+            locked: vec![false],
+            current: 0,
+        },
+    );
+    let state = world.run(
+        state,
+        Input::Wallpapers {
+            names: vec!["user/Dawn/Cloud.png".into(), "user/Dawn/Sun.png".into()],
+            locked: vec![false; 2],
+            current: 1,
+        },
+    );
+    assert_eq!(state.settings().wallpaper_rows()[1].1, [1, 0]);
+}
