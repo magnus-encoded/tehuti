@@ -1820,6 +1820,10 @@ impl Compositor {
         self.dispatch.settings()
     }
 
+    pub(crate) const fn wallpaper_preview_active(&self) -> bool {
+        self.settings().open && matches!(self.settings().page, tehuti_core::dispatch::Page::Wallpaper)
+    }
+
     #[expect(clippy::too_many_lines, reason = "effect routing is centralized here")]
     fn run_effect(&mut self, effect: DispatchEffect) -> Option<DispatchInput> {
         if matches!(effect, DispatchEffect::MovePointer { .. }) {

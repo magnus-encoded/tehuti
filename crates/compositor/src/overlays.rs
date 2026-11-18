@@ -104,6 +104,7 @@ impl Overlays {
                 compositor.adjuster().filter(|gauge| !gauge.is_stepper()),
             ),
             Overlay::Cursor => self.cursor_element(renderer, output, compositor),
+            Overlay::ChoiceList if compositor.wallpaper_preview_active() => Ok(None),
             Overlay::ChoiceList => self.choices.element(renderer, compositor, output),
             Overlay::Settings => crate::settings::element(renderer, compositor, output),
             Overlay::Bar => self.bar.element(renderer, output, &compositor.voice_bar(), clock),

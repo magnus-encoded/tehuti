@@ -1021,7 +1021,11 @@ where
         .iter()
         .map(OutputRenderElements::Custom)
         .collect::<Vec<_>>();
-    let space = space_render_elements(renderer, [&compositor.space], output, 1.0)?;
+    let space = if compositor.wallpaper_preview_active() {
+        Vec::new()
+    } else {
+        space_render_elements(renderer, [&compositor.space], output, 1.0)?
+    };
     elements.extend(
         compositor
             .focus_outline(output)
