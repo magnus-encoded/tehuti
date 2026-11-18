@@ -6,6 +6,8 @@ use fontdue::{
     layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
 };
 
+type Glyph = (i32, i32, usize, usize, Vec<u8>, f32);
+
 #[expect(
     clippy::redundant_pub_crate,
     reason = "the canvas is shared by desktop shell artwork"
@@ -250,20 +252,114 @@ impl Canvas {
         }
     }
 
+    /// The glyphs of `text` in the bar font `choice` at `pixels` physical pixels: left bearing, bottom bearing,
+    /// width, height, coverage and advance. The bitmap font grows in whole-pixel blocks.
+    fn sample_glyphs(text: &str, choice: tehuti_core::bar::Font, pixels: f32) -> Vec<Glyph> {
+        let block = (pixels / 12.0).floor().max(1.0) as usize;
+        let cell = (block.saturating_mul(8), block.saturating_mul(12));
+        text.chars()
+            .map(|character| {
+                let mono = (choice == tehuti_core::bar::Font::LiberationMono)
+                    .then(|| crate::bar_font::mono_raster(character, pixels))
+                    .flatten();
+                mono.map_or_else(
+                    || {
+                        let samples =
+                            crate::bar_font::coverage(character, tehuti_core::bar::Font::Bitmap, false);
+                        let mut scaled = vec![0_u8; cell.0.saturating_mul(cell.1)];
+                        for (slot, coverage) in scaled.iter_mut().enumerate() {
+                            let column = slot
+                                .checked_rem(cell.0)
+                                .unwrap_or(0)
+                                .checked_div(block)
+                                .unwrap_or(0);
+                            let row = slot
+                                .checked_div(cell.0)
+                                .unwrap_or(0)
+                                .checked_div(block)
+                                .unwrap_or(0);
+                            *coverage = samples
+                                .get(row.saturating_mul(8).saturating_add(column))
+                                .copied()
+                                .unwrap_or(0);
+                        }
+                        (0_i32, 0_i32, cell.0, cell.1, scaled, cell.0 as f32)
+                    },
+                    |(metrics, bitmap)| {
+                        (
+                            metrics.xmin,
+                            metrics.ymin,
+                            metrics.width,
+                            metrics.height,
+                            bitmap,
+                            metrics.advance_width,
+                        )
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Draws `text` centred on `centre` in the bar font `choice`, `size` reference pixels tall,
+    /// rasterised at the physical size: outlines for the mono font, whole-pixel blocks for the bitmap font.
+    pub(crate) fn sample_text(
+        &mut self,
+        centre: (usize, usize),
+        text: &str,
+        choice: tehuti_core::bar::Font,
+        size: usize,
+        colour: [u8; 4],
+    ) {
+        let pixels = size as f32 * self.scale.1;
+        let glyphs = Self::sample_glyphs(text, choice, pixels);
+        let total: f32 = glyphs.iter().map(|glyph| glyph.5).sum();
+        let mut pen = (centre.0 as f32).mul_add(self.scale.0, -(total / 2.0));
+        let top = (centre.1 as f32).mul_add(self.scale.1, -(pixels / 2.0));
+        let bitmapped = choice != tehuti_core::bar::Font::LiberationMono;
+        for (xmin, ymin, width, height, bitmap, advance) in glyphs {
+            let glyph_top = if bitmapped {
+                top + (pixels - height as f32) / 2.0
+            } else {
+                pixels.mul_add(0.8, top) - (ymin as f32 + height as f32)
+            };
+            for (index, coverage) in bitmap.iter().enumerate() {
+                if *coverage == 0 || width == 0 {
+                    continue;
+                }
+                let column = index.checked_rem(width).unwrap_or(0);
+                let row = index.checked_div(width).unwrap_or(0);
+                let left = (pen + xmin as f32 + column as f32).round();
+                let line = (glyph_top + row as f32).round();
+                if left >= 0.0 && line >= 0.0 {
+                    self.blend(left as usize, line as usize, colour, f32::from(*coverage) / 255.0);
+                }
+            }
+            pen += advance;
+        }
+    }
+
     /// A sine wave `width` wide from `start` (left, middle), with a cycle for about every 15 Hz.
     pub(crate) fn wave_across(&mut self, start: (usize, usize), width: usize, hertz: f32) {
-        let amplitude = width as f32 / 6.0;
-        let cycles = (hertz / 15.0).clamp(1.0, 40.0);
-        for column in 0..width {
-            let phase = column as f32 / width as f32 * cycles * core::f32::consts::TAU;
-            let offset = phase.sin() * amplitude;
-            self.rectangle(
-                start.0.saturating_add(column),
-                (start.1 as f32 + offset).max(0.0) as usize,
-                2,
-                3,
-                super::CYAN,
-            );
+        let cycles = (hertz / 30.0).clamp(1.0, 8.0);
+        let left = start.0 as f32 * self.scale.0;
+        let span = (width as f32 * self.scale.0).max(1.0);
+        let amplitude = width as f32 / 6.0 * self.scale.1;
+        let middle = start.1 as f32 * self.scale.1;
+        let half = (1.0 * self.scale.1).max(1.0);
+        let height = |column: f32| {
+            let phase = (column - left) / span * cycles * core::f32::consts::TAU;
+            (-phase.sin()).mul_add(amplitude, middle)
+        };
+        let first = left.floor() as usize;
+        let last = (left + span).ceil() as usize;
+        for column in first..last {
+            let (here, next) = (height(column as f32), height(column as f32 + 1.0));
+            let low = here.min(next) - half;
+            let high = here.max(next) + half;
+            for row in (low.floor().max(0.0) as usize)..(high.ceil().max(0.0) as usize) {
+                let covered = (high.min(row as f32 + 1.0) - low.max(row as f32)).clamp(0.0, 1.0);
+                self.blend(column, row, super::CYAN, covered);
+            }
         }
     }
 

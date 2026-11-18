@@ -635,6 +635,34 @@ time.sleep(60)
                     expected = [name for name in ["front", "headset"] if name not in off]
                     self.assertEqual(module.list_sources(), expected)
 
+    def test_auto_honours_the_off_list_and_the_fallback_does_too(self):
+        def dump(default):
+            nodes = [{"type": "PipeWire:Interface:Node",
+                      "info": {"props": {"node.name": name, "media.class": "Audio/Source"}}}
+                     for name in ["front", "headset"]]
+            meta = {"type": "PipeWire:Interface:Metadata",
+                    "metadata": [{"key": "default.audio.source", "value": {"name": default}}]}
+            return types.SimpleNamespace(stdout=json.dumps(nodes + [meta]).encode())
+        cases = [("auto", [], "front", [None]), ("auto", ["headset"], "front", [None]),
+                 ("auto", ["front"], "front", []), ("all", ["front", "headset"], "front", [])]
+        for choice, off, default, expected in cases:
+            with self.subTest(choice=choice, off=off), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}), \
+                    patch.object(module.subprocess, "run", return_value=dump(default)):
+                os.environ.pop("TEHUTI_SPEECH_SOURCE", None)
+                (Path(directory) / "tehuti").mkdir()
+                (Path(directory) / "tehuti" / "speech-source").write_text(choice + "\n")
+                (Path(directory) / "tehuti" / "microphones-disabled.json").write_text(json.dumps(off))
+                self.assertEqual(module.list_sources(), expected)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}), \
+                patch.object(module.subprocess, "run", side_effect=OSError("no pw-dump")):
+            os.environ.pop("TEHUTI_SPEECH_SOURCE", None)
+            (Path(directory) / "tehuti").mkdir()
+            self.assertEqual(module.list_sources(), [None])
+            (Path(directory) / "tehuti" / "microphones-disabled.json").write_text(json.dumps(["front"]))
+            self.assertEqual(module.list_sources(), [])
+
     def test_a_missing_saved_source_is_reported_and_falls_back(self):
         listing = json.dumps([{"type": "PipeWire:Interface:Node",
                                "info": {"props": {"node.name": "front", "media.class": "Audio/Source"}}}]).encode()

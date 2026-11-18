@@ -33,6 +33,8 @@ pub(crate) struct LoopData {
     /// The virtual pad of an unplugged controller, kept so the application never loses it.
     spare_virtual_pad: Option<controller::VirtualPad>,
     pad_gate: input::PadGate,
+    /// The stable key each attached pad took when it attached; a later pad never changes it.
+    pad_keys: BTreeMap<PathBuf, String>,
     virtual_pad: Option<String>,
     /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
     /// Unplugging it does not clear this: no pad matches the stale path, so no mirror exists
@@ -490,6 +492,7 @@ fn start_session(
         controllers,
         spare_virtual_pad: None,
         pad_gate: input::PadGate::default(),
+        pad_keys: BTreeMap::new(),
         controller_tokens,
         virtual_pad,
         active_pad: None,
@@ -815,11 +818,17 @@ fn sync_controller_names(data: &mut LoopData) {
                 vendor,
                 product,
                 controller.pad.device_identity(),
+                controller.pad.connection(),
             )
         })
         .collect();
+    let keyed = controller::keyed_controllers(devices, &data.pad_keys);
+    data.pad_keys = keyed
+        .iter()
+        .map(|(path, info)| (path.clone(), info.key.clone()))
+        .collect();
     data.compositor
-        .configure_controllers(controller::numbered_controllers(devices));
+        .configure_controllers(keyed.into_iter().map(|(_, info)| info).collect());
     let controllers = &data.controllers;
     data.pad_gate.retain(|path| controllers.contains_key(path));
 }
@@ -1014,23 +1023,6 @@ fn insert_controller_watch(event_loop: &EventLoop<LoopData>) -> Result<(), Box<d
     Ok(())
 }
 
-/// The key of each attached pad, by node path.
-fn controller_keys(controllers: &BTreeMap<PathBuf, AttachedController>) -> BTreeMap<PathBuf, String> {
-    controller::keyed_controllers(controllers.iter().map(|(path, controller)| {
-        let (vendor, product) = controller.pad.usb_id();
-        (
-            path.clone(),
-            controller.pad.name().to_owned(),
-            vendor,
-            product,
-            controller.pad.device_identity(),
-        )
-    }))
-    .into_iter()
-    .map(|(path, info)| (path, info.key))
-    .collect()
-}
-
 /// Routes pending events from every pad; failed registrations are removed on the next loop turn.
 ///
 /// Stick motion, and trigger motion that crosses no threshold, arrive as events the core never sees,
@@ -1040,7 +1032,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
-    let keys = controller_keys(&data.controllers);
+    let keys = &data.pad_keys;
     let mut event_controllers = Vec::new();
     let active = &mut data.active_pad;
     let spare = &mut data.spare_virtual_pad;
@@ -1116,7 +1108,7 @@ fn advance_time(data: &mut LoopData) {
         return;
     }
     let mut sampled = tehuti_core::dispatch::Sticks::default();
-    let keys = controller_keys(&data.controllers);
+    let keys = &data.pad_keys;
     for (path, controller) in &mut data.controllers {
         let key = keys
             .get(path)

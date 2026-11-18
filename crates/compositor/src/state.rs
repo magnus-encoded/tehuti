@@ -121,7 +121,6 @@ pub struct Compositor {
     settings_display: crate::settings::Display,
     bar_font_store: Option<crate::display_mode_store::Store>,
     /// The pad that drives Tehuti; previews before confirmation too.
-    controller_choice: tehuti_core::dispatch::ControllerChoice,
     controller_names: Vec<String>,
     /// Pads the user turned off on the Input page.
     disabled_controllers: Vec<String>,
@@ -192,6 +191,8 @@ pub struct Compositor {
     /// Host keys a Meta chord consumed, so their release is consumed too.
     consumed_host_keys: Vec<Keycode>,
     virtual_pad_buttons: Vec<tehuti_protocol::ButtonName>,
+    /// Buttons pressed with Guide held (Start for the escape chord); the stream sees neither their press nor their release.
+    chord_buttons: Vec<tehuti_protocol::ButtonName>,
     virtual_pad_talk: Vec<tehuti_protocol::ButtonName>,
     display: DisplayHandle,
 }
@@ -285,7 +286,6 @@ impl Compositor {
             ),
             settings_display: crate::settings::Display::default(),
             bar_font_store: None,
-            controller_choice: tehuti_core::dispatch::ControllerChoice::Auto,
             controller_names: Vec::new(),
             disabled_controllers: Vec::new(),
             input_choices: None,
@@ -347,6 +347,7 @@ impl Compositor {
             meta_held: Vec::new(),
             consumed_host_keys: Vec::new(),
             virtual_pad_buttons: Vec::new(),
+            chord_buttons: Vec::new(),
             virtual_pad_talk: Vec::new(),
             display: display.clone(),
         };
@@ -857,6 +858,7 @@ impl Compositor {
     /// Forgets held physical buttons when the virtual pad starts.
     pub fn reset_virtual_pad(&mut self) {
         self.virtual_pad_buttons.clear();
+        self.chord_buttons.clear();
         self.virtual_pad_talk.clear();
         if let Some(plugins) = &mut self.plugins {
             plugins.reset_pad();
@@ -866,8 +868,8 @@ impl Compositor {
     /// Whether Tehuti holds `button` from the virtual pad; reads only, so a new mirror can ask.
     #[must_use]
     pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
-        (button == tehuti_protocol::ButtonName::Guide
-            && self.dispatch.core().level() == tehuti_core::Level::Columns)
+        (button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded())
+            || self.chord_buttons.contains(&button)
             || self.virtual_pad_talk.contains(&button)
             || self
                 .plugins
@@ -911,10 +913,28 @@ impl Compositor {
             .plugins
             .as_mut()
             .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk));
-        // At the app level Guide reaches the game and Tehuti acts too; at the columns level it stays local.
-        let local_guide = button == tehuti_protocol::ButtonName::Guide
-            && self.dispatch.core().level() == tehuti_core::Level::Columns;
-        talk || plugin || local_guide
+        // Guide reaches the application only at the app level and only when the context forwards it.
+        let local_guide =
+            button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded();
+        // Start pressed while Guide is held belongs to the escape chord in every mode, and so does its release.
+        // Guide is read from this hook's own held list: a batch of raw events reaches here before the core sees any.
+        let chord_start = if button != tehuti_protocol::ButtonName::Start {
+            false
+        } else if state == tehuti_protocol::ButtonState::Pressed {
+            if self
+                .virtual_pad_buttons
+                .contains(&tehuti_protocol::ButtonName::Guide)
+                && !self.chord_buttons.contains(&button)
+            {
+                self.chord_buttons.push(button);
+            }
+            self.chord_buttons.contains(&button)
+        } else {
+            let chorded = self.chord_buttons.contains(&button);
+            self.chord_buttons.retain(|held| *held != button);
+            chorded
+        };
+        talk || plugin || local_guide || chord_start
     }
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
@@ -1645,7 +1665,6 @@ impl Compositor {
             std::collections::BTreeMap::new()
         });
         let _bindings_rejection = self.dispatch(DispatchInput::ControllerBindings(bindings));
-        self.controller_choice = controller.clone();
         self.input_choices = Some(store);
         let _rejection = self.dispatch(DispatchInput::InputChoices {
             controller,
@@ -1668,30 +1687,21 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Controllers(controllers));
     }
 
-    /// Whether input from the pad named `name` drives Tehuti.
+    /// Whether input from the pad with this stable key drives Tehuti: every pad that is not turned off.
     #[must_use]
     pub fn controller_chosen(&self, key: &str) -> bool {
-        let name = self
-            .settings()
-            .input
-            .controllers
-            .iter()
-            .find(|controller| controller.key == key)
-            .map_or(key, |controller| controller.name.as_str());
         !self.disabled_controllers.iter().any(|disabled| disabled == key)
-            && crate::input::chosen(&self.controller_choice, &self.controller_names, name)
     }
 
     pub fn activate_controller(&mut self, name: String) {
         let _rejection = self.dispatch(DispatchInput::ActiveController(name));
     }
 
-    fn choose_controller(&mut self, choice: tehuti_core::dispatch::ControllerChoice, persist: bool) {
+    fn choose_controller(&mut self, choice: &tehuti_core::dispatch::ControllerChoice, persist: bool) {
         tracing::info!(?choice, persist, "controller choice");
         if persist {
-            self.save_input_choice(|store| store.set_controller(&choice));
+            self.save_input_choice(|store| store.set_controller(choice));
         }
-        self.controller_choice = choice;
     }
 
     fn choose_microphone(&mut self, choice: &tehuti_core::dispatch::MicrophoneChoice) {
@@ -1721,6 +1731,64 @@ impl Compositor {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.microphone_listing = None,
         }
+    }
+
+    /// Fills the Display or Input page with invented hardware for the visual run.
+    ///
+    /// # Errors
+    /// Names the fixture when it is not known.
+    pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
+        use tehuti_core::dispatch::Connection;
+        let pad = |label: &str, key: &str, connection| tehuti_core::dispatch::ControllerInfo {
+            connection,
+            name: label.to_owned(),
+            key: key.to_owned(),
+            label: format!(
+                "{} #{}",
+                label.to_uppercase(),
+                key.rsplit('-').next().unwrap_or("1")
+            ),
+        };
+        let mic = |node: &str, description: &str| tehuti_core::dispatch::Microphone {
+            name: node.to_owned(),
+            description: description.to_owned(),
+        };
+        match name {
+            "display" => {
+                let modes = [
+                    "1920x1080@60",
+                    "1920x1080@144",
+                    "2560x1080@60",
+                    "2560x1080@120",
+                    "1280x1024@60",
+                    "1280x1024@75",
+                ];
+                self.configure_display_modes(modes.map(str::to_owned).to_vec(), 0);
+            }
+            "input" => {
+                // The real listing must not answer over the invented sources.
+                self.microphone_listing = None;
+                self.configure_controllers(vec![
+                    pad("Xbox Wireless Controller", "xbox-1", Connection::Usb),
+                    pad("Xbox Wireless Controller", "xbox-2", Connection::Bluetooth),
+                    pad("Xbox Wireless Controller", "xbox-3", Connection::Dongle),
+                    pad(
+                        "DualSense Wireless Controller",
+                        "dualsense-1",
+                        Connection::Bluetooth,
+                    ),
+                ]);
+                let _rejection = self.dispatch(DispatchInput::Microphones(vec![
+                    mic("bluez_input.headset", "Arctis Headset"),
+                    mic("alsa_input.usb-desk", "USB Desk Microphone"),
+                    mic("alsa_input.pci-analog", "Built-in Analog Stereo"),
+                    mic("rtp-source", "Network RTP Stream"),
+                    mic("phone-mic", "Phone Microphone"),
+                ]));
+            }
+            _ => return Err(format!("unknown fixture {name}")),
+        }
+        Ok(())
     }
 
     pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
@@ -2142,7 +2210,7 @@ impl Compositor {
             }
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
-            DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
+            DispatchEffect::SettingsController(choice) => self.choose_controller(&choice, false),
             DispatchEffect::PersistControllerTalk(controller_name, button) => {
                 let mut bindings = self.settings().input.controller_bindings.clone();
                 if let Some(button) = button {
@@ -2155,7 +2223,7 @@ impl Compositor {
                     self.activate_controller(name);
                 }
             }
-            DispatchEffect::PersistController(choice) => self.choose_controller(choice, true),
+            DispatchEffect::PersistController(choice) => self.choose_controller(&choice, true),
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
             DispatchEffect::SettingsControllerEnabled { name, enabled } => {
                 tracing::info!(%name, enabled, "controller enabled");

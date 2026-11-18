@@ -64,3 +64,7 @@ Tehuti is built so that a part can be swapped out: another window manager or com
 - If it does and the move is small, make it in the same PR as its own commit. If it is large, open an issue and leave the code where it is.
 - A concern depends on another only through a named interface: a type or a protocol message, never a shared field or a call into its internals.
 - Do not refactor for its own sake, and do not move code in an unrelated PR beyond what the touched function needs.
+
+## UI and settings
+
+- Settings pages are realtime: a page draws at once from state Tehuti already holds. Anything from an outside source (network peers, PipeWire, AudioRelay, Tailscale, slow device probes) arrives later as an added tile at the end of its row, never as a wait, a spinner or a moved focus.

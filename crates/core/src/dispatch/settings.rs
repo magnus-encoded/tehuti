@@ -95,13 +95,13 @@ impl Settings {
     pub(super) fn configure_controllers(&mut self, controllers: Vec<super::ControllerInfo>) {
         let focused = self.input.focused_controller().cloned();
         self.input.controllers = settle(&self.input.controllers, controllers, |controller| {
-            (controller.key.clone(), controller.label.clone())
+            controller.key.clone()
         });
         if let Some(col) = focused.and_then(|tile| {
             self.input
                 .controllers
                 .iter()
-                .position(|controller| *controller == tile)
+                .position(|controller| controller.key == tile.key)
         }) {
             self.input.focus.col = col;
         }

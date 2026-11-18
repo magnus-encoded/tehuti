@@ -3557,6 +3557,49 @@ proptest! {
     }
 }
 
+#[test]
+fn a_same_model_pad_arriving_first_in_path_order_keeps_tiles_and_focus_by_stable_key() {
+    let mut world = World::default();
+    let state = open_input(&mut world);
+    let pad = |key: &str, number: usize| ControllerInfo {
+        name: "Xbox Controller".into(),
+        key: key.into(),
+        label: format!("XBOX CONTROLLER #{number}"),
+        connection: crate::dispatch::Connection::Usb,
+    };
+    let state = world.run(state, Input::Controllers(vec![pad("old-a", 1), pad("old-b", 2)]));
+    let state = settings_button(&mut world, state, ButtonName::DpadRight);
+    assert_eq!(
+        state
+            .settings()
+            .input
+            .focused_controller()
+            .map(|tile| tile.key.as_str()),
+        Some("old-b")
+    );
+    // The newcomer's node sorts first, so every label shifts by one.
+    let state = world.run(
+        state,
+        Input::Controllers(vec![pad("new", 1), pad("old-a", 2), pad("old-b", 3)]),
+    );
+    let keys: Vec<_> = state
+        .settings()
+        .input
+        .controllers
+        .iter()
+        .map(|tile| tile.key.as_str())
+        .collect();
+    assert_eq!(keys, ["old-a", "old-b", "new"]);
+    assert_eq!(
+        state
+            .settings()
+            .input
+            .focused_controller()
+            .map(|tile| tile.key.as_str()),
+        Some("old-b")
+    );
+}
+
 fn press_all(world: &mut World, state: State, buttons: &[ButtonName]) -> State {
     buttons
         .iter()

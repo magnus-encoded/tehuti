@@ -689,7 +689,7 @@ mod tests {
         use tehuti::{input::route, state::Compositor};
 
         let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = talk_compositor(&display.handle(), "['record']");
+        let mut compositor = talk_compositor_with(&display.handle(), "['record']", "guide = 'both'");
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut pad, handles) = pad("game", &log);
         assert!(
@@ -723,12 +723,121 @@ mod tests {
     }
 
     #[test]
-    fn a_long_guide_hold_at_the_app_level_reaches_the_game_as_a_held_press() {
+    fn a_guide_tap_into_the_columns_level_never_reaches_a_game_that_does_not_ask_for_it() {
         use smithay::reexports::wayland_server::Display;
         use tehuti::{input::route, state::Compositor};
 
         let display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = talk_compositor(&display.handle(), "['record']");
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
+        for (step, app_level) in [false, true, false, true].into_iter().enumerate() {
+            for value in [1, 0] {
+                queue(&handles, KeyCode::BTN_MODE, value);
+                pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                    .unwrap();
+                route(&mut compositor, &mut pad).unwrap();
+            }
+            assert_eq!(
+                compositor.pad_passthrough(),
+                app_level,
+                "step {step}: local level"
+            );
+        }
+        assert!(
+            never_sent(&log.borrow(), KeyCode::BTN_MODE),
+            "Guide stays with Tehuti"
+        );
+    }
+
+    #[test]
+    fn in_app_mode_guide_reaches_only_the_game_and_the_escape_chord_stays_with_tehuti() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor_with(&display.handle(), "['record']", "guide = 'app'");
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
+        for (key, value) in [
+            (KeyCode::BTN_MODE, 1),
+            (KeyCode::BTN_MODE, 0),
+            (KeyCode::BTN_MODE, 1),
+            (KeyCode::BTN_START, 1),
+            (KeyCode::BTN_START, 0),
+            (KeyCode::BTN_MODE, 0),
+        ] {
+            queue(&handles, key, value);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(&mut compositor, &mut pad).unwrap();
+        }
+        assert!(compositor.pad_passthrough(), "Tehuti ignored the Guide taps");
+        assert_eq!(
+            values(&log.borrow(), KeyCode::BTN_MODE),
+            vec![1, 0, 1, 0],
+            "the game got Guide"
+        );
+        assert!(
+            never_sent(&log.borrow(), KeyCode::BTN_START),
+            "the chord's Start is never forwarded"
+        );
+    }
+
+    #[test]
+    fn the_chord_start_stays_out_whichever_button_is_released_first() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        for guide_first in [true, false] {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = talk_compositor_with(&display.handle(), "['record']", "guide = 'app'");
+            let log = Rc::new(RefCell::new(Log::default()));
+            let (mut pad, handles) = pad("game", &log);
+            assert!(
+                pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                    .unwrap()
+            );
+            let releases = if guide_first {
+                [(KeyCode::BTN_MODE, 0), (KeyCode::BTN_START, 0)]
+            } else {
+                [(KeyCode::BTN_START, 0), (KeyCode::BTN_MODE, 0)]
+            };
+            // Both presses arrive in one batch, before the core has seen either.
+            queue(&handles, KeyCode::BTN_MODE, 1);
+            queue(&handles, KeyCode::BTN_START, 1);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(&mut compositor, &mut pad).unwrap();
+            for (key, value) in releases {
+                queue(&handles, key, value);
+                pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                    .unwrap();
+                route(&mut compositor, &mut pad).unwrap();
+            }
+            assert!(
+                never_sent(&log.borrow(), KeyCode::BTN_START),
+                "guide_first {guide_first}: neither Start press nor release reaches the stream"
+            );
+            assert_eq!(values(&log.borrow(), KeyCode::BTN_MODE), vec![1, 0]);
+        }
+    }
+
+    #[test]
+    fn a_long_guide_hold_at_the_app_level_reaches_the_game_as_a_held_press() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor_with(&display.handle(), "['record']", "guide = 'both'");
         let log = Rc::new(RefCell::new(Log::default()));
         let (mut pad, handles) = pad("game", &log);
         assert!(
@@ -863,13 +972,21 @@ mod tests {
         display: &smithay::reexports::wayland_server::DisplayHandle,
         chord: &str,
     ) -> tehuti::state::Compositor {
+        talk_compositor_with(display, chord, "")
+    }
+
+    fn talk_compositor_with(
+        display: &smithay::reexports::wayland_server::DisplayHandle,
+        chord: &str,
+        extra_pad: &str,
+    ) -> tehuti::state::Compositor {
         use tehuti::state::Compositor;
         use tehuti_protocol::Event;
 
         let mut compositor = Compositor::new(display).unwrap();
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(&format!(
-                "app_id = 'game'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\npush_to_talk = {chord}"
+                "app_id = 'game'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\n{extra_pad}\npush_to_talk = {chord}"
             ))
             .unwrap(),
         ]);

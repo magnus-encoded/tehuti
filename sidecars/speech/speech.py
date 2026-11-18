@@ -109,6 +109,20 @@ def capture_sources(listing):
     return names
 
 
+def default_source(listing):
+    """The node name PipeWire's metadata names as the default capture source, if it says."""
+    for node in listing:
+        if node.get("type") != "PipeWire:Interface:Metadata":
+            continue
+        for entry in node.get("metadata", []):
+            if entry.get("key") == "default.audio.source":
+                value = entry.get("value")
+                name = value.get("name") if isinstance(value, dict) else value
+                if isinstance(name, str) and name:
+                    return name
+    return None
+
+
 def chosen_source():
     """The microphone picked in Tehuti's settings: "all", "auto", a node name, or None."""
     root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
@@ -138,26 +152,35 @@ def list_sources(missing=None):
     if pinned:
         return [pinned]
     choice = chosen_source()
-    if choice == "auto":
+    off = disabled_sources()
+    if choice == "auto" and not off:
         return [None]
     listed = True
+    default = None
     try:
         listing = subprocess.run(
             ["pw-dump"],
             capture_output=True, check=True, timeout=2,
         ).stdout
-        names = capture_sources(json.loads(listing))
+        dump = json.loads(listing)
+        names = capture_sources(dump)
+        default = default_source(dump)
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"speech source listing failed: {error}", file=sys.stderr, flush=True)
         names = []
         listed = False
-    off = disabled_sources()
+    if choice == "auto":
+        # The default source cannot be recorded by name here: record it only when it is known to be on.
+        return [None] if default is not None and default not in off else []
     enabled = [name for name in names if name not in off]
     if choice in enabled:
         return [choice]
     if missing is not None and choice not in (None, "all", "auto") and choice not in off and listed:
         missing(choice)
-    return enabled if names else [None]
+    if names:
+        return enabled
+    # Discovery found nothing: the default source stands in only when no microphone is off.
+    return [] if off else [None]
 
 
 def speech_tails(value):
