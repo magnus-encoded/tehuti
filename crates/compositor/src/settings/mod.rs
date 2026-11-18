@@ -351,7 +351,8 @@ mod tests {
                     colours.len() > 30,
                     "Input outlines have fractional coverage at {width}x{height}"
                 );
-            });
+                Ok::<_, Box<dyn core::error::Error>>(Vec::new())
+            })?;
         }
         Ok(())
     }

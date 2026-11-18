@@ -65,6 +65,7 @@ pub(super) fn raster(
     if cache.len() >= 128 {
         cache.clear();
     }
-    cache.insert(key, Arc::clone(&image));
+    let _evicted = cache.insert(key, Arc::clone(&image));
+    drop(cache);
     Some(image)
 }
