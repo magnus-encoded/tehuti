@@ -32,9 +32,9 @@ fn load(path: &std::path::Path) -> std::io::Result<Font> {
     clippy::redundant_pub_crate,
     reason = "the text raster stays private to the compositor"
 )]
-pub(crate) fn mono_raster(character: char, px: f32) -> Option<(fontdue::Metrics, Vec<u8>)> {
+pub(crate) fn mono_raster(character: char, pixels: f32) -> Option<(fontdue::Metrics, Vec<u8>)> {
     let font = MONO.as_ref()?;
-    (font.lookup_glyph_index(character) != 0).then(|| font.rasterize(character, px))
+    (font.lookup_glyph_index(character) != 0).then(|| font.rasterize(character, pixels))
 }
 
 /// Coverage in a fixed cell, sharing a baseline across every character.

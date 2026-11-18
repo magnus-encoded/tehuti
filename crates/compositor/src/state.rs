@@ -1724,6 +1724,9 @@ impl Compositor {
     }
 
     /// Fills the Display or Input page with invented hardware for the visual run.
+    ///
+    /// # Errors
+    /// Names the fixture when it is not known.
     pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
         let pad = |label: &str, key: &str| tehuti_core::dispatch::ControllerInfo {
             name: label.to_owned(),
@@ -1734,8 +1737,8 @@ impl Compositor {
                 key.rsplit('-').next().unwrap_or("1")
             ),
         };
-        let mic = |name: &str, description: &str| tehuti_core::dispatch::Microphone {
-            name: name.to_owned(),
+        let mic = |node: &str, description: &str| tehuti_core::dispatch::Microphone {
+            name: node.to_owned(),
             description: description.to_owned(),
         };
         match name {

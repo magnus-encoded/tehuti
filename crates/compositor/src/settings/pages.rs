@@ -251,7 +251,10 @@ impl Canvas {
     /// One large sample, drawn by the font the tile stands for at its physical size, and the font's name.
     fn font_tile(&mut self, corner: (usize, usize), side: usize, font: tehuti_core::bar::Font) {
         let (x, y) = corner;
-        let middle = (x.saturating_add(side / 2), y.saturating_add(side * 2 / 5));
+        let middle = (
+            x.saturating_add(side / 2),
+            y.saturating_add(side.saturating_mul(2) / 5),
+        );
         self.sample_text(middle, "Aa", font, side / 2, WHITE);
         let points = side.checked_div(10).unwrap_or(8).max(8);
         let below = y.saturating_add(side).saturating_sub(side / 5);

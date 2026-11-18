@@ -6,6 +6,8 @@ use fontdue::{
     layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
 };
 
+type Glyph = (i32, i32, usize, usize, Vec<u8>, f32);
+
 #[expect(
     clippy::redundant_pub_crate,
     reason = "the canvas is shared by desktop shell artwork"
@@ -250,6 +252,54 @@ impl Canvas {
         }
     }
 
+    /// The glyphs of `text` in the bar font `choice` at `pixels` physical pixels: left bearing, bottom bearing,
+    /// width, height, coverage and advance. The bitmap font grows in whole-pixel blocks.
+    fn sample_glyphs(text: &str, choice: tehuti_core::bar::Font, pixels: f32) -> Vec<Glyph> {
+        let block = (pixels / 12.0).floor().max(1.0) as usize;
+        let cell = (block.saturating_mul(8), block.saturating_mul(12));
+        text.chars()
+            .map(|character| {
+                let mono = (choice == tehuti_core::bar::Font::LiberationMono)
+                    .then(|| crate::bar_font::mono_raster(character, pixels))
+                    .flatten();
+                mono.map_or_else(
+                    || {
+                        let samples =
+                            crate::bar_font::coverage(character, tehuti_core::bar::Font::Bitmap, false);
+                        let mut scaled = vec![0_u8; cell.0.saturating_mul(cell.1)];
+                        for (slot, coverage) in scaled.iter_mut().enumerate() {
+                            let column = slot
+                                .checked_rem(cell.0)
+                                .unwrap_or(0)
+                                .checked_div(block)
+                                .unwrap_or(0);
+                            let row = slot
+                                .checked_div(cell.0)
+                                .unwrap_or(0)
+                                .checked_div(block)
+                                .unwrap_or(0);
+                            *coverage = samples
+                                .get(row.saturating_mul(8).saturating_add(column))
+                                .copied()
+                                .unwrap_or(0);
+                        }
+                        (0_i32, 0_i32, cell.0, cell.1, scaled, cell.0 as f32)
+                    },
+                    |(metrics, bitmap)| {
+                        (
+                            metrics.xmin,
+                            metrics.ymin,
+                            metrics.width,
+                            metrics.height,
+                            bitmap,
+                            metrics.advance_width,
+                        )
+                    },
+                )
+            })
+            .collect()
+    }
+
     /// Draws `text` centred on `centre` in the bar font `choice`, `size` reference pixels tall,
     /// rasterised at the physical size: outlines for the mono font, whole-pixel blocks for the bitmap font.
     pub(crate) fn sample_text(
@@ -260,57 +310,17 @@ impl Canvas {
         size: usize,
         colour: [u8; 4],
     ) {
-        let px = size as f32 * self.scale.1;
-        let block = (px / 12.0).floor().max(1.0) as usize;
-        let cell = (block.saturating_mul(8), block.saturating_mul(12));
-        let mut glyphs = Vec::new();
-        for character in text.chars() {
-            let mono = (choice == tehuti_core::bar::Font::LiberationMono)
-                .then(|| crate::bar_font::mono_raster(character, px))
-                .flatten();
-            glyphs.push(mono.map_or_else(
-                || {
-                    let samples = crate::bar_font::coverage(character, tehuti_core::bar::Font::Bitmap, false);
-                    let mut scaled = vec![0_u8; cell.0.saturating_mul(cell.1)];
-                    for (slot, coverage) in scaled.iter_mut().enumerate() {
-                        let column = slot
-                            .checked_rem(cell.0)
-                            .unwrap_or(0)
-                            .checked_div(block)
-                            .unwrap_or(0);
-                        let row = slot
-                            .checked_div(cell.0)
-                            .unwrap_or(0)
-                            .checked_div(block)
-                            .unwrap_or(0);
-                        *coverage = samples
-                            .get(row.saturating_mul(8).saturating_add(column))
-                            .copied()
-                            .unwrap_or(0);
-                    }
-                    (0_i32, 0_i32, cell.0, cell.1, scaled, cell.0 as f32)
-                },
-                |(metrics, bitmap)| {
-                    (
-                        metrics.xmin,
-                        metrics.ymin,
-                        metrics.width,
-                        metrics.height,
-                        bitmap,
-                        metrics.advance_width,
-                    )
-                },
-            ));
-        }
+        let pixels = size as f32 * self.scale.1;
+        let glyphs = Self::sample_glyphs(text, choice, pixels);
         let total: f32 = glyphs.iter().map(|glyph| glyph.5).sum();
-        let mut pen = centre.0 as f32 * self.scale.0 - total / 2.0;
-        let top = centre.1 as f32 * self.scale.1 - px / 2.0;
+        let mut pen = (centre.0 as f32).mul_add(self.scale.0, -(total / 2.0));
+        let top = (centre.1 as f32).mul_add(self.scale.1, -(pixels / 2.0));
         let bitmapped = choice != tehuti_core::bar::Font::LiberationMono;
         for (xmin, ymin, width, height, bitmap, advance) in glyphs {
             let glyph_top = if bitmapped {
-                top + (px - height as f32) / 2.0
+                top + (pixels - height as f32) / 2.0
             } else {
-                top + px * 0.8 - (ymin as f32 + height as f32)
+                pixels.mul_add(0.8, top) - (ymin as f32 + height as f32)
             };
             for (index, coverage) in bitmap.iter().enumerate() {
                 if *coverage == 0 || width == 0 {
@@ -318,10 +328,10 @@ impl Canvas {
                 }
                 let column = index.checked_rem(width).unwrap_or(0);
                 let row = index.checked_div(width).unwrap_or(0);
-                let x = (pen + xmin as f32 + column as f32).round();
-                let y = (glyph_top + row as f32).round();
-                if x >= 0.0 && y >= 0.0 {
-                    self.blend(x as usize, y as usize, colour, f32::from(*coverage) / 255.0);
+                let left = (pen + xmin as f32 + column as f32).round();
+                let line = (glyph_top + row as f32).round();
+                if left >= 0.0 && line >= 0.0 {
+                    self.blend(left as usize, line as usize, colour, f32::from(*coverage) / 255.0);
                 }
             }
             pen += advance;
