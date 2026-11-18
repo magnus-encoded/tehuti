@@ -366,7 +366,6 @@ impl Canvas {
     }
 }
 
-#[must_use]
 /// The running version and short commit SHA, as `v0.134.1 · 1a2b3c4`.
 #[must_use]
 fn version_line(version: &str, commit: &str) -> String {
@@ -381,6 +380,7 @@ fn build_line() -> String {
     )
 }
 
+#[must_use]
 pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<MemoryRenderBuffer> {
     if !settings.open {
         return None;
