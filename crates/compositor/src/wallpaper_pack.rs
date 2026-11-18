@@ -37,6 +37,7 @@ impl Pack {
         }
         let mut index = Vec::new();
         let mut names = std::collections::BTreeSet::new();
+        let mut total = 0_u64;
         for _ in 0..count {
             let mut length = [0];
             file.read_exact(&mut length)?;
@@ -47,6 +48,10 @@ impl Pack {
             file.read_exact(&mut size)?;
             let size = u64::from_le_bytes(size);
             if !valid_name(&name) || !names.insert(name.clone()) || size == 0 || size > MAX_BLOB {
+                return Err(invalid());
+            }
+            total = total.checked_add(size).ok_or_else(invalid)?;
+            if total > 256 * 1024 * 1024 {
                 return Err(invalid());
             }
             index.push((name, size));
@@ -83,8 +88,13 @@ impl Pack {
 fn valid_name(name: &str) -> bool {
     super::wallpaper::CODENAMES.contains(&name)
         || super::wallpaper::BUNDLED_SETS.iter().any(|set| {
-            name.strip_prefix(&format!("{set}/"))
-                .is_some_and(|file| !file.is_empty() && !file.contains(['/', '\\']) && file.ends_with(".png"))
+            name.strip_prefix(&format!("{set}/")).is_some_and(|file| {
+                !file.is_empty()
+                    && !file.contains(['/', '\\'])
+                    && Path::new(file)
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+            })
         })
 }
 

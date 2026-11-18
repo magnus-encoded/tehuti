@@ -64,33 +64,7 @@ impl Canvas {
                 if let Some(image) = crate::wallpaper::thumbnail(*index, size) {
                     self.thumbnail(x, y, &image, locked);
                 }
-                let identity = settings.wallpapers.get(*index).map_or("", String::as_str);
-                let caption = if identity.starts_with("user/") || identity.starts_with("bundled/") {
-                    std::path::Path::new(identity)
-                        .file_stem()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or(identity)
-                } else {
-                    identity
-                };
-                self.caption((x, y), grid.side(), caption, WHITE);
-                let badge = if locked {
-                    "LOCKED"
-                } else if *index == settings.wallpaper_current {
-                    "SAVED"
-                } else {
-                    ""
-                };
-                if !badge.is_empty() {
-                    self.rectangle(x.saturating_add(8), y.saturating_add(8), 72, 22, SCREEN);
-                    self.text(
-                        x.saturating_add(12),
-                        y.saturating_add(10),
-                        badge,
-                        2,
-                        if locked { AMBER } else { CYAN },
-                    );
-                }
+                self.wallpaper_caption(settings, *index, (x, y), grid.side(), locked);
             }
         }
         if let Ok(config) = crate::display_mode_store::config_root() {
@@ -100,6 +74,44 @@ impl Canvas {
                 &format!("ADD SET FOLDERS IN {}", folder.display()),
                 2,
                 DIM,
+            );
+        }
+    }
+
+    fn wallpaper_caption(
+        &mut self,
+        settings: &Settings,
+        index: usize,
+        corner: (usize, usize),
+        side: usize,
+        locked: bool,
+    ) {
+        let (x, y) = corner;
+        let identity = settings.wallpapers.get(index).map_or("", String::as_str);
+        let caption = if identity.starts_with("user/") || identity.starts_with("bundled/") {
+            std::path::Path::new(identity)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(identity)
+        } else {
+            identity
+        };
+        self.caption((x, y), side, caption, WHITE);
+        let badge = if locked {
+            "LOCKED"
+        } else if index == settings.wallpaper_current {
+            "SAVED"
+        } else {
+            ""
+        };
+        if !badge.is_empty() {
+            self.rectangle(x.saturating_add(8), y.saturating_add(8), 72, 22, SCREEN);
+            self.text(
+                x.saturating_add(12),
+                y.saturating_add(10),
+                badge,
+                2,
+                if locked { AMBER } else { CYAN },
             );
         }
     }

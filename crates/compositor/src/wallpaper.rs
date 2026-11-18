@@ -135,7 +135,7 @@ impl Source {
     }
 
     pub(super) fn stamp(&self) -> u64 {
-        use std::hash::{Hash as _, Hasher as _};
+        use core::hash::{Hash as _, Hasher as _};
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         match self {
             Self::File(path) => {
@@ -181,17 +181,7 @@ impl Collection {
             .as_deref()
             == Some("1");
         let mut entries = load_entries(roots, release, true);
-        let legacy = roots
-            .iter()
-            .find_map(|root| {
-                let path = root.join("wallpaper.png");
-                bounded_image(&path).map(|_| Source::File(path))
-            })
-            .map(|image| {
-                let index = entries.len();
-                entries.push(("wallpaper.png".into(), image));
-                index
-            });
+        let legacy = load_legacy(roots, &mut entries);
         load_user_sets(store.sibling("wallpapers").path(), &mut entries);
         if store
             .sibling("wallpapers-hidden-unlocked")
@@ -367,11 +357,22 @@ impl Collection {
     }
 }
 
+fn load_legacy(roots: &[PathBuf], entries: &mut Vec<(String, Source)>) -> Option<usize> {
+    let source = roots.iter().find_map(|root| {
+        let path = root.join("wallpaper.png");
+        bounded_image(&path).map(|_| Source::File(path))
+    })?;
+    let index = entries.len();
+    entries.push(("wallpaper.png".into(), source));
+    Some(index)
+}
+
 fn load_user_sets(folder: &Path, entries: &mut Vec<(String, Source)>) {
     let Ok(sets) = std::fs::read_dir(folder) else {
         return;
     };
     let mut sets: Vec<_> = sets
+        .take(4096)
         .filter_map(Result::ok)
         .filter(|set| set.file_type().is_ok_and(|kind| kind.is_dir()))
         .collect();
@@ -381,6 +382,7 @@ fn load_user_sets(folder: &Path, entries: &mut Vec<(String, Source)>) {
             continue;
         };
         let mut files: Vec<_> = files
+            .take(4096)
             .filter_map(Result::ok)
             .filter(|file| file.file_type().is_ok_and(|kind| kind.is_file()))
             .collect();
@@ -767,6 +769,7 @@ pub fn revision() -> u64 {
     wallpaper().lock().map_or(0, |cache| cache.picker.revision)
 }
 
+#[must_use]
 pub fn poll() -> Option<(Vec<String>, Vec<bool>, usize, bool)> {
     let mut cache = wallpaper().lock().ok()?;
     let collection = cache.picker.poll()?;
@@ -781,6 +784,7 @@ pub fn poll() -> Option<(Vec<String>, Vec<bool>, usize, bool)> {
     cache.fresh.clear();
     cache.pending.clear();
     let (names, locked, current) = cache.choices();
+    drop(cache);
     Some((names, locked, current, missing))
 }
 

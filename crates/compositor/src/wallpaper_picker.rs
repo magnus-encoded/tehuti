@@ -28,6 +28,10 @@ enum Reply {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the picker worker is shared by wallpaper collection and rendering"
+)]
 pub(super) struct Picker {
     requests: mpsc::SyncSender<(Job, Option<Ping>)>,
     replies: mpsc::Receiver<Reply>,
@@ -99,7 +103,7 @@ impl Picker {
                     if key.0 == self.epoch
                         && let Some(image) = image
                     {
-                        let bytes: usize = self.ready.values().map(|image| image.as_raw().len()).sum();
+                        let bytes: usize = self.ready.values().map(|cached| cached.as_raw().len()).sum();
                         if bytes.saturating_add(image.as_raw().len()) > 64 * 1024 * 1024 {
                             self.ready.clear();
                         }
@@ -148,13 +152,17 @@ impl Picker {
     }
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the collection and worker share thumbnail preparation"
+)]
 pub(super) fn thumbnail(
     source: &Source,
     identity: &str,
     size: (u32, u32),
     cache: &Path,
 ) -> Option<image::RgbaImage> {
-    use std::hash::{Hash as _, Hasher as _};
+    use core::hash::{Hash as _, Hasher as _};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     ("center-area-v1", identity, source.stamp(), size).hash(&mut hash);
     let path = cache.join(format!("{:016x}.png", hash.finish()));
@@ -201,10 +209,9 @@ pub(super) fn thumbnail(
         if result
             .save_with_format(&temporary, image::ImageFormat::Png)
             .is_ok()
+            && let Err(error) = std::fs::rename(&temporary, &path)
         {
-            if let Err(error) = std::fs::rename(&temporary, &path) {
-                tracing::warn!(%error, "thumbnail cache replacement failed");
-            }
+            tracing::warn!(%error, "thumbnail cache replacement failed");
         }
     }
     Some(result)
@@ -212,7 +219,6 @@ pub(super) fn thumbnail(
 
 #[expect(
     clippy::as_conversions,
-    clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::float_arithmetic,
@@ -237,10 +243,10 @@ fn area_resize(image: &image::RgbaImage, size: (u32, u32)) -> image::RgbaImage {
                 let [_, _, _, alpha] = pixel.0;
                 let alpha = f64::from(alpha) / 255.0;
                 for (channel, value) in channels.iter_mut().take(3).zip(pixel.0.iter()) {
-                    *channel += f64::from(*value) * alpha * overlap;
+                    *channel = (f64::from(*value) * alpha).mul_add(overlap, *channel);
                 }
                 if let Some(channel) = channels.last_mut() {
-                    *channel += alpha * 255.0 * overlap;
+                    *channel = (alpha * 255.0).mul_add(overlap, *channel);
                 }
                 weight += overlap;
             }

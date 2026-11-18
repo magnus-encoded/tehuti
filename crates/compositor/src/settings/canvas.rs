@@ -405,16 +405,22 @@ impl Canvas {
         let height = image.height() as f32;
         let radius = 8.0 * self.scale.0.min(self.scale.1);
         for (column, row, pixel) in image.enumerate_pixels() {
-            let dx = (column as f32 + 0.5 - width / 2.0).abs() - (width / 2.0 - radius);
-            let dy = (row as f32 + 0.5 - height / 2.0).abs() - (height / 2.0 - radius);
-            let distance = dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - radius;
+            let horizontal = (column as f32 + 0.5 - width / 2.0).abs() - (width / 2.0 - radius);
+            let vertical = (row as f32 + 0.5 - height / 2.0).abs() - (height / 2.0 - radius);
+            let distance =
+                horizontal.max(0.0).hypot(vertical.max(0.0)) + horizontal.max(vertical).min(0.0) - radius;
             let coverage = (0.5 - distance).clamp(0.0, 1.0);
             let [red, green, blue, alpha] = pixel.0;
             let dim = if locked { 3 } else { 1 };
             self.blend(
                 left.saturating_add(column as usize),
                 top.saturating_add(row as usize),
-                [blue / dim, green / dim, red / dim, alpha],
+                [
+                    blue.checked_div(dim).unwrap_or_default(),
+                    green.checked_div(dim).unwrap_or_default(),
+                    red.checked_div(dim).unwrap_or_default(),
+                    alpha,
+                ],
                 coverage,
             );
         }
