@@ -26,16 +26,25 @@ mod tests {
         });
         press(&mut compositor, ButtonName::South);
         press(&mut compositor, ButtonName::DpadDown);
+        press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::DpadRight);
+        assert_eq!(
+            compositor.voice_bar().font,
+            Font::LiberationMono,
+            "moving to a font tile applies nothing"
+        );
+        press(&mut compositor, ButtonName::South);
         assert_eq!(compositor.voice_bar().font, Font::Bitmap);
         assert_eq!(Store::new(path.clone()).read()?.as_deref(), Some("Bitmap"));
         let mut restarted = Compositor::new(&display.handle())?;
         restarted.load_bar_font(Store::new(path.clone()));
         assert_eq!(restarted.voice_bar().font, Font::Bitmap);
         press(&mut compositor, ButtonName::DpadLeft);
+        press(&mut compositor, ButtonName::South);
         assert_eq!(compositor.voice_bar().font, Font::LiberationMono);
         restarted.load_bar_font(Store::new(path));
         assert_eq!(restarted.voice_bar().font, Font::LiberationMono);
+        press(&mut compositor, ButtonName::DpadRight);
         press(&mut compositor, ButtonName::South);
         assert_eq!(compositor.voice_bar().font, Font::Bitmap);
         Ok(())
@@ -54,7 +63,9 @@ mod tests {
         });
         press(&mut compositor, ButtonName::South);
         press(&mut compositor, ButtonName::DpadDown);
+        press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::DpadRight);
+        press(&mut compositor, ButtonName::South);
         assert_eq!(compositor.voice_bar().font, Font::LiberationMono);
         Ok(())
     }

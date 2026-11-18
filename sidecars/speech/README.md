@@ -45,7 +45,8 @@ peak and logs the winner once per released capture session to the Tehuti log. A 
 to start is skipped. The Input page of Tehuti's settings writes
 `$XDG_CONFIG_HOME/tehuti/speech-source`: `all` (or no file) keeps this,
 `auto` records the default source, and a PipeWire node name records that
-source while it is listed. `TEHUTI_SPEECH_SOURCE` pins one source by its
+source while it is listed. Sources listed in `tehuti/microphones-disabled.json` (a JSON array of node names) are
+never recorded, also under `all`. `TEHUTI_SPEECH_SOURCE` pins one source by its
 PipeWire name and overrides both.
 
 ## Transport and limits

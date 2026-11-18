@@ -9,6 +9,7 @@
 | Global layer | The fixed mapping that applies in every application. Confirm sends an Enter tap by default; an active context mapping of that button replaces it. |
 | Tap hold | Timed synthetic key synthesis with caller-supplied monotonic time, shared modifier deadlines, re-tap gaps and focus generations. A context may set the hold time with `key_hold_ms` (1 to 1000 ms, default 40). |
 | Held key | A key a `hold = true` button mapping keeps down from the button's press to its release, or until focus, a disconnect or an overlay releases it. |
+| Tile | One equal square of a settings page row (controller, microphone, resolution, refresh rate, scale, font). Rows fill from the left like windows in the columns layout; moving focus never changes a setting, confirm applies the focused tile, and a tile that arrives late joins the row end without moving focus. |
 | Consumed | An event handled by a layer, with or without an action. Later layers never see it. |
 | Context | A set of input mappings for one application id, optionally narrowed to one exact window title. |
 | Active context | The context selected for the focused window's application id, or its nearest launcher ancestor with a context when it has none of its own. |

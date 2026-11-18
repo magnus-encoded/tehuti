@@ -1236,6 +1236,8 @@ pub mod plugin;
 
 pub mod dispatch;
 
+pub mod tiles;
+
 pub mod controller;
 
 pub mod windows;

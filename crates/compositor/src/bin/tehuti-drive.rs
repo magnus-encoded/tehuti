@@ -20,6 +20,7 @@ key KEY                      Tap a protocol key name\n\
 text TEXT                    Type text into the focused client\n\
 say TEXT                     Deliver a final transcript\n\
 scene --json                 Inspect windows, focus, launcher, bar and notices\n\
+fixture NAME                 Fill the Display or Input page with invented hardware\n\
 shot PATH                    Save a whole-output PNG\n\
 menu-select LABEL            Move the system menu selection to the entry with that label\n\
 wait-for POINTER JSON [MS]    Wait for a JSON pointer to equal a value (default 5000 ms)\n\
@@ -114,6 +115,9 @@ fn parse_action(
         },
         "shot" => Request::Shot {
             path: next(arguments)?.into(),
+        },
+        "fixture" => Request::Fixture {
+            name: next(arguments)?,
         },
         "clock" => {
             if next(arguments)? != "advance" {

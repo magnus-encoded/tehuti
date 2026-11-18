@@ -121,8 +121,9 @@ pub struct Compositor {
     settings_display: crate::settings::Display,
     bar_font_store: Option<crate::display_mode_store::Store>,
     /// The pad that drives Tehuti; previews before confirmation too.
-    controller_choice: tehuti_core::dispatch::ControllerChoice,
     controller_names: Vec<String>,
+    /// Pads the user turned off on the Input page.
+    disabled_controllers: Vec<String>,
     input_choices: Option<crate::input_choice_store::Store>,
     volume: Option<crate::volume::Backend>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
@@ -285,8 +286,8 @@ impl Compositor {
             ),
             settings_display: crate::settings::Display::default(),
             bar_font_store: None,
-            controller_choice: tehuti_core::dispatch::ControllerChoice::Auto,
             controller_names: Vec::new(),
+            disabled_controllers: Vec::new(),
             input_choices: None,
             volume: None,
             microphone_listing: None,
@@ -1650,16 +1651,26 @@ impl Compositor {
             tracing::warn!(%error, "saved microphone unreadable; using every microphone");
             tehuti_core::dispatch::MicrophoneChoice::All
         });
+        let disabled_controllers = store.disabled_controllers().unwrap_or_else(|error| {
+            tracing::warn!(%error, "disabled controllers unreadable; using every pad");
+            Vec::new()
+        });
+        self.disabled_controllers.clone_from(&disabled_controllers);
+        let disabled_microphones = store.disabled_microphones().unwrap_or_else(|error| {
+            tracing::warn!(%error, "disabled microphones unreadable; using every microphone");
+            Vec::new()
+        });
         let bindings = store.controller_bindings().unwrap_or_else(|error| {
             tracing::warn!(%error, "controller bindings unreadable; using context defaults");
             std::collections::BTreeMap::new()
         });
         let _bindings_rejection = self.dispatch(DispatchInput::ControllerBindings(bindings));
-        self.controller_choice = controller.clone();
         self.input_choices = Some(store);
         let _rejection = self.dispatch(DispatchInput::InputChoices {
             controller,
             microphone,
+            disabled_controllers,
+            disabled_microphones,
         });
     }
 
@@ -1676,22 +1687,21 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Controllers(controllers));
     }
 
-    /// Whether input from the pad named `name` drives Tehuti.
+    /// Whether input from the pad with this stable key drives Tehuti: every pad that is not turned off.
     #[must_use]
-    pub fn controller_chosen(&self, name: &str) -> bool {
-        crate::input::chosen(&self.controller_choice, &self.controller_names, name)
+    pub fn controller_chosen(&self, key: &str) -> bool {
+        !self.disabled_controllers.iter().any(|disabled| disabled == key)
     }
 
     pub fn activate_controller(&mut self, name: String) {
         let _rejection = self.dispatch(DispatchInput::ActiveController(name));
     }
 
-    fn choose_controller(&mut self, choice: tehuti_core::dispatch::ControllerChoice, persist: bool) {
+    fn choose_controller(&mut self, choice: &tehuti_core::dispatch::ControllerChoice, persist: bool) {
         tracing::info!(?choice, persist, "controller choice");
         if persist {
-            self.save_input_choice(|store| store.set_controller(&choice));
+            self.save_input_choice(|store| store.set_controller(choice));
         }
-        self.controller_choice = choice;
     }
 
     fn choose_microphone(&mut self, choice: &tehuti_core::dispatch::MicrophoneChoice) {
@@ -1721,6 +1731,64 @@ impl Compositor {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.microphone_listing = None,
         }
+    }
+
+    /// Fills the Display or Input page with invented hardware for the visual run.
+    ///
+    /// # Errors
+    /// Names the fixture when it is not known.
+    pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
+        use tehuti_core::dispatch::Connection;
+        let pad = |label: &str, key: &str, connection| tehuti_core::dispatch::ControllerInfo {
+            connection,
+            name: label.to_owned(),
+            key: key.to_owned(),
+            label: format!(
+                "{} #{}",
+                label.to_uppercase(),
+                key.rsplit('-').next().unwrap_or("1")
+            ),
+        };
+        let mic = |node: &str, description: &str| tehuti_core::dispatch::Microphone {
+            name: node.to_owned(),
+            description: description.to_owned(),
+        };
+        match name {
+            "display" => {
+                let modes = [
+                    "1920x1080@60",
+                    "1920x1080@144",
+                    "2560x1080@60",
+                    "2560x1080@120",
+                    "1280x1024@60",
+                    "1280x1024@75",
+                ];
+                self.configure_display_modes(modes.map(str::to_owned).to_vec(), 0);
+            }
+            "input" => {
+                // The real listing must not answer over the invented sources.
+                self.microphone_listing = None;
+                self.configure_controllers(vec![
+                    pad("Xbox Wireless Controller", "xbox-1", Connection::Usb),
+                    pad("Xbox Wireless Controller", "xbox-2", Connection::Bluetooth),
+                    pad("Xbox Wireless Controller", "xbox-3", Connection::Dongle),
+                    pad(
+                        "DualSense Wireless Controller",
+                        "dualsense-1",
+                        Connection::Bluetooth,
+                    ),
+                ]);
+                let _rejection = self.dispatch(DispatchInput::Microphones(vec![
+                    mic("bluez_input.headset", "Arctis Headset"),
+                    mic("alsa_input.usb-desk", "USB Desk Microphone"),
+                    mic("alsa_input.pci-analog", "Built-in Analog Stereo"),
+                    mic("rtp-source", "Network RTP Stream"),
+                    mic("phone-mic", "Phone Microphone"),
+                ]));
+            }
+            _ => return Err(format!("unknown fixture {name}")),
+        }
+        Ok(())
     }
 
     pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
@@ -1836,6 +1904,8 @@ impl Compositor {
             | DispatchEffect::PersistControllerTalk(_, _)
             | DispatchEffect::PersistController(_)
             | DispatchEffect::SettingsMicrophone(_)
+            | DispatchEffect::SettingsControllerEnabled { .. }
+            | DispatchEffect::SettingsMicrophoneEnabled { .. }
             | DispatchEffect::ListMicrophones
             | DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::RunMenuCommand(_)
@@ -2126,7 +2196,7 @@ impl Compositor {
             }
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
-            DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
+            DispatchEffect::SettingsController(choice) => self.choose_controller(&choice, false),
             DispatchEffect::PersistControllerTalk(controller_name, button) => {
                 let mut bindings = self.settings().input.controller_bindings.clone();
                 if let Some(button) = button {
@@ -2139,8 +2209,19 @@ impl Compositor {
                     self.activate_controller(name);
                 }
             }
-            DispatchEffect::PersistController(choice) => self.choose_controller(choice, true),
+            DispatchEffect::PersistController(choice) => self.choose_controller(&choice, true),
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
+            DispatchEffect::SettingsControllerEnabled { name, enabled } => {
+                tracing::info!(%name, enabled, "controller enabled");
+                self.disabled_controllers = self.settings().input.disabled_controllers.clone();
+                let disabled = self.disabled_controllers.clone();
+                self.save_input_choice(|store| store.set_disabled_controllers(&disabled));
+            }
+            DispatchEffect::SettingsMicrophoneEnabled { name, enabled } => {
+                tracing::info!(%name, enabled, "microphone enabled");
+                let disabled = self.settings().input.disabled_microphones.clone();
+                self.save_input_choice(|store| store.set_disabled_microphones(&disabled));
+            }
             DispatchEffect::ListMicrophones => {
                 self.microphone_listing = Some(crate::input_choice_store::list_microphones());
             }

@@ -19,6 +19,9 @@ pub enum Font {
 }
 
 impl Font {
+    /// Every font, in the order the settings tiles list them.
+    pub const ALL: [Self; 2] = [Self::LiberationMono, Self::Bitmap];
+
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {

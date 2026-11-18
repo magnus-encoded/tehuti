@@ -27,6 +27,16 @@ fn load(path: &std::path::Path) -> std::io::Result<Font> {
     Font::from_bytes(std::fs::read(path)?, FontSettings::default()).map_err(std::io::Error::other)
 }
 
+/// One glyph of the bar's monospaced font rasterised at `px` pixels, if the font has it.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the text raster stays private to the compositor"
+)]
+pub(crate) fn mono_raster(character: char, pixels: f32) -> Option<(fontdue::Metrics, Vec<u8>)> {
+    let font = MONO.as_ref()?;
+    (font.lookup_glyph_index(character) != 0).then(|| font.rasterize(character, pixels))
+}
+
 /// Coverage in a fixed cell, sharing a baseline across every character.
 #[expect(
     clippy::redundant_pub_crate,

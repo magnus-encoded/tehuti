@@ -13,7 +13,8 @@ use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
 mod input_settings;
 pub use input_settings::{
-    ControllerChoice, ControllerInfo, InputRow, InputSettings, Microphone, MicrophoneChoice,
+    CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, ControllerChoice, ControllerInfo, InputSettings,
+    MICROPHONE_ROW, MicKind, Microphone, MicrophoneChoice, PadKind, TALK_OPTIONS,
 };
 
 mod settings;
@@ -62,6 +63,8 @@ pub enum Input {
     InputChoices {
         controller: ControllerChoice,
         microphone: MicrophoneChoice,
+        disabled_controllers: Vec<String>,
+        disabled_microphones: Vec<String>,
     },
     /// Elapsed wall time since the previous tick.
     Tick {
@@ -155,6 +158,16 @@ pub enum Effect {
     PersistControllerTalk(String, Option<ButtonName>),
     /// Saves the capture sources the speech sidecar records from.
     SettingsMicrophone(MicrophoneChoice),
+    /// Whether the named pad drives Tehuti; the compositor saves it and gates the pad.
+    SettingsControllerEnabled {
+        name: String,
+        enabled: bool,
+    },
+    /// Whether the named microphone is used; the compositor saves it for the speech sidecar.
+    SettingsMicrophoneEnabled {
+        name: String,
+        enabled: bool,
+    },
     /// Lists capture sources; the compositor answers later with [`Input::Microphones`].
     ListMicrophones,
     /// Relative motion in millionths of a logical pixel.
@@ -877,7 +890,11 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::InputChoices {
             controller,
             microphone,
-        } => state.settings.restore_input(controller, microphone),
+            disabled_controllers,
+            disabled_microphones,
+        } => state
+            .settings
+            .restore_input(controller, microphone, disabled_controllers, disabled_microphones),
         Input::Menu(_)
         | Input::Launcher(_)
         | Input::CloseInvitation

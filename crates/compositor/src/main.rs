@@ -33,6 +33,8 @@ pub(crate) struct LoopData {
     /// The virtual pad of an unplugged controller, kept so the application never loses it.
     spare_virtual_pad: Option<controller::VirtualPad>,
     pad_gate: input::PadGate,
+    /// The stable key each attached pad took when it attached; a later pad never changes it.
+    pad_keys: BTreeMap<PathBuf, String>,
     virtual_pad: Option<String>,
     /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
     /// Unplugging it does not clear this: no pad matches the stale path, so no mirror exists
@@ -490,6 +492,7 @@ fn start_session(
         controllers,
         spare_virtual_pad: None,
         pad_gate: input::PadGate::default(),
+        pad_keys: BTreeMap::new(),
         controller_tokens,
         virtual_pad,
         active_pad: None,
@@ -809,11 +812,23 @@ fn sync_controller_names(data: &mut LoopData) {
         .iter()
         .map(|(path, controller)| {
             let (vendor, product) = controller.pad.usb_id();
-            (path.clone(), controller.pad.name().to_owned(), vendor, product)
+            (
+                path.clone(),
+                controller.pad.name().to_owned(),
+                vendor,
+                product,
+                controller.pad.device_identity(),
+                controller.pad.connection(),
+            )
         })
         .collect();
+    let keyed = controller::keyed_controllers(devices, &data.pad_keys);
+    data.pad_keys = keyed
+        .iter()
+        .map(|(path, info)| (path.clone(), info.key.clone()))
+        .collect();
     data.compositor
-        .configure_controllers(controller::numbered_controllers(devices));
+        .configure_controllers(keyed.into_iter().map(|(_, info)| info).collect());
     let controllers = &data.controllers;
     data.pad_gate.retain(|path| controllers.contains_key(path));
 }
@@ -1017,15 +1032,19 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
+    let keys = &data.pad_keys;
     let mut event_controllers = Vec::new();
     let active = &mut data.active_pad;
     let spare = &mut data.spare_virtual_pad;
     let (events, removed) = input::drain_pads_handing_over(
         &mut data.controllers,
         |path, controller, event| {
-            let admitted = gate.admit(path, compositor.controller_chosen(controller.pad.name()), event);
+            let key = keys
+                .get(path)
+                .map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
+            let admitted = gate.admit(path, compositor.controller_chosen(&key), event);
             if admitted {
-                event_controllers.push(controller.pad.name().to_owned());
+                event_controllers.push(key);
                 identity = Some(controller.pad.identity());
                 *active = Some(path.to_path_buf());
             }
@@ -1089,8 +1108,12 @@ fn advance_time(data: &mut LoopData) {
         return;
     }
     let mut sampled = tehuti_core::dispatch::Sticks::default();
-    for controller in data.controllers.values_mut() {
-        let chosen = data.compositor.controller_chosen(controller.pad.name());
+    let keys = &data.pad_keys;
+    for (path, controller) in &mut data.controllers {
+        let key = keys
+            .get(path)
+            .map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
+        let chosen = data.compositor.controller_chosen(&key);
         match controller.pad.sticks() {
             Ok(sticks) => {
                 if chosen && sticks != tehuti_core::dispatch::Sticks::default() {
