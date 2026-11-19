@@ -7,8 +7,8 @@ use super::{
 };
 use tehuti_core::{
     dispatch::{
-        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, MICROPHONE_ROW, MicKind, MicrophoneChoice,
-        PadKind, REMOTE_ROW, Settings, TALK_OPTIONS,
+        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, MICROPHONE_ROW, MicKind, MicrophoneChoice, Origin, PadKind,
+        REMOTE_ROW, Settings, TALK_OPTIONS,
     },
     tiles::{Focus, clamp},
 };
@@ -271,13 +271,7 @@ impl Canvas {
     }
 
     /// The origin glyph in a tile's corner; nothing when the source is unknown.
-    fn connection_glyph(
-        &mut self,
-        corner: (usize, usize),
-        side: usize,
-        connection: Connection,
-        colour: [u8; 4],
-    ) {
+    fn connection_glyph(&mut self, corner: (usize, usize), side: usize, connection: Origin, colour: [u8; 4]) {
         if let Some(icon) = connection.glyph() {
             self.svg_icon(corner, side.saturating_mul(2) / 7, icon, colour);
         }

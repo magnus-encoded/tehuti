@@ -3,6 +3,131 @@
 use crate::ticker::{Direction, Piece, Rgb, Shape};
 use tehuti_protocol::ButtonName;
 
+pub use crate::audio_source::Presence;
+
+/// Where a pad comes from; the tile shows it so the user sees which device is where.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Origin {
+    #[default]
+    Usb,
+    Bluetooth,
+    /// A radio dongle that is not Bluetooth.
+    Dongle,
+    /// A virtual device made by a game-streaming host.
+    Streamed,
+    /// A virtual device made by a program that could not be named.
+    VirtualOther,
+    /// Tehuti's own virtual pad.
+    Tehuti,
+    /// The source could not be told; the tile draws no glyph.
+    Unknown,
+}
+
+impl Origin {
+    /// The short caption line on the pad tile; empty when the source is unknown.
+    #[must_use]
+    pub const fn caption(self) -> &'static str {
+        match self {
+            Self::Usb => "USB CABLE",
+            Self::Bluetooth => "BLUETOOTH",
+            Self::Dongle => "WIRELESS DONGLE",
+            Self::Streamed => "STREAMED: SUNSHINE",
+            Self::VirtualOther => "VIRTUAL (OTHER APP)",
+            Self::Tehuti => "TEHUTI VIRTUAL PAD",
+            Self::Unknown => "",
+        }
+    }
+
+    /// The name of the glyph asset, or none when the source is unknown.
+    #[must_use]
+    pub const fn glyph(self) -> Option<&'static str> {
+        match self {
+            Self::Usb => Some("cable"),
+            Self::Bluetooth => Some("bluetooth"),
+            Self::Dongle => Some("dongle"),
+            Self::Streamed => Some("streamed"),
+            Self::VirtualOther => Some("virtual"),
+            Self::Tehuti => Some("tehuti"),
+            Self::Unknown => None,
+        }
+    }
+}
+
+/// A pad's key: stable across reconnects, the same string `ControllerInfo::key` holds today.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PadKey(String);
+
+impl PadKey {
+    #[must_use]
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One controller as the rest of Tehuti sees it: runtime facts only, no settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pad {
+    pub key: PadKey,
+    pub label: String,
+    pub model: Identity,
+    pub origin: Origin,
+    pub presence: Presence,
+}
+
+#[cfg(test)]
+mod pad_type_tests {
+    use super::*;
+
+    #[test]
+    fn pad_key_keeps_its_text_and_orders_by_it() {
+        assert_eq!(PadKey::new("xbox-1").as_str(), "xbox-1");
+        assert!(PadKey::new("a") < PadKey::new("b"));
+    }
+
+    #[test]
+    fn pad_carries_origin_and_presence() {
+        let pad = Pad {
+            key: PadKey::new("k"),
+            label: "PAD #1".into(),
+            model: Identity::default(),
+            origin: Origin::Bluetooth,
+            presence: Presence::Connecting,
+        };
+        assert_eq!(pad.origin.caption(), "BLUETOOTH");
+        assert_eq!(pad.presence.label(), "CONNECTING");
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::Origin;
+
+    #[test]
+    fn every_known_origin_has_its_own_glyph_and_caption_and_unknown_has_none() {
+        let known = [
+            Origin::Usb,
+            Origin::Bluetooth,
+            Origin::Dongle,
+            Origin::Streamed,
+            Origin::VirtualOther,
+            Origin::Tehuti,
+        ];
+        let glyphs: std::collections::BTreeSet<_> =
+            known.iter().filter_map(|origin| origin.glyph()).collect();
+        let captions: std::collections::BTreeSet<_> = known.iter().map(|origin| origin.caption()).collect();
+        assert_eq!(glyphs.len(), known.len());
+        assert_eq!(captions.len(), known.len());
+        assert!(captions.iter().all(|caption| !caption.is_empty()));
+        assert_eq!(Origin::Unknown.glyph(), None);
+        assert_eq!(Origin::Unknown.caption(), "");
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Confirm,
