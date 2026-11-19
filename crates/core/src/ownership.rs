@@ -1,7 +1,7 @@
 //! Who gets a button press, as one pure answer (#800, step 1).
 //!
 //! This models today's routing exactly and is not wired into dispatch or the compositor yet.
-//! The differential test at the bottom drives the old code and this module over generated
+//! The differential test at the bottom drives the existing routing and this module over generated
 //! states and requires them to agree.
 //!
 //! The scope is what core `route` and the push-to-talk rules decide while no overlay other than
@@ -823,7 +823,7 @@ mod tests {
         }
     }
 
-    /// The old code's answer: its own predicates for the Tehuti and talk layers, then the
+    /// The existing routing's answer: its own predicates for the Tehuti and talk layers, then the
     /// actions `route` returns for everything it routes itself.
     fn old_routing(scenario: &Scenario, state: &State) -> Kind {
         let event = scenario.event();
