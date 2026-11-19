@@ -1,7 +1,10 @@
 //! Test harness that serves Wayland clients without sleeping or reading the wall clock.
 //!
 //! Clients run on their own threads. The server side waits on the display socket and on a
-//! wake pipe that each client thread writes when it ends, so a test never polls on a timer.
+//! wake pipe that each client thread writes when it ends or notifies, so a test never polls on a
+//! timer. A client that stalls without ending or writing fails the test after [`STALL_LIMIT`] of
+//! silence instead of hanging until the runner's timeout; that bound is a poll timeout, not a
+//! clock read in the test.
 
 #![expect(
     clippy::must_use_candidate,
@@ -10,16 +13,44 @@
     reason = "test helper: panics are the failure report and results are not optional"
 )]
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 use std::{
     io::{Read, Write},
     os::unix::net::UnixStream,
-    sync::Arc,
+    sync::{Arc, mpsc},
     thread,
 };
 
 use smithay::reexports::wayland_server::Display;
 use tehuti::state::Compositor;
+
+/// How long the server waits with no socket traffic and no wake before the test fails.
+pub const STALL_LIMIT: Duration = Duration::from_secs(20);
+
+/// Sends a value to the test body and, when made by [`Harness::channel`], wakes the server loop.
+pub struct Notifier<T> {
+    sender: mpsc::Sender<T>,
+    wake: Option<Arc<UnixStream>>,
+}
+
+impl<T> Notifier<T> {
+    pub fn send(&self, value: T) -> Result<(), mpsc::SendError<T>> {
+        let sent = self.sender.send(value);
+        if let Some(mut wake) = self.wake.as_deref() {
+            let _written = wake.write(&[1]);
+        }
+        sent
+    }
+}
+
+/// A channel whose sends do not wake a server loop, for tests that poll the receiver themselves.
+pub fn channel<T>() -> (Notifier<T>, mpsc::Receiver<T>) {
+    let (sender, receiver) = mpsc::channel();
+    (Notifier { sender, wake: None }, receiver)
+}
 
 /// A client thread that wakes the server loop when it ends, even by panic.
 pub struct Client<T> {
@@ -88,6 +119,13 @@ impl Harness {
         Client { handle, ended }
     }
 
+    /// A channel from a client thread to the test body whose sends wake the server loop.
+    pub fn channel<T>(&self) -> (Notifier<T>, mpsc::Receiver<T>) {
+        let (sender, receiver) = mpsc::channel();
+        let wake = Some(Arc::new(self.wake_write.try_clone().unwrap()));
+        (Notifier { sender, wake }, receiver)
+    }
+
     /// Serves clients until `done` holds, blocking on socket readiness between turns.
     pub fn serve_until(
         &mut self,
@@ -95,10 +133,22 @@ impl Harness {
         compositor: &mut Compositor,
         mut done: impl FnMut() -> bool,
     ) {
+        self.serve_turns(display, compositor, |_| done());
+    }
+
+    /// Like [`Self::serve_until`], and hands the compositor to `turn` after each dispatch so the
+    /// test can act on it; `turn` returns whether the test is done.
+    pub fn serve_turns(
+        &mut self,
+        display: &mut Display<Compositor>,
+        compositor: &mut Compositor,
+        mut turn: impl FnMut(&mut Compositor) -> bool,
+    ) {
         loop {
             let _dispatched = display.dispatch_clients(compositor).unwrap();
+            let done = turn(compositor);
             display.flush_clients().unwrap();
-            if done() {
+            if done {
                 return;
             }
             self.wait(display);
@@ -125,9 +175,17 @@ impl Harness {
             PollFd::new(&display_fd, PollFlags::IN),
             PollFd::new(&self.wake_read, PollFlags::IN),
         ];
-        let polled = poll(&mut fds, None);
+        let limit = rustix::event::Timespec {
+            tv_sec: STALL_LIMIT.as_secs().try_into().unwrap(),
+            tv_nsec: 0,
+        };
+        let polled = poll(&mut fds, Some(&limit));
         if polled != Err(rustix::io::Errno::INTR) {
-            let _ready = polled.unwrap();
+            let ready = polled.unwrap();
+            assert!(
+                ready > 0,
+                "no client traffic, notice or end within {STALL_LIMIT:?}"
+            );
         }
         let mut drained = [0_u8; 64];
         while matches!(self.wake_read.read(&mut drained), Ok(count) if count > 0) {}
