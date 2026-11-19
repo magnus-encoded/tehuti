@@ -23,12 +23,12 @@ mod launch {
             let now = Instant::now();
             let mut owner = launches(Some(Exit::Code(code)));
             owner.start(&Launch::new("term", "Term").with_app_id(app_id.clone()), now).unwrap();
-            let failures = owner.poll(now + Duration::from_secs(late));
+            let failures = owner.poll(now.checked_add(Duration::from_secs(late)).unwrap());
             prop_assert_eq!(failures.len(), 1);
             prop_assert_eq!(failures[0].app_id.as_deref(), Some(app_id.as_str()));
             prop_assert_eq!(failures[0].code, Some(code));
             prop_assert_eq!(failures[0].early, late < 5);
-            prop_assert!(owner.poll(now).is_empty());
+            prop_assert_eq!(owner.poll(now), Vec::new());
             prop_assert_eq!(owner.running(), 0);
         }
 
@@ -39,7 +39,7 @@ mod launch {
             for _ in 0..count {
                 owner.start(&Launch::new("app", "App"), now).unwrap();
             }
-            prop_assert!(owner.poll(now).is_empty());
+            prop_assert_eq!(owner.poll(now), Vec::new());
             prop_assert_eq!(owner.running(), 0);
         }
     }
@@ -49,7 +49,7 @@ mod launch {
         let now = Instant::now();
         let mut owner = launches(None);
         owner.start(&Launch::new("app", "App"), now).unwrap();
-        assert!(owner.poll(now).is_empty());
+        assert_eq!(owner.poll(now), Vec::new());
         assert_eq!(owner.running(), 1);
     }
 
