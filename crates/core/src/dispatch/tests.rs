@@ -3570,7 +3570,7 @@ fn a_same_model_pad_arriving_first_in_path_order_keeps_tiles_and_focus_by_stable
         name: "Xbox Controller".into(),
         key: key.into(),
         label: format!("XBOX CONTROLLER #{number}"),
-        connection: crate::dispatch::Connection::Usb,
+        connection: crate::dispatch::Origin::Usb,
     };
     let state = world.run(state, Input::Controllers(vec![pad("old-a", 1), pad("old-b", 2)]));
     let state = settings_button(&mut world, state, ButtonName::DpadRight);

@@ -19,7 +19,7 @@ pub type ConnectedPad = (
     u16,
     u16,
     String,
-    tehuti_core::dispatch::Connection,
+    tehuti_core::dispatch::Origin,
 );
 
 /// Labels pads in path order, counting each model independently.
@@ -268,17 +268,17 @@ const XBOX_RECEIVERS: [(u16, u16); 6] = [
 /// through UHID. A device under `/sys/devices/virtual/input` was made by a program through uinput
 /// and is never Bluetooth. Without a sysfs path only unambiguous signs count, else the origin is unknown.
 #[must_use]
-pub fn classify_origin(pad: &PadOrigin<'_>) -> tehuti_core::dispatch::Connection {
-    use tehuti_core::dispatch::Connection;
+pub fn classify_origin(pad: &PadOrigin<'_>) -> tehuti_core::dispatch::Origin {
+    use tehuti_core::dispatch::Origin;
     if pad.name == VIRTUAL_PAD_NAME {
-        return Connection::Tehuti;
+        return Origin::Tehuti;
     }
     let known_dongle = XBOX_RECEIVERS.contains(&(pad.vendor, pad.product));
     let Some(path) = pad.sysfs else {
         return match pad.bus.0 {
-            0x03 if known_dongle => Connection::Dongle,
-            0x03 => Connection::Usb,
-            _ => Connection::Unknown,
+            0x03 if known_dongle => Origin::Dongle,
+            0x03 => Origin::Usb,
+            _ => Origin::Unknown,
         };
     };
     let part = |text: &str| {
@@ -287,27 +287,27 @@ pub fn classify_origin(pad: &PadOrigin<'_>) -> tehuti_core::dispatch::Connection
     };
     if path.starts_with("/sys/devices/virtual/misc/uhid") {
         return if pad.bus == evdev::BusType::BUS_BLUETOOTH {
-            Connection::Bluetooth
+            Origin::Bluetooth
         } else {
-            Connection::Unknown
+            Origin::Unknown
         };
     }
     if path.starts_with("/sys/devices/virtual") {
         let signs = format!("{} {} {}", pad.name, pad.phys, pad.uniq).to_lowercase();
         return if signs.contains("sunshine") {
-            Connection::Streamed
+            Origin::Streamed
         } else {
-            Connection::VirtualOther
+            Origin::VirtualOther
         };
     }
     if part("hci") || part("bluetooth") {
-        Connection::Bluetooth
+        Origin::Bluetooth
     } else if known_dongle || part("xone") || part("gip") {
-        Connection::Dongle
+        Origin::Dongle
     } else if part("usb") {
-        Connection::Usb
+        Origin::Usb
     } else {
-        Connection::Unknown
+        Origin::Unknown
     }
 }
 
@@ -1014,7 +1014,7 @@ impl EvdevPad {
 
     /// Where the pad comes from: cable, dongle, Bluetooth, streamed or virtual, else unknown.
     #[must_use]
-    pub fn connection(&self) -> tehuti_core::dispatch::Connection {
+    pub fn connection(&self) -> tehuti_core::dispatch::Origin {
         let events = &self.handles.events;
         let input_id = events.input_id();
         classify_origin(&PadOrigin {
@@ -1923,9 +1923,9 @@ mod mirror_tests {
 mod tests {
     use super::{PadOrigin, classify_origin};
     use evdev::BusType;
-    use tehuti_core::dispatch::Connection;
+    use tehuti_core::dispatch::Origin;
 
-    fn origin(bus: BusType, ids: (u16, u16), sysfs: Option<&str>, name: &str) -> Connection {
+    fn origin(bus: BusType, ids: (u16, u16), sysfs: Option<&str>, name: &str) -> Origin {
         classify_origin(&PadOrigin {
             bus,
             vendor: ids.0,
@@ -1947,63 +1947,63 @@ mod tests {
                 pad,
                 "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3:1.0/input/input5/event4",
                 "Pad",
-                Connection::Usb,
+                Origin::Usb,
             ),
             (
                 BusType::BUS_USB,
                 (0x045e, 0x0291),
                 "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0/input/input6/event5",
                 "Pad",
-                Connection::Dongle,
+                Origin::Dongle,
             ),
             (
                 BusType::BUS_VIRTUAL,
                 pad,
                 "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0/gip0/gip0.0/input/input7/event6",
                 "Pad",
-                Connection::Dongle,
+                Origin::Dongle,
             ),
             (
                 BusType::BUS_BLUETOOTH,
                 pad,
                 "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-4/1-4:1.0/bluetooth/hci0/hci0:11/0005:045E:0B13.0003/input/input9/event8",
                 "Pad",
-                Connection::Bluetooth,
+                Origin::Bluetooth,
             ),
             (
                 BusType::BUS_BLUETOOTH,
                 pad,
                 "/sys/devices/virtual/misc/uhid/0005:045E:0B13.0007/input/input30/event12",
                 "Pad",
-                Connection::Bluetooth,
+                Origin::Bluetooth,
             ),
             (
                 BusType::BUS_USB,
                 pad,
                 "/sys/devices/virtual/input/input23/event16",
                 "Sunshine X-Box One (virtual) pad",
-                Connection::Streamed,
+                Origin::Streamed,
             ),
             (
                 BusType::BUS_USB,
                 pad,
                 "/sys/devices/virtual/input/input24/event17",
                 "Some Emulated Pad",
-                Connection::VirtualOther,
+                Origin::VirtualOther,
             ),
             (
                 BusType::BUS_BLUETOOTH,
                 pad,
                 "/sys/devices/virtual/input/input25/event18",
                 "Some Emulated Pad",
-                Connection::VirtualOther,
+                Origin::VirtualOther,
             ),
             (
                 BusType::BUS_USB,
                 pad,
                 "/sys/devices/virtual/input/input26/event19",
                 super::VIRTUAL_PAD_NAME,
-                Connection::Tehuti,
+                Origin::Tehuti,
             ),
         ];
         for (bus, ids, path, name, expected) in cases {
@@ -2014,10 +2014,7 @@ mod tests {
     #[test]
     fn bluetooth_is_never_claimed_without_proof() {
         let pad = (0x045e, 0x0b13);
-        assert_eq!(
-            origin(BusType::BUS_BLUETOOTH, pad, None, "Pad"),
-            Connection::Unknown
-        );
+        assert_eq!(origin(BusType::BUS_BLUETOOTH, pad, None, "Pad"), Origin::Unknown);
         assert_eq!(
             origin(
                 BusType::BUS_BLUETOOTH,
@@ -2025,9 +2022,9 @@ mod tests {
                 Some("/sys/devices/platform/odd/input/input1/event1"),
                 "Pad"
             ),
-            Connection::Unknown
+            Origin::Unknown
         );
-        assert_eq!(origin(BusType::BUS_USB, pad, None, "Pad"), Connection::Usb);
+        assert_eq!(origin(BusType::BUS_USB, pad, None, "Pad"), Origin::Usb);
     }
 
     #[test]
@@ -2041,7 +2038,7 @@ mod tests {
             phys: "sunshine-gamepad-1",
             uniq: "",
         };
-        assert_eq!(classify_origin(&pad), Connection::Streamed);
+        assert_eq!(classify_origin(&pad), Origin::Streamed);
     }
 
     #[test]
@@ -2054,7 +2051,7 @@ mod tests {
                     0x045e,
                     0x0b13,
                     String::new(),
-                    tehuti_core::dispatch::Connection::Usb,
+                    tehuti_core::dispatch::Origin::Usb,
                 ),
                 (
                     "/dev/input/event2".into(),
@@ -2062,7 +2059,7 @@ mod tests {
                     0x054c,
                     0x09cc,
                     String::new(),
-                    tehuti_core::dispatch::Connection::Usb,
+                    tehuti_core::dispatch::Origin::Usb,
                 ),
             ],
             &std::collections::BTreeMap::new(),
@@ -2075,7 +2072,7 @@ mod tests {
 
     #[test]
     fn a_pads_connection_reaches_its_tile_info() {
-        use tehuti_core::dispatch::Connection;
+        use tehuti_core::dispatch::Origin;
         let pads = super::numbered_controllers(
             [(
                 "/dev/input/event9".into(),
@@ -2083,11 +2080,11 @@ mod tests {
                 0x045e,
                 0x0b13,
                 String::new(),
-                Connection::Bluetooth,
+                Origin::Bluetooth,
             )],
             &std::collections::BTreeMap::new(),
         );
-        assert_eq!(pads[0].connection, Connection::Bluetooth);
+        assert_eq!(pads[0].connection, Origin::Bluetooth);
     }
 
     fn pad(path: &str, name: &str, identity: &str) -> super::ConnectedPad {
@@ -2097,7 +2094,7 @@ mod tests {
             0x045e,
             0x0b13,
             identity.into(),
-            tehuti_core::dispatch::Connection::Usb,
+            tehuti_core::dispatch::Origin::Usb,
         )
     }
 
@@ -2144,7 +2141,7 @@ mod tests {
                     0x054c,
                     0x05c4,
                     String::new(),
-                    tehuti_core::dispatch::Connection::Usb,
+                    tehuti_core::dispatch::Origin::Usb,
                 ),
                 (
                     "/dev/input/event2".into(),
@@ -2152,7 +2149,7 @@ mod tests {
                     0x054c,
                     0x09cc,
                     String::new(),
-                    tehuti_core::dispatch::Connection::Usb,
+                    tehuti_core::dispatch::Origin::Usb,
                 ),
             ],
             &std::collections::BTreeMap::new(),

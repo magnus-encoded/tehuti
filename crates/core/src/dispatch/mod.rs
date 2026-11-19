@@ -12,8 +12,9 @@ use std::collections::VecDeque;
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
 mod input_settings;
+pub use crate::pad::Origin;
 pub use input_settings::{
-    CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, ControllerChoice, ControllerInfo, DEADZONE_STEPS,
+    CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, ControllerChoice, ControllerInfo, DEADZONE_STEPS,
     DEFAULT_DEADZONE, InputSettings, MICROPHONE_ROW, MicKind, Microphone, MicrophoneChoice, PadKind,
     REMOTE_ROW, RelayState, TALK_OPTIONS,
 };
