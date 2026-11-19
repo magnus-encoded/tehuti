@@ -3,12 +3,12 @@
 use super::{
     AMBER, CYAN, WHITE,
     canvas::Canvas,
-    tiles::{DISPLAY_SIDE, Grid, wrap},
+    tiles::{DISPLAY_SIDE, Grid, ellipsize, per_line, wrap},
 };
 use tehuti_core::{
     dispatch::{
         CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, MICROPHONE_ROW, MicKind, MicrophoneChoice,
-        PadKind, Settings, TALK_OPTIONS,
+        PadKind, REMOTE_ROW, Settings, TALK_OPTIONS,
     },
     tiles::{Focus, clamp},
 };
@@ -68,14 +68,10 @@ impl Canvas {
     /// Centres up to three wrapped lines in `area`.
     fn tile_text(&mut self, area: Area, lines: &[String], points: usize, colour: [u8; 4]) {
         let (left, top, width, height) = area;
-        let per_line = width
-            .saturating_sub(12)
-            .saturating_mul(10)
-            .checked_div(points.saturating_mul(6))
-            .unwrap_or(1);
+        let columns = per_line(width, points);
         let wrapped: Vec<String> = lines
             .iter()
-            .flat_map(|line| wrap(line, per_line, 3))
+            .flat_map(|line| wrap(line, columns, 3))
             .take(3)
             .collect();
         let line_height = points.saturating_mul(6).checked_div(5).unwrap_or(points);
@@ -252,6 +248,7 @@ impl Canvas {
         self.controller_row(settings, &grid, focus);
         self.controller_settings_row(settings, &grid, focus);
         self.microphone_row(settings, &grid, focus);
+        self.remote_row(settings, &grid, focus);
         self.text(760, 58, "SPEECH RUNS ON", 2, WHITE);
         let speech: String = speech.chars().take(26).collect();
         self.text(
@@ -310,7 +307,8 @@ impl Canvas {
                 .saturating_sub(side / 12)
                 .saturating_mul(2),
         );
-        self.centred(middle, text, points, colour);
+        let fitted = ellipsize(text, per_line(side, points));
+        self.centred(middle, &fitted, points, colour);
     }
 
     /// A thin outline around a tile, for the pad that the focused settings row edits.
@@ -402,7 +400,9 @@ impl Canvas {
         let side = grid.side();
         let points = side.checked_div(10).unwrap_or(8).max(8);
         let enabled = input.controller_enabled(&controller.key);
-        if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0) {
+        // With the pad row scrolled away, the page heading already sits where this one would.
+        let beside_pads = grid.origin(CONTROLLER_ROW, 0).is_some();
+        if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0).filter(|_| beside_pads) {
             let heading = controller.spoken_name().to_uppercase();
             self.text(x, y.saturating_sub(28), &heading, 2, AMBER);
         }
@@ -438,6 +438,21 @@ impl Canvas {
         }
     }
 
+    /// The hosts that could send a remote microphone; confirm connects.
+    fn remote_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
+        let side = grid.side();
+        let points = side.checked_div(14).unwrap_or(8).max(8);
+        for (col, host) in settings.input.remote_hosts.iter().enumerate() {
+            if let Some((x, y)) = self.tile_frame(grid, (REMOTE_ROW, col), focus, false) {
+                let host = ellipsize(&host.to_uppercase(), per_line(side, points));
+                let lines = ["ADD REMOTE".to_owned(), host];
+                self.input_icon((x, y), side, "remote", WHITE);
+                let below = y.saturating_add(side.saturating_mul(7) / 10);
+                self.tile_text((x, below, side, side / 4), &lines, points, WHITE);
+            }
+        }
+    }
+
     fn microphone_row(&mut self, settings: &Settings, grid: &Grid, focus: Focus) {
         let input = &settings.input;
         let side = grid.side();
@@ -460,6 +475,9 @@ impl Canvas {
                 match (choice, microphone) {
                     (MicrophoneChoice::All, _) => self.input_icon((x, y), side, "all", colour),
                     (MicrophoneChoice::Auto, _) => self.input_icon((x, y), side, "auto", colour),
+                    (MicrophoneChoice::Named(_), Some(known)) if known.relay.is_some() => {
+                        self.input_icon((x, y), side, "relay", colour);
+                    }
                     (MicrophoneChoice::Named(_), Some(known)) => {
                         self.mic_drawing((x, y), side, known.kind(), colour);
                     }
@@ -468,8 +486,14 @@ impl Canvas {
                     }
                 }
                 let words = if enabled { label } else { format!("{label} OFF") };
+                let mut lines = vec![words];
+                lines.extend(
+                    microphone
+                        .and_then(|known| known.relay)
+                        .map(|state| state.label().to_owned()),
+                );
                 let below = y.saturating_add(side.saturating_mul(7) / 10);
-                self.tile_text((x, below, side, side / 4), &[words], points, colour);
+                self.tile_text((x, below, side, side / 4), &lines, points, colour);
             }
         }
     }

@@ -10,6 +10,8 @@ const LARGEST_SIDE: usize = 150;
 pub(super) const DISPLAY_SIDE: usize = 192;
 /// The largest side of an Input tile; the page shrinks it until pads, their settings and microphones all show.
 const INPUT_SIDE_MAX: usize = 180;
+/// The smallest side of an Input tile; below it the page scrolls rows into view instead.
+pub(super) const INPUT_SIDE_MIN: usize = 114;
 /// The height kept under every Input tile; the pad row's slot carries the settings row heading.
 pub(super) const INPUT_CAPTION: usize = 16;
 
@@ -46,7 +48,7 @@ impl Grid {
     pub(super) fn input(rows: &[usize], focus: Focus) -> Self {
         Self {
             rows: rows.to_vec(),
-            side: Self::fitting_side(rows, INPUT_CAPTION).clamp(1, INPUT_SIDE_MAX),
+            side: Self::fitting_side(rows, INPUT_CAPTION).clamp(INPUT_SIDE_MIN, INPUT_SIDE_MAX),
             caption: INPUT_CAPTION,
             focus,
         }
@@ -124,6 +126,30 @@ impl Grid {
     }
 }
 
+/// How many characters of `points` size fit across a tile of `width`.
+pub(super) fn per_line(width: usize, points: usize) -> usize {
+    width
+        .saturating_sub(12)
+        .saturating_mul(10)
+        .checked_div(points.saturating_mul(6))
+        .unwrap_or(1)
+}
+
+/// `text` cut to at most `per_line` characters, ending in two dots when it was cut.
+pub(super) fn ellipsize(text: &str, per_line: usize) -> String {
+    if text.chars().count() <= per_line {
+        return text.to_owned();
+    }
+    let kept = per_line.saturating_sub(2);
+    let head: String = text.chars().take(kept).collect();
+    let cut = head.trim_end();
+    if per_line >= 2 {
+        format!("{cut}..")
+    } else {
+        cut.to_owned()
+    }
+}
+
 /// Breaks `label` into at most `max_lines` lines of at most `per_line` characters,
 /// at spaces where it can and inside a word where it must.
 pub(super) fn wrap(label: &str, per_line: usize, max_lines: usize) -> Vec<String> {
@@ -149,13 +175,19 @@ pub(super) fn wrap(label: &str, per_line: usize, max_lines: usize) -> Vec<String
             }
         }
     }
+    if lines.len() > max_lines && max_lines > 0 {
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            *last = ellipsize(&format!("{last} .."), per_line);
+        }
+    }
     lines.truncate(max_lines);
     lines
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AREA, GAP, Grid, wrap};
+    use super::{AREA, GAP, Grid, ellipsize, per_line, wrap};
     use proptest::prelude::*;
     use tehuti_core::tiles::{Focus, clamp};
 
@@ -242,6 +274,29 @@ mod tests {
             prop_assert_eq!(shown[0], AREA.0);
             for pair in shown.windows(2) {
                 prop_assert_eq!(pair[1].saturating_sub(pair[0]), step);
+            }
+        }
+
+        #[test]
+        fn captions_never_reach_past_their_tile(
+            text in "[A-Z0-9 ().#-]{0,60}",
+            side in super::INPUT_SIDE_MIN..260_usize,
+            points in 8_usize..20,
+        ) {
+            let fit = ellipsize(&text, per_line(side, points));
+            prop_assert!(fit.chars().count().saturating_mul(points).saturating_mul(6) / 10 <= side.saturating_sub(12));
+        }
+
+        #[test]
+        fn input_tiles_keep_their_size_and_the_focused_row_scrolls_into_view(
+            rows in prop::collection::vec(0_usize..12, 1..8),
+            spot in (0_usize..8, 0_usize..12),
+        ) {
+            let focus = clamp(&rows, Focus { row: spot.0, col: spot.1 });
+            let grid = Grid::input(&rows, focus);
+            prop_assert!(grid.side() >= super::INPUT_SIDE_MIN);
+            if rows.get(focus.row).copied().unwrap_or(0) > 0 {
+                prop_assert!(grid.origin(focus.row, focus.col).is_some());
             }
         }
 

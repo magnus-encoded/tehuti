@@ -38,6 +38,8 @@ pub(super) fn raster(
         "headset" => include_str!("../../assets/input/headset.svg"),
         "mic" => include_str!("../../assets/input/mic.svg"),
         "network" => include_str!("../../assets/input/network.svg"),
+        "relay" => include_str!("../../assets/input/relay.svg"),
+        "remote" => include_str!("../../assets/input/remote.svg"),
         "phone" => include_str!("../../assets/input/phone.svg"),
         "switch" => include_str!("../../assets/input/switch.svg"),
         "usb-mic" => include_str!("../../assets/input/usb-mic.svg"),
