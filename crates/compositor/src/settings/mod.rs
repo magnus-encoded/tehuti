@@ -319,9 +319,18 @@ mod tests {
         let Some(directory) = std::env::var_os("SHOT_DIR") else {
             return Ok(());
         };
+        use tehuti_protocol::{ButtonName, ButtonState};
         let display = Display::<Compositor>::new()?;
         let mut compositor = Compositor::new(&display.handle())?;
         compositor.show_fixture("input")?;
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        for name in [ButtonName::DpadDown, ButtonName::South] {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                compositor.handle(&Event::Button { name, state });
+            }
+        }
         let mut buffer = compositor
             .settings_buffer((1280, 720))
             .ok_or("missing Input artwork")?;
