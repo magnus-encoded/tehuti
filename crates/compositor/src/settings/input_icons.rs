@@ -32,6 +32,8 @@ pub(super) fn raster(
         "bluetooth" => include_str!("../../assets/input/bluetooth.svg"),
         "builtin" => include_str!("../../assets/input/builtin.svg"),
         "cable" => include_str!("../../assets/input/cable.svg"),
+        "deadzone" => include_str!("../../assets/input/deadzone.svg"),
+        "recentre" => include_str!("../../assets/input/recentre.svg"),
         "dongle" => include_str!("../../assets/input/dongle.svg"),
         "dualsense" => include_str!("../../assets/input/dualsense.svg"),
         "generic-pad" => include_str!("../../assets/input/generic-pad.svg"),

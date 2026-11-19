@@ -125,4 +125,62 @@ mod tests {
         assert_eq!(speech_pixels("", cyan)?, 0);
         Ok(())
     }
+
+    /// The pixels of the open controller's settings row, with the DEADZONE tile (the fifth) focused.
+    fn deadzone_row(deadzone: Option<u16>) -> Result<Vec<[u8; 4]>, Box<dyn core::error::Error>> {
+        let mut settings = Settings::default();
+        settings.open = true;
+        settings.page = Page::Input;
+        settings.input.controllers = vec!["Pad".into()];
+        if let Some(deadzone) = deadzone {
+            let _previous = settings.input.controller_deadzones.insert("Pad".into(), deadzone);
+        }
+        settings.input.focus = tehuti_core::tiles::Focus { row: 1, col: 4 };
+        pixels_of(&settings)
+    }
+
+    fn lit(pixels: &[[u8; 4]], area: (usize, usize, usize, usize)) -> usize {
+        (area.1..area.1.saturating_add(area.3))
+            .flat_map(|y| (area.0..area.0.saturating_add(area.2)).map(move |x| (x, y)))
+            .filter(|(x, y)| pixel_at(pixels, *x, *y) == [244, 240, 225, 255])
+            .count()
+    }
+
+    #[test]
+    fn the_deadzone_tile_sits_fifth_in_the_controller_row_with_its_own_value()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let default = deadzone_row(None)?;
+        // The tiles shrink to fit three rows, so look at everything under the pad row.
+        let tile = (80, 330, 1120, 330);
+        assert!(lit(&default, tile) > 100, "the row carries its labels");
+        assert!(
+            default != deadzone_row(Some(250))?,
+            "the shown value follows the saved deadzone"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_recentre_tile_is_the_last_of_the_row_and_shows_once_measured()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let drawn = |measured: bool| -> Result<Vec<[u8; 4]>, Box<dyn core::error::Error>> {
+            let mut settings = Settings::default();
+            settings.open = true;
+            settings.page = Page::Input;
+            settings.input.controllers = vec!["Pad".into()];
+            if measured {
+                let _previous = settings
+                    .input
+                    .controller_recentres
+                    .insert("Pad".into(), [-104, 238, 0, 0]);
+            }
+            settings.input.focus = tehuti_core::tiles::Focus { row: 1, col: 5 };
+            pixels_of(&settings)
+        };
+        let tile = (80, 330, 1120, 330);
+        let (open, measured) = (drawn(false)?, drawn(true)?);
+        assert!(lit(&open, tile) > 100, "the row carries its labels");
+        assert!(open != measured, "a measured rest shows on the tile");
+        Ok(())
+    }
 }

@@ -13,8 +13,9 @@ use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
 mod input_settings;
 pub use input_settings::{
-    CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, ControllerChoice, ControllerInfo, InputSettings,
-    MICROPHONE_ROW, MicKind, Microphone, MicrophoneChoice, PadKind, REMOTE_ROW, RelayState, TALK_OPTIONS,
+    CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, Connection, ControllerChoice, ControllerInfo, DEADZONE_STEPS,
+    DEFAULT_DEADZONE, InputSettings, MICROPHONE_ROW, MicKind, Microphone, MicrophoneChoice, PadKind,
+    REMOTE_ROW, RelayState, TALK_OPTIONS,
 };
 
 mod settings;
@@ -56,6 +57,10 @@ pub enum Input {
     /// The connected pads and their labels, in device path order.
     Controllers(Vec<ControllerInfo>),
     ControllerBindings(std::collections::BTreeMap<String, ButtonName>),
+    /// The saved stick deadzones by pad key, in thousandths.
+    ControllerDeadzones(std::collections::BTreeMap<String, u16>),
+    /// The saved stick rest offsets by pad key: X, Y, right X, right Y, in thousandths of half travel.
+    ControllerRecentres(std::collections::BTreeMap<String, [i16; 4]>),
     ActiveController(String),
     /// Reply to [`Effect::ListMicrophones`]: the capture sources found.
     Microphones(Vec<Microphone>),
@@ -158,6 +163,10 @@ pub enum Effect {
     SettingsController(ControllerChoice),
     PersistController(ControllerChoice),
     PersistControllerTalk(String, Option<ButtonName>),
+    /// Saves the stick deadzone, in thousandths, of the pad with this key.
+    PersistControllerDeadzone(String, u16),
+    /// Measures where the pad's sticks rest now and keeps that as their centre.
+    RecentreController(String),
     /// Saves the capture sources the speech sidecar records from.
     SettingsMicrophone(MicrophoneChoice),
     /// Whether the named pad drives Tehuti; the compositor saves it and gates the pad.
@@ -486,6 +495,12 @@ enum SecretPrompt {
     Visible,
 }
 
+impl From<bool> for SecretPrompt {
+    fn from(visible: bool) -> Self {
+        if visible { Self::Visible } else { Self::Hidden }
+    }
+}
+
 /// How long focus may rest on no window before a passthrough window gives up the pad.
 /// Helper surfaces flicker focus away several times a second, each gap far shorter.
 pub const FOCUS_GAP_GRACE: Duration = Duration::from_millis(500);
@@ -684,6 +699,10 @@ fn size_read(mut state: State, value: Option<u32>) -> State {
     state
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive match over every input, each arm handing off"
+)]
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::Menu(command) => {
@@ -715,6 +734,8 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::WallpaperSaved(_)
         | Input::ModeApplied(_)
         | Input::ControllerBindings(_)
+        | Input::ControllerDeadzones(_)
+        | Input::ControllerRecentres(_)
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
@@ -780,6 +801,8 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
         | Input::ControllerBindings(_)
+        | Input::ControllerDeadzones(_)
+        | Input::ControllerRecentres(_)
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
@@ -804,20 +827,10 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
     run_tasks(state, tasks, Vec::new())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one match lists every settings reply beside the others"
-)]
 fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
-        Input::SecretPrompt(visible) => {
-            state.secret_prompt = if *visible {
-                SecretPrompt::Visible
-            } else {
-                SecretPrompt::Hidden
-            }
-        }
+        Input::SecretPrompt(visible) => state.secret_prompt = SecretPrompt::from(*visible),
         Input::Sticks(sticks) => adjuster_sticks(&mut state, *sticks),
         Input::TextField {
             active,
@@ -848,6 +861,8 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
         | Input::ControllerBindings(_)
+        | Input::ControllerDeadzones(_)
+        | Input::ControllerRecentres(_)
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
@@ -895,6 +910,8 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::WallpaperSaved(index) => state.settings.wallpaper_saved(index),
         Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
         Input::ControllerBindings(bindings) => state.settings.input.controller_bindings = bindings,
+        Input::ControllerDeadzones(deadzones) => state.settings.input.controller_deadzones = deadzones,
+        Input::ControllerRecentres(rests) => state.settings.input.controller_recentres = rests,
         Input::ActiveController(name) => {
             let binding = state.settings.input.controller_bindings.get(&name).copied();
             state.core.set_controller_push_to_talk(binding);

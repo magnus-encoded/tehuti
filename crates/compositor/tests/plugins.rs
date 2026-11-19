@@ -274,6 +274,8 @@ for line in sys.stdin:
             | Effect::SettingsScale(_)
             | Effect::SettingsController(_)
             | Effect::PersistControllerTalk(_, _)
+            | Effect::PersistControllerDeadzone(_, _)
+            | Effect::RecentreController(_)
             | Effect::PersistController(_)
             | Effect::SettingsMicrophone(_)
             | Effect::SettingsControllerEnabled { .. }

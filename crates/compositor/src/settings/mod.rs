@@ -605,6 +605,63 @@ mod tests {
     }
 
     #[test]
+    fn the_recentre_tile_queues_a_measurement_that_is_saved_and_handed_back()
+    -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let directory = tempfile::tempdir()?;
+        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.load_input_choices(store.clone());
+        compositor.configure_controllers(input_test_controllers());
+        compositor.activate_controller("Wireless Controller#1".into());
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        let press = |target: &mut Compositor, name| {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                target.handle(&Event::Button { name, state });
+            }
+        };
+        press(&mut compositor, ButtonName::DpadDown);
+        press(&mut compositor, ButtonName::South);
+        assert_eq!(compositor.settings().page, tehuti_core::dispatch::Page::Input);
+        assert!(compositor.settings_buffer((1024, 600)).is_some());
+        press(&mut compositor, ButtonName::DpadDown);
+        for _ in 0..5 {
+            press(&mut compositor, ButtonName::DpadRight);
+        }
+        assert_eq!(
+            compositor.settings().input.focus,
+            tehuti_core::tiles::Focus { row: 1, col: 5 }
+        );
+        assert!(
+            compositor.take_recentre_requests().is_empty(),
+            "moving asks for nothing"
+        );
+        press(&mut compositor, ButtonName::South);
+        assert_eq!(
+            compositor.take_recentre_requests(),
+            vec!["Wireless Controller#1".to_owned()]
+        );
+        assert!(
+            compositor.take_recentre_requests().is_empty(),
+            "a request is answered once"
+        );
+        compositor.store_recentre("Wireless Controller#1".into(), [200, 0, 0, 0]);
+        assert_eq!(
+            compositor.controller_recentre("Wireless Controller#1"),
+            [200, 0, 0, 0]
+        );
+        assert_eq!(compositor.controller_recentre("Xbox Controller#1"), [0; 4]);
+        assert_eq!(
+            store.controller_recentres()?.get("Wireless Controller#1"),
+            Some(&[200, 0, 0, 0])
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_saved_single_pad_choice_never_rejects_other_enabled_pads() -> Result<(), Box<dyn core::error::Error>>
     {
         let directory = tempfile::tempdir()?;

@@ -212,6 +212,11 @@ pub const TALK_OPTIONS: [Option<tehuti_protocol::ButtonName>; 3] = [
     Some(tehuti_protocol::ButtonName::Start),
 ];
 
+/// The stick deadzones a pad's DEADZONE tile steps through, in thousandths of full travel.
+pub const DEADZONE_STEPS: [u16; 8] = [0, 50, 100, 150, 200, 250, 300, 350];
+/// The deadzone of a pad with no saved choice: the 15% Tehuti always applied to its own stick reading.
+pub const DEFAULT_DEADZONE: u16 = 150;
+
 impl Microphone {
     #[must_use]
     pub fn kind(&self) -> MicKind {
@@ -261,6 +266,10 @@ pub struct InputSettings {
     pub microphone: MicrophoneChoice,
     pub active_controller: Option<String>,
     pub controller_bindings: std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
+    /// Saved stick deadzones by pad key, in thousandths; a pad without one uses the default.
+    pub controller_deadzones: std::collections::BTreeMap<String, u16>,
+    /// Where each pad's sticks rest, by pad key: X, Y, right X, right Y, in thousandths of half travel.
+    pub controller_recentres: std::collections::BTreeMap<String, [i16; 4]>,
     /// Pad names the user turned off.
     pub disabled_controllers: Vec<String>,
     /// Microphone node names the user turned off; never recorded, also under ALL.
@@ -286,11 +295,31 @@ impl InputSettings {
             if self.controllers.is_empty() {
                 0
             } else {
-                TALK_OPTIONS.len().saturating_add(1)
+                TALK_OPTIONS.len().saturating_add(3)
             },
             self.microphone_options().len(),
             self.remote_hosts.len(),
         ]
+    }
+
+    /// The stick deadzone of the pad with this key, in thousandths of full travel.
+    #[must_use]
+    pub fn deadzone(&self, key: &str) -> u16 {
+        self.controller_deadzones
+            .get(key)
+            .copied()
+            .unwrap_or(DEFAULT_DEADZONE)
+    }
+
+    /// The next deadzone after the pad's current one, wrapping round; a value off the steps moves to the next larger step.
+    #[must_use]
+    pub fn next_deadzone(&self, key: &str) -> u16 {
+        let current = self.deadzone(key);
+        DEADZONE_STEPS
+            .iter()
+            .copied()
+            .find(|step| *step > current)
+            .unwrap_or(DEADZONE_STEPS[0])
     }
 
     #[must_use]

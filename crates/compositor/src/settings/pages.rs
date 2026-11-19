@@ -436,6 +436,22 @@ impl Canvas {
                 self.tile_foot((x, y), side, &format!("TALK {label}"), points, WHITE);
             }
         }
+        let deadzone = (CONTROLLER_SETTINGS_ROW, TALK_OPTIONS.len().saturating_add(1));
+        if let Some((x, y)) = self.tile_frame(grid, deadzone, focus, true) {
+            let percent = input
+                .deadzone(&controller.key)
+                .checked_div(10)
+                .unwrap_or_default();
+            self.input_icon((x, y), side, "deadzone", WHITE);
+            self.tile_foot((x, y), side, &format!("DEADZONE {percent}%"), points, WHITE);
+        }
+        let recentre = (CONTROLLER_SETTINGS_ROW, TALK_OPTIONS.len().saturating_add(2));
+        let measured = input.controller_recentres.contains_key(&controller.key);
+        if let Some((x, y)) = self.tile_frame(grid, recentre, focus, measured) {
+            let words = if measured { "RECENTRE SET" } else { "RECENTRE" };
+            self.input_icon((x, y), side, "recentre", WHITE);
+            self.tile_foot((x, y), side, words, points, WHITE);
+        }
     }
 
     /// The hosts that could send a remote microphone; confirm connects.
