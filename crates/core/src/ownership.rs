@@ -688,11 +688,21 @@ mod tests {
         ])
     }
 
-    /// A talk list the parser accepts: no Guide or Start, and not empty.
+    /// A talk list the parser accepts: buttons a single entry may name, and not empty.
     fn usable_talk(talk: Vec<ButtonName>) -> Option<Vec<ButtonName>> {
         let talk: Vec<ButtonName> = talk
             .into_iter()
-            .filter(|button| !matches!(button, ButtonName::Guide | ButtonName::Start))
+            .filter(|button| {
+                matches!(
+                    button,
+                    ButtonName::Record
+                        | ButtonName::Select
+                        | ButtonName::Paddle1
+                        | ButtonName::Paddle2
+                        | ButtonName::Paddle3
+                        | ButtonName::Paddle4
+                )
+            })
             .collect();
         (!talk.is_empty()).then_some(talk)
     }
