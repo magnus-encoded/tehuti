@@ -17,18 +17,18 @@ use smithay::reexports::wayland_server::Display;
 use tehuti::state::Compositor;
 
 /// A client thread that wakes the server loop when it ends, even by panic.
-pub struct Client<T> {
+pub(crate) struct Client<T> {
     handle: thread::JoinHandle<T>,
     ended: Arc<AtomicBool>,
 }
 
 impl<T> Client<T> {
-    pub fn has_ended(&self) -> bool {
+    pub(crate) fn has_ended(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
     }
 
     /// Returns the client's result; panics if the client panicked.
-    pub fn join(self) -> T {
+    pub(crate) fn join(self) -> T {
         self.handle.join().unwrap()
     }
 }
@@ -47,7 +47,7 @@ impl Drop for EndSignal {
 }
 
 /// The server's side of the wake pipe.
-pub struct Harness {
+pub(crate) struct Harness {
     wake_read: UnixStream,
     wake_write: UnixStream,
 }
@@ -59,7 +59,7 @@ impl Default for Harness {
 }
 
 impl Harness {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (wake_read, wake_write) = UnixStream::pair().unwrap();
         wake_read.set_nonblocking(true).unwrap();
         wake_write.set_nonblocking(true).unwrap();
@@ -70,7 +70,7 @@ impl Harness {
     }
 
     /// Runs `body` on a thread whose end wakes [`Self::serve_until_ended`].
-    pub fn client<T: Send + 'static>(&self, body: impl FnOnce() -> T + Send + 'static) -> Client<T> {
+    pub(crate) fn client<T: Send + 'static>(&self, body: impl FnOnce() -> T + Send + 'static) -> Client<T> {
         let ended = Arc::new(AtomicBool::new(false));
         let signal = EndSignal {
             ended: ended.clone(),
@@ -84,7 +84,7 @@ impl Harness {
     }
 
     /// Serves clients until `done` holds, blocking on socket readiness between turns.
-    pub fn serve_until(
+    pub(crate) fn serve_until(
         &mut self,
         display: &mut Display<Compositor>,
         compositor: &mut Compositor,
@@ -101,7 +101,7 @@ impl Harness {
     }
 
     /// Serves clients until every one of them has ended.
-    pub fn serve_until_ended<T>(
+    pub(crate) fn serve_until_ended<T>(
         &mut self,
         display: &mut Display<Compositor>,
         compositor: &mut Compositor,
@@ -120,9 +120,9 @@ impl Harness {
             PollFd::new(&display_fd, PollFlags::IN),
             PollFd::new(&self.wake_read, PollFlags::IN),
         ];
-        match poll(&mut fds, None) {
-            Ok(_) | Err(rustix::io::Errno::INTR) => {}
-            Err(error) => panic!("waiting for clients failed: {error}"),
+        let polled = poll(&mut fds, None);
+        if polled != Err(rustix::io::Errno::INTR) {
+            polled.unwrap();
         }
         let mut drained = [0_u8; 64];
         while matches!(self.wake_read.read(&mut drained), Ok(count) if count > 0) {}
