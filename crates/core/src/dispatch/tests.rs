@@ -2862,6 +2862,34 @@ proptest! {
     }
 }
 
+/// Disagreement fixed in #800 step 3: a passthrough context with no list of its own used to talk
+/// on Record whatever the global list said; now it follows the global list like every other mode.
+#[test]
+fn passthrough_without_its_own_list_talks_on_the_global_buttons() {
+    let global = tehuti_protocol::parse_context("app_id = '*'\npush_to_talk = ['start']\n[buttons]").unwrap();
+    let app = tehuti_protocol::parse_context(
+        "app_id = 'org.example.Emulator'\n[buttons]\n[pad]\npassthrough = true",
+    )
+    .unwrap();
+    let mut state = configured(vec![app, global], "org.example.Emulator");
+    let mut world = World::default();
+    state = world.run(state, Input::Speech(SpeechInput::Available));
+    state = world.run(state, pad_button(ButtonName::Record, ButtonState::Pressed));
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::SpeechCommand(_)))
+    );
+    state = world.run(state, pad_button(ButtonName::Start, ButtonState::Pressed));
+    assert!(
+        world
+            .trace
+            .contains(&Effect::SpeechCommand(SpeechEffect::Start { session: 0 }))
+    );
+    let _state = world.run(state, pad_button(ButtonName::Start, ButtonState::Released));
+}
+
 #[test]
 fn title_updates_reach_plugins_without_cancelling_capture() {
     let mut world = World::default();
