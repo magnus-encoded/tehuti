@@ -625,10 +625,16 @@ mod tests {
         };
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::South);
+        assert_eq!(compositor.settings().page, tehuti_core::dispatch::Page::Input);
+        assert!(compositor.settings_buffer((1024, 600)).is_some());
         press(&mut compositor, ButtonName::DpadDown);
         for _ in 0..5 {
             press(&mut compositor, ButtonName::DpadRight);
         }
+        assert_eq!(
+            compositor.settings().input.focus,
+            tehuti_core::tiles::Focus { row: 1, col: 5 }
+        );
         assert!(
             compositor.take_recentre_requests().is_empty(),
             "moving asks for nothing"
