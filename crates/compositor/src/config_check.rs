@@ -338,7 +338,17 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
                             "the global layer sends Enter for South unless a focused context maps it"
                         }
                         Why::PushToTalk => "it is in the global context's push_to_talk list (default record)",
-                        _ => "an earlier routing layer consumes it",
+                        Why::GuideDpadChord
+                        | Why::ChordStart
+                        | Why::SystemMenu
+                        | Why::MenuRelease
+                        | Why::ColumnsLevel
+                        | Why::PluginRequest
+                        | Why::StickModifier
+                        | Why::HeldKey
+                        | Why::ContextMapping
+                        | Why::Passthrough
+                        | Why::Unmapped => "an earlier routing layer consumes it",
                     };
                     report.push(
                         path,
