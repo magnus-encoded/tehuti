@@ -6,6 +6,7 @@
 #![expect(
     clippy::must_use_candidate,
     clippy::missing_panics_doc,
+    missing_debug_implementations,
     reason = "test helper: panics are the failure report and results are not optional"
 )]
 
@@ -126,7 +127,7 @@ impl Harness {
         ];
         let polled = poll(&mut fds, None);
         if polled != Err(rustix::io::Errno::INTR) {
-            polled.unwrap();
+            let _ready = polled.unwrap();
         }
         let mut drained = [0_u8; 64];
         while matches!(self.wake_read.read(&mut drained), Ok(count) if count > 0) {}
