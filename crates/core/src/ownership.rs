@@ -444,7 +444,11 @@ mod tests {
     }
 
     fn any_guide_mode() -> impl Strategy<Value = GuideMode> {
-        prop_oneof![Just(GuideMode::Tehuti), Just(GuideMode::Both), Just(GuideMode::App)]
+        prop_oneof![
+            Just(GuideMode::Tehuti),
+            Just(GuideMode::Both),
+            Just(GuideMode::App)
+        ]
     }
 
     fn any_source() -> impl Strategy<Value = TalkSource> {
@@ -466,7 +470,15 @@ mod tests {
             any::<bool>(),
             any::<bool>(),
         );
-        let lists = (buttons(), buttons(), buttons(), buttons(), buttons(), buttons(), buttons());
+        let lists = (
+            buttons(),
+            buttons(),
+            buttons(),
+            buttons(),
+            buttons(),
+            buttons(),
+            buttons(),
+        );
         (flags, lists, any_source(), any_button()).prop_map(
             |(
                 (passthrough, level, guide_mode, guide_held, start_in_chord, menu_open, plugin_active),
@@ -690,7 +702,16 @@ mod tests {
         (setup, state, any::<bool>(), any_button(), any_phase()).prop_map(
             |(
                 (family, passthrough, guide, focused, global, own_talk, global_talk, controller_talk),
-                (stick_with, stick_held, level, guide_held, start_in_chord, chord_buttons, menu_open, menu_buttons),
+                (
+                    stick_with,
+                    stick_held,
+                    level,
+                    guide_held,
+                    start_in_chord,
+                    chord_buttons,
+                    menu_open,
+                    menu_buttons,
+                ),
                 plugin_active,
                 button,
                 phase,
@@ -774,7 +795,9 @@ mod tests {
             if self.menu_open {
                 state.menu = Some(state.new_menu());
             }
-            if self.stick_held && let Some(with) = self.stick_with {
+            if self.stick_held
+                && let Some(with) = self.stick_with
+            {
                 state.sticks.press_modifier(with);
             }
             state
@@ -864,7 +887,11 @@ mod tests {
             [Action::Text { text }] if text.as_str() == "g" => Kind::Context(Scope::Global),
             [Action::KeyDown { key: KeyName::X }] => Kind::Context(Scope::Active),
             [Action::KeyDown { key: KeyName::Y }] => Kind::Context(Scope::Global),
-            [Action::Key { key: KeyName::Enter, .. }] => Kind::GlobalLayer,
+            [
+                Action::Key {
+                    key: KeyName::Enter, ..
+                },
+            ] => Kind::GlobalLayer,
             _ => Kind::Dropped,
         }
     }
@@ -903,22 +930,23 @@ mod tests {
     fn the_talk_source_follows_the_lookup_order() {
         let global = "app_id = '*'\npush_to_talk = ['start']\n[buttons]";
         let own = "app_id = 'app'\n[buttons]\n[pad]\npush_to_talk = ['select']";
-        let contexts = || {
-            vec![
-                parse_context(own).unwrap(),
-                parse_context(global).unwrap(),
-            ]
-        };
+        let contexts = || vec![parse_context(own).unwrap(), parse_context(global).unwrap()];
         let focus = Event::Focus {
             app_id: Some("app".into()),
             title: String::new(),
         };
         let (mut state, _) = crate::step(State::with_contexts(contexts()), &focus);
         let view = state.ownership_view(false);
-        assert_eq!((view.talk, view.talk_source), (vec![ButtonName::Select], TalkSource::Context));
+        assert_eq!(
+            (view.talk, view.talk_source),
+            (vec![ButtonName::Select], TalkSource::Context)
+        );
         state.set_controller_push_to_talk(Some(ButtonName::East));
         let view = state.ownership_view(false);
-        assert_eq!((view.talk, view.talk_source), (vec![ButtonName::East], TalkSource::Controller));
+        assert_eq!(
+            (view.talk, view.talk_source),
+            (vec![ButtonName::East], TalkSource::Controller)
+        );
         let (state, _) = crate::step(
             State::with_contexts(vec![parse_context(global).unwrap()]),
             &Event::Focus {
@@ -927,19 +955,31 @@ mod tests {
             },
         );
         let view = state.ownership_view(false);
-        assert_eq!((view.talk, view.talk_source), (vec![ButtonName::Start], TalkSource::Global));
+        assert_eq!(
+            (view.talk, view.talk_source),
+            (vec![ButtonName::Start], TalkSource::Global)
+        );
         let view = State::default().ownership_view(false);
-        assert_eq!((view.talk, view.talk_source), (vec![ButtonName::Record], TalkSource::Default));
+        assert_eq!(
+            (view.talk, view.talk_source),
+            (vec![ButtonName::Record], TalkSource::Default)
+        );
     }
 
     #[test]
     fn guide_is_forwarded_only_through_a_passthrough_pad_that_asks() {
         let mut view = State::default().ownership_view(false);
         view.guide_mode = GuideMode::Both;
-        assert!(!view.guide_forwarded(), "Both without passthrough stays with Tehuti");
+        assert!(
+            !view.guide_forwarded(),
+            "Both without passthrough stays with Tehuti"
+        );
         view.passthrough = true;
         assert!(view.guide_forwarded());
-        assert_eq!(owner(&view, ButtonName::Guide, Phase::Pressed), Owner::Tehuti(Why::EscapeChord));
+        assert_eq!(
+            owner(&view, ButtonName::Guide, Phase::Pressed),
+            Owner::Tehuti(Why::EscapeChord)
+        );
         assert!(GLOBAL_APP_ID.starts_with('*'));
     }
 }
