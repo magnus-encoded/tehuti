@@ -160,11 +160,8 @@ impl PadRoster {
                 let model_name = model.model_name(&sighting.name);
                 let count = counts.entry(model_name.clone()).or_default();
                 *count = count.saturating_add(1);
-                let key = self
-                    .known
-                    .get(&sighting.path)
-                    .map(|pad| pad.key.clone())
-                    .unwrap_or_else(|| {
+                let key = self.known.get(&sighting.path).map_or_else(
+                    || {
                         let identity = &sighting.uniq;
                         let name = &sighting.name;
                         let candidates = (1_usize..).map(|index| match (identity.is_empty(), index) {
@@ -178,7 +175,9 @@ impl PadRoster {
                             .unwrap_or_default();
                         let _fresh = taken.insert(free.clone());
                         PadKey(free)
-                    });
+                    },
+                    |pad| pad.key.clone(),
+                );
                 let pad = Pad {
                     key,
                     label: format!("{model_name} #{count}"),
@@ -188,8 +187,7 @@ impl PadRoster {
                     held: self
                         .known
                         .get(&sighting.path)
-                        .map(|pad| pad.held.clone())
-                        .unwrap_or_default(),
+                        .map_or_else(Vec::new, |pad| pad.held.clone()),
                 };
                 let _old = next.insert(sighting.path.clone(), pad.clone());
                 (sighting.path, pad)
