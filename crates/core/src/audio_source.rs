@@ -79,15 +79,18 @@ impl AudioSource {
     pub fn classify(key: &str, description: &str, relay: Option<Presence>) -> Self {
         let lowered = format!("{key} {description}").to_lowercase();
         let has = |words: &[&str]| words.iter().any(|word| lowered.contains(word));
-        let (kind, presence) = if let Some(presence) = relay {
-            (SourceKind::Stream(StreamOrigin::Relay), presence)
-        } else if key.ends_with(".monitor") || has(&["monitor of", "loopback"]) {
-            (SourceKind::Stream(StreamOrigin::Loopback), Presence::Present)
-        } else if has(&["rtp", "network", "tunnel", "stream", "raop"]) {
-            (SourceKind::Stream(StreamOrigin::Network), Presence::Present)
-        } else {
-            (SourceKind::Microphone, Presence::Present)
-        };
+        let (kind, presence) = relay.map_or_else(
+            || {
+                if key.ends_with(".monitor") || has(&["monitor of", "loopback"]) {
+                    (SourceKind::Stream(StreamOrigin::Loopback), Presence::Present)
+                } else if has(&["rtp", "network", "tunnel", "stream", "raop"]) {
+                    (SourceKind::Stream(StreamOrigin::Network), Presence::Present)
+                } else {
+                    (SourceKind::Microphone, Presence::Present)
+                }
+            },
+            |presence| (SourceKind::Stream(StreamOrigin::Relay), presence),
+        );
         Self {
             key: key.to_owned(),
             description: description.to_owned(),
