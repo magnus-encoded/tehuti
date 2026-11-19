@@ -3675,7 +3675,7 @@ impl Compositor {
     fn poll_launchers(&mut self) {
         let now = Instant::now();
         let failures = self.launcher.poll(now);
-        let summary = crate::launcher::Failure::summary(&failures);
+        let summary = crate::launch::Failure::summary(&failures);
         if failures.iter().any(|failure| !failure.early) {
             self.show_launch_failure();
         }
