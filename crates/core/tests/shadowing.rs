@@ -5,7 +5,8 @@ mod shadowing {
     use proptest::prelude::*;
     use tehuti_core::{
         State,
-        shadowing::{ButtonOwner, Shadowing, shadowed},
+        ownership::Why,
+        shadowing::{Shadowing, shadowed},
         step,
     };
     use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, Text, parse_context};
@@ -143,17 +144,17 @@ mod shadowing {
                 Shadowing::Button {
                     context: 0,
                     button: ButtonName::South,
-                    owner: ButtonOwner::GlobalEnter
+                    owner: Why::GlobalEnter
                 },
                 Shadowing::Button {
                     context: 1,
                     button: ButtonName::Guide,
-                    owner: ButtonOwner::EscapeChord
+                    owner: Why::EscapeChord
                 },
                 Shadowing::Button {
                     context: 1,
                     button: ButtonName::Start,
-                    owner: ButtonOwner::PushToTalk
+                    owner: Why::PushToTalk
                 },
                 Shadowing::Context {
                     context: 2,
@@ -186,7 +187,25 @@ mod shadowing {
             vec![Shadowing::Button {
                 context: 0,
                 button: ButtonName::Record,
-                owner: ButtonOwner::PushToTalk
+                owner: Why::PushToTalk
+            }]
+        );
+    }
+
+    #[test]
+    fn the_global_contexts_own_pad_list_does_not_decide_what_it_shadows() {
+        // Routing reads the global context's `push_to_talk`, never its `[pad]` list, so Start
+        // talks and Select does not.
+        let contexts = [parse_context(
+            "app_id = '*'\npush_to_talk = ['start']\n[pad]\npush_to_talk = ['select']\n[buttons]\nstart = { key = 'tab' }\nselect = { key = 'tab' }\n",
+        )
+        .unwrap()];
+        assert_eq!(
+            shadowed(&contexts),
+            vec![Shadowing::Button {
+                context: 0,
+                button: ButtonName::Start,
+                owner: Why::PushToTalk
             }]
         );
     }

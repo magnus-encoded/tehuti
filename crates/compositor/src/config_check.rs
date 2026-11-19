@@ -3,7 +3,10 @@
 use core::fmt;
 use std::path::{Path, PathBuf};
 
-use tehuti_core::shadowing::{ButtonOwner, Shadowing, shadowed};
+use tehuti_core::{
+    ownership::Why,
+    shadowing::{Shadowing, shadowed},
+};
 use tehuti_protocol::ButtonName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,6 +294,25 @@ fn report_skipped_phrases(report: &mut Report, loaded: &[(PathBuf, tehuti_protoc
     }
 }
 
+const fn shadowing_reason(why: Why) -> &'static str {
+    match why {
+        Why::EscapeChord => "the escape chord consumes every Guide press",
+        Why::GlobalEnter => "the global layer sends Enter for South unless a focused context maps it",
+        Why::PushToTalk => "it is in the global context's push_to_talk list (default record)",
+        Why::GuideDpadChord
+        | Why::ChordStart
+        | Why::SystemMenu
+        | Why::MenuRelease
+        | Why::ColumnsLevel
+        | Why::PluginRequest
+        | Why::StickModifier
+        | Why::HeldKey
+        | Why::ContextMapping
+        | Why::Passthrough
+        | Why::Unmapped => "an earlier routing layer consumes it",
+    }
+}
+
 fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
     let contexts: Vec<_> = loaded.iter().map(|(_, context)| context.clone()).collect();
     report_unreachable_speech(report, loaded, |phrase| {
@@ -329,15 +351,7 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
                 owner,
             } => {
                 if let Some((path, _)) = loaded.get(context) {
-                    let reason = match owner {
-                        ButtonOwner::EscapeChord => "the escape chord consumes every Guide press",
-                        ButtonOwner::GlobalEnter => {
-                            "the global layer sends Enter for South unless a focused context maps it"
-                        }
-                        ButtonOwner::PushToTalk => {
-                            "it is in the global context's push_to_talk list (default record)"
-                        }
-                    };
+                    let reason = shadowing_reason(owner);
                     report.push(
                         path,
                         Severity::Warning,
