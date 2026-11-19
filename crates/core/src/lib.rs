@@ -1245,6 +1245,7 @@ pub mod windows;
 pub mod layout;
 pub mod layout_trace;
 
+pub mod audio_source;
 pub mod bar;
 pub mod overlay;
 pub mod ownership;

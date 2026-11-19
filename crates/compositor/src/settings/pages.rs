@@ -343,6 +343,9 @@ impl Canvas {
         let input = &settings.input;
         let side = grid.side();
         let points = side.checked_div(14).unwrap_or(8).max(8);
+        if let Some((x, y)) = grid.origin(CONTROLLER_ROW, 0) {
+            self.text(x, y.saturating_sub(28), "CONTROLLERS", 2, AMBER);
+        }
         for (col, controller) in input.controllers.iter().enumerate() {
             let enabled = input.controller_enabled(&controller.key);
             let Some((x, y)) = self.tile_frame(grid, (CONTROLLER_ROW, col), focus, enabled) else {
@@ -400,9 +403,7 @@ impl Canvas {
         let side = grid.side();
         let points = side.checked_div(10).unwrap_or(8).max(8);
         let enabled = input.controller_enabled(&controller.key);
-        // With the pad row scrolled away, the page heading already sits where this one would.
-        let beside_pads = grid.origin(CONTROLLER_ROW, 0).is_some();
-        if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0).filter(|_| beside_pads) {
+        if let Some((x, y)) = grid.origin(CONTROLLER_SETTINGS_ROW, 0) {
             let heading = controller.spoken_name().to_uppercase();
             self.text(x, y.saturating_sub(28), &heading, 2, AMBER);
         }
@@ -473,6 +474,9 @@ impl Canvas {
         let input = &settings.input;
         let side = grid.side();
         let points = side.checked_div(14).unwrap_or(8).max(8);
+        if let Some((x, y)) = grid.origin(MICROPHONE_ROW, 0) {
+            self.text(x, y.saturating_sub(28), "AUDIO SOURCES", 2, AMBER);
+        }
         for (col, choice) in input.microphone_options().iter().enumerate() {
             let marked = *choice == input.microphone;
             if let Some((x, y)) = self.tile_frame(grid, (MICROPHONE_ROW, col), focus, marked) {
@@ -502,12 +506,25 @@ impl Canvas {
                     }
                 }
                 let words = if enabled { label } else { format!("{label} OFF") };
+                let source = microphone.map(tehuti_core::dispatch::Microphone::source);
                 let mut lines = vec![words];
-                lines.extend(
-                    microphone
-                        .and_then(|known| known.relay)
-                        .map(|state| state.label().to_owned()),
-                );
+                if let Some(source) = &source {
+                    lines.push(if source.kind.loops_back() {
+                        "HEARS ITSELF".to_owned()
+                    } else {
+                        source.kind.label().to_owned()
+                    });
+                    lines.extend(
+                        microphone
+                            .and_then(|known| known.relay)
+                            .map(|state| state.label().to_owned()),
+                    );
+                }
+                let colour = if source.as_ref().is_some_and(|known| known.kind.loops_back()) {
+                    AMBER
+                } else {
+                    colour
+                };
                 let below = y.saturating_add(side.saturating_mul(7) / 10);
                 self.tile_text((x, below, side, side / 4), &lines, points, colour);
             }

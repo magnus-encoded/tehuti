@@ -271,7 +271,13 @@ pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<Mem
         WHITE,
     );
     canvas.rectangle(80, 166, 1120, 2, CYAN);
-    canvas.text(80, 190, "POP THE HOOD", 2, AMBER);
+    // The Input page names its first row at the left, so the hood label moves right, clear of any row heading.
+    let hood_left = if settings.page == Page::Input {
+        1200 - 12 * 12
+    } else {
+        80
+    };
+    canvas.text(hood_left, 190, "POP THE HOOD", 2, AMBER);
     if settings.page == Page::Categories {
         canvas.text(1200 - 24 * 15, 186, &build_line(), 3, WHITE);
     }
@@ -306,6 +312,39 @@ mod tests {
         utils::{Rectangle, Transform},
     };
     use tehuti_protocol::{Event, Text};
+
+    /// Writes the Input page to `$SHOT_DIR/input-page.png` when that is set; the PR screenshots come from here.
+    #[test]
+    fn the_input_page_can_be_written_as_a_screenshot() -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let Some(directory) = std::env::var_os("SHOT_DIR") else {
+            return Ok(());
+        };
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.show_fixture("input")?;
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        for name in [ButtonName::DpadDown, ButtonName::South] {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                compositor.handle(&Event::Button { name, state });
+            }
+        }
+        let mut buffer = compositor
+            .settings_buffer((1280, 720))
+            .ok_or("missing Input artwork")?;
+        let mut rgba = Vec::new();
+        buffer.render().draw(|pixels| {
+            for pixel in pixels.as_chunks::<4>().0 {
+                rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+            }
+            Ok::<_, Box<dyn core::error::Error>>(Vec::new())
+        })?;
+        let path = std::path::Path::new(&directory).join("input-page.png");
+        image::save_buffer(path, &rgba, 1280, 720, image::ColorType::Rgba8)?;
+        Ok(())
+    }
 
     #[test]
     fn input_silhouettes_have_smooth_edges_at_each_output_size() -> Result<(), Box<dyn core::error::Error>> {

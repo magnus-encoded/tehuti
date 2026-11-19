@@ -1854,7 +1854,7 @@ impl Compositor {
                     mic("alsa_input.pci-analog", "Built-in Analog Stereo"),
                     mic("rtp-source", "Network RTP Stream"),
                     mic("phone-mic", "Phone Microphone"),
-                    mic("capture-source", "Capture Microphone"),
+                    mic("alsa_output.analog.monitor", "Monitor of Built-in Speakers"),
                     tehuti_core::dispatch::Microphone {
                         relay: Some(tehuti_core::dispatch::RelayState::Connected),
                         ..mic("audiorelay-virtual-mic", "Phone One")

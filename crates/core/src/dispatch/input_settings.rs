@@ -1,6 +1,7 @@
 //! The Input page of the settings view: one tile per controller, microphone and push-to-talk button.
 
 use super::Effect;
+use crate::audio_source::AudioSource;
 use crate::tiles::Focus;
 
 /// Which connected pad drives Tehuti.
@@ -238,6 +239,17 @@ impl Microphone {
         }
     }
 
+    /// This node as an audio source: a microphone or a stream, and whether it is usable yet.
+    #[must_use]
+    pub fn source(&self) -> AudioSource {
+        use crate::audio_source::Presence;
+        let relay = self.relay.map(|state| match state {
+            RelayState::Connected => Presence::Present,
+            RelayState::Waiting => Presence::Connecting,
+        });
+        AudioSource::classify(&self.name, &self.description, relay)
+    }
+
     /// The name voice uses for this microphone, and the caption under its tile.
     #[must_use]
     pub fn spoken_name(&self) -> String {
@@ -325,6 +337,15 @@ impl InputSettings {
     #[must_use]
     pub fn controller_enabled(&self, name: &str) -> bool {
         !self.disabled_controllers.iter().any(|disabled| disabled == name)
+    }
+
+    /// The named capture node as an audio source; a name that is not listed is Gone.
+    #[must_use]
+    pub fn audio_source(&self, name: &str) -> AudioSource {
+        self.microphones
+            .iter()
+            .find(|microphone| microphone.name == name)
+            .map_or_else(|| AudioSource::gone(name), Microphone::source)
     }
 
     #[must_use]

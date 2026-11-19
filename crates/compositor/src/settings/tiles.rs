@@ -11,9 +11,9 @@ pub(super) const DISPLAY_SIDE: usize = 192;
 /// The largest side of an Input tile; the page shrinks it until pads, their settings and microphones all show.
 const INPUT_SIDE_MAX: usize = 180;
 /// The smallest side of an Input tile; below it the page scrolls rows into view instead.
-pub(super) const INPUT_SIDE_MIN: usize = 114;
+pub(super) const INPUT_SIDE_MIN: usize = 100;
 /// The height kept under every Input tile; the pad row's slot carries the settings row heading.
-pub(super) const INPUT_CAPTION: usize = 16;
+pub(super) const INPUT_CAPTION: usize = 28;
 
 /// The square tiles of a page: one side for every tile, rows filled from the left.
 ///
