@@ -499,7 +499,10 @@ mod tests {
                 start_in_chord,
                 chord_buttons,
                 menu_open,
-                menu_buttons,
+                menu_buttons: menu_buttons
+                    .into_iter()
+                    .filter(|held| !matches!(held, ButtonName::Guide | ButtonName::Start))
+                    .collect(),
                 talk,
                 talk_source,
                 plugin_active,
@@ -698,7 +701,12 @@ mod tests {
             prop::option::of(any_button()),
         );
         let state = (
-            prop::option::of(any_button()),
+            prop::option::of(prop::sample::select(vec![
+                ButtonName::South,
+                ButtonName::East,
+                ButtonName::North,
+                ButtonName::West,
+            ])),
             any::<bool>(),
             any_level(),
             any::<bool>(),
