@@ -9,6 +9,10 @@
 | Global layer | The fixed mapping that applies in every application. Confirm sends an Enter tap by default; an active context mapping of that button replaces it. |
 | Tap hold | Timed synthetic key synthesis with caller-supplied monotonic time, shared modifier deadlines, re-tap gaps and focus generations. A context may set the hold time with `key_hold_ms` (1 to 1000 ms, default 40). |
 | Held key | A key a `hold = true` button mapping keeps down from the button's press to its release, or until focus, a disconnect or an overlay releases it. |
+| Audio source | Anything Tehuti can take audio from for speech: a Microphone or a Stream, with a key and a Presence. Sorted by where the sound comes from, not by how PipeWire lists it. |
+| Microphone | An Audio source that is a local device picking up sound in the room: built-in, USB, Bluetooth or a pad headset. |
+| Stream | An Audio source whose sound originates elsewhere: a phone through the relay player, a monitor or loopback of the machine's own output, a test clip or a recorded command. A loopback Stream can hear Tehuti itself, so the Input page warns before speech listens to it. |
+| Presence | The lifecycle shared by Audio sources and pads: Connecting (seen, not yet usable), Present (usable now), Gone (vanished, or known only from saved settings). |
 | Tile | One equal square of a settings page row (controller, microphone, resolution, refresh rate, scale, font). Rows fill from the left like windows in the columns layout; moving focus never changes a setting, confirm applies the focused tile, and a tile that arrives late joins the row end without moving focus. |
 | Consumed | An event handled by a layer, with or without an action. Later layers never see it. |
 | Context | A set of input mappings for one application id, optionally narrowed to one exact window title. |

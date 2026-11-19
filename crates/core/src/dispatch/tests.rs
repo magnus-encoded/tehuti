@@ -6377,3 +6377,18 @@ fn a_late_host_list_adds_a_row_and_confirm_connects() {
             .contains(&Effect::ConnectRemoteMicrophone { host: "desk".into() })
     );
 }
+
+#[test]
+fn the_input_page_sorts_listed_nodes_and_marks_unlisted_ones_gone() {
+    use crate::audio_source::{Presence, SourceKind};
+    let input = InputSettings {
+        microphones: vec![
+            microphone("alsa_input.usb", "USB Mic"),
+            microphone("alsa_output.analog.monitor", "Monitor of Speakers"),
+        ],
+        ..InputSettings::default()
+    };
+    assert_eq!(input.audio_source("alsa_input.usb").kind, SourceKind::Microphone);
+    assert!(input.audio_source("alsa_output.analog.monitor").kind.loops_back());
+    assert_eq!(input.audio_source("unplugged").presence, Presence::Gone);
+}

@@ -271,7 +271,9 @@ pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<Mem
         WHITE,
     );
     canvas.rectangle(80, 166, 1120, 2, CYAN);
-    canvas.text(80, 190, "POP THE HOOD", 2, AMBER);
+    // The Input page names its first row at the left, so the hood label moves right, clear of any row heading.
+    let hood_left = if settings.page == Page::Input { 1200 - 12 * 12 } else { 80 };
+    canvas.text(hood_left, 190, "POP THE HOOD", 2, AMBER);
     if settings.page == Page::Categories {
         canvas.text(1200 - 24 * 15, 186, &build_line(), 3, WHITE);
     }
