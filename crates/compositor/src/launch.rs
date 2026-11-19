@@ -76,10 +76,10 @@ impl Launch {
     /// The command with the session environment and detached standard streams.
     #[must_use]
     pub fn command(&self) -> std::process::Command {
-        let mut command = match &self.socket {
-            Some(socket) => crate::client_env::command(&self.program, socket),
-            None => crate::child_process::command(&self.program),
-        };
+        let mut command = self.socket.as_ref().map_or_else(
+            || crate::child_process::command(&self.program),
+            |socket| crate::client_env::command(&self.program, socket),
+        );
         let _command = command
             .args(&self.args)
             .stdin(Stdio::null())
@@ -117,7 +117,7 @@ pub trait Spawner {
 impl Process for Child {
     fn try_wait(&mut self) -> io::Result<Option<Exit>> {
         Ok(
-            Child::try_wait(self)?.map(|status| match (status.success(), status.code()) {
+            Self::try_wait(self)?.map(|status| match (status.success(), status.code()) {
                 (true, _) => Exit::Success,
                 (false, Some(code)) => Exit::Code(code),
                 (false, None) => Exit::Crashed,
@@ -226,7 +226,7 @@ impl<S: Spawner> Launches<S> {
     }
 
     #[must_use]
-    pub fn running(&self) -> usize {
+    pub const fn running(&self) -> usize {
         self.running.len()
     }
 
