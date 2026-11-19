@@ -514,9 +514,9 @@ mod tests {
                 guide_mode,
                 guide_held,
                 start_in_chord,
+                held_buttons: chord_buttons.clone(),
                 chord_buttons,
                 menu_open,
-                held_buttons: chord_buttons.clone(),
                 menu_buttons: menu_buttons
                     .into_iter()
                     .filter(|held| !matches!(held, ButtonName::Guide | ButtonName::Start))
