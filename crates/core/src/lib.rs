@@ -1247,6 +1247,7 @@ pub mod layout_trace;
 
 pub mod bar;
 pub mod overlay;
+pub mod ownership;
 pub mod pad;
 pub mod ticker;
 pub mod vpad;
