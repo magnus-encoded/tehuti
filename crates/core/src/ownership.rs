@@ -10,7 +10,7 @@
 
 use tehuti_protocol::{ButtonName, GuideMode};
 
-use crate::{GLOBAL_APP_ID, Level, State, focused_context, global_context, pad};
+use crate::{Level, State, focused_context, global_context, pad};
 
 /// Every pad button, so a view can be built from a state.
 const ALL_BUTTONS: [ButtonName; 22] = [
@@ -129,6 +129,10 @@ impl Owner {
 
 /// A plain-data snapshot of what decides ownership, rebuilt from the state at the start of a step.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a flat snapshot of independent routing flags"
+)]
 pub struct OwnershipView {
     /// The button in the Confirm role on this pad.
     pub confirm: ButtonName,
@@ -419,6 +423,7 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    use core::fmt::Write as _;
     use core::time::Duration;
 
     use proptest::prelude::*;
@@ -606,17 +611,15 @@ mod tests {
         let mut source = format!("app_id = '{app_id}'\n");
         if scope == Scope::Global {
             source.push_str(pad_section);
-            source.push_str("[buttons]\n");
-        } else {
-            source.push_str("[buttons]\n");
         }
+        source.push_str("[buttons]\n");
         for (button, hold) in maps {
             let name = toml::Value::try_from(button).unwrap();
             let name = name.as_str().unwrap();
             if *hold {
-                source.push_str(&format!("{name} = {{ key = '{key}', hold = true }}\n"));
+                writeln!(source, "{name} = {{ key = '{key}', hold = true }}").unwrap();
             } else {
-                source.push_str(&format!("{name} = {{ text = '{text}' }}\n"));
+                writeln!(source, "{name} = {{ text = '{text}' }}").unwrap();
             }
         }
         if scope == Scope::Active {
@@ -635,6 +638,10 @@ mod tests {
 
     /// A generated state with the knobs routing reads set, and the event to route.
     #[derive(Debug, Clone)]
+    #[expect(
+        clippy::struct_excessive_bools,
+        reason = "a flat generated snapshot of routing flags"
+    )]
     struct Scenario {
         family: PadFamily,
         passthrough: bool,
@@ -678,6 +685,7 @@ mod tests {
         ])
     }
 
+    #[expect(clippy::too_many_lines, reason = "one flat generator for every routing knob")]
     fn scenario() -> impl Strategy<Value = Scenario> {
         let setup = (
             prop::sample::select(vec![PadFamily::Letters, PadFamily::Nintendo]),
@@ -747,27 +755,27 @@ mod tests {
             let mut pad = String::new();
             if self.passthrough {
                 pad.push_str("[pad]\npassthrough = true\nvirtual = true\n");
-                pad.push_str(&format!(
-                    "guide = '{}'\n",
-                    match self.guide {
-                        GuideMode::Tehuti => "tehuti",
-                        GuideMode::Both => "both",
-                        GuideMode::App => "app",
-                    }
-                ));
+                let mode = match self.guide {
+                    GuideMode::Tehuti => "tehuti",
+                    GuideMode::Both => "both",
+                    GuideMode::App => "app",
+                };
+                writeln!(pad, "guide = '{mode}'").unwrap();
             } else if self.own_talk.is_some() {
                 pad.push_str("[pad]\n");
             }
             if let Some(own) = &self.own_talk {
-                pad.push_str(&format!("push_to_talk = {}\n", list(own)));
+                writeln!(pad, "push_to_talk = {}", list(own)).unwrap();
             }
             let mut focused = context_source(FOCUSED, Scope::Active, &self.focused, &pad);
             if let Some(with) = self.stick_with {
                 let name = toml::Value::try_from(with).unwrap();
-                focused.push_str(&format!(
-                    "[sticks]\nleft.up = {{ text = 's', with = '{}' }}\n",
+                writeln!(
+                    focused,
+                    "[sticks]\nleft.up = {{ text = 's', with = '{}' }}",
                     name.as_str().unwrap()
-                ));
+                )
+                .unwrap();
             }
             let top = self
                 .global_talk
@@ -936,32 +944,32 @@ mod tests {
             title: String::new(),
         };
         let (mut state, _) = crate::step(State::with_contexts(contexts()), &focus);
-        let view = state.ownership_view(false);
+        let view1 = state.ownership_view(false);
         assert_eq!(
-            (view.talk, view.talk_source),
+            (view1.talk, view1.talk_source),
             (vec![ButtonName::Select], TalkSource::Context)
         );
         state.set_controller_push_to_talk(Some(ButtonName::East));
-        let view = state.ownership_view(false);
+        let view2 = state.ownership_view(false);
         assert_eq!(
-            (view.talk, view.talk_source),
+            (view2.talk, view2.talk_source),
             (vec![ButtonName::East], TalkSource::Controller)
         );
-        let (state, _) = crate::step(
+        let (other, _) = crate::step(
             State::with_contexts(vec![parse_context(global).unwrap()]),
             &Event::Focus {
                 app_id: Some("other".into()),
                 title: String::new(),
             },
         );
-        let view = state.ownership_view(false);
+        let view3 = other.ownership_view(false);
         assert_eq!(
-            (view.talk, view.talk_source),
+            (view3.talk, view3.talk_source),
             (vec![ButtonName::Start], TalkSource::Global)
         );
-        let view = State::default().ownership_view(false);
+        let view4 = State::default().ownership_view(false);
         assert_eq!(
-            (view.talk, view.talk_source),
+            (view4.talk, view4.talk_source),
             (vec![ButtonName::Record], TalkSource::Default)
         );
     }
@@ -980,6 +988,5 @@ mod tests {
             owner(&view, ButtonName::Guide, Phase::Pressed),
             Owner::Tehuti(Why::EscapeChord)
         );
-        assert!(GLOBAL_APP_ID.starts_with('*'));
     }
 }
