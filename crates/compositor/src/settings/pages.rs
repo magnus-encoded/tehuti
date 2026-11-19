@@ -474,6 +474,9 @@ impl Canvas {
         let input = &settings.input;
         let side = grid.side();
         let points = side.checked_div(14).unwrap_or(8).max(8);
+        if let Some((x, y)) = grid.origin(MICROPHONE_ROW, 0) {
+            self.text(x, y.saturating_sub(28), "AUDIO SOURCES", 2, AMBER);
+        }
         for (col, choice) in input.microphone_options().iter().enumerate() {
             let marked = *choice == input.microphone;
             if let Some((x, y)) = self.tile_frame(grid, (MICROPHONE_ROW, col), focus, marked) {
