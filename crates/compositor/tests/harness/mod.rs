@@ -115,8 +115,9 @@ impl Harness {
     fn wait(&mut self, display: &mut Display<Compositor>) {
         use rustix::event::{PollFd, PollFlags, poll};
         let backend = display.backend();
+        let display_fd = backend.poll_fd();
         let mut fds = [
-            PollFd::new(&backend.poll_fd(), PollFlags::IN),
+            PollFd::new(&display_fd, PollFlags::IN),
             PollFd::new(&self.wake_read, PollFlags::IN),
         ];
         match poll(&mut fds, None) {
