@@ -2,8 +2,9 @@
 
 #[cfg(test)]
 mod launch {
+    use core::time::Duration;
     use proptest::prelude::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     use tehuti::launch::{Exit, Failure, FakeSpawner, Launch, Launches};
 
     fn launches(exit: Option<Exit>) -> Launches<FakeSpawner> {
