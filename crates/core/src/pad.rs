@@ -102,7 +102,7 @@ impl Pad {
     }
 
     /// The grab succeeded: events flow.
-    pub fn on_grabbed(&mut self) -> Vec<PadEffect> {
+    pub const fn on_grabbed(&mut self) -> Vec<PadEffect> {
         self.presence = Presence::Present;
         Vec::new()
     }
@@ -154,8 +154,8 @@ impl PadBook {
                 known.label = pad.label;
                 continue;
             }
-            let _effects = pad.on_seen();
-            let _effects = pad.on_grabbed();
+            let _seen = pad.on_seen();
+            let _grabbed = pad.on_grabbed();
             let _old = self.pads.insert(path, pad);
         }
         effects
