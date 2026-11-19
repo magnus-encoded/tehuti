@@ -33,8 +33,8 @@ pub(crate) struct LoopData {
     /// The virtual pad of an unplugged controller, kept so the application never loses it.
     spare_virtual_pad: Option<controller::VirtualPad>,
     pad_gate: input::PadGate,
-    /// The stable key each attached pad took when it attached; a later pad never changes it.
-    pad_keys: BTreeMap<PathBuf, String>,
+    /// Keys each attached pad; a later pad never changes the key of one already there.
+    pad_roster: tehuti_core::pad::PadRoster,
     virtual_pad: Option<String>,
     /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
     /// Unplugging it does not clear this: no pad matches the stale path, so no mirror exists
@@ -492,7 +492,7 @@ fn start_session(
         controllers,
         spare_virtual_pad: None,
         pad_gate: input::PadGate::default(),
-        pad_keys: BTreeMap::new(),
+        pad_roster: tehuti_core::pad::PadRoster::default(),
         controller_tokens,
         virtual_pad,
         active_pad: None,
@@ -812,21 +812,17 @@ fn sync_controller_names(data: &mut LoopData) {
         .iter()
         .map(|(path, controller)| {
             let (vendor, product) = controller.pad.usb_id();
-            (
-                path.clone(),
-                controller.pad.name().to_owned(),
+            tehuti_core::pad::PadSighting {
+                path: path.clone(),
+                name: controller.pad.name().to_owned(),
                 vendor,
                 product,
-                controller.pad.device_identity(),
-                controller.pad.connection(),
-            )
+                uniq: controller.pad.device_identity(),
+                origin: controller.pad.connection(),
+            }
         })
         .collect();
-    let keyed = controller::keyed_controllers(devices, &data.pad_keys);
-    data.pad_keys = keyed
-        .iter()
-        .map(|(path, info)| (path.clone(), info.key.clone()))
-        .collect();
+    let keyed = controller::keyed_controllers(&mut data.pad_roster, devices);
     data.compositor
         .configure_controllers(keyed.into_iter().map(|(_, info)| info).collect());
     let controllers = &data.controllers;
@@ -1032,7 +1028,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
-    let keys = &data.pad_keys;
+    let keys = &data.pad_roster;
     let mut event_controllers = Vec::new();
     let active = &mut data.active_pad;
     let spare = &mut data.spare_virtual_pad;
@@ -1040,8 +1036,8 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         &mut data.controllers,
         |path, controller, event| {
             let key = keys
-                .get(path)
-                .map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
+                .key_for(path)
+                .map_or_else(|| controller.pad.name().to_owned(), |key| key.as_str().to_owned());
             let admitted = gate.admit(path, compositor.controller_chosen(&key), event);
             if admitted {
                 event_controllers.push(key);
@@ -1108,12 +1104,12 @@ fn advance_time(data: &mut LoopData) {
         return;
     }
     let mut sampled = tehuti_core::dispatch::Sticks::default();
-    let keys = &data.pad_keys;
+    let keys = &data.pad_roster;
     let recentres = data.compositor.take_recentre_requests();
     for (path, controller) in &mut data.controllers {
         let key = keys
-            .get(path)
-            .map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
+            .key_for(path)
+            .map_or_else(|| controller.pad.name().to_owned(), |key| key.as_str().to_owned());
         let chosen = data.compositor.controller_chosen(&key);
         let measure = recentres.contains(&key);
         match controller.pad.calibrate(

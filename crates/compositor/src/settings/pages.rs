@@ -366,14 +366,14 @@ impl Canvas {
             self.tile_foot(
                 (x, y),
                 side,
-                controller.connection.caption(),
+                controller.origin.caption(),
                 points.max(8),
                 if asking { AMBER } else { ORIGIN_TEXT },
             );
             self.connection_glyph(
                 (x.saturating_add(8), y.saturating_add(8)),
                 side,
-                controller.connection,
+                controller.origin,
                 colour,
             );
             if input.controller_in_use(&controller.key) {

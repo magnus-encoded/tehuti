@@ -24,7 +24,7 @@ pub struct ControllerInfo {
     pub name: String,
     pub key: String,
     pub label: String,
-    pub connection: Origin,
+    pub origin: Origin,
 }
 
 impl From<&str> for ControllerInfo {
@@ -33,7 +33,7 @@ impl From<&str> for ControllerInfo {
             name: name.into(),
             key: name.into(),
             label: format!("{} #1", name.to_uppercase()),
-            connection: Origin::default(),
+            origin: Origin::default(),
         }
     }
 }
@@ -43,7 +43,7 @@ impl From<String> for ControllerInfo {
         Self {
             label: format!("{} #1", name.to_uppercase()),
             key: name.clone(),
-            connection: Origin::default(),
+            origin: Origin::default(),
             name,
         }
     }
