@@ -1,6 +1,7 @@
 //! End to end without a display or devices: a synthetic pad press reaches a Wayland client as a key.
 
-mod harness;
+#[cfg(test)]
+pub mod harness;
 
 #[cfg(test)]
 mod synthetic_pad {

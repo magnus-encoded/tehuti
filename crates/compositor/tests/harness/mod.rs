@@ -3,13 +3,11 @@
 //! Clients run on their own threads. The server side waits on the display socket and on a
 //! wake pipe that each client thread writes when it ends, so a test never polls on a timer.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::{
     io::{Read, Write},
     os::unix::net::UnixStream,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     thread,
 };
 
@@ -17,18 +15,18 @@ use smithay::reexports::wayland_server::Display;
 use tehuti::state::Compositor;
 
 /// A client thread that wakes the server loop when it ends, even by panic.
-pub(crate) struct Client<T> {
+pub struct Client<T> {
     handle: thread::JoinHandle<T>,
     ended: Arc<AtomicBool>,
 }
 
 impl<T> Client<T> {
-    pub(crate) fn has_ended(&self) -> bool {
+    pub fn has_ended(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
     }
 
     /// Returns the client's result; panics if the client panicked.
-    pub(crate) fn join(self) -> T {
+    pub fn join(self) -> T {
         self.handle.join().unwrap()
     }
 }
@@ -47,7 +45,7 @@ impl Drop for EndSignal {
 }
 
 /// The server's side of the wake pipe.
-pub(crate) struct Harness {
+pub struct Harness {
     wake_read: UnixStream,
     wake_write: UnixStream,
 }
@@ -59,7 +57,7 @@ impl Default for Harness {
 }
 
 impl Harness {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let (wake_read, wake_write) = UnixStream::pair().unwrap();
         wake_read.set_nonblocking(true).unwrap();
         wake_write.set_nonblocking(true).unwrap();
@@ -70,7 +68,7 @@ impl Harness {
     }
 
     /// Runs `body` on a thread whose end wakes [`Self::serve_until_ended`].
-    pub(crate) fn client<T: Send + 'static>(&self, body: impl FnOnce() -> T + Send + 'static) -> Client<T> {
+    pub fn client<T: Send + 'static>(&self, body: impl FnOnce() -> T + Send + 'static) -> Client<T> {
         let ended = Arc::new(AtomicBool::new(false));
         let signal = EndSignal {
             ended: ended.clone(),
@@ -84,7 +82,7 @@ impl Harness {
     }
 
     /// Serves clients until `done` holds, blocking on socket readiness between turns.
-    pub(crate) fn serve_until(
+    pub fn serve_until(
         &mut self,
         display: &mut Display<Compositor>,
         compositor: &mut Compositor,
@@ -101,7 +99,7 @@ impl Harness {
     }
 
     /// Serves clients until every one of them has ended.
-    pub(crate) fn serve_until_ended<T>(
+    pub fn serve_until_ended<T>(
         &mut self,
         display: &mut Display<Compositor>,
         compositor: &mut Compositor,
