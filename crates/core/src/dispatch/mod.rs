@@ -827,10 +827,6 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
     run_tasks(state, tasks, Vec::new())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one match lists every settings reply beside the others"
-)]
 fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
