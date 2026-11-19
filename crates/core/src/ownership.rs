@@ -146,6 +146,9 @@ pub struct OwnershipView {
     /// D-pad buttons pressed with Guide held.
     pub chord_buttons: Vec<ButtonName>,
     pub menu_open: bool,
+    /// Buttons held down now, as dispatch tracks them in passthrough; a talk list there needs every
+    /// member held. `State` does not know them, so the caller fills this in.
+    pub held_buttons: Vec<ButtonName>,
     /// Buttons the system menu took, whose release it consumes.
     pub menu_buttons: Vec<ButtonName>,
     /// The push-to-talk buttons and where they came from.
@@ -175,6 +178,16 @@ impl OwnershipView {
 
     fn talks(&self, button: ButtonName) -> bool {
         self.talk.contains(&button)
+    }
+
+    /// Passthrough talk needs every member held; a Select-only list is special-cased instead.
+    fn passthrough_talks(&self, button: ButtonName) -> bool {
+        self.talks(button)
+            && (self.talk == [ButtonName::Select]
+                || self
+                    .talk
+                    .iter()
+                    .all(|member| *member == button || self.held_buttons.contains(member)))
     }
 
     fn start_chord(&self, button: ButtonName, phase: Phase) -> bool {
@@ -313,13 +326,16 @@ fn passthrough_owner(view: &OwnershipView, button: ButtonName, phase: Phase) -> 
     if let Some(owner) = view.tehuti_first(button, phase) {
         return owner;
     }
-    if view.dpad_chord(button) {
-        return Owner::Tehuti(Why::GuideDpadChord);
-    }
     // Open question for the owner (#800): a Select-only talk list is special-cased in dispatch
     // (a tap talks, a hold takes the pad back). It stays Talk here, as today.
-    if view.talks(button) {
+    // Talk comes before the Guide d-pad chord, as in normal mode. Today a d-pad talk member
+    // pressed with Guide held both talks and chords; one owner cannot say that, so wiring this
+    // in (step 5) removes the double fire.
+    if view.passthrough_talks(button) {
         return Owner::Talk(view.talk_source);
+    }
+    if view.dpad_chord(button) {
+        return Owner::Tehuti(Why::GuideDpadChord);
     }
     Owner::App
 }
@@ -384,6 +400,7 @@ impl State {
             start_in_chord: self.start_in_chord,
             chord_buttons: self.chord_buttons.clone(),
             menu_open: self.menu.is_some(),
+            held_buttons: Vec::new(),
             menu_buttons: self.menu_buttons.clone(),
             talk,
             talk_source,
@@ -499,6 +516,7 @@ mod tests {
                 start_in_chord,
                 chord_buttons,
                 menu_open,
+                held_buttons: chord_buttons.clone(),
                 menu_buttons: menu_buttons
                     .into_iter()
                     .filter(|held| !matches!(held, ButtonName::Guide | ButtonName::Start))
@@ -562,8 +580,9 @@ mod tests {
         fn a_release_goes_to_its_presses_owner(before in any_view(), after in any_view(), button in any_button()) {
             let mut claims = Claims::default();
             let pressed = claims.press(&before, button);
-            let _later = owner(&after, button, Phase::Released);
+            prop_assert_eq!(claims.press(&after, button), pressed);
             prop_assert_eq!(claims.release(button), pressed);
+            prop_assert_eq!(claims.release(button), Owner::Dropped);
         }
 
         /// 4. No stuck: once everything is released the claims are empty, and a release without
@@ -662,6 +681,7 @@ mod tests {
         chord_buttons: Vec<ButtonName>,
         menu_open: bool,
         menu_buttons: Vec<ButtonName>,
+        held: Vec<ButtonName>,
         plugin_active: bool,
         button: ButtonName,
         phase: Phase,
@@ -739,6 +759,7 @@ mod tests {
             prop::collection::vec(dpad(), 0..3),
             any::<bool>(),
             prop::collection::vec(any_button(), 0..3),
+            buttons(),
         );
         (setup, state, any::<bool>(), any_button(), any_phase()).prop_map(
             |(
@@ -752,6 +773,7 @@ mod tests {
                     chord_buttons,
                     menu_open,
                     menu_buttons,
+                    held,
                 ),
                 plugin_active,
                 button,
@@ -776,6 +798,7 @@ mod tests {
                     .into_iter()
                     .filter(|held| !matches!(held, ButtonName::Guide | ButtonName::Start))
                     .collect(),
+                held,
                 plugin_active,
                 button,
                 phase,
@@ -896,14 +919,18 @@ mod tests {
         let menu_release = menu_button_release(&mut state.clone(), &event);
         let first = keyed_chord || state.menu.is_some();
         if state.passthrough() {
-            if menu_release || first || chord {
+            if menu_release || first {
                 return Kind::Tehuti;
             }
-            return if state.passthrough_push_to_talk().contains(&scenario.button) {
-                Kind::Talk
-            } else {
-                Kind::App
-            };
+            // Dispatch fires talk from the held buttons before `route` reaches the chord.
+            let members = state.passthrough_push_to_talk();
+            let held = |member: &ButtonName| *member == scenario.button || scenario.held.contains(member);
+            if members.contains(&scenario.button)
+                && (members == [ButtonName::Select] || members.iter().all(held))
+            {
+                return Kind::Talk;
+            }
+            return if chord { Kind::Tehuti } else { Kind::App };
         }
         if first {
             return Kind::Tehuti;
@@ -956,7 +983,8 @@ mod tests {
         #[test]
         fn owner_agrees_with_todays_routing(scenario in scenario()) {
             let state = scenario.state();
-            let view = state.ownership_view(scenario.plugin_active);
+            let mut view = state.ownership_view(scenario.plugin_active);
+            view.held_buttons.clone_from(&scenario.held);
             let got = owner(&view, scenario.button, scenario.phase);
             prop_assert_eq!(kind(got), old_routing(&scenario, &state), "view {:?}", view);
         }
@@ -973,6 +1001,44 @@ mod tests {
             };
             prop_assert_eq!(view.talks(button), old);
         }
+    }
+
+    #[test]
+    fn a_dpad_talk_button_talks_in_passthrough_even_with_guide_held() {
+        let mut state = State::with_contexts(vec![
+            parse_context("app_id = 'app'\n[buttons]\n[pad]\npassthrough = true").unwrap(),
+        ]);
+        state.set_controller_push_to_talk(Some(ButtonName::DpadUp));
+        let (mut state, _) = crate::step(
+            state,
+            &Event::Focus {
+                app_id: Some("app".into()),
+                title: String::new(),
+            },
+        );
+        state.guide_held = Some(Duration::ZERO);
+        let view = state.ownership_view(false);
+        assert_eq!(
+            owner(&view, ButtonName::DpadUp, Phase::Pressed),
+            Owner::Talk(TalkSource::Controller)
+        );
+        assert_eq!(
+            owner(&view, ButtonName::DpadDown, Phase::Pressed),
+            Owner::Tehuti(Why::GuideDpadChord)
+        );
+    }
+
+    #[test]
+    fn passthrough_talk_needs_every_member_held() {
+        let mut view = State::default().ownership_view(false);
+        view.passthrough = true;
+        view.talk = vec![ButtonName::Record, ButtonName::LeftBumper];
+        assert_eq!(owner(&view, ButtonName::Record, Phase::Pressed), Owner::App);
+        view.held_buttons = vec![ButtonName::LeftBumper];
+        assert_eq!(
+            owner(&view, ButtonName::Record, Phase::Pressed),
+            Owner::Talk(view.talk_source)
+        );
     }
 
     #[test]
