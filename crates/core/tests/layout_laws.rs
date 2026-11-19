@@ -2532,7 +2532,7 @@ mod layout_laws {
             let count = seen.len();
             seen.dedup();
             prop_assert_eq!(seen.len(), count);
-            prop_assert_eq!(count, all_tiles(&snap).count() + snap.outputs.iter().flat_map(|o| &o.workspaces).map(|w| w.helpers.len()).sum::<usize>());
+            prop_assert_eq!(count, all_tiles(&snap).count() + snap.outputs.iter().flat_map(|output| &output.workspaces).map(|workspace| workspace.helpers.len()).sum::<usize>());
             for placement in &placements {
                 prop_assert_eq!(placement.focused, snap.focused_window == Some(placement.window));
                 match &placement.slot {
@@ -2546,7 +2546,7 @@ mod layout_laws {
                     }
                     Slot::Helper { origin, preceding } => {
                         prop_assert!(placement.helper);
-                        let (output, workspace) = snap
+                        let (_output, workspace) = snap
                             .outputs
                             .iter()
                             .find_map(|output| {
@@ -2554,8 +2554,7 @@ mod layout_laws {
                                 workspace.helpers.contains(&placement.window).then_some((output, workspace))
                             })
                             .ok_or_else(|| TestCaseError::fail("shown helper is not on an active workspace"))?;
-                        let _ = output;
-                        let index = workspace.helpers.iter().position(|h| *h == placement.window).unwrap_or(0);
+                        let index = workspace.helpers.iter().position(|helper| *helper == placement.window).unwrap_or(0);
                         prop_assert_eq!(*origin, workspace.helper_position);
                         prop_assert_eq!(preceding.as_slice(), &workspace.helpers[..index]);
                     }
@@ -2588,7 +2587,7 @@ mod layout_laws {
                 .iter()
                 .filter(|placement| matches!(placement.slot, Slot::Tile { .. }))
                 .count();
-            prop_assert_eq!(shown, snap.outputs.iter().filter_map(|o| o.workspaces.get(o.active_workspace)).map(|w| w.columns.len()).sum::<usize>());
+            prop_assert_eq!(shown, snap.outputs.iter().filter_map(|output| output.workspaces.get(output.active_workspace)).map(|workspace| workspace.columns.len()).sum::<usize>());
         }
     }
 }
