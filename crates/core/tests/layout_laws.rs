@@ -2561,12 +2561,13 @@ mod layout_laws {
                     }
                     Slot::Hidden => {
                         // A hidden helper is on a workspace that is not active.
-                        prop_assert!(snap.outputs.iter().all(|output| {
+                        let off_active = snap.outputs.iter().all(|output| {
                             output
                                 .workspaces
                                 .get(output.active_workspace)
                                 .is_none_or(|workspace| !workspace.helpers.contains(&placement.window))
-                        }));
+                        });
+                        prop_assert!(off_active);
                     }
                 }
             }
