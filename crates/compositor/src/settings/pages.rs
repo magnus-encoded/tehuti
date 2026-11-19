@@ -503,7 +503,7 @@ impl Canvas {
                     }
                 }
                 let words = if enabled { label } else { format!("{label} OFF") };
-                let source = microphone.map(Microphone::source);
+                let source = microphone.map(tehuti_core::dispatch::Microphone::source);
                 let mut lines = vec![words];
                 if let Some(source) = &source {
                     lines.push(if source.kind.loops_back() {
