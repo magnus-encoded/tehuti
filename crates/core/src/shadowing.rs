@@ -2,19 +2,10 @@
 
 use tehuti_protocol::{Action, ButtonName, Context, KeyName};
 
-use crate::GLOBAL_APP_ID;
-
-/// The routing layer that consumes a button before the active context sees it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ButtonOwner {
-    /// The escape chord consumes every Guide press and release.
-    EscapeChord,
-    /// The global layer sends Enter for an unmapped Confirm press, so the global
-    /// context's own Confirm mapping never fires. A focused mapping replaces it.
-    GlobalEnter,
-    /// The global context's `push_to_talk` list records speech with the button.
-    PushToTalk,
-}
+use crate::{
+    GLOBAL_APP_ID, Level,
+    ownership::{Owner, OwnershipView, Phase, TalkSource, Why, owner},
+};
 
 /// A part of the configuration that never takes effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +16,7 @@ pub enum Shadowing {
     Button {
         context: usize,
         button: ButtonName,
-        owner: ButtonOwner,
+        owner: Why,
     },
 }
 
@@ -48,19 +39,15 @@ pub fn shadowed(contexts: &[Context]) -> Vec<Shadowing> {
 /// Lists unreachable mappings for the connected pad's roles.
 #[must_use]
 pub fn shadowed_for_pad(contexts: &[Context], pad: crate::pad::PadFamily) -> Vec<Shadowing> {
-    let global_talk = |button: ButtonName| {
-        contexts
-            .iter()
-            .find(|context| context.app_id() == GLOBAL_APP_ID)
-            .map_or(button == ButtonName::Record, |global| global.push_to_talk(button))
+    let global = contexts.iter().find(|context| context.app_id() == GLOBAL_APP_ID);
+    let global_talk = || {
+        global.map_or_else(
+            || (vec![ButtonName::Record], TalkSource::Default),
+            |global| (global.push_to_talk_buttons().to_vec(), TalkSource::Global),
+        )
     };
     let mut found = Vec::new();
     for (index, context) in contexts.iter().enumerate() {
-        let push_to_talk = |button: ButtonName| {
-            context
-                .own_push_to_talk()
-                .map_or_else(|| global_talk(button), |own| own.contains(&button))
-        };
         if let Some(earlier) = contexts
             .iter()
             .take(index)
@@ -72,23 +59,53 @@ pub fn shadowed_for_pad(contexts: &[Context], pad: crate::pad::PadFamily) -> Vec
             });
             continue;
         }
-        let mut buttons: Vec<(ButtonName, ButtonOwner)> = context
+        let is_global = context.app_id() == GLOBAL_APP_ID;
+        // The global context's own buttons are judged against the global list; any other
+        // context's own list replaces it, as routing does.
+        let (talk, talk_source) = match context.own_push_to_talk() {
+            Some(own) if !is_global => (own.to_vec(), TalkSource::Context),
+            _ => global_talk(),
+        };
+        let view = OwnershipView {
+            confirm: pad.button(crate::pad::Role::Confirm),
+            passthrough: false,
+            level: Level::App,
+            guide_mode: tehuti_protocol::GuideMode::Tehuti,
+            guide_held: false,
+            start_in_chord: false,
+            chord_buttons: Vec::new(),
+            menu_open: false,
+            held_buttons: Vec::new(),
+            menu_buttons: Vec::new(),
+            talk,
+            talk_source,
+            plugin_active: false,
+            // The global layer owns Confirm unless the focused context maps it.
+            focused_maps: if is_global {
+                Vec::new()
+            } else {
+                context.mapped_buttons().collect()
+            },
+            global_maps: Vec::new(),
+            holds: Vec::new(),
+            stick_modifiers: Vec::new(),
+            sticks_held: Vec::new(),
+        };
+        let mut buttons: Vec<(ButtonName, Why)> = context
             .mapped_buttons()
             .filter_map(|button| {
-                let owner = if button == ButtonName::Guide {
-                    ButtonOwner::EscapeChord
-                } else if push_to_talk(button) {
-                    ButtonOwner::PushToTalk
-                } else if button == pad.button(crate::pad::Role::Confirm) && context.app_id() == GLOBAL_APP_ID
-                {
-                    if context.action_for(button) == Some(GLOBAL_ENTER) {
-                        return None;
+                let why = match owner(&view, button, Phase::Pressed) {
+                    Owner::Tehuti(Why::EscapeChord) => Why::EscapeChord,
+                    Owner::Talk(_) => Why::PushToTalk,
+                    Owner::GlobalLayer => {
+                        if context.action_for(button) == Some(GLOBAL_ENTER) {
+                            return None;
+                        }
+                        Why::GlobalEnter
                     }
-                    ButtonOwner::GlobalEnter
-                } else {
-                    return None;
+                    _ => return None,
                 };
-                Some((button, owner))
+                Some((button, why))
             })
             .collect();
         buttons.sort_by_cached_key(|(button, _)| format!("{button:?}"));

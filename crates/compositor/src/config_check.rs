@@ -3,7 +3,10 @@
 use core::fmt;
 use std::path::{Path, PathBuf};
 
-use tehuti_core::shadowing::{ButtonOwner, Shadowing, shadowed};
+use tehuti_core::{
+    ownership::Why,
+    shadowing::{Shadowing, shadowed},
+};
 use tehuti_protocol::ButtonName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,13 +333,12 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
             } => {
                 if let Some((path, _)) = loaded.get(context) {
                     let reason = match owner {
-                        ButtonOwner::EscapeChord => "the escape chord consumes every Guide press",
-                        ButtonOwner::GlobalEnter => {
+                        Why::EscapeChord => "the escape chord consumes every Guide press",
+                        Why::GlobalEnter => {
                             "the global layer sends Enter for South unless a focused context maps it"
                         }
-                        ButtonOwner::PushToTalk => {
-                            "it is in the global context's push_to_talk list (default record)"
-                        }
+                        Why::PushToTalk => "it is in the global context's push_to_talk list (default record)",
+                        _ => "an earlier routing layer consumes it",
                     };
                     report.push(
                         path,
