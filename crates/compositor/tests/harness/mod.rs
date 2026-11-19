@@ -8,6 +8,7 @@
 
 #![expect(
     clippy::must_use_candidate,
+    clippy::missing_errors_doc,
     clippy::missing_panics_doc,
     missing_debug_implementations,
     reason = "test helper: panics are the failure report and results are not optional"
