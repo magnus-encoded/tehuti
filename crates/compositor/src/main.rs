@@ -1109,14 +1109,22 @@ fn advance_time(data: &mut LoopData) {
     }
     let mut sampled = tehuti_core::dispatch::Sticks::default();
     let keys = &data.pad_keys;
+    let recentres = data.compositor.take_recentre_requests();
     for (path, controller) in &mut data.controllers {
         let key = keys
             .get(path)
             .map_or_else(|| controller.pad.name().to_owned(), Clone::clone);
         let chosen = data.compositor.controller_chosen(&key);
-        controller
-            .pad
-            .set_deadzone(data.compositor.controller_deadzone(&key));
+        let measure = recentres.contains(&key);
+        match controller.pad.calibrate(
+            data.compositor.controller_deadzone(&key),
+            data.compositor.controller_recentre(&key),
+            measure,
+        ) {
+            Ok(Some(rest)) => data.compositor.store_recentre(key.clone(), rest),
+            Ok(None) => {}
+            Err(error) => warn!(%error, "controller calibration failed"),
+        }
         match controller.pad.sticks() {
             Ok(sticks) => {
                 if chosen && sticks != tehuti_core::dispatch::Sticks::default() {

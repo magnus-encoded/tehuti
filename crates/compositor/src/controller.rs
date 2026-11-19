@@ -1327,6 +1327,26 @@ impl<D: PadDevice> EvdevPad<D> {
         self.deadzone = deadzone;
     }
 
+    /// Applies the pad's saved calibration and, when `measure` is set, first measures where its sticks
+    /// rest now and keeps that. Returns the new rest when one was measured.
+    /// # Errors
+    /// The kernel could not read the controller axis state.
+    pub fn calibrate(
+        &mut self,
+        deadzone: u16,
+        saved: [i16; 4],
+        measure: bool,
+    ) -> io::Result<Option<[i16; 4]>> {
+        self.deadzone = deadzone;
+        self.recentre = saved;
+        if !measure {
+            return Ok(None);
+        }
+        let rest = self.rest_offsets()?;
+        self.recentre = rest;
+        Ok(Some(rest))
+    }
+
     /// Sets where the sticks rest, as measured by [`Self::rest_offsets`].
     pub const fn set_recentre(&mut self, recentre: [i16; 4]) {
         self.recentre = recentre;

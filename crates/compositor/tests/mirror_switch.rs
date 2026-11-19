@@ -61,6 +61,7 @@ mod tests {
         raw: Rc<RefCell<VecDeque<InputEvent>>>,
         held: Rc<RefCell<Vec<u16>>>,
         hat: Rc<core::cell::Cell<i32>>,
+        rest: Rc<core::cell::Cell<i32>>,
         log: Rc<RefCell<Log>>,
     }
 
@@ -94,7 +95,7 @@ mod tests {
                 ),
                 (
                     AbsoluteAxisCode::ABS_X,
-                    evdev::AbsInfo::new(0, -100, 100, 0, 0, 0),
+                    evdev::AbsInfo::new(self.rest.get(), -100, 100, 0, 0, 0),
                 ),
                 (AbsoluteAxisCode::ABS_Z, evdev::AbsInfo::new(0, 0, 255, 0, 0, 0)),
             ])
@@ -134,23 +135,26 @@ mod tests {
         raw: Rc<RefCell<VecDeque<InputEvent>>>,
         held: Rc<RefCell<Vec<u16>>>,
         hat: Rc<core::cell::Cell<i32>>,
+        rest: Rc<core::cell::Cell<i32>>,
     }
 
     fn pad(name: &'static str, log: &Rc<RefCell<Log>>) -> (EvdevPad<Synthetic>, Handles) {
         let raw = Rc::default();
         let held = Rc::default();
         let hat = Rc::default();
+        let rest: Rc<core::cell::Cell<i32>> = Rc::default();
         let device = |queue: &Rc<_>, keys: &Rc<_>| Synthetic {
             name,
             raw: Rc::clone(queue),
             held: Rc::clone(keys),
             hat: Rc::clone(&hat),
+            rest: Rc::clone(&rest),
             log: Rc::clone(log),
         };
         let mut pad = EvdevPad::new(device(&raw, &held), device(&raw, &held), DpadHat::default());
         // These tests follow raw values through the mirror; the deadzone has its own tests below.
         pad.set_deadzone(0);
-        (pad, Handles { raw, held, hat })
+        (pad, Handles { raw, held, hat, rest })
     }
 
     fn queue(handles: &Handles, code: KeyCode, value: i32) {
@@ -414,6 +418,34 @@ mod tests {
             forwarded_x(0, 100),
             "full travel still reaches the end"
         );
+    }
+
+    #[test]
+    fn a_measured_rest_is_applied_to_what_the_game_is_sent() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut controller, handles) = pad("pad", &log);
+        handles.rest.set(20);
+        assert!(controller.set_mirror(true, &|_| false).unwrap());
+        // Without a request the saved rest is used and nothing is measured.
+        assert_eq!(controller.calibrate(0, [0; 4], false).unwrap(), None);
+        // The tile asked: the pad measures its rest, 20 of a 100 half travel.
+        assert_eq!(
+            controller.calibrate(0, [0; 4], true).unwrap(),
+            Some([200, 0, 0, 0])
+        );
+        handles.raw.borrow_mut().extend(axis(AbsoluteAxisCode::ABS_X, 20));
+        controller.pump_mirror(&mut |_, _| false).unwrap();
+        let resting = shown(&log.borrow())
+            .get(&(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0))
+            .copied();
+        assert_eq!(
+            resting,
+            forwarded_x(0, 0),
+            "the drifted rest reaches the game as the middle"
+        );
+        // A later start applies the saved rest without measuring.
+        let (mut again, _) = pad("pad", &log);
+        assert_eq!(again.calibrate(0, [200, 0, 0, 0], false).unwrap(), None);
     }
 
     #[test]
