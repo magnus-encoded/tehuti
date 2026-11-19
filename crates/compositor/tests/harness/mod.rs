@@ -5,7 +5,7 @@
 
 use std::{
     io::{Read, Write},
-    os::{fd::AsRawFd, unix::net::UnixStream},
+    os::unix::net::UnixStream,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -112,22 +112,17 @@ impl Harness {
         });
     }
 
-    fn wait(&mut self, display: &Display<Compositor>) {
+    fn wait(&mut self, display: &mut Display<Compositor>) {
+        use rustix::event::{PollFd, PollFlags, poll};
+        let backend = display.backend();
         let mut fds = [
-            libc::pollfd {
-                fd: display.backend().poll_fd().as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: self.wake_read.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
+            PollFd::new(&backend.poll_fd(), PollFlags::IN),
+            PollFd::new(&self.wake_read, PollFlags::IN),
         ];
-        // SAFETY: `fds` is a valid array of two initialised `pollfd`s for the whole call.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
-        assert!(ready >= 0 || std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted);
+        match poll(&mut fds, None) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(error) => panic!("waiting for clients failed: {error}"),
+        }
         let mut drained = [0_u8; 64];
         while matches!(self.wake_read.read(&mut drained), Ok(count) if count > 0) {}
     }
