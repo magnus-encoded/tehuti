@@ -3,6 +3,12 @@
 //! Clients run on their own threads. The server side waits on the display socket and on a
 //! wake pipe that each client thread writes when it ends, so a test never polls on a timer.
 
+#![expect(
+    clippy::must_use_candidate,
+    clippy::missing_panics_doc,
+    reason = "test helper: panics are the failure report and results are not optional"
+)]
+
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::{
     io::{Read, Write},
