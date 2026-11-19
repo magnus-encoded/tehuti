@@ -564,27 +564,18 @@ mod tests {
     }
 
     fn input_test_controllers() -> Vec<tehuti_core::dispatch::ControllerInfo> {
-        crate::controller::numbered_controllers(
-            [
-                (
-                    "/dev/input/event2".into(),
-                    "Wireless Controller".into(),
-                    0x054c,
-                    0x09cc,
-                    String::new(),
-                    tehuti_core::dispatch::Origin::Usb,
-                ),
-                (
-                    "/dev/input/event9".into(),
-                    "Xbox Controller".into(),
-                    0x045e,
-                    0x0b13,
-                    String::new(),
-                    tehuti_core::dispatch::Origin::Usb,
-                ),
-            ],
-            &std::collections::BTreeMap::new(),
-        )
+        let sighting = |path: &str, name: &str, product| tehuti_core::pad::PadSighting {
+            path: path.into(),
+            name: name.into(),
+            vendor: if product == 0x09cc { 0x054c } else { 0x045e },
+            product,
+            uniq: String::new(),
+            origin: tehuti_core::dispatch::Origin::Usb,
+        };
+        crate::controller::numbered_controllers([
+            sighting("/dev/input/event2", "Wireless Controller", 0x09cc),
+            sighting("/dev/input/event9", "Xbox Controller", 0x0b13),
+        ])
     }
 
     #[test]

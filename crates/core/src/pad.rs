@@ -1,6 +1,8 @@
 //! Pad identity, physical positions, interaction roles and printed glyphs.
 
 use crate::ticker::{Direction, Piece, Rgb, Shape};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use tehuti_protocol::ButtonName;
 
 pub use crate::audio_source::Presence;
@@ -77,6 +79,85 @@ pub struct Pad {
     pub model: Identity,
     pub origin: Origin,
     pub presence: Presence,
+}
+
+/// One pad node as discovery sees it: the facts keying needs, before any key exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PadSighting {
+    pub path: PathBuf,
+    pub name: String,
+    pub vendor: u16,
+    pub product: u16,
+    /// The device's own unique id or physical path; empty when it reports neither.
+    pub uniq: String,
+    pub origin: Origin,
+}
+
+/// Keeps pad keys: owns the keying rules and the path-to-key memory between sightings.
+#[derive(Debug, Clone, Default)]
+pub struct PadRoster {
+    known: BTreeMap<PathBuf, PadKey>,
+}
+
+impl PadRoster {
+    /// Takes the pads present now, in any order, and returns them in path order.
+    ///
+    /// Labels count each model independently. A pad's key survives a reconnect: the unique id
+    /// or physical path when it is the pad's alone, else the kernel name with an index. A pad
+    /// seen on the previous call keeps its key whatever attaches beside it; a new pad takes the
+    /// first key of its identity that no pad holds. Pads missing from `sightings` are forgotten.
+    pub fn observe(&mut self, sightings: impl IntoIterator<Item = PadSighting>) -> Vec<(PathBuf, Pad)> {
+        let mut sightings: Vec<_> = sightings.into_iter().collect();
+        sightings.sort_by(|left, right| left.path.cmp(&right.path));
+        let mut taken: BTreeSet<String> = sightings
+            .iter()
+            .filter_map(|sighting| self.known.get(&sighting.path))
+            .map(|key| key.0.clone())
+            .collect();
+        let mut counts = BTreeMap::<String, usize>::new();
+        let mut next = BTreeMap::new();
+        let pads = sightings
+            .into_iter()
+            .map(|sighting| {
+                let model = Identity::for_node(sighting.vendor, sighting.product, &sighting.name);
+                let model_name = model.model_name(&sighting.name);
+                let count = counts.entry(model_name.clone()).or_default();
+                *count = count.saturating_add(1);
+                let key = self.known.get(&sighting.path).cloned().unwrap_or_else(|| {
+                    let identity = &sighting.uniq;
+                    let name = &sighting.name;
+                    let candidates = (1_usize..).map(|index| match (identity.is_empty(), index) {
+                        (false, 1) => identity.clone(),
+                        (false, _) => format!("{identity}#{index}"),
+                        (true, _) => format!("{name}#{index}"),
+                    });
+                    let free = candidates
+                        .into_iter()
+                        .find(|key| !taken.contains(key))
+                        .unwrap_or_default();
+                    let _fresh = taken.insert(free.clone());
+                    PadKey(free)
+                });
+                let _old = next.insert(sighting.path.clone(), key.clone());
+                let pad = Pad {
+                    key,
+                    label: format!("{model_name} #{count}"),
+                    model,
+                    origin: sighting.origin,
+                    presence: Presence::Present,
+                };
+                (sighting.path, pad)
+            })
+            .collect();
+        self.known = next;
+        pads
+    }
+
+    /// The key the pad at `path` holds, while it is present.
+    #[must_use]
+    pub fn key_for(&self, path: &Path) -> Option<&PadKey> {
+        self.known.get(path)
+    }
 }
 
 #[cfg(test)]
@@ -568,3 +649,95 @@ const DPAD_SHAPES: &[(ButtonName, Direction)] = &[
     (ButtonName::DpadLeft, Direction::Left),
     (ButtonName::DpadRight, Direction::Right),
 ];
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn sighting(path: &str, name: &str, uniq: &str) -> PadSighting {
+        PadSighting {
+            path: path.into(),
+            name: name.into(),
+            vendor: 0x045e,
+            product: 0x0b13,
+            uniq: uniq.into(),
+            origin: Origin::Usb,
+        }
+    }
+
+    fn keys(pads: &[(PathBuf, Pad)]) -> Vec<&str> {
+        pads.iter().map(|(_, pad)| pad.key.as_str()).collect()
+    }
+
+    #[test]
+    fn pads_of_different_names_sharing_an_identity_get_different_keys() {
+        let pads = PadRoster::default().observe([
+            sighting("/dev/input/event1", "Pad A", "shared"),
+            sighting("/dev/input/event2", "Pad B", "shared"),
+        ]);
+        assert_ne!(pads[0].1.key, pads[1].1.key);
+    }
+
+    #[test]
+    fn a_duplicate_attaching_never_rekeys_the_pad_already_there() {
+        let mut roster = PadRoster::default();
+        let original = sighting("/dev/input/event5", "Pad", "shared");
+        let before = roster.observe([original.clone()]);
+        // The newcomer's node sorts before the original's.
+        let after = roster.observe([sighting("/dev/input/event2", "Pad", "shared"), original]);
+        assert_eq!(after[1].0, PathBuf::from("/dev/input/event5"));
+        assert_eq!(after[1].1.key, before[0].1.key);
+        assert_ne!(after[0].1.key, after[1].1.key);
+    }
+
+    #[test]
+    fn identical_pads_without_ids_take_indexed_name_keys() {
+        let pads = PadRoster::default().observe([
+            sighting("/dev/input/event1", "Pad", ""),
+            sighting("/dev/input/event2", "Pad", ""),
+        ]);
+        assert_eq!(keys(&pads), ["Pad#1", "Pad#2"]);
+    }
+
+    #[test]
+    fn matching_models_are_numbered_by_device_path() {
+        let mut first = sighting("/dev/input/event9", "Wireless Controller", "");
+        let mut second = sighting("/dev/input/event2", "Wireless Controller", "");
+        (first.vendor, first.product) = (0x054c, 0x05c4);
+        (second.vendor, second.product) = (0x054c, 0x09cc);
+        let pads = PadRoster::default().observe([first, second]);
+        let labels: Vec<_> = pads.iter().map(|(_, pad)| pad.label.as_str()).collect();
+        assert_eq!(labels, ["DUALSHOCK 4 #1", "DUALSHOCK 4 #2"]);
+    }
+
+    #[test]
+    fn an_origin_reaches_the_pad() {
+        let mut seen = sighting("/dev/input/event9", "Xbox Wireless Controller", "");
+        seen.origin = Origin::Bluetooth;
+        let pads = PadRoster::default().observe([seen]);
+        assert_eq!(pads[0].1.origin, Origin::Bluetooth);
+    }
+
+    proptest! {
+        /// Each step is the set of nodes present after a sighting or a drop.
+        #[test]
+        fn any_interleaving_of_sightings_and_drops_keeps_present_keys_unique(
+            steps in proptest::collection::vec(
+                proptest::collection::btree_map(0_u8..6, (0_u8..3, any::<bool>()), 0..6),
+                1..12,
+            ),
+        ) {
+            let mut roster = PadRoster::default();
+            for step in steps {
+                let present = step.into_iter().map(|(node, (name, has_id))| {
+                    let uniq = if has_id { format!("id{}", name % 2) } else { String::new() };
+                    sighting(&format!("/dev/input/event{node}"), &format!("Pad{name}"), &uniq)
+                });
+                let pads = roster.observe(present);
+                let unique: BTreeSet<_> = pads.iter().map(|(_, pad)| &pad.key).collect();
+                prop_assert_eq!(unique.len(), pads.len());
+            }
+        }
+    }
+}

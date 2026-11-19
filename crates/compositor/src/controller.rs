@@ -11,72 +11,40 @@ use tracing::warn;
 
 use crate::input::InputSource;
 
-/// One connected pad as the settings view needs it: its node path, kernel name, USB ids and
-/// the device's own unique id or physical path (empty when it reports neither).
-pub type ConnectedPad = (
-    std::path::PathBuf,
-    String,
-    u16,
-    u16,
-    String,
-    tehuti_core::dispatch::Origin,
-);
-
-/// Labels pads in path order, counting each model independently.
-///
-/// Each pad also gets a key that survives a reconnect: the unique id or physical path
-/// when it is the pad's alone, else the kernel name with an index. A pad in `known`
-/// (path to key, from the previous call) keeps its key whatever attaches beside it; a new
-/// pad takes the first key of its identity that no pad holds.
+/// Labels pads in path order and keys them through `roster`; see [`PadRoster::observe`].
 #[must_use]
 pub fn keyed_controllers(
-    devices: impl IntoIterator<Item = ConnectedPad>,
-    known: &std::collections::BTreeMap<std::path::PathBuf, String>,
+    roster: &mut tehuti_core::pad::PadRoster,
+    devices: impl IntoIterator<Item = tehuti_core::pad::PadSighting>,
 ) -> Vec<(std::path::PathBuf, tehuti_core::dispatch::ControllerInfo)> {
-    let mut devices: Vec<_> = devices.into_iter().collect();
-    devices.sort_by(|left, right| left.0.cmp(&right.0));
-    let mut taken: std::collections::BTreeSet<String> = devices
-        .iter()
-        .filter_map(|device| known.get(&device.0).cloned())
-        .collect();
-    let mut counts = std::collections::BTreeMap::<String, usize>::new();
-    devices
+    let mut sightings = std::collections::BTreeMap::new();
+    let devices: Vec<_> = devices
         .into_iter()
-        .map(|(path, name, vendor, product, identity, connection)| {
-            let model = tehuti_core::pad::Identity::for_node(vendor, product, &name).model_name(&name);
-            let count = counts.entry(model.clone()).or_default();
-            *count = count.saturating_add(1);
-            let key = known.get(&path).cloned().unwrap_or_else(|| {
-                let candidates = (1_usize..).map(|index| match (identity.is_empty(), index) {
-                    (false, 1) => identity.clone(),
-                    (false, _) => format!("{identity}#{index}"),
-                    (true, _) => format!("{name}#{index}"),
-                });
-                let free = candidates
-                    .into_iter()
-                    .find(|key| !taken.contains(key))
-                    .unwrap_or_default();
-                let _fresh = taken.insert(free.clone());
-                free
-            });
+        .inspect(|sighting| {
+            let _old = sightings.insert(sighting.path.clone(), sighting.name.clone());
+        })
+        .collect();
+    roster
+        .observe(devices)
+        .into_iter()
+        .map(|(path, pad)| {
             let info = tehuti_core::dispatch::ControllerInfo {
-                name,
-                key,
-                label: format!("{model} #{count}"),
-                connection,
+                name: sightings.remove(&path).unwrap_or_default(),
+                key: pad.key.as_str().to_owned(),
+                label: pad.label,
+                origin: pad.origin,
             };
             (path, info)
         })
         .collect()
 }
 
-/// [`keyed_controllers`] without the node paths.
+/// [`keyed_controllers`] for a first sighting, without the node paths.
 #[must_use]
 pub fn numbered_controllers(
-    devices: impl IntoIterator<Item = ConnectedPad>,
-    known: &std::collections::BTreeMap<std::path::PathBuf, String>,
+    devices: impl IntoIterator<Item = tehuti_core::pad::PadSighting>,
 ) -> Vec<tehuti_core::dispatch::ControllerInfo> {
-    keyed_controllers(devices, known)
+    keyed_controllers(&mut tehuti_core::pad::PadRoster::default(), devices)
         .into_iter()
         .map(|(_, info)| info)
         .collect()
@@ -2041,29 +2009,33 @@ mod tests {
         assert_eq!(classify_origin(&pad), Origin::Streamed);
     }
 
+    fn sighting(path: &str, name: &str, ids: (u16, u16), origin: Origin) -> tehuti_core::pad::PadSighting {
+        tehuti_core::pad::PadSighting {
+            path: path.into(),
+            name: name.into(),
+            vendor: ids.0,
+            product: ids.1,
+            uniq: String::new(),
+            origin,
+        }
+    }
+
     #[test]
     fn usb_ids_give_distinct_models_and_keep_kernel_names() {
-        let pads = super::numbered_controllers(
-            [
-                (
-                    "/dev/input/event9".into(),
-                    "Xbox Wireless Controller".into(),
-                    0x045e,
-                    0x0b13,
-                    String::new(),
-                    tehuti_core::dispatch::Origin::Usb,
-                ),
-                (
-                    "/dev/input/event2".into(),
-                    "Wireless Controller".into(),
-                    0x054c,
-                    0x09cc,
-                    String::new(),
-                    tehuti_core::dispatch::Origin::Usb,
-                ),
-            ],
-            &std::collections::BTreeMap::new(),
-        );
+        let pads = super::numbered_controllers([
+            sighting(
+                "/dev/input/event9",
+                "Xbox Wireless Controller",
+                (0x045e, 0x0b13),
+                Origin::Usb,
+            ),
+            sighting(
+                "/dev/input/event2",
+                "Wireless Controller",
+                (0x054c, 0x09cc),
+                Origin::Usb,
+            ),
+        ]);
         assert_eq!(pads[0].name, "Wireless Controller");
         assert_eq!(pads[0].label, "DUALSHOCK 4 #1");
         assert_eq!(pads[1].name, "Xbox Wireless Controller");
@@ -2071,93 +2043,14 @@ mod tests {
     }
 
     #[test]
-    fn a_pads_connection_reaches_its_tile_info() {
-        use tehuti_core::dispatch::Origin;
-        let pads = super::numbered_controllers(
-            [(
-                "/dev/input/event9".into(),
-                "Xbox Wireless Controller".into(),
-                0x045e,
-                0x0b13,
-                String::new(),
-                Origin::Bluetooth,
-            )],
-            &std::collections::BTreeMap::new(),
-        );
-        assert_eq!(pads[0].connection, Origin::Bluetooth);
-    }
-
-    fn pad(path: &str, name: &str, identity: &str) -> super::ConnectedPad {
-        (
-            path.into(),
-            name.into(),
-            0x045e,
-            0x0b13,
-            identity.into(),
-            tehuti_core::dispatch::Origin::Usb,
-        )
-    }
-
-    #[test]
-    fn pads_of_different_names_sharing_an_identity_get_different_keys() {
-        let pads = super::numbered_controllers(
-            [
-                pad("/dev/input/event1", "Pad A", "shared"),
-                pad("/dev/input/event2", "Pad B", "shared"),
-            ],
-            &std::collections::BTreeMap::new(),
-        );
-        assert_ne!(pads[0].key, pads[1].key);
-    }
-
-    #[test]
-    fn a_duplicate_attaching_never_rekeys_the_pad_already_there() {
-        let first = [pad("/dev/input/event5", "Pad", "shared")];
-        let before = super::keyed_controllers(first.clone(), &std::collections::BTreeMap::new());
-        let known: std::collections::BTreeMap<_, _> = before
-            .iter()
-            .map(|(path, info)| (path.clone(), info.key.clone()))
-            .collect();
-        // The newcomer's node sorts before the original's.
-        let after = super::keyed_controllers(
-            [pad("/dev/input/event2", "Pad", "shared"), first[0].clone()],
-            &known,
-        );
-        let original = after
-            .iter()
-            .find(|(path, _)| path.ends_with("event5"))
-            .map(|(_, info)| &info.key);
-        assert_eq!(original, Some(&before[0].1.key));
-        assert_ne!(after[0].1.key, after[1].1.key);
-    }
-
-    #[test]
-    fn matching_models_are_numbered_by_device_path() {
-        let pads = super::numbered_controllers(
-            [
-                (
-                    "/dev/input/event9".into(),
-                    "Wireless Controller".into(),
-                    0x054c,
-                    0x05c4,
-                    String::new(),
-                    tehuti_core::dispatch::Origin::Usb,
-                ),
-                (
-                    "/dev/input/event2".into(),
-                    "Wireless Controller".into(),
-                    0x054c,
-                    0x09cc,
-                    String::new(),
-                    tehuti_core::dispatch::Origin::Usb,
-                ),
-            ],
-            &std::collections::BTreeMap::new(),
-        );
-        assert_eq!(
-            pads.iter().map(|pad| pad.label.as_str()).collect::<Vec<_>>(),
-            ["DUALSHOCK 4 #1", "DUALSHOCK 4 #2"]
-        );
+    fn a_pads_origin_reaches_its_tile_info() {
+        let pads = super::numbered_controllers([sighting(
+            "/dev/input/event9",
+            "Xbox Wireless Controller",
+            (0x045e, 0x0b13),
+            Origin::Bluetooth,
+        )]);
+        assert_eq!(pads[0].origin, Origin::Bluetooth);
     }
 
     #[test]

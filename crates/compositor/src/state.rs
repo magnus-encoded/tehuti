@@ -1805,8 +1805,8 @@ impl Compositor {
     )]
     pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
         use tehuti_core::dispatch::Origin;
-        let pad = |label: &str, key: &str, connection| tehuti_core::dispatch::ControllerInfo {
-            connection,
+        let pad = |label: &str, key: &str, origin| tehuti_core::dispatch::ControllerInfo {
+            origin,
             name: label.to_owned(),
             key: key.to_owned(),
             label: format!(
