@@ -35,8 +35,6 @@ pub(crate) struct LoopData {
     pad_gate: input::PadGate,
     /// Keys each attached pad; a later pad never changes the key of one already there.
     pad_roster: tehuti_core::pad::PadRoster,
-    /// Each attached pad's lifecycle; its Gone effects drive the gate.
-    pad_book: tehuti_core::pad::PadBook,
     virtual_pad: Option<String>,
     /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
     /// Unplugging it does not clear this: no pad matches the stale path, so no mirror exists
@@ -495,7 +493,6 @@ fn start_session(
         spare_virtual_pad: None,
         pad_gate: input::PadGate::default(),
         pad_roster: tehuti_core::pad::PadRoster::default(),
-        pad_book: tehuti_core::pad::PadBook::default(),
         controller_tokens,
         virtual_pad,
         active_pad: None,
@@ -826,23 +823,20 @@ fn sync_controller_names(data: &mut LoopData) {
         })
         .collect();
     let keyed = controller::keyed_controllers(&mut data.pad_roster, devices);
-    let present = keyed
-        .iter()
-        .map(|(path, info)| {
-            let pad = tehuti_core::pad::Pad {
-                key: tehuti_core::pad::PadKey::new(info.key.clone()),
-                label: info.label.clone(),
-                model: tehuti_core::pad::Identity::default(),
-                origin: info.origin,
-                presence: tehuti_core::pad::Presence::Present,
-                held: Vec::new(),
-            };
-            (path.clone(), pad)
-        })
-        .collect();
-    for (path, effect) in data.pad_book.sync(present) {
-        if effect == tehuti_core::pad::PadEffect::ForgetGate {
-            data.pad_gate.forget(&path);
+    for (path, effect) in data.pad_roster.take_effects() {
+        match effect {
+            tehuti_core::pad::PadEffect::ForgetGate => data.pad_gate.forget(&path),
+            tehuti_core::pad::PadEffect::ReleaseHeld(buttons) => {
+                for name in buttons {
+                    data.compositor
+                        .controller_input(tehuti_core::controller::Input::Event(
+                            tehuti_protocol::Event::Button {
+                                name,
+                                state: tehuti_protocol::ButtonState::Released,
+                            },
+                        ));
+                }
+            }
         }
     }
     data.compositor
@@ -1048,7 +1042,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
-    let keys = &data.pad_roster;
+    let keys = &mut data.pad_roster;
     let mut event_controllers = Vec::new();
     let active = &mut data.active_pad;
     let spare = &mut data.spare_virtual_pad;
@@ -1060,6 +1054,9 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
                 .map_or_else(|| controller.pad.name().to_owned(), |key| key.as_str().to_owned());
             let admitted = gate.admit(path, compositor.controller_chosen(&key), event);
             if admitted {
+                if let tehuti_protocol::Event::Button { name, state } = event {
+                    keys.on_button(path, *name, *state == tehuti_protocol::ButtonState::Pressed);
+                }
                 event_controllers.push(key);
                 identity = Some(controller.pad.identity());
                 *active = Some(path.to_path_buf());

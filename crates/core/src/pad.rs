@@ -93,20 +93,6 @@ pub enum PadEffect {
 }
 
 impl Pad {
-    /// The node showed up (again): a new or gone pad waits for its grab.
-    pub fn on_seen(&mut self) -> Vec<PadEffect> {
-        if self.presence == Presence::Gone {
-            self.presence = Presence::Connecting;
-        }
-        Vec::new()
-    }
-
-    /// The grab succeeded: events flow.
-    pub const fn on_grabbed(&mut self) -> Vec<PadEffect> {
-        self.presence = Presence::Present;
-        Vec::new()
-    }
-
     /// Records a press or release so a drop knows what is held.
     pub fn on_button(&mut self, name: ButtonName, pressed: bool) {
         self.held.retain(|button| *button != name);
@@ -131,42 +117,6 @@ impl Pad {
     }
 }
 
-/// Pads by node path, driven through their lifecycle as nodes come and go.
-#[derive(Debug, Clone, Default)]
-pub struct PadBook {
-    pads: BTreeMap<PathBuf, Pad>,
-}
-
-impl PadBook {
-    /// Takes the pads attached now and returns the effects of those that vanished.
-    pub fn sync(&mut self, present: Vec<(PathBuf, Pad)>) -> Vec<(PathBuf, PadEffect)> {
-        let mut effects = Vec::new();
-        let paths: BTreeSet<&PathBuf> = present.iter().map(|(path, _)| path).collect();
-        for (path, pad) in &mut self.pads {
-            if !paths.contains(path) {
-                effects.extend(pad.on_gone().into_iter().map(|effect| (path.clone(), effect)));
-            }
-        }
-        self.pads.retain(|_, pad| pad.presence != Presence::Gone);
-        for (path, mut pad) in present {
-            if let Some(known) = self.pads.get_mut(&path) {
-                known.key = pad.key;
-                known.label = pad.label;
-                continue;
-            }
-            let _seen = pad.on_seen();
-            let _grabbed = pad.on_grabbed();
-            let _old = self.pads.insert(path, pad);
-        }
-        effects
-    }
-
-    #[must_use]
-    pub fn get(&self, path: &Path) -> Option<&Pad> {
-        self.pads.get(path)
-    }
-}
-
 /// One pad node as discovery sees it: the facts keying needs, before any key exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PadSighting {
@@ -182,7 +132,8 @@ pub struct PadSighting {
 /// Keeps pad keys: owns the keying rules and the path-to-key memory between sightings.
 #[derive(Debug, Clone, Default)]
 pub struct PadRoster {
-    known: BTreeMap<PathBuf, PadKey>,
+    known: BTreeMap<PathBuf, Pad>,
+    effects: Vec<(PathBuf, PadEffect)>,
 }
 
 impl PadRoster {
@@ -198,7 +149,7 @@ impl PadRoster {
         let mut taken: BTreeSet<String> = sightings
             .iter()
             .filter_map(|sighting| self.known.get(&sighting.path))
-            .map(|key| key.0.clone())
+            .map(|pad| pad.key.0.clone())
             .collect();
         let mut counts = BTreeMap::<String, usize>::new();
         let mut next = BTreeMap::new();
@@ -209,41 +160,67 @@ impl PadRoster {
                 let model_name = model.model_name(&sighting.name);
                 let count = counts.entry(model_name.clone()).or_default();
                 *count = count.saturating_add(1);
-                let key = self.known.get(&sighting.path).cloned().unwrap_or_else(|| {
-                    let identity = &sighting.uniq;
-                    let name = &sighting.name;
-                    let candidates = (1_usize..).map(|index| match (identity.is_empty(), index) {
-                        (false, 1) => identity.clone(),
-                        (false, _) => format!("{identity}#{index}"),
-                        (true, _) => format!("{name}#{index}"),
+                let key = self
+                    .known
+                    .get(&sighting.path)
+                    .map(|pad| pad.key.clone())
+                    .unwrap_or_else(|| {
+                        let identity = &sighting.uniq;
+                        let name = &sighting.name;
+                        let candidates = (1_usize..).map(|index| match (identity.is_empty(), index) {
+                            (false, 1) => identity.clone(),
+                            (false, _) => format!("{identity}#{index}"),
+                            (true, _) => format!("{name}#{index}"),
+                        });
+                        let free = candidates
+                            .into_iter()
+                            .find(|key| !taken.contains(key))
+                            .unwrap_or_default();
+                        let _fresh = taken.insert(free.clone());
+                        PadKey(free)
                     });
-                    let free = candidates
-                        .into_iter()
-                        .find(|key| !taken.contains(key))
-                        .unwrap_or_default();
-                    let _fresh = taken.insert(free.clone());
-                    PadKey(free)
-                });
-                let _old = next.insert(sighting.path.clone(), key.clone());
                 let pad = Pad {
                     key,
                     label: format!("{model_name} #{count}"),
                     model,
                     origin: sighting.origin,
                     presence: Presence::Present,
-                    held: Vec::new(),
+                    held: self
+                        .known
+                        .get(&sighting.path)
+                        .map(|pad| pad.held.clone())
+                        .unwrap_or_default(),
                 };
+                let _old = next.insert(sighting.path.clone(), pad.clone());
                 (sighting.path, pad)
             })
             .collect();
-        self.known = next;
+        let previous = core::mem::replace(&mut self.known, next);
+        for (path, mut pad) in previous {
+            if !self.known.contains_key(&path) {
+                self.effects
+                    .extend(pad.on_gone().into_iter().map(|effect| (path.clone(), effect)));
+            }
+        }
         pads
     }
 
     /// The key the pad at `path` holds, while it is present.
     #[must_use]
     pub fn key_for(&self, path: &Path) -> Option<&PadKey> {
-        self.known.get(path)
+        self.known.get(path).map(|pad| &pad.key)
+    }
+
+    /// Records a press or release on the pad at `path`.
+    pub fn on_button(&mut self, path: &Path, name: ButtonName, pressed: bool) {
+        if let Some(pad) = self.known.get_mut(path) {
+            pad.on_button(name, pressed);
+        }
+    }
+
+    /// The effects of pads that vanished since the last call, each given once.
+    pub fn take_effects(&mut self) -> Vec<(PathBuf, PadEffect)> {
+        core::mem::take(&mut self.effects)
     }
 }
 
