@@ -796,7 +796,7 @@ mod tests {
                 menu_open,
                 menu_buttons: menu_buttons
                     .into_iter()
-                    .filter(|held| !matches!(held, ButtonName::Guide | ButtonName::Start))
+                    .filter(|pressed| !matches!(pressed, ButtonName::Guide | ButtonName::Start))
                     .collect(),
                 held,
                 plugin_active,
