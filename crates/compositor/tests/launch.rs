@@ -119,12 +119,12 @@ mod launch {
     #[test]
     fn a_late_failure_is_left_out_of_the_early_exit_notice() {
         let now = Instant::now();
-        let at = |seconds| now.checked_add(Duration::from_secs(seconds)).unwrap();
+        let after = |seconds| now.checked_add(Duration::from_secs(seconds)).unwrap();
         let mut owner = launches(Some(Exit::Code(1)));
         owner.start(&Launch::new("a", "Slow"), now).unwrap();
-        owner.start(&Launch::new("b", "First"), at(59)).unwrap();
-        owner.start(&Launch::new("c", "Second"), at(58)).unwrap();
-        let failures = owner.poll(at(60));
+        owner.start(&Launch::new("b", "First"), after(59)).unwrap();
+        owner.start(&Launch::new("c", "Second"), after(58)).unwrap();
+        let failures = owner.poll(after(60));
         assert_eq!(failures.len(), 3);
         assert_eq!(
             Failure::summary(&failures).as_deref(),
