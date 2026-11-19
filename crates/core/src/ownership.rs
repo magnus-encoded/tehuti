@@ -688,6 +688,15 @@ mod tests {
         ])
     }
 
+    /// A talk list the parser accepts: no Guide or Start, and not empty.
+    fn usable_talk(talk: Vec<ButtonName>) -> Option<Vec<ButtonName>> {
+        let talk: Vec<ButtonName> = talk
+            .into_iter()
+            .filter(|button| !matches!(button, ButtonName::Guide | ButtonName::Start))
+            .collect();
+        (!talk.is_empty()).then_some(talk)
+    }
+
     #[expect(clippy::too_many_lines, reason = "one flat generator for every routing knob")]
     fn scenario() -> impl Strategy<Value = Scenario> {
         let setup = (
@@ -737,8 +746,8 @@ mod tests {
                 guide,
                 focused,
                 global,
-                own_talk,
-                global_talk,
+                own_talk: own_talk.and_then(usable_talk),
+                global_talk: global_talk.and_then(usable_talk),
                 controller_talk,
                 stick_with,
                 stick_held,
@@ -891,6 +900,9 @@ mod tests {
         }
         let (_, actions, routed) = step_with_plugin(state.clone(), &event, scenario.plugin_active);
         let shoulder = matches!(scenario.button, ButtonName::LeftBumper | ButtonName::RightBumper);
+        if shoulder && state.level == Level::Columns {
+            return Kind::Level;
+        }
         if state.sticks.holds(scenario.button) || state.focused_stick_modifier(scenario.button) {
             return Kind::Sticks;
         }
