@@ -950,7 +950,10 @@ mod tests {
         let confirm_press = scenario.phase == Phase::Pressed
             && scenario.button == state.pad_family.button(pad::Role::Confirm);
         if !confirm_press
-            && (state.sticks.holds(scenario.button) || state.focused_stick_modifier(scenario.button))
+            && (match scenario.phase {
+                Phase::Pressed => state.focused_stick_modifier(scenario.button),
+                Phase::Released => state.sticks.holds(scenario.button),
+            })
         {
             return Kind::Sticks;
         }
