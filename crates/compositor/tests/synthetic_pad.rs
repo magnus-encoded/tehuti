@@ -1,5 +1,7 @@
 //! End to end without a display or devices: a synthetic pad press reaches a Wayland client as a key.
 
+mod harness;
+
 #[cfg(test)]
 mod synthetic_pad {
     /// A compositor whose taps release at once; the tests here do not run the release timer.
@@ -158,6 +160,7 @@ mod synthetic_pad {
         use smithay::backend::allocator::{Format, Fourcc, Modifier};
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = instant_compositor(&display);
+        let mut harness = crate::harness::Harness::new();
         let formats = if supports_dmabuf {
             vec![Format {
                 code: Fourcc::Argb8888,
@@ -179,18 +182,9 @@ mod synthetic_pad {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let client_thread = thread::spawn(move || dmabuf_client(client, device));
-        let started = Instant::now();
-        while !client_thread.is_finished() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "dmabuf client timed out"
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        let (version, app) = client_thread.join().unwrap();
+        let client_thread = harness.client(move || dmabuf_client(client, device));
+        harness.serve_until_ended(&mut display, &mut compositor, &[&client_thread]);
+        let (version, app) = client_thread.join();
         (version, app, imports.load(Ordering::Relaxed))
     }
 
@@ -372,23 +366,15 @@ mod synthetic_pad {
     fn viewporter_is_advertised_and_rejects_invalid_destinations() {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = instant_compositor(&display);
+        let mut harness = crate::harness::Harness::new();
         let (server, client) = UnixStream::pair().unwrap();
         let _client = display
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let client_thread = thread::spawn(move || viewporter_client(client));
-        let started = Instant::now();
-        while !client_thread.is_finished() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "viewporter client timed out"
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        let result = client_thread.join().unwrap();
+        let client_thread = harness.client(move || viewporter_client(client));
+        harness.serve_until_ended(&mut display, &mut compositor, &[&client_thread]);
+        let result = client_thread.join();
         let error = result.expect_err("negative destination is a protocol error, binding itself succeeded");
         assert!(
             error.contains("viewport") || error.contains("Protocol"),
@@ -479,6 +465,7 @@ mod synthetic_pad {
     fn selection_is_offered_to_another_client_after_keyboard_focus_changes() {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = instant_compositor(&display);
+        let mut harness = crate::harness::Harness::new();
         let streams: Vec<_> = (0..2)
             .map(|_| {
                 let (server, client) = UnixStream::pair().unwrap();
@@ -489,18 +476,9 @@ mod synthetic_pad {
                 client
             })
             .collect();
-        let client = thread::spawn(move || check_clipboard_clients(streams));
-        let began = Instant::now();
-        while !client.is_finished() {
-            assert!(
-                began.elapsed() < Duration::from_secs(5),
-                "clipboard client timed out"
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        client.join().unwrap();
+        let client = harness.client(move || check_clipboard_clients(streams));
+        harness.serve_until_ended(&mut display, &mut compositor, &[&client]);
+        client.join();
     }
 
     fn check_clipboard_clients(streams: Vec<UnixStream>) {
@@ -3374,12 +3352,13 @@ else:
         if let Ok(expected) = std::env::var(CHILD) {
             let mut display: Display<Compositor> = Display::new().unwrap();
             let mut compositor = instant_compositor(&display);
+            let mut harness = crate::harness::Harness::new();
             let (server_end, client_end) = UnixStream::pair().unwrap();
             let _client = display
                 .handle()
                 .insert_client(server_end, Arc::new(ClientState::default()))
                 .unwrap();
-            let client = thread::spawn(move || {
+            let client = harness.client(move || {
                 let connection = Connection::from_socket(client_end).unwrap();
                 let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
                 let handle = queue.handle();
@@ -3389,20 +3368,14 @@ else:
                 let _dispatched = queue.roundtrip(&mut app).unwrap();
                 app.repeat_info
             });
-            let started = Instant::now();
-            while !client.is_finished() {
-                assert!(started.elapsed() < Duration::from_secs(5));
-                let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-                display.flush_clients().unwrap();
-                thread::sleep(Duration::from_millis(1));
-            }
+            harness.serve_until_ended(&mut display, &mut compositor, &[&client]);
             let expected = match expected.as_str() {
                 "disabled" => (0, 450),
                 "custom" => (37, 310),
                 "default" => (25, 200),
                 _ => panic!("unknown repeat test case"),
             };
-            assert_eq!(client.join().unwrap(), Some(expected));
+            assert_eq!(client.join(), Some(expected));
             return;
         }
         for (case, rate, delay) in [
