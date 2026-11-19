@@ -5,16 +5,21 @@
 /// # Errors
 /// The desktop entry id is invalid or the launcher is unavailable.
 pub fn launch(entry_id: &str, socket: &std::ffi::OsStr) -> Result<std::process::Child, String> {
+    launch_for(entry_id, socket)?
+        .command()
+        .spawn()
+        .map_err(|error| error.to_string())
+}
+
+/// The launch of one desktop entry, labelled with the entry id.
+///
+/// # Errors
+/// The desktop entry id is invalid.
+pub fn launch_for(entry_id: &str, socket: &std::ffi::OsStr) -> Result<crate::launch::Launch, String> {
     if entry_id.is_empty() || entry_id.starts_with('-') || entry_id.contains('/') || entry_id.contains('\0') {
         return Err("invalid desktop entry id".into());
     }
-    crate::client_env::command(std::ffi::OsStr::new("gtk-launch"), socket)
-        .arg(entry_id)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|error| error.to_string())
+    Ok(crate::launch::Launch::new("gtk-launch", entry_id).arg(entry_id).on_socket(socket))
 }
 
 /// Discovers desktop entry ids in the XDG data directories.

@@ -1,5 +1,8 @@
 //! Destination discovery, launcher views, invitation state and launched children.
-use crate::destinations::{Destination, Route};
+use crate::{
+    destinations::{Destination, Route},
+    launch::{Failure, Launch, Launches},
+};
 use std::time::Instant;
 use tehuti_core::unit_verbs::DestinationKind;
 
@@ -115,7 +118,7 @@ pub(crate) enum InvitationView {
 
 #[derive(Debug)]
 pub(crate) struct Session {
-    children: Children,
+    children: Launches,
     desktop_entries: crate::desktop::EntryCache,
     paths: crate::destinations::Paths,
     table: crate::destinations::Table,
@@ -127,7 +130,7 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn new() -> std::io::Result<Self> {
         Ok(Self {
-            children: Children::default(),
+            children: Launches::default(),
             desktop_entries: crate::desktop::EntryCache::new()?,
             paths: crate::destinations::Paths::default(),
             table: crate::destinations::Table::default(),
@@ -296,17 +299,11 @@ impl Session {
         let result = socket
             .ok_or_else(|| "no compositor socket".to_owned())
             .and_then(|socket| {
-                if self.children.is_full() {
-                    return Err("too many pending launches".into());
-                }
-                crate::desktop::launch(entry, socket)
+                let launch = crate::desktop::launch_for(entry, socket)?.labelled(&self.display_name(entry));
+                self.children.start(&launch, Instant::now())
             });
         match result {
-            Ok(child) => {
-                let label = self.display_name(entry);
-                self.children.track(child, &label, Instant::now());
-                true
-            }
+            Ok(()) => true,
             Err(error) => {
                 tracing::warn!(%error, "desktop launch failed");
                 false
@@ -338,20 +335,9 @@ impl Session {
         let Some(socket) = socket else {
             return false;
         };
-        if self.children.is_full() {
-            return false;
-        }
-        match crate::client_env::command(std::ffi::OsStr::new("xdg-open"), socket)
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(child) => {
-                self.children.track(child, "Link", Instant::now());
-                true
-            }
+        let launch = Launch::new("xdg-open", "Link").arg(url).on_socket(socket);
+        match self.children.start(&launch, Instant::now()) {
+            Ok(()) => true,
             Err(error) => {
                 tracing::warn!(%error, "launcher URL failed");
                 false
@@ -360,110 +346,13 @@ impl Session {
     }
 
     pub(crate) fn shutdown(&mut self) {
-        self.children = Children::default();
+        self.children = Launches::default();
     }
 
     pub(crate) fn poll(&mut self, now: Instant) -> Vec<Failure> {
         let failed = self.children.poll(now);
         self.desktop_entries.poll();
         failed
-    }
-}
-
-/// How long after launch a non-zero exit counts as "closed right away".
-const EARLY_EXIT: core::time::Duration = core::time::Duration::from_secs(5);
-
-/// A launched child that has exited unsuccessfully.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Failure {
-    pub(crate) label: String,
-    pub(crate) code: Option<i32>,
-    /// Exited within a few seconds of the launch.
-    pub(crate) early: bool,
-}
-
-impl Failure {
-    /// The bar notice for an early exit.
-    pub(crate) fn notice(&self) -> String {
-        let exit = self.code.map_or_default(|code| format!(" (exit {code})"));
-        format!("{} closed right away{exit}", self.label)
-    }
-
-    /// One notice for every early exit seen in a poll: the single notice for
-    /// one, otherwise the count and the names. `None` when none exited early.
-    pub(crate) fn summary(failures: &[Self]) -> Option<String> {
-        let early: Vec<&Self> = failures.iter().filter(|failure| failure.early).collect();
-        match early.as_slice() {
-            [] => None,
-            [only] => Some(only.notice()),
-            many => {
-                let names: Vec<&str> = many.iter().map(|failure| failure.label.as_str()).collect();
-                Some(format!(
-                    "{} apps closed right away: {}",
-                    many.len(),
-                    names.join(", ")
-                ))
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Child {
-    process: std::process::Child,
-    label: String,
-    started: Instant,
-}
-
-#[derive(Debug, Default)]
-struct Children(Vec<Child>);
-
-impl Children {
-    const fn is_full(&self) -> bool {
-        self.0.len() >= 16
-    }
-    fn track(&mut self, process: std::process::Child, label: &str, now: Instant) {
-        self.0.push(Child {
-            process,
-            label: label.to_owned(),
-            started: now,
-        });
-    }
-    fn poll(&mut self, now: Instant) -> Vec<Failure> {
-        let mut failures = Vec::new();
-        self.0.retain_mut(|child| match child.process.try_wait() {
-            Ok(None) => true,
-            Ok(Some(status)) => {
-                if !status.success() {
-                    failures.push(Failure {
-                        label: child.label.clone(),
-                        code: status.code(),
-                        early: now.saturating_duration_since(child.started) < EARLY_EXIT,
-                    });
-                }
-                false
-            }
-            Err(error) => {
-                tracing::warn!(%error, "desktop launcher wait failed");
-                failures.push(Failure {
-                    label: child.label.clone(),
-                    code: None,
-                    early: false,
-                });
-                let _killed = child.process.kill();
-                let _reaped = child.process.wait();
-                false
-            }
-        });
-        failures
-    }
-}
-
-impl Drop for Children {
-    fn drop(&mut self) {
-        for mut child in self.0.drain(..) {
-            crate::shutdown::terminate(&mut child.process, false);
-        }
     }
 }
 
