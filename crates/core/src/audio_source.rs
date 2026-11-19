@@ -182,7 +182,10 @@ mod tests {
 
     #[test]
     fn a_usb_device_is_a_microphone_and_a_network_feed_a_stream() {
-        assert_eq!(AudioSource::classify("alsa_input.usb", "USB Mic", None).kind, SourceKind::Microphone);
+        assert_eq!(
+            AudioSource::classify("alsa_input.usb", "USB Mic", None).kind,
+            SourceKind::Microphone
+        );
         assert_eq!(
             AudioSource::classify("rtp_source", "RTP", None).kind,
             SourceKind::Stream(StreamOrigin::Network)
