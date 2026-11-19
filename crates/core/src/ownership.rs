@@ -690,8 +690,14 @@ mod tests {
 
     /// A talk list the parser accepts: buttons a single entry may name, and not empty.
     fn usable_talk(talk: Vec<ButtonName>) -> Option<Vec<ButtonName>> {
+        let mut seen = Vec::new();
         let talk: Vec<ButtonName> = talk
             .into_iter()
+            .filter(|button| {
+                let fresh = !seen.contains(button);
+                seen.push(*button);
+                fresh
+            })
             .filter(|button| {
                 matches!(
                     button,
