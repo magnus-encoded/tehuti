@@ -294,7 +294,7 @@ fn report_skipped_phrases(report: &mut Report, loaded: &[(PathBuf, tehuti_protoc
     }
 }
 
-fn shadowing_reason(why: Why) -> &'static str {
+const fn shadowing_reason(why: Why) -> &'static str {
     match why {
         Why::EscapeChord => "the escape chord consumes every Guide press",
         Why::GlobalEnter => "the global layer sends Enter for South unless a focused context maps it",
