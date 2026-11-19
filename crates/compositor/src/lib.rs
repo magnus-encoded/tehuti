@@ -81,6 +81,7 @@ pub mod window_context;
 pub mod xwayland;
 
 pub mod child_process;
+pub mod launch;
 
 pub mod speech_vocabulary;
 
