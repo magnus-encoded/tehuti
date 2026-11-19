@@ -79,6 +79,92 @@ pub struct Pad {
     pub model: Identity,
     pub origin: Origin,
     pub presence: Presence,
+    /// Buttons pressed and not yet released; a drop releases them once.
+    pub held: Vec<ButtonName>,
+}
+
+/// What the compositor must do after a pad changes state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PadEffect {
+    /// Send a release for each of these buttons.
+    ReleaseHeld(Vec<ButtonName>),
+    /// Drop whatever the input gate remembers about this pad.
+    ForgetGate,
+}
+
+impl Pad {
+    /// The node showed up (again): a new or gone pad waits for its grab.
+    pub fn on_seen(&mut self) -> Vec<PadEffect> {
+        if self.presence == Presence::Gone {
+            self.presence = Presence::Connecting;
+        }
+        Vec::new()
+    }
+
+    /// The grab succeeded: events flow.
+    pub fn on_grabbed(&mut self) -> Vec<PadEffect> {
+        self.presence = Presence::Present;
+        Vec::new()
+    }
+
+    /// Records a press or release so a drop knows what is held.
+    pub fn on_button(&mut self, name: ButtonName, pressed: bool) {
+        self.held.retain(|button| *button != name);
+        if pressed {
+            self.held.push(name);
+        }
+    }
+
+    /// The node vanished. Effects come once; a pad already gone yields none.
+    pub fn on_gone(&mut self) -> Vec<PadEffect> {
+        if self.presence == Presence::Gone {
+            return Vec::new();
+        }
+        self.presence = Presence::Gone;
+        let held = core::mem::take(&mut self.held);
+        let mut effects = Vec::new();
+        if !held.is_empty() {
+            effects.push(PadEffect::ReleaseHeld(held));
+        }
+        effects.push(PadEffect::ForgetGate);
+        effects
+    }
+}
+
+/// Pads by node path, driven through their lifecycle as nodes come and go.
+#[derive(Debug, Clone, Default)]
+pub struct PadBook {
+    pads: BTreeMap<PathBuf, Pad>,
+}
+
+impl PadBook {
+    /// Takes the pads attached now and returns the effects of those that vanished.
+    pub fn sync(&mut self, present: Vec<(PathBuf, Pad)>) -> Vec<(PathBuf, PadEffect)> {
+        let mut effects = Vec::new();
+        let paths: BTreeSet<&PathBuf> = present.iter().map(|(path, _)| path).collect();
+        for (path, pad) in &mut self.pads {
+            if !paths.contains(path) {
+                effects.extend(pad.on_gone().into_iter().map(|effect| (path.clone(), effect)));
+            }
+        }
+        self.pads.retain(|_, pad| pad.presence != Presence::Gone);
+        for (path, mut pad) in present {
+            if let Some(known) = self.pads.get_mut(&path) {
+                known.key = pad.key;
+                known.label = pad.label;
+                continue;
+            }
+            let _effects = pad.on_seen();
+            let _effects = pad.on_grabbed();
+            let _old = self.pads.insert(path, pad);
+        }
+        effects
+    }
+
+    #[must_use]
+    pub fn get(&self, path: &Path) -> Option<&Pad> {
+        self.pads.get(path)
+    }
 }
 
 /// One pad node as discovery sees it: the facts keying needs, before any key exists.
@@ -145,6 +231,7 @@ impl PadRoster {
                     model,
                     origin: sighting.origin,
                     presence: Presence::Present,
+                    held: Vec::new(),
                 };
                 (sighting.path, pad)
             })
@@ -178,6 +265,7 @@ mod pad_type_tests {
             model: Identity::default(),
             origin: Origin::Bluetooth,
             presence: Presence::Connecting,
+            held: Vec::new(),
         };
         assert_eq!(pad.origin.caption(), "BLUETOOTH");
         assert_eq!(pad.presence.label(), "CONNECTING");

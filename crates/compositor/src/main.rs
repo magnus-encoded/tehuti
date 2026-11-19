@@ -35,6 +35,8 @@ pub(crate) struct LoopData {
     pad_gate: input::PadGate,
     /// Keys each attached pad; a later pad never changes the key of one already there.
     pad_roster: tehuti_core::pad::PadRoster,
+    /// Each attached pad's lifecycle; its Gone effects drive the gate.
+    pad_book: tehuti_core::pad::PadBook,
     virtual_pad: Option<String>,
     /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
     /// Unplugging it does not clear this: no pad matches the stale path, so no mirror exists
@@ -493,6 +495,7 @@ fn start_session(
         spare_virtual_pad: None,
         pad_gate: input::PadGate::default(),
         pad_roster: tehuti_core::pad::PadRoster::default(),
+        pad_book: tehuti_core::pad::PadBook::default(),
         controller_tokens,
         virtual_pad,
         active_pad: None,
@@ -823,10 +826,27 @@ fn sync_controller_names(data: &mut LoopData) {
         })
         .collect();
     let keyed = controller::keyed_controllers(&mut data.pad_roster, devices);
+    let present = keyed
+        .iter()
+        .map(|(path, info)| {
+            let pad = tehuti_core::pad::Pad {
+                key: tehuti_core::pad::PadKey::new(info.key.clone()),
+                label: info.label.clone(),
+                model: tehuti_core::pad::Identity::default(),
+                origin: info.origin,
+                presence: tehuti_core::pad::Presence::Present,
+                held: Vec::new(),
+            };
+            (path.clone(), pad)
+        })
+        .collect();
+    for (path, effect) in data.pad_book.sync(present) {
+        if effect == tehuti_core::pad::PadEffect::ForgetGate {
+            data.pad_gate.forget(&path);
+        }
+    }
     data.compositor
         .configure_controllers(keyed.into_iter().map(|(_, info)| info).collect());
-    let controllers = &data.controllers;
-    data.pad_gate.retain(|path| controllers.contains_key(path));
 }
 
 fn insert_wayland_sources(
