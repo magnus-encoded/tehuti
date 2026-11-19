@@ -126,12 +126,13 @@ impl PadRoster {
                 let key = self.known.get(&sighting.path).cloned().unwrap_or_else(|| {
                     let identity = &sighting.uniq;
                     let name = &sighting.name;
-                    let free = (1_usize..)
-                        .map(|index| match (identity.is_empty(), index) {
-                            (false, 1) => identity.clone(),
-                            (false, _) => format!("{identity}#{index}"),
-                            (true, _) => format!("{name}#{index}"),
-                        })
+                    let candidates = (1_usize..).map(|index| match (identity.is_empty(), index) {
+                        (false, 1) => identity.clone(),
+                        (false, _) => format!("{identity}#{index}"),
+                        (true, _) => format!("{name}#{index}"),
+                    });
+                    let free = candidates
+                        .into_iter()
                         .find(|key| !taken.contains(key))
                         .unwrap_or_default();
                     let _fresh = taken.insert(free.clone());
