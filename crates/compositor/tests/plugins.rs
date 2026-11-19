@@ -235,7 +235,7 @@ for line in sys.stdin:
     /// The reply a dispatch effect asks for, recording routed plugin events.
     #[expect(
         clippy::too_many_lines,
-        reason = "one exhaustive list of the effects this harness leaves unanswered"
+        reason = "one match names every effect that needs no reply"
     )]
     fn answer(
         effect: tehuti_core::dispatch::Effect,
@@ -280,6 +280,8 @@ for line in sys.stdin:
             | Effect::SettingsMicrophone(_)
             | Effect::SettingsControllerEnabled { .. }
             | Effect::SettingsMicrophoneEnabled { .. }
+            | Effect::ListRemoteHosts
+            | Effect::ConnectRemoteMicrophone { .. }
             | Effect::WallpaperPreview(_)
             | Effect::WallpaperSave(_)
             | Effect::UnlockWallpapers

@@ -7,7 +7,7 @@
 use core::time::Duration;
 use std::{io, io::Write as _, path::PathBuf};
 
-use tehuti_core::dispatch::{ControllerChoice, Microphone, MicrophoneChoice};
+use tehuti_core::dispatch::{ControllerChoice, Microphone, MicrophoneChoice, RelayState};
 
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -257,12 +257,28 @@ pub fn capture_sources(listing: &serde_json::Value) -> Vec<Microphone> {
         {
             continue;
         }
+        let description = text("node.description")
+            .or_else(|| text("node.nick"))
+            .unwrap_or(name);
+        let relay = [Some(name), Some(description), text("application.name")]
+            .into_iter()
+            .flatten()
+            .any(|word| {
+                word.to_lowercase()
+                    .replace([' ', '-', '_'], "")
+                    .contains("audiorelay")
+            })
+            .then(|| {
+                if node.pointer("/info/state").and_then(serde_json::Value::as_str) == Some("running") {
+                    RelayState::Connected
+                } else {
+                    RelayState::Waiting
+                }
+            });
         microphones.push(Microphone {
             name: name.to_owned(),
-            description: text("node.description")
-                .or_else(|| text("node.nick"))
-                .unwrap_or(name)
-                .to_owned(),
+            description: description.to_owned(),
+            relay,
         });
     }
     microphones
@@ -319,7 +335,7 @@ fn run_pw_dump() -> io::Result<Vec<Microphone>> {
 #[cfg(test)]
 mod tests {
     use super::{Store, capture_sources};
-    use tehuti_core::dispatch::{ControllerChoice, Microphone, MicrophoneChoice};
+    use tehuti_core::dispatch::{ControllerChoice, Microphone, MicrophoneChoice, RelayState};
 
     #[test]
     fn choices_survive_reopening_and_auto_controller_removes_its_file() -> std::io::Result<()> {
@@ -443,12 +459,46 @@ mod tests {
                 Microphone {
                     name: "alsa_input.pci-0000_00_1b.0.analog-stereo".into(),
                     description: "Built-in Audio Analog Stereo".into(),
+                    relay: None,
                 },
                 Microphone {
                     name: "bluez_input.headset".into(),
                     description: "bluez_input.headset".into(),
+                    relay: None,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn audiorelay_sources_carry_their_connection() {
+        let listing = serde_json::json!([
+            {"type": "PipeWire:Interface:Node", "info": {"state": "running", "props": {
+                "node.name": "audiorelay-virtual-mic-a",
+                "node.description": "Phone One",
+                "media.class": "Audio/Source"}}},
+            {"type": "PipeWire:Interface:Node", "info": {"state": "idle", "props": {
+                "node.name": "input.b", "application.name": "Audio Relay",
+                "media.class": "Audio/Source"}}},
+            {"type": "PipeWire:Interface:Node", "info": {"state": "running", "props": {
+                "node.name": "alsa_input.desk", "media.class": "Audio/Source"}}}
+        ]);
+        let relays: Vec<_> = capture_sources(&listing)
+            .into_iter()
+            .map(|mic| mic.relay)
+            .collect();
+        assert_eq!(
+            relays,
+            vec![Some(RelayState::Connected), Some(RelayState::Waiting), None]
+        );
+    }
+
+    #[test]
+    fn without_audiorelay_no_source_is_marked() {
+        let listing = serde_json::json!([
+            {"type": "PipeWire:Interface:Node", "info": {"state": "running", "props": {
+                "node.name": "alsa_input.desk", "media.class": "Audio/Source"}}}
+        ]);
+        assert!(capture_sources(&listing).iter().all(|mic| mic.relay.is_none()));
     }
 }

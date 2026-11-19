@@ -78,6 +78,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::ActiveController(_)
         | DispatchInput::Controllers(_)
         | DispatchInput::Microphones(_)
+        | DispatchInput::RemoteHosts(_)
         | DispatchInput::InputChoices { .. }
         | DispatchInput::Speech(_)
         | DispatchInput::PluginReply { .. }
@@ -130,6 +131,7 @@ pub struct Compositor {
     recentre_requests: Vec<String>,
     input_choices: Option<crate::input_choice_store::Store>,
     volume: Option<crate::volume::Backend>,
+    remote_host_listing: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
     driver_clock: crate::driver::Clock,
@@ -295,6 +297,7 @@ impl Compositor {
             recentre_requests: Vec::new(),
             input_choices: None,
             volume: None,
+            remote_host_listing: None,
             microphone_listing: None,
             driver_clock: crate::driver::Clock::Live,
             driver_elapsed: core::time::Duration::ZERO,
@@ -1764,6 +1767,20 @@ impl Compositor {
         }
     }
 
+    fn poll_remote_hosts(&mut self) {
+        let Some(listing) = &self.remote_host_listing else {
+            return;
+        };
+        match listing.try_recv() {
+            Ok(hosts) => {
+                self.remote_host_listing = None;
+                let _hosts_rejection = self.dispatch(DispatchInput::RemoteHosts(hosts));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.remote_host_listing = None,
+        }
+    }
+
     fn poll_microphones(&mut self) {
         let Some(listing) = &self.microphone_listing else {
             return;
@@ -1782,6 +1799,10 @@ impl Compositor {
     ///
     /// # Errors
     /// Names the fixture when it is not known.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each fixture lists its invented hardware inline"
+    )]
     pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
         use tehuti_core::dispatch::Connection;
         let pad = |label: &str, key: &str, connection| tehuti_core::dispatch::ControllerInfo {
@@ -1797,6 +1818,7 @@ impl Compositor {
         let mic = |node: &str, description: &str| tehuti_core::dispatch::Microphone {
             name: node.to_owned(),
             description: description.to_owned(),
+            relay: None,
         };
         match name {
             "display" => {
@@ -1833,6 +1855,19 @@ impl Compositor {
                     mic("rtp-source", "Network RTP Stream"),
                     mic("phone-mic", "Phone Microphone"),
                     mic("capture-source", "Capture Microphone"),
+                    tehuti_core::dispatch::Microphone {
+                        relay: Some(tehuti_core::dispatch::RelayState::Connected),
+                        ..mic("audiorelay-virtual-mic", "Phone One")
+                    },
+                    tehuti_core::dispatch::Microphone {
+                        relay: Some(tehuti_core::dispatch::RelayState::Waiting),
+                        ..mic("audiorelay-virtual-mic-2", "Phone Two")
+                    },
+                ]));
+                self.remote_host_listing = None;
+                let _hosts_rejection = self.dispatch(DispatchInput::RemoteHosts(vec![
+                    "desk-pc".to_owned(),
+                    "laptop.tail1234.ts.net".to_owned(),
                 ]));
             }
             _ => return Err(format!("unknown fixture {name}")),
@@ -1958,6 +1993,8 @@ impl Compositor {
             | DispatchEffect::SettingsControllerEnabled { .. }
             | DispatchEffect::SettingsMicrophoneEnabled { .. }
             | DispatchEffect::ListMicrophones
+            | DispatchEffect::ListRemoteHosts
+            | DispatchEffect::ConnectRemoteMicrophone { .. }
             | DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::RunMenuCommand(_)
             | DispatchEffect::MovePointer { .. }
@@ -2282,6 +2319,14 @@ impl Compositor {
             DispatchEffect::ListMicrophones => {
                 self.microphone_listing = Some(crate::input_choice_store::list_microphones());
             }
+            DispatchEffect::ListRemoteHosts => {
+                self.remote_host_listing = Some(crate::remote_hosts::list_remote_hosts());
+            }
+            DispatchEffect::ConnectRemoteMicrophone { host } => {
+                tracing::info!(%host, "remote microphone requested");
+                self.show_notice(&format!("CONNECTING TO {}", host.to_uppercase()));
+                self.microphone_listing = Some(crate::input_choice_store::list_microphones());
+            }
             DispatchEffect::PasswordSpeechIgnored => {
                 tracing::info!("push-to-talk ignored: password field active");
             }
@@ -2313,6 +2358,7 @@ impl Compositor {
                 self.poll_secret_lookup();
                 self.poll_launchers();
                 self.poll_microphones();
+                self.poll_remote_hosts();
                 self.poll_menu_failures();
                 self.poll_volume();
             }

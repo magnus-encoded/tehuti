@@ -3,7 +3,7 @@
 use super::{
     Effect,
     input_settings::{
-        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, ControllerChoice, InputSettings, MICROPHONE_ROW,
+        CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, ControllerChoice, InputSettings, MICROPHONE_ROW, REMOTE_ROW,
         TALK_OPTIONS,
     },
 };
@@ -114,6 +114,12 @@ impl Settings {
         {
             self.input.pending_disable = None;
         }
+        self.keep_input_focus();
+    }
+
+    /// Sets the hosts offered for a remote microphone; an empty list hides the row.
+    pub(super) fn configure_remote_hosts(&mut self, hosts: Vec<String>) {
+        self.input.remote_hosts = hosts;
         self.keep_input_focus();
     }
 
@@ -375,6 +381,7 @@ impl Settings {
                     self.input.controller_cursor = 0;
                     self.input.pending_disable = None;
                     effects.push(Effect::ListMicrophones);
+                    effects.push(Effect::ListRemoteHosts);
                 }
                 Category::Wallpaper => {
                     self.page = Page::Wallpaper;
@@ -526,7 +533,14 @@ impl Settings {
                 Some(choice) => self.choose_microphone(choice, effects),
                 None => {}
             },
+            REMOTE_ROW => self.connect_remote(focus.col, effects),
             _ => {}
+        }
+    }
+
+    fn connect_remote(&self, col: usize, effects: &mut Vec<Effect>) {
+        if let Some(host) = self.input.remote_hosts.get(col).cloned() {
+            effects.push(Effect::ConnectRemoteMicrophone { host });
         }
     }
 
