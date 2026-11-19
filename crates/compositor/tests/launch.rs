@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use std::time::{Duration, Instant};
-use tehuti::launch::{Exit, FakeSpawner, Failure, Launch, Launches};
+use tehuti::launch::{Exit, Failure, FakeSpawner, Launch, Launches};
 
 fn launches(exit: Option<Exit>) -> Launches<FakeSpawner> {
     Launches::new(FakeSpawner {
@@ -57,7 +57,10 @@ fn a_crash_without_an_exit_code_still_notifies() {
     let mut owner = launches(Some(Exit::Crashed));
     owner.start(&Launch::new("app", "App"), now).unwrap();
     let failures = owner.poll(now);
-    assert_eq!(Failure::summary(&failures).as_deref(), Some("App closed right away"));
+    assert_eq!(
+        Failure::summary(&failures).as_deref(),
+        Some("App closed right away")
+    );
 }
 
 #[test]
@@ -66,7 +69,11 @@ fn a_program_that_cannot_start_is_an_error_and_not_owned() {
         refuse: true,
         ..FakeSpawner::default()
     });
-    assert!(owner.start(&Launch::new("missing", "Missing"), Instant::now()).is_err());
+    assert!(
+        owner
+            .start(&Launch::new("missing", "Missing"), Instant::now())
+            .is_err()
+    );
     assert_eq!(owner.running(), 0);
 }
 
@@ -98,7 +105,10 @@ fn several_early_failures_share_one_notice() {
 
 #[test]
 fn the_launch_carries_its_label_and_app_id() {
-    let launch = Launch::new("kitty", "Agent").arg("--class").arg("agent").with_app_id("agent");
+    let launch = Launch::new("kitty", "Agent")
+        .arg("--class")
+        .arg("agent")
+        .with_app_id("agent");
     assert_eq!(launch.label(), "Agent");
     assert_eq!(launch.app_id(), Some("agent"));
 }

@@ -19,7 +19,9 @@ pub fn launch_for(entry_id: &str, socket: &std::ffi::OsStr) -> Result<crate::lau
     if entry_id.is_empty() || entry_id.starts_with('-') || entry_id.contains('/') || entry_id.contains('\0') {
         return Err("invalid desktop entry id".into());
     }
-    Ok(crate::launch::Launch::new("gtk-launch", entry_id).arg(entry_id).on_socket(socket))
+    Ok(crate::launch::Launch::new("gtk-launch", entry_id)
+        .arg(entry_id)
+        .on_socket(socket))
 }
 
 /// Discovers desktop entry ids in the XDG data directories.

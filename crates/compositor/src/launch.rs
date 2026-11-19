@@ -116,11 +116,13 @@ pub trait Spawner {
 
 impl Process for Child {
     fn try_wait(&mut self) -> io::Result<Option<Exit>> {
-        Ok(Child::try_wait(self)?.map(|status| match (status.success(), status.code()) {
-            (true, _) => Exit::Success,
-            (false, Some(code)) => Exit::Code(code),
-            (false, None) => Exit::Crashed,
-        }))
+        Ok(
+            Child::try_wait(self)?.map(|status| match (status.success(), status.code()) {
+                (true, _) => Exit::Success,
+                (false, Some(code)) => Exit::Code(code),
+                (false, None) => Exit::Crashed,
+            }),
+        )
     }
 
     fn terminate(&mut self) {
@@ -166,7 +168,11 @@ impl Failure {
             [only] => Some(only.notice()),
             many => {
                 let names: Vec<&str> = many.iter().map(|failure| failure.label.as_str()).collect();
-                Some(format!("{} apps closed right away: {}", many.len(), names.join(", ")))
+                Some(format!(
+                    "{} apps closed right away: {}",
+                    many.len(),
+                    names.join(", ")
+                ))
             }
         }
     }
