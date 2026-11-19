@@ -919,7 +919,12 @@ mod tests {
         if shoulder && state.level == Level::Columns {
             return Kind::Level;
         }
-        if state.sticks.holds(scenario.button) || state.focused_stick_modifier(scenario.button) {
+        // The global layer takes an unmodified Confirm press before the stick modifiers see it.
+        let confirm_press = scenario.phase == Phase::Pressed
+            && scenario.button == state.pad_family.button(pad::Role::Confirm);
+        if !confirm_press
+            && (state.sticks.holds(scenario.button) || state.focused_stick_modifier(scenario.button))
+        {
             return Kind::Sticks;
         }
         if routed {
