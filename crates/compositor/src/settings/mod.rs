@@ -316,10 +316,10 @@ mod tests {
     /// Writes the Input page to `$SHOT_DIR/input-page.png` when that is set; the PR screenshots come from here.
     #[test]
     fn the_input_page_can_be_written_as_a_screenshot() -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
         let Some(directory) = std::env::var_os("SHOT_DIR") else {
             return Ok(());
         };
-        use tehuti_protocol::{ButtonName, ButtonState};
         let display = Display::<Compositor>::new()?;
         let mut compositor = Compositor::new(&display.handle())?;
         compositor.show_fixture("input")?;
