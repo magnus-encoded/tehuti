@@ -614,6 +614,7 @@ mod tests {
         let mut compositor = Compositor::new(&display.handle())?;
         compositor.load_input_choices(store.clone());
         compositor.configure_controllers(input_test_controllers());
+        compositor.activate_controller("Wireless Controller#1".into());
         compositor.handle(&Event::Speech {
             text: Text::new("Pop the hood.".into())?,
         });
