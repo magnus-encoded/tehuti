@@ -66,6 +66,7 @@ pub mod wallpaper_pack;
 
 pub mod decorations;
 pub mod display_mode_store;
+pub mod image_capture;
 pub mod input_choice_store;
 pub mod remote_hosts;
 mod screenshot;
