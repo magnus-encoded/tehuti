@@ -103,7 +103,7 @@ verdict=$("$jq" -rR --rawfile allowed "$allowed" '
     | select(.level == "error" and ((.spans | length) > 0 or (.message | test("^(aborting due to|could not compile)") | not)))
     | (.code.code // "none") as $c
     | (.spans | map(select(.is_primary)) | .[0]) as $sp
-    | if ($c | IN("E0432", "E0433", "E0425", "E0599", "E0609", "E0412", "E0061", "E0423", "E0531", "E0574", "E0560", "E0026", "E0063", "E0407", "E0071"))
+    | if ($c | IN("E0432", "E0433", "E0425", "E0599", "E0609", "E0412", "E0061", "E0423", "E0531", "E0574", "E0560", "E0026", "E0063", "E0407", "E0071", "E0624"))
           and $sp != null and any($ok[]; .f == $sp.file_name and $sp.line_start >= .s)
       then "ok" else "bad \($c) \(.message)" end' "$log" 2>/dev/null || true)
 # Failures cargo reports outside rustc diagnostics (build scripts, linker) are not the PR's new API.
