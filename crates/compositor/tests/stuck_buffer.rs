@@ -245,7 +245,7 @@ mod stuck_buffer {
         }
 
         /// Pumps until the client thread ends, failing at the deadline.
-        fn finish(mut self) {
+        fn finish(&mut self) {
             let started = Instant::now();
             while !self.thread.is_finished() {
                 assert!(started.elapsed() < DEADLINE, "client thread did not end");
@@ -331,13 +331,18 @@ mod stuck_buffer {
         let probes = scene.compositor.held_gate_probes();
         assert_eq!(probes.len(), 2, "both gates are held first");
         scene.stop.send(()).unwrap();
-        scene.settle();
+        if destroy_first {
+            scene.settle();
+        } else {
+            scene.finish();
+            scene.settle();
+        }
         let waiting = scene.compositor.buffers_waiting();
         let alive = probes.iter().filter(|gate| gate.upgrade().is_some()).count();
         if destroy_first {
             scene.stop.send(()).unwrap();
+            scene.finish();
         }
-        scene.finish();
         (waiting, alive)
     }
 
