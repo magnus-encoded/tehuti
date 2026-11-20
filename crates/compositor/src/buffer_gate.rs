@@ -88,8 +88,9 @@ impl Blocker for BufferBlocker {
     }
 }
 
-/// The gates of a surface's held commits, oldest first. Each commit owns one gate,
-/// shared with that commit's blocker. Kept in the surface's own data, so a destroyed
+/// The gates of a surface's held commits, oldest first.
+///
+/// Each commit owns one gate, shared with that commit's blocker. Kept in the surface's own data, so a destroyed
 /// surface or a dead client takes them (and their fds) along.
 #[derive(Debug, Default)]
 pub struct Held(pub std::sync::Mutex<VecDeque<Arc<Gate>>>);
@@ -105,7 +106,7 @@ impl Held {
         let mut gates = self.lock();
         let before = gates.len();
         gates.retain(|gate| !gate.ready(now));
-        before - gates.len()
+        before.saturating_sub(gates.len())
     }
 
     #[must_use]
@@ -167,11 +168,9 @@ impl Waiting {
             .filter_map(|weak| weak.upgrade().ok())
             .flat_map(|surface| {
                 with_states(&surface, |states| {
-                    states
-                        .data_map
-                        .get::<Held>()
-                        .map(|held| held.lock().iter().map(Arc::downgrade).collect::<Vec<_>>())
-                        .unwrap_or_default()
+                    states.data_map.get::<Held>().map_or_else(Vec::new, |held| {
+                        held.lock().iter().map(Arc::downgrade).collect::<Vec<_>>()
+                    })
                 })
             })
             .collect()
