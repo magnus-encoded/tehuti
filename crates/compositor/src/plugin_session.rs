@@ -1,6 +1,7 @@
-//! One plugin's protocol state: framing, handshake, decision deadlines and invalid-message
-//! limits (ADR 0003). Bytes and the time come in; deliveries and bytes to write go out. No
-//! process, pipe or event loop appears here.
+//! One plugin's protocol state (ADR 0003).
+//!
+//! Framing, handshake, decision deadlines and invalid-message limits live here. Bytes and the
+//! time come in; deliveries and bytes to write go out. No process, pipe or event loop appears.
 
 use core::time::Duration;
 use std::{
@@ -19,6 +20,7 @@ pub const FLOOD_WINDOW: Duration = Duration::from_secs(1);
 pub const FLOOD_BYTES: usize = 262_144;
 
 /// What a session hands the compositor after reading plugin output.
+#[derive(Debug)]
 pub enum Delivery {
     Reply {
         key: tehuti_core::plugin::RequestKey,
@@ -102,6 +104,7 @@ impl Session {
     }
 
     /// The bytes waiting to be written to the plugin's stdin.
+    #[must_use]
     pub fn output_slice(&self) -> &[u8] {
         self.output.as_slices().0
     }
@@ -111,7 +114,7 @@ impl Session {
         let _written = self.output.drain(..count);
     }
 
-    pub fn queue_initialize(&mut self) -> io::Result<()> {
+    fn queue_initialize(&mut self) -> io::Result<()> {
         self.queue(&Call {
             jsonrpc: RpcVersion::Two,
             request_id: Some(0),
@@ -166,6 +169,7 @@ impl Session {
     }
 
     /// Whether the manifest lists this application; focus notices go to no other plugin.
+    #[must_use]
     pub fn owns_app(&self, app_id: Option<&String>) -> bool {
         app_id.is_some_and(|app_id| self.manifest.app_ids.contains(app_id))
     }
@@ -182,6 +186,10 @@ impl Session {
         Some(request_id)
     }
 
+    /// Queues `call` for the plugin and starts the decision clock for a request.
+    ///
+    /// # Errors
+    /// The pending queue or the output queue is full, or the call cannot be encoded.
     pub fn queue_event(&mut self, call: &Call, now: Instant) -> io::Result<()> {
         if call.request_id.is_some() && self.pending.len() >= 256 {
             return Err(io::Error::other("plugin pending queue full"));
@@ -200,10 +208,18 @@ impl Session {
         Ok(())
     }
 
+    /// Queues `call` for the plugin.
+    ///
+    /// # Errors
+    /// The output queue is full or the call cannot be encoded.
     pub fn queue(&mut self, call: &Call) -> io::Result<()> {
         self.queue_bytes(serde_json::to_vec(call)?)
     }
 
+    /// Queues one message line for the plugin.
+    ///
+    /// # Errors
+    /// The output queue is full.
     pub fn queue_bytes(&mut self, bytes: Vec<u8>) -> io::Result<()> {
         if self.output.len().saturating_add(bytes.len()).saturating_add(1) > MAX_MESSAGE_BYTES {
             return Err(io::Error::other("plugin output queue full"));
@@ -502,6 +518,10 @@ impl Session {
         })
     }
 
+    /// Tells the plugin its action was rejected.
+    ///
+    /// # Errors
+    /// The output queue is full.
     pub fn reject(&mut self, request_id: Option<u64>, reason: &str) -> io::Result<()> {
         self.queue_bytes(serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0", "method": "action_rejected",
@@ -583,7 +603,7 @@ mod tests {
             session.supervise(after(start, before));
             prop_assert!(session.pending.contains_key(&request_id), "still within budget");
             prop_assert_eq!(session.missed_decisions, 0);
-            session.supervise(after(start, budget + Duration::from_millis(late)));
+            session.supervise(after(start, budget.saturating_add(Duration::from_millis(late))));
             prop_assert!(session.pending.is_empty(), "expired at the budget");
             prop_assert_eq!(session.missed_decisions, 1);
         }
