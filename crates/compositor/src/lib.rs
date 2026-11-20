@@ -19,6 +19,7 @@ pub mod width_rewrite;
 
 pub(crate) mod text_input;
 
+pub mod plugin_session;
 pub mod plugins;
 
 pub mod say;
