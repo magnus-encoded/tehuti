@@ -3956,9 +3956,12 @@ impl CompositorHandler for Compositor {
     }
 
     fn new_surface(&mut self, surface: &WlSurface) {
-        let _hook = smithay::wayland::compositor::add_pre_commit_hook::<Self, _>(surface, |state, _display, surface| {
-            state.gate_buffer(surface);
-        });
+        let _hook = smithay::wayland::compositor::add_pre_commit_hook::<Self, _>(
+            surface,
+            |state, _display, surface| {
+                state.gate_buffer(surface);
+            },
+        );
         if let Some(output) = &self.output {
             Self::announce_scale(output, surface);
         }
