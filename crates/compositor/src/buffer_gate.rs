@@ -141,7 +141,9 @@ impl Held {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<Arc<Gate>>> {
-        self.gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
