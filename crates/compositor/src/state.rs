@@ -991,6 +991,14 @@ impl Compositor {
         }
     }
 
+    /// The focused window retitled: a held utterance dictates first, still to this application.
+    pub fn focused_title_changed(&mut self, app_id: Option<String>, title: String) {
+        self.flush_held_utterance();
+        self.speech_title.clone_from(&title);
+        let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
+        self.refresh_speech_vocabulary();
+    }
+
     /// Routes a typed phrase through the same event path as an admitted transcript.
     pub fn say(&mut self, text: tehuti_protocol::Text) {
         tracing::info!(bytes = text.as_str().len(), "speech transcript received");
@@ -4346,14 +4354,6 @@ impl XdgShellHandler for Compositor {
         if let Some(Event::Focus { app_id, title }) = self.focus_event(&surface) {
             self.focused_title_changed(app_id, title);
         }
-    }
-
-    /// The focused window retitled: a held utterance dictates first, still to this application.
-    pub fn focused_title_changed(&mut self, app_id: Option<String>, title: String) {
-        self.flush_held_utterance();
-        self.speech_title.clone_from(&title);
-        let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
-        self.refresh_speech_vocabulary();
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
