@@ -1013,7 +1013,7 @@ impl Compositor {
         }) else {
             return;
         };
-        let Some(client) = surface.client() else {
+        let Some(client) = smithay::reexports::wayland_server::Resource::client(surface) else {
             return;
         };
         let name = with_states(surface, |states| {
