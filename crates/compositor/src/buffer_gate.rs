@@ -89,24 +89,45 @@ impl Blocker for BufferBlocker {
     }
 }
 
+/// The most gates one surface may hold; a client committing more unready buffers than
+/// this has its oldest held commit let through.
+pub const MAX_HELD: usize = 16;
+
 /// The gates of a surface's held commits, oldest first.
 ///
-/// Each commit owns one gate; its blocker only watches it.
+/// Lives in the surface's own data, so a dead surface's gates go with it. Each commit owns one
+/// gate; its blocker only watches it.
 #[derive(Debug, Default)]
-pub struct Held(pub std::sync::Mutex<VecDeque<Arc<Gate>>>);
+pub struct Held {
+    gates: std::sync::Mutex<VecDeque<Arc<Gate>>>,
+    overflowed: AtomicBool,
+}
 
 impl Held {
-    /// Adds the gate of a newly held commit.
+    /// Adds the gate of a newly held commit. Past [`MAX_HELD`] the oldest gate is dropped,
+    /// which lets its commit through at the next [`Held::take_ready`].
     pub fn hold(&self, gate: Arc<Gate>) {
-        self.lock().push_back(gate);
+        let mut gates = self.lock();
+        gates.push_back(gate);
+        if gates.len() > MAX_HELD {
+            gates.pop_front();
+            self.overflowed.store(true, Ordering::Relaxed);
+        }
     }
 
-    /// Drops every gate that is ready, whatever its position, and returns how many went.
-    pub fn clear_ready(&self, now: Instant) -> usize {
+    /// Drops every gate that is ready, whatever its position. Returns whether any commit
+    /// should be re-evaluated: a gate went, by readiness or by the cap.
+    pub fn take_ready(&self, now: Instant) -> bool {
         let mut gates = self.lock();
         let before = gates.len();
         gates.retain(|gate| !gate.ready(now));
-        before.saturating_sub(gates.len())
+        let overflowed = self.overflowed.swap(false, Ordering::Relaxed);
+        overflowed || gates.len() < before
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
     }
 
     #[must_use]
@@ -114,59 +135,72 @@ impl Held {
         self.lock().is_empty()
     }
 
-    /// Drops every gate and its fds: the surface is gone, though something may still hold its data.
-    pub fn clear(&self) {
-        self.lock().clear();
+    #[must_use]
+    pub fn probes(&self) -> Vec<alloc::sync::Weak<Gate>> {
+        self.lock().iter().map(Arc::downgrade).collect()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<Arc<Gate>>> {
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
-/// The surfaces that hold gates, one entry per surface.
-///
-/// The surface is held weakly. The
-/// gates live here rather than in the surface's data: a stray handle can keep a destroyed
-/// surface's data alive, and the gates must still go.
+/// Runs `visit` on the surface's [`Held`], creating it on first use.
+pub fn with_held<T>(surface: &WlSurface, visit: impl FnOnce(&Held) -> T) -> T {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states.data_map.insert_if_missing_threadsafe(Held::default);
+        visit(states.data_map.get::<Held>().expect("inserted above"))
+    })
+}
+
+/// Which surfaces may hold gates. Weak, and it owns no gate: the gates live in each
+/// surface's data.
 #[derive(Debug, Default)]
-pub struct Waiting(HashMap<ObjectId, (Weak<WlSurface>, Held)>);
+pub struct Waiting(HashMap<ObjectId, Weak<WlSurface>>);
 
 impl Waiting {
     /// Holds the gate of a newly held commit on its surface.
     pub fn hold(&mut self, surface: &WlSurface, gate: Arc<Gate>) {
-        let (_, held) = self
-            .0
-            .entry(surface.id())
-            .or_insert_with(|| (surface.downgrade(), Held::default()));
-        held.hold(gate);
+        self.0.entry(surface.id()).or_insert_with(|| surface.downgrade());
+        with_held(surface, |held| held.hold(gate));
     }
 
-    /// Drops the gates of dead surfaces and forgets them, forgets surfaces with nothing held,
-    /// and returns the live surfaces where a gate became ready, so their commits are re-evaluated.
+    /// Returns the live surfaces where a gate went, so their commits are re-evaluated, and
+    /// forgets surfaces that are gone or hold nothing.
     pub fn take_ready(&mut self, now: Instant) -> Vec<WlSurface> {
         let mut ready = Vec::new();
-        self.0.retain(|_, (weak, held)| {
+        self.0.retain(|_, weak| {
             let Ok(surface) = weak.upgrade() else {
-                held.clear();
                 return false;
             };
-            if held.clear_ready(now) > 0 {
+            let (changed, empty) = with_held(&surface, |held| (held.take_ready(now), held.is_empty()));
+            if changed {
                 ready.push(surface);
             }
-            !held.is_empty()
+            !empty
         });
         ready
     }
 
+    /// Live surfaces still holding a commit.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.0
+            .values()
+            .filter_map(|weak| weak.upgrade().ok())
+            .filter(|surface| !with_held(surface, Held::is_empty))
+            .count()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.len() == 0
+    }
+
+    /// Weak handles to the surfaces that may hold gates.
+    #[must_use]
+    pub fn surfaces(&self) -> Vec<Weak<WlSurface>> {
+        self.0.values().cloned().collect()
     }
 
     /// Weak handles to every held gate, so tests can check teardown dropped them.
@@ -174,7 +208,8 @@ impl Waiting {
     pub fn gate_probes(&self) -> Vec<alloc::sync::Weak<Gate>> {
         self.0
             .values()
-            .flat_map(|(_, held)| held.lock().iter().map(Arc::downgrade).collect::<Vec<_>>())
+            .filter_map(|weak| weak.upgrade().ok())
+            .flat_map(|surface| with_held(&surface, Held::probes))
             .collect()
     }
 }

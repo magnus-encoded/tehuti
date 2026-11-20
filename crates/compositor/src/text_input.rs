@@ -93,6 +93,10 @@ impl TextInput {
         Self::default()
     }
 
+    pub(crate) fn focus_id(&self) -> Option<smithay::reexports::wayland_server::backend::ObjectId> {
+        self.focus.as_ref().map(Resource::id)
+    }
+
     pub(crate) fn focus(&mut self, focus: Option<WlSurface>) {
         for instance in &mut self.instances {
             if let Some(old) = &self.focus

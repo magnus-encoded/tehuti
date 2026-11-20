@@ -13,7 +13,7 @@ mod stuck_buffer {
 
     use smithay::{
         backend::allocator::{Format, Fourcc, Modifier},
-        reexports::wayland_server::Display,
+        reexports::wayland_server::{Display, Resource as _},
     };
     use tehuti::{
         driver::{Driver, Request},
@@ -334,18 +334,48 @@ mod stuck_buffer {
         let mut scene = Scene::new(2, destroy_first);
         let probes = scene.compositor.held_gate_probes();
         assert_eq!(probes.len(), 2, "both gates are held first");
+        let surfaces = scene.compositor.held_surfaces();
+        let ids: Vec<_> = surfaces
+            .iter()
+            .filter_map(|surface| surface.upgrade().ok())
+            .map(|surface| surface.id())
+            .collect();
         scene.stop.send(()).unwrap();
         if !destroy_first {
             scene.finish();
         }
-        scene.settle();
+        let started = Instant::now();
+        let alive = || probes.iter().filter(|gate| gate.upgrade().is_some()).count();
+        while (scene.compositor.buffers_waiting() > 0 || alive() > 0) && started.elapsed() < DEADLINE {
+            pump(&mut scene.display, &mut scene.compositor);
+            scene.compositor.advance_time();
+        }
         let waiting = scene.compositor.buffers_waiting();
-        let alive = probes.iter().filter(|gate| gate.upgrade().is_some()).count();
+        let left = alive();
+        for id in &ids {
+            let holders = scene.compositor.surface_holders(id);
+            assert!(
+                left == 0 || holders.is_empty(),
+                "a destroyed surface is still held by: {holders:?}"
+            );
+        }
         if destroy_first {
             scene.stop.send(()).unwrap();
             scene.finish();
         }
-        (waiting, alive)
+        (waiting, left)
+    }
+
+    #[test]
+    fn a_surface_holds_at_most_a_capped_number_of_gates() {
+        let mut scene = Scene::new(tehuti::buffer_gate::MAX_HELD + 4, false);
+        assert_eq!(
+            scene.compositor.held_gate_probes().len(),
+            tehuti::buffer_gate::MAX_HELD,
+            "the oldest gates past the cap are dropped"
+        );
+        scene.stop.send(()).unwrap();
+        scene.finish();
     }
 
     #[test]
