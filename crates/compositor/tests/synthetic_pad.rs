@@ -4039,6 +4039,18 @@ for line in sys.stdin:
         {
             Ok(tehuti_core::secret::SecretValue::new("s3ntinel".into()))
         }
+
+        fn list_labels(&mut self) -> Result<Vec<String>, tehuti_core::secret::SecretProviderUnavailable> {
+            Err(tehuti_core::secret::SecretProviderUnavailable)
+        }
+
+        fn unlock(&mut self) -> Result<(), tehuti_core::secret::SecretProviderUnavailable> {
+            Err(tehuti_core::secret::SecretProviderUnavailable)
+        }
+
+        fn lock(&mut self) -> Result<(), tehuti_core::secret::SecretProviderUnavailable> {
+            Err(tehuti_core::secret::SecretProviderUnavailable)
+        }
     }
 
     fn dispatch_until_ready(
