@@ -922,11 +922,9 @@ impl Scanout {
         self.statistics.count(drawn.is_some());
         let Some(drawn) = drawn else {
             trace!(elapsed = ?started.elapsed(), "DRM frame unchanged");
-            if self.idle_frame_callbacks.due(started) {
-                self.send_frame_callbacks(data);
-            }
-            data.compositor.space.refresh();
-            data.display.flush_clients()?;
+            let callbacks = self.idle_frame_callbacks.due(started);
+            data.compositor
+                .frame_done(&self.output, &mut data.display, false, callbacks)?;
             return Ok(());
         };
         trace!(elapsed = ?started.elapsed(), "DRM frame drawn");
@@ -949,25 +947,10 @@ impl Scanout {
         trace!(elapsed = ?started.elapsed(), "DRM frame committed");
         self.pending = true;
         self.next = !self.next;
-        if drawn.notice_included && data.compositor.secret_confirmation_text().is_some() {
-            data.compositor.note_secret_confirmation_frame_submitted();
-        }
         self.idle_frame_callbacks.restart(started);
-        self.send_frame_callbacks(data);
-        data.compositor.space.refresh();
-        data.display.flush_clients()?;
+        data.compositor
+            .frame_done(&self.output, &mut data.display, drawn.notice_included, true)?;
         Ok(())
-    }
-
-    fn send_frame_callbacks(&self, data: &LoopData) {
-        for window in data.compositor.space.elements() {
-            window.send_frame(
-                &self.output,
-                data.compositor.start_time.elapsed(),
-                Some(Duration::ZERO),
-                |_, _| Some(self.output.clone()),
-            );
-        }
     }
 }
 
