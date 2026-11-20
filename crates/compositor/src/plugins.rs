@@ -35,7 +35,7 @@ struct Process {
 }
 
 impl Process {
-    /// Why the child is no longer running, if it has stopped.
+    /// Why the child has stopped, if it has.
     fn exit_reason(&mut self) -> Option<String> {
         match self.child.as_mut()?.try_wait() {
             Ok(Some(status)) => Some(format!("plugin exited: {status}")),
