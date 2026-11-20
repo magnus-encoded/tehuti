@@ -171,8 +171,8 @@ impl PadGate {
         }
     }
 
-    /// Forgets pads that are gone.
-    pub fn retain(&mut self, connected: impl Fn(&std::path::Path) -> bool) {
-        self.held.retain(|path, _| connected(path));
+    /// Forgets a pad that is gone.
+    pub fn forget(&mut self, path: &std::path::Path) {
+        let _gone = self.held.remove(path);
     }
 }

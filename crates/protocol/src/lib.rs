@@ -850,11 +850,6 @@ impl Context {
         })
     }
 
-    #[must_use]
-    pub fn passthrough_push_to_talk(&self) -> &[ButtonName] {
-        self.pad.push_to_talk.as_deref().unwrap_or(&[ButtonName::Record])
-    }
-
     /// The context's own `[pad] push_to_talk` list, which replaces the global one.
     #[must_use]
     pub fn own_push_to_talk(&self) -> Option<&[ButtonName]> {

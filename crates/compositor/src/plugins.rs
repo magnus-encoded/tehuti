@@ -1,90 +1,46 @@
 //! Plugin processes and their non-blocking stdio sources.
 
-use crate::state::Compositor;
+use crate::{
+    plugin_session::{Delivery, Session, Status},
+    state::Compositor,
+};
 use core::{
     cell::{Cell, RefCell},
     time::Duration,
 };
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
 use std::{
-    collections::{BTreeMap, VecDeque},
     io::{self, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::Path,
-    process::{Child, ChildStdin, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Stdio},
     rc::Rc,
     time::Instant,
 };
 use tehuti_protocol::{
-    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, Permission, PluginKind,
-    ResultValue, RpcVersion, StartPolicy, Subscription,
+    Action, Call, Event, Manifest, Method, Permission, PluginKind, RpcVersion, StartPolicy, Subscription,
 };
 
 const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
 const RESTART_BACKOFF_CAP: Duration = Duration::from_secs(30);
 const RESTART_BACKOFF_RESET: Duration = Duration::from_secs(30);
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(10);
-const HANG_TIMEOUT: Duration = Duration::from_secs(2);
-const INVALID_MESSAGE_LIMIT: usize = 16;
 const READ_ATTEMPTS: usize = 16;
-const FLOOD_WINDOW: Duration = Duration::from_secs(1);
-const FLOOD_BYTES: usize = 262_144;
-
-enum Delivery {
-    Reply {
-        key: tehuti_core::plugin::RequestKey,
-        result: Result<Vec<Action>, String>,
-        submission_id: Option<u64>,
-    },
-    /// The plugin handled the request itself: no actions and no fallback.
-    Handled(tehuti_core::plugin::RequestKey),
-    Notice(Vec<Action>),
-    PadOverrides(Vec<tehuti_protocol::PadOverride>),
-    /// The plugin replaced its speech hotwords.
-    SpeechHints,
-}
 
 #[derive(Debug)]
 struct Process {
     child: Option<Child>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Status {
-    Starting,
-    Ready,
-    Refused,
-    Failed,
-}
-
-#[derive(Debug)]
-struct Session {
-    child: Process,
-    stdin: ChildStdin,
-    output: VecDeque<u8>,
-    writer_disabled: Rc<Cell<bool>>,
-    input: Vec<u8>,
-    dropping_line: bool,
-    status: Status,
-    initialize_deadline: Instant,
-    latest_focus: Option<(Option<String>, String)>,
-    events: Vec<Subscription>,
-    manifest: Manifest,
-    next_id: u64,
-    plugin: usize,
-    invalid_messages: usize,
-    missed_decisions: usize,
-    healthy_since: Option<Instant>,
-    pending: BTreeMap<u64, Instant>,
-    read_window: Instant,
-    read_bytes: usize,
-    status_text: Option<String>,
-    /// A verb plugin's current verbs; empty for application plugins.
-    verbs: Vec<String>,
-    /// The hotwords the plugin last sent; a restart starts empty.
-    hints: Vec<String>,
-    /// The invoke words the plugin last sent; a restart starts empty.
-    invoke_words: Vec<String>,
+impl Process {
+    /// Why the child has stopped, if it has.
+    fn exit_reason(&mut self) -> Option<String> {
+        match self.child.as_mut()?.try_wait() {
+            Ok(Some(status)) => Some(format!("plugin exited: {status}")),
+            Ok(None) => None,
+            Err(error) => Some(format!("plugin status failed: {error}")),
+        }
+    }
 }
 
 impl Drop for Process {
@@ -95,431 +51,15 @@ impl Drop for Process {
     }
 }
 
-impl Session {
-    fn queue_initialize(&mut self) -> io::Result<()> {
-        self.queue(&Call {
-            jsonrpc: RpcVersion::Two,
-            request_id: Some(0),
-            method: Method::Initialize(Initialize {
-                protocol_version: 0,
-                encoding: "json".into(),
-                core_version: env!("CARGO_PKG_VERSION").into(),
-                options: Some(
-                    core::iter::once(("action_submission".into(), serde_json::json!("submit_actions")))
-                        .collect(),
-                ),
-            }),
-        })
-    }
-
-    fn accept_bytes(&mut self, count: usize) -> bool {
-        let now = Instant::now();
-        if now.duration_since(self.read_window) >= FLOOD_WINDOW {
-            self.read_window = now;
-            self.read_bytes = 0;
-        }
-        self.read_bytes = self.read_bytes.saturating_add(count);
-        if self.read_bytes > FLOOD_BYTES {
-            self.fail("plugin stdout flood");
-            return false;
-        }
-        true
-    }
-
-    fn fail(&mut self, reason: &str) {
-        if self.status != Status::Failed {
-            tracing::warn!(plugin = self.plugin, executable = %self.manifest.executable, reason, "plugin restart scheduled");
-            self.status = Status::Failed;
-        }
-    }
-
-    fn invalid(&mut self) {
-        self.invalid_messages = self.invalid_messages.saturating_add(1);
-        self.healthy_since = (self.status == Status::Ready).then(Instant::now);
-        if self.invalid_messages >= INVALID_MESSAGE_LIMIT {
-            self.fail("repeated invalid messages");
-        }
-    }
-
-    fn supervise(&mut self, now: Instant) {
-        self.expire_initialize();
-        let expired = self.pending.values().filter(|deadline| now >= **deadline).count();
-        self.pending.retain(|_, deadline| now < *deadline);
-        self.missed_decisions = self.missed_decisions.saturating_add(usize::from(expired > 0));
-        if self.missed_decisions >= 3 {
-            self.fail("three consecutive plugin decisions missed");
-        }
-        if let Some(child) = &mut self.child.child {
-            match child.try_wait() {
-                Ok(Some(status)) => self.fail(&format!("plugin exited: {status}")),
-                Ok(None) => {}
-                Err(error) => self.fail(&format!("plugin status failed: {error}")),
-            }
-        }
-    }
-
-    /// Whether the manifest lists this application; focus notices go to no other plugin.
-    fn owns_app(&self, app_id: Option<&String>) -> bool {
-        app_id.is_some_and(|app_id| self.manifest.app_ids.contains(app_id))
-    }
-
-    fn observe(&mut self, event: &Event) {
-        if let Event::Focus { app_id, title } = event {
-            self.latest_focus = Some((app_id.clone(), title.clone()));
-        }
-    }
-
-    fn request(&mut self) -> Option<u64> {
-        let request_id = self.next_id;
-        self.next_id = self.next_id.checked_add(1)?;
-        Some(request_id)
-    }
-
-    fn queue_event(&mut self, call: &Call) -> io::Result<()> {
-        if call.request_id.is_some() && self.pending.len() >= 256 {
-            return Err(io::Error::other("plugin pending queue full"));
-        }
-        self.queue(call)?;
-        let budget = if matches!(call.method, Method::Button { .. }) {
-            tehuti_core::plugin::BUTTON_BUDGET
-        } else {
-            tehuti_core::plugin::SPEECH_BUDGET
-        };
-        if let Some(request_id) = call.request_id
-            && let Some(deadline) = Instant::now().checked_add(budget)
-        {
-            let _deadline = self.pending.insert(request_id, deadline);
-        }
-        Ok(())
-    }
-
-    fn queue(&mut self, call: &Call) -> io::Result<()> {
-        self.queue_bytes(serde_json::to_vec(call)?)
-    }
-
-    fn queue_bytes(&mut self, bytes: Vec<u8>) -> io::Result<()> {
-        if self.output.len().saturating_add(bytes.len()).saturating_add(1) > MAX_MESSAGE_BYTES {
-            return Err(io::Error::other("plugin output queue full"));
-        }
-        self.output.extend(bytes);
-        self.output.push_back(b'\n');
-        Ok(())
-    }
-
-    fn write_ready(&mut self) -> io::Result<PostAction> {
-        while !self.output.is_empty() {
-            let (first, _) = self.output.as_slices();
-            match self.stdin.write(first) {
-                Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "plugin stdin closed")),
-                Ok(count) => {
-                    let _written = self.output.drain(..count);
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(PostAction::Continue),
-                Err(error) => return Err(error),
-            }
-        }
-        self.writer_disabled.set(true);
-        Ok(PostAction::Disable)
-    }
-
-    fn receive(&mut self, bytes: &[u8]) -> Vec<Delivery> {
-        let mut actions = Vec::new();
-        for byte in bytes {
-            if *byte == b'\n' {
-                if !self.dropping_line {
-                    let line = core::mem::take(&mut self.input);
-                    match tehuti_protocol::parse_message(&line) {
-                        Ok(message) => actions.extend(self.message(message)),
-                        Err(error) => {
-                            tracing::warn!(%error, "plugin message dropped");
-                            actions.extend(self.invalid_message(&line, error));
-                            self.invalid();
-                        }
-                    }
-                }
-                self.dropping_line = false;
-            } else if !self.dropping_line {
-                if self.input.len() == MAX_MESSAGE_BYTES {
-                    self.input.clear();
-                    self.dropping_line = true;
-                    tracing::warn!("overlong plugin line dropped");
-                    self.invalid();
-                } else {
-                    self.input.push(*byte);
-                }
-            }
-        }
-        actions
-    }
-
-    fn invalid_message(&mut self, line: &[u8], reason: String) -> Vec<Delivery> {
-        if self.status != Status::Ready {
-            return Vec::new();
-        }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
-            return Vec::new();
-        };
-        let request_id = value.get("id").and_then(serde_json::Value::as_u64);
-        let method = value.get("method").and_then(serde_json::Value::as_str);
-        let event_id = if method == Some("submit_actions") {
-            value
-                .get("params")
-                .and_then(|params| params.get("event_id"))
-                .and_then(serde_json::Value::as_u64)
-        } else if value.get("result").is_some() {
-            request_id
-        } else {
-            None
-        };
-        if let Some(event_id) = event_id {
-            let _deadline = self.pending.remove(&event_id);
-            return vec![Delivery::Reply {
-                key: tehuti_core::plugin::RequestKey {
-                    plugin: self.plugin,
-                    request_id: event_id,
-                },
-                result: Err(reason),
-                submission_id: if method == Some("submit_actions") {
-                    request_id
-                } else {
-                    None
-                },
-            }];
-        }
-        if method == Some("actions")
-            && let Err(error) = self.reject(None, &reason)
-        {
-            tracing::warn!(%error, "plugin rejection dropped");
-        }
-        Vec::new()
-    }
-
-    fn expire_initialize(&mut self) {
-        if self.status == Status::Starting && Instant::now() >= self.initialize_deadline {
-            self.fail("plugin initialize timed out");
-        }
-    }
-
-    fn initialize_reply(&mut self, message: Message) {
-        self.expire_initialize();
-        if matches!(self.status, Status::Refused | Status::Failed) {
-            return;
-        }
-        if let Message::Response(response) = message
-            && response.request_id == 0
-            && let ResultValue::Initialized(result) = response.result
-        {
-            if result.protocol_version != 0 || result.encoding != "json" {
-                self.status = Status::Refused;
-                tracing::warn!(
-                    version = result.protocol_version,
-                    encoding = result.encoding,
-                    "plugin handshake refused"
-                );
-            } else {
-                self.events = result
-                    .events
-                    .into_iter()
-                    .filter(|event| self.manifest.events.contains(event))
-                    .collect();
-                self.status = Status::Ready;
-                self.healthy_since = Some(Instant::now());
-                if self.events.contains(&Subscription::Focus)
-                    && let Some((app_id, title)) = self.latest_focus.clone()
-                    && self.owns_app(app_id.as_ref())
-                    && let Err(error) = self.queue(&Call {
-                        jsonrpc: RpcVersion::Two,
-                        request_id: None,
-                        method: Method::Focus { app_id, title },
-                    })
-                {
-                    tracing::warn!(%error, "plugin focus dropped");
-                }
-            }
-        }
-    }
-
-    fn notice_actions(&mut self, actions: Vec<Action>) -> Vec<Delivery> {
-        match tehuti_core::plugin::validate_actions(actions, &self.manifest.permissions) {
-            Ok(actions) => vec![Delivery::Notice(actions)],
-            Err(reason) => {
-                self.invalid();
-                tracing::warn!(%reason, "plugin action rejected");
-                if let Err(error) = self.reject(None, &reason) {
-                    tracing::warn!(%error, "plugin rejection dropped");
-                }
-                Vec::new()
-            }
-        }
-    }
-
-    fn complete_decision(&mut self, message: &Message) {
-        self.supervise(Instant::now());
-        let event_id = match message {
-            Message::Response(response) => Some(response.request_id),
-            Message::Error(response) => Some(response.request_id),
-            Message::Call(Call {
-                method: Method::SubmitActions { event_id, .. },
-                ..
-            }) => Some(*event_id),
-            Message::Call(_) => None,
-        };
-        if let Some(event_id) = event_id
-            && self.pending.remove(&event_id).is_some()
-        {
-            self.missed_decisions = 0;
-        }
-    }
-
-    fn message(&mut self, message: Message) -> Vec<Delivery> {
-        if let Message::Error(response) = &message {
-            tracing::warn!(code = response.error.code, message = %response.error.message, "plugin request declined");
-        }
-        if matches!(self.status, Status::Refused | Status::Failed) {
-            return Vec::new();
-        }
-        if self.status != Status::Ready {
-            self.initialize_reply(message);
-            return Vec::new();
-        }
-        self.complete_decision(&message);
-        match message {
-            Message::Response(response) => {
-                let key = tehuti_core::plugin::RequestKey {
-                    plugin: self.plugin,
-                    request_id: response.request_id,
-                };
-                vec![match response.result {
-                    ResultValue::Handled(_) => Delivery::Handled(key),
-                    ResultValue::Actions(actions) => Delivery::Reply {
-                        key,
-                        result: Ok(actions),
-                        submission_id: None,
-                    },
-                    ResultValue::Initialized(_) => Delivery::Reply {
-                        key,
-                        result: Err("result must be an action list".into()),
-                        submission_id: None,
-                    },
-                }]
-            }
-            Message::Error(response) => vec![Delivery::Reply {
-                key: tehuti_core::plugin::RequestKey {
-                    plugin: self.plugin,
-                    request_id: response.request_id,
-                },
-                result: Ok(Vec::new()),
-                submission_id: None,
-            }],
-            Message::Call(Call {
-                request_id: Some(submission_id),
-                method: Method::SubmitActions { event_id, actions },
-                ..
-            }) => vec![Delivery::Reply {
-                key: tehuti_core::plugin::RequestKey {
-                    plugin: self.plugin,
-                    request_id: event_id,
-                },
-                result: Ok(actions),
-                submission_id: Some(submission_id),
-            }],
-            Message::Call(call) => self.notice(call.method),
-        }
-    }
-
-    /// Handles a plugin notice that needs no reply.
-    fn notice(&mut self, method: Method) -> Vec<Delivery> {
-        match method {
-            Method::Actions { actions } => self.notice_actions(actions),
-            Method::PadOverrides { overrides } => vec![Delivery::PadOverrides(overrides)],
-            Method::Status { text } => {
-                self.status_text = text;
-                Vec::new()
-            }
-            Method::Verbs { verbs } => {
-                self.set_verbs(verbs);
-                Vec::new()
-            }
-            Method::SpeechHints { hotwords } => {
-                self.hints = hotwords;
-                vec![Delivery::SpeechHints]
-            }
-            Method::InvokeWords { words } => {
-                self.invoke_words = words;
-                vec![Delivery::SpeechHints]
-            }
-            Method::Adjuster { .. }
-            | Method::Initialize(_)
-            | Method::Button { .. }
-            | Method::Speech { .. }
-            | Method::Verb { .. }
-            | Method::Focus { .. }
-            | Method::SubmitActions { .. }
-            | Method::PadInput { .. } => Vec::new(),
-        }
-    }
-
-    /// Replaces a verb plugin's verbs; an application plugin may not declare any.
-    fn set_verbs(&mut self, verbs: Vec<String>) {
-        if self.manifest.kind == PluginKind::Verb {
-            self.verbs = verbs;
-            return;
-        }
-        let reason = "an application plugin declares no verbs";
-        self.invalid();
-        tracing::warn!(reason, "plugin verbs rejected");
-        if let Err(error) = self.reject(None, reason) {
-            tracing::warn!(%error, "plugin rejection dropped");
-        }
-    }
-
-    fn call_for_event(&mut self, event: &Event, selected: bool) -> Option<Call> {
-        let (request_id, method) = match event {
-            Event::Button { name, state } if selected && self.events.contains(&Subscription::Button) => {
-                let request_id = self.request()?;
-                (
-                    Some(request_id),
-                    Method::Button {
-                        name: *name,
-                        state: *state,
-                    },
-                )
-            }
-            Event::Speech { text } if selected && self.events.contains(&Subscription::Speech) => {
-                let request_id = self.request()?;
-                (Some(request_id), Method::Speech { text: text.clone() })
-            }
-            Event::Focus { app_id, title }
-                if self.events.contains(&Subscription::Focus) && self.owns_app(app_id.as_ref()) =>
-            {
-                (
-                    None,
-                    Method::Focus {
-                        app_id: app_id.clone(),
-                        title: title.clone(),
-                    },
-                )
-            }
-            Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => {
-                return None;
-            }
-        };
-        Some(Call {
-            jsonrpc: RpcVersion::Two,
-            request_id,
-            method,
-        })
-    }
-
-    fn reject(&mut self, request_id: Option<u64>, reason: &str) -> io::Result<()> {
-        self.queue_bytes(serde_json::to_vec(&serde_json::json!({
-            "jsonrpc": "2.0", "method": "action_rejected",
-            "params": { "event_id": request_id, "error": { "code": -32602, "message": reason } }
-        }))?)
-    }
+/// A started plugin: its protocol session and the process-side handles.
+struct Running {
+    session: Rc<RefCell<Session>>,
+    /// The child process, when there is one; it ends with the running plugin.
+    process: Option<Process>,
+    wake: Box<dyn Fn()>,
+    cleanup: Box<dyn Fn()>,
 }
 
-type Running = (Rc<RefCell<Session>>, Box<dyn Fn()>, Box<dyn Fn()>);
 type Start = Box<dyn Fn(&Manifest) -> io::Result<Running>>;
 struct Entry {
     manifest: Manifest,
@@ -531,6 +71,7 @@ struct Entry {
     next_id: u64,
     cleanup: Option<Box<dyn Fn()>>,
     session: Option<Rc<RefCell<Session>>>,
+    process: Option<Process>,
     wake: Option<Box<dyn Fn()>>,
 }
 
@@ -546,6 +87,7 @@ impl Entry {
             next_id: 1,
             cleanup: None,
             session: None,
+            process: None,
             wake: None,
         }
     }
@@ -749,7 +291,12 @@ impl Plugins {
             entry.started = true;
             entry.restart_at = None;
             match start(&entry.manifest) {
-                Ok((session, wake, cleanup)) => {
+                Ok(Running {
+                    session,
+                    process,
+                    wake,
+                    cleanup,
+                }) => {
                     {
                         let mut session = session.borrow_mut();
                         session.next_id = entry.next_id;
@@ -758,6 +305,7 @@ impl Plugins {
                     }
                     entry.cleanup = Some(cleanup);
                     entry.session = Some(session);
+                    entry.process = process;
                     entry.wake = Some(wake);
                 }
                 Err(error) => {
@@ -784,6 +332,9 @@ impl Plugins {
             let failed = entry.session.as_ref().is_some_and(|session| {
                 let mut session = session.borrow_mut();
                 session.supervise(now);
+                if let Some(reason) = entry.process.as_mut().and_then(Process::exit_reason) {
+                    session.fail(&reason);
+                }
                 entry.next_id = session.next_id;
                 if session.status != Status::Failed
                     && session
@@ -803,6 +354,7 @@ impl Plugins {
                 }
                 entry.wake = None;
                 entry.session = None;
+                entry.process = None;
                 Self::schedule_restart(entry, now);
             }
             if entry.started {
@@ -832,7 +384,7 @@ impl Plugins {
         }
         for entry in &self.entries {
             if let Some(session) = &entry.session {
-                session.borrow_mut().expire_initialize();
+                session.borrow_mut().expire_initialize(Instant::now());
             }
         }
         self.routed_verb = self.verb_route(event).map(|matched| (event.clone(), matched));
@@ -878,7 +430,7 @@ impl Plugins {
                 text: matched.text,
             },
         };
-        if let Err(error) = session.queue_event(&call) {
+        if let Err(error) = session.queue_event(&call, Instant::now()) {
             tracing::warn!(%error, "plugin verb dropped");
             return None;
         }
@@ -944,7 +496,7 @@ impl Plugins {
                 continue;
             };
             let request_id = call.request_id;
-            if let Err(error) = session.queue_event(&call) {
+            if let Err(error) = session.queue_event(&call, Instant::now()) {
                 tracing::warn!(%error, "plugin event dropped");
                 continue;
             }
@@ -1036,7 +588,9 @@ fn read_manifest(path: &Path) -> io::Result<Manifest> {
     tehuti_protocol::parse_manifest(&bytes).map_err(io::Error::other)
 }
 
-fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std::process::ChildStdout)> {
+fn create_session(
+    manifest: &Manifest,
+) -> io::Result<(Rc<RefCell<Session>>, Process, ChildStdin, ChildStdout)> {
     let child = crate::child_process::command(&manifest.executable)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1057,35 +611,26 @@ fn create_session(manifest: &Manifest) -> io::Result<(Rc<RefCell<Session>>, std:
         .ok_or_else(|| io::Error::other("plugin stdout missing"))?;
     rustix::fs::fcntl_setfl(&stdin, rustix::fs::OFlags::NONBLOCK)?;
     rustix::fs::fcntl_setfl(&stdout, rustix::fs::OFlags::NONBLOCK)?;
-    let session = Rc::new(RefCell::new(Session {
-        child: process,
-        stdin,
-        output: VecDeque::new(),
-        writer_disabled: Rc::new(Cell::new(false)),
-        input: Vec::new(),
-        dropping_line: false,
-        status: Status::Starting,
-        initialize_deadline: Instant::now()
-            .checked_add(core::time::Duration::from_secs(2))
-            .unwrap_or_else(Instant::now),
-        latest_focus: None,
-        events: Vec::new(),
-        manifest: manifest.clone(),
-        next_id: 1,
-        plugin: usize::MAX,
-        invalid_messages: 0,
-        missed_decisions: 0,
-        healthy_since: None,
-        pending: BTreeMap::new(),
-        read_window: Instant::now(),
-        read_bytes: 0,
-        status_text: None,
-        verbs: manifest.verbs.clone(),
-        hints: Vec::new(),
-        invoke_words: Vec::new(),
-    }));
-    session.borrow_mut().queue_initialize()?;
-    Ok((session, stdout))
+    let session = Rc::new(RefCell::new(Session::new(manifest, Instant::now())?));
+    Ok((session, process, stdin, stdout))
+}
+
+/// Writes what the session has queued to the plugin's stdin until the pipe is full.
+fn write_ready(
+    session: &mut Session,
+    stdin: &mut ChildStdin,
+    writer_disabled: &Cell<bool>,
+) -> io::Result<PostAction> {
+    while !session.output.is_empty() {
+        match stdin.write(session.output_slice()) {
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "plugin stdin closed")),
+            Ok(count) => session.written(count),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(PostAction::Continue),
+            Err(error) => return Err(error),
+        }
+    }
+    writer_disabled.set(true);
+    Ok(PostAction::Disable)
 }
 
 fn start_process<Data: 'static>(
@@ -1093,14 +638,16 @@ fn start_process<Data: 'static>(
     manifest: &Manifest,
     compositor: fn(&mut Data) -> &mut Compositor,
 ) -> io::Result<Running> {
-    let (session, stdout) = create_session(manifest)?;
+    let (session, process, mut stdin, stdout) = create_session(manifest)?;
     let writer = session.clone();
-    let descriptor = rustix::io::dup(&session.borrow().stdin)?;
+    let writer_disabled = Rc::new(Cell::new(false));
+    let writer_flag = writer_disabled.clone();
+    let descriptor = rustix::io::dup(&stdin)?;
     let token = handle
         .insert_source(
             Generic::new(descriptor, Interest::WRITE, Mode::Level),
             move |_, _, data| {
-                let result = writer.borrow_mut().write_ready();
+                let result = write_ready(&mut writer.borrow_mut(), &mut stdin, &writer_flag);
                 Ok(result.unwrap_or_else(|error| {
                     tracing::warn!(%error, "plugin write failed");
                     writer.borrow_mut().fail("plugin pipe write failed");
@@ -1110,19 +657,26 @@ fn start_process<Data: 'static>(
             },
         )
         .map_err(|error| io::Error::other(error.to_string()))?;
-    let reader_token = match insert_reader(handle, stdout, session.clone(), token, compositor) {
+    let reader_token = match insert_reader(
+        handle,
+        stdout,
+        session.clone(),
+        writer_disabled.clone(),
+        token,
+        compositor,
+    ) {
         Ok(reader_token) => reader_token,
         Err(error) => {
             handle.remove(token);
             return Err(error);
         }
     };
-    let writer_disabled = session.borrow().writer_disabled.clone();
     let wake_handle = handle.clone();
     let cleanup_handle = handle.clone();
-    Ok((
+    Ok(Running {
         session,
-        Box::new(move || {
+        process: Some(process),
+        wake: Box::new(move || {
             if writer_disabled.get() {
                 match wake_handle.enable(&token) {
                     Ok(()) => writer_disabled.set(false),
@@ -1130,17 +684,18 @@ fn start_process<Data: 'static>(
                 }
             }
         }),
-        Box::new(move || {
+        cleanup: Box::new(move || {
             cleanup_handle.remove(token);
             cleanup_handle.remove(reader_token);
         }),
-    ))
+    })
 }
 
 fn insert_reader<Data: 'static>(
     handle: &smithay::reexports::calloop::LoopHandle<'static, Data>,
-    stdout: std::process::ChildStdout,
+    stdout: ChildStdout,
     session: Rc<RefCell<Session>>,
+    writer_disabled: Rc<Cell<bool>>,
     writer_token: smithay::reexports::calloop::RegistrationToken,
     compositor: fn(&mut Data) -> &mut Compositor,
 ) -> io::Result<smithay::reexports::calloop::RegistrationToken> {
@@ -1158,11 +713,11 @@ fn insert_reader<Data: 'static>(
                 let action = read_ready(&reader, source, data, compositor, &timer_handle);
                 let reader_session = reader.borrow();
                 if !reader_session.output.is_empty()
-                    && reader_session.writer_disabled.get()
+                    && writer_disabled.get()
                     && let Some(writer_handle) = writer_handle.upgrade()
                 {
                     match writer_handle.enable(&writer_token) {
-                        Ok(()) => reader_session.writer_disabled.set(false),
+                        Ok(()) => writer_disabled.set(false),
                         Err(error) => tracing::warn!(%error, "plugin writer unavailable"),
                     }
                 }
@@ -1194,13 +749,13 @@ fn read_ready<Data: 'static>(
                 return PostAction::Remove;
             }
             Ok(count) => {
-                if !reader.borrow_mut().accept_bytes(count) {
+                if !reader.borrow_mut().accept_bytes(count, Instant::now()) {
                     compositor.plugin_exited(reader.borrow().plugin);
                     return PostAction::Remove;
                 }
                 let deliveries = reader
                     .borrow_mut()
-                    .receive(bytes.get(..count).unwrap_or_default());
+                    .receive(bytes.get(..count).unwrap_or_default(), Instant::now());
                 compositor.advance_time();
                 deliver(reader, compositor, deliveries, &mut |rest| {
                     schedule_rest(handle, compositor_of, rest);
@@ -1291,7 +846,7 @@ fn deliver(
                 if rejection.is_some() {
                     tracing::warn!("plugin action rejected");
                     if !already_invalid {
-                        reader.borrow_mut().invalid();
+                        reader.borrow_mut().invalid(Instant::now());
                     }
                 }
                 let response = if let Some(request_id) = submission_id {
@@ -1321,117 +876,62 @@ fn deliver(
     }
 }
 
-thread_local! {
-    static FUZZ_SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
-}
-
-fn fuzz_session() -> io::Result<Session> {
-    let manifest = Manifest {
+fn fuzz_manifest() -> Manifest {
+    Manifest {
         adjusters: Vec::new(),
         plugin_id: None,
         author: None,
         security_contact: None,
-        kind: tehuti_protocol::PluginKind::Application,
+        kind: PluginKind::Application,
         verbs: Vec::new(),
-        executable: "sleep".into(),
+        executable: "plugin".into(),
         app_ids: vec!["fuzz".into()],
         events: vec![Subscription::Button, Subscription::Speech, Subscription::Focus],
         start: StartPolicy::Always,
         permissions: vec![Permission::Key, Permission::Text],
-    };
-    let mut child = crate::child_process::command("sleep")
-        .arg("infinity")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("stdin missing"))?;
-    let now = Instant::now();
-    Ok(Session {
-        child: Process { child: Some(child) },
-        stdin,
-        output: VecDeque::new(),
-        writer_disabled: Rc::new(Cell::new(false)),
-        input: Vec::new(),
-        dropping_line: false,
-        status: Status::Starting,
-        initialize_deadline: now,
-        latest_focus: None,
-        events: Vec::new(),
-        manifest,
-        next_id: 1,
-        plugin: 0,
-        invalid_messages: 0,
-        missed_decisions: 0,
-        healthy_since: None,
-        pending: BTreeMap::new(),
-        read_window: now,
-        read_bytes: 0,
-        status_text: None,
-        verbs: Vec::new(),
-        hints: Vec::new(),
-        invoke_words: Vec::new(),
-    })
+    }
 }
 
 /// Feeds arbitrary bytes to one plugin session as if they were its stdout and routes the replies
 /// through the core. Fuzzing seam only; the core must never panic on any input.
 ///
 /// The first byte picks the session state and the read chunk size.
-///
-/// # Errors
-/// The stand-in child process cannot be spawned.
 #[doc(hidden)]
-pub fn fuzz_stdout(bytes: &[u8]) -> io::Result<()> {
+pub fn fuzz_stdout(bytes: &[u8]) {
     let Some((&control, stdout)) = bytes.split_first() else {
-        return Ok(());
+        return;
     };
-    FUZZ_SESSION.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(fuzz_session()?);
+    let now = Instant::now();
+    let manifest = fuzz_manifest();
+    let Ok(mut session) = Session::new(&manifest, now) else {
+        return;
+    };
+    session.status = if control.is_multiple_of(2) {
+        Status::Starting
+    } else {
+        Status::Ready
+    };
+    session.events.clone_from(&manifest.events);
+    let chunk = usize::from(control.checked_shr(1).unwrap_or(0)).max(1);
+    let mut core = tehuti_core::State::new();
+    for part in stdout.chunks(chunk) {
+        if !session.accept_bytes(part.len(), now) {
+            break;
         }
-        let Some(session) = slot.as_mut() else {
-            return Ok(());
-        };
-        let now = Instant::now();
-        session.output.clear();
-        session.input.clear();
-        session.dropping_line = false;
-        session.invalid_messages = 0;
-        session.pending.clear();
-        session.read_window = now;
-        session.read_bytes = 0;
-        session.initialize_deadline = now.checked_add(HANG_TIMEOUT).unwrap_or(now);
-        session.status = if control.is_multiple_of(2) {
-            Status::Starting
-        } else {
-            Status::Ready
-        };
-        session.events = session.manifest.events.clone();
-        let chunk = usize::from(control.checked_shr(1).unwrap_or(0)).max(1);
-        let mut core = tehuti_core::State::new();
-        for part in stdout.chunks(chunk) {
-            if !session.accept_bytes(part.len()) {
-                break;
-            }
-            for delivery in session.receive(part) {
-                if let Delivery::Reply { key, result, .. } = delivery {
-                    let (next, _actions, _rejection) =
-                        tehuti_core::plugin::step(core, tehuti_core::plugin::Input::Reply { key, result });
-                    core = next;
-                }
+        for delivery in session.receive(part, now) {
+            if let Delivery::Reply { key, result, .. } = delivery {
+                let (next, _actions, _rejection) =
+                    tehuti_core::plugin::step(core, tehuti_core::plugin::Input::Reply { key, result });
+                core = next;
             }
         }
-        Ok(())
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tehuti_protocol::Message;
 
     fn key(name: &str) -> Action {
         serde_json::from_value(serde_json::json!({"type":"key","key":name})).unwrap()
@@ -1439,7 +939,7 @@ mod tests {
 
     #[test]
     fn focus_notices_reach_only_plugins_that_list_the_app() {
-        let mut session = fuzz_session().unwrap();
+        let mut session = Session::new(&fuzz_manifest(), Instant::now()).unwrap();
         session.events = vec![Subscription::Focus];
         let focus = |app_id: Option<&str>| Event::Focus {
             app_id: app_id.map(Into::into),
@@ -1459,11 +959,11 @@ mod tests {
     #[test]
     fn the_handshake_replays_focus_only_for_a_listed_app() {
         for (app, replayed) in [("other", false), ("fuzz", true)] {
-            let mut session = fuzz_session().unwrap();
+            let mut session = Session::new(&fuzz_manifest(), Instant::now()).unwrap();
             session.initialize_deadline = Instant::now() + Duration::from_secs(60);
             session.latest_focus = Some((Some(app.into()), "private title".into()));
             let reply = "{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocol_version\":0,\"encoding\":\"json\",\"events\":[\"focus\"]}}\n";
-            drop(session.receive(reply.as_bytes()));
+            drop(session.receive(reply.as_bytes(), Instant::now()));
             assert_eq!(session.status, Status::Ready);
             let sent = String::from_utf8(session.output.iter().copied().collect()).unwrap();
             assert_eq!(sent.contains("private title"), replayed, "{app}: {sent}");
@@ -1547,43 +1047,12 @@ mod tests {
             now.checked_add(Duration::from_millis(millis)).unwrap()
         }
 
-        /// A ready session backed by a live child that never writes.
-        fn live_session(manifest: &Manifest) -> io::Result<Rc<RefCell<Session>>> {
-            let mut child = crate::child_process::command("sleep")
-                .arg("3600")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .spawn()?;
-            let stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| io::Error::other("stdin missing"))?;
-            let now = Instant::now();
-            Ok(Rc::new(RefCell::new(Session {
-                child: Process { child: Some(child) },
-                stdin,
-                output: VecDeque::new(),
-                writer_disabled: Rc::new(Cell::new(false)),
-                input: Vec::new(),
-                dropping_line: false,
-                status: Status::Ready,
-                initialize_deadline: now,
-                latest_focus: None,
-                events: Vec::new(),
-                manifest: manifest.clone(),
-                next_id: 1,
-                plugin: usize::MAX,
-                invalid_messages: 0,
-                missed_decisions: 0,
-                healthy_since: None,
-                pending: BTreeMap::new(),
-                read_window: now,
-                read_bytes: 0,
-                status_text: None,
-                verbs: manifest.verbs.clone(),
-                hints: Vec::new(),
-                invoke_words: Vec::new(),
-            })))
+        /// A ready session with nothing behind it: the tests feed it bytes and a virtual clock.
+        fn ready_session(manifest: &Manifest) -> io::Result<Rc<RefCell<Session>>> {
+            let mut session = Session::new(manifest, Instant::now())?;
+            session.status = Status::Ready;
+            session.output.clear();
+            Ok(Rc::new(RefCell::new(session)))
         }
 
         /// Plugins whose starts succeed when `succeed[index]` is set and are counted in `starts`.
@@ -1601,8 +1070,12 @@ mod tests {
                 if !succeed.borrow()[index] {
                     return Err(io::Error::other("start refused"));
                 }
-                let running: Running = (live_session(manifest)?, Box::new(|| {}), Box::new(|| {}));
-                Ok(running)
+                Ok(Running {
+                    session: ready_session(manifest)?,
+                    process: None,
+                    wake: Box::new(|| {}),
+                    cleanup: Box::new(|| {}),
+                })
             });
             let entries = (0..PLUGINS)
                 .map(|index| {
@@ -1746,7 +1219,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .borrow_mut()
-                .set_verbs(vec!["orion".into()]);
+                .set_verbs(vec!["orion".into()], Instant::now());
             let request = plugins.dispatch(&heard, true);
             assert_eq!(
                 request.map(|(key, _)| key.plugin),
@@ -1765,13 +1238,16 @@ mod tests {
         fn an_application_plugin_cannot_take_verbs_at_runtime() {
             let mut plugins = verb_plugins(&[]);
             let session = plugins.entries[1].session.clone().unwrap();
-            let deliveries = session.borrow_mut().message(Message::Call(Call {
-                jsonrpc: RpcVersion::Two,
-                request_id: None,
-                method: Method::Verbs {
-                    verbs: vec!["ada".into()],
-                },
-            }));
+            let deliveries = session.borrow_mut().message(
+                Message::Call(Call {
+                    jsonrpc: RpcVersion::Two,
+                    request_id: None,
+                    method: Method::Verbs {
+                        verbs: vec!["ada".into()],
+                    },
+                }),
+                Instant::now(),
+            );
             assert!(deliveries.is_empty(), "the notice delivers nothing");
             assert!(session.borrow().verbs.is_empty(), "the verbs are refused");
             assert_eq!(
@@ -1803,8 +1279,10 @@ mod tests {
                 })
             };
             let session = plugins.entries[1].session.clone().unwrap();
-            let _first = session.borrow_mut().message(notice(&["usage", "code-review"]));
-            let deliveries = session.borrow_mut().message(notice(&["usage"]));
+            let _first = session
+                .borrow_mut()
+                .message(notice(&["usage", "code-review"]), Instant::now());
+            let deliveries = session.borrow_mut().message(notice(&["usage"]), Instant::now());
             assert!(
                 matches!(deliveries.as_slice(), [Delivery::SpeechHints]),
                 "a notice refreshes the focused window's words"
@@ -1913,7 +1391,7 @@ mod tests {
                     let request_id = old.borrow_mut().request().unwrap();
                     old.borrow_mut().queue_event(&Call {
                         jsonrpc: RpcVersion::Two, request_id: Some(request_id), method: method.clone(),
-                    }).unwrap();
+                    }, Instant::now()).unwrap();
                     let deadline = old.borrow().pending[&request_id];
                     let event = if button {
                         Event::Button { name: tehuti_protocol::ButtonName::East, state: tehuti_protocol::ButtonState::Pressed }
@@ -1939,7 +1417,7 @@ mod tests {
                         prop_assert_eq!(starts.borrow()[0], 1);
                         for reply_id in [request_id, request_id.saturating_add(1000)] {
                             let reply = format!("{{\"jsonrpc\":\"2.0\",\"id\":{reply_id},\"result\":[{{\"type\":\"quit\"}}]}}\n");
-                            for delivery in old.borrow_mut().receive(reply.as_bytes()) {
+                            for delivery in old.borrow_mut().receive(reply.as_bytes(), Instant::now()) {
                                 if let Delivery::Reply { key, result, .. } = delivery {
                                     let (next, actions, _) = tehuti_core::plugin::step(core,
                                         tehuti_core::plugin::Input::Reply { key, result });
@@ -1994,7 +1472,7 @@ mod tests {
                 }
                 let (answered, _) = plugins.dispatch(&event, true).unwrap();
                 let reply = format!("{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":[]}}\n", answered.request_id);
-                drop(session.borrow_mut().receive(reply.as_bytes()));
+                drop(session.borrow_mut().receive(reply.as_bytes(), Instant::now()));
                 prop_assert_eq!(session.borrow().missed_decisions, 0);
                 for miss in 1..=3 {
                     let (key, _) = plugins.dispatch(&event, true).unwrap();

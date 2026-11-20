@@ -1950,10 +1950,9 @@ fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Eff
 }
 
 fn passthrough_talk_held(state: &State) -> bool {
-    state.core.passthrough_push_to_talk() != [ButtonName::Select]
-        && state
-            .core
-            .passthrough_push_to_talk()
+    let (members, _) = state.core.talk_buttons();
+    members != [ButtonName::Select]
+        && members
             .iter()
             .all(|member| state.passthrough_buttons.contains(member))
 }
@@ -2020,7 +2019,7 @@ fn takeback_release(state: &mut State, effects: &mut Vec<Effect>) -> bool {
 }
 
 fn passthrough_view_talk(state: &mut State) {
-    if state.core.passthrough_push_to_talk() == [ButtonName::Select]
+    if state.core.talk_buttons().0 == [ButtonName::Select]
         && !state.keyboard.password_field_active()
         && let Some(frame) = state.frames.last_mut()
     {
