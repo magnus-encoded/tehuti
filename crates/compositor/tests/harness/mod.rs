@@ -8,7 +8,6 @@
 
 #![expect(
     clippy::must_use_candidate,
-    clippy::missing_errors_doc,
     clippy::missing_panics_doc,
     missing_debug_implementations,
     reason = "test helper: panics are the failure report and results are not optional"
@@ -38,6 +37,12 @@ pub struct Notifier<T> {
 }
 
 impl<T> Notifier<T> {
+    /// Sends `value` to the receiver, then wakes the server loop. The wake write is best effort:
+    /// its result is ignored, because the value is already queued and the loop rechecks it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the value when the receiver has been dropped.
     pub fn send(&self, value: T) -> Result<(), mpsc::SendError<T>> {
         let sent = self.sender.send(value);
         if let Some(mut wake) = self.wake.as_deref() {
@@ -48,7 +53,7 @@ impl<T> Notifier<T> {
 }
 
 /// A channel whose sends do not wake a server loop, for tests that poll the receiver themselves.
-pub fn channel<T>() -> (Notifier<T>, mpsc::Receiver<T>) {
+pub fn silent_channel<T>() -> (Notifier<T>, mpsc::Receiver<T>) {
     let (sender, receiver) = mpsc::channel();
     (Notifier { sender, wake: None }, receiver)
 }

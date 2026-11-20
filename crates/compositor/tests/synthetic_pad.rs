@@ -1346,7 +1346,7 @@ mod synthetic_pad {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_parent(
                 stream,
@@ -1432,7 +1432,7 @@ mod synthetic_pad {
             return;
         };
         let stream = UnixStream::connect(socket).unwrap();
-        let (sender, _receiver) = crate::harness::channel();
+        let (sender, _receiver) = crate::harness::silent_channel();
         let app = run_client_with_app_id(stream, "player", "player", ClientTextState::Absent, &sender);
         assert!(app.keys.contains(&(1, KeyState::Pressed)));
         assert!(app.keys.contains(&(1, KeyState::Released)));
@@ -2332,7 +2332,7 @@ mod synthetic_pad {
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = crate::harness::channel();
+        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
         let client =
             thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
         let began = Instant::now();
@@ -2641,7 +2641,7 @@ mod synthetic_pad {
     #[test]
     fn plugins_that_never_read_stall_or_flood_cannot_block_input_or_escape() {
         for mode in ["never_read", "stalled", "flood", "overlong_flood"] {
-            let (sender, receiver) = crate::harness::channel();
+            let (sender, receiver) = crate::harness::silent_channel();
             let worker = thread::spawn(move || {
                 exercise_unresponsive_plugin(mode);
                 sender.send(()).unwrap();
@@ -2676,7 +2676,7 @@ mod synthetic_pad {
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
         wait_for_focused_plugin(&mut display, &mut compositor, &mut event_loop, &receiver);
         thread::sleep(Duration::from_millis(150));
@@ -2797,7 +2797,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = crate::harness::channel();
+        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
         let client =
             thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
         let started = Instant::now();
@@ -2972,7 +2972,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = crate::harness::channel();
+        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
 
         let mut pad = SyntheticPad::default();
@@ -3024,7 +3024,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let worker = thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
@@ -3246,7 +3246,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3346,7 +3346,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3400,7 +3400,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let mut harness = crate::harness::Harness::new();
         let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
@@ -3453,7 +3453,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3509,7 +3509,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3574,7 +3574,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3659,7 +3659,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let worker =
             thread::spawn(move || run_client(client_end, "mgba-qt", ClientTextState::Absent, &sender));
         let mut pressed_at = None;
@@ -4173,7 +4173,7 @@ for line in sys.stdin:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = crate::harness::channel();
+        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
         let client =
             thread::spawn(move || run_client(client_end, "test", ClientTextState::Enabled, &ready_sender));
         let started = Instant::now();
@@ -4238,7 +4238,7 @@ for line in sys.stdin:
                     .handle()
                     .insert_client(server_end, Arc::new(ClientState::default()))
                     .unwrap();
-                let (sender, receiver) = crate::harness::channel();
+                let (sender, receiver) = crate::harness::silent_channel();
                 let client = thread::spawn(move || {
                     run_client_with_app_id(client_end, "test", "test", text_state, &sender)
                 });
@@ -4313,7 +4313,7 @@ for line in sys.stdin:
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client =
             thread::spawn(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
         let started = Instant::now();
@@ -4362,7 +4362,7 @@ for line in sys.stdin:
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(
                 client,
@@ -4408,7 +4408,7 @@ for line in sys.stdin:
                 .handle()
                 .insert_client(server, Arc::new(ClientState::default()))
                 .unwrap();
-            let (sender, receiver) = crate::harness::channel();
+            let (sender, receiver) = crate::harness::silent_channel();
             let client =
                 thread::spawn(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
             let started = Instant::now();
@@ -4459,7 +4459,7 @@ for line in sys.stdin:
                 .handle()
                 .insert_client(server, Arc::new(ClientState::default()))
                 .unwrap();
-            let (sender, receiver) = crate::harness::channel();
+            let (sender, receiver) = crate::harness::silent_channel();
             let client = thread::spawn(move || {
                 run_client_with_app_id(client, "test", "test", ClientTextState::Purpose(purpose), &sender)
             });
