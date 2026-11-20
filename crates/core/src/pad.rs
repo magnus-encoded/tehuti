@@ -203,7 +203,8 @@ impl Pads {
                 !holders.is_empty()
             });
             if !released.is_empty() {
-                self.effects.push((path.clone(), PadEffect::ReleaseHeld(released)));
+                self.effects
+                    .push((path.clone(), PadEffect::ReleaseHeld(released)));
             }
             self.effects.push((path, PadEffect::ForgetGate));
         }

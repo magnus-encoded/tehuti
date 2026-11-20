@@ -24,8 +24,7 @@ mod tests {
     }
 
     fn ids(pads: &mut Pads, sightings: Vec<PadSighting>) -> Vec<String> {
-        pads
-            .observe(sightings)
+        pads.observe(sightings)
             .into_iter()
             .map(|(_, pad)| pad.id.as_str().to_owned())
             .collect()

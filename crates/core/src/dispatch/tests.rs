@@ -6471,8 +6471,11 @@ fn an_old_format_pad_file_loads_and_saves_with_the_same_settings() {
     let mut world = World::default();
     // The old files: a disabled list in insertion order with a duplicate, bindings apart.
     let old_disabled = vec!["pad-b".to_owned(), "pad-a".to_owned(), "pad-b".to_owned()];
-    let old_bindings: std::collections::BTreeMap<String, ButtonName> =
-        [("pad-c".to_owned(), ButtonName::Start), ("pad-a".to_owned(), ButtonName::Record)].into();
+    let old_bindings: std::collections::BTreeMap<String, ButtonName> = [
+        ("pad-c".to_owned(), ButtonName::Start),
+        ("pad-a".to_owned(), ButtonName::Record),
+    ]
+    .into();
     let state = world.run(
         State::default(),
         Input::InputChoices {
