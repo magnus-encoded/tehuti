@@ -995,7 +995,7 @@ impl Compositor {
 
     /// Commits whose client buffer is still not ready.
     #[must_use]
-    pub fn buffers_waiting(&self) -> usize {
+    pub const fn buffers_waiting(&self) -> usize {
         self.waiting_buffers.len()
     }
 
@@ -3956,7 +3956,7 @@ impl CompositorHandler for Compositor {
     }
 
     fn new_surface(&mut self, surface: &WlSurface) {
-        smithay::wayland::compositor::add_pre_commit_hook::<Self, _>(surface, |state, _display, surface| {
+        let _hook = smithay::wayland::compositor::add_pre_commit_hook::<Self, _>(surface, |state, _display, surface| {
             state.gate_buffer(surface);
         });
         if let Some(output) = &self.output {

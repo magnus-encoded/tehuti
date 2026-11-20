@@ -2,6 +2,7 @@
 //! never stalls the output: its last good buffer stays on screen and every
 //! other surface keeps drawing.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use smithay::{
     reexports::wayland_server::Client,
@@ -9,10 +10,7 @@ use smithay::{
 };
 use std::{
     os::fd::{AsFd, OwnedFd},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::Instant,
 };
 
@@ -30,7 +28,7 @@ pub struct Gate {
 
 impl Gate {
     #[must_use]
-    pub fn new(planes: Vec<OwnedFd>, client: String, since: Instant) -> Self {
+    pub const fn new(planes: Vec<OwnedFd>, client: String, since: Instant) -> Self {
         Self {
             planes,
             client,
