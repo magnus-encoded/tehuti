@@ -57,9 +57,9 @@ impl Origin {
 
 /// A pad's key: stable across reconnects, the same string `ControllerInfo::key` holds today.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PadKey(String);
+pub struct PadId(String);
 
-impl PadKey {
+impl PadId {
     #[must_use]
     pub fn new(key: impl Into<String>) -> Self {
         Self(key.into())
@@ -71,10 +71,27 @@ impl PadKey {
     }
 }
 
+/// What the user chose for one pad; a pad with no saved choice has the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PadSettings {
+    pub enabled: bool,
+    /// The button that records speech on this pad; none means the global default.
+    pub push_to_talk: Option<ButtonName>,
+}
+
+impl Default for PadSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            push_to_talk: None,
+        }
+    }
+}
+
 /// One controller as the rest of Tehuti sees it: runtime facts only, no settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pad {
-    pub key: PadKey,
+    pub key: PadId,
     pub label: String,
     pub model: Identity,
     pub origin: Origin,
@@ -131,12 +148,12 @@ pub struct PadSighting {
 
 /// Keeps pad keys: owns the keying rules and the path-to-key memory between sightings.
 #[derive(Debug, Clone, Default)]
-pub struct PadRoster {
+pub struct Pads {
     known: BTreeMap<PathBuf, Pad>,
     effects: Vec<(PathBuf, PadEffect)>,
 }
 
-impl PadRoster {
+impl Pads {
     /// Takes the pads present now, in any order, and returns them in path order.
     ///
     /// Labels count each model independently. A pad's key survives a reconnect: the unique id
@@ -174,7 +191,7 @@ impl PadRoster {
                             .find(|key| !taken.contains(key))
                             .unwrap_or_default();
                         let _fresh = taken.insert(free.clone());
-                        PadKey(free)
+                        PadId(free)
                     },
                     |pad| pad.key.clone(),
                 );
@@ -194,18 +211,44 @@ impl PadRoster {
             })
             .collect();
         let previous = core::mem::replace(&mut self.known, next);
+        self.forget(previous);
+        pads
+    }
+
+    /// Queues the effects of each pad in `previous` that has vanished.
+    fn forget(&mut self, previous: BTreeMap<PathBuf, Pad>) {
         for (path, mut pad) in previous {
             if !self.known.contains_key(&path) {
-                self.effects
-                    .extend(pad.on_gone().into_iter().map(|effect| (path.clone(), effect)));
+                let effects = pad.on_gone();
+                self.effects.extend(
+                    self.without_shared_releases(effects)
+                        .into_iter()
+                        .map(|effect| (path.clone(), effect)),
+                );
             }
         }
-        pads
+    }
+
+    /// Drops from a release the buttons another present pad still holds: that press goes on.
+    fn without_shared_releases(&self, effects: Vec<PadEffect>) -> Vec<PadEffect> {
+        effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                PadEffect::ReleaseHeld(buttons) => {
+                    let buttons: Vec<_> = buttons
+                        .into_iter()
+                        .filter(|button| !self.known.values().any(|other| other.held.contains(button)))
+                        .collect();
+                    (!buttons.is_empty()).then_some(PadEffect::ReleaseHeld(buttons))
+                }
+                PadEffect::ForgetGate => Some(PadEffect::ForgetGate),
+            })
+            .collect()
     }
 
     /// The key the pad at `path` holds, while it is present.
     #[must_use]
-    pub fn key_for(&self, path: &Path) -> Option<&PadKey> {
+    pub fn key_for(&self, path: &Path) -> Option<&PadId> {
         self.known.get(path).map(|pad| &pad.key)
     }
 
@@ -227,15 +270,15 @@ mod pad_type_tests {
     use super::*;
 
     #[test]
-    fn pad_key_keeps_its_text_and_orders_by_it() {
-        assert_eq!(PadKey::new("xbox-1").as_str(), "xbox-1");
-        assert!(PadKey::new("a") < PadKey::new("b"));
+    fn pad_id_keeps_its_text_and_orders_by_it() {
+        assert_eq!(PadId::new("xbox-1").as_str(), "xbox-1");
+        assert!(PadId::new("a") < PadId::new("b"));
     }
 
     #[test]
     fn pad_carries_origin_and_presence() {
         let pad = Pad {
-            key: PadKey::new("k"),
+            key: PadId::new("k"),
             label: "PAD #1".into(),
             model: Identity::default(),
             origin: Origin::Bluetooth,
@@ -735,7 +778,7 @@ mod roster_tests {
 
     #[test]
     fn pads_of_different_names_sharing_an_identity_get_different_keys() {
-        let pads = PadRoster::default().observe([
+        let pads = Pads::default().observe([
             sighting("/dev/input/event1", "Pad A", "shared"),
             sighting("/dev/input/event2", "Pad B", "shared"),
         ]);
@@ -744,7 +787,7 @@ mod roster_tests {
 
     #[test]
     fn a_duplicate_attaching_never_rekeys_the_pad_already_there() {
-        let mut roster = PadRoster::default();
+        let mut roster = Pads::default();
         let original = sighting("/dev/input/event5", "Pad", "shared");
         let before = roster.observe([original.clone()]);
         // The newcomer's node sorts before the original's.
@@ -756,7 +799,7 @@ mod roster_tests {
 
     #[test]
     fn identical_pads_without_ids_take_indexed_name_keys() {
-        let pads = PadRoster::default().observe([
+        let pads = Pads::default().observe([
             sighting("/dev/input/event1", "Pad", ""),
             sighting("/dev/input/event2", "Pad", ""),
         ]);
@@ -769,7 +812,7 @@ mod roster_tests {
         let mut second = sighting("/dev/input/event2", "Wireless Controller", "");
         (first.vendor, first.product) = (0x054c, 0x05c4);
         (second.vendor, second.product) = (0x054c, 0x09cc);
-        let pads = PadRoster::default().observe([first, second]);
+        let pads = Pads::default().observe([first, second]);
         let labels: Vec<_> = pads.iter().map(|(_, pad)| pad.label.as_str()).collect();
         assert_eq!(labels, ["DUALSHOCK 4 #1", "DUALSHOCK 4 #2"]);
     }
@@ -778,7 +821,7 @@ mod roster_tests {
     fn an_origin_reaches_the_pad() {
         let mut seen = sighting("/dev/input/event9", "Xbox Wireless Controller", "");
         seen.origin = Origin::Bluetooth;
-        let pads = PadRoster::default().observe([seen]);
+        let pads = Pads::default().observe([seen]);
         assert_eq!(pads[0].1.origin, Origin::Bluetooth);
     }
 
@@ -791,7 +834,7 @@ mod roster_tests {
                 1..12,
             ),
         ) {
-            let mut roster = PadRoster::default();
+            let mut roster = Pads::default();
             for step in steps {
                 let present = step.into_iter().map(|(node, (name, has_id))| {
                     let uniq = if has_id { format!("id{}", name % 2) } else { String::new() };

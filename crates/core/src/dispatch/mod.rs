@@ -910,11 +910,11 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         } => state.settings.configure_wallpapers(names, locked, current),
         Input::WallpaperSaved(index) => state.settings.wallpaper_saved(index),
         Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
-        Input::ControllerBindings(bindings) => state.settings.input.controller_bindings = bindings,
+        Input::ControllerBindings(bindings) => state.settings.input.restore_bindings(&bindings),
         Input::ControllerDeadzones(deadzones) => state.settings.input.controller_deadzones = deadzones,
         Input::ControllerRecentres(rests) => state.settings.input.controller_recentres = rests,
         Input::ActiveController(name) => {
-            let binding = state.settings.input.controller_bindings.get(&name).copied();
+            let binding = state.settings.input.pad_settings(&name).push_to_talk;
             state.core.set_controller_push_to_talk(binding);
             state.settings.input.active_controller = Some(name);
         }
@@ -924,11 +924,11 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::InputChoices {
             controller,
             microphone,
-            disabled_controllers,
+            disabled_controllers: off_pads,
             disabled_microphones,
         } => state
             .settings
-            .restore_input(controller, microphone, disabled_controllers, disabled_microphones),
+            .restore_input(controller, microphone, &off_pads, disabled_microphones),
         Input::Menu(_)
         | Input::Launcher(_)
         | Input::CloseInvitation

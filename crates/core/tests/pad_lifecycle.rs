@@ -1,14 +1,14 @@
 //! Pad lifecycle through the roster: keys survive reconnects and a drop's effects come once.
 
 use std::path::{Path, PathBuf};
-use tehuti_core::pad::{Origin, PadEffect, PadRoster, PadSighting};
+use tehuti_core::pad::{Origin, PadEffect, PadSighting, Pads};
 use tehuti_protocol::ButtonName;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn see(roster: &mut PadRoster, sightings: Vec<PadSighting>) {
+    fn see(roster: &mut Pads, sightings: Vec<PadSighting>) {
         let _pads = roster.observe(sightings);
     }
 
@@ -23,7 +23,7 @@ mod tests {
         }
     }
 
-    fn keys(roster: &mut PadRoster, sightings: Vec<PadSighting>) -> Vec<String> {
+    fn keys(roster: &mut Pads, sightings: Vec<PadSighting>) -> Vec<String> {
         roster
             .observe(sightings)
             .into_iter()
@@ -33,7 +33,7 @@ mod tests {
 
     #[test]
     fn reconnect_keeps_the_key() {
-        let mut roster = PadRoster::default();
+        let mut roster = Pads::default();
         let first = keys(&mut roster, vec![sighting("/dev/input/event5", "")]);
         see(&mut roster, vec![]);
         let again = keys(&mut roster, vec![sighting("/dev/input/event9", "")]);
@@ -42,7 +42,7 @@ mod tests {
 
     #[test]
     fn a_path_that_vanishes_and_reappears_keeps_its_key() {
-        let mut roster = PadRoster::default();
+        let mut roster = Pads::default();
         let first = keys(&mut roster, vec![sighting("/dev/input/event5", "")]);
         see(&mut roster, vec![]);
         let again = keys(&mut roster, vec![sighting("/dev/input/event5", "")]);
@@ -51,7 +51,7 @@ mod tests {
 
     #[test]
     fn unplugging_the_first_of_two_identical_pads_does_not_swap_keys() {
-        let mut roster = PadRoster::default();
+        let mut roster = Pads::default();
         let both = keys(
             &mut roster,
             vec![
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn a_held_button_on_a_vanished_pad_is_released_exactly_once() {
-        let mut roster = PadRoster::default();
+        let mut roster = Pads::default();
         let first = PathBuf::from("/dev/input/event5");
         see(
             &mut roster,
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn a_vanished_pad_with_nothing_held_only_forgets_the_gate() {
-        let mut roster = PadRoster::default();
+        let mut roster = Pads::default();
         see(&mut roster, vec![sighting("/dev/input/event5", "")]);
         see(&mut roster, vec![]);
         assert_eq!(
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn held_buttons_survive_a_rescan_that_keeps_the_pad() {
-        let mut roster = PadRoster::default();
+        let mut roster = Pads::default();
         let path = PathBuf::from("/dev/input/event5");
         see(&mut roster, vec![sighting("/dev/input/event5", "")]);
         roster.on_button(&path, ButtonName::South, true);
@@ -124,5 +124,47 @@ mod tests {
                 (path, PadEffect::ForgetGate),
             ]
         );
+    }
+
+    #[test]
+    fn a_drop_does_not_release_a_button_another_pad_still_holds() {
+        let mut pads = Pads::default();
+        let first = PathBuf::from("/dev/input/event5");
+        let second = PathBuf::from("/dev/input/event6");
+        see(
+            &mut pads,
+            vec![
+                sighting("/dev/input/event5", ""),
+                sighting("/dev/input/event6", ""),
+            ],
+        );
+        pads.on_button(&first, ButtonName::South, true);
+        pads.on_button(&first, ButtonName::East, true);
+        pads.on_button(&second, ButtonName::South, true);
+        see(&mut pads, vec![sighting("/dev/input/event6", "")]);
+        assert_eq!(
+            pads.take_effects(),
+            vec![
+                (first.clone(), PadEffect::ReleaseHeld(vec![ButtonName::East])),
+                (first, PadEffect::ForgetGate),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_drop_whose_buttons_are_all_held_elsewhere_only_forgets_the_gate() {
+        let mut pads = Pads::default();
+        let first = PathBuf::from("/dev/input/event5");
+        see(
+            &mut pads,
+            vec![
+                sighting("/dev/input/event5", ""),
+                sighting("/dev/input/event6", ""),
+            ],
+        );
+        pads.on_button(&first, ButtonName::South, true);
+        pads.on_button(Path::new("/dev/input/event6"), ButtonName::South, true);
+        see(&mut pads, vec![sighting("/dev/input/event6", "")]);
+        assert_eq!(pads.take_effects(), vec![(first, PadEffect::ForgetGate)]);
     }
 }
