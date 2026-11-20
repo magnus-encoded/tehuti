@@ -114,6 +114,7 @@ mod stuck_buffer {
         pipe_write: &mpsc::Sender<std::fs::File>,
         ready: &mpsc::Sender<()>,
         stop: &mpsc::Receiver<()>,
+        destroy_first: bool,
     ) {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
@@ -155,6 +156,13 @@ mod stuck_buffer {
             let _dispatched = queue.roundtrip(&mut app).unwrap();
             thread::sleep(Duration::from_millis(1));
         }
+        if destroy_first {
+            surface.destroy();
+            while stop.try_recv().is_err() {
+                let _dispatched = queue.roundtrip(&mut app).unwrap();
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
 
     fn pump(display: &mut Display<Compositor>, compositor: &mut Compositor) {
@@ -195,7 +203,7 @@ mod stuck_buffer {
         let (pipe_write, pipe_end) = mpsc::channel();
         let (ready, received) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
-        let thread = thread::spawn(move || client(stream, &pipe_write, &ready, &stopped));
+        let thread = thread::spawn(move || client(stream, &pipe_write, &ready, &stopped, false));
         let started = Instant::now();
         while received.try_recv().is_err() {
             assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
@@ -237,5 +245,56 @@ mod stuck_buffer {
             pump(&mut display, &mut compositor);
         }
         thread.join().unwrap();
+    }
+
+    /// Holds a never-ready buffer, then ends the client's side as `destroy_first` says.
+    fn waiting_after(destroy_first: bool) -> usize {
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = compositor_with_linear_dmabuf(&display);
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let (pipe_write, _pipe_end) = mpsc::channel();
+        let (ready, received) = mpsc::channel();
+        let (stop, stopped) = mpsc::channel();
+        let thread = thread::spawn(move || client(stream, &pipe_write, &ready, &stopped, destroy_first));
+        let started = Instant::now();
+        while received.try_recv().is_err() {
+            assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
+            pump(&mut display, &mut compositor);
+        }
+        for _ in 0..20 {
+            pump(&mut display, &mut compositor);
+            compositor.advance_time();
+        }
+        assert_eq!(compositor.buffers_waiting(), 1, "the buffer is held first");
+        stop.send(()).unwrap();
+        if destroy_first {
+            thread::sleep(Duration::from_millis(50));
+        } else {
+            thread.join().unwrap();
+        }
+        for _ in 0..50 {
+            pump(&mut display, &mut compositor);
+            compositor.advance_time();
+        }
+        let waiting = compositor.buffers_waiting();
+        if destroy_first {
+            stop.send(()).unwrap();
+            thread.join().unwrap();
+        }
+        waiting
+    }
+
+    #[test]
+    fn a_client_that_disconnects_while_held_leaves_nothing_waiting() {
+        assert_eq!(waiting_after(false), 0);
+    }
+
+    #[test]
+    fn a_surface_destroyed_while_held_leaves_nothing_waiting() {
+        assert_eq!(waiting_after(true), 0);
     }
 }

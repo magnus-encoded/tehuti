@@ -5,7 +5,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use smithay::{
-    reexports::wayland_server::Client,
+    reexports::wayland_server::{Client, Resource as _, protocol::wl_surface::WlSurface},
     wayland::compositor::{Blocker, BlockerState},
 };
 use std::{
@@ -87,17 +87,19 @@ impl Blocker for BufferBlocker {
 
 /// Gates waiting on their buffers, with the client each belongs to.
 #[derive(Debug, Default)]
-pub struct Waiting(Vec<(Client, Arc<Gate>)>);
+pub struct Waiting(Vec<(WlSurface, Client, Arc<Gate>)>);
 
 impl Waiting {
-    pub fn push(&mut self, client: Client, gate: Arc<Gate>) {
-        self.0.push((client, gate));
+    pub fn push(&mut self, surface: WlSurface, client: Client, gate: Arc<Gate>) {
+        self.0.push((surface, client, gate));
     }
 
     /// Removes the gates that became ready and returns their clients.
     pub fn take_ready(&mut self, now: Instant) -> Vec<Client> {
         let mut ready = Vec::new();
-        self.0.retain(|(client, gate)| {
+        // A destroyed surface or a disconnected client frees its gate and fds.
+        self.0.retain(|(surface, _, _)| surface.is_alive());
+        self.0.retain(|(_, client, gate)| {
             let done = gate.ready(now);
             if done {
                 ready.push(client.clone());

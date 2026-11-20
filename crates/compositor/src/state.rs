@@ -983,9 +983,6 @@ impl Compositor {
 
     /// Lets held commits through once their client buffers became ready.
     fn release_ready_buffers(&mut self) {
-        if self.waiting_buffers.is_empty() {
-            return;
-        }
         let display = self.display.clone();
         for client in self.waiting_buffers.take_ready(Instant::now()) {
             let state = self.client_compositor_state(&client);
@@ -1038,7 +1035,7 @@ impl Compositor {
             return;
         }
         add_blocker(surface, crate::buffer_gate::BufferBlocker(gate.clone()));
-        self.waiting_buffers.push(client, gate);
+        self.waiting_buffers.push(surface.clone(), client, gate);
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
