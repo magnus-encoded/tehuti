@@ -1,7 +1,7 @@
 //! Surface membership, layout identity and placement decisions.
 use tehuti_core::layout::{
-    Command, Layout, LayoutConfig, LayoutError, OutputGeometry, OutputId, Rect, Snapshot, TileView, WindowId,
-    WindowRules, WorkspaceId,
+    Command, Layout, LayoutConfig, LayoutError, OutputGeometry, OutputId, Rect, Slot, Snapshot, TileView,
+    WindowId, WindowRules, WorkspaceId,
 };
 
 #[derive(Debug)]
@@ -199,46 +199,37 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
     }
 
     pub(crate) fn placed(&self, width: impl Fn(&Window) -> f64) -> Vec<Placed<'_, Key, Window>> {
-        let snapshot = self.layout.snapshot();
+        let placements = self.layout.snapshot().placements();
         self.entries
             .iter()
             .map(|entry| {
-                let is_helper = snapshot
-                    .outputs
+                let placement = placements
                     .iter()
-                    .flat_map(|output| &output.workspaces)
-                    .any(|workspace| workspace.helpers.contains(&entry.identity));
-                let helper_position = snapshot.outputs.iter().find_map(|output| {
-                    let workspace = output.workspaces.get(output.active_workspace)?;
-                    let index = workspace
-                        .helpers
-                        .iter()
-                        .position(|helper| *helper == entry.identity)?;
-                    let preceding = workspace
-                        .helpers
-                        .iter()
-                        .take(index)
-                        .filter_map(|helper| {
-                            self.entries
-                                .iter()
-                                .find(|candidate| candidate.identity == *helper)
-                                .map(|candidate| width(&candidate.window))
-                        })
-                        .sum::<f64>();
-                    Some((
-                        core::ops::Add::add(workspace.helper_position.0, preceding),
-                        workspace.helper_position.1,
-                    ))
-                });
+                    .find(|placement| placement.window == entry.identity);
+                let (tile, helper_position) = match placement.map(|placement| &placement.slot) {
+                    Some(Slot::Tile { tile, border }) => (Some((tile.clone(), *border)), None),
+                    Some(Slot::Helper { origin, preceding }) => {
+                        let offset = preceding
+                            .iter()
+                            .filter_map(|helper| {
+                                self.entries
+                                    .iter()
+                                    .find(|candidate| candidate.identity == *helper)
+                                    .map(|candidate| width(&candidate.window))
+                            })
+                            .sum::<f64>();
+                        (None, Some((core::ops::Add::add(origin.0, offset), origin.1)))
+                    }
+                    Some(Slot::Hidden) | None => (None, None),
+                };
                 Placed {
                     key: &entry.key,
                     window: &entry.window,
                     identity: entry.identity.0,
-                    focused: snapshot.focused_window == Some(entry.identity),
-                    helper: is_helper,
+                    focused: placement.is_some_and(|placement| placement.focused),
+                    helper: placement.is_some_and(|placement| placement.helper),
                     helper_position,
-                    tile: visible_tile(&snapshot, entry.identity)
-                        .map(|(tile, border)| (tile.clone(), border)),
+                    tile,
                 }
             })
             .collect()
@@ -263,24 +254,6 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
     ) -> Option<tehuti_core::windows::Effect<Key>> {
         self.windows.step(input)
     }
-}
-
-fn visible_tile(snapshot: &Snapshot, identity: WindowId) -> Option<(&TileView, f64)> {
-    snapshot.outputs.iter().find_map(|output| {
-        output
-            .workspaces
-            .get(output.active_workspace)
-            .and_then(|workspace| {
-                workspace.columns.iter().find_map(|column| {
-                    column.tiles.iter().enumerate().find_map(|(index, tile)| {
-                        (tile.window == identity
-                            && (column.display == tehuti_core::layout::ColumnDisplay::Normal
-                                || index == column.focused_tile))
-                            .then_some((tile, output.border))
-                    })
-                })
-            })
-    })
 }
 
 #[cfg(test)]

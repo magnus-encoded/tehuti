@@ -293,6 +293,83 @@ pub struct Snapshot {
     pub focused_window: Option<WindowId>,
 }
 
+impl Snapshot {
+    /// Where each window in the snapshot goes: one entry per tiled window and helper.
+    ///
+    /// A tile is shown only when it sits on the active workspace of its output and,
+    /// in a tabbed column, is the focused tab. Its border is the output's border.
+    #[must_use]
+    pub fn placements(&self) -> Vec<Placement> {
+        let mut placements = Vec::new();
+        for output in &self.outputs {
+            for (index, workspace) in output.workspaces.iter().enumerate() {
+                let active = index == output.active_workspace;
+                for column in &workspace.columns {
+                    for (position, tile) in column.tiles.iter().enumerate() {
+                        let shown = active
+                            && (column.display == ColumnDisplay::Normal || position == column.focused_tile);
+                        placements.push(Placement {
+                            window: tile.window,
+                            focused: self.focused_window == Some(tile.window),
+                            helper: false,
+                            slot: if shown {
+                                Slot::Tile {
+                                    tile: tile.clone(),
+                                    border: output.border,
+                                }
+                            } else {
+                                Slot::Hidden
+                            },
+                        });
+                    }
+                }
+                for (position, helper) in workspace.helpers.iter().enumerate() {
+                    placements.push(Placement {
+                        window: *helper,
+                        focused: self.focused_window == Some(*helper),
+                        helper: true,
+                        slot: if active {
+                            Slot::Helper {
+                                origin: workspace.helper_position,
+                                preceding: workspace.helpers.iter().take(position).copied().collect(),
+                            }
+                        } else {
+                            Slot::Hidden
+                        },
+                    });
+                }
+            }
+        }
+        placements
+    }
+}
+
+/// What a snapshot decides for one window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Placement {
+    pub window: WindowId,
+    /// The window receives input.
+    pub focused: bool,
+    /// The window is a helper, shown or not.
+    pub helper: bool,
+    pub slot: Slot,
+}
+
+/// Where a window is shown.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Slot {
+    /// Not shown: another workspace or a background tab.
+    Hidden,
+    /// Shown in a tile, with the border of its output.
+    Tile { tile: TileView, border: f64 },
+    /// Shown as a helper at `origin` plus the client widths of the helpers
+    /// before it, which only the caller knows.
+    Helper {
+        origin: (f64, f64),
+        preceding: Vec<WindowId>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputView {
     pub output: OutputId,
