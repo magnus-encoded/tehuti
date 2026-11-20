@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import select
 import signal
 import socket
 import subprocess
@@ -185,8 +186,16 @@ def list_sources(missing=None):
     return [] if off else [None]
 
 
+REMOTE_FINAL_SECONDS = 30
+REMOTE_INTERIM_SECONDS = 3
+MAX_REMOTE_REPLY = 65536
+
+
 def remote_sockets():
-    """Language to remote transcription socket path, from `[remote]` in speech.toml."""
+    """Language to absolute remote socket path, from `[remote]` in speech.toml.
+
+    Entries with a bad language code or a path that is not absolute after expansion are
+    skipped with a warning."""
     root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     try:
         import tomllib
@@ -196,24 +205,55 @@ def remote_sockets():
         return {}
     if not isinstance(table, dict):
         return {}
-    return {language: os.path.expandvars(path) for language, path in table.items()
-            if isinstance(path, str) and path}
+    sockets = {}
+    for language, path in table.items():
+        expanded = os.path.expandvars(path) if isinstance(path, str) else ""
+        if not re.fullmatch(r"[a-z]{2,8}", language):
+            log(f"speech.toml: remote language {language!r} skipped", level="WARN")
+        elif not os.path.isabs(expanded) or "$" in expanded:
+            log(f"speech.toml: remote path for {language} is not absolute; skipped", level="WARN")
+        else:
+            sockets[language] = expanded
+    return sockets
 
 
-def remote_transcribe(path, audio, prompt, final):
-    """Text from a remote transcription socket; raises on error, busy or a bad reply."""
-    kind = b"G" if final else b"J"
+def remote_transcribe(path, audio, prompt, final, abort=None):
+    """Text from a remote transcription socket within one total deadline.
+
+    Raises on error, busy, a bad or oversized reply, or the deadline."""
+    deadline = time.monotonic() + (REMOTE_FINAL_SECONDS if final else REMOTE_INTERIM_SECONDS)
+
+    def remaining():
+        left = deadline - time.monotonic()
+        if left <= 0 or (abort is not None and abort.is_set()):
+            raise TimeoutError("remote transcription deadline")
+        return left
+
+    request = (b"G" if final else b"J") + prompt.encode("utf-8") + b"\0" + audio
     with socket.socket(socket.AF_UNIX) as connection:
-        connection.settimeout(60 if final else 5)
+        connection.settimeout(remaining())
         connection.connect(path)
-        connection.sendall(kind + prompt.encode("utf-8") + b"\0" + audio)
+        connection.setblocking(False)
+        sent = 0
+        while sent < len(request):
+            _, writable, _ = select.select([], [connection], [], min(remaining(), 0.25))
+            if writable:
+                try:
+                    sent += connection.send(request[sent:sent + 65536])
+                except BlockingIOError:
+                    pass
         connection.shutdown(socket.SHUT_WR)
         data = bytearray()
         while True:
-            chunk = connection.recv(65536)
+            readable, _, _ = select.select([connection], [], [], min(remaining(), 0.25))
+            if not readable:
+                continue
+            chunk = connection.recv(4096)
             if not chunk:
                 break
             data.extend(chunk)
+            if len(data) > MAX_REMOTE_REPLY:
+                raise ValueError("remote reply too large")
     answer = json.loads(bytes(data))
     if not isinstance(answer, dict):
         raise ValueError("remote reply is not an object")
@@ -261,7 +301,8 @@ class Recording:
 
 class Take:
     """One push-to-talk, recorded from every source at once."""
-    def __init__(self, session, prompt="", language=DEFAULT_LANGUAGE):
+    def __init__(self, session, prompt="", language=DEFAULT_LANGUAGE, remote=None):
+        self.remote = remote  # the backend, resolved once: a socket path, else the local model
         self.session = session
         self.prompt = prompt
         self.language = language
@@ -326,7 +367,7 @@ class Speech:
         self.cancel_tail()
         if self.capture is not None:
             return
-        take = Take(session, prompt, language)
+        take = Take(session, prompt, language, self.remotes().get(language))
         for source in self.sources():
             target = [] if source is None else ["--target", source]
             try:
@@ -369,11 +410,6 @@ class Speech:
 
     def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None, beam_size=5,
                          language=DEFAULT_LANGUAGE):
-        remote = self.remotes().get(language)
-        if remote:
-            if abort is not None and abort.is_set():
-                return ""
-            return remote_transcribe(remote, audio, prompt, final=beam_size != 1)
         priming = {"hotwords": self.hotwords} if self.hotwords else {}
         if prompt:
             priming["initial_prompt"] = prompt
@@ -401,6 +437,32 @@ class Speech:
             )
             return transcript(segments)
 
+    def transcribe_take(self, take, audio, *, final):
+        """Transcribe with the backend the take resolved at its start.
+
+        Only the local backend takes the model lock. A remote failure falls back to the
+        local model for a final; an interim then yields nothing."""
+        if take.remote:
+            try:
+                return remote_transcribe(take.remote, audio, take.prompt, final,
+                                         None if final else take.interim_abort)
+            except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+                log(f"remote transcription failed ({error}); "
+                    + ("using the local model" if final else "interim skipped"), level="WARN")
+                if not final:
+                    return ""
+        if final:
+            with self.model_lock:
+                return self.transcribe_audio(audio, take.prompt, language=take.language)
+        if not self.model_lock.acquire(blocking=False):
+            return ""
+        try:
+            return self.transcribe_audio(audio, take.prompt, retry=False,
+                                         abort=take.interim_abort, beam_size=1,
+                                         language=take.language)
+        finally:
+            self.model_lock.release()
+
     def interim(self, session, audio, capture):
         if not self.interims.acquire(blocking=False):
             return
@@ -409,14 +471,7 @@ class Speech:
             try:
                 if self.capture is not capture or peak(audio) <= SILENCE_PEAK:
                     return
-                if not self.model_lock.acquire(blocking=False):
-                    return
-                try:
-                    text = self.transcribe_audio(audio, capture.prompt, retry=False,
-                                                abort=capture.interim_abort, beam_size=1,
-                                                language=capture.language)
-                finally:
-                    self.model_lock.release()
+                text = self.transcribe_take(capture, audio, final=False)
                 if self.capture is capture and not capture.interim_abort.is_set() and text:
                     reply({"session": session, "interim": text})
             except Exception as error:
@@ -492,9 +547,7 @@ class Speech:
                 if winner.peak <= SILENCE_PEAK:
                     answer({"error": "silent"})
                     return
-                with self.model_lock:
-                    text = self.transcribe_audio(bytes(winner.audio), take.prompt,
-                                                 language=take.language)
+                text = self.transcribe_take(take, bytes(winner.audio), final=True)
                 answer({"text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)

@@ -92,49 +92,146 @@ class SpeechTests(unittest.TestCase):
             speech.transcribe_audio(b"\x00\x10" * 24000, retry=False)
         self.assertEqual(model.languages, ["no", "no", "en"])
 
-    def test_a_language_with_a_remote_socket_goes_there_and_leaves_the_model_idle(self):
+    def serve(self, directory, reply, count=1, received=None, trickle=False):
+        path = os.path.join(directory, "remote.sock")
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(path)
+        listener.listen(4)
+        self.addCleanup(listener.close)
+
+        def one():
+            connection, _ = listener.accept()
+            with connection:
+                data = bytearray()
+                while True:
+                    chunk = connection.recv(65536)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                if received is not None:
+                    received.append(bytes(data))
+                if trickle:
+                    try:
+                        for _ in range(100):
+                            connection.sendall(b" ")
+                            time.sleep(0.05)
+                    except OSError:
+                        pass
+                    return
+                connection.sendall(reply)
+
+        def run_all():
+            for _ in range(count):
+                one()
+
+        threading.Thread(target=run_all, daemon=True).start()
+        return path
+
+    def take(self, speech, language="no"):
+        return module.Take(1, "chat", language, speech.remotes().get(language))
+
+    def test_a_remote_language_goes_to_the_socket_and_leaves_the_model_idle(self):
         received = []
+
+        class Model:
+            def transcribe(self, *args, **options):
+                raise AssertionError("the local model must stay idle")
+
         with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "remote.sock")
-            listener = socket.socket(socket.AF_UNIX)
-            listener.bind(path)
-            listener.listen(4)
-
-            def serve():
-                for _ in range(2):
-                    connection, _ = listener.accept()
-                    with connection:
-                        data = bytearray()
-                        while True:
-                            chunk = connection.recv(65536)
-                            if not chunk:
-                                break
-                            data.extend(chunk)
-                        received.append(bytes(data))
-                        connection.sendall(b'{"text": "hei"}\n')
-
-            server = threading.Thread(target=serve, daemon=True)
-            server.start()
-
-            class Model:
-                def transcribe(self, *args, **options):
-                    raise AssertionError("the local model must stay idle")
-
+            path = self.serve(directory, b'{"text": "hei"}\n', 2, received)
             speech = module.Speech(Model(), remotes=lambda: {"no": path})
             audio = b"\x00\x10" * 100
-            self.assertEqual(speech.transcribe_audio(audio, "chat", language="no"), "hei")
-            self.assertEqual(
-                speech.transcribe_audio(audio, "chat", language="no", beam_size=1), "hei")
-            server.join(timeout=5)
-            listener.close()
+            take = self.take(speech)
+            self.assertEqual(speech.transcribe_take(take, audio, final=True), "hei")
+            self.assertEqual(speech.transcribe_take(take, audio, final=False), "hei")
         self.assertEqual(received, [b"Gchat\0" + audio, b"Jchat\0" + audio])
 
-    def test_speech_toml_maps_languages_to_sockets(self):
+    def test_a_remote_interim_does_not_block_a_local_final(self):
+        class Model:
+            def transcribe(self, *args, **options):
+                return iter([]), None
+
+        speech = module.Speech(Model(), remotes=dict)
+        self.assertTrue(speech.model_lock.acquire(blocking=False))
+        speech.model_lock.release()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.serve(directory, b"", 1, trickle=True)
+            speech.remotes = lambda: {"no": path}
+            take = self.take(speech)
+            speech.model_lock.acquire()
+            try:
+                result = []
+                worker = threading.Thread(target=lambda: result.append(
+                    speech.transcribe_take(take, b"\x00\x10" * 100, final=False)), daemon=True)
+                worker.start()
+                # the remote interim never takes the lock, so a final can take it at once
+                self.assertTrue(speech.model_lock.locked())
+            finally:
+                speech.model_lock.release()
+            self.assertTrue(speech.model_lock.acquire(timeout=0.5))
+            speech.model_lock.release()
+            take.interim_abort.set()
+            worker.join(timeout=3)
+            self.assertEqual(result, [""])
+
+    def test_a_trickling_server_hits_the_total_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.serve(directory, b"", 1, trickle=True)
+            with patch.object(module, "REMOTE_INTERIM_SECONDS", 0.5):
+                started = time.monotonic()
+                with self.assertRaises(TimeoutError):
+                    module.remote_transcribe(path, b"\x00\x10" * 10, "", final=False)
+                self.assertLess(time.monotonic() - started, 3)
+
+    def test_a_dead_socket_falls_back_to_the_local_final_with_the_takes_language(self):
+        class Model:
+            def __init__(self):
+                self.languages = []
+
+            def transcribe(self, path, **options):
+                self.languages.append(options["language"])
+                return iter([]), None
+
+        model = Model()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            speech = module.Speech(model, remotes=lambda: {"no": directory + "/dead.sock"})
+            take = self.take(speech)
+            self.assertEqual(speech.transcribe_take(take, b"\x00\x10" * 24000, final=True), "")
+            self.assertTrue(model.languages and set(model.languages) == {"no"})
+            seen = len(model.languages)
+            self.assertEqual(speech.transcribe_take(take, b"\x00\x10" * 24000, final=False), "")
+            self.assertEqual(len(model.languages), seen, "an interim does not fall back")
+
+    def test_a_busy_reply_falls_back_for_the_final(self):
+        class Model:
+            calls = 0
+
+            def transcribe(self, path, **options):
+                Model.calls += 1
+                return iter([]), None
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            path = self.serve(directory, b'{"busy": true}\n')
+            speech = module.Speech(Model(), remotes=lambda: {"no": path})
+            speech.transcribe_take(self.take(speech), b"\x00\x10" * 24000, final=True)
+        self.assertGreaterEqual(Model.calls, 1)
+
+    def test_an_oversized_reply_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.serve(directory, b" " * (module.MAX_REMOTE_REPLY + 5000))
+            with self.assertRaises(ValueError):
+                module.remote_transcribe(path, b"\x00\x10" * 10, "", final=True)
+
+    def test_speech_toml_maps_languages_to_absolute_sockets_and_skips_bad_entries(self):
         with tempfile.TemporaryDirectory() as directory:
             os.mkdir(os.path.join(directory, "tehuti"))
             with open(os.path.join(directory, "tehuti", "speech.toml"), "w") as saved:
-                saved.write('[remote]\nno = "$XDG_RUNTIME_DIR/t.sock"\nbad = 3\n')
-            with patch.dict(os.environ, {"XDG_CONFIG_HOME": directory, "XDG_RUNTIME_DIR": "/run/x"}):
+                saved.write('[remote]\nno = "$XDG_RUNTIME_DIR/t.sock"\nbad = 3\nNo = "/a"\n'
+                            'rel = "relative.sock"\nunset = "$NOPE_UNSET/x.sock"\n')
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": directory, "XDG_RUNTIME_DIR": "/run/x",
+                                         "TEHUTI_LOG_FILE": directory + "/log"}):
                 self.assertEqual(module.remote_sockets(), {"no": "/run/x/t.sock"})
             with patch.dict(os.environ, {"XDG_CONFIG_HOME": directory + "/none"}):
                 self.assertEqual(module.remote_sockets(), {})
