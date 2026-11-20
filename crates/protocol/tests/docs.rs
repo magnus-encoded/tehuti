@@ -41,7 +41,10 @@ mod docs {
         let mut contexts = 0;
         for guide in [CONTEXT_GUIDE, PROTOCOL_GUIDE] {
             for block in blocks(guide, "toml") {
-                if block.contains("[[destinations]]") || block.contains("[[entry]]") {
+                if block.contains("[[destinations]]")
+                    || block.contains("[[entry]]")
+                    || block.contains("[remote]")
+                {
                     let _table: toml::Table =
                         block.parse().unwrap_or_else(|error| panic!("{error}\n{block}"));
                     continue;
