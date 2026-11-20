@@ -78,7 +78,9 @@ for line in sys.stdin:
                 _display: display,
             };
             harness.focus("chatty");
-            harness.pump_until("the sidecar is ready", |harness| harness.compositor.speech_ready());
+            harness.pump_until("the sidecar is ready", |harness| {
+                harness.compositor.speech_ready()
+            });
             harness
         }
 
