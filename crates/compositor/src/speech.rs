@@ -161,16 +161,15 @@ impl SpeechProcess {
     ) -> io::Result<()> {
         let value = match effect {
             SpeechEffect::Start { session } => {
-                let mut value = serde_json::json!({"start": session});
-                if let Some(fields) = value.as_object_mut() {
-                    if !prompt.is_empty() {
-                        fields.insert("prompt".into(), prompt.into());
-                    }
-                    if let Some(language) = language {
-                        fields.insert("language".into(), language.into());
-                    }
+                let mut fields = serde_json::Map::new();
+                fields.extend([("start".to_owned(), serde_json::json!(session))]);
+                if !prompt.is_empty() {
+                    fields.extend([("prompt".to_owned(), prompt.into())]);
                 }
-                value
+                if let Some(language) = language {
+                    fields.extend([("language".to_owned(), language.into())]);
+                }
+                serde_json::Value::Object(fields)
             }
             SpeechEffect::Stop { session, transcribe } => {
                 serde_json::json!({"stop": session, "transcribe": transcribe})
