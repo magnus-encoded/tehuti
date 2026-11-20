@@ -42,6 +42,11 @@ mod secret_service {
         OwnedObjectPath::try_from(path).expect("valid object path")
     }
 
+    fn assert_one_collection(objects: Vec<OwnedObjectPath>) {
+        let requested: [OwnedObjectPath; 1] = objects.try_into().expect("one object");
+        assert_eq!(requested[0].as_str(), COLLECTION_PATH);
+    }
+
     fn item_path(index: usize) -> String {
         format!("{COLLECTION_PATH}/{index}")
     }
@@ -78,7 +83,7 @@ mod secret_service {
         }
 
         fn unlock(&self, objects: Vec<OwnedObjectPath>) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
-            assert_eq!(objects.into_iter().count(), 1);
+            assert_one_collection(objects);
             self.0.with(|store| {
                 if store.needs_prompt {
                     (Vec::new(), object_path(PROMPT_PATH))
@@ -90,7 +95,7 @@ mod secret_service {
         }
 
         fn lock(&self, objects: Vec<OwnedObjectPath>) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
-            assert_eq!(objects.into_iter().count(), 1);
+            assert_one_collection(objects);
             self.0.with(|store| store.locked = true);
             (vec![object_path(COLLECTION_PATH)], object_path("/"))
         }
