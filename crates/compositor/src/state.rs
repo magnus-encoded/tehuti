@@ -201,6 +201,8 @@ pub struct Compositor {
     chord_buttons: Vec<tehuti_protocol::ButtonName>,
     virtual_pad_talk: Vec<tehuti_protocol::ButtonName>,
     display: DisplayHandle,
+    /// Commits held back because their client buffer is not ready yet.
+    waiting_buffers: crate::buffer_gate::Waiting,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -333,6 +335,7 @@ impl Compositor {
             _viewporter_state: ViewporterState::new::<Self>(display),
             _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
             dmabuf: crate::rendering::DmabufSupport::default(),
+            waiting_buffers: crate::buffer_gate::Waiting::default(),
             recording: None,
             recording_runtime: None,
             timeline_level: crate::timeline_level::TimelineLevel::default(),
@@ -969,12 +972,79 @@ impl Compositor {
         self.release_due_keys();
         self.keep_invitation();
         self.poll_recording();
+        self.release_ready_buffers();
         if let Some((status, due)) = self.exit_hold
             && Instant::now() >= due
         {
             self.exit_hold = None;
             self.leave_session(status);
         }
+    }
+
+    /// Lets held commits through once their client buffers became ready.
+    fn release_ready_buffers(&mut self) {
+        let display = self.display.clone();
+        for surface in self.waiting_buffers.take_ready(Instant::now()) {
+            let Some(client) = smithay::reexports::wayland_server::Resource::client(&surface) else {
+                continue;
+            };
+            let state = self.client_compositor_state(&client);
+            state.blocker_cleared(self, &display);
+        }
+    }
+
+    /// Weak handles to every held gate; test use, to check teardown dropped them.
+    #[must_use]
+    pub fn held_gate_probes(&self) -> Vec<std::sync::Weak<crate::buffer_gate::Gate>> {
+        self.waiting_buffers.gate_probes()
+    }
+
+    /// Commits whose client buffer is still not ready.
+    #[must_use]
+    pub fn buffers_waiting(&self) -> usize {
+        self.waiting_buffers.len()
+    }
+
+    /// Holds a commit until its dmabuf is ready; the surface keeps its last good buffer meanwhile.
+    fn gate_buffer(&mut self, surface: &WlSurface) {
+        use smithay::wayland::compositor::{BufferAssignment, SurfaceAttributes, add_blocker, with_states};
+        let Some(dmabuf) = with_states(surface, |states| {
+            let mut attributes = states.cached_state.get::<SurfaceAttributes>();
+            match &attributes.pending().buffer {
+                Some(BufferAssignment::NewBuffer(buffer)) => {
+                    smithay::wayland::dmabuf::get_dmabuf(buffer).ok().cloned()
+                }
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+        let name = with_states(surface, |states| {
+            states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .and_then(|attributes| {
+                    attributes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .app_id
+                        .clone()
+                })
+        })
+        .unwrap_or_else(|| "unnamed client".to_owned());
+        let gate = std::sync::Arc::new(crate::buffer_gate::Gate::new(
+            crate::buffer_gate::planes_of(&dmabuf),
+            name,
+            Instant::now(),
+        ));
+        if gate.ready(Instant::now()) {
+            return;
+        }
+        add_blocker(
+            surface,
+            crate::buffer_gate::BufferBlocker(std::sync::Arc::downgrade(&gate)),
+        );
+        self.waiting_buffers.hold(surface, gate);
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
@@ -3897,6 +3967,12 @@ impl CompositorHandler for Compositor {
     }
 
     fn new_surface(&mut self, surface: &WlSurface) {
+        let _hook = smithay::wayland::compositor::add_pre_commit_hook::<Self, _>(
+            surface,
+            |state, _display, surface| {
+                state.gate_buffer(surface);
+            },
+        );
         if let Some(output) = &self.output {
             Self::announce_scale(output, surface);
         }
