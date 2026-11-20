@@ -72,11 +72,13 @@ pub struct Stopwatch {
 }
 
 impl Stopwatch {
+    /// Starts timing now.
     pub fn start() -> Self {
         let now = Instant::now();
         Self { start: now, lap: now }
     }
 
+    /// Real time since [`Self::start`].
     pub fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }
@@ -128,7 +130,7 @@ pub fn pump_until(
     while !done(compositor) {
         assert!(
             began.elapsed() < SUBPROCESS_LIMIT,
-            "subprocess did not finish within {SUBPROCESS_LIMIT:?}"
+            "condition not met within {SUBPROCESS_LIMIT:?}"
         );
         event_loop.dispatch(POLL_STEP, compositor).unwrap();
     }

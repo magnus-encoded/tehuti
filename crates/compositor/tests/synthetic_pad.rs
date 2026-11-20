@@ -3730,16 +3730,20 @@ else:
             harness.client(move || run_client(client_end, "mgba-qt", ClientTextState::Absent, &sender));
         let mut pressed = false;
         let mut released = false;
-        harness.serve_turns(&mut display, &mut compositor, |compositor| {
-            if !pressed && receiver.try_recv().is_ok() {
-                compositor.handle(&Event::Button {
-                    name: ButtonName::South,
-                    state: ButtonState::Pressed,
-                });
-                pressed = true;
-                clock.advance(compositor, Duration::from_millis(101));
+        // Polled so a later turn comes even when the client sends nothing back.
+        harness.serve_polled(&mut display, &mut compositor, |compositor| {
+            if !pressed {
+                if receiver.try_recv().is_ok() {
+                    compositor.handle(&Event::Button {
+                        name: ButtonName::South,
+                        state: ButtonState::Pressed,
+                    });
+                    pressed = true;
+                    clock.advance(compositor, Duration::from_millis(101));
+                }
+                return false;
             }
-            if pressed && !released {
+            if !released {
                 assert!(
                     !worker.has_ended(),
                     "the client saw only the press while South was held"
