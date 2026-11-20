@@ -512,7 +512,7 @@ impl Settings {
                 }
             }
             CONTROLLER_SETTINGS_ROW => {
-                let Some(name) = self.input.selected_controller().map(|pad| pad.id.clone()) else {
+                let Some(name) = self.input.selected_controller().map(|pad| pad.key.clone()) else {
                     return;
                 };
                 match focus.col.checked_sub(1) {
@@ -595,7 +595,7 @@ impl Settings {
     }
 
     fn choose_talk(&mut self, option: Option<ButtonName>, effects: &mut Vec<Effect>) {
-        let Some(name) = self.input.selected_controller().map(|pad| pad.id.clone()) else {
+        let Some(name) = self.input.selected_controller().map(|pad| pad.key.clone()) else {
             return;
         };
         if self.input.talk_choice() == option {

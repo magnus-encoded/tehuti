@@ -422,7 +422,7 @@ impl InputSettings {
     #[must_use]
     pub fn talk_choice(&self) -> Option<tehuti_protocol::ButtonName> {
         self.selected_controller()
-            .and_then(|pad| self.pad_settings(&pad.id).push_to_talk)
+            .and_then(|pad| self.pad_settings(&pad.key).push_to_talk)
     }
 
     #[must_use]
