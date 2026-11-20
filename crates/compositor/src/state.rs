@@ -156,8 +156,6 @@ pub struct Compositor {
     context_files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>,
     speech_context: Option<String>,
     speech_resolver: Option<crate::speech::resolver_worker::Link>,
-    /// Set while a held utterance is routed again, so it is not held twice.
-    resolver_bypass: bool,
     speech_title: String,
     warned_hotwords: crate::speech_vocabulary::OverCapWarned,
     launch_socket: Option<std::ffi::OsString>,
@@ -328,7 +326,6 @@ impl Compositor {
             launch_socket: None,
             speech_context: None,
             speech_resolver: None,
-            resolver_bypass: false,
             speech_title: String::new(),
             warned_hotwords: crate::speech_vocabulary::OverCapWarned::default(),
             surfaces: CompositorState::new_v6::<Self>(display),
@@ -867,31 +864,25 @@ impl Compositor {
     /// Returns whether it was held.
     fn hold_for_resolver(&mut self, text: &tehuti_protocol::Text) -> bool {
         use crate::speech::resolver_worker::{Job, Waiting};
-        if self.resolver_bypass
-            || self.dispatch.keyboard().is_open()
-            || self.dispatch.keyboard().password_field_active()
-        {
-            return false;
-        }
-        let Some(link) = self.speech_resolver.as_ref() else {
-            return false;
-        };
-        if !link.opt_in.enabled() {
+        if self.dispatch.keyboard().is_open() || self.dispatch.keyboard().password_field_active() {
             return false;
         }
         let Some(commands) = self.dispatch.unmatched_speech_commands(text.as_str()) else {
             return false;
         };
-        let transcript = text.as_str().to_owned();
         let Some(link) = self.speech_resolver.as_mut() else {
             return false;
         };
-        let (id, superseded) = link.pending.begin(Waiting {
+        if link.rerouting || !link.opt_in.enabled() {
+            return false;
+        }
+        let transcript = text.as_str().to_owned();
+        let (number, superseded) = link.pending.begin(Waiting {
             transcript: transcript.clone(),
             commands: commands.clone(),
         });
         let queued = link.worker.submit(Job {
-            id,
+            number,
             transcript,
             commands,
         });
@@ -909,6 +900,12 @@ impl Compositor {
         true
     }
 
+    fn set_rerouting(&mut self, rerouting: bool) {
+        if let Some(link) = self.speech_resolver.as_mut() {
+            link.rerouting = rerouting;
+        }
+    }
+
     fn speech_resolver_abandon(&mut self) -> Option<crate::speech::resolver_worker::Waiting> {
         self.speech_resolver
             .as_mut()
@@ -922,9 +919,9 @@ impl Compositor {
         let Some(waiting) = self
             .speech_resolver
             .as_mut()
-            .and_then(|link| link.pending.finish(reply.id))
+            .and_then(|link| link.pending.finish(reply.number))
         else {
-            tracing::debug!(id = reply.id, "late speech resolver reply dropped");
+            tracing::debug!(number = reply.number, "late speech resolver reply dropped");
             return;
         };
         let resolution = resolve(
@@ -933,7 +930,7 @@ impl Compositor {
             reply.answer.as_ref(),
             Bands::default(),
         );
-        self.settle_turn(&waiting, reply.answer, resolution);
+        self.settle_turn(&waiting, reply.answer.as_ref(), resolution);
     }
 
     /// Logs the turn and routes what it became: a chosen command runs as if spoken;
@@ -941,15 +938,12 @@ impl Compositor {
     fn settle_turn(
         &mut self,
         waiting: &crate::speech::resolver_worker::Waiting,
-        answer: Option<tehuti_core::speech::resolver::Answer>,
+        answer: Option<&tehuti_core::speech::resolver::Answer>,
         resolution: tehuti_core::speech::resolver::Resolution,
     ) {
         use tehuti_core::speech::resolver::{Resolution, Turn};
         if let Some(log) = self.speech_resolver.as_ref().and_then(|link| link.log.as_ref())
-            && let Err(error) = log.append(
-                &Turn::new(&waiting.transcript, answer.as_ref(), &resolution),
-                false,
-            )
+            && let Err(error) = log.append(&Turn::new(&waiting.transcript, answer, &resolution), false)
         {
             tracing::warn!(%error, "speech turn log not written");
         }
@@ -958,9 +952,9 @@ impl Compositor {
             Resolution::Offer(_) | Resolution::Dictate => waiting.transcript.clone(),
         };
         if let Ok(text) = tehuti_protocol::Text::new(spoken) {
-            self.resolver_bypass = true;
+            self.set_rerouting(true);
             self.handle(&Event::Speech { text });
-            self.resolver_bypass = false;
+            self.set_rerouting(false);
         }
     }
 

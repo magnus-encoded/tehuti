@@ -70,7 +70,7 @@ mod tests {
             .unwrap();
         let started = Instant::now();
         assert!(worker.submit(Job {
-            id: 1,
+            number: 1,
             transcript: "slow words".into(),
             commands: vec!["mute".into(), "pause".into()],
         }));
@@ -139,12 +139,11 @@ mod tests {
         opt_in.set(true).unwrap();
         let log_path = directory.path().join("turns.jsonl");
         let (worker, receiver) = worker_into(vec![("first", Duration::from_millis(400))]);
-        compositor.set_speech_resolver(Link {
+        compositor.set_speech_resolver(Link::new(
             worker,
-            pending: Pending::default(),
             opt_in,
-            log: Some(TurnLog::stored_at(log_path.clone())),
-        });
+            Some(TurnLog::stored_at(log_path.clone())),
+        ));
         let mut event_loop: EventLoop<Compositor> = EventLoop::try_new().unwrap();
         let _token = event_loop
             .handle()
@@ -211,12 +210,11 @@ mod tests {
             title: String::new(),
         });
         let (worker, _receiver) = worker_into(Vec::new());
-        compositor.set_speech_resolver(Link {
+        compositor.set_speech_resolver(Link::new(
             worker,
-            pending: Pending::default(),
-            opt_in: OptIn::stored_at(Store::new(directory.path().join("opt-in"))),
-            log: None,
-        });
+            OptIn::stored_at(Store::new(directory.path().join("opt-in"))),
+            None,
+        ));
         compositor.handle(&Event::Speech {
             text: tehuti_protocol::Text::new("unknown words".into()).unwrap(),
         });
@@ -232,7 +230,7 @@ mod tests {
 
     #[test]
     fn a_missing_curl_fails_the_post_and_reports_unavailable() {
-        let curl = Curl::at("/nonexistent/curl".into());
+        let curl = Curl::program_at("/nonexistent/curl".into());
         assert!(!curl.available());
         let error = curl.post(&key().unwrap(), "{}", DEADLINE).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
@@ -242,7 +240,7 @@ mod tests {
     #[test]
     fn curl_that_outlives_the_deadline_is_killed() {
         let directory = tempfile::tempdir().unwrap();
-        let curl = Curl::at(script(directory.path(), "exec sleep 30"));
+        let curl = Curl::program_at(script(directory.path(), "exec sleep 30"));
         let started = Instant::now();
         let error = curl
             .post(&key().unwrap(), "{}", Duration::from_millis(100))
@@ -265,7 +263,9 @@ mod tests {
                 arguments.display()
             ),
         );
-        let reply = Curl::at(program).post(&key().unwrap(), "{}", DEADLINE).unwrap();
+        let reply = Curl::program_at(program)
+            .post(&key().unwrap(), "{}", DEADLINE)
+            .unwrap();
         assert_eq!(reply.trim(), "{}");
         let seen = std::fs::read_to_string(arguments).unwrap();
         assert_eq!(

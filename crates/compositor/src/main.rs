@@ -972,7 +972,7 @@ fn insert_applications_watch(
 fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor: &mut Compositor) {
     use tehuti::speech::{
         resolver::{ApiKey, Curl, OptIn, Resolver, TurnLog},
-        resolver_worker::{Link, Pending, Worker},
+        resolver_worker::{Link, Worker},
     };
     let Some(key) = ApiKey::from_env() else {
         return;
@@ -998,12 +998,7 @@ fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor
     match Worker::spawn(Resolver::new(transport, Some(key)), move |reply| {
         sender.send(reply).is_ok()
     }) {
-        Ok(worker) => compositor.set_speech_resolver(Link {
-            worker,
-            pending: Pending::default(),
-            opt_in,
-            log: TurnLog::from_env().ok(),
-        }),
+        Ok(worker) => compositor.set_speech_resolver(Link::new(worker, opt_in, TurnLog::from_env().ok())),
         Err(error) => warn!(%error, "speech resolver unavailable"),
     }
 }

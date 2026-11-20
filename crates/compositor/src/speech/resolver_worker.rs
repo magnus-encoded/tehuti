@@ -14,7 +14,7 @@ use super::resolver::{Resolver, Transport};
 /// One question for the model.
 #[derive(Debug)]
 pub struct Job {
-    pub id: u64,
+    pub number: u64,
     pub transcript: String,
     pub commands: Vec<String>,
 }
@@ -22,7 +22,7 @@ pub struct Job {
 /// The model's answer to one job; `None` when it failed, was refused or ran late.
 #[derive(Debug)]
 pub struct Reply {
-    pub id: u64,
+    pub number: u64,
     pub answer: Option<Answer>,
 }
 
@@ -49,7 +49,10 @@ impl Worker {
             .spawn(move || {
                 for job in queue {
                     let answer = resolver.ask(true, &job.transcript, &job.commands);
-                    if !deliver(Reply { id: job.id, answer }) {
+                    if !deliver(Reply {
+                        number: job.number,
+                        answer,
+                    }) {
                         return;
                     }
                 }
@@ -79,7 +82,7 @@ pub struct Pending {
 }
 
 impl Pending {
-    /// Starts waiting on a new utterance. Returns its job id and the utterance it
+    /// Starts waiting on a new utterance. Returns its job number and the utterance it
     /// superseded, whose answer will now be dropped.
     pub fn begin(&mut self, waiting: Waiting) -> (u64, Option<Waiting>) {
         self.next = self.next.wrapping_add(1);
@@ -89,8 +92,12 @@ impl Pending {
 
     /// The utterance a reply belongs to; `None` when the reply is late for a superseded
     /// or already finished utterance.
-    pub fn finish(&mut self, id: u64) -> Option<Waiting> {
-        if self.waiting.as_ref().is_some_and(|(current, _)| *current == id) {
+    pub fn finish(&mut self, number: u64) -> Option<Waiting> {
+        if self
+            .waiting
+            .as_ref()
+            .is_some_and(|(current, _)| *current == number)
+        {
             self.waiting.take().map(|(_, waiting)| waiting)
         } else {
             None
@@ -111,8 +118,27 @@ impl Pending {
 /// Everything the compositor needs to hold an unmatched utterance for the model.
 #[derive(Debug)]
 pub struct Link {
-    pub worker: Worker,
-    pub pending: Pending,
-    pub opt_in: super::resolver::OptIn,
-    pub log: Option<super::resolver::TurnLog>,
+    pub(crate) worker: Worker,
+    pub(crate) pending: Pending,
+    pub(crate) opt_in: super::resolver::OptIn,
+    pub(crate) log: Option<super::resolver::TurnLog>,
+    /// Set while a held utterance is routed again, so it is not held twice.
+    pub(crate) rerouting: bool,
+}
+
+impl Link {
+    #[must_use]
+    pub fn new(
+        worker: Worker,
+        opt_in: super::resolver::OptIn,
+        log: Option<super::resolver::TurnLog>,
+    ) -> Self {
+        Self {
+            worker,
+            pending: Pending::default(),
+            opt_in,
+            log,
+            rerouting: false,
+        }
+    }
 }

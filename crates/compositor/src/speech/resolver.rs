@@ -189,7 +189,7 @@ pub struct Curl {
 
 impl Default for Curl {
     fn default() -> Self {
-        Self::at("curl".into())
+        Self::program_at("curl".into())
     }
 }
 
@@ -198,7 +198,7 @@ impl Curl {
     pub const PACKAGE: &'static str = "curl";
 
     #[must_use]
-    pub const fn at(program: PathBuf) -> Self {
+    pub const fn program_at(program: PathBuf) -> Self {
         Self { program }
     }
 
