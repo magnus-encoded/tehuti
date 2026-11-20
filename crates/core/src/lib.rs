@@ -777,6 +777,51 @@ fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
         .map(|slash| vec![Action::Text { text: slash }])
 }
 
+const NO_MAPPING_NOTICE: &str = "NO SPEECH MAPPING";
+
+/// The mapped phrases a model may choose from for a phrase that matches nothing.
+///
+/// These are the focused and global contexts' phrases, once each. `None` when a
+/// mapping, built-in or fuzzy match takes the phrase.
+#[must_use]
+pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<String>> {
+    if phrase.trim().is_empty() {
+        return None;
+    }
+    let focused = focused_context(state);
+    let global = global_context(state);
+    if [focused, global]
+        .into_iter()
+        .flatten()
+        .any(|context| maps_phrase(context, phrase))
+    {
+        return None;
+    }
+    let action = route_speech(focused, global, phrase)?;
+    let fell_through = if let Action::Notice { text } = &action {
+        text.as_str() == NO_MAPPING_NOTICE
+    } else {
+        [focused, global]
+            .into_iter()
+            .flatten()
+            .any(|context| context.unmatched_speech_action(phrase).as_ref() == Some(&action))
+    };
+    if !fell_through {
+        return None;
+    }
+    let mut commands: Vec<String> = Vec::new();
+    for context in [focused, global].into_iter().flatten() {
+        for (_, candidate) in context.speech_candidates() {
+            let mapped = candidate.phrase.to_owned();
+            if !commands.contains(&mapped) {
+                commands.push(mapped);
+            }
+        }
+    }
+    commands.sort();
+    (!commands.is_empty()).then_some(commands)
+}
+
 /// Every exact match in chain order, then the built-in close, then folded
 /// matches, then plurals, then prefix rules, then fuzzy, then unmatched dictation.
 fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
@@ -793,7 +838,7 @@ fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &st
         .or_else(|| focused.and_then(|context| context.unmatched_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.unmatched_speech_action(phrase)))
         .or_else(|| {
-            tehuti_protocol::Text::new("NO SPEECH MAPPING".into())
+            tehuti_protocol::Text::new(NO_MAPPING_NOTICE.into())
                 .ok()
                 .map(|notice| Action::Notice { text: notice })
         })

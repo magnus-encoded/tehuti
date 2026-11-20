@@ -155,6 +155,7 @@ pub struct Compositor {
     /// Each installed context with its file, so a broken edit keeps the last good version.
     context_files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>,
     speech_context: Option<String>,
+    speech_resolver: Option<crate::speech::resolver_worker::Link>,
     speech_title: String,
     warned_hotwords: crate::speech_vocabulary::OverCapWarned,
     launch_socket: Option<std::ffi::OsString>,
@@ -324,6 +325,7 @@ impl Compositor {
             placement: crate::window_placement::Placement::new(),
             launch_socket: None,
             speech_context: None,
+            speech_resolver: None,
             speech_title: String::new(),
             warned_hotwords: crate::speech_vocabulary::OverCapWarned::default(),
             surfaces: CompositorState::new_v6::<Self>(display),
@@ -845,6 +847,158 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Speech(input));
     }
 
+    /// Installs the speech resolver; unmatched transcripts then wait for its answer.
+    pub fn set_speech_resolver(&mut self, link: crate::speech::resolver_worker::Link) {
+        self.speech_resolver = Some(link);
+    }
+
+    /// Whether an utterance is waiting for the resolver's answer.
+    #[must_use]
+    pub fn speech_resolver_waiting(&self) -> bool {
+        self.speech_resolver
+            .as_ref()
+            .is_some_and(|link| link.pending.is_waiting())
+    }
+
+    /// Holds a transcript that matches nothing while the model answers off the loop.
+    /// Returns whether it was held.
+    fn hold_for_resolver(&mut self, event: &Event) -> bool {
+        use crate::speech::resolver_worker::{Job, Waiting};
+        let Event::Speech { text } = event else {
+            return false;
+        };
+        if self.dispatch.keyboard().is_open() || self.dispatch.keyboard().password_field_active() {
+            return false;
+        }
+        let Some(commands) = self.dispatch.unmatched_speech_commands(text.as_str()) else {
+            return false;
+        };
+        let target = self.speech_context.clone();
+        let Some(link) = self.speech_resolver.as_mut() else {
+            return false;
+        };
+        if link.rerouting || !link.opt_in.enabled() {
+            return false;
+        }
+        let transcript = text.as_str().to_owned();
+        let (number, superseded) = link.pending.begin(Waiting {
+            transcript: transcript.clone(),
+            target,
+            commands: commands.clone(),
+        });
+        let queued = link.worker.submit(Job {
+            number,
+            transcript,
+            commands,
+        });
+        if let Some(older) = superseded {
+            self.settle_turn(&older, None, tehuti_core::speech::resolver::Resolution::Dictate);
+        }
+        if !queued {
+            tracing::warn!("speech resolver stopped; dictating as before");
+            let held = self.speech_resolver_abandon();
+            self.speech_resolver = None;
+            if let Some(held) = held {
+                self.settle_turn(&held, None, tehuti_core::speech::resolver::Resolution::Dictate);
+            }
+        }
+        true
+    }
+
+    const fn set_rerouting(&mut self, rerouting: bool) {
+        if let Some(link) = self.speech_resolver.as_mut() {
+            link.rerouting = rerouting;
+        }
+    }
+
+    /// Dictates the held utterance when the resolver has not answered within `limit`.
+    pub fn abandon_stale_resolver(&mut self, now: std::time::Instant, limit: core::time::Duration) {
+        let stale = self
+            .speech_resolver
+            .as_mut()
+            .and_then(|link| link.pending.stale(now, limit));
+        if let Some(held) = stale {
+            tracing::warn!("speech resolver gave no answer in time; dictating as before");
+            self.settle_turn(&held, None, tehuti_core::speech::resolver::Resolution::Dictate);
+        }
+    }
+
+    /// Dictates the held utterance now, before a later event is routed behind it.
+    fn flush_held_utterance(&mut self) {
+        let held = self
+            .speech_resolver
+            .as_mut()
+            .filter(|link| !link.rerouting)
+            .and_then(|link| link.pending.abandon());
+        if let Some(held) = held {
+            self.settle_turn(&held, None, tehuti_core::speech::resolver::Resolution::Dictate);
+        }
+    }
+
+    fn speech_resolver_abandon(&mut self) -> Option<crate::speech::resolver_worker::Waiting> {
+        self.speech_resolver
+            .as_mut()
+            .and_then(|link| link.pending.abandon())
+    }
+
+    /// Takes the resolver's reply back on the loop. A reply for an utterance that a
+    /// newer one superseded is dropped.
+    pub fn resolver_replied(&mut self, reply: &crate::speech::resolver_worker::Reply) {
+        use tehuti_core::speech::resolver::{Bands, resolve};
+        let Some(waiting) = self
+            .speech_resolver
+            .as_mut()
+            .and_then(|link| link.pending.finish(reply.number))
+        else {
+            tracing::debug!(number = reply.number, "late speech resolver reply dropped");
+            return;
+        };
+        let resolution = resolve(
+            &waiting.transcript,
+            &waiting.commands,
+            reply.answer.as_ref(),
+            Bands::default(),
+        );
+        self.settle_turn(&waiting, reply.answer.as_ref(), resolution);
+    }
+
+    /// Logs the turn and routes what it became: a chosen command runs as if spoken;
+    /// anything else is routed as the original transcript.
+    fn settle_turn(
+        &mut self,
+        waiting: &crate::speech::resolver_worker::Waiting,
+        answer: Option<&tehuti_core::speech::resolver::Answer>,
+        resolution: tehuti_core::speech::resolver::Resolution,
+    ) {
+        use tehuti_core::speech::resolver::{Resolution, Turn};
+        if let Some(log) = self.speech_resolver.as_ref().and_then(|link| link.log.as_ref())
+            && let Err(error) = log.append(&Turn::new(&waiting.transcript, answer, &resolution), false)
+        {
+            tracing::warn!(%error, "speech turn log not written");
+        }
+        if self.speech_context != waiting.target {
+            tracing::warn!("focus moved while speech was held; the utterance is discarded");
+            return;
+        }
+        let spoken = match resolution {
+            Resolution::Run(command) => command,
+            Resolution::Offer(_) | Resolution::Dictate => waiting.transcript.clone(),
+        };
+        if let Ok(text) = tehuti_protocol::Text::new(spoken) {
+            self.set_rerouting(true);
+            self.handle(&Event::Speech { text });
+            self.set_rerouting(false);
+        }
+    }
+
+    /// The focused window retitled: a held utterance dictates first, still to this application.
+    pub fn focused_title_changed(&mut self, app_id: Option<String>, title: String) {
+        self.flush_held_utterance();
+        self.speech_title.clone_from(&title);
+        let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
+        self.refresh_speech_vocabulary();
+    }
+
     /// Routes a typed phrase through the same event path as an admitted transcript.
     pub fn say(&mut self, text: tehuti_protocol::Text) {
         tracing::info!(bytes = text.as_str().len(), "speech transcript received");
@@ -1302,6 +1456,9 @@ impl Compositor {
             self.save_destination(name.trim().trim_end_matches(['.', '!', '?']));
             return;
         }
+        if self.hold_for_resolver(event) {
+            return;
+        }
         let since_tick = if matches!(event, Event::Focus { .. }) {
             core::time::Duration::ZERO
         } else {
@@ -1365,6 +1522,13 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        // A held utterance dictates before any input but time, sticks and the sidecar's own feed.
+        if !matches!(
+            input,
+            DispatchInput::Tick { .. } | DispatchInput::Sticks(_) | DispatchInput::Speech(_)
+        ) {
+            self.flush_held_utterance();
+        }
         // Loop ticks are not timeline events; sticks are sampled once per video frame.
         if let DispatchInput::Sticks(sticks) = &input {
             let now = [sticks.left.0, sticks.left.1, sticks.right.0, sticks.right.1];
@@ -4188,9 +4352,7 @@ impl XdgShellHandler for Compositor {
         }
         self.sync_destination_windows();
         if let Some(Event::Focus { app_id, title }) = self.focus_event(&surface) {
-            self.speech_title.clone_from(&title);
-            let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
-            self.refresh_speech_vocabulary();
+            self.focused_title_changed(app_id, title);
         }
     }
 

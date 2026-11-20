@@ -484,6 +484,7 @@ fn start_session(
 
     let applications_watch = insert_applications_watch(&event_loop, &compositor.destination_paths().data);
     let menu_watch = insert_menu_watch(&event_loop);
+    install_speech_resolver(&event_loop, &mut compositor);
     let mut data = LoopData {
         applications_watch,
         menu_watch,
@@ -963,6 +964,56 @@ fn insert_applications_watch(
         |error| warn!(%error, "applications watch unavailable; desktop entries reload only on restart"),
     )
     .ok()
+}
+
+/// Starts the speech resolver when a key is set and curl exists. The worker thread posts;
+/// its replies come back through a channel the loop drains.
+fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor: &mut Compositor) {
+    use tehuti::speech::{
+        resolver::{ApiKey, Curl, OptIn, Resolver, TurnLog},
+        resolver_worker::{Link, Worker},
+    };
+    let Some(key) = ApiKey::from_env() else {
+        return;
+    };
+    let transport = Curl::default();
+    if !transport.available() {
+        return;
+    }
+    let Ok(opt_in) = OptIn::from_env() else {
+        return;
+    };
+    let (sender, receiver) = calloop::channel::channel();
+    let inserted = event_loop.handle().insert_source(receiver, |event, (), data| {
+        if let calloop::channel::Event::Msg(reply) = event {
+            data.compositor.resolver_replied(&reply);
+            data.pacing.input_arrived = true;
+        }
+    });
+    if let Err(error) = inserted {
+        warn!(%error, "speech resolver unavailable");
+        return;
+    }
+    let sweep = event_loop.handle().insert_source(
+        calloop::timer::Timer::from_duration(Duration::from_millis(250)),
+        |_, (), data| {
+            data.compositor.abandon_stale_resolver(
+                std::time::Instant::now(),
+                tehuti::speech::resolver_worker::HELD_LIMIT,
+            );
+            calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(250))
+        },
+    );
+    if let Err(error) = sweep {
+        warn!(%error, "speech resolver unavailable");
+        return;
+    }
+    match Worker::spawn(Resolver::new(transport, Some(key)), move |reply| {
+        sender.send(reply).is_ok()
+    }) {
+        Ok(worker) => compositor.set_speech_resolver(Link::new(worker, opt_in, TurnLog::from_env().ok())),
+        Err(error) => warn!(%error, "speech resolver unavailable"),
+    }
 }
 
 /// Watches the menu config; a failure leaves the menu loaded until restart.

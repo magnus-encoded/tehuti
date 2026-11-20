@@ -123,4 +123,67 @@ mod speech_resolver {
             CANCEL_WINDOW.saturating_add(core::time::Duration::from_millis(1))
         ));
     }
+
+    mod fall_through {
+        use core::fmt::Write as _;
+
+        use proptest::prelude::*;
+        use tehuti_core::{State, step, unmatched_speech_commands};
+        use tehuti_protocol::{Event, parse_context};
+
+        fn focused(phrases: &[String], unmatched: bool) -> State {
+            let mut source = String::from("app_id = 'editor'\n");
+            if unmatched {
+                source.push_str("unmatched_speech = 'type'\n");
+            }
+            source.push_str("[buttons]\n[speech]\n");
+            for phrase in phrases {
+                writeln!(source, "'{phrase}' = {{ notify = 'ok' }}").unwrap();
+            }
+            let state = State::with_contexts(vec![parse_context(&source).unwrap()]);
+            step(
+                state,
+                &Event::Focus {
+                    app_id: Some("editor".into()),
+                    title: String::new(),
+                },
+            )
+            .0
+        }
+
+        proptest! {
+            #[test]
+            fn a_mapped_phrase_never_goes_to_the_model(
+                phrases in proptest::collection::hash_set("[a-z]{4,8}", 1..6),
+                unmatched in any::<bool>(),
+            ) {
+                let phrases: Vec<String> = phrases.into_iter().collect();
+                let state = focused(&phrases, unmatched);
+                for phrase in &phrases {
+                    prop_assert_eq!(unmatched_speech_commands(&state, phrase), None);
+                }
+            }
+
+            #[test]
+            fn an_unknown_phrase_offers_every_mapped_phrase_once(
+                phrases in proptest::collection::hash_set("[a-z]{4,8}", 1..6),
+                unmatched in any::<bool>(),
+            ) {
+                let phrases: Vec<String> = phrases.into_iter().collect();
+                let state = focused(&phrases, unmatched);
+                let offered = unmatched_speech_commands(&state, "ZZZ 123 unlisted").unwrap();
+                let mut expected = phrases;
+                expected.sort();
+                prop_assert_eq!(offered, expected);
+            }
+        }
+
+        #[test]
+        fn nothing_is_offered_when_no_phrase_is_mapped() {
+            assert_eq!(
+                unmatched_speech_commands(&focused(&[], true), "hello there"),
+                None
+            );
+        }
+    }
 }
