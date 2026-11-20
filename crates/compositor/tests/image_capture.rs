@@ -522,7 +522,10 @@ mod image_capture {
     fn a_client_cannot_hold_more_sessions_than_the_cap() {
         let report = run(Plan::FloodSessions, |_| {});
         assert_eq!(report.announced, MAX_SESSIONS_PER_CLIENT, "{report:?}");
-        assert_eq!(report.stopped_count, 1, "the excess session is stopped: {report:?}");
+        assert_eq!(
+            report.stopped_count, 1,
+            "the excess session is stopped: {report:?}"
+        );
     }
 
     #[test]

@@ -163,7 +163,9 @@ pub const MAX_SOURCES_PER_CLIENT: usize = 16;
 
 fn held_by<T: Resource>(held: &[T], client: &Client) -> usize {
     held.iter()
-        .filter(|resource| resource.is_alive() && resource.client().is_some_and(|owner| owner.id() == client.id()))
+        .filter(|resource| {
+            resource.is_alive() && resource.client().is_some_and(|owner| owner.id() == client.id())
+        })
         .count()
 }
 
