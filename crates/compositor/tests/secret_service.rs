@@ -191,11 +191,16 @@ mod secret_service {
                         .serve_at(item_path(index), FakeItem(shared.clone(), index))
                         .expect("serve item");
                 }
+            } else {
+                builder = builder
+                    .serve_at("/unrelated", FakePrompt(shared.clone()))
+                    .expect("serve unrelated object");
             }
             builder.build().expect("server connection")
         });
         let client = Builder::unix_stream(client_stream)
             .p2p()
+            .method_timeout(Duration::from_secs(10))
             .build()
             .expect("client connection");
         let server = serving.join().expect("server thread");
