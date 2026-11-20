@@ -1,7 +1,7 @@
 //! The winit backend: a window in the host desktop that Tehuti renders its output into.
 //! Host keyboard input on this window goes to the focused client; host pointer input is ignored.
 
-use core::{cell::RefCell, error::Error, time::Duration};
+use core::{cell::RefCell, error::Error};
 use std::rc::Rc;
 
 use smithay::{
@@ -143,74 +143,53 @@ impl Nested {
 
     fn redraw(&mut self, data: &mut LoopData) {
         let size = self.backend.borrow().window_size();
-        self.render_frame(data, size);
-        let elapsed = data.compositor.start_time.elapsed();
-        let output = &self.output;
-        for window in data.compositor.space.elements() {
-            window.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| Some(output.clone()));
-        }
-        data.compositor.space.refresh();
-        if let Err(error) = data.display.flush_clients() {
+        let notice_drawn = self.render_frame(data, size);
+        if let Err(error) = data
+            .compositor
+            .frame_done(&self.output, &mut data.display, notice_drawn, true)
+        {
             warn!(%error, "flush failed");
         }
         self.backend.borrow().window().request_redraw();
     }
 
+    /// Whether the submitted frame drew a notice.
     fn render_frame(
         &mut self,
-        data: &mut LoopData,
+        data: &LoopData,
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
-    ) {
-        let confirmation_pending = data.compositor.secret_confirmation_text().is_some();
-        let (confirmation_element_included, output_drew) = self.draw_bound_output(data, confirmation_pending);
-        let submit_succeeded = match self
+    ) -> bool {
+        let notice_drawn = match self.backend.borrow_mut().bind() {
+            Ok((renderer, mut framebuffer)) => {
+                let mut surface = tehuti::frame::Surface {
+                    output: &self.output,
+                    overlays: &mut self.overlays,
+                    damage: &mut self.damage_tracker,
+                    age: 0,
+                };
+                match data.compositor.frame(renderer, &mut framebuffer, &mut surface) {
+                    Ok(frame) => frame.drew && frame.notice_included,
+                    Err(error) => {
+                        warn!(?error, "render failed");
+                        false
+                    }
+                }
+            }
+            Err(error) => {
+                warn!(?error, "bind failed");
+                false
+            }
+        };
+        match self
             .backend
             .borrow_mut()
             .submit(Some(&[Rectangle::from_size(size)]))
         {
-            Ok(()) => true,
+            Ok(()) => notice_drawn,
             Err(error) => {
                 warn!(?error, "submit failed");
                 false
             }
-        };
-        if confirmation_element_included && output_drew && submit_succeeded {
-            data.compositor.note_secret_confirmation_frame_submitted();
         }
-    }
-
-    fn draw_bound_output(&mut self, data: &LoopData, confirmation_pending: bool) -> (bool, bool) {
-        let mut output_drew = false;
-        let mut confirmation_element_included = false;
-        match self.backend.borrow_mut().bind() {
-            Ok((renderer, mut framebuffer)) => {
-                let clock = chrono::Local::now().format("%H:%M").to_string();
-                let overlays = match self
-                    .overlays
-                    .elements(renderer, &self.output, &data.compositor, &clock)
-                {
-                    Ok(overlays) => overlays,
-                    Err(error) => {
-                        warn!(?error, "overlay render failed");
-                        return (false, false);
-                    }
-                };
-                confirmation_element_included = confirmation_pending && overlays.notice_included;
-                match tehuti::wallpaper::render_output(
-                    &self.output,
-                    renderer,
-                    &mut framebuffer,
-                    &data.compositor,
-                    &overlays.elements,
-                    &mut self.damage_tracker,
-                ) {
-                    Ok(result) if result.damage.is_some() => output_drew = true,
-                    Ok(_) => {}
-                    Err(error) => warn!(?error, "render failed"),
-                }
-            }
-            Err(error) => warn!(?error, "bind failed"),
-        }
-        (confirmation_element_included, output_drew)
     }
 }
