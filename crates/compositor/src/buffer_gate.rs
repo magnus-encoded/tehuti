@@ -124,7 +124,9 @@ impl Held {
     }
 }
 
-/// The surfaces that hold gates, one entry per surface. The surface is held weakly. The
+/// The surfaces that hold gates, one entry per surface.
+///
+/// The surface is held weakly. The
 /// gates live here rather than in the surface's data: a stray handle can keep a destroyed
 /// surface's data alive, and the gates must still go.
 #[derive(Debug, Default)]
