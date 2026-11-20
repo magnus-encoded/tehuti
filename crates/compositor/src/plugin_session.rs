@@ -18,6 +18,49 @@ pub const HANG_TIMEOUT: Duration = Duration::from_secs(2);
 pub const INVALID_MESSAGE_LIMIT: usize = 16;
 pub const FLOOD_WINDOW: Duration = Duration::from_secs(1);
 pub const FLOOD_BYTES: usize = 262_144;
+pub const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
+pub const RESTART_BACKOFF_CAP: Duration = Duration::from_secs(30);
+pub const RESTART_BACKOFF_RESET: Duration = Duration::from_secs(30);
+
+/// When a plugin may be started again, and how long the next wait is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Backoff {
+    pub at: Option<Instant>,
+    pub delay: Duration,
+}
+
+impl Backoff {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            at: None,
+            delay: RESTART_BACKOFF_BASE,
+        }
+    }
+
+    /// Whether a start is allowed at `now`.
+    #[must_use]
+    pub fn due(&self, now: Instant) -> bool {
+        self.at.is_none_or(|deadline| now >= deadline)
+    }
+
+    /// Records that a start is being made.
+    pub const fn started(&mut self) {
+        self.at = None;
+    }
+
+    /// Schedules the next start after the current delay, then doubles the delay up to the cap.
+    pub fn schedule(&mut self, now: Instant) {
+        self.at = now.checked_add(self.delay);
+        self.delay = self.delay.saturating_mul(2).min(RESTART_BACKOFF_CAP);
+    }
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// What a session hands the compositor after reading plugin output.
 #[derive(Debug)]
@@ -166,6 +209,25 @@ impl Session {
         if self.missed_decisions >= 3 {
             self.fail("three consecutive plugin decisions missed");
         }
+    }
+
+    /// One supervision tick: expires deadlines, applies a child exit (`exit`, the reason the
+    /// adapter found), and resets `backoff` once the session has stayed healthy long enough.
+    /// Returns whether the session has failed and must be replaced.
+    pub fn supervise_child(&mut self, now: Instant, exit: Option<&str>, backoff: &mut Backoff) -> bool {
+        self.supervise(now);
+        if let Some(reason) = exit {
+            self.fail(reason);
+        }
+        if self.status != Status::Failed
+            && self
+                .healthy_since
+                .is_some_and(|since| now.duration_since(since) >= RESTART_BACKOFF_RESET)
+        {
+            backoff.delay = RESTART_BACKOFF_BASE;
+            self.invalid_messages = 0;
+        }
+        self.status == Status::Failed
     }
 
     /// Whether the manifest lists this application; focus notices go to no other plugin.
@@ -632,6 +694,46 @@ mod tests {
             session.supervise(after(start, HANG_TIMEOUT.saturating_add(Duration::from_millis(late))));
             prop_assert_eq!(session.status, Status::Failed);
         }
+    }
+
+    #[test]
+    fn the_button_limit_is_shorter_than_the_speech_limit() {
+        assert!(tehuti_core::plugin::BUTTON_BUDGET < tehuti_core::plugin::SPEECH_BUDGET);
+        let start = Instant::now();
+        let mut session = ready(start);
+        let button = call(&mut session, true, start);
+        let speech = call(&mut session, false, start);
+        session.supervise(after(start, tehuti_core::plugin::BUTTON_BUDGET));
+        assert!(!session.pending.contains_key(&button), "button expired first");
+        assert!(session.pending.contains_key(&speech), "speech still waiting");
+    }
+
+    #[test]
+    fn a_late_reply_is_dropped() {
+        let start = Instant::now();
+        let mut session = ready(start);
+        let request_id = call(&mut session, true, start);
+        let late = after(start, tehuti_core::plugin::BUTTON_BUDGET);
+        session.supervise(late);
+        let line = format!("{{\"jsonrpc\":\"2.0\",\"id\":{request_id},\"result\":{{\"actions\":[]}}}}\n");
+        let _deliveries = session.receive(line.as_bytes(), late);
+        assert_eq!(session.missed_decisions, 1, "the miss stands; the late reply does not clear it");
+    }
+
+    #[test]
+    fn backoff_doubles_to_the_cap_and_resets_when_healthy() {
+        let now = Instant::now();
+        let mut backoff = Backoff::new();
+        for _ in 0..20 {
+            backoff.schedule(now);
+        }
+        assert_eq!(backoff.delay, RESTART_BACKOFF_CAP);
+        let mut session = ready(now);
+        session.healthy_since = Some(now);
+        let healthy = after(now, RESTART_BACKOFF_RESET);
+        assert!(!session.supervise_child(healthy, None, &mut backoff));
+        assert_eq!(backoff.delay, RESTART_BACKOFF_BASE);
+        assert!(session.supervise_child(healthy, Some("exited"), &mut backoff));
     }
 
     #[test]
