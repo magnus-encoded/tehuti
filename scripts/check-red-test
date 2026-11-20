@@ -60,6 +60,12 @@ if [ "${#sources[@]}" -eq 0 ]; then
     echo "check-red-test: the PR changes no source file under crates/*/src; skipping."
     exit 0
 fi
+jq=${JQ:-jq}
+if ! command -v "$jq" >/dev/null 2>&1; then
+    echo "check-red-test: jq is required to read cargo's JSON diagnostics but was not found." >&2
+    exit 1
+fi
+allowed=$(mktemp)
 trap 'git checkout -q HEAD -- "${sources[@]}"' EXIT
 for file in "${sources[@]}"; do
     if ! git cat-file -e "$base:$file" 2>/dev/null; then continue; fi
@@ -71,6 +77,8 @@ for file in "${sources[@]}"; do
         { if [ "$base_start" -gt 0 ]; then head -n $((base_start - 1)) "$file.base"; else cat "$file.base"; fi
           tail -n +"$head_start" "$file"; } >"$file.mixed"
         mv "$file.mixed" "$file"
+        # The module starts where the base's test module did, in the mixed file.
+        printf '%s\t%s\n' "$file" "$(test_start <"$file")" >>"$allowed"
     else
         cp "$file.base" "$file"
     fi
@@ -87,14 +95,9 @@ if XKB_DEFAULT_LAYOUT=us "$cargo" test --workspace --locked --message-format=jso
 fi
 cat "$log" "$errlog"
 # Where the PR's own tests live: "file first-line" pairs. A build error there is the PR's test using new API.
-allowed=$(mktemp)
-for file in ${tests[@]+"${tests[@]}"}; do printf '%s\t1\n' "$file"; done >"$allowed"
-for file in ${sources[@]+"${sources[@]}"}; do
-    start=$(test_start <"$file")
-    [ "$start" -gt 0 ] && printf '%s\t%s\n' "$file" "$start"
-done >>"$allowed" || true
+for file in ${tests[@]+"${tests[@]}"}; do printf '%s\t1\n' "$file"; done >>"$allowed"
 # One line per compiler error: "ok" when it is a new-API error inside the PR's tests, "bad <code> <message>" otherwise.
-verdict=$(jq -rR --rawfile allowed "$allowed" '
+verdict=$("$jq" -rR --rawfile allowed "$allowed" '
     ($allowed | split("\n") | map(select(. != "") | split("\t") | {f: .[0], s: (.[1] | tonumber)})) as $ok
     | fromjson? | select(.reason == "compiler-message") | .message
     | select(.level == "error" and ((.spans | length) > 0 or (.message | test("^(aborting due to|could not compile)") | not)))
@@ -103,6 +106,10 @@ verdict=$(jq -rR --rawfile allowed "$allowed" '
     | if ($c | IN("E0432", "E0433", "E0425", "E0599", "E0609", "E0412", "E0061", "E0423", "E0531", "E0574", "E0560", "E0026", "E0063"))
           and $sp != null and any($ok[]; .f == $sp.file_name and $sp.line_start >= .s)
       then "ok" else "bad \($c) \(.message)" end' "$log" 2>/dev/null || true)
+# Failures cargo reports outside rustc diagnostics (build scripts, linker) are not the PR's new API.
+if grep -qE 'failed to run custom build command|linking with' "$log" "$errlog"; then
+    verdict="bad cargo build-script or linker failure"
+fi
 if [ -n "$verdict" ] && ! printf '%s\n' "$verdict" | grep -q '^bad'; then
     echo "check-red-test: the base does not build with the PR's tests, only because they use items the PR adds; accepted as red."
     exit 0
