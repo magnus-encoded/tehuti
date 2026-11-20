@@ -10,7 +10,13 @@ cat >"$work/cargo-stub" <<'STUB'
 #!/usr/bin/env bash
 echo "args: $*" >>"$STUB_LOG"
 cat crates/a/src/lib.rs >>"$STUB_LOG"
-if grep -q nocompile crates/a/src/lib.rs; then echo "error: could not compile \`a\`"; exit 101; fi
+diag() { printf '{"reason":"compiler-message","message":{"level":"error","message":"m","code":{"code":"%s"},"spans":[{"file_name":"%s","line_start":%s,"is_primary":true}]}}\n' "$1" "$2" "$3"; }
+if grep -q newapi crates/a/tests/t.rs; then diag E0599 crates/a/tests/t.rs 3; fi
+if grep -q nocompile crates/a/src/lib.rs; then diag E0308 crates/a/src/lib.rs 1; echo "error: could not compile \`a\`"; exit 101; fi
+if grep -q linkfail crates/a/tests/t.rs; then echo "error: linking with \`cc\` failed" >&2; fi
+if grep -q inline_api crates/a/src/lib.rs; then diag E0599 crates/a/src/lib.rs "$(grep -n 'cfg(test)' crates/a/src/lib.rs | head -1 | cut -d: -f1)"; exit 101; fi
+if grep -q inline_bad crates/a/src/lib.rs; then diag E0599 crates/a/src/lib.rs 1; exit 101; fi
+if grep -q newapi crates/a/tests/t.rs; then exit 101; fi
 if grep -q base crates/a/src/lib.rs; then echo "test result: FAILED"; exit 101; fi
 exit 0
 STUB
@@ -110,6 +116,55 @@ git commit -qam 'pr on broken base'
 scripts/check-red-test "$nbase" >"$work/out" 2>&1 && fail "base build failure should be inconclusive"
 grep -q 'red-test-build-ok' "$work/out" || fail "label hint missing"
 RED_TEST_BUILD_OK=1 scripts/check-red-test "$nbase" >"$work/out" 2>&1 || fail "label should accept a build failure"
+
+# Base fails to build only on new API in the PR's test file: accepted without the label.
+start newapi
+fixed
+printf '%s\nfn api_test() { newapi(); }\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git commit -qam newapi
+run || fail "new-API build error should be accepted"
+grep -q 'only because they use items the PR adds' "$work/out" || fail "acceptance not logged"
+
+# New-API error plus an unrelated error in the base source: fails.
+start mixed-errors
+fixed
+printf '%s\nfn api_test() { newapi(); }\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git commit -qam mixed
+mbase=$(git commit-tree -p "$base" -m nocompile-base "$(git rev-parse "$base^{tree}")")
+git checkout -q -B mixed2 "$mbase"
+printf 'nocompile\n' >crates/a/src/lib.rs
+git commit -qam 'broken base'
+mbase=$(git rev-parse HEAD)
+printf 'fixed\n' >crates/a/src/lib.rs
+printf '%s\nfn api_test() { newapi(); }\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git commit -qam 'pr on broken base'
+if scripts/check-red-test "$mbase" >"$work/out" 2>&1; then fail "an unrelated base error should fail"; fi
+grep -q 'E0308' "$work/out" || fail "unrelated error not reported"
+
+# Linker failure next to an accepted error: fails.
+start linkfail
+fixed
+printf '%s\nfn api_test() { newapi(); linkfail(); }\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git commit -qam linkfail
+if run; then fail "a linker failure should not be accepted"; fi
+
+# Error in the inline test module: accepted. Same code in the non-test part of the file: fails.
+start inlineapi
+printf 'fixed\n#[cfg(test)]\nmod tests {\n    fn inline_old() {}\n    fn inline_api() {}\n}\n' >crates/a/src/lib.rs
+git commit -qam inlineapi
+run || fail "error inside the inline test module should be accepted"
+start inlinebad
+printf 'fixed\n#[cfg(test)]\nmod tests {\n    fn inline_old() {}\n    fn inline_bad() {}\n}\n' >crates/a/src/lib.rs
+git commit -qam inlinebad
+if run; then fail "an error outside the inline test module should fail"; fi
+
+# Missing jq: fails loudly, even with the label.
+start nojq
+fixed
+printf '%s\nfn api_test() { newapi(); }\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
+git commit -qam nojq
+if RED_TEST_BUILD_OK=1 JQ=no-such-jq run; then fail "missing jq should fail"; fi
+grep -q 'jq is required' "$work/out" || fail "jq message missing"
 
 # Fix only in a newly added source file: reported, not skipped.
 start newfile
