@@ -52,7 +52,7 @@ mod speech_resolver {
         fn the_band_decides((commands, answer, bands) in scenario()) {
             let resolution = resolve("open the thing", &commands, Some(&answer), bands);
             if answer.confidence >= bands.run_from {
-                prop_assert_eq!(resolution, Resolution::Run(answer.command.clone()));
+                prop_assert_eq!(resolution, Resolution::Run(answer.command));
             } else if answer.confidence < bands.offer_from {
                 prop_assert_eq!(resolution, Resolution::Dictate);
             } else {

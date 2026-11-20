@@ -109,18 +109,18 @@ mod tests {
     fn the_opt_in_is_off_until_set_and_survives_reopening() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("tehuti/speech-resolver");
-        assert!(!OptIn::at(Store::new(path.clone())).enabled());
-        OptIn::at(Store::new(path.clone())).set(true)?;
-        assert!(OptIn::at(Store::new(path.clone())).enabled());
-        OptIn::at(Store::new(path.clone())).set(false)?;
-        assert!(!OptIn::at(Store::new(path)).enabled());
+        assert!(!OptIn::stored_at(Store::new(path.clone())).enabled());
+        OptIn::stored_at(Store::new(path.clone())).set(true)?;
+        assert!(OptIn::stored_at(Store::new(path.clone())).enabled());
+        OptIn::stored_at(Store::new(path.clone())).set(false)?;
+        assert!(!OptIn::stored_at(Store::new(path)).enabled());
         Ok(())
     }
 
     #[test]
     fn each_turn_is_one_log_line_with_what_was_heard_chosen_and_run() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
-        let log = TurnLog::at(directory.path().join("state/turns.jsonl"));
+        let log = TurnLog::stored_at(directory.path().join("state/turns.jsonl"));
         let answer = Answer {
             command: "mute".into(),
             confidence: 900,

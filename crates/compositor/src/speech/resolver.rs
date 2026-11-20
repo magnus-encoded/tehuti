@@ -70,7 +70,7 @@ impl OptIn {
     }
 
     #[must_use]
-    pub const fn at(store: crate::display_mode_store::Store) -> Self {
+    pub const fn stored_at(store: crate::display_mode_store::Store) -> Self {
         Self { store }
     }
 
@@ -252,14 +252,14 @@ pub struct TurnLog {
 
 impl TurnLog {
     #[must_use]
-    pub const fn at(path: PathBuf) -> Self {
+    pub const fn stored_at(path: PathBuf) -> Self {
         Self { path }
     }
 
     /// # Errors
     /// Neither the config directory nor home is available.
     pub fn from_env() -> io::Result<Self> {
-        Ok(Self::at(
+        Ok(Self::stored_at(
             crate::display_mode_store::config_root()?.join("tehuti/speech-turns.jsonl"),
         ))
     }
