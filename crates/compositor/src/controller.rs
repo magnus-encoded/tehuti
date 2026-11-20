@@ -11,10 +11,10 @@ use tracing::warn;
 
 use crate::input::InputSource;
 
-/// Labels pads in path order and keys them through `roster`; see [`PadRoster::observe`].
+/// Labels pads in path order and keys them through `pads`; see [`Pads::observe`].
 #[must_use]
 pub fn keyed_controllers(
-    roster: &mut tehuti_core::pad::PadRoster,
+    pads: &mut tehuti_core::pad::Pads,
     devices: impl IntoIterator<Item = tehuti_core::pad::PadSighting>,
 ) -> Vec<(std::path::PathBuf, tehuti_core::dispatch::ControllerInfo)> {
     let mut sightings = std::collections::BTreeMap::new();
@@ -24,7 +24,7 @@ pub fn keyed_controllers(
             let _old = sightings.insert(sighting.path.clone(), sighting.name.clone());
         })
         .collect();
-    roster
+    pads
         .observe(devices)
         .into_iter()
         .map(|(path, pad)| {
@@ -44,7 +44,7 @@ pub fn keyed_controllers(
 pub fn numbered_controllers(
     devices: impl IntoIterator<Item = tehuti_core::pad::PadSighting>,
 ) -> Vec<tehuti_core::dispatch::ControllerInfo> {
-    keyed_controllers(&mut tehuti_core::pad::PadRoster::default(), devices)
+    keyed_controllers(&mut tehuti_core::pad::Pads::default(), devices)
         .into_iter()
         .map(|(_, info)| info)
         .collect()

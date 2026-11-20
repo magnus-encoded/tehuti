@@ -34,7 +34,7 @@ pub(crate) struct LoopData {
     spare_virtual_pad: Option<controller::VirtualPad>,
     pad_gate: input::PadGate,
     /// Keys each attached pad; a later pad never changes the key of one already there.
-    pad_roster: tehuti_core::pad::PadRoster,
+    pads: tehuti_core::pad::Pads,
     virtual_pad: Option<String>,
     /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
     /// Unplugging it does not clear this: no pad matches the stale path, so no mirror exists
@@ -492,7 +492,7 @@ fn start_session(
         controllers,
         spare_virtual_pad: None,
         pad_gate: input::PadGate::default(),
-        pad_roster: tehuti_core::pad::PadRoster::default(),
+        pads: tehuti_core::pad::Pads::default(),
         controller_tokens,
         virtual_pad,
         active_pad: None,
@@ -822,8 +822,8 @@ fn sync_controller_names(data: &mut LoopData) {
             }
         })
         .collect();
-    let keyed = controller::keyed_controllers(&mut data.pad_roster, devices);
-    for (path, effect) in data.pad_roster.take_effects() {
+    let keyed = controller::keyed_controllers(&mut data.pads, devices);
+    for (path, effect) in data.pads.take_effects() {
         match effect {
             tehuti_core::pad::PadEffect::ForgetGate => data.pad_gate.forget(&path),
             tehuti_core::pad::PadEffect::ReleaseHeld(buttons) => {
@@ -1042,7 +1042,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
-    let keys = &mut data.pad_roster;
+    let keys = &mut data.pads;
     let mut event_controllers = Vec::new();
     let active = &mut data.active_pad;
     let spare = &mut data.spare_virtual_pad;
@@ -1121,7 +1121,7 @@ fn advance_time(data: &mut LoopData) {
         return;
     }
     let mut sampled = tehuti_core::dispatch::Sticks::default();
-    let keys = &data.pad_roster;
+    let keys = &data.pads;
     let recentres = data.compositor.take_recentre_requests();
     for (path, controller) in &mut data.controllers {
         let key = keys

@@ -2282,7 +2282,7 @@ impl Compositor {
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
             DispatchEffect::SettingsController(choice) => self.choose_controller(&choice, false),
             DispatchEffect::PersistControllerTalk(controller_name, button) => {
-                let mut bindings = self.settings().input.controller_bindings.clone();
+                let mut bindings = self.settings().input.controller_bindings();
                 if let Some(button) = button {
                     let _previous = bindings.insert(controller_name, button);
                 } else {
@@ -2303,7 +2303,7 @@ impl Compositor {
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
             DispatchEffect::SettingsControllerEnabled { name, enabled } => {
                 tracing::info!(%name, enabled, "controller enabled");
-                self.disabled_controllers = self.settings().input.disabled_controllers.clone();
+                self.disabled_controllers = self.settings().input.disabled_controllers();
                 let disabled = self.disabled_controllers.clone();
                 self.save_input_choice(|store| store.set_disabled_controllers(&disabled));
             }

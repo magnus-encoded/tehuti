@@ -167,7 +167,7 @@ impl Settings {
     ) {
         self.input.controller = controller;
         self.input.microphone = microphone;
-        self.input.disabled_controllers = disabled_controllers;
+        self.input.restore_disabled(&disabled_controllers);
         self.input.disabled_microphones = disabled_microphones;
     }
 
@@ -601,11 +601,9 @@ impl Settings {
         if self.input.talk_choice() == option {
             return;
         }
-        if let Some(button) = option {
-            let _previous = self.input.controller_bindings.insert(name.clone(), button);
-        } else {
-            let _previous = self.input.controller_bindings.remove(&name);
-        }
+        let mut chosen = self.input.pad_settings(&name);
+        chosen.push_to_talk = option;
+        self.input.store_pad_settings(&name, chosen);
         effects.push(Effect::PersistControllerTalk(name, option));
     }
 
