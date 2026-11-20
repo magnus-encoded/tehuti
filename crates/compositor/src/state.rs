@@ -873,7 +873,7 @@ impl Compositor {
         let Some(commands) = self.dispatch.unmatched_speech_commands(text.as_str()) else {
             return false;
         };
-        let target = (self.speech_context.clone(), self.speech_title.clone());
+        let target = self.speech_context.clone();
         let Some(link) = self.speech_resolver.as_mut() else {
             return false;
         };
@@ -976,8 +976,7 @@ impl Compositor {
         {
             tracing::warn!(%error, "speech turn log not written");
         }
-        let target = (self.speech_context.clone(), self.speech_title.clone());
-        if target != waiting.target {
+        if self.speech_context != waiting.target {
             tracing::warn!("focus moved while speech was held; the utterance is discarded");
             return;
         }
@@ -4345,10 +4344,16 @@ impl XdgShellHandler for Compositor {
         }
         self.sync_destination_windows();
         if let Some(Event::Focus { app_id, title }) = self.focus_event(&surface) {
-            self.speech_title.clone_from(&title);
-            let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
-            self.refresh_speech_vocabulary();
+            self.focused_title_changed(app_id, title);
         }
+    }
+
+    /// The focused window retitled: a held utterance dictates first, still to this application.
+    pub fn focused_title_changed(&mut self, app_id: Option<String>, title: String) {
+        self.flush_held_utterance();
+        self.speech_title.clone_from(&title);
+        let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
+        self.refresh_speech_vocabulary();
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {

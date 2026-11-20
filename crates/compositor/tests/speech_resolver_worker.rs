@@ -104,7 +104,7 @@ mod tests {
         fn only_the_newest_utterance_takes_its_reply(count in 1_usize..8, order in any::<u64>()) {
             let mut pending = Pending::default();
             let ids: Vec<u64> = (0..count)
-                .map(|index| pending.begin(Waiting { transcript: format!("t{index}"), target: (None, String::new()), commands: Vec::new() }).0)
+                .map(|index| pending.begin(Waiting { transcript: format!("t{index}"), target: None, commands: Vec::new() }).0)
                 .collect();
             let mut shuffled = ids.clone();
             let length = shuffled.len();
@@ -292,6 +292,19 @@ mod tests {
                 ("first once more".to_owned(), "dictated".to_owned())
             ]
         );
+    }
+
+    #[test]
+    fn a_retitle_of_the_same_application_dictates_the_held_utterance() {
+        let mut rig = rig(vec![("first", Duration::from_millis(300))]);
+        rig.say("first unknown words");
+        assert!(rig.compositor.speech_resolver_waiting());
+        rig.compositor
+            .focused_title_changed(Some("editor".into()), "new title".into());
+        assert!(!rig.compositor.speech_resolver_waiting());
+        let turns = lines(&rig.log_path);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0]["outcome"], "dictated");
     }
 
     #[test]

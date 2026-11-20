@@ -82,8 +82,8 @@ impl Worker {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Waiting {
     pub transcript: String,
-    /// The focused application and title the utterance was spoken to.
-    pub target: (Option<String>, String),
+    /// The focused application the utterance was spoken to.
+    pub target: Option<String>,
     pub commands: Vec<String>,
 }
 
