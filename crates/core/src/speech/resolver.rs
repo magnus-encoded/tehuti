@@ -76,7 +76,7 @@ pub fn resolve(transcript: &str, commands: &[String], answer: Option<&Answer>, b
         .iter()
         .filter(|ranked| ranked.command != answer.command && commands.contains(&ranked.command))
         .collect();
-    others.sort_by(|left, right| right.probability.cmp(&left.probability));
+    others.sort_by_key(|ranked| core::cmp::Reverse(ranked.probability));
     let offered: Vec<String> = core::iter::once(answer.command.clone())
         .chain(others.into_iter().map(|ranked| ranked.command.clone()))
         .fold(Vec::new(), |mut unique, command| {
