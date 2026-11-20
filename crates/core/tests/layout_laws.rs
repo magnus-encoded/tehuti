@@ -37,8 +37,9 @@ mod layout_laws {
     }
     use tehuti_core::layout::{
         CenterFocusedColumn, ColumnDisplay, ColumnView, Command, Direction, Layout, LayoutConfig,
-        LayoutError, OutputGeometry, OutputId, OutputView, PresetSize, Rect, SizeChange, Snapshot, Struts,
-        TileMode, TileView, WindowHeight, WindowId, WindowRules, WorkspaceId, WorkspaceView,
+        LayoutError, OutputGeometry, OutputId, OutputView, PresetSize, Rect, SizeChange, Slot, Snapshot,
+        Struts, TileMode, TileView, WindowHeight, WindowId, WindowKind, WindowRules, WorkspaceId,
+        WorkspaceView,
     };
 
     #[test]
@@ -2481,6 +2482,112 @@ mod layout_laws {
             };
             prop_assert!(world.open_with(rules).is_err());
             prop_assert!(all_finite(&world.snap()));
+        }
+    }
+
+    /// The rule the compositor applied before placements moved into core: a tile is shown on the
+    /// active workspace of an output, and a tabbed column shows only its focused tab.
+    fn shown_tile(snap: &Snapshot, window: WindowId) -> Option<(&TileView, f64)> {
+        snap.outputs.iter().find_map(|output| {
+            let workspace = output.workspaces.get(output.active_workspace)?;
+            workspace.columns.iter().find_map(|column| {
+                column.tiles.iter().enumerate().find_map(|(index, tile)| {
+                    (tile.window == window
+                        && (column.display == ColumnDisplay::Normal || index == column.focused_tile))
+                        .then_some((tile, output.border))
+                })
+            })
+        })
+    }
+
+    fn helper_rules() -> WindowRules {
+        WindowRules {
+            kind: WindowKind::Helper,
+            ..WindowRules::default()
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn placements_show_a_tile_only_on_the_active_workspace_and_focused_tab(
+            config in config_strategy(),
+            first in geometry_strategy(),
+            second in geometry_strategy(),
+            ops in ops_strategy(),
+            helpers in 0_usize..4,
+        ) {
+            let second = geometry_at(first.area.width, 0.0, second.area.width, second.area.height, 0.0);
+            let mut world = World::with_outputs(config, &[first, second])?;
+            world.run(&ops)?;
+            for _ in 0..helpers {
+                let _helper = world.open_with(helper_rules())?;
+            }
+            let snap = world.snap();
+            let placements = snap.placements();
+            // One entry per window, none twice.
+            let mut seen: Vec<_> = placements.iter().map(|placement| placement.window).collect();
+            seen.sort();
+            let count = seen.len();
+            seen.dedup();
+            prop_assert_eq!(seen.len(), count);
+            prop_assert_eq!(count, all_tiles(&snap).count() + snap.outputs.iter().flat_map(|output| &output.workspaces).map(|workspace| workspace.helpers.len()).sum::<usize>());
+            for placement in &placements {
+                prop_assert_eq!(placement.focused, snap.focused_window == Some(placement.window));
+                match &placement.slot {
+                    Slot::Tile { tile, border } => {
+                        prop_assert!(!placement.helper);
+                        let expected = shown_tile(&snap, placement.window);
+                        prop_assert_eq!(expected, Some((tile, *border)));
+                    }
+                    Slot::Hidden if !placement.helper => {
+                        prop_assert!(shown_tile(&snap, placement.window).is_none());
+                    }
+                    Slot::Helper { origin, preceding } => {
+                        prop_assert!(placement.helper);
+                        let (_output, workspace) = snap
+                            .outputs
+                            .iter()
+                            .find_map(|output| {
+                                let workspace = output.workspaces.get(output.active_workspace)?;
+                                workspace.helpers.contains(&placement.window).then_some((output, workspace))
+                            })
+                            .ok_or_else(|| TestCaseError::fail("shown helper is not on an active workspace"))?;
+                        let index = workspace.helpers.iter().position(|helper| *helper == placement.window).unwrap_or(0);
+                        prop_assert_eq!(*origin, workspace.helper_position);
+                        prop_assert_eq!(preceding.as_slice(), &workspace.helpers[..index]);
+                    }
+                    Slot::Hidden => {
+                        // A hidden helper is on a workspace that is not active.
+                        let off_active = snap.outputs.iter().all(|output| {
+                            output
+                                .workspaces
+                                .get(output.active_workspace)
+                                .is_none_or(|workspace| !workspace.helpers.contains(&placement.window))
+                        });
+                        prop_assert!(off_active);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn a_tabbed_column_places_exactly_one_tab(
+            config in with_display(ColumnDisplay::Tabbed),
+            geometry in geometry_strategy(),
+            count in 1_usize..6,
+        ) {
+            let mut world = World::single(config, geometry)?;
+            world.open_many(count)?;
+            world.apply(Command::ConsumeWindowIntoColumn);
+            let snap = world.snap();
+            let shown = snap
+                .placements()
+                .iter()
+                .filter(|placement| matches!(placement.slot, Slot::Tile { .. }))
+                .count();
+            prop_assert_eq!(shown, snap.outputs.iter().filter_map(|output| output.workspaces.get(output.active_workspace)).map(|workspace| workspace.columns.len()).sum::<usize>());
         }
     }
 }

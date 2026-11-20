@@ -823,10 +823,24 @@ fn sync_controller_names(data: &mut LoopData) {
         })
         .collect();
     let keyed = controller::keyed_controllers(&mut data.pad_roster, devices);
+    for (path, effect) in data.pad_roster.take_effects() {
+        match effect {
+            tehuti_core::pad::PadEffect::ForgetGate => data.pad_gate.forget(&path),
+            tehuti_core::pad::PadEffect::ReleaseHeld(buttons) => {
+                for name in buttons {
+                    data.compositor
+                        .controller_input(tehuti_core::controller::Input::Event(
+                            tehuti_protocol::Event::Button {
+                                name,
+                                state: tehuti_protocol::ButtonState::Released,
+                            },
+                        ));
+                }
+            }
+        }
+    }
     data.compositor
         .configure_controllers(keyed.into_iter().map(|(_, info)| info).collect());
-    let controllers = &data.controllers;
-    data.pad_gate.retain(|path| controllers.contains_key(path));
 }
 
 fn insert_wayland_sources(
@@ -1028,7 +1042,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
-    let keys = &data.pad_roster;
+    let keys = &mut data.pad_roster;
     let mut event_controllers = Vec::new();
     let active = &mut data.active_pad;
     let spare = &mut data.spare_virtual_pad;
@@ -1040,6 +1054,9 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
                 .map_or_else(|| controller.pad.name().to_owned(), |key| key.as_str().to_owned());
             let admitted = gate.admit(path, compositor.controller_chosen(&key), event);
             if admitted {
+                if let tehuti_protocol::Event::Button { name, state } = event {
+                    keys.on_button(path, *name, *state == tehuti_protocol::ButtonState::Pressed);
+                }
                 event_controllers.push(key);
                 identity = Some(controller.pad.identity());
                 *active = Some(path.to_path_buf());
