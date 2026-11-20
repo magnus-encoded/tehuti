@@ -39,7 +39,6 @@ mod stuck_buffer {
     };
 
     const APP_ID: &str = "org.example.Viewer";
-    
 
     #[derive(Default)]
     struct App {
@@ -201,7 +200,11 @@ mod stuck_buffer {
             pump(&mut display, &mut compositor);
             compositor.advance_time();
         }
-        assert_eq!(compositor.buffers_waiting(), 1, "the unfinished buffer holds its commit");
+        assert_eq!(
+            compositor.buffers_waiting(),
+            1,
+            "the unfinished buffer holds its commit"
+        );
         let path = directory.path().join("shot.png");
         let _shot = driver
             .execute(&mut compositor, Request::Shot { path: path.clone() })
@@ -219,7 +222,11 @@ mod stuck_buffer {
             pump(&mut display, &mut compositor);
             compositor.advance_time();
         }
-        assert_eq!(compositor.buffers_waiting(), 0, "the commit goes through once the buffer is ready");
+        assert_eq!(
+            compositor.buffers_waiting(),
+            0,
+            "the commit goes through once the buffer is ready"
+        );
         stop.send(()).unwrap();
         while !thread.is_finished() {
             pump(&mut display, &mut compositor);

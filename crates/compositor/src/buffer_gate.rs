@@ -45,8 +45,14 @@ impl Gate {
     pub fn ready(&self, now: Instant) -> bool {
         let ready = self.planes.iter().all(|plane| {
             let mut fds = [rustix::event::PollFd::new(plane, rustix::event::PollFlags::IN)];
-            rustix::event::poll(&mut fds, Some(&rustix::time::Timespec { tv_sec: 0, tv_nsec: 0 }))
-                .is_ok_and(|count| count > 0)
+            rustix::event::poll(
+                &mut fds,
+                Some(&rustix::time::Timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                }),
+            )
+            .is_ok_and(|count| count > 0)
         });
         if !ready
             && now.saturating_duration_since(self.since) > STALL_AFTER
