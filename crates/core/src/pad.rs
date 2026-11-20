@@ -61,8 +61,8 @@ pub struct PadId(String);
 
 impl PadId {
     #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
     }
 
     #[must_use]
@@ -154,7 +154,7 @@ impl Pads {
                 let model_name = model.model_name(&sighting.name);
                 let count = counts.entry(model_name.clone()).or_default();
                 *count = count.saturating_add(1);
-                let id = self.known.get(&sighting.path).map_or_else(
+                let pad_id = self.known.get(&sighting.path).map_or_else(
                     || {
                         let identity = &sighting.uniq;
                         let name = &sighting.name;
@@ -165,7 +165,7 @@ impl Pads {
                         });
                         let free = candidates
                             .into_iter()
-                            .find(|id| !taken.contains(id))
+                            .find(|name| !taken.contains(name))
                             .unwrap_or_default();
                         let _fresh = taken.insert(free.clone());
                         PadId(free)
@@ -173,7 +173,7 @@ impl Pads {
                     |pad| pad.id.clone(),
                 );
                 let pad = Pad {
-                    id,
+                    id: pad_id,
                     label: format!("{model_name} #{count}"),
                     model,
                     origin: sighting.origin,

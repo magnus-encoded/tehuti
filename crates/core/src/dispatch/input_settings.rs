@@ -268,17 +268,17 @@ impl InputSettings {
 
     /// The stick deadzone of the pad with this id, in thousandths of full travel.
     #[must_use]
-    pub fn deadzone(&self, id: &str) -> u16 {
+    pub fn deadzone(&self, pad_id: &str) -> u16 {
         self.controller_deadzones
-            .get(id)
+            .get(pad_id)
             .copied()
             .unwrap_or(DEFAULT_DEADZONE)
     }
 
     /// The next deadzone after the pad's current one, wrapping round; a value off the steps moves to the next larger step.
     #[must_use]
-    pub fn next_deadzone(&self, id: &str) -> u16 {
-        let current = self.deadzone(id);
+    pub fn next_deadzone(&self, pad_id: &str) -> u16 {
+        let current = self.deadzone(pad_id);
         DEADZONE_STEPS
             .iter()
             .copied()
@@ -288,16 +288,16 @@ impl InputSettings {
 
     /// The saved choices of the pad with this id, or the defaults.
     #[must_use]
-    pub fn pad_settings(&self, id: &str) -> crate::pad::PadSettings {
+    pub fn pad_settings(&self, pad_id: &str) -> crate::pad::PadSettings {
         self.pads
-            .get(&crate::pad::PadId::new(id))
+            .get(&crate::pad::PadId::new(pad_id))
             .copied()
             .unwrap_or_default()
     }
 
     /// Stores a pad's choices; the defaults are stored as no entry.
-    pub(super) fn store_pad_settings(&mut self, id: &str, settings: crate::pad::PadSettings) {
-        let pad_id = crate::pad::PadId::new(id);
+    pub(super) fn store_pad_settings(&mut self, pad_name: &str, settings: crate::pad::PadSettings) {
+        let pad_id = crate::pad::PadId::new(pad_name);
         if settings == crate::pad::PadSettings::default() {
             let _removed = self.pads.remove(&pad_id);
         } else {
@@ -344,10 +344,10 @@ impl InputSettings {
             .map(|pad_id| pad_id.as_str().to_owned())
             .chain(bindings.keys().cloned())
             .collect();
-        for id in ids {
-            let mut settings = self.pad_settings(&id);
-            settings.push_to_talk = bindings.get(&id).copied();
-            self.store_pad_settings(&id, settings);
+        for pad_id in ids {
+            let mut settings = self.pad_settings(&pad_id);
+            settings.push_to_talk = bindings.get(&pad_id).copied();
+            self.store_pad_settings(&pad_id, settings);
         }
     }
 
@@ -359,10 +359,10 @@ impl InputSettings {
             .map(|pad_id| pad_id.as_str().to_owned())
             .chain(disabled.iter().cloned())
             .collect();
-        for id in ids {
-            let mut settings = self.pad_settings(&id);
-            settings.enabled = !disabled.contains(&id);
-            self.store_pad_settings(&id, settings);
+        for pad_id in ids {
+            let mut settings = self.pad_settings(&pad_id);
+            settings.enabled = !disabled.contains(&pad_id);
+            self.store_pad_settings(&pad_id, settings);
         }
     }
 
