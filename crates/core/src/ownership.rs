@@ -449,7 +449,13 @@ impl Owner {
         match self {
             Self::Tehuti(Why::EscapeChord) => !guide_forwarded,
             Self::Tehuti(Why::GuideDpadChord | Why::SystemMenu | Why::MenuRelease) | Self::App => false,
-            _ => true,
+            Self::Tehuti(_)
+            | Self::Level
+            | Self::Talk(_)
+            | Self::Plugin
+            | Self::Context { .. }
+            | Self::GlobalLayer
+            | Self::Dropped => true,
         }
     }
 }
@@ -1118,7 +1124,7 @@ mod tests {
             let state = State::default();
             let held: Vec<ButtonName> = others
                 .into_iter()
-                .filter(|b| !matches!(b, ButtonName::Guide | ButtonName::Start | ButtonName::Record))
+                .filter(|held| !matches!(held, ButtonName::Guide | ButtonName::Start | ButtonName::Record))
                 .chain([ButtonName::Guide, ButtonName::Start])
                 .collect();
             let start = state.pad_button_owner(&held, false, ButtonName::Start, Phase::Pressed);
