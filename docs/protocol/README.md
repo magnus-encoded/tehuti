@@ -78,7 +78,7 @@ the core sends an unknown method to a plugin, the plugin can reply with error
 
 The core ignores valid plugin `initialize`, `button`, `speech`, `verb`,
 `focus`, `adjuster` and `pad_input` calls. A plugin sends only replies and
-these notices: `actions`, `speech.hints`, `invoke.words`, `verbs`,
+these notices: `actions`, `speech.hints`, `speech.language`, `invoke.words`, `verbs`,
 `pad_overrides` and `status`. It can also send `submit_actions` requests.
 
 Sometimes an `actions` notice lists a `key` action directly followed by a
@@ -298,6 +298,35 @@ it:
 Context `[speech] hotwords` and plugin hints share a cap of 64 entries. Context
 words come first. If the total is over the cap, the core drops the last entries
 of the plugin and logs a warning once.
+
+### Speech language
+
+An application plugin sets the dictation language with a notice. The language
+is a lowercase code of 2 to 8 ASCII letters. It is standing: every speech
+session that starts while a window of the applications of the plugin has focus
+uses it, until the plugin sends another. It is gone when the plugin stops,
+crashes or restarts, and while focus is elsewhere. Without it the language is
+"en". Interims and the final transcript use the session's language. The core
+passes it in the sidecar start command, `{"start":7,"language":"no"}`.
+
+```json
+{"jsonrpc":"2.0","method":"speech.language","params":{"language":"no"}}
+```
+
+The sidecar reads an optional `speech.toml` in the Tehuti config directory. Its
+`[remote]` table maps a language to a transcription socket. A session in that
+language goes to the socket, and the local model stays idle. `$XDG_RUNTIME_DIR`
+expands in the path:
+
+```toml
+[remote]
+no = "$XDG_RUNTIME_DIR/tehuti-transcribe.sock"
+```
+
+A request is one kind byte (`G` final, `J` interim) and the priming prompt,
+a NUL byte, then raw s16 16 kHz mono PCM until the client shuts down writing.
+The reply is one JSON line: `{"text":"..."}`, `{"error":"..."}` or
+`{"busy":true}`. A reply the sidecar cannot use is an error for that session.
 
 ### Invoke words
 

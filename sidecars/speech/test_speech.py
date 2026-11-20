@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 from pathlib import Path
 import tempfile
 import time
@@ -23,7 +24,7 @@ class SpeechTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def start(self, session, prompt=""):
+            def start(self, session, prompt="", language="en"):
                 self.calls.append((session, prompt))
 
             def close(self):
@@ -51,6 +52,93 @@ class SpeechTests(unittest.TestCase):
         self.assertEqual([call["initial_prompt"] for call in model.calls],
                          ["chat with yell", "chat with yell"])
 
+    def test_start_language_is_passed_validated_and_defaults_to_english(self):
+        class Capture:
+            def __init__(self):
+                self.calls = []
+
+            def start(self, session, prompt="", language="en"):
+                self.calls.append((session, language))
+
+            def close(self):
+                pass
+
+        capture = Capture()
+        commands = [{"start": 1}, {"start": 2, "language": "no"},
+                    {"start": 3, "prompt": "x", "language": "no"}]
+        with contextlib.redirect_stdout(io.StringIO()):
+            module.run(io.StringIO("".join(json.dumps(c) + "\n" for c in commands)), capture)
+        self.assertEqual(capture.calls, [(1, "en"), (2, "no"), (3, "no")])
+        for bad in ({"start": 4, "language": "NO"}, {"start": 4, "language": 7},
+                    {"start": 4, "language": "../x"}):
+            with self.assertRaises(ValueError), contextlib.redirect_stdout(io.StringIO()):
+                module.run(io.StringIO(json.dumps(bad) + "\n"), capture)
+
+    def test_the_session_language_reaches_the_model_for_interims_and_the_final(self):
+        class Model:
+            def __init__(self):
+                self.languages = []
+
+            def transcribe(self, path, **options):
+                self.languages.append(options["language"])
+                return iter([]), None
+
+        model = Model()
+        speech = module.Speech(model, remotes=dict)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            speech.transcribe_audio(b"\x00\x10" * 24000, language="no", retry=False, beam_size=1)
+            speech.transcribe_audio(b"\x00\x10" * 24000, language="no", retry=False)
+            speech.transcribe_audio(b"\x00\x10" * 24000, retry=False)
+        self.assertEqual(model.languages, ["no", "no", "en"])
+
+    def test_a_language_with_a_remote_socket_goes_there_and_leaves_the_model_idle(self):
+        received = []
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "remote.sock")
+            listener = socket.socket(socket.AF_UNIX)
+            listener.bind(path)
+            listener.listen(4)
+
+            def serve():
+                for _ in range(2):
+                    connection, _ = listener.accept()
+                    with connection:
+                        data = bytearray()
+                        while True:
+                            chunk = connection.recv(65536)
+                            if not chunk:
+                                break
+                            data.extend(chunk)
+                        received.append(bytes(data))
+                        connection.sendall(b'{"text": "hei"}\n')
+
+            server = threading.Thread(target=serve, daemon=True)
+            server.start()
+
+            class Model:
+                def transcribe(self, *args, **options):
+                    raise AssertionError("the local model must stay idle")
+
+            speech = module.Speech(Model(), remotes=lambda: {"no": path})
+            audio = b"\x00\x10" * 100
+            self.assertEqual(speech.transcribe_audio(audio, "chat", language="no"), "hei")
+            self.assertEqual(
+                speech.transcribe_audio(audio, "chat", language="no", beam_size=1), "hei")
+            server.join(timeout=5)
+            listener.close()
+        self.assertEqual(received, [b"Gchat\0" + audio, b"Jchat\0" + audio])
+
+    def test_speech_toml_maps_languages_to_sockets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            os.mkdir(os.path.join(directory, "tehuti"))
+            with open(os.path.join(directory, "tehuti", "speech.toml"), "w") as saved:
+                saved.write('[remote]\nno = "$XDG_RUNTIME_DIR/t.sock"\nbad = 3\n')
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": directory, "XDG_RUNTIME_DIR": "/run/x"}):
+                self.assertEqual(module.remote_sockets(), {"no": "/run/x/t.sock"})
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": directory + "/none"}):
+                self.assertEqual(module.remote_sockets(), {})
+
     def test_ready_reply_names_the_chosen_device_and_compute_type(self):
         class Speech:
             def close(self):
@@ -67,7 +155,7 @@ class SpeechTests(unittest.TestCase):
                 self.sessions = []
                 self.closed = False
 
-            def start(self, session):
+            def start(self, session, prompt="", language="en"):
                 self.sessions.append((session, None))
 
             def stop(self, session, transcribe):

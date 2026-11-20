@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import threading
 import time
 import wave
 
+DEFAULT_LANGUAGE = "en"
 MAX_HOTWORD_TOKENS = 64
 MAX_LINE = 65536
 MAX_AUDIO_SECONDS = 60
@@ -183,6 +185,45 @@ def list_sources(missing=None):
     return [] if off else [None]
 
 
+def remote_sockets():
+    """Language to remote transcription socket path, from `[remote]` in speech.toml."""
+    root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    try:
+        import tomllib
+        with open(os.path.join(root, "tehuti", "speech.toml"), "rb") as saved:
+            table = tomllib.load(saved).get("remote", {})
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(table, dict):
+        return {}
+    return {language: os.path.expandvars(path) for language, path in table.items()
+            if isinstance(path, str) and path}
+
+
+def remote_transcribe(path, audio, prompt, final):
+    """Text from a remote transcription socket; raises on error, busy or a bad reply."""
+    kind = b"G" if final else b"J"
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(60 if final else 5)
+        connection.connect(path)
+        connection.sendall(kind + prompt.encode("utf-8") + b"\0" + audio)
+        connection.shutdown(socket.SHUT_WR)
+        data = bytearray()
+        while True:
+            chunk = connection.recv(65536)
+            if not chunk:
+                break
+            data.extend(chunk)
+    answer = json.loads(bytes(data))
+    if not isinstance(answer, dict):
+        raise ValueError("remote reply is not an object")
+    if answer.get("busy"):
+        raise RuntimeError("busy")
+    if isinstance(answer.get("text"), str):
+        return answer["text"]
+    raise RuntimeError(str(answer.get("error", "bad remote reply")))
+
+
 def speech_tails(value):
     tails = {"default": DEFAULT_SPEECH_TAIL_MS}
     if not value:
@@ -220,9 +261,10 @@ class Recording:
 
 class Take:
     """One push-to-talk, recorded from every source at once."""
-    def __init__(self, session, prompt=""):
+    def __init__(self, session, prompt="", language=DEFAULT_LANGUAGE):
         self.session = session
         self.prompt = prompt
+        self.language = language
         self.recordings = []
         self.cancelled = threading.Event()
         self.interim_abort = threading.Event()
@@ -241,8 +283,9 @@ def choose(recordings):
 
 
 class Speech:
-    def __init__(self, model, sources=None):
+    def __init__(self, model, sources=None, remotes=None):
         self.model = model
+        self.remotes = remote_sockets if remotes is None else remotes
         self.hotwords = ""
         self.warned_missing = False
         self.sources = sources or (lambda: list_sources(self.warn_missing_source))
@@ -279,11 +322,11 @@ class Speech:
             self.releasing.worker.join()
             self.releasing = None
 
-    def start(self, session, prompt=""):
+    def start(self, session, prompt="", language=DEFAULT_LANGUAGE):
         self.cancel_tail()
         if self.capture is not None:
             return
-        take = Take(session, prompt)
+        take = Take(session, prompt, language)
         for source in self.sources():
             target = [] if source is None else ["--target", source]
             try:
@@ -324,7 +367,13 @@ class Speech:
         if remaining == 0 and capture.poll() is None:
             capture.send_signal(signal.SIGINT)
 
-    def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None, beam_size=5):
+    def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None, beam_size=5,
+                         language=DEFAULT_LANGUAGE):
+        remote = self.remotes().get(language)
+        if remote:
+            if abort is not None and abort.is_set():
+                return ""
+            return remote_transcribe(remote, audio, prompt, final=beam_size != 1)
         priming = {"hotwords": self.hotwords} if self.hotwords else {}
         if prompt:
             priming["initial_prompt"] = prompt
@@ -335,7 +384,7 @@ class Speech:
                 output.setframerate(16000)
                 output.writeframes(audio)
             segments, _ = self.model.transcribe(
-                recording.name, beam_size=beam_size, language="en", vad_filter=True, **priming,
+                recording.name, beam_size=beam_size, language=language, vad_filter=True, **priming,
                 vad_parameters={"threshold": 0.3, "min_speech_duration_ms": 80,
                                 "speech_pad_ms": 300},
             )
@@ -347,7 +396,7 @@ class Speech:
                 return ""
             log("retrying clip without VAD")
             segments, _ = self.model.transcribe(
-                recording.name, beam_size=5, language="en", vad_filter=False,
+                recording.name, beam_size=5, language=language, vad_filter=False,
                 temperature=0, condition_on_previous_text=False, **priming,
             )
             return transcript(segments)
@@ -364,7 +413,8 @@ class Speech:
                     return
                 try:
                     text = self.transcribe_audio(audio, capture.prompt, retry=False,
-                                                abort=capture.interim_abort, beam_size=1)
+                                                abort=capture.interim_abort, beam_size=1,
+                                                language=capture.language)
                 finally:
                     self.model_lock.release()
                 if self.capture is capture and not capture.interim_abort.is_set() and text:
@@ -443,7 +493,8 @@ class Speech:
                     answer({"error": "silent"})
                     return
                 with self.model_lock:
-                    text = self.transcribe_audio(bytes(winner.audio), take.prompt)
+                    text = self.transcribe_audio(bytes(winner.audio), take.prompt,
+                                                 language=take.language)
                 answer({"text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)
@@ -476,12 +527,14 @@ def run(stream, speech, device=None):
                     and not {"start", "stop", "transcribe", "vocabulary"}.intersection(command)):
                 log("unknown speech command ignored")
                 continue
-            if set(command) == {"start"} and type(command["start"]) is int and command["start"] >= 0:
-                speech.start(command["start"])
-            elif (set(command) == {"start", "prompt"}
-                  and type(command["start"]) is int and command["start"] >= 0
-                  and isinstance(command["prompt"], str) and "\0" not in command["prompt"]):
-                speech.start(command["start"], " ".join(command["prompt"].split()[:100]))
+            if (isinstance(command, dict) and "start" in command
+                    and set(command) <= {"start", "prompt", "language"}
+                    and type(command["start"]) is int and command["start"] >= 0
+                    and isinstance(command.get("prompt", ""), str) and "\0" not in command.get("prompt", "")
+                    and isinstance(command.get("language", DEFAULT_LANGUAGE), str)
+                    and re.fullmatch(r"[a-z]{2,8}", command.get("language", DEFAULT_LANGUAGE))):
+                speech.start(command["start"], " ".join(command.get("prompt", "").split()[:100]),
+                             command.get("language", DEFAULT_LANGUAGE))
             elif (set(command) == {"stop", "transcribe"}
                   and type(command["stop"]) is int and command["stop"] >= 0
                   and type(command["transcribe"]) is bool):

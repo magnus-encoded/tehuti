@@ -116,6 +116,8 @@ pub(crate) struct Session {
     pub(crate) hints: Vec<String>,
     /// The invoke words the plugin last sent; a restart starts empty.
     pub(crate) invoke_words: Vec<String>,
+    /// The standing dictation language this plugin set; gone with the session.
+    pub(crate) language: Option<String>,
 }
 
 impl Session {
@@ -146,6 +148,7 @@ impl Session {
             verbs: manifest.verbs.clone(),
             hints: Vec::new(),
             invoke_words: Vec::new(),
+            language: None,
         };
         session.queue_initialize()?;
         Ok(session)
@@ -522,6 +525,10 @@ impl Session {
             Method::SpeechHints { hotwords } => {
                 self.hints = hotwords;
                 vec![Delivery::SpeechHints]
+            }
+            Method::SpeechLanguage { language } => {
+                self.language = Some(language);
+                Vec::new()
             }
             Method::InvokeWords { words } => {
                 self.invoke_words = words;

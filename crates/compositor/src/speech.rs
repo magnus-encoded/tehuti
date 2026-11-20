@@ -145,11 +145,33 @@ impl SpeechProcess {
     /// # Errors
     /// The child is absent or its bounded output queue is full.
     pub fn send_with_prompt(&mut self, effect: &SpeechEffect, prompt: &str) -> io::Result<()> {
+        self.send_with_language(effect, prompt, None)
+    }
+
+    /// Queues a capture command with the focused context prompt and the plugin's dictation
+    /// language. Without a language the sidecar uses its default, "en".
+    ///
+    /// # Errors
+    /// The child is absent or its bounded output queue is full.
+    pub fn send_with_language(
+        &mut self,
+        effect: &SpeechEffect,
+        prompt: &str,
+        language: Option<&str>,
+    ) -> io::Result<()> {
         let value = match effect {
-            SpeechEffect::Start { session } if !prompt.is_empty() => {
-                serde_json::json!({"start": session, "prompt": prompt})
+            SpeechEffect::Start { session } => {
+                let mut value = serde_json::json!({"start": session});
+                if let Some(fields) = value.as_object_mut() {
+                    if !prompt.is_empty() {
+                        fields.insert("prompt".into(), prompt.into());
+                    }
+                    if let Some(language) = language {
+                        fields.insert("language".into(), language.into());
+                    }
+                }
+                value
             }
-            SpeechEffect::Start { session } => serde_json::json!({"start": session}),
             SpeechEffect::Stop { session, transcribe } => {
                 serde_json::json!({"stop": session, "transcribe": transcribe})
             }

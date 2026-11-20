@@ -1570,6 +1570,11 @@ impl Compositor {
             | tehuti_core::speech::SpeechEffect::Interim { .. }
             | tehuti_core::speech::SpeechEffect::Failed { .. } => {}
         }
+        let language = self
+            .speech_context
+            .as_deref()
+            .zip(self.plugins.as_ref())
+            .and_then(|(app_id, plugins)| plugins.speech_language(app_id));
         let prompt = crate::speech_vocabulary::prompt(
             self.contexts(),
             self.speech_context.as_deref(),
@@ -1577,7 +1582,7 @@ impl Compositor {
         );
         self.speech_process.as_mut().is_none_or(|process| {
             process
-                .send_with_prompt(command, &prompt)
+                .send_with_language(command, &prompt, language.as_deref())
                 .inspect_err(|error| tracing::warn!(%error, "speech command failed"))
                 .is_ok()
         })

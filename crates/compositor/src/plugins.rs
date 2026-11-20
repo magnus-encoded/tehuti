@@ -168,6 +168,19 @@ impl Plugins {
             .collect()
     }
 
+    /// The dictation language the first initialized application plugin covering `app_id` set.
+    pub(crate) fn speech_language(&self, app_id: &str) -> Option<String> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.manifest.kind == PluginKind::Application
+                    && entry.manifest.app_ids.iter().any(|name| name == app_id)
+            })
+            .filter_map(|entry| entry.session.as_ref())
+            .filter(|session| session.borrow().status == Status::Ready)
+            .find_map(|session| session.borrow().language.clone())
+    }
+
     pub(crate) fn set_pad_overrides(&mut self, plugin: usize, overrides: Vec<tehuti_protocol::PadOverride>) {
         self.pad.set(plugin, overrides);
     }
