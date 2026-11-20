@@ -149,7 +149,7 @@ mod tests {
             .handle()
             .insert_source(receiver, |event, (), compositor| {
                 if let calloop::channel::Event::Msg(reply) = event {
-                    compositor.resolver_replied(reply);
+                    compositor.resolver_replied(&reply);
                 }
             })
             .unwrap();

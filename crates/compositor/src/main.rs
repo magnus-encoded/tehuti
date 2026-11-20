@@ -987,7 +987,7 @@ fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor
     let (sender, receiver) = calloop::channel::channel();
     let inserted = event_loop.handle().insert_source(receiver, |event, (), data| {
         if let calloop::channel::Event::Msg(reply) = event {
-            data.compositor.resolver_replied(reply);
+            data.compositor.resolver_replied(&reply);
             data.pacing.input_arrived = true;
         }
     });

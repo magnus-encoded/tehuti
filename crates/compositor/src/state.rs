@@ -900,7 +900,7 @@ impl Compositor {
         true
     }
 
-    fn set_rerouting(&mut self, rerouting: bool) {
+    const fn set_rerouting(&mut self, rerouting: bool) {
         if let Some(link) = self.speech_resolver.as_mut() {
             link.rerouting = rerouting;
         }
@@ -914,7 +914,7 @@ impl Compositor {
 
     /// Takes the resolver's reply back on the loop. A reply for an utterance that a
     /// newer one superseded is dropped.
-    pub fn resolver_replied(&mut self, reply: crate::speech::resolver_worker::Reply) {
+    pub fn resolver_replied(&mut self, reply: &crate::speech::resolver_worker::Reply) {
         use tehuti_core::speech::resolver::{Bands, resolve};
         let Some(waiting) = self
             .speech_resolver
