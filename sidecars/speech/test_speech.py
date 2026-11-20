@@ -146,34 +146,6 @@ class SpeechTests(unittest.TestCase):
             self.assertEqual(speech.transcribe_take(take, audio, final=False), "hei")
         self.assertEqual(received, [b"Gchat\0" + audio, b"Jchat\0" + audio])
 
-    def test_a_remote_interim_does_not_block_a_local_final(self):
-        class Model:
-            def transcribe(self, *args, **options):
-                return iter([]), None
-
-        speech = module.Speech(Model(), remotes=dict)
-        self.assertTrue(speech.model_lock.acquire(blocking=False))
-        speech.model_lock.release()
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.serve(directory, b"", 1, trickle=True)
-            speech.remotes = lambda: {"no": path}
-            take = self.take(speech)
-            speech.model_lock.acquire()
-            try:
-                result = []
-                worker = threading.Thread(target=lambda: result.append(
-                    speech.transcribe_take(take, b"\x00\x10" * 100, final=False)), daemon=True)
-                worker.start()
-                # the remote interim never takes the lock, so a final can take it at once
-                self.assertTrue(speech.model_lock.locked())
-            finally:
-                speech.model_lock.release()
-            self.assertTrue(speech.model_lock.acquire(timeout=0.5))
-            speech.model_lock.release()
-            take.interim_abort.set()
-            worker.join(timeout=3)
-            self.assertEqual(result, [""])
-
     def test_a_trickling_server_hits_the_total_deadline(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.serve(directory, b"", 1, trickle=True)
@@ -723,7 +695,7 @@ time.sleep(60)
             replies, log = self.run_stop(speech)
             self.assertEqual(replies, [{"session": 4, "text": "w"}])
             self.assertLess(time.monotonic() - began, 1.5, "a final never waits for an interim")
-            self.assertRegex(log, r"session 4: language en, backend local, lock wait 0\.\d\ds, "
+            self.assertRegex(log, r"session 4: language en, backend local, "
                                   r"decode 0\.\d\ds, stop to reply \d+\.\d\ds")
         finally:
             release.set()
@@ -752,11 +724,41 @@ time.sleep(60)
         self.assertEqual(replies[0]["session"], 4)
         self.assertIn("error", replies[0])
 
+    def test_a_stop_during_stuck_finals_still_gets_its_own_reply(self):
+        release = threading.Event()
+        started = threading.Semaphore(0)
+        segment = types.SimpleNamespace(text="w", no_speech_prob=0, avg_logprob=0)
+        calls = []
+
+        class Model:
+            def transcribe(self, path, **options):
+                calls.append(path)
+                if len(calls) <= 2:
+                    started.release()
+                    release.wait(10)
+                return iter([segment]), None
+
+        speech = module.Speech(Model(), sources=lambda: [None])
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+                for session in (1, 2):
+                    self.final_take(speech, session)
+                    speech.stop(session, True)
+                    speech.releasing.worker.join(1)
+                    self.assertTrue(started.acquire(timeout=3))
+            self.final_take(speech, 3)
+            replies, _ = self.run_stop(speech, 3)
+            self.assertEqual(replies, [{"session": 3, "text": "w"}])
+        finally:
+            release.set()
+
     def test_busy_transcriptions_reply_with_an_error(self):
         speech = module.Speech(types.SimpleNamespace(), sources=lambda: [None])
         self.final_take(speech)
-        self.assertTrue(speech.transcriptions.acquire(blocking=False))
-        self.assertTrue(speech.transcriptions.acquire(blocking=False))
+        for _ in range(module.MAX_PENDING_FINALS):
+            self.assertTrue(speech.transcriptions.acquire(blocking=False))
         replies, _ = self.run_stop(speech)
         self.assertEqual(replies, [{"session": 4, "error": "busy"}])
 

@@ -19,6 +19,7 @@ MAX_LINE = 65536
 MAX_AUDIO_SECONDS = 60
 INTERIM_BYTES = 16000 * 2
 SILENCE_PEAK = 64
+MAX_PENDING_FINALS = 4
 DEFAULT_SPEECH_TAIL_MS = 150
 MAX_SPEECH_TAIL_MS = MAX_AUDIO_SECONDS * 1000
 
@@ -312,7 +313,6 @@ class Take:
         self.worker = None
         self.stopped = time.monotonic()
         self.backend = "local"
-        self.waited = 0.0
         self.decoded = 0.0
 
     def poll(self):
@@ -337,8 +337,7 @@ class Speech:
         self.releasing = None
         self.capture = None
         self.session = None
-        self.model_lock = threading.Lock()
-        self.transcriptions = threading.BoundedSemaphore(2)
+        self.transcriptions = threading.BoundedSemaphore(MAX_PENDING_FINALS)
         self.interims = threading.BoundedSemaphore(1)
 
     def set_vocabulary(self, vocabulary):
@@ -443,8 +442,7 @@ class Speech:
     def transcribe_take(self, take, audio, *, final):
         """Transcribe with the backend the take resolved at its start.
 
-        Only a local final takes the model lock, and an interim never does: the lock only
-        orders finals, so a final cannot wait behind an interim's decode. A remote failure
+        No call waits for another: a final never queues behind an interim or an earlier final. A remote failure
         falls back to the local model for a final; an interim then yields nothing."""
         if take.remote:
             try:
@@ -461,13 +459,11 @@ class Speech:
                     return ""
         if final:
             take.backend = "local"
-            asked = time.monotonic()
-            with self.model_lock:
-                began = time.monotonic()
-                try:
-                    return self.transcribe_audio(audio, take.prompt, language=take.language)
-                finally:
-                    take.waited, take.decoded = began - asked, time.monotonic() - began
+            began = time.monotonic()
+            try:
+                return self.transcribe_audio(audio, take.prompt, language=take.language)
+            finally:
+                take.decoded = time.monotonic() - began
         return self.transcribe_audio(audio, take.prompt, retry=False,
                                      abort=take.interim_abort, beam_size=1,
                                      language=take.language)
@@ -540,7 +536,7 @@ class Speech:
         def answer(value):
             reply({"session": session, **value})
             log(f"session {session}: language {take.language}, backend {take.backend}, "
-                f"lock wait {take.waited:.2f}s, decode {take.decoded:.2f}s, "
+                f"decode {take.decoded:.2f}s, "
                 f"stop to reply {time.monotonic() - take.stopped:.2f}s")
 
         if not finished:
