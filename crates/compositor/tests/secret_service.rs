@@ -16,6 +16,8 @@ mod secret_service {
     use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
     use zbus::{Guid, fdo};
 
+    type SecretReply = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
+
     const COLLECTION_PATH: &str = "/org/freedesktop/secrets/collection/default";
     const PROMPT_PATH: &str = "/org/freedesktop/secrets/prompt/u1";
     const SHORT_PROMPT_TIMEOUT: Duration = Duration::from_millis(300);
@@ -47,6 +49,11 @@ mod secret_service {
     struct FakeService(Shared);
 
     #[zbus::interface(name = "org.freedesktop.Secret.Service")]
+    #[expect(
+        clippy::unused_self,
+        clippy::used_underscore_binding,
+        reason = "the fake ignores arguments it does not need; the macro reads the names"
+    )]
     impl FakeService {
         fn open_session(
             &self,
@@ -106,19 +113,11 @@ mod secret_service {
     impl FakeItem {
         #[zbus(property)]
         fn label(&self) -> String {
-            self.0.with(|store| {
-                store
-                    .entries
-                    .get(self.1)
-                    .map(|entry| entry.0.clone())
-                    .unwrap_or_default()
-            })
+            self.0
+                .with(|store| store.entries.get(self.1).map_or_default(|entry| entry.0.clone()))
         }
 
-        fn get_secret(
-            &self,
-            session: OwnedObjectPath,
-        ) -> fdo::Result<((OwnedObjectPath, Vec<u8>, Vec<u8>, String),)> {
+        fn get_secret(&self, session: OwnedObjectPath) -> fdo::Result<(SecretReply,)> {
             self.0.with(|store| {
                 if store.locked {
                     return Err(fdo::Error::AccessDenied("locked".to_owned()));
@@ -126,8 +125,7 @@ mod secret_service {
                 let value = store
                     .entries
                     .get(self.1)
-                    .map(|entry| entry.1.clone().into_bytes())
-                    .unwrap_or_default();
+                    .map_or_default(|entry| entry.1.clone().into_bytes());
                 Ok(((session, Vec::new(), value, "text/plain".to_owned()),))
             })
         }
@@ -136,6 +134,7 @@ mod secret_service {
     struct FakePrompt(Shared);
 
     #[zbus::interface(name = "org.freedesktop.Secret.Prompt")]
+    #[expect(clippy::used_underscore_binding, reason = "the macro reads the argument name")]
     impl FakePrompt {
         fn prompt(&self, _window_id: &str) {
             self.0.with(|store| {
