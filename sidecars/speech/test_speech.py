@@ -701,6 +701,33 @@ time.sleep(60)
         self.assertLess(time.monotonic() - began, 1.5)
         self.assertIn("stop to reply", log)
 
+    def test_final_replies_while_an_interim_is_stuck_inside_the_model(self):
+        stuck = threading.Event()
+        release = threading.Event()
+        segment = types.SimpleNamespace(text="w", no_speech_prob=0, avg_logprob=0)
+
+        class Model:
+            def transcribe(self, path, **options):
+                if options.get("beam_size") == 1:
+                    stuck.set()
+                    release.wait(10)  # a decode that never reaches a segment boundary
+                return iter([segment]), None
+
+        speech = module.Speech(Model(), sources=lambda: [None])
+        take, _ = self.final_take(speech)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                speech.interim(4, bytes(take.recordings[0].audio), take)
+            self.assertTrue(stuck.wait(3))
+            began = time.monotonic()
+            replies, log = self.run_stop(speech)
+            self.assertEqual(replies, [{"session": 4, "text": "w"}])
+            self.assertLess(time.monotonic() - began, 1.5, "a final never waits for an interim")
+            self.assertRegex(log, r"session 4: language en, backend local, lock wait 0\.\d\ds, "
+                                  r"decode 0\.\d\ds, stop to reply \d+\.\d\ds")
+        finally:
+            release.set()
+
     def test_interims_use_a_narrow_beam(self):
         beams = []
 

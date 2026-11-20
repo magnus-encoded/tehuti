@@ -311,6 +311,9 @@ class Take:
         self.interim_abort = threading.Event()
         self.worker = None
         self.stopped = time.monotonic()
+        self.backend = "local"
+        self.waited = 0.0
+        self.decoded = 0.0
 
     def poll(self):
         if any(r.process.poll() is None for r in self.recordings):
@@ -440,28 +443,34 @@ class Speech:
     def transcribe_take(self, take, audio, *, final):
         """Transcribe with the backend the take resolved at its start.
 
-        Only the local backend takes the model lock. A remote failure falls back to the
-        local model for a final; an interim then yields nothing."""
+        Only a local final takes the model lock, and an interim never does: the lock only
+        orders finals, so a final cannot wait behind an interim's decode. A remote failure
+        falls back to the local model for a final; an interim then yields nothing."""
         if take.remote:
             try:
-                return remote_transcribe(take.remote, audio, take.prompt, final,
+                began = time.monotonic()
+                text = remote_transcribe(take.remote, audio, take.prompt, final,
                                          None if final else take.interim_abort)
+                if final:
+                    take.backend, take.decoded = "remote", time.monotonic() - began
+                return text
             except (OSError, ValueError, RuntimeError, TimeoutError) as error:
                 log(f"remote transcription failed ({error}); "
                     + ("using the local model" if final else "interim skipped"), level="WARN")
                 if not final:
                     return ""
         if final:
+            take.backend = "local"
+            asked = time.monotonic()
             with self.model_lock:
-                return self.transcribe_audio(audio, take.prompt, language=take.language)
-        if not self.model_lock.acquire(blocking=False):
-            return ""
-        try:
-            return self.transcribe_audio(audio, take.prompt, retry=False,
-                                         abort=take.interim_abort, beam_size=1,
-                                         language=take.language)
-        finally:
-            self.model_lock.release()
+                began = time.monotonic()
+                try:
+                    return self.transcribe_audio(audio, take.prompt, language=take.language)
+                finally:
+                    take.waited, take.decoded = began - asked, time.monotonic() - began
+        return self.transcribe_audio(audio, take.prompt, retry=False,
+                                     abort=take.interim_abort, beam_size=1,
+                                     language=take.language)
 
     def interim(self, session, audio, capture):
         if not self.interims.acquire(blocking=False):
@@ -530,7 +539,9 @@ class Speech:
 
         def answer(value):
             reply({"session": session, **value})
-            log(f"session {session}: stop to reply {time.monotonic() - take.stopped:.2f}s")
+            log(f"session {session}: language {take.language}, backend {take.backend}, "
+                f"lock wait {take.waited:.2f}s, decode {take.decoded:.2f}s, "
+                f"stop to reply {time.monotonic() - take.stopped:.2f}s")
 
         if not finished:
             answer({"error": "capture did not finish"})
