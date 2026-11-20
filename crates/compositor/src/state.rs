@@ -4408,7 +4408,7 @@ impl SeatHandler for Compositor {
             seat,
             focused.and_then(smithay::reexports::wayland_server::Resource::client),
         );
-        self.text_input.focus(focused.cloned());
+        self.text_input.focus(focused);
         self.taps.focus_changed();
         // smithay holds the keyboard lock here; a dispatch can relayout and call
         // `set_focus` again, which deadlocks. Defer it until the lock is released.

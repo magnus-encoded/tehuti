@@ -98,7 +98,7 @@ impl TextInput {
         self.focus.as_ref().and_then(|weak| weak.upgrade().ok())
     }
 
-    pub(crate) fn focus(&mut self, focus: Option<WlSurface>) {
+    pub(crate) fn focus(&mut self, focus: Option<&WlSurface>) {
         let previous = self.focused_surface();
         for instance in &mut self.instances {
             if let Some(old) = &previous
@@ -112,13 +112,13 @@ impl TextInput {
             instance.pending_kind = None;
             instance.surrounding = None;
             instance.pending_surrounding = SurroundingUpdate::Unchanged;
-            if let Some(surface) = &focus
+            if let Some(surface) = focus
                 && instance.resource.id().same_client_as(&surface.id())
             {
                 instance.resource.enter(surface);
             }
         }
-        self.focus = focus.as_ref().map(Resource::downgrade);
+        self.focus = focus.map(Resource::downgrade);
     }
 
     pub(crate) fn edit_keyboard(&self, edit: &tehuti_core::keyboard::Edit) {
