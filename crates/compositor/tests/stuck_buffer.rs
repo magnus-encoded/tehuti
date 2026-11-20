@@ -169,6 +169,7 @@ mod stuck_buffer {
                 thread::sleep(Duration::from_millis(1));
             }
         }
+        drop(held_reads);
     }
 
     fn pump(display: &mut Display<Compositor>, compositor: &mut Compositor) {
@@ -219,7 +220,7 @@ mod stuck_buffer {
             let (ready, received) = mpsc::channel();
             let (stop, stopped) = mpsc::channel();
             let thread = thread::spawn(move || {
-                client(stream, &pipe_write, &ready, &stopped, (commits, destroy_first))
+                client(stream, &pipe_write, &ready, &stopped, (commits, destroy_first));
             });
             let started = Instant::now();
             while received.try_recv().is_err() {
@@ -334,12 +335,10 @@ mod stuck_buffer {
         let probes = scene.compositor.held_gate_probes();
         assert_eq!(probes.len(), 2, "both gates are held first");
         scene.stop.send(()).unwrap();
-        if destroy_first {
-            scene.settle();
-        } else {
+        if !destroy_first {
             scene.finish();
-            scene.settle();
         }
+        scene.settle();
         let waiting = scene.compositor.buffers_waiting();
         let alive = probes.iter().filter(|gate| gate.upgrade().is_some()).count();
         if destroy_first {
