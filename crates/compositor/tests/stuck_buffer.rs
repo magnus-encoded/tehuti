@@ -271,11 +271,6 @@ mod stuck_buffer {
         }
         assert_eq!(compositor.buffers_waiting(), 1, "the buffer is held first");
         stop.send(()).unwrap();
-        if destroy_first {
-            thread::sleep(Duration::from_millis(50));
-        } else {
-            thread.join().unwrap();
-        }
         for _ in 0..50 {
             pump(&mut display, &mut compositor);
             compositor.advance_time();
@@ -283,8 +278,8 @@ mod stuck_buffer {
         let waiting = compositor.buffers_waiting();
         if destroy_first {
             stop.send(()).unwrap();
-            thread.join().unwrap();
         }
+        thread.join().unwrap();
         waiting
     }
 
