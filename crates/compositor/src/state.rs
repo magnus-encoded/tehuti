@@ -984,7 +984,10 @@ impl Compositor {
     /// Lets held commits through once their client buffers became ready.
     fn release_ready_buffers(&mut self) {
         let display = self.display.clone();
-        for client in self.waiting_buffers.take_ready(Instant::now()) {
+        for surface in self.waiting_buffers.take_ready(Instant::now()) {
+            let Some(client) = smithay::reexports::wayland_server::Resource::client(&surface) else {
+                continue;
+            };
             let state = self.client_compositor_state(&client);
             state.blocker_cleared(self, &display);
         }
@@ -1010,9 +1013,6 @@ impl Compositor {
         }) else {
             return;
         };
-        let Some(client) = smithay::reexports::wayland_server::Resource::client(surface) else {
-            return;
-        };
         let name = with_states(surface, |states| {
             states
                 .data_map
@@ -1035,7 +1035,15 @@ impl Compositor {
             return;
         }
         add_blocker(surface, crate::buffer_gate::BufferBlocker(gate.clone()));
-        self.waiting_buffers.push(surface.clone(), client, gate);
+        with_states(surface, |states| {
+            let _fresh = states
+                .data_map
+                .insert_if_missing_threadsafe(crate::buffer_gate::Held::default);
+            if let Some(held) = states.data_map.get::<crate::buffer_gate::Held>() {
+                *held.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+            }
+        });
+        self.waiting_buffers.push(surface);
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {

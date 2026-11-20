@@ -5,7 +5,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use smithay::{
-    reexports::wayland_server::{Client, Resource as _, protocol::wl_surface::WlSurface},
+    reexports::wayland_server::{Resource as _, Weak, protocol::wl_surface::WlSurface},
+    wayland::compositor::with_states,
     wayland::compositor::{Blocker, BlockerState},
 };
 use std::{
@@ -85,24 +86,38 @@ impl Blocker for BufferBlocker {
     }
 }
 
-/// Gates waiting on their buffers, with the client each belongs to.
+/// The gate held on a surface, kept in the surface's own data so it is dropped with the surface.
 #[derive(Debug, Default)]
-pub struct Waiting(Vec<(WlSurface, Client, Arc<Gate>)>);
+pub struct Held(pub std::sync::Mutex<Option<Arc<Gate>>>);
+
+/// Weak handles to surfaces that hold a gate; they keep nothing alive.
+#[derive(Debug, Default)]
+pub struct Waiting(Vec<Weak<WlSurface>>);
 
 impl Waiting {
-    pub fn push(&mut self, surface: WlSurface, client: Client, gate: Arc<Gate>) {
-        self.0.push((surface, client, gate));
+    pub fn push(&mut self, surface: &WlSurface) {
+        self.0.push(surface.downgrade());
     }
 
-    /// Removes the gates that became ready and returns their clients.
-    pub fn take_ready(&mut self, now: Instant) -> Vec<Client> {
+    /// Forgets dead surfaces and surfaces whose buffer became ready, returning the latter.
+    pub fn take_ready(&mut self, now: Instant) -> Vec<WlSurface> {
         let mut ready = Vec::new();
-        // A destroyed surface or a disconnected client frees its gate and fds.
-        self.0.retain(|(surface, _, _)| surface.is_alive());
-        self.0.retain(|(_, client, gate)| {
-            let done = gate.ready(now);
+        self.0.retain(|weak| {
+            let Ok(surface) = weak.upgrade() else {
+                return false;
+            };
+            let done = with_states(&surface, |states| {
+                states.data_map.get::<Held>().is_none_or(|held| {
+                    let mut held = held.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let done = held.as_ref().is_none_or(|gate| gate.ready(now));
+                    if done {
+                        *held = None;
+                    }
+                    done
+                })
+            });
             if done {
-                ready.push(client.clone());
+                ready.push(surface);
             }
             !done
         });
