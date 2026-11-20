@@ -19,6 +19,7 @@ pub mod width_rewrite;
 
 pub(crate) mod text_input;
 
+pub(crate) mod plugin_session;
 pub mod plugins;
 
 pub mod say;
@@ -28,6 +29,7 @@ pub mod notice;
 
 pub mod secret_confirmation;
 pub mod secret_delivery;
+pub mod secret_service;
 
 pub mod client_env;
 pub mod desktop;

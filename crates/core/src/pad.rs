@@ -79,6 +79,42 @@ pub struct Pad {
     pub model: Identity,
     pub origin: Origin,
     pub presence: Presence,
+    /// Buttons pressed and not yet released; a drop releases them once.
+    pub held: Vec<ButtonName>,
+}
+
+/// What the compositor must do after a pad changes state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PadEffect {
+    /// Send a release for each of these buttons.
+    ReleaseHeld(Vec<ButtonName>),
+    /// Drop whatever the input gate remembers about this pad.
+    ForgetGate,
+}
+
+impl Pad {
+    /// Records a press or release so a drop knows what is held.
+    pub fn on_button(&mut self, name: ButtonName, pressed: bool) {
+        self.held.retain(|button| *button != name);
+        if pressed {
+            self.held.push(name);
+        }
+    }
+
+    /// The node vanished. Effects come once; a pad already gone yields none.
+    pub fn on_gone(&mut self) -> Vec<PadEffect> {
+        if self.presence == Presence::Gone {
+            return Vec::new();
+        }
+        self.presence = Presence::Gone;
+        let held = core::mem::take(&mut self.held);
+        let mut effects = Vec::new();
+        if !held.is_empty() {
+            effects.push(PadEffect::ReleaseHeld(held));
+        }
+        effects.push(PadEffect::ForgetGate);
+        effects
+    }
 }
 
 /// One pad node as discovery sees it: the facts keying needs, before any key exists.
@@ -96,7 +132,8 @@ pub struct PadSighting {
 /// Keeps pad keys: owns the keying rules and the path-to-key memory between sightings.
 #[derive(Debug, Clone, Default)]
 pub struct PadRoster {
-    known: BTreeMap<PathBuf, PadKey>,
+    known: BTreeMap<PathBuf, Pad>,
+    effects: Vec<(PathBuf, PadEffect)>,
 }
 
 impl PadRoster {
@@ -112,7 +149,7 @@ impl PadRoster {
         let mut taken: BTreeSet<String> = sightings
             .iter()
             .filter_map(|sighting| self.known.get(&sighting.path))
-            .map(|key| key.0.clone())
+            .map(|pad| pad.key.0.clone())
             .collect();
         let mut counts = BTreeMap::<String, usize>::new();
         let mut next = BTreeMap::new();
@@ -123,40 +160,65 @@ impl PadRoster {
                 let model_name = model.model_name(&sighting.name);
                 let count = counts.entry(model_name.clone()).or_default();
                 *count = count.saturating_add(1);
-                let key = self.known.get(&sighting.path).cloned().unwrap_or_else(|| {
-                    let identity = &sighting.uniq;
-                    let name = &sighting.name;
-                    let candidates = (1_usize..).map(|index| match (identity.is_empty(), index) {
-                        (false, 1) => identity.clone(),
-                        (false, _) => format!("{identity}#{index}"),
-                        (true, _) => format!("{name}#{index}"),
-                    });
-                    let free = candidates
-                        .into_iter()
-                        .find(|key| !taken.contains(key))
-                        .unwrap_or_default();
-                    let _fresh = taken.insert(free.clone());
-                    PadKey(free)
-                });
-                let _old = next.insert(sighting.path.clone(), key.clone());
+                let key = self.known.get(&sighting.path).map_or_else(
+                    || {
+                        let identity = &sighting.uniq;
+                        let name = &sighting.name;
+                        let candidates = (1_usize..).map(|index| match (identity.is_empty(), index) {
+                            (false, 1) => identity.clone(),
+                            (false, _) => format!("{identity}#{index}"),
+                            (true, _) => format!("{name}#{index}"),
+                        });
+                        let free = candidates
+                            .into_iter()
+                            .find(|key| !taken.contains(key))
+                            .unwrap_or_default();
+                        let _fresh = taken.insert(free.clone());
+                        PadKey(free)
+                    },
+                    |pad| pad.key.clone(),
+                );
                 let pad = Pad {
                     key,
                     label: format!("{model_name} #{count}"),
                     model,
                     origin: sighting.origin,
                     presence: Presence::Present,
+                    held: self
+                        .known
+                        .get(&sighting.path)
+                        .map_or_else(Vec::new, |pad| pad.held.clone()),
                 };
+                let _old = next.insert(sighting.path.clone(), pad.clone());
                 (sighting.path, pad)
             })
             .collect();
-        self.known = next;
+        let previous = core::mem::replace(&mut self.known, next);
+        for (path, mut pad) in previous {
+            if !self.known.contains_key(&path) {
+                self.effects
+                    .extend(pad.on_gone().into_iter().map(|effect| (path.clone(), effect)));
+            }
+        }
         pads
     }
 
     /// The key the pad at `path` holds, while it is present.
     #[must_use]
     pub fn key_for(&self, path: &Path) -> Option<&PadKey> {
-        self.known.get(path)
+        self.known.get(path).map(|pad| &pad.key)
+    }
+
+    /// Records a press or release on the pad at `path`.
+    pub fn on_button(&mut self, path: &Path, name: ButtonName, pressed: bool) {
+        if let Some(pad) = self.known.get_mut(path) {
+            pad.on_button(name, pressed);
+        }
+    }
+
+    /// The effects of pads that vanished since the last call, each given once.
+    pub fn take_effects(&mut self) -> Vec<(PathBuf, PadEffect)> {
+        core::mem::take(&mut self.effects)
     }
 }
 
@@ -178,6 +240,7 @@ mod pad_type_tests {
             model: Identity::default(),
             origin: Origin::Bluetooth,
             presence: Presence::Connecting,
+            held: Vec::new(),
         };
         assert_eq!(pad.origin.caption(), "BLUETOOTH");
         assert_eq!(pad.presence.label(), "CONNECTING");

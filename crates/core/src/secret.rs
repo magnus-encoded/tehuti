@@ -123,6 +123,27 @@ pub trait SecretProvider: Send {
     /// # Errors
     /// The provider is unavailable or the requested entry cannot be read.
     fn lookup(&mut self, reference: &SecretReference) -> Result<SecretValue, SecretProviderUnavailable>;
+
+    /// Lists the labels of the stored entries, never their values.
+    ///
+    /// A locked store is unlocked first, because some stores keep labels
+    /// readable only while unlocked.
+    ///
+    /// # Errors
+    /// The provider is unavailable or the store stays locked.
+    fn list_labels(&mut self) -> Result<Vec<String>, SecretProviderUnavailable>;
+
+    /// Unlocks the store, letting the store ask for its own credential.
+    ///
+    /// # Errors
+    /// The provider is unavailable or the store stays locked.
+    fn unlock(&mut self) -> Result<(), SecretProviderUnavailable>;
+
+    /// Locks the store.
+    ///
+    /// # Errors
+    /// The provider is unavailable or the store stays unlocked.
+    fn lock(&mut self) -> Result<(), SecretProviderUnavailable>;
 }
 
 /// A provider result that cannot be cloned or serialized and is redacted by Debug.
@@ -155,6 +176,18 @@ pub struct DenySecretProvider;
 
 impl SecretProvider for DenySecretProvider {
     fn lookup(&mut self, _reference: &SecretReference) -> Result<SecretValue, SecretProviderUnavailable> {
+        Err(SecretProviderUnavailable)
+    }
+
+    fn list_labels(&mut self) -> Result<Vec<String>, SecretProviderUnavailable> {
+        Err(SecretProviderUnavailable)
+    }
+
+    fn unlock(&mut self) -> Result<(), SecretProviderUnavailable> {
+        Err(SecretProviderUnavailable)
+    }
+
+    fn lock(&mut self) -> Result<(), SecretProviderUnavailable> {
         Err(SecretProviderUnavailable)
     }
 }
