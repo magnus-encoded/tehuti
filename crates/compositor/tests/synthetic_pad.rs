@@ -781,7 +781,7 @@ mod synthetic_pad {
 
     fn run_pointer_client(
         stream: UnixStream,
-        ready: &mpsc::Sender<()>,
+        ready: &crate::harness::Notifier<()>,
         scroll_mouse_mode: Option<bool>,
     ) -> App {
         use std::os::fd::AsFd;
@@ -856,16 +856,11 @@ mod synthetic_pad {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
-        let client = thread::spawn(move || run_pointer_client(client, &sender, None));
-        let began = Instant::now();
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || run_pointer_client(client, &sender, None));
         let mut sent = false;
-        while !client.is_finished() {
-            assert!(
-                began.elapsed() < Duration::from_secs(5),
-                "pointer client timed out"
-            );
-            let _events = display.dispatch_clients(&mut compositor).unwrap();
+        harness.serve_turns(&mut display, &mut compositor, |compositor| {
             if !sent && receiver.try_recv().is_ok() {
                 let mut pad = SyntheticPad::default();
                 pad.push(Event::Button {
@@ -890,7 +885,7 @@ mod synthetic_pad {
                         state,
                     });
                 }
-                route(&mut compositor, &mut pad).unwrap();
+                route(compositor, &mut pad).unwrap();
                 assert!(
                     compositor.cursor_location().is_some(),
                     "mouse mode draws a cursor"
@@ -898,10 +893,9 @@ mod synthetic_pad {
                 assert_eq!(compositor.visible_notice_text().as_deref(), Some("MOUSE MODE"));
                 sent = true;
             }
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        let app = client.join().unwrap();
+            client.has_ended()
+        });
+        let app = client.join();
         assert_eq!(
             app.clicks,
             vec![(0x110, PointerState::Pressed), (0x110, PointerState::Released)]
@@ -930,13 +924,11 @@ mod synthetic_pad {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
-        let client = thread::spawn(move || run_pointer_client(stream, &sender, None));
-        let began = Instant::now();
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || run_pointer_client(stream, &sender, None));
         let mut sent = false;
-        while !client.is_finished() {
-            assert!(began.elapsed() < Duration::from_secs(5), "host pointer timed out");
-            let _events = display.dispatch_clients(&mut compositor).unwrap();
+        harness.serve_turns(&mut display, &mut compositor, |compositor| {
             if !sent && receiver.try_recv().is_ok() {
                 compositor.apply_layout_command(tehuti_core::layout::Command::FocusColumnFirst);
                 compositor.host_pointer_motion(10.0, 5.0);
@@ -945,10 +937,9 @@ mod synthetic_pad {
                 compositor.host_pointer_button(PointerButton::Left, false);
                 sent = true;
             }
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        let app = client.join().unwrap();
+            client.has_ended()
+        });
+        let app = client.join();
         // The pointer ends at (112.5, 107.25); the window sits 16 px in from the output corner.
         assert!(app.motions.contains(&(96.5, 91.25)));
         assert_eq!(
@@ -977,21 +968,18 @@ mod synthetic_pad {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
-        let client = thread::spawn(move || run_pointer_client(stream, &sender, Some(true)));
-        let began = Instant::now();
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || run_pointer_client(stream, &sender, Some(true)));
         let mut sent = false;
-        while !client.is_finished() {
-            assert!(began.elapsed() < Duration::from_secs(5), "host scroll timed out");
-            let _events = display.dispatch_clients(&mut compositor).unwrap();
+        harness.serve_turns(&mut display, &mut compositor, |compositor| {
             if !sent && receiver.try_recv().is_ok() {
                 compositor.host_pointer_scroll(0.0, 7.5);
                 sent = true;
             }
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        let app = client.join().unwrap();
+            client.has_ended()
+        });
+        let app = client.join();
         assert_eq!(app.axes.len(), 1, "one scroll reaches the client: {:?}", app.axes);
         let (target, axis, value) = &app.axes[0];
         assert_eq!(
@@ -1027,13 +1015,11 @@ mod synthetic_pad {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
-        let client = thread::spawn(move || run_pointer_client(stream, &sender, None));
-        let began = Instant::now();
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || run_pointer_client(stream, &sender, None));
         let mut sent = false;
-        while !client.is_finished() {
-            assert!(began.elapsed() < Duration::from_secs(5), "host pointer timed out");
-            let _events = display.dispatch_clients(&mut compositor).unwrap();
+        harness.serve_turns(&mut display, &mut compositor, |compositor| {
             if !sent && receiver.try_recv().is_ok() {
                 compositor.apply_layout_command(tehuti_core::layout::Command::FocusColumnFirst);
                 compositor.host_pointer_absolute(0.05, 0.1);
@@ -1048,10 +1034,9 @@ mod synthetic_pad {
                 compositor.host_pointer_button(PointerButton::Right, false);
                 sent = true;
             }
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        let app = client.join().unwrap();
+            client.has_ended()
+        });
+        let app = client.join();
         assert!(!app.motions.is_empty(), "absolute motion reaches the client");
         assert_eq!(
             app.clicks,
@@ -1308,23 +1293,18 @@ mod synthetic_pad {
                 .handle()
                 .insert_client(server, Arc::new(ClientState::default()))
                 .unwrap();
-            let (sender, receiver) = mpsc::channel();
-            let client = thread::spawn(move || run_pointer_client(client, &sender, Some(mouse_mode)));
-            let began = Instant::now();
+            let mut harness = crate::harness::Harness::new();
+            let (sender, receiver) = harness.channel();
+            let client = harness.client(move || run_pointer_client(client, &sender, Some(mouse_mode)));
             let mut sent = false;
-            while !client.is_finished() {
-                assert!(
-                    began.elapsed() < Duration::from_secs(5),
-                    "scroll client timed out"
-                );
-                let _events = display.dispatch_clients(&mut compositor).unwrap();
+            harness.serve_turns(&mut display, &mut compositor, |compositor| {
                 if !sent && receiver.try_recv().is_ok() {
                     let mut pad = SyntheticPad::default();
-                    deflect_sticks_in_passthrough(&mut compositor, &mut pad);
-                    toggle_pointer_mode(&mut compositor);
+                    deflect_sticks_in_passthrough(compositor, &mut pad);
+                    toggle_pointer_mode(compositor);
                     let cursor = compositor.cursor_location();
                     if !mouse_mode {
-                        toggle_pointer_mode(&mut compositor);
+                        toggle_pointer_mode(compositor);
                     }
                     compositor.sample_sticks(tehuti_core::dispatch::Sticks {
                         left: (0, 0),
@@ -1333,11 +1313,11 @@ mod synthetic_pad {
                     pad.push(Event::Tick {
                         elapsed: Duration::from_millis(10),
                     });
-                    route(&mut compositor, &mut pad).unwrap();
+                    route(compositor, &mut pad).unwrap();
                     compositor.sample_sticks(tehuti_core::dispatch::Sticks::default());
                     if !mouse_mode {
                         assert_eq!(compositor.cursor_location(), None);
-                        toggle_pointer_mode(&mut compositor);
+                        toggle_pointer_mode(compositor);
                     }
                     assert_eq!(
                         compositor.cursor_location(),
@@ -1346,10 +1326,9 @@ mod synthetic_pad {
                     );
                     sent = true;
                 }
-                display.flush_clients().unwrap();
-                thread::sleep(Duration::from_millis(1));
-            }
-            let _app = client.join().unwrap();
+                client.has_ended()
+            });
+            let _app = client.join();
         }
     }
 
@@ -1367,7 +1346,7 @@ mod synthetic_pad {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_parent(
                 stream,
@@ -1453,7 +1432,7 @@ mod synthetic_pad {
             return;
         };
         let stream = UnixStream::connect(socket).unwrap();
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, _receiver) = crate::harness::silent_channel();
         let app = run_client_with_app_id(stream, "player", "player", ClientTextState::Absent, &sender);
         assert!(app.keys.contains(&(1, KeyState::Pressed)));
         assert!(app.keys.contains(&(1, KeyState::Released)));
@@ -1464,7 +1443,7 @@ mod synthetic_pad {
         stream: UnixStream,
         app_id: &str,
         text_state: ClientTextState,
-        ready: &mpsc::Sender<()>,
+        ready: &crate::harness::Notifier<()>,
     ) -> App {
         let initial_app_id = if app_id == "test" { "other" } else { "test" };
         run_client_with_app_id(stream, app_id, initial_app_id, text_state, ready)
@@ -1475,7 +1454,7 @@ mod synthetic_pad {
         app_id: &str,
         initial_app_id: &str,
         text_state: ClientTextState,
-        ready: &mpsc::Sender<()>,
+        ready: &crate::harness::Notifier<()>,
     ) -> App {
         run_client_with_parent(stream, app_id, initial_app_id, text_state, ready, None)
     }
@@ -1485,7 +1464,7 @@ mod synthetic_pad {
         app_id: &str,
         initial_app_id: &str,
         text_state: ClientTextState,
-        ready: &mpsc::Sender<()>,
+        ready: &crate::harness::Notifier<()>,
         parent_app_id: Option<&str>,
     ) -> App {
         let connection = Connection::from_socket(stream).unwrap();
@@ -1881,8 +1860,9 @@ mod synthetic_pad {
         compositor.set_contexts(vec![tehuti_protocol::parse_context(
             "app_id = 'test'\n[buttons]\n[speech]\nnotice = { notify = 'Ready' }\nunknown = { launch = 'tehuti-missing-entry-9.desktop' }\nclose = { close = 'focused' }"
         ).unwrap()]);
-        let first = start_action_client(&mut display, &mut compositor);
-        let second = start_action_client(&mut display, &mut compositor);
+        let mut harness = crate::harness::Harness::new();
+        let first = start_action_client(&mut harness, &mut display, &mut compositor);
+        let second = start_action_client(&mut harness, &mut display, &mut compositor);
         for (phrase, notice) in [("notice", "Ready"), ("unknown", "APPLICATION UNAVAILABLE")] {
             compositor.handle(&Event::Speech {
                 text: tehuti_protocol::Text::new(phrase.into()).unwrap(),
@@ -1896,20 +1876,11 @@ mod synthetic_pad {
             name: ButtonName::South,
             state: ButtonState::Pressed,
         });
-        let began = Instant::now();
-        while !first.is_finished() || !second.is_finished() {
-            assert!(
-                began.elapsed() < Duration::from_secs(5),
-                "close or focus transfer stalled"
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        let closed = second.join().unwrap();
+        harness.serve_until_ended(&mut display, &mut compositor, &[&first, &second]);
+        let closed = second.join();
         assert!(closed.close_requested, "the focused client received close");
         assert!(closed.keys.is_empty(), "the closed client received no later key");
-        let remaining = first.join().unwrap();
+        let remaining = first.join();
         assert!(!remaining.close_requested, "the remaining client stayed open");
         assert_eq!(
             remaining.keys,
@@ -1985,7 +1956,8 @@ mod synthetic_pad {
                 ))
                 .unwrap(),
             ]);
-            let client = start_action_client(&mut display, &mut compositor);
+            let mut harness = crate::harness::Harness::new();
+            let client = start_action_client(&mut harness, &mut display, &mut compositor);
             let snapshot = compositor.layout_snapshot();
             let output = &snapshot.outputs[0];
             let tile = &output.workspaces[output.active_workspace].columns[0].tiles[0];
@@ -1997,14 +1969,8 @@ mod synthetic_pad {
                 name: ButtonName::South,
                 state: ButtonState::Pressed,
             });
-            let began = Instant::now();
-            while !client.is_finished() {
-                assert!(began.elapsed() < Duration::from_secs(5));
-                let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-                display.flush_clients().unwrap();
-                thread::sleep(Duration::from_millis(1));
-            }
-            let app = client.join().unwrap();
+            harness.serve_until_ended(&mut display, &mut compositor, &[&client]);
+            let app = client.join();
             assert_eq!(app.window_configures[0].2, expected);
             if expected {
                 assert!(app.window_configures[0].0 > 0);
@@ -2024,9 +1990,10 @@ mod synthetic_pad {
             )
             .unwrap(),
         ]);
+        let mut harness = crate::harness::Harness::new();
         let clients: Vec<_> = (0..3)
             .map(|_| {
-                let client = start_action_client(&mut display, &mut compositor);
+                let client = start_action_client(&mut harness, &mut display, &mut compositor);
                 assert_geometry_matches_snapshot(&compositor);
                 client
             })
@@ -2058,13 +2025,7 @@ mod synthetic_pad {
             });
             assert_geometry_matches_snapshot(&compositor);
         }
-        let began = Instant::now();
-        while !clients.iter().all(thread::JoinHandle::is_finished) {
-            assert!(began.elapsed() < Duration::from_secs(5), "close stalled");
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
+        harness.serve_until_ended(&mut display, &mut compositor, &clients.iter().collect::<Vec<_>>());
         let snapshot = compositor.layout_snapshot();
         assert!(
             snapshot.focused_window.is_none(),
@@ -2124,8 +2085,9 @@ mod synthetic_pad {
             )
             .unwrap(),
         ]);
+        let mut harness = crate::harness::Harness::new();
         let clients: Vec<_> = (0..2)
-            .map(|_| start_action_client(&mut display, &mut compositor))
+            .map(|_| start_action_client(&mut harness, &mut display, &mut compositor))
             .collect();
         let mut trace = Vec::new();
         for chord in chords {
@@ -2143,13 +2105,7 @@ mod synthetic_pad {
                 text: tehuti_protocol::Text::new("close".into()).unwrap(),
             });
         }
-        let began = Instant::now();
-        while !clients.iter().all(thread::JoinHandle::is_finished) {
-            assert!(began.elapsed() < Duration::from_secs(5), "close stalled");
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
+        harness.serve_until_ended(&mut display, &mut compositor, &clients.iter().collect::<Vec<_>>());
         trace
     }
 
@@ -2193,30 +2149,25 @@ mod synthetic_pad {
     }
 
     fn start_action_client(
+        harness: &mut crate::harness::Harness,
         display: &mut Display<Compositor>,
         compositor: &mut Compositor,
-    ) -> thread::JoinHandle<App> {
+    ) -> crate::harness::Client<App> {
         let (server, client) = UnixStream::pair().unwrap();
         let _inserted = display
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
-        let worker = thread::spawn(move || run_client(client, "test", ClientTextState::Absent, &sender));
-        let began = Instant::now();
-        while receiver.try_recv().is_err() {
-            assert!(began.elapsed() < Duration::from_secs(5), "client setup stalled");
-            let _dispatched = display.dispatch_clients(compositor).unwrap();
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
+        let (sender, receiver) = harness.channel();
+        let worker = harness.client(move || run_client(client, "test", ClientTextState::Absent, &sender));
+        harness.serve_until(display, compositor, || receiver.try_recv().is_ok());
         worker
     }
 
     fn run_committing_windows(
         client: UnixStream,
         receive: &mpsc::Receiver<(usize, bool)>,
-        done: &mpsc::Sender<()>,
+        done: &crate::harness::Notifier<()>,
     ) {
         use std::os::fd::AsFd;
         use wayland_client::protocol::wl_shm::{Format, WlShm};
@@ -2275,15 +2226,10 @@ mod synthetic_pad {
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
         let (commands, receive) = mpsc::channel::<(usize, bool)>();
-        let (done, completed) = mpsc::channel();
-        let worker = thread::spawn(move || run_committing_windows(client, &receive, &done));
-        let began = Instant::now();
-        while completed.try_recv().is_err() {
-            assert!(began.elapsed() < Duration::from_secs(5), "client setup stalled");
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
+        let mut harness = crate::harness::Harness::new();
+        let (done, completed) = harness.channel();
+        let worker = harness.client(move || run_committing_windows(client, &receive, &done));
+        harness.serve_until(&mut display, &mut compositor, || completed.try_recv().is_ok());
         assert!(
             compositor
                 .destinations()
@@ -2312,7 +2258,7 @@ mod synthetic_pad {
             tehuti::destinations::Target::Application("test".into())
         );
         drop(commands);
-        worker.join().unwrap();
+        worker.join();
     }
 
     #[test]
@@ -2325,16 +2271,11 @@ mod synthetic_pad {
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
         let (commands, receive) = mpsc::channel::<(usize, bool)>();
-        let (done, completed) = mpsc::channel();
-        let worker = thread::spawn(move || run_committing_windows(client, &receive, &done));
-        let pump = |server_display: &mut Display<Compositor>, state: &mut Compositor| {
-            let began = Instant::now();
-            while completed.try_recv().is_err() {
-                assert!(began.elapsed() < Duration::from_secs(5), "commit stalled");
-                let _dispatched = server_display.dispatch_clients(state).unwrap();
-                server_display.flush_clients().unwrap();
-                thread::sleep(Duration::from_millis(1));
-            }
+        let mut harness = crate::harness::Harness::new();
+        let (done, completed) = harness.channel();
+        let worker = harness.client(move || run_committing_windows(client, &receive, &done));
+        let mut pump = |server_display: &mut Display<Compositor>, state: &mut Compositor| {
+            harness.serve_until(server_display, state, || completed.try_recv().is_ok());
         };
         pump(&mut display, &mut compositor);
         compositor.speech_input(tehuti_core::speech::SpeechInput::Available);
@@ -2366,7 +2307,7 @@ mod synthetic_pad {
             }
         }
         drop(commands);
-        worker.join().unwrap();
+        worker.join();
     }
 
     #[test]
@@ -2391,7 +2332,7 @@ mod synthetic_pad {
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
         let client =
             thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
         let began = Instant::now();
@@ -2700,7 +2641,7 @@ mod synthetic_pad {
     #[test]
     fn plugins_that_never_read_stall_or_flood_cannot_block_input_or_escape() {
         for mode in ["never_read", "stalled", "flood", "overlong_flood"] {
-            let (sender, receiver) = mpsc::channel();
+            let (sender, receiver) = crate::harness::silent_channel();
             let worker = thread::spawn(move || {
                 exercise_unresponsive_plugin(mode);
                 sender.send(()).unwrap();
@@ -2735,7 +2676,7 @@ mod synthetic_pad {
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
         wait_for_focused_plugin(&mut display, &mut compositor, &mut event_loop, &receiver);
         thread::sleep(Duration::from_millis(150));
@@ -2856,7 +2797,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
         let client =
             thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
         let started = Instant::now();
@@ -3031,7 +2972,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
 
         let mut pad = SyntheticPad::default();
@@ -3083,7 +3024,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let worker = thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
@@ -3121,17 +3062,12 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
         let worker =
-            thread::spawn(move || run_client(client_end, "firefox", ClientTextState::Absent, &sender));
+            harness.client(move || run_client(client_end, "firefox", ClientTextState::Absent, &sender));
         let mut sent = false;
-        let began = Instant::now();
-        while !worker.is_finished() {
-            assert!(
-                began.elapsed() < Duration::from_secs(5),
-                "shortcut delivery stalled"
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
+        harness.serve_turns(&mut display, &mut compositor, |compositor| {
             if !sent && receiver.try_recv().is_ok() {
                 sent = true;
                 for &name in buttons {
@@ -3149,10 +3085,9 @@ else:
                     state: ButtonState::Pressed,
                 });
             }
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        worker.join().unwrap()
+            worker.has_ended()
+        });
+        worker.join()
     }
 
     fn run_shortcut_layout_variants() -> bool {
@@ -3311,7 +3246,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3411,7 +3346,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3465,8 +3400,9 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
-        let client = thread::spawn(move || {
+        let (sender, receiver) = crate::harness::silent_channel();
+        let mut harness = crate::harness::Harness::new();
+        let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
         let started = Instant::now();
@@ -3488,19 +3424,10 @@ else:
         let letter_a = Keycode::new(30 + 8);
         compositor.host_key(letter_a, true);
         compositor.host_key(letter_a, false);
-        while !client.is_finished() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "destination input stalled"
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
+        harness.serve_until_ended(&mut display, &mut compositor, &[&client]);
         assert_upward_workspace_feedback(&compositor);
         let trace: Vec<_> = client
             .join()
-            .unwrap()
             .keyboard_trace
             .into_iter()
             .skip_while(|event| !matches!(event, Trace::Key(..)))
@@ -3526,7 +3453,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3582,7 +3509,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3647,7 +3574,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
@@ -3732,7 +3659,7 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let worker =
             thread::spawn(move || run_client(client_end, "mgba-qt", ClientTextState::Absent, &sender));
         let mut pressed_at = None;
@@ -4246,7 +4173,7 @@ for line in sys.stdin:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
         let client =
             thread::spawn(move || run_client(client_end, "test", ClientTextState::Enabled, &ready_sender));
         let started = Instant::now();
@@ -4311,7 +4238,7 @@ for line in sys.stdin:
                     .handle()
                     .insert_client(server_end, Arc::new(ClientState::default()))
                     .unwrap();
-                let (sender, receiver) = mpsc::channel();
+                let (sender, receiver) = crate::harness::silent_channel();
                 let client = thread::spawn(move || {
                     run_client_with_app_id(client_end, "test", "test", text_state, &sender)
                 });
@@ -4386,7 +4313,7 @@ for line in sys.stdin:
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client =
             thread::spawn(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
         let started = Instant::now();
@@ -4435,7 +4362,7 @@ for line in sys.stdin:
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = crate::harness::silent_channel();
         let client = thread::spawn(move || {
             run_client_with_app_id(
                 client,
@@ -4481,7 +4408,7 @@ for line in sys.stdin:
                 .handle()
                 .insert_client(server, Arc::new(ClientState::default()))
                 .unwrap();
-            let (sender, receiver) = mpsc::channel();
+            let (sender, receiver) = crate::harness::silent_channel();
             let client =
                 thread::spawn(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
             let started = Instant::now();
@@ -4532,7 +4459,7 @@ for line in sys.stdin:
                 .handle()
                 .insert_client(server, Arc::new(ClientState::default()))
                 .unwrap();
-            let (sender, receiver) = mpsc::channel();
+            let (sender, receiver) = crate::harness::silent_channel();
             let client = thread::spawn(move || {
                 run_client_with_app_id(client, "test", "test", ClientTextState::Purpose(purpose), &sender)
             });
