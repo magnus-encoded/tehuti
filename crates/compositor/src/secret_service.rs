@@ -32,6 +32,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 type Outcome<T> = Result<T, SecretProviderUnavailable>;
 
+/// The `(session, parameters, value, content_type)` struct of `GetSecret`.
+type SecretReply = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
+
 /// Reads and locks the default collection of the desktop's secret store.
 #[derive(Debug)]
 pub struct SecretServiceProvider {
@@ -152,7 +155,7 @@ impl SecretServiceProvider {
         let (_output, session): (OwnedValue, OwnedObjectPath) = service
             .call("OpenSession", &("plain", Value::from("")))
             .map_err(|_| SecretProviderUnavailable)?;
-        let reply: Outcome<((OwnedObjectPath, Vec<u8>, Vec<u8>, String),)> = self
+        let reply: Outcome<(SecretReply,)> = self
             .proxy(item.as_str(), ITEM_INTERFACE)?
             .call("GetSecret", &(&session,))
             .map_err(|_| SecretProviderUnavailable);
