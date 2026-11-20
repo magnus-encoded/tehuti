@@ -779,9 +779,10 @@ fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
 
 const NO_MAPPING_NOTICE: &str = "NO SPEECH MAPPING";
 
-/// The mapped phrases a model may choose from when `phrase` would fall through to
-/// dictation (or to no mapping): the focused and global contexts' phrases, once each.
-/// `None` when any mapping, built-in or fuzzy match takes the phrase.
+/// The mapped phrases a model may choose from for a phrase that matches nothing.
+///
+/// These are the focused and global contexts' phrases, once each. `None` when a
+/// mapping, built-in or fuzzy match takes the phrase.
 #[must_use]
 pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<String>> {
     if phrase.trim().is_empty() {
@@ -796,12 +797,14 @@ pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<Stri
     {
         return None;
     }
-    let fell_through = match route_speech(focused, global, phrase)? {
-        Action::Notice { text } => text.as_str() == NO_MAPPING_NOTICE,
-        action => [focused, global]
+    let action = route_speech(focused, global, phrase)?;
+    let fell_through = if let Action::Notice { text } = &action {
+        text.as_str() == NO_MAPPING_NOTICE
+    } else {
+        [focused, global]
             .into_iter()
             .flatten()
-            .any(|context| context.unmatched_speech_action(phrase).as_ref() == Some(&action)),
+            .any(|context| context.unmatched_speech_action(phrase).as_ref() == Some(&action))
     };
     if !fell_through {
         return None;
@@ -809,9 +812,9 @@ pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<Stri
     let mut commands: Vec<String> = Vec::new();
     for context in [focused, global].into_iter().flatten() {
         for (_, candidate) in context.speech_candidates() {
-            let phrase = candidate.phrase.to_owned();
-            if !commands.contains(&phrase) {
-                commands.push(phrase);
+            let mapped = candidate.phrase.to_owned();
+            if !commands.contains(&mapped) {
+                commands.push(mapped);
             }
         }
     }
