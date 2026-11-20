@@ -34,8 +34,11 @@ mod tests {
 
     impl Transport for Slow {
         fn post(&self, _key: &ApiKey, body: &str, _deadline: Duration) -> io::Result<String> {
-            let value: serde_json::Value = serde_json::from_str(body).unwrap();
-            let transcript = value["state"]["transcript"].as_str().unwrap().to_owned();
+            let value: serde_json::Value = serde_json::from_str(body).map_err(io::Error::other)?;
+            let transcript = value["state"]["transcript"]
+                .as_str()
+                .ok_or_else(|| io::Error::other("no transcript"))?
+                .to_owned();
             if let Some((_, delay)) = self.delays.iter().find(|(word, _)| transcript.starts_with(word)) {
                 std::thread::sleep(*delay);
             }
@@ -103,8 +106,8 @@ mod tests {
                 .collect();
             let mut shuffled = ids.clone();
             let length = shuffled.len();
-            shuffled.rotate_left(usize::try_from(order % u64::try_from(length).unwrap()).unwrap());
-            let taken: Vec<u64> = shuffled.into_iter().filter(|id| pending.finish(*id).is_some()).collect();
+            shuffled.rotate_left(usize::try_from(order).unwrap_or(0).checked_rem(length).unwrap_or(0));
+            let taken: Vec<u64> = shuffled.into_iter().filter(|number| pending.finish(*number).is_some()).collect();
             prop_assert_eq!(taken, vec![*ids.last().unwrap()]);
             prop_assert!(!pending.is_waiting());
         }
@@ -118,10 +121,8 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_late_reply_for_a_superseded_utterance_is_dropped() {
-        let directory = tempfile::tempdir().unwrap();
-        let contexts = directory.path().join("contexts");
+    fn editor_compositor(directory: &Path) -> (Display<Compositor>, Compositor) {
+        let contexts = directory.join("contexts");
         std::fs::create_dir_all(contexts.join("editor")).unwrap();
         std::fs::write(
             contexts.join("editor/context.toml"),
@@ -135,6 +136,13 @@ mod tests {
             app_id: Some("editor".into()),
             title: String::new(),
         });
+        (display, compositor)
+    }
+
+    #[test]
+    fn a_late_reply_for_a_superseded_utterance_is_dropped() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_display, mut compositor) = editor_compositor(directory.path());
         let opt_in = OptIn::stored_at(Store::new(directory.path().join("opt-in")));
         opt_in.set(true).unwrap();
         let log_path = directory.path().join("turns.jsonl");
@@ -147,9 +155,9 @@ mod tests {
         let mut event_loop: EventLoop<Compositor> = EventLoop::try_new().unwrap();
         let _token = event_loop
             .handle()
-            .insert_source(receiver, |event, (), compositor| {
+            .insert_source(receiver, |event, (), target| {
                 if let calloop::channel::Event::Msg(reply) = event {
-                    compositor.resolver_replied(&reply);
+                    target.resolver_replied(&reply);
                 }
             })
             .unwrap();
@@ -195,20 +203,7 @@ mod tests {
     #[test]
     fn nothing_is_held_without_the_opt_in() {
         let directory = tempfile::tempdir().unwrap();
-        let contexts = directory.path().join("contexts");
-        std::fs::create_dir_all(contexts.join("editor")).unwrap();
-        std::fs::write(
-            contexts.join("editor/context.toml"),
-            "app_id = 'editor'\nunmatched_speech = 'type'\n[buttons]\n[speech]\n'mute' = { notify = 'muted' }\n",
-        )
-        .unwrap();
-        let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
-        compositor.set_contexts(tehuti::contexts::load(&contexts));
-        compositor.handle(&Event::Focus {
-            app_id: Some("editor".into()),
-            title: String::new(),
-        });
+        let (_display, mut compositor) = editor_compositor(directory.path());
         let (worker, _receiver) = worker_into(Vec::new());
         compositor.set_speech_resolver(Link::new(
             worker,
