@@ -38,6 +38,7 @@ tempfile = "3"
 proptest = "1"
 tehuti-protocol = { path = "../protocol", features = ["arbitrary"] }
 wayland-client = "0.31"
+zbus = { version = "5", features = ["p2p"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
 
 [build-dependencies]

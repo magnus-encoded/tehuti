@@ -152,6 +152,10 @@ mod secret_service {
         _server: Connection,
     }
 
+    #[expect(
+        deprecated,
+        reason = "the replacement takes an async-io stream and would add a direct dependency"
+    )]
     fn start(entries: &[(String, String)], locked: bool, serve: bool) -> Fixture {
         let store = Shared(Arc::new(Mutex::new(Store {
             entries: entries.to_vec(),
@@ -160,22 +164,22 @@ mod secret_service {
             prompt_dismissed: false,
         })));
         let (server_stream, client_stream) = UnixStream::pair().expect("socket pair");
-        let served = store.clone();
+        let shared = store.clone();
         let count = entries.len();
-        let server = thread::spawn(move || {
+        let serving = thread::spawn(move || {
             let mut builder = Builder::unix_stream(server_stream)
                 .p2p()
                 .server(Guid::generate())
                 .expect("server builder");
             if serve {
                 builder = builder
-                    .serve_at("/org/freedesktop/secrets", FakeService(served.clone()))
-                    .and_then(|builder| builder.serve_at(COLLECTION_PATH, FakeCollection(served.clone())))
-                    .and_then(|builder| builder.serve_at(PROMPT_PATH, FakePrompt(served.clone())))
+                    .serve_at("/org/freedesktop/secrets", FakeService(shared.clone()))
+                    .and_then(|builder| builder.serve_at(COLLECTION_PATH, FakeCollection(shared.clone())))
+                    .and_then(|builder| builder.serve_at(PROMPT_PATH, FakePrompt(shared.clone())))
                     .expect("serve objects");
                 for index in 0..count {
                     builder = builder
-                        .serve_at(item_path(index), FakeItem(served.clone(), index))
+                        .serve_at(item_path(index), FakeItem(shared.clone(), index))
                         .expect("serve item");
                 }
             }
@@ -185,7 +189,7 @@ mod secret_service {
             .p2p()
             .build()
             .expect("client connection");
-        let server = server.join().expect("server thread");
+        let server = serving.join().expect("server thread");
         Fixture {
             provider: SecretServiceProvider::new(client, SERVICE_BUS_NAME.to_owned(), SHORT_PROMPT_TIMEOUT),
             store,
