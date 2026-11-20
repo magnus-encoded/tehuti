@@ -1,7 +1,7 @@
 //! Plugin processes and their non-blocking stdio sources.
 
 use crate::{
-    plugin_session::{Delivery, HANG_TIMEOUT, Session, Status},
+    plugin_session::{Delivery, Session, Status},
     state::Compositor,
 };
 use core::{
@@ -10,7 +10,6 @@ use core::{
 };
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
 use std::{
-    collections::{BTreeMap, VecDeque},
     io::{self, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::Path,
@@ -19,8 +18,7 @@ use std::{
     time::Instant,
 };
 use tehuti_protocol::{
-    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, Permission, PluginKind,
-    ResultValue, RpcVersion, StartPolicy, Subscription,
+    Action, Call, Event, Manifest, Method, Permission, PluginKind, RpcVersion, StartPolicy, Subscription,
 };
 
 const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
@@ -933,6 +931,7 @@ pub fn fuzz_stdout(bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tehuti_protocol::Message;
 
     fn key(name: &str) -> Action {
         serde_json::from_value(serde_json::json!({"type":"key","key":name})).unwrap()

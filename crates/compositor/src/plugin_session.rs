@@ -156,7 +156,7 @@ impl Session {
     }
 
     pub(crate) fn supervise(&mut self, now: Instant) {
-        self.expire_initialize();
+        self.expire_initialize(now);
         let expired = self.pending.values().filter(|deadline| now >= **deadline).count();
         self.pending.retain(|_, deadline| now < *deadline);
         self.missed_decisions = self.missed_decisions.saturating_add(usize::from(expired > 0));
