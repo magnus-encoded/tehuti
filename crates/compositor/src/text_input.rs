@@ -99,8 +99,9 @@ impl TextInput {
     }
 
     pub(crate) fn focus(&mut self, focus: Option<WlSurface>) {
+        let previous = self.focused_surface();
         for instance in &mut self.instances {
-            if let Some(old) = &self.focused_surface()
+            if let Some(old) = &previous
                 && instance.resource.id().same_client_as(&old.id())
             {
                 instance.resource.leave(old);
