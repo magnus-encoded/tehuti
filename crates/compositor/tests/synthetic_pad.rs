@@ -1413,7 +1413,7 @@ mod synthetic_pad {
         let mut process = KillOnDrop(process);
         let mut harness = crate::harness::Harness::new();
         let mut connected = false;
-        let handle = display.handle();
+        let mut handle = display.handle();
         harness.serve_polled(&mut display, &mut compositor, |compositor| {
             if process.0.try_wait().unwrap().is_some() {
                 return true;
