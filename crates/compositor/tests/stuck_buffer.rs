@@ -352,8 +352,8 @@ mod stuck_buffer {
         }
         let waiting = scene.compositor.buffers_waiting();
         let left = alive();
-        for id in &ids {
-            let holders = scene.compositor.surface_holders(id);
+        for surface_id in &ids {
+            let holders = scene.compositor.surface_holders(surface_id);
             assert!(
                 left == 0 || holders.is_empty(),
                 "a destroyed surface is still held by: {holders:?}"
