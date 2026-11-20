@@ -326,7 +326,7 @@ no = "$XDG_RUNTIME_DIR/tehuti-transcribe.sock"
 A request is one kind byte (`G` final, `J` interim) and the priming prompt,
 a NUL byte, then raw s16 16 kHz mono PCM until the client shuts down writing.
 The reply is one JSON line: `{"text":"..."}`, `{"error":"..."}` or
-`{"busy":true}`. A reply the sidecar cannot use is an error for that session.
+`{"busy":true}`. The whole exchange has one deadline: 30 s for a final, 3 s for an interim. The reply is capped at 64 KiB. Keys must be language codes and paths absolute; the sidecar skips other entries with a warning. On an error, a busy reply or the deadline, a final falls back to the local model with the session's language, and an interim yields nothing.
 
 ### Invoke words
 
