@@ -5,8 +5,9 @@
 //! [`Pending`] holds the one utterance still waiting; a reply for any other job is late
 //! and is dropped.
 
+use core::panic::AssertUnwindSafe;
 use core::time::Duration;
-use std::{panic::AssertUnwindSafe, sync::mpsc, time::Instant};
+use std::{sync::mpsc, time::Instant};
 
 /// How long an utterance may be held before it dictates as before.
 pub const HELD_LIMIT: Duration = Duration::from_secs(1);

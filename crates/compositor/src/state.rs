@@ -862,8 +862,14 @@ impl Compositor {
 
     /// Holds a transcript that matches nothing while the model answers off the loop.
     /// Returns whether it was held.
-    fn hold_for_resolver(&mut self, text: &tehuti_protocol::Text) -> bool {
+    fn hold_for_resolver(&mut self, event: &Event) -> bool {
         use crate::speech::resolver_worker::{Job, Waiting};
+        if matches!(event, Event::Speech { .. } | Event::Focus { .. }) {
+            self.flush_held_utterance();
+        }
+        let Event::Speech { text } = event else {
+            return false;
+        };
         if self.dispatch.keyboard().is_open() || self.dispatch.keyboard().password_field_active() {
             return false;
         }
@@ -1401,9 +1407,6 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
-        if matches!(event, Event::Speech { .. } | Event::Focus { .. }) {
-            self.flush_held_utterance();
-        }
         if let Event::Button { name, state } = event {
             self.log_button(*name, *state);
             // The menu opens a moment after Guide goes down; look for holders once, now.
@@ -1442,9 +1445,7 @@ impl Compositor {
             self.save_destination(name.trim().trim_end_matches(['.', '!', '?']));
             return;
         }
-        if let Event::Speech { text } = event
-            && self.hold_for_resolver(text)
-        {
+        if self.hold_for_resolver(event) {
             return;
         }
         let since_tick = if matches!(event, Event::Focus { .. }) {
