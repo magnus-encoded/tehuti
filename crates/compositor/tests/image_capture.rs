@@ -166,10 +166,10 @@ mod image_capture {
                 app.formats.push(format);
             } else if matches!(event, Event::Done) {
                 app.done = true;
-                app.announced += 1;
+                app.announced = app.announced.saturating_add(1);
             } else if matches!(event, Event::Stopped) {
                 app.stopped = true;
-                app.stopped_count += 1;
+                app.stopped_count = app.stopped_count.saturating_add(1);
             }
         }
     }
@@ -355,7 +355,7 @@ mod image_capture {
             let before = app.announced;
             let _session = manager.create_session(&last, Options::empty(), &handle, ());
             let _dispatched = queue.roundtrip(&mut app).unwrap();
-            app.announced -= before;
+            app.announced = app.announced.saturating_sub(before);
             return report(app, [0; 4]);
         }
         if !matches!(plan, Plan::Capture { .. }) {
