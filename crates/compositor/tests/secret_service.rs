@@ -51,15 +51,18 @@ mod secret_service {
     #[zbus::interface(name = "org.freedesktop.Secret.Service")]
     #[expect(
         clippy::unused_self,
-        clippy::used_underscore_binding,
-        reason = "the fake ignores arguments it does not need; the macro reads the names"
+        reason = "the macro generates methods that do not need the store"
     )]
     impl FakeService {
         fn open_session(
             &self,
-            _algorithm: &str,
-            _input: Value<'_>,
+            algorithm: &str,
+            input: Value<'_>,
         ) -> fdo::Result<(OwnedValue, OwnedObjectPath)> {
+            if algorithm != "plain" {
+                return Err(fdo::Error::NotSupported(String::new()));
+            }
+            drop(input);
             let output = Value::from("")
                 .try_to_owned()
                 .map_err(|error| fdo::Error::Failed(error.to_string()))?;
@@ -74,7 +77,8 @@ mod secret_service {
             }
         }
 
-        fn unlock(&self, _objects: Vec<OwnedObjectPath>) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
+        fn unlock(&self, objects: Vec<OwnedObjectPath>) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
+            assert!(!objects.is_empty());
             self.0.with(|store| {
                 if store.needs_prompt {
                     (Vec::new(), object_path(PROMPT_PATH))
@@ -85,7 +89,8 @@ mod secret_service {
             })
         }
 
-        fn lock(&self, _objects: Vec<OwnedObjectPath>) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
+        fn lock(&self, objects: Vec<OwnedObjectPath>) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
+            assert!(!objects.is_empty());
             self.0.with(|store| store.locked = true);
             (vec![object_path(COLLECTION_PATH)], object_path("/"))
         }
@@ -134,9 +139,9 @@ mod secret_service {
     struct FakePrompt(Shared);
 
     #[zbus::interface(name = "org.freedesktop.Secret.Prompt")]
-    #[expect(clippy::used_underscore_binding, reason = "the macro reads the argument name")]
     impl FakePrompt {
-        fn prompt(&self, _window_id: &str) {
+        fn prompt(&self, window_id: &str) {
+            assert!(window_id.is_empty());
             self.0.with(|store| {
                 if !store.prompt_dismissed {
                     store.locked = false;
