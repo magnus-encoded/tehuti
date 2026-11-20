@@ -464,3 +464,5 @@ mod tests {
         );
     }
 }
+
+pub mod resolver;
