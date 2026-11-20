@@ -906,6 +906,30 @@ impl Compositor {
         }
     }
 
+    /// Dictates the held utterance when the resolver has not answered within `limit`.
+    pub fn abandon_stale_resolver(&mut self, now: std::time::Instant, limit: core::time::Duration) {
+        let stale = self
+            .speech_resolver
+            .as_mut()
+            .and_then(|link| link.pending.stale(now, limit));
+        if let Some(held) = stale {
+            tracing::warn!("speech resolver gave no answer in time; dictating as before");
+            self.settle_turn(&held, None, tehuti_core::speech::resolver::Resolution::Dictate);
+        }
+    }
+
+    /// Dictates the held utterance now, before a later event is routed behind it.
+    fn flush_held_utterance(&mut self) {
+        let held = self
+            .speech_resolver
+            .as_mut()
+            .filter(|link| !link.rerouting)
+            .and_then(|link| link.pending.abandon());
+        if let Some(held) = held {
+            self.settle_turn(&held, None, tehuti_core::speech::resolver::Resolution::Dictate);
+        }
+    }
+
     fn speech_resolver_abandon(&mut self) -> Option<crate::speech::resolver_worker::Waiting> {
         self.speech_resolver
             .as_mut()
@@ -1377,6 +1401,9 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if matches!(event, Event::Speech { .. } | Event::Focus { .. }) {
+            self.flush_held_utterance();
+        }
         if let Event::Button { name, state } = event {
             self.log_button(*name, *state);
             // The menu opens a moment after Guide goes down; look for holders once, now.

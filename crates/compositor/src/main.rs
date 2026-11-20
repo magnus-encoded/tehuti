@@ -995,6 +995,20 @@ fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor
         warn!(%error, "speech resolver unavailable");
         return;
     }
+    let sweep = event_loop.handle().insert_source(
+        calloop::timer::Timer::from_duration(Duration::from_millis(250)),
+        |_, (), data| {
+            data.compositor.abandon_stale_resolver(
+                std::time::Instant::now(),
+                tehuti::speech::resolver_worker::HELD_LIMIT,
+            );
+            calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(250))
+        },
+    );
+    if let Err(error) = sweep {
+        warn!(%error, "speech resolver unavailable");
+        return;
+    }
     match Worker::spawn(Resolver::new(transport, Some(key)), move |reply| {
         sender.send(reply).is_ok()
     }) {

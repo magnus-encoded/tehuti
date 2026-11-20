@@ -5,7 +5,11 @@
 //! [`Pending`] holds the one utterance still waiting; a reply for any other job is late
 //! and is dropped.
 
-use std::sync::mpsc;
+use core::time::Duration;
+use std::{panic::AssertUnwindSafe, sync::mpsc, time::Instant};
+
+/// How long an utterance may be held before it dictates as before.
+pub const HELD_LIMIT: Duration = Duration::from_secs(1);
 
 use tehuti_core::speech::resolver::Answer;
 
@@ -48,7 +52,13 @@ impl Worker {
             .name("speech-resolver".into())
             .spawn(move || {
                 for job in queue {
-                    let answer = resolver.ask(true, &job.transcript, &job.commands);
+                    let answer = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        resolver.ask(true, &job.transcript, &job.commands)
+                    }))
+                    .unwrap_or_else(|_| {
+                        tracing::warn!("speech resolver panicked; dictating as before");
+                        None
+                    });
                     if !deliver(Reply {
                         number: job.number,
                         answer,
@@ -78,7 +88,7 @@ pub struct Waiting {
 #[derive(Debug, Default)]
 pub struct Pending {
     next: u64,
-    waiting: Option<(u64, Waiting)>,
+    waiting: Option<(u64, Waiting, Instant)>,
 }
 
 impl Pending {
@@ -86,7 +96,10 @@ impl Pending {
     /// superseded, whose answer will now be dropped.
     pub fn begin(&mut self, waiting: Waiting) -> (u64, Option<Waiting>) {
         self.next = self.next.wrapping_add(1);
-        let superseded = self.waiting.replace((self.next, waiting)).map(|(_, old)| old);
+        let superseded = self
+            .waiting
+            .replace((self.next, waiting, Instant::now()))
+            .map(|(_, old, _)| old);
         (self.next, superseded)
     }
 
@@ -96,9 +109,9 @@ impl Pending {
         if self
             .waiting
             .as_ref()
-            .is_some_and(|(current, _)| *current == number)
+            .is_some_and(|(current, _, _)| *current == number)
         {
-            self.waiting.take().map(|(_, waiting)| waiting)
+            self.waiting.take().map(|(_, waiting, _)| waiting)
         } else {
             None
         }
@@ -111,7 +124,16 @@ impl Pending {
 
     /// Gives up the waiting utterance, for example when the worker is gone.
     pub fn abandon(&mut self) -> Option<Waiting> {
-        self.waiting.take().map(|(_, waiting)| waiting)
+        self.waiting.take().map(|(_, waiting, _)| waiting)
+    }
+
+    /// The waiting utterance when it has been held longer than `limit` at `now`.
+    pub fn stale(&mut self, now: Instant, limit: Duration) -> Option<Waiting> {
+        let held_too_long = self
+            .waiting
+            .as_ref()
+            .is_some_and(|(_, _, since)| now.saturating_duration_since(*since) > limit);
+        if held_too_long { self.abandon() } else { None }
     }
 }
 

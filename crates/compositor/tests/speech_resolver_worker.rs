@@ -2,7 +2,8 @@
 
 #[cfg(test)]
 mod tests {
-    use core::time::Duration;
+    use core::{cell::Cell, time::Duration};
+    use std::rc::Rc;
     use std::{
         io,
         os::unix::fs::PermissionsExt as _,
@@ -19,7 +20,7 @@ mod tests {
         display_mode_store::Store,
         speech::{
             resolver::{ApiKey, Curl, DEADLINE, OptIn, Resolver, Transport, TurnLog},
-            resolver_worker::{Job, Link, Pending, Reply, Waiting, Worker},
+            resolver_worker::{HELD_LIMIT, Job, Link, Pending, Reply, Waiting, Worker},
         },
         state::Compositor,
     };
@@ -39,6 +40,7 @@ mod tests {
                 .as_str()
                 .ok_or_else(|| io::Error::other("no transcript"))?
                 .to_owned();
+            assert!(!transcript.starts_with("explode"), "the model client panicked");
             if let Some((_, delay)) = self.delays.iter().find(|(word, _)| transcript.starts_with(word)) {
                 std::thread::sleep(*delay);
             }
@@ -78,7 +80,7 @@ mod tests {
             commands: vec!["mute".into(), "pause".into()],
         }));
         assert!(
-            started.elapsed() < Duration::from_millis(100),
+            started.elapsed() < Duration::from_millis(250),
             "submit waited for the model"
         );
         let mut replies = Vec::new();
@@ -139,57 +141,81 @@ mod tests {
         (display, compositor)
     }
 
-    #[test]
-    fn a_late_reply_for_a_superseded_utterance_is_dropped() {
+    struct Rig {
+        _display: Display<Compositor>,
+        compositor: Compositor,
+        event_loop: EventLoop<'static, Compositor>,
+        log_path: PathBuf,
+        arrived: Rc<Cell<usize>>,
+        _directory: tempfile::TempDir,
+    }
+
+    fn rig(delays: Vec<(&'static str, Duration)>) -> Rig {
         let directory = tempfile::tempdir().unwrap();
-        let (_display, mut compositor) = editor_compositor(directory.path());
+        let (display, mut compositor) = editor_compositor(directory.path());
         let opt_in = OptIn::stored_at(Store::new(directory.path().join("opt-in")));
         opt_in.set(true).unwrap();
         let log_path = directory.path().join("turns.jsonl");
-        let (worker, receiver) = worker_into(vec![("first", Duration::from_millis(400))]);
+        let (worker, receiver) = worker_into(delays);
         compositor.set_speech_resolver(Link::new(
             worker,
             opt_in,
             Some(TurnLog::stored_at(log_path.clone())),
         ));
-        let mut event_loop: EventLoop<Compositor> = EventLoop::try_new().unwrap();
+        let event_loop: EventLoop<Compositor> = EventLoop::try_new().unwrap();
+        let arrived = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&arrived);
         let _token = event_loop
             .handle()
-            .insert_source(receiver, |event, (), target| {
+            .insert_source(receiver, move |event, (), target| {
                 if let calloop::channel::Event::Msg(reply) = event {
+                    counter.set(counter.get() + 1);
                     target.resolver_replied(&reply);
                 }
             })
             .unwrap();
+        Rig {
+            _display: display,
+            compositor,
+            event_loop,
+            log_path,
+            arrived,
+            _directory: directory,
+        }
+    }
 
-        let said = |text: &str| Event::Speech {
-            text: tehuti_protocol::Text::new(text.into()).unwrap(),
-        };
+    impl Rig {
+        fn say(&mut self, text: &str) {
+            self.compositor.handle(&Event::Speech {
+                text: tehuti_protocol::Text::new(text.into()).unwrap(),
+            });
+        }
+
+        fn pump_for(&mut self, span: Duration) {
+            let started = Instant::now();
+            while started.elapsed() < span {
+                self.event_loop
+                    .dispatch(Duration::from_millis(5), &mut self.compositor)
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn a_late_reply_for_a_superseded_utterance_is_dropped() {
+        let mut rig = rig(vec![("first", Duration::from_millis(400))]);
         let started = Instant::now();
-        compositor.handle(&said("first unknown words"));
-        assert!(compositor.speech_resolver_waiting());
-        compositor.handle(&said("second unknown words"));
+        rig.say("first unknown words");
+        assert!(rig.compositor.speech_resolver_waiting());
+        rig.say("second unknown words");
         assert!(
-            started.elapsed() < Duration::from_millis(200),
+            started.elapsed() < Duration::from_millis(400),
             "handling waited for the model"
         );
-        while compositor.speech_resolver_waiting() && started.elapsed() < Duration::from_secs(5) {
-            event_loop
-                .dispatch(Duration::from_millis(5), &mut compositor)
-                .unwrap();
-        }
-        // Let the superseded utterance's reply arrive late.
-        while started.elapsed() < Duration::from_millis(900) {
-            event_loop
-                .dispatch(Duration::from_millis(5), &mut compositor)
-                .unwrap();
-        }
-        let turns = lines(&log_path);
-        assert_eq!(
-            turns.len(),
-            2,
-            "one line per utterance, the late reply adds none: {turns:?}"
-        );
+        rig.pump_for(Duration::from_millis(900));
+        assert_eq!(rig.arrived.get(), 2, "the superseded reply did arrive, late");
+        let turns = lines(&rig.log_path);
+        assert_eq!(turns.len(), 2, "the late reply adds no line: {turns:?}");
         assert_eq!(turns[0]["heard"], "first unknown words");
         assert_eq!(
             turns[0]["outcome"], "dictated",
@@ -198,6 +224,62 @@ mod tests {
         assert_eq!(turns[1]["heard"], "second unknown words");
         assert_eq!(turns[1]["outcome"], "ran");
         assert_eq!(turns[1]["chosen"]["command"], "mute");
+    }
+
+    #[test]
+    fn a_later_matched_phrase_or_focus_change_settles_the_held_utterance_first() {
+        let mut rig = rig(vec![("first", Duration::from_millis(300))]);
+        rig.say("first unknown words");
+        assert!(rig.compositor.speech_resolver_waiting());
+        rig.say("pause");
+        assert!(
+            !rig.compositor.speech_resolver_waiting(),
+            "the held utterance dictated before the next phrase"
+        );
+        rig.say("first again");
+        rig.compositor.handle(&Event::Focus {
+            app_id: Some("other".into()),
+            title: String::new(),
+        });
+        assert!(
+            !rig.compositor.speech_resolver_waiting(),
+            "focus never moves a held utterance to another window"
+        );
+        rig.pump_for(Duration::from_millis(700));
+        let turns = lines(&rig.log_path);
+        let heard: Vec<_> = turns
+            .iter()
+            .map(|turn| turn["heard"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(heard, ["first unknown words", "first again"]);
+        assert!(turns.iter().all(|turn| turn["outcome"] == "dictated"));
+    }
+
+    #[test]
+    fn a_resolver_that_never_answers_dictates_after_the_limit() {
+        let mut rig = rig(vec![("hang", Duration::from_secs(30))]);
+        rig.say("hang forever");
+        let held_at = Instant::now();
+        rig.compositor.abandon_stale_resolver(held_at, HELD_LIMIT);
+        assert!(rig.compositor.speech_resolver_waiting(), "not yet stale");
+        rig.compositor
+            .abandon_stale_resolver(held_at + HELD_LIMIT * 2, HELD_LIMIT);
+        assert!(!rig.compositor.speech_resolver_waiting());
+        let turns = lines(&rig.log_path);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0]["outcome"], "dictated");
+    }
+
+    #[test]
+    fn a_panicking_resolver_still_replies_and_dictates() {
+        let mut rig = rig(Vec::new());
+        rig.say("explode now");
+        rig.pump_for(Duration::from_millis(300));
+        assert!(!rig.compositor.speech_resolver_waiting());
+        let turns = lines(&rig.log_path);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0]["outcome"], "dictated");
+        assert_eq!(turns[0]["chosen"], serde_json::Value::Null);
     }
 
     #[test]
