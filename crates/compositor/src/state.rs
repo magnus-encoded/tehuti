@@ -180,7 +180,7 @@ pub struct Compositor {
     keyboard: KeyboardHandle<Self>,
     window_focus: Option<(WlSurface, Option<String>)>,
     /// The window focus last left for no window, until a window takes focus.
-    unfocused_window: Option<WlSurface>,
+    unfocused_window: Option<smithay::reexports::wayland_server::Weak<WlSurface>>,
     controller_session: tehuti_core::controller::State,
     seat: Seat<Self>,
     shortcut_keycodes: Vec<(Keycode, u32)>,
@@ -1019,16 +1019,6 @@ impl Compositor {
             .is_some_and(|(held, _)| &held.id() == surface_id)
         {
             holders.push("window_focus");
-        }
-        if self
-            .unfocused_window
-            .as_ref()
-            .is_some_and(|held| &held.id() == surface_id)
-        {
-            holders.push("unfocused_window");
-        }
-        if self.text_input.focus_id().as_ref() == Some(surface_id) {
-            holders.push("text_input focus");
         }
         if self.placement.windows().any(|window| {
             window
@@ -3891,7 +3881,7 @@ impl Compositor {
             if !self.pad_passthrough() {
                 self.dispatch.core_mut().set_context_ancestors(None, Vec::new());
             }
-            self.unfocused_window = Some(surface);
+            self.unfocused_window = Some(smithay::reexports::wayland_server::Resource::downgrade(&surface));
             self.handle(&Event::Focus {
                 app_id: None,
                 title: String::new(),
@@ -4326,7 +4316,12 @@ impl XdgShellHandler for Compositor {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let closing = Some(surface.wl_surface());
         if self.window_focus.as_ref().map(|(focused, _)| focused) == closing
-            || self.unfocused_window.as_ref() == closing
+            || self
+                .unfocused_window
+                .as_ref()
+                .and_then(|weak| weak.upgrade().ok())
+                .as_ref()
+                == closing
         {
             self.unfocused_window = None;
             let _rejection = self.dispatch(DispatchInput::FocusedWindowClosed);
