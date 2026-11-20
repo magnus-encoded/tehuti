@@ -168,7 +168,7 @@ impl Nested {
                     age: 0,
                 };
                 match data.compositor.frame(renderer, &mut framebuffer, &mut surface) {
-                    Ok(rendered) => rendered.drew && rendered.notice_included,
+                    Ok(frame) => frame.drew && frame.notice_included,
                     Err(error) => {
                         warn!(?error, "render failed");
                         false
