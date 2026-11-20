@@ -3,6 +3,11 @@
 //! Framing, handshake, decision deadlines and invalid-message limits live here. Bytes and the
 //! time come in; deliveries and bytes to write go out. No process, pipe or event loop appears.
 
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "unreachable_pub rejects bare pub in a crate-private module, so pub(crate) is the only form both lints accept"
+)]
+
 use core::time::Duration;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -14,14 +19,57 @@ use tehuti_protocol::{
     RpcVersion, Subscription,
 };
 
-pub const HANG_TIMEOUT: Duration = Duration::from_secs(2);
-pub const INVALID_MESSAGE_LIMIT: usize = 16;
-pub const FLOOD_WINDOW: Duration = Duration::from_secs(1);
-pub const FLOOD_BYTES: usize = 262_144;
+pub(crate) const HANG_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const INVALID_MESSAGE_LIMIT: usize = 16;
+pub(crate) const FLOOD_WINDOW: Duration = Duration::from_secs(1);
+pub(crate) const FLOOD_BYTES: usize = 262_144;
+pub(crate) const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
+pub(crate) const RESTART_BACKOFF_CAP: Duration = Duration::from_secs(30);
+pub(crate) const RESTART_BACKOFF_RESET: Duration = Duration::from_secs(30);
+
+/// When a plugin may be started again, and how long the next wait is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Backoff {
+    pub(crate) retry_at: Option<Instant>,
+    pub(crate) delay: Duration,
+}
+
+impl Backoff {
+    #[must_use]
+    pub(crate) const fn new() -> Self {
+        Self {
+            retry_at: None,
+            delay: RESTART_BACKOFF_BASE,
+        }
+    }
+
+    /// Whether a start is allowed at `now`.
+    #[must_use]
+    pub(crate) fn due(&self, now: Instant) -> bool {
+        self.retry_at.is_none_or(|deadline| now >= deadline)
+    }
+
+    /// Records that a start is being made.
+    pub(crate) const fn started(&mut self) {
+        self.retry_at = None;
+    }
+
+    /// Schedules the next start after the current delay, then doubles the delay up to the cap.
+    pub(crate) fn schedule(&mut self, now: Instant) {
+        self.retry_at = now.checked_add(self.delay);
+        self.delay = self.delay.saturating_mul(2).min(RESTART_BACKOFF_CAP);
+    }
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// What a session hands the compositor after reading plugin output.
 #[derive(Debug)]
-pub enum Delivery {
+pub(crate) enum Delivery {
     Reply {
         key: tehuti_core::plugin::RequestKey,
         result: Result<Vec<Action>, String>,
@@ -36,7 +84,7 @@ pub enum Delivery {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Status {
+pub(crate) enum Status {
     Starting,
     Ready,
     Refused,
@@ -44,30 +92,30 @@ pub enum Status {
 }
 
 #[derive(Debug)]
-pub struct Session {
-    pub output: VecDeque<u8>,
-    pub input: Vec<u8>,
-    pub dropping_line: bool,
-    pub status: Status,
-    pub initialize_deadline: Instant,
-    pub latest_focus: Option<(Option<String>, String)>,
-    pub events: Vec<Subscription>,
-    pub manifest: Manifest,
-    pub next_id: u64,
-    pub plugin: usize,
-    pub invalid_messages: usize,
-    pub missed_decisions: usize,
-    pub healthy_since: Option<Instant>,
-    pub pending: BTreeMap<u64, Instant>,
-    pub read_window: Instant,
-    pub read_bytes: usize,
-    pub status_text: Option<String>,
+pub(crate) struct Session {
+    pub(crate) output: VecDeque<u8>,
+    pub(crate) input: Vec<u8>,
+    pub(crate) dropping_line: bool,
+    pub(crate) status: Status,
+    pub(crate) initialize_deadline: Instant,
+    pub(crate) latest_focus: Option<(Option<String>, String)>,
+    pub(crate) events: Vec<Subscription>,
+    pub(crate) manifest: Manifest,
+    pub(crate) next_id: u64,
+    pub(crate) plugin: usize,
+    pub(crate) invalid_messages: usize,
+    pub(crate) missed_decisions: usize,
+    pub(crate) healthy_since: Option<Instant>,
+    pub(crate) pending: BTreeMap<u64, Instant>,
+    pub(crate) read_window: Instant,
+    pub(crate) read_bytes: usize,
+    pub(crate) status_text: Option<String>,
     /// A verb plugin's current verbs; empty for application plugins.
-    pub verbs: Vec<String>,
+    pub(crate) verbs: Vec<String>,
     /// The hotwords the plugin last sent; a restart starts empty.
-    pub hints: Vec<String>,
+    pub(crate) hints: Vec<String>,
     /// The invoke words the plugin last sent; a restart starts empty.
-    pub invoke_words: Vec<String>,
+    pub(crate) invoke_words: Vec<String>,
 }
 
 impl Session {
@@ -76,7 +124,7 @@ impl Session {
     ///
     /// # Errors
     /// The `initialize` message does not fit the output queue.
-    pub fn new(manifest: &Manifest, now: Instant) -> io::Result<Self> {
+    pub(crate) fn new(manifest: &Manifest, now: Instant) -> io::Result<Self> {
         let mut session = Self {
             output: VecDeque::new(),
             input: Vec::new(),
@@ -105,12 +153,12 @@ impl Session {
 
     /// The bytes waiting to be written to the plugin's stdin.
     #[must_use]
-    pub fn output_slice(&self) -> &[u8] {
+    pub(crate) fn output_slice(&self) -> &[u8] {
         self.output.as_slices().0
     }
 
     /// Drops `count` bytes the adapter wrote.
-    pub fn written(&mut self, count: usize) {
+    pub(crate) fn written(&mut self, count: usize) {
         let _written = self.output.drain(..count);
     }
 
@@ -130,7 +178,7 @@ impl Session {
         })
     }
 
-    pub fn accept_bytes(&mut self, count: usize, now: Instant) -> bool {
+    pub(crate) fn accept_bytes(&mut self, count: usize, now: Instant) -> bool {
         if now.duration_since(self.read_window) >= FLOOD_WINDOW {
             self.read_window = now;
             self.read_bytes = 0;
@@ -143,14 +191,14 @@ impl Session {
         true
     }
 
-    pub fn fail(&mut self, reason: &str) {
+    pub(crate) fn fail(&mut self, reason: &str) {
         if self.status != Status::Failed {
             tracing::warn!(plugin = self.plugin, executable = %self.manifest.executable, reason, "plugin restart scheduled");
             self.status = Status::Failed;
         }
     }
 
-    pub fn invalid(&mut self, now: Instant) {
+    pub(crate) fn invalid(&mut self, now: Instant) {
         self.invalid_messages = self.invalid_messages.saturating_add(1);
         self.healthy_since = (self.status == Status::Ready).then_some(now);
         if self.invalid_messages >= INVALID_MESSAGE_LIMIT {
@@ -158,7 +206,7 @@ impl Session {
         }
     }
 
-    pub fn supervise(&mut self, now: Instant) {
+    pub(crate) fn supervise(&mut self, now: Instant) {
         self.expire_initialize(now);
         let expired = self.pending.values().filter(|deadline| now >= **deadline).count();
         self.pending.retain(|_, deadline| now < *deadline);
@@ -168,19 +216,43 @@ impl Session {
         }
     }
 
+    /// One supervision tick: expires deadlines, applies a child exit (`exit`, the reason the
+    /// adapter found), and resets `backoff` once the session has stayed healthy long enough.
+    /// Returns whether the session has failed and must be replaced.
+    pub(crate) fn supervise_child(
+        &mut self,
+        now: Instant,
+        exit: Option<&str>,
+        backoff: &mut Backoff,
+    ) -> bool {
+        self.supervise(now);
+        if let Some(reason) = exit {
+            self.fail(reason);
+        }
+        if self.status != Status::Failed
+            && self
+                .healthy_since
+                .is_some_and(|since| now.duration_since(since) >= RESTART_BACKOFF_RESET)
+        {
+            backoff.delay = RESTART_BACKOFF_BASE;
+            self.invalid_messages = 0;
+        }
+        self.status == Status::Failed
+    }
+
     /// Whether the manifest lists this application; focus notices go to no other plugin.
     #[must_use]
-    pub fn owns_app(&self, app_id: Option<&String>) -> bool {
+    pub(crate) fn owns_app(&self, app_id: Option<&String>) -> bool {
         app_id.is_some_and(|app_id| self.manifest.app_ids.contains(app_id))
     }
 
-    pub fn observe(&mut self, event: &Event) {
+    pub(crate) fn observe(&mut self, event: &Event) {
         if let Event::Focus { app_id, title } = event {
             self.latest_focus = Some((app_id.clone(), title.clone()));
         }
     }
 
-    pub fn request(&mut self) -> Option<u64> {
+    pub(crate) fn request(&mut self) -> Option<u64> {
         let request_id = self.next_id;
         self.next_id = self.next_id.checked_add(1)?;
         Some(request_id)
@@ -190,7 +262,7 @@ impl Session {
     ///
     /// # Errors
     /// The pending queue or the output queue is full, or the call cannot be encoded.
-    pub fn queue_event(&mut self, call: &Call, now: Instant) -> io::Result<()> {
+    pub(crate) fn queue_event(&mut self, call: &Call, now: Instant) -> io::Result<()> {
         if call.request_id.is_some() && self.pending.len() >= 256 {
             return Err(io::Error::other("plugin pending queue full"));
         }
@@ -212,7 +284,7 @@ impl Session {
     ///
     /// # Errors
     /// The output queue is full or the call cannot be encoded.
-    pub fn queue(&mut self, call: &Call) -> io::Result<()> {
+    pub(crate) fn queue(&mut self, call: &Call) -> io::Result<()> {
         self.queue_bytes(serde_json::to_vec(call)?)
     }
 
@@ -220,7 +292,7 @@ impl Session {
     ///
     /// # Errors
     /// The output queue is full.
-    pub fn queue_bytes(&mut self, bytes: Vec<u8>) -> io::Result<()> {
+    pub(crate) fn queue_bytes(&mut self, bytes: Vec<u8>) -> io::Result<()> {
         if self.output.len().saturating_add(bytes.len()).saturating_add(1) > MAX_MESSAGE_BYTES {
             return Err(io::Error::other("plugin output queue full"));
         }
@@ -229,7 +301,7 @@ impl Session {
         Ok(())
     }
 
-    pub fn receive(&mut self, bytes: &[u8], now: Instant) -> Vec<Delivery> {
+    pub(crate) fn receive(&mut self, bytes: &[u8], now: Instant) -> Vec<Delivery> {
         let mut actions = Vec::new();
         for byte in bytes {
             if *byte == b'\n' {
@@ -259,7 +331,7 @@ impl Session {
         actions
     }
 
-    pub fn invalid_message(&mut self, line: &[u8], reason: String) -> Vec<Delivery> {
+    pub(crate) fn invalid_message(&mut self, line: &[u8], reason: String) -> Vec<Delivery> {
         if self.status != Status::Ready {
             return Vec::new();
         }
@@ -301,13 +373,13 @@ impl Session {
         Vec::new()
     }
 
-    pub fn expire_initialize(&mut self, now: Instant) {
+    pub(crate) fn expire_initialize(&mut self, now: Instant) {
         if self.status == Status::Starting && now >= self.initialize_deadline {
             self.fail("plugin initialize timed out");
         }
     }
 
-    pub fn initialize_reply(&mut self, message: Message, now: Instant) {
+    pub(crate) fn initialize_reply(&mut self, message: Message, now: Instant) {
         self.expire_initialize(now);
         if matches!(self.status, Status::Refused | Status::Failed) {
             return;
@@ -346,7 +418,7 @@ impl Session {
         }
     }
 
-    pub fn notice_actions(&mut self, actions: Vec<Action>, now: Instant) -> Vec<Delivery> {
+    pub(crate) fn notice_actions(&mut self, actions: Vec<Action>, now: Instant) -> Vec<Delivery> {
         match tehuti_core::plugin::validate_actions(actions, &self.manifest.permissions) {
             Ok(actions) => vec![Delivery::Notice(actions)],
             Err(reason) => {
@@ -360,7 +432,7 @@ impl Session {
         }
     }
 
-    pub fn complete_decision(&mut self, message: &Message, now: Instant) {
+    pub(crate) fn complete_decision(&mut self, message: &Message, now: Instant) {
         self.supervise(now);
         let event_id = match message {
             Message::Response(response) => Some(response.request_id),
@@ -378,7 +450,7 @@ impl Session {
         }
     }
 
-    pub fn message(&mut self, message: Message, now: Instant) -> Vec<Delivery> {
+    pub(crate) fn message(&mut self, message: Message, now: Instant) -> Vec<Delivery> {
         if let Message::Error(response) = &message {
             tracing::warn!(code = response.error.code, message = %response.error.message, "plugin request declined");
         }
@@ -435,7 +507,7 @@ impl Session {
     }
 
     /// Handles a plugin notice that needs no reply.
-    pub fn notice(&mut self, method: Method, now: Instant) -> Vec<Delivery> {
+    pub(crate) fn notice(&mut self, method: Method, now: Instant) -> Vec<Delivery> {
         match method {
             Method::Actions { actions } => self.notice_actions(actions, now),
             Method::PadOverrides { overrides } => vec![Delivery::PadOverrides(overrides)],
@@ -467,7 +539,7 @@ impl Session {
     }
 
     /// Replaces a verb plugin's verbs; an application plugin may not declare any.
-    pub fn set_verbs(&mut self, verbs: Vec<String>, now: Instant) {
+    pub(crate) fn set_verbs(&mut self, verbs: Vec<String>, now: Instant) {
         if self.manifest.kind == PluginKind::Verb {
             self.verbs = verbs;
             return;
@@ -480,7 +552,7 @@ impl Session {
         }
     }
 
-    pub fn call_for_event(&mut self, event: &Event, selected: bool) -> Option<Call> {
+    pub(crate) fn call_for_event(&mut self, event: &Event, selected: bool) -> Option<Call> {
         let (request_id, method) = match event {
             Event::Button { name, state } if selected && self.events.contains(&Subscription::Button) => {
                 let request_id = self.request()?;
@@ -522,7 +594,7 @@ impl Session {
     ///
     /// # Errors
     /// The output queue is full.
-    pub fn reject(&mut self, request_id: Option<u64>, reason: &str) -> io::Result<()> {
+    pub(crate) fn reject(&mut self, request_id: Option<u64>, reason: &str) -> io::Result<()> {
         self.queue_bytes(serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0", "method": "action_rejected",
             "params": { "event_id": request_id, "error": { "code": -32602, "message": reason } }
@@ -632,6 +704,49 @@ mod tests {
             session.supervise(after(start, HANG_TIMEOUT.saturating_add(Duration::from_millis(late))));
             prop_assert_eq!(session.status, Status::Failed);
         }
+    }
+
+    #[test]
+    fn the_button_limit_is_shorter_than_the_speech_limit() {
+        assert!(tehuti_core::plugin::BUTTON_BUDGET < tehuti_core::plugin::SPEECH_BUDGET);
+        let start = Instant::now();
+        let mut session = ready(start);
+        let button = call(&mut session, true, start);
+        let speech = call(&mut session, false, start);
+        session.supervise(after(start, tehuti_core::plugin::BUTTON_BUDGET));
+        assert!(!session.pending.contains_key(&button), "button expired first");
+        assert!(session.pending.contains_key(&speech), "speech still waiting");
+    }
+
+    #[test]
+    fn a_late_reply_is_dropped() {
+        let start = Instant::now();
+        let mut session = ready(start);
+        let request_id = call(&mut session, true, start);
+        let late = after(start, tehuti_core::plugin::BUTTON_BUDGET);
+        session.supervise(late);
+        let line = format!("{{\"jsonrpc\":\"2.0\",\"id\":{request_id},\"result\":{{\"actions\":[]}}}}\n");
+        let _deliveries = session.receive(line.as_bytes(), late);
+        assert_eq!(
+            session.missed_decisions, 1,
+            "the miss stands; the late reply does not clear it"
+        );
+    }
+
+    #[test]
+    fn backoff_doubles_to_the_cap_and_resets_when_healthy() {
+        let now = Instant::now();
+        let mut backoff = Backoff::new();
+        for _ in 0..20 {
+            backoff.schedule(now);
+        }
+        assert_eq!(backoff.delay, RESTART_BACKOFF_CAP);
+        let mut session = ready(now);
+        session.healthy_since = Some(now);
+        let healthy = after(now, RESTART_BACKOFF_RESET);
+        assert!(!session.supervise_child(healthy, None, &mut backoff));
+        assert_eq!(backoff.delay, RESTART_BACKOFF_BASE);
+        assert!(session.supervise_child(healthy, Some("exited"), &mut backoff));
     }
 
     #[test]

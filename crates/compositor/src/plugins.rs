@@ -1,7 +1,7 @@
 //! Plugin processes and their non-blocking stdio sources.
 
 use crate::{
-    plugin_session::{Delivery, Session, Status},
+    plugin_session::{Backoff, Delivery, Session, Status},
     state::Compositor,
 };
 use core::{
@@ -21,9 +21,6 @@ use tehuti_protocol::{
     Action, Call, Event, Manifest, Method, Permission, PluginKind, RpcVersion, StartPolicy, Subscription,
 };
 
-const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
-const RESTART_BACKOFF_CAP: Duration = Duration::from_secs(30);
-const RESTART_BACKOFF_RESET: Duration = Duration::from_secs(30);
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(10);
 const READ_ATTEMPTS: usize = 16;
 
@@ -66,8 +63,7 @@ struct Entry {
     plugin: usize,
     latest_focus: Option<(Option<String>, String)>,
     started: bool,
-    restart_at: Option<Instant>,
-    backoff: Duration,
+    restart: Backoff,
     next_id: u64,
     cleanup: Option<Box<dyn Fn()>>,
     session: Option<Rc<RefCell<Session>>>,
@@ -82,8 +78,7 @@ impl Entry {
             plugin,
             latest_focus: None,
             started: false,
-            restart_at: None,
-            backoff: RESTART_BACKOFF_BASE,
+            restart: Backoff::new(),
             next_id: 1,
             cleanup: None,
             session: None,
@@ -287,9 +282,9 @@ impl Plugins {
     }
 
     fn start_entry(start: &Start, entry: &mut Entry, now: Instant) {
-        if entry.session.is_none() && entry.restart_at.is_none_or(|deadline| now >= deadline) {
+        if entry.session.is_none() && entry.restart.due(now) {
             entry.started = true;
-            entry.restart_at = None;
+            entry.restart.started();
             match start(&entry.manifest) {
                 Ok(Running {
                     session,
@@ -317,9 +312,8 @@ impl Plugins {
     }
 
     fn schedule_restart(entry: &mut Entry, now: Instant) {
-        entry.restart_at = now.checked_add(entry.backoff);
-        tracing::warn!(executable = %entry.manifest.executable, delay_ms = entry.backoff.as_millis(), "plugin restart backoff");
-        entry.backoff = entry.backoff.saturating_mul(2).min(RESTART_BACKOFF_CAP);
+        tracing::warn!(executable = %entry.manifest.executable, delay_ms = entry.restart.delay.as_millis(), "plugin restart backoff");
+        entry.restart.schedule(now);
     }
 
     pub(crate) fn supervise(&mut self) -> Vec<usize> {
@@ -331,20 +325,10 @@ impl Plugins {
         for entry in &mut self.entries {
             let failed = entry.session.as_ref().is_some_and(|session| {
                 let mut session = session.borrow_mut();
-                session.supervise(now);
-                if let Some(reason) = entry.process.as_mut().and_then(Process::exit_reason) {
-                    session.fail(&reason);
-                }
+                let exit = entry.process.as_mut().and_then(Process::exit_reason);
+                let failed = session.supervise_child(now, exit.as_deref(), &mut entry.restart);
                 entry.next_id = session.next_id;
-                if session.status != Status::Failed
-                    && session
-                        .healthy_since
-                        .is_some_and(|since| now.duration_since(since) >= RESTART_BACKOFF_RESET)
-                {
-                    entry.backoff = RESTART_BACKOFF_BASE;
-                    session.invalid_messages = 0;
-                }
-                session.status == Status::Failed
+                failed
             });
             if failed {
                 exited.push(entry.plugin);
@@ -931,6 +915,7 @@ pub fn fuzz_stdout(bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin_session::RESTART_BACKOFF_BASE;
     use tehuti_protocol::Message;
 
     fn key(name: &str) -> Action {
@@ -1351,9 +1336,9 @@ mod tests {
                     "plugin {} running",
                     index
                 );
-                prop_assert_eq!(entry.backoff, expected.backoff, "plugin {} backoff", index);
+                prop_assert_eq!(entry.restart.delay, expected.backoff, "plugin {} backoff", index);
                 prop_assert_eq!(
-                    entry.restart_at,
+                    entry.restart.retry_at,
                     expected.restart_at,
                     "plugin {} restart time",
                     index
@@ -1522,7 +1507,7 @@ mod tests {
             let mut delays = Vec::new();
             for _attempt in 0..12 {
                 drop(plugins.supervise_at(now));
-                let restart_at = plugins.entries[0].restart_at.unwrap();
+                let restart_at = plugins.entries[0].restart.retry_at.unwrap();
                 delays.push(restart_at.duration_since(now).as_millis());
                 drop(plugins.supervise_at(restart_at.checked_sub(Duration::from_millis(1)).unwrap()));
                 assert_eq!(
@@ -1549,18 +1534,21 @@ mod tests {
             let mut now = Instant::now();
             for _attempt in 0..5 {
                 drop(plugins.supervise_at(now));
-                now = plugins.entries[0].restart_at.unwrap();
+                now = plugins.entries[0].restart.retry_at.unwrap();
             }
             succeed.borrow_mut()[0] = true;
             drop(plugins.supervise_at(now));
             mark_healthy(&plugins, now);
             let young = Duration::from_millis(3200);
-            assert_eq!(plugins.entries[0].backoff, young, "backoff kept while young");
+            assert_eq!(
+                plugins.entries[0].restart.delay, young,
+                "backoff kept while young"
+            );
             drop(plugins.supervise_at(later(now, 29_999)));
-            assert_eq!(plugins.entries[0].backoff, young, "not reset before 30 s");
+            assert_eq!(plugins.entries[0].restart.delay, young, "not reset before 30 s");
             drop(plugins.supervise_at(later(now, 30_000)));
             assert_eq!(
-                plugins.entries[0].backoff, RESTART_BACKOFF_BASE,
+                plugins.entries[0].restart.delay, RESTART_BACKOFF_BASE,
                 "reset after 30 s healthy"
             );
         }
