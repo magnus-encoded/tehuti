@@ -460,8 +460,7 @@ fn button_entries(
             trigger: vec![Piece::Text("Pad".into())],
             result: vec![Piece::Text("app".into())],
         }];
-        let chord = active.map_or(&[][..], Context::passthrough_push_to_talk);
-        entries.push(talk_entry(chord_pieces(chord, pad)));
+        entries.push(talk_entry(chord_pieces(talk, pad)));
         entries.extend(
             BUTTONS
                 .iter()

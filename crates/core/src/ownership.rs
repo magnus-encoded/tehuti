@@ -378,7 +378,8 @@ impl State {
         let focused = focused_context(self);
         let global = global_context(self);
         let passthrough = self.passthrough();
-        let (talk, talk_source) = self.talk_buttons(passthrough);
+        let (talk, talk_source) = self.talk_buttons();
+        let talk = talk.to_vec();
         let maps = |context: Option<&tehuti_protocol::Context>| -> Vec<ButtonName> {
             context.map_or_else(Vec::new, |context| context.mapped_buttons().collect())
         };
@@ -417,24 +418,6 @@ impl State {
                 .filter(|button| self.sticks.holds(*button))
                 .collect(),
         }
-    }
-
-    /// The push-to-talk buttons the way routing looks them up today: two functions, two defaults.
-    fn talk_buttons(&self, passthrough: bool) -> (Vec<ButtonName>, TalkSource) {
-        if let Some(button) = self.controller_talk {
-            return (vec![button], TalkSource::Controller);
-        }
-        let own = focused_context(self).and_then(|context| context.own_push_to_talk());
-        if let Some(own) = own {
-            return (own.to_vec(), TalkSource::Context);
-        }
-        if passthrough {
-            return (vec![ButtonName::Record], TalkSource::Default);
-        }
-        global_context(self).map_or_else(
-            || (vec![ButtonName::Record], TalkSource::Default),
-            |context| (context.push_to_talk_buttons().to_vec(), TalkSource::Global),
-        )
     }
 }
 
@@ -923,7 +906,7 @@ mod tests {
                 return Kind::Tehuti;
             }
             // Dispatch fires talk from the held buttons before `route` reaches the chord.
-            let members = state.passthrough_push_to_talk();
+            let members = state.talk_buttons().0;
             let held = |member: &ButtonName| *member == scenario.button || scenario.held.contains(member);
             if members.contains(&scenario.button)
                 && (members == [ButtonName::Select] || members.iter().all(held))
@@ -992,17 +975,12 @@ mod tests {
             prop_assert_eq!(kind(got), old_routing(&scenario, &state), "view {:?}", view);
         }
 
-        /// The view's push-to-talk set is what `push_to_talk` and `passthrough_push_to_talk` say.
+        /// The view's push-to-talk set is what `push_to_talk` says, in every mode.
         #[test]
         fn the_view_talks_like_the_old_lookups(scenario in scenario(), button in any_button()) {
             let state = scenario.state();
             let view = state.ownership_view(false);
-            let old = if state.passthrough() {
-                state.passthrough_push_to_talk().contains(&button)
-            } else {
-                state.push_to_talk(button)
-            };
-            prop_assert_eq!(view.talks(button), old);
+            prop_assert_eq!(view.talks(button), state.push_to_talk(button));
         }
     }
 

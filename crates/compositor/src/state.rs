@@ -891,7 +891,7 @@ impl Compositor {
         button: tehuti_protocol::ButtonName,
         state: tehuti_protocol::ButtonState,
     ) -> bool {
-        let push_to_talk = self.dispatch.core().passthrough_push_to_talk();
+        let push_to_talk = self.dispatch.core().talk_buttons().0;
         let mut talk = self.virtual_pad_talk.contains(&button);
         match state {
             tehuti_protocol::ButtonState::Pressed => {
