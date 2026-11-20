@@ -3465,6 +3465,10 @@ else:
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the client setup and the five-argument harness waits cannot shrink further"
+    )]
     fn meta_and_arrows_move_focus_without_reaching_the_client() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();
@@ -3532,6 +3536,10 @@ else:
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the client setup and the five-argument harness waits cannot shrink further"
+    )]
     fn meta_takes_only_arrows_the_client_never_saw_and_moves_once_per_hold() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();
@@ -4264,6 +4272,10 @@ for line in sys.stdin:
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the client setup and the five-argument harness waits cannot shrink further"
+    )]
     fn text_input_enablement_allows_y_without_automatically_opening_the_keyboard() {
         for mode in ["open", "button", "off"] {
             for text_state in [
