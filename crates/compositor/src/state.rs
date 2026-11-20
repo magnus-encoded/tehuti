@@ -155,6 +155,9 @@ pub struct Compositor {
     /// Each installed context with its file, so a broken edit keeps the last good version.
     context_files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>,
     speech_context: Option<String>,
+    speech_resolver: Option<crate::speech::resolver_worker::Link>,
+    /// Set while a held utterance is routed again, so it is not held twice.
+    resolver_bypass: bool,
     speech_title: String,
     warned_hotwords: crate::speech_vocabulary::OverCapWarned,
     launch_socket: Option<std::ffi::OsString>,
@@ -324,6 +327,8 @@ impl Compositor {
             placement: crate::window_placement::Placement::new(),
             launch_socket: None,
             speech_context: None,
+            speech_resolver: None,
+            resolver_bypass: false,
             speech_title: String::new(),
             warned_hotwords: crate::speech_vocabulary::OverCapWarned::default(),
             surfaces: CompositorState::new_v6::<Self>(display),
@@ -845,6 +850,115 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Speech(input));
     }
 
+    /// Installs the speech resolver; unmatched transcripts then wait for its answer.
+    pub fn set_speech_resolver(&mut self, link: crate::speech::resolver_worker::Link) {
+        self.speech_resolver = Some(link);
+    }
+
+    /// Whether an utterance is waiting for the resolver's answer.
+    #[must_use]
+    pub fn speech_resolver_waiting(&self) -> bool {
+        self.speech_resolver
+            .as_ref()
+            .is_some_and(|link| link.pending.is_waiting())
+    }
+
+    /// Holds a transcript that matches nothing while the model answers off the loop.
+    /// Returns whether it was held.
+    fn hold_for_resolver(&mut self, text: &tehuti_protocol::Text) -> bool {
+        use crate::speech::resolver_worker::{Job, Waiting};
+        if self.resolver_bypass
+            || self.dispatch.keyboard().is_open()
+            || self.dispatch.keyboard().password_field_active()
+        {
+            return false;
+        }
+        let Some(link) = self.speech_resolver.as_ref() else {
+            return false;
+        };
+        if !link.opt_in.enabled() {
+            return false;
+        }
+        let Some(commands) = self.dispatch.unmatched_speech_commands(text.as_str()) else {
+            return false;
+        };
+        let transcript = text.as_str().to_owned();
+        let Some(link) = self.speech_resolver.as_mut() else {
+            return false;
+        };
+        let (id, superseded) = link.pending.begin(Waiting {
+            transcript: transcript.clone(),
+            commands: commands.clone(),
+        });
+        let queued = link.worker.submit(Job {
+            id,
+            transcript,
+            commands,
+        });
+        if let Some(older) = superseded {
+            self.settle_turn(&older, None, tehuti_core::speech::resolver::Resolution::Dictate);
+        }
+        if !queued {
+            tracing::warn!("speech resolver stopped; dictating as before");
+            let held = self.speech_resolver_abandon();
+            self.speech_resolver = None;
+            if let Some(held) = held {
+                self.settle_turn(&held, None, tehuti_core::speech::resolver::Resolution::Dictate);
+            }
+        }
+        true
+    }
+
+    fn speech_resolver_abandon(&mut self) -> Option<crate::speech::resolver_worker::Waiting> {
+        self.speech_resolver.as_mut().and_then(|link| link.pending.abandon())
+    }
+
+    /// Takes the resolver's reply back on the loop. A reply for an utterance that a
+    /// newer one superseded is dropped.
+    pub fn resolver_replied(&mut self, reply: crate::speech::resolver_worker::Reply) {
+        use tehuti_core::speech::resolver::{Bands, resolve};
+        let Some(waiting) = self
+            .speech_resolver
+            .as_mut()
+            .and_then(|link| link.pending.finish(reply.id))
+        else {
+            tracing::debug!(id = reply.id, "late speech resolver reply dropped");
+            return;
+        };
+        let resolution = resolve(
+            &waiting.transcript,
+            &waiting.commands,
+            reply.answer.as_ref(),
+            Bands::default(),
+        );
+        self.settle_turn(&waiting, reply.answer, resolution);
+    }
+
+    /// Logs the turn and routes what it became: a chosen command runs as if spoken;
+    /// anything else is routed as the original transcript.
+    fn settle_turn(
+        &mut self,
+        waiting: &crate::speech::resolver_worker::Waiting,
+        answer: Option<tehuti_core::speech::resolver::Answer>,
+        resolution: tehuti_core::speech::resolver::Resolution,
+    ) {
+        use tehuti_core::speech::resolver::{Resolution, Turn};
+        if let Some(log) = self.speech_resolver.as_ref().and_then(|link| link.log.as_ref())
+            && let Err(error) = log.append(&Turn::new(&waiting.transcript, answer.as_ref(), &resolution), false)
+        {
+            tracing::warn!(%error, "speech turn log not written");
+        }
+        let spoken = match resolution {
+            Resolution::Run(command) => command,
+            Resolution::Offer(_) | Resolution::Dictate => waiting.transcript.clone(),
+        };
+        if let Ok(text) = tehuti_protocol::Text::new(spoken) {
+            self.resolver_bypass = true;
+            self.handle(&Event::Speech { text });
+            self.resolver_bypass = false;
+        }
+    }
+
     /// Routes a typed phrase through the same event path as an admitted transcript.
     pub fn say(&mut self, text: tehuti_protocol::Text) {
         tracing::info!(bytes = text.as_str().len(), "speech transcript received");
@@ -1300,6 +1414,11 @@ impl Compositor {
                 .and_then(|_| text.as_str().get(13..))
         {
             self.save_destination(name.trim().trim_end_matches(['.', '!', '?']));
+            return;
+        }
+        if let Event::Speech { text } = event
+            && self.hold_for_resolver(text)
+        {
             return;
         }
         let since_tick = if matches!(event, Event::Focus { .. }) {

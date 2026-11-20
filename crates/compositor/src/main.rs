@@ -484,6 +484,7 @@ fn start_session(
 
     let applications_watch = insert_applications_watch(&event_loop, &compositor.destination_paths().data);
     let menu_watch = insert_menu_watch(&event_loop);
+    install_speech_resolver(&event_loop, &mut compositor);
     let mut data = LoopData {
         applications_watch,
         menu_watch,
@@ -966,6 +967,45 @@ fn insert_applications_watch(
 }
 
 /// Watches the menu config; a failure leaves the menu loaded until restart.
+/// Starts the speech resolver when a key is set and curl exists. The worker thread posts;
+/// its replies come back through a channel the loop drains.
+fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor: &mut Compositor) {
+    use tehuti::speech::{
+        resolver::{ApiKey, Curl, OptIn, Resolver, TurnLog},
+        resolver_worker::{Link, Pending, Worker},
+    };
+    let Some(key) = ApiKey::from_env() else {
+        return;
+    };
+    let transport = Curl::default();
+    if !transport.available() {
+        return;
+    }
+    let Ok(opt_in) = OptIn::from_env() else {
+        return;
+    };
+    let (sender, receiver) = calloop::channel::channel();
+    let inserted = event_loop.handle().insert_source(receiver, |event, (), data| {
+        if let calloop::channel::Event::Msg(reply) = event {
+            data.compositor.resolver_replied(reply);
+            data.pacing.input_arrived = true;
+        }
+    });
+    if let Err(error) = inserted {
+        warn!(%error, "speech resolver unavailable");
+        return;
+    }
+    match Worker::spawn(Resolver::new(transport, Some(key)), move |reply| sender.send(reply).is_ok()) {
+        Ok(worker) => compositor.set_speech_resolver(Link {
+            worker,
+            pending: Pending::default(),
+            opt_in,
+            log: TurnLog::from_env().ok(),
+        }),
+        Err(error) => warn!(%error, "speech resolver unavailable"),
+    }
+}
+
 fn insert_menu_watch(event_loop: &EventLoop<'static, LoopData>) -> Option<tehuti::menu_watch::MenuWatch> {
     let path = tehuti::system_menu::config_path()
         .inspect_err(|error| warn!(%error, "no menu config path; the menu reloads only on restart"))
