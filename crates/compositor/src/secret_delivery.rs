@@ -71,6 +71,18 @@ mod tests {
         ) -> Result<SecretValue, tehuti_core::secret::SecretProviderUnavailable> {
             Ok(SecretValue::new(self.0.clone()))
         }
+
+        fn list_labels(&mut self) -> Result<Vec<String>, tehuti_core::secret::SecretProviderUnavailable> {
+            Err(tehuti_core::secret::SecretProviderUnavailable)
+        }
+
+        fn unlock(&mut self) -> Result<(), tehuti_core::secret::SecretProviderUnavailable> {
+            Err(tehuti_core::secret::SecretProviderUnavailable)
+        }
+
+        fn lock(&mut self) -> Result<(), tehuti_core::secret::SecretProviderUnavailable> {
+            Err(tehuti_core::secret::SecretProviderUnavailable)
+        }
     }
 
     #[test]
