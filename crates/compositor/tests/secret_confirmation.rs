@@ -28,6 +28,18 @@ mod tests {
             self.started.send(()).map_err(|_| SecretProviderUnavailable)?;
             self.results.recv().map_err(|_| SecretProviderUnavailable)?
         }
+
+        fn list_labels(&mut self) -> Result<Vec<String>, SecretProviderUnavailable> {
+            Err(SecretProviderUnavailable)
+        }
+
+        fn unlock(&mut self) -> Result<(), SecretProviderUnavailable> {
+            Err(SecretProviderUnavailable)
+        }
+
+        fn lock(&mut self) -> Result<(), SecretProviderUnavailable> {
+            Err(SecretProviderUnavailable)
+        }
     }
 
     struct Flow {
