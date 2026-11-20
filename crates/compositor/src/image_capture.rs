@@ -219,11 +219,8 @@ impl Dispatch<ExtOutputImageCaptureSourceManagerV1, ()> for Compositor {
         if let ext_output_image_capture_source_manager_v1::Request::CreateSource { source, output } = request
         {
             // Past the cap a source has no output, so sessions made from it stop at once.
-            let output = if held_by(&state.capture_sessions.1, client) < MAX_SOURCES_PER_CLIENT {
-                Output::from_resource(&output)
-            } else {
-                None
-            };
+            let output = Output::from_resource(&output)
+                .filter(|_| held_by(&state.capture_sessions.1, client) < MAX_SOURCES_PER_CLIENT);
             let source = data_init.init(source, output);
             state.capture_sessions.1.push(source);
         }
@@ -298,10 +295,8 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Compositor {
                     );
                     return;
                 }
-                let mut output = source_output(&source);
-                if held_by(&state.capture_sessions.0, client) >= MAX_SESSIONS_PER_CLIENT {
-                    output = None;
-                }
+                let output = source_output(&source)
+                    .filter(|_| held_by(&state.capture_sessions.0, client) < MAX_SESSIONS_PER_CLIENT);
                 let session = data_init.init(session, SessionData::new(output.clone()));
                 announce(&session, output.as_ref());
                 if output.is_some() {
