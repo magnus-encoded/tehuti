@@ -924,14 +924,11 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::InputChoices {
             controller,
             microphone,
-            disabled_controllers,
+            disabled_controllers: off_pads,
             disabled_microphones,
-        } => state.settings.restore_input(
-            controller,
-            microphone,
-            &disabled_controllers,
-            disabled_microphones,
-        ),
+        } => state
+            .settings
+            .restore_input(controller, microphone, &off_pads, disabled_microphones),
         Input::Menu(_)
         | Input::Launcher(_)
         | Input::CloseInvitation
