@@ -9,12 +9,12 @@ mod secret_service {
     use std::thread;
 
     use proptest::prelude::*;
-    use tehuti::secret_service::{SecretServiceProvider, SERVICE_BUS_NAME};
+    use tehuti::secret_service::{SERVICE_BUS_NAME, SecretServiceProvider};
     use tehuti_core::secret::{SecretProvider, SecretValue};
     use tehuti_protocol::SecretReference;
-    use zbus::blocking::{connection::Builder, Connection};
+    use zbus::blocking::{Connection, connection::Builder};
     use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
-    use zbus::{fdo, Guid};
+    use zbus::{Guid, fdo};
 
     const COLLECTION_PATH: &str = "/org/freedesktop/secrets/collection/default";
     const PROMPT_PATH: &str = "/org/freedesktop/secrets/prompt/u1";
@@ -48,7 +48,11 @@ mod secret_service {
 
     #[zbus::interface(name = "org.freedesktop.Secret.Service")]
     impl FakeService {
-        fn open_session(&self, _algorithm: &str, _input: Value<'_>) -> fdo::Result<(OwnedValue, OwnedObjectPath)> {
+        fn open_session(
+            &self,
+            _algorithm: &str,
+            _input: Value<'_>,
+        ) -> fdo::Result<(OwnedValue, OwnedObjectPath)> {
             let output = Value::from("")
                 .try_to_owned()
                 .map_err(|error| fdo::Error::Failed(error.to_string()))?;
@@ -102,7 +106,13 @@ mod secret_service {
     impl FakeItem {
         #[zbus(property)]
         fn label(&self) -> String {
-            self.0.with(|store| store.entries.get(self.1).map(|entry| entry.0.clone()).unwrap_or_default())
+            self.0.with(|store| {
+                store
+                    .entries
+                    .get(self.1)
+                    .map(|entry| entry.0.clone())
+                    .unwrap_or_default()
+            })
         }
 
         fn get_secret(
@@ -113,7 +123,11 @@ mod secret_service {
                 if store.locked {
                     return Err(fdo::Error::AccessDenied("locked".to_owned()));
                 }
-                let value = store.entries.get(self.1).map(|entry| entry.1.clone().into_bytes()).unwrap_or_default();
+                let value = store
+                    .entries
+                    .get(self.1)
+                    .map(|entry| entry.1.clone().into_bytes())
+                    .unwrap_or_default();
                 Ok(((session, Vec::new(), value, "text/plain".to_owned()),))
             })
         }
@@ -167,7 +181,10 @@ mod secret_service {
             }
             builder.build().expect("server connection")
         });
-        let client = Builder::unix_stream(client_stream).p2p().build().expect("client connection");
+        let client = Builder::unix_stream(client_stream)
+            .p2p()
+            .build()
+            .expect("client connection");
         let server = server.join().expect("server thread");
         Fixture {
             provider: SecretServiceProvider::new(client, SERVICE_BUS_NAME.to_owned(), SHORT_PROMPT_TIMEOUT),
@@ -184,7 +201,9 @@ mod secret_service {
     }
 
     fn reference(entry: &str) -> SecretReference {
-        SecretReference { entry: entry.to_owned() }
+        SecretReference {
+            entry: entry.to_owned(),
+        }
     }
 
     fn reveal(value: &SecretValue) -> String {
@@ -209,7 +228,10 @@ mod secret_service {
     #[test]
     fn lookup_unlocks_a_locked_collection_first() {
         let mut fixture = start(&sample(), true, true);
-        let value = fixture.provider.lookup(&reference("mail account")).expect("found");
+        let value = fixture
+            .provider
+            .lookup(&reference("mail account"))
+            .expect("found");
         assert_eq!(reveal(&value), "v-first-value");
         assert!(!fixture.store.with(|store| store.locked));
     }

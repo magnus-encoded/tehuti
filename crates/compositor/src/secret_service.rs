@@ -47,7 +47,11 @@ impl SecretServiceProvider {
     /// There is no session bus.
     pub fn connect_session_bus() -> Outcome<Self> {
         let connection = Connection::session().map_err(|_| SecretProviderUnavailable)?;
-        Ok(Self::new(connection, SERVICE_BUS_NAME.to_owned(), DEFAULT_PROMPT_TIMEOUT))
+        Ok(Self::new(
+            connection,
+            SERVICE_BUS_NAME.to_owned(),
+            DEFAULT_PROMPT_TIMEOUT,
+        ))
     }
 
     /// Uses an existing connection, a service name and a prompt timeout.
