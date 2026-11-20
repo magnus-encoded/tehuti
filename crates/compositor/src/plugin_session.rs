@@ -3,6 +3,11 @@
 //! Framing, handshake, decision deadlines and invalid-message limits live here. Bytes and the
 //! time come in; deliveries and bytes to write go out. No process, pipe or event loop appears.
 
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "unreachable_pub rejects bare pub in a crate-private module, so pub(crate) is the only form both lints accept"
+)]
+
 use core::time::Duration;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -14,17 +19,17 @@ use tehuti_protocol::{
     RpcVersion, Subscription,
 };
 
-pub const HANG_TIMEOUT: Duration = Duration::from_secs(2);
-pub const INVALID_MESSAGE_LIMIT: usize = 16;
-pub const FLOOD_WINDOW: Duration = Duration::from_secs(1);
-pub const FLOOD_BYTES: usize = 262_144;
-pub const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
-pub const RESTART_BACKOFF_CAP: Duration = Duration::from_secs(30);
-pub const RESTART_BACKOFF_RESET: Duration = Duration::from_secs(30);
+pub(crate) const HANG_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const INVALID_MESSAGE_LIMIT: usize = 16;
+pub(crate) const FLOOD_WINDOW: Duration = Duration::from_secs(1);
+pub(crate) const FLOOD_BYTES: usize = 262_144;
+pub(crate) const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
+pub(crate) const RESTART_BACKOFF_CAP: Duration = Duration::from_secs(30);
+pub(crate) const RESTART_BACKOFF_RESET: Duration = Duration::from_secs(30);
 
 /// When a plugin may be started again, and how long the next wait is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Backoff {
+pub(crate) struct Backoff {
     pub(crate) retry_at: Option<Instant>,
     pub(crate) delay: Duration,
 }
@@ -64,7 +69,7 @@ impl Default for Backoff {
 
 /// What a session hands the compositor after reading plugin output.
 #[derive(Debug)]
-pub enum Delivery {
+pub(crate) enum Delivery {
     Reply {
         key: tehuti_core::plugin::RequestKey,
         result: Result<Vec<Action>, String>,
@@ -79,7 +84,7 @@ pub enum Delivery {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Status {
+pub(crate) enum Status {
     Starting,
     Ready,
     Refused,
@@ -87,7 +92,7 @@ pub enum Status {
 }
 
 #[derive(Debug)]
-pub struct Session {
+pub(crate) struct Session {
     pub(crate) output: VecDeque<u8>,
     pub(crate) input: Vec<u8>,
     pub(crate) dropping_line: bool,
