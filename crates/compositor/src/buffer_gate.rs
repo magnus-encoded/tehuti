@@ -107,10 +107,16 @@ impl Held {
     /// Adds the gate of a newly held commit. Past [`MAX_HELD`] the oldest gate is dropped,
     /// which lets its commit through at the next [`Held::take_ready`].
     pub fn hold(&self, gate: Arc<Gate>) {
-        let mut gates = self.lock();
-        gates.push_back(gate);
-        if gates.len() > MAX_HELD {
-            gates.pop_front();
+        let evicted = {
+            let mut gates = self.lock();
+            gates.push_back(gate);
+            if gates.len() > MAX_HELD {
+                gates.pop_front()
+            } else {
+                None
+            }
+        };
+        if evicted.is_some() {
             self.overflowed.store(true, Ordering::Relaxed);
         }
     }
@@ -150,8 +156,7 @@ impl Held {
 /// Runs `visit` on the surface's [`Held`], creating it on first use.
 pub fn with_held<T>(surface: &WlSurface, visit: impl FnOnce(&Held) -> T) -> T {
     smithay::wayland::compositor::with_states(surface, |states| {
-        states.data_map.insert_if_missing_threadsafe(Held::default);
-        visit(states.data_map.get::<Held>().expect("inserted above"))
+        visit(states.data_map.get_or_insert_threadsafe(Held::default))
     })
 }
 
@@ -163,7 +168,7 @@ pub struct Waiting(HashMap<ObjectId, Weak<WlSurface>>);
 impl Waiting {
     /// Holds the gate of a newly held commit on its surface.
     pub fn hold(&mut self, surface: &WlSurface, gate: Arc<Gate>) {
-        self.0.entry(surface.id()).or_insert_with(|| surface.downgrade());
+        let _entry = self.0.entry(surface.id()).or_insert_with(|| surface.downgrade());
         with_held(surface, |held| held.hold(gate));
     }
 

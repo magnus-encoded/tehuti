@@ -1009,35 +1009,39 @@ impl Compositor {
     #[must_use]
     pub fn surface_holders(
         &self,
-        id: &smithay::reexports::wayland_server::backend::ObjectId,
+        surface_id: &smithay::reexports::wayland_server::backend::ObjectId,
     ) -> Vec<&'static str> {
         use smithay::reexports::wayland_server::Resource as _;
         let mut holders = Vec::new();
         if self
             .window_focus
             .as_ref()
-            .is_some_and(|(held, _)| &held.id() == id)
+            .is_some_and(|(held, _)| &held.id() == surface_id)
         {
             holders.push("window_focus");
         }
         if self
             .unfocused_window
             .as_ref()
-            .is_some_and(|held| &held.id() == id)
+            .is_some_and(|held| &held.id() == surface_id)
         {
             holders.push("unfocused_window");
         }
-        if self.text_input.focus_id().as_ref() == Some(id) {
+        if self.text_input.focus_id().as_ref() == Some(surface_id) {
             holders.push("text_input focus");
         }
-        if self
-            .placement
-            .windows()
-            .any(|window| window.toplevel().is_some_and(|top| &top.wl_surface().id() == id))
-        {
+        if self.placement.windows().any(|window| {
+            window
+                .toplevel()
+                .is_some_and(|top| &top.wl_surface().id() == surface_id)
+        }) {
             holders.push("placement");
         }
-        if self.keyboard.current_focus().is_some_and(|held| &held.id() == id) {
+        if self
+            .keyboard
+            .current_focus()
+            .is_some_and(|held| &held.id() == surface_id)
+        {
             holders.push("keyboard focus");
         }
         holders
