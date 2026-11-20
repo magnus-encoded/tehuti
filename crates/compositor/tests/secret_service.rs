@@ -78,7 +78,7 @@ mod secret_service {
         }
 
         fn unlock(&self, objects: Vec<OwnedObjectPath>) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
-            assert!(!objects.is_empty());
+            assert_eq!(objects.into_iter().count(), 1);
             self.0.with(|store| {
                 if store.needs_prompt {
                     (Vec::new(), object_path(PROMPT_PATH))
@@ -90,7 +90,7 @@ mod secret_service {
         }
 
         fn lock(&self, objects: Vec<OwnedObjectPath>) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
-            assert!(!objects.is_empty());
+            assert_eq!(objects.into_iter().count(), 1);
             self.0.with(|store| store.locked = true);
             (vec![object_path(COLLECTION_PATH)], object_path("/"))
         }
@@ -141,7 +141,7 @@ mod secret_service {
     #[zbus::interface(name = "org.freedesktop.Secret.Prompt")]
     impl FakePrompt {
         fn prompt(&self, window_id: &str) {
-            assert!(window_id.is_empty());
+            assert_eq!(window_id, "");
             self.0.with(|store| {
                 if !store.prompt_dismissed {
                     store.locked = false;
