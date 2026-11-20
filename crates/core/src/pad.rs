@@ -215,7 +215,7 @@ impl Pads {
         pads
     }
 
-    /// Queues the effects of each pad in `previous` that is no longer known.
+    /// Queues the effects of each pad in `previous` that has vanished.
     fn forget(&mut self, previous: BTreeMap<PathBuf, Pad>) {
         for (path, mut pad) in previous {
             if !self.known.contains_key(&path) {
