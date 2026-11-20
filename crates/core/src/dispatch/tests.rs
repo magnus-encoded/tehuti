@@ -3323,7 +3323,10 @@ fn one_right_reaches_the_next_controller_without_changing_anything() {
         Some("Xbox Controller")
     );
     assert_eq!(input_effects(&world), Vec::<Effect>::new());
-    assert_eq!(state.settings().input.disabled_controllers(), Vec::<String>::new());
+    assert_eq!(
+        state.settings().input.disabled_controllers(),
+        Vec::<String>::new()
+    );
 }
 
 proptest! {
@@ -6445,7 +6448,11 @@ fn saved_off_pads_and_buttons_land_in_one_settings_entry_per_pad() {
     let state = world.run(
         state,
         Input::ControllerBindings(
-            [("pad-a".to_owned(), ButtonName::Start), ("pad-b".to_owned(), ButtonName::Record)].into(),
+            [
+                ("pad-a".to_owned(), ButtonName::Start),
+                ("pad-b".to_owned(), ButtonName::Record),
+            ]
+            .into(),
         ),
     );
     let input = &state.settings().input;
@@ -6465,6 +6472,9 @@ fn restoring_clears_what_the_saved_files_no_longer_hold() {
         State::default(),
         Input::ControllerBindings([("pad-a".to_owned(), ButtonName::Start)].into()),
     );
-    let state = world.run(state, Input::ControllerBindings(std::collections::BTreeMap::new()));
+    let state = world.run(
+        state,
+        Input::ControllerBindings(std::collections::BTreeMap::new()),
+    );
     assert!(state.settings().input.pads.is_empty());
 }

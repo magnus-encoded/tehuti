@@ -133,7 +133,10 @@ mod tests {
         let second = PathBuf::from("/dev/input/event6");
         see(
             &mut pads,
-            vec![sighting("/dev/input/event5", ""), sighting("/dev/input/event6", "")],
+            vec![
+                sighting("/dev/input/event5", ""),
+                sighting("/dev/input/event6", ""),
+            ],
         );
         pads.on_button(&first, ButtonName::South, true);
         pads.on_button(&first, ButtonName::East, true);
@@ -154,7 +157,10 @@ mod tests {
         let first = PathBuf::from("/dev/input/event5");
         see(
             &mut pads,
-            vec![sighting("/dev/input/event5", ""), sighting("/dev/input/event6", "")],
+            vec![
+                sighting("/dev/input/event5", ""),
+                sighting("/dev/input/event6", ""),
+            ],
         );
         pads.on_button(&first, ButtonName::South, true);
         pads.on_button(Path::new("/dev/input/event6"), ButtonName::South, true);

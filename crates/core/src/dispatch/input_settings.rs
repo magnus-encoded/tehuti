@@ -325,12 +325,19 @@ impl InputSettings {
     pub fn controller_bindings(&self) -> std::collections::BTreeMap<String, tehuti_protocol::ButtonName> {
         self.pads
             .iter()
-            .filter_map(|(id, settings)| settings.push_to_talk.map(|button| (id.as_str().to_owned(), button)))
+            .filter_map(|(id, settings)| {
+                settings
+                    .push_to_talk
+                    .map(|button| (id.as_str().to_owned(), button))
+            })
             .collect()
     }
 
     /// Replaces every pad's push-to-talk choice with `bindings`; on/off choices stay.
-    pub(super) fn restore_bindings(&mut self, bindings: &std::collections::BTreeMap<String, tehuti_protocol::ButtonName>) {
+    pub(super) fn restore_bindings(
+        &mut self,
+        bindings: &std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
+    ) {
         let keys: Vec<String> = self
             .pads
             .keys()

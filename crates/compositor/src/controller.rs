@@ -24,8 +24,7 @@ pub fn keyed_controllers(
             let _old = sightings.insert(sighting.path.clone(), sighting.name.clone());
         })
         .collect();
-    pads
-        .observe(devices)
+    pads.observe(devices)
         .into_iter()
         .map(|(path, pad)| {
             let info = tehuti_core::dispatch::ControllerInfo {

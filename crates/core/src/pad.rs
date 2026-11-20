@@ -219,7 +219,9 @@ impl Pads {
                         PadEffect::ReleaseHeld(buttons) => {
                             let buttons: Vec<_> = buttons
                                 .into_iter()
-                                .filter(|button| !self.known.values().any(|other| other.held.contains(button)))
+                                .filter(|button| {
+                                    !self.known.values().any(|other| other.held.contains(button))
+                                })
                                 .collect();
                             if buttons.is_empty() {
                                 continue;
