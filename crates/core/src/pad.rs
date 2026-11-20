@@ -91,7 +91,7 @@ impl Default for PadSettings {
 /// One controller as the rest of Tehuti sees it: runtime facts only, no settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pad {
-    pub id: PadId,
+    pub pad_id: PadId,
     pub label: String,
     pub model: Identity,
     pub origin: Origin,
@@ -143,7 +143,7 @@ impl Pads {
         let mut taken: BTreeSet<String> = sightings
             .iter()
             .filter_map(|sighting| self.known.get(&sighting.path))
-            .map(|pad| pad.id.0.clone())
+            .map(|pad| pad.pad_id.0.clone())
             .collect();
         let mut counts = BTreeMap::<String, usize>::new();
         let mut next = BTreeMap::new();
@@ -165,15 +165,15 @@ impl Pads {
                         });
                         let free = candidates
                             .into_iter()
-                            .find(|name| !taken.contains(name))
+                            .find(|candidate| !taken.contains(candidate))
                             .unwrap_or_default();
                         let _fresh = taken.insert(free.clone());
                         PadId(free)
                     },
-                    |pad| pad.id.clone(),
+                    |pad| pad.pad_id.clone(),
                 );
                 let pad = Pad {
-                    id: pad_id,
+                    pad_id,
                     label: format!("{model_name} #{count}"),
                     model,
                     origin: sighting.origin,
@@ -213,7 +213,7 @@ impl Pads {
     /// The id the pad at `path` holds, while it is present.
     #[must_use]
     pub fn id_for(&self, path: &Path) -> Option<&PadId> {
-        self.known.get(path).map(|pad| &pad.id)
+        self.known.get(path).map(|pad| &pad.pad_id)
     }
 
     /// Records a press or release on the pad at `path`.
@@ -250,7 +250,7 @@ mod pad_type_tests {
     #[test]
     fn pad_carries_origin_and_presence() {
         let pad = Pad {
-            id: PadId::new("k"),
+            pad_id: PadId::new("k"),
             label: "PAD #1".into(),
             model: Identity::default(),
             origin: Origin::Bluetooth,
@@ -744,7 +744,7 @@ mod pads_tests {
     }
 
     fn ids(pads: &[(PathBuf, Pad)]) -> Vec<&str> {
-        pads.iter().map(|(_, pad)| pad.id.as_str()).collect()
+        pads.iter().map(|(_, pad)| pad.pad_id.as_str()).collect()
     }
 
     #[test]
@@ -753,7 +753,7 @@ mod pads_tests {
             sighting("/dev/input/event1", "Pad A", "shared"),
             sighting("/dev/input/event2", "Pad B", "shared"),
         ]);
-        assert_ne!(pads[0].1.id, pads[1].1.id);
+        assert_ne!(pads[0].1.pad_id, pads[1].1.pad_id);
     }
 
     #[test]
@@ -764,8 +764,8 @@ mod pads_tests {
         // The newcomer's node sorts before the original's.
         let after = pads.observe([sighting("/dev/input/event2", "Pad", "shared"), original]);
         assert_eq!(after[1].0, PathBuf::from("/dev/input/event5"));
-        assert_eq!(after[1].1.id, before[0].1.id);
-        assert_ne!(after[0].1.id, after[1].1.id);
+        assert_eq!(after[1].1.pad_id, before[0].1.pad_id);
+        assert_ne!(after[0].1.pad_id, after[1].1.pad_id);
     }
 
     #[test]
@@ -812,7 +812,7 @@ mod pads_tests {
                     sighting(&format!("/dev/input/event{node}"), &format!("Pad{name}"), &uniq)
                 });
                 let pads = pads.observe(present);
-                let unique: BTreeSet<_> = pads.iter().map(|(_, pad)| &pad.id).collect();
+                let unique: BTreeSet<_> = pads.iter().map(|(_, pad)| &pad.pad_id).collect();
                 prop_assert_eq!(unique.len(), pads.len());
             }
         }
