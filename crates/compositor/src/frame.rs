@@ -1,8 +1,9 @@
-//! The frame sequence both backends share: overlays and notices, render, then, after the
-//! backend has submitted the frame, the confirmation note, frame callbacks, refresh and flush.
-//! A backend only binds a target and submits it.
+//! The frame sequence both backends share.
+//!
+//! Overlays and notices, then render; after the backend submits, the confirmation note,
+//! frame callbacks, refresh and flush. A backend only binds a target and submits it.
 
-use core::{error::Error, time::Duration};
+use core::{error::Error, fmt, time::Duration};
 
 use smithay::{
     backend::renderer::{ImportAll, ImportMem, Renderer, damage::OutputDamageTracker, sync::SyncPoint},
@@ -93,5 +94,25 @@ impl Compositor {
         }
         self.space.refresh();
         display.flush_clients()
+    }
+}
+
+impl fmt::Debug for Surface<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Surface")
+            .field("output", &self.output.name())
+            .field("age", &self.age)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for Rendered {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Rendered")
+            .field("drew", &self.drew)
+            .field("notice_included", &self.notice_included)
+            .finish_non_exhaustive()
     }
 }
