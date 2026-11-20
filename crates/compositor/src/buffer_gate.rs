@@ -74,13 +74,15 @@ impl Gate {
     }
 }
 
-/// The blocker smithay holds a commit on.
+/// The blocker smithay holds a commit on. It does not own the gate, so a commit
+/// queued by smithay cannot keep the gate's fds alive after its surface is gone.
 #[derive(Debug, Clone)]
-pub struct BufferBlocker(pub Arc<Gate>);
+pub struct BufferBlocker(pub alloc::sync::Weak<Gate>);
 
 impl Blocker for BufferBlocker {
     fn state(&self) -> BlockerState {
-        if self.0.ready(Instant::now()) {
+        // The surface owns the gate; a gate that is gone has nothing left to wait for.
+        if self.0.upgrade().is_none_or(|gate| gate.ready(Instant::now())) {
             BlockerState::Released
         } else {
             BlockerState::Pending
@@ -225,7 +227,14 @@ mod tests {
     #[test]
     fn the_blocker_stays_pending_while_the_buffer_is_unfinished() {
         let (read, _write) = pipe();
-        let blocker = BufferBlocker(Arc::new(Gate::new(vec![read], "viewer".into(), Instant::now())));
+        let gate = Arc::new(Gate::new(vec![read], "viewer".into(), Instant::now()));
+        let blocker = BufferBlocker(Arc::downgrade(&gate));
         assert_eq!(blocker.state(), BlockerState::Pending);
+        drop(gate);
+        assert_eq!(
+            blocker.state(),
+            BlockerState::Released,
+            "a dropped gate waits for nothing"
+        );
     }
 }

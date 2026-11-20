@@ -1040,7 +1040,10 @@ impl Compositor {
         if gate.ready(Instant::now()) {
             return;
         }
-        add_blocker(surface, crate::buffer_gate::BufferBlocker(gate.clone()));
+        add_blocker(
+            surface,
+            crate::buffer_gate::BufferBlocker(std::sync::Arc::downgrade(&gate)),
+        );
         with_states(surface, |states| {
             let _fresh = states
                 .data_map
