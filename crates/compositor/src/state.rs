@@ -864,9 +864,6 @@ impl Compositor {
     /// Returns whether it was held.
     fn hold_for_resolver(&mut self, event: &Event) -> bool {
         use crate::speech::resolver_worker::{Job, Waiting};
-        if matches!(event, Event::Speech { .. } | Event::Focus { .. }) {
-            self.flush_held_utterance();
-        }
         let Event::Speech { text } = event else {
             return false;
         };
@@ -876,6 +873,7 @@ impl Compositor {
         let Some(commands) = self.dispatch.unmatched_speech_commands(text.as_str()) else {
             return false;
         };
+        let target = (self.speech_context.clone(), self.speech_title.clone());
         let Some(link) = self.speech_resolver.as_mut() else {
             return false;
         };
@@ -885,6 +883,7 @@ impl Compositor {
         let transcript = text.as_str().to_owned();
         let (number, superseded) = link.pending.begin(Waiting {
             transcript: transcript.clone(),
+            target: target.clone(),
             commands: commands.clone(),
         });
         let queued = link.worker.submit(Job {
@@ -976,6 +975,11 @@ impl Compositor {
             && let Err(error) = log.append(&Turn::new(&waiting.transcript, answer, &resolution), false)
         {
             tracing::warn!(%error, "speech turn log not written");
+        }
+        let target = (self.speech_context.clone(), self.speech_title.clone());
+        if target != waiting.target {
+            tracing::warn!("focus moved while speech was held; the utterance is discarded");
+            return;
         }
         let spoken = match resolution {
             Resolution::Run(command) => command,
@@ -1511,6 +1515,13 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        // A held utterance dictates before any input but time, sticks and the sidecar's own feed.
+        if !matches!(
+            input,
+            DispatchInput::Tick { .. } | DispatchInput::Sticks(_) | DispatchInput::Speech(_)
+        ) {
+            self.flush_held_utterance();
+        }
         // Loop ticks are not timeline events; sticks are sampled once per video frame.
         if let DispatchInput::Sticks(sticks) = &input {
             let now = [sticks.left.0, sticks.left.1, sticks.right.0, sticks.right.1];

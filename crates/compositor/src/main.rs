@@ -966,7 +966,6 @@ fn insert_applications_watch(
     .ok()
 }
 
-/// Watches the menu config; a failure leaves the menu loaded until restart.
 /// Starts the speech resolver when a key is set and curl exists. The worker thread posts;
 /// its replies come back through a channel the loop drains.
 fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor: &mut Compositor) {
@@ -1017,6 +1016,7 @@ fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor
     }
 }
 
+/// Watches the menu config; a failure leaves the menu loaded until restart.
 fn insert_menu_watch(event_loop: &EventLoop<'static, LoopData>) -> Option<tehuti::menu_watch::MenuWatch> {
     let path = tehuti::system_menu::config_path()
         .inspect_err(|error| warn!(%error, "no menu config path; the menu reloads only on restart"))

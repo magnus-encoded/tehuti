@@ -104,7 +104,7 @@ mod tests {
         fn only_the_newest_utterance_takes_its_reply(count in 1_usize..8, order in any::<u64>()) {
             let mut pending = Pending::default();
             let ids: Vec<u64> = (0..count)
-                .map(|index| pending.begin(Waiting { transcript: format!("t{index}"), commands: Vec::new() }).0)
+                .map(|index| pending.begin(Waiting { transcript: format!("t{index}"), target: (None, String::new()), commands: Vec::new() }).0)
                 .collect();
             let mut shuffled = ids.clone();
             let length = shuffled.len();
@@ -253,6 +253,45 @@ mod tests {
             .collect();
         assert_eq!(heard, ["first unknown words", "first again"]);
         assert!(turns.iter().all(|turn| turn["outcome"] == "dictated"));
+    }
+
+    #[test]
+    fn a_button_press_or_a_typed_phrase_sees_the_dictation_first() {
+        let mut rig = rig(vec![("first", Duration::from_millis(300))]);
+        rig.say("first unknown words");
+        assert!(rig.compositor.speech_resolver_waiting());
+        rig.compositor.handle(&Event::Button {
+            name: tehuti_protocol::ButtonName::South,
+            state: tehuti_protocol::ButtonState::Pressed,
+        });
+        assert!(
+            !rig.compositor.speech_resolver_waiting(),
+            "a button press settled the held utterance"
+        );
+        rig.say("first once more");
+        assert!(rig.compositor.speech_resolver_waiting());
+        rig.compositor
+            .say(tehuti_protocol::Text::new("pause".into()).unwrap());
+        assert!(
+            !rig.compositor.speech_resolver_waiting(),
+            "a typed phrase settled it"
+        );
+        let heard: Vec<_> = lines(&rig.log_path)
+            .iter()
+            .map(|turn| {
+                (
+                    turn["heard"].as_str().unwrap().to_owned(),
+                    turn["outcome"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            heard,
+            [
+                ("first unknown words".to_owned(), "dictated".to_owned()),
+                ("first once more".to_owned(), "dictated".to_owned())
+            ]
+        );
     }
 
     #[test]
