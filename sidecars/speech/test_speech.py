@@ -459,6 +459,95 @@ time.sleep(60)
         self.assertEqual([json.loads(l) for l in output.getvalue().splitlines()],
                          [{"session": 4, "text": "w"}])
 
+    def final_take(self, speech, session=4, reader_alive=False):
+        class Process:
+            stdout = io.BytesIO()
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        take = module.Take(session)
+        recording = module.Recording("default", Process())
+        recording.extend(b"\x00\x10" * 32000)
+        gate = threading.Event()
+        recording.reader = threading.Thread(target=lambda: gate.wait(10), daemon=True)
+        recording.reader.start()
+        if not reader_alive:
+            gate.set()
+            recording.reader.join()
+        take.recordings.append(recording)
+        speech.capture, speech.session = take, session
+        return take, gate
+
+    def run_stop(self, speech, session=4):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            speech.stop(session, True)
+            speech.releasing.worker.join(1)
+            deadline = time.monotonic() + 5
+            while not output.getvalue() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            log = Path(directory, "log").read_text() if Path(directory, "log").exists() else ""
+        return [json.loads(l) for l in output.getvalue().splitlines()], log
+
+    def test_final_behind_slow_blocking_interim_replies_within_one_transcription(self):
+        started = threading.Event()
+        segment = types.SimpleNamespace(text="w", no_speech_prob=0, avg_logprob=0)
+
+        class Model:
+            def transcribe(self, path, **options):
+                if options.get("beam_size") == 1 and not started.is_set():
+                    started.set()
+                    time.sleep(0.5)
+                return iter([segment]), None
+
+        speech = module.Speech(Model(), sources=lambda: [None])
+        take, _ = self.final_take(speech)
+        with contextlib.redirect_stdout(io.StringIO()):
+            speech.interim(4, bytes(take.recordings[0].audio), take)
+        self.assertTrue(started.wait(3))
+        began = time.monotonic()
+        replies, log = self.run_stop(speech)
+        self.assertEqual(replies, [{"session": 4, "text": "w"}], "discarded interim publishes nothing")
+        self.assertLess(time.monotonic() - began, 1.5)
+        self.assertIn("stop to reply", log)
+
+    def test_interims_use_a_narrow_beam(self):
+        beams = []
+
+        class Model:
+            def transcribe(self, path, **options):
+                beams.append(options["beam_size"])
+                return iter([]), None
+
+        speech = module.Speech(Model())
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            speech.transcribe_audio(b"\x00\x10" * 16000, retry=False, beam_size=1)
+        self.assertEqual(beams, [1])
+
+    def test_stuck_reader_still_gets_a_reply(self):
+        speech = module.Speech(types.SimpleNamespace(), sources=lambda: [None])
+        _, gate = self.final_take(speech, reader_alive=True)
+        with patch.object(module.threading.Thread, "join", lambda self, timeout=None: None):
+            replies, _ = self.run_stop(speech)
+        gate.set()
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(replies[0]["session"], 4)
+        self.assertIn("error", replies[0])
+
+    def test_busy_transcriptions_reply_with_an_error(self):
+        speech = module.Speech(types.SimpleNamespace(), sources=lambda: [None])
+        self.final_take(speech)
+        self.assertTrue(speech.transcriptions.acquire(blocking=False))
+        self.assertTrue(speech.transcriptions.acquire(blocking=False))
+        replies, _ = self.run_stop(speech)
+        self.assertEqual(replies, [{"session": 4, "error": "busy"}])
+
     def test_hallucinated_whole_transcripts_are_empty(self):
         for text in [
             ' "THANK YOU VERY MUCH FOR WATCHING AND BYE BYE!" ',
@@ -721,9 +810,8 @@ time.sleep(60)
                 self.assertEqual(json.loads(output.getvalue()), {"session": 5, "text": "hi"})
                 self.assertEqual(model.samples, b"\x00\x30" * 320)
                 self.assertEqual(model.calls, [(b"\x00\x30" * 320, True)])
-                self.assertEqual(log_path.read_text().splitlines(), [
-                    "INFO speech: session 5: source front, 640 bytes, peak 12288",
-                ])
+                self.assertEqual(log_path.read_text().splitlines()[0],
+                                 "INFO speech: session 5: source front, 640 bytes, peak 12288")
                 self.assertNotIn("front", log.getvalue())
                 self.assertNotIn("quiet", log.getvalue())
             finally:

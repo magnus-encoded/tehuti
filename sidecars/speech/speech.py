@@ -227,6 +227,7 @@ class Take:
         self.cancelled = threading.Event()
         self.interim_abort = threading.Event()
         self.worker = None
+        self.stopped = time.monotonic()
 
     def poll(self):
         if any(r.process.poll() is None for r in self.recordings):
@@ -323,7 +324,7 @@ class Speech:
         if remaining == 0 and capture.poll() is None:
             capture.send_signal(signal.SIGINT)
 
-    def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None):
+    def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None, beam_size=5):
         priming = {"hotwords": self.hotwords} if self.hotwords else {}
         if prompt:
             priming["initial_prompt"] = prompt
@@ -334,7 +335,7 @@ class Speech:
                 output.setframerate(16000)
                 output.writeframes(audio)
             segments, _ = self.model.transcribe(
-                recording.name, beam_size=5, language="en", vad_filter=True, **priming,
+                recording.name, beam_size=beam_size, language="en", vad_filter=True, **priming,
                 vad_parameters={"threshold": 0.3, "min_speech_duration_ms": 80,
                                 "speech_pad_ms": 300},
             )
@@ -363,10 +364,10 @@ class Speech:
                     return
                 try:
                     text = self.transcribe_audio(audio, capture.prompt, retry=False,
-                                                abort=capture.interim_abort)
+                                                abort=capture.interim_abort, beam_size=1)
                 finally:
                     self.model_lock.release()
-                if self.capture is capture and text:
+                if self.capture is capture and not capture.interim_abort.is_set() and text:
                     reply({"session": session, "interim": text})
             except Exception as error:
                 print(f"interim transcription failed: {error}", file=sys.stderr)
@@ -384,6 +385,7 @@ class Speech:
         take = self.capture
         self.capture = self.session = None
         take.interim_abort.set()
+        take.stopped = time.monotonic()
         if transcribe:
             self.cancel_tail()
             self.releasing = take
@@ -418,10 +420,18 @@ class Speech:
             recording.process.stdout.close()
             if not recording.reader.is_alive():
                 finished.append(recording)
-        if not transcribe or take.cancelled.is_set() or not finished:
+        if not transcribe or take.cancelled.is_set():
+            return
+
+        def answer(value):
+            reply({"session": session, **value})
+            log(f"session {session}: stop to reply {time.monotonic() - take.stopped:.2f}s")
+
+        if not finished:
+            answer({"error": "capture did not finish"})
             return
         if not self.transcriptions.acquire(blocking=False):
-            reply({"session": session, "text": ""})
+            answer({"error": "busy"})
             return
 
         def finish():
@@ -430,14 +440,14 @@ class Speech:
                 log(f"session {session}: source {winner.source}, "
                     f"{len(winner.audio)} bytes, peak {winner.peak}", private=True)
                 if winner.peak <= SILENCE_PEAK:
-                    reply({"session": session, "error": "silent"})
+                    answer({"error": "silent"})
                     return
                 with self.model_lock:
                     text = self.transcribe_audio(bytes(winner.audio), take.prompt)
-                reply({"session": session, "text": text})
+                answer({"text": text})
             except Exception as error:
                 print(f"speech transcription failed: {error}", file=sys.stderr)
-                reply({"session": session, "error": str(error)})
+                answer({"error": str(error)})
             finally:
                 self.transcriptions.release()
 
