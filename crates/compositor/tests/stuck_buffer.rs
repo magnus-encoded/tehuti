@@ -279,6 +279,9 @@ mod stuck_buffer {
         if destroy_first {
             stop.send(()).unwrap();
         }
+        while !thread.is_finished() {
+            pump(&mut display, &mut compositor);
+        }
         thread.join().unwrap();
         waiting
     }
