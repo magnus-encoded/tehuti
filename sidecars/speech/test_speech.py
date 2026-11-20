@@ -146,34 +146,6 @@ class SpeechTests(unittest.TestCase):
             self.assertEqual(speech.transcribe_take(take, audio, final=False), "hei")
         self.assertEqual(received, [b"Gchat\0" + audio, b"Jchat\0" + audio])
 
-    def test_a_remote_interim_does_not_block_a_local_final(self):
-        class Model:
-            def transcribe(self, *args, **options):
-                return iter([]), None
-
-        speech = module.Speech(Model(), remotes=dict)
-        self.assertTrue(speech.model_lock.acquire(blocking=False))
-        speech.model_lock.release()
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.serve(directory, b"", 1, trickle=True)
-            speech.remotes = lambda: {"no": path}
-            take = self.take(speech)
-            speech.model_lock.acquire()
-            try:
-                result = []
-                worker = threading.Thread(target=lambda: result.append(
-                    speech.transcribe_take(take, b"\x00\x10" * 100, final=False)), daemon=True)
-                worker.start()
-                # the remote interim never takes the lock, so a final can take it at once
-                self.assertTrue(speech.model_lock.locked())
-            finally:
-                speech.model_lock.release()
-            self.assertTrue(speech.model_lock.acquire(timeout=0.5))
-            speech.model_lock.release()
-            take.interim_abort.set()
-            worker.join(timeout=3)
-            self.assertEqual(result, [""])
-
     def test_a_trickling_server_hits_the_total_deadline(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.serve(directory, b"", 1, trickle=True)
@@ -701,35 +673,135 @@ time.sleep(60)
         self.assertLess(time.monotonic() - began, 1.5)
         self.assertIn("stop to reply", log)
 
-    def test_interims_use_a_narrow_beam(self):
-        beams = []
+    class OneWorkerModel:
+        """Like CTranslate2 with one worker: calls run one at a time, in arrival order."""
+        def __init__(self, interim_seconds=0.0):
+            self.worker = threading.Lock()
+            self.interim_seconds = interim_seconds
+            self.started = threading.Event()
+            self.calls = []
+
+        def transcribe(self, path, **options):
+            with self.worker:
+                with wave.open(path) as clip:
+                    seconds = clip.getnframes() / 16000
+                self.calls.append((options.get("beam_size"), seconds))
+                if options.get("beam_size") == 1:
+                    self.started.set()
+                    time.sleep(self.interim_seconds)
+                segment = types.SimpleNamespace(text="w", no_speech_prob=0, avg_logprob=0)
+                return iter([segment]), None
+
+    def test_a_final_arriving_mid_interim_waits_for_that_one_decode_only(self):
+        model = self.OneWorkerModel(interim_seconds=0.6)
+        speech = module.Speech(model, sources=lambda: [None])
+        take, _ = self.final_take(speech)
+        with contextlib.redirect_stdout(io.StringIO()):
+            speech.interim(4, bytes(take.recordings[0].audio), take)
+        self.assertTrue(model.started.wait(3))
+        began = time.monotonic()
+        replies, log = self.run_stop(speech)
+        self.assertEqual(replies, [{"session": 4, "text": "w"}])
+        self.assertGreater(time.monotonic() - began, 0.3, "the final queued behind the decode")
+        self.assertLess(time.monotonic() - began, 1.5)
+        self.assertRegex(log, r"session 4: language en, backend local, audio 2\.0s, "
+                              r"queue wait 0\.\d\ds, decode 0\.\d\ds, retry no, "
+                              r"stop to reply \d+\.\d\ds")
+
+    def test_no_interim_starts_while_a_final_is_pending(self):
+        model = self.OneWorkerModel()
+        speech = module.Speech(model, sources=lambda: [None])
+        take, _ = self.final_take(speech)
+        with speech.schedule:
+            speech.finals_pending = 1
+        with contextlib.redirect_stdout(io.StringIO()):
+            speech.interim(4, bytes(take.recordings[0].audio), take)
+            time.sleep(0.3)
+        self.assertEqual(model.calls, [])
+
+    def test_an_interim_decodes_only_the_last_five_seconds(self):
+        model = self.OneWorkerModel()
+        speech = module.Speech(model, sources=lambda: [None])
+        take = module.Take(4)
+        speech.capture = take
+        with contextlib.redirect_stdout(io.StringIO()):
+            speech.interim(4, b"\x00\x10" * 16000 * 12, take)
+            deadline = time.monotonic() + 3
+            while not model.calls and time.monotonic() < deadline:
+                time.sleep(0.01)
+        self.assertEqual(model.calls, [(1, 5.0)])
+
+    def test_silent_and_busy_sessions_log_no_backend(self):
+        speech = module.Speech(types.SimpleNamespace(), sources=lambda: [None])
+        take, _ = self.final_take(speech)
+        take.recordings[0].peak = 0
+        replies, log = self.run_stop(speech)
+        self.assertEqual(replies, [{"session": 4, "error": "silent"}])
+        self.assertIn("no decode", log)
+        self.assertNotIn("backend", log)
+
+    def test_a_remote_interim_leaves_the_local_final_unqueued(self):
+        speech = module.Speech(self.OneWorkerModel(), remotes=dict)
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.serve(directory, b"", 1, trickle=True)
+            speech.remotes = lambda: {"no": path}
+            take = self.take(speech)
+            result = []
+            worker = threading.Thread(target=lambda: result.append(
+                speech.transcribe_take(take, b"\x00\x10" * 100, final=False)), daemon=True)
+            worker.start()
+            time.sleep(0.2)
+            self.assertFalse(speech.decoding, "a remote interim never holds the model")
+            local = self.take(speech, "en")
+            local.remote = None
+            began = time.monotonic()
+            self.assertEqual(speech.transcribe_take(local, b"\x00\x10" * 100, final=True), "w")
+            self.assertLess(time.monotonic() - began, 0.5)
+            take.interim_abort.set()
+            worker.join(timeout=3)
+            self.assertEqual(result, [""])
+
+    def test_stops_behind_a_slow_final_queue_and_each_gets_its_own_reply(self):
+        release = threading.Event()
+        started = threading.Event()
+        segment = types.SimpleNamespace(text="w", no_speech_prob=0, avg_logprob=0)
+        calls = []
 
         class Model:
             def transcribe(self, path, **options):
-                beams.append(options["beam_size"])
-                return iter([]), None
+                calls.append(path)
+                if len(calls) == 1:
+                    started.set()
+                    release.wait(10)
+                return iter([segment]), None
 
-        speech = module.Speech(Model())
-        with tempfile.TemporaryDirectory() as directory, patch.dict(
-                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
-            speech.transcribe_audio(b"\x00\x10" * 16000, retry=False, beam_size=1)
-        self.assertEqual(beams, [1])
-
-    def test_stuck_reader_still_gets_a_reply(self):
-        speech = module.Speech(types.SimpleNamespace(), sources=lambda: [None])
-        _, gate = self.final_take(speech, reader_alive=True)
-        with patch.object(module.threading.Thread, "join", lambda self, timeout=None: None):
-            replies, _ = self.run_stop(speech)
-        gate.set()
-        self.assertEqual(len(replies), 1)
-        self.assertEqual(replies[0]["session"], 4)
-        self.assertIn("error", replies[0])
+        speech = module.Speech(Model(), sources=lambda: [None])
+        output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(output), \
+                    tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+                for session in (1, 2, 3):
+                    self.final_take(speech, session)
+                    speech.stop(session, True)
+                    speech.releasing.worker.join(1)
+                    if session == 1:
+                        self.assertTrue(started.wait(3))
+                release.set()
+                deadline = time.monotonic() + 5
+                while len(output.getvalue().splitlines()) < 3 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            replies = sorted(json.loads(l)["session"] for l in output.getvalue().splitlines()
+                             if '"text": "w"' in l)
+            self.assertEqual(replies, [1, 2, 3], "no stop fails fast with busy")
+        finally:
+            release.set()
 
     def test_busy_transcriptions_reply_with_an_error(self):
         speech = module.Speech(types.SimpleNamespace(), sources=lambda: [None])
         self.final_take(speech)
-        self.assertTrue(speech.transcriptions.acquire(blocking=False))
-        self.assertTrue(speech.transcriptions.acquire(blocking=False))
+        for _ in range(module.MAX_PENDING_FINALS):
+            self.assertTrue(speech.transcriptions.acquire(blocking=False))
         replies, _ = self.run_stop(speech)
         self.assertEqual(replies, [{"session": 4, "error": "busy"}])
 
