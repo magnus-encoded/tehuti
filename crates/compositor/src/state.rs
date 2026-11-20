@@ -883,7 +883,7 @@ impl Compositor {
         let transcript = text.as_str().to_owned();
         let (number, superseded) = link.pending.begin(Waiting {
             transcript: transcript.clone(),
-            target: target,
+            target,
             commands: commands.clone(),
         });
         let queued = link.worker.submit(Job {
