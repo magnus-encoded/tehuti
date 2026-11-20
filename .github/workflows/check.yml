@@ -5,6 +5,17 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 jobs:
+  lint:
+    if: github.event_name != 'pull_request' || !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl-dev libudev-dev libseat-dev libinput-dev libgbm-dev libdrm-dev libpixman-1-dev python3
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
   check:
     if: github.event_name != 'pull_request' || !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action)
     runs-on: ubuntu-latest
