@@ -120,4 +120,18 @@ mod contract {
             assert!(parse_message(line.as_bytes()).is_err(), "{line}");
         }
     }
+
+    #[test]
+    fn speech_language_is_a_notice_of_a_lowercase_language_code() {
+        let good = r#"{"jsonrpc":"2.0","method":"speech.language","params":{"language":"no"}}"#;
+        assert!(parse_message(good.as_bytes()).is_ok(), "{good}");
+        for line in [
+            r#"{"jsonrpc":"2.0","method":"speech.language","params":{"language":"No"}}"#,
+            r#"{"jsonrpc":"2.0","method":"speech.language","params":{"language":"n"}}"#,
+            r#"{"jsonrpc":"2.0","method":"speech.language","params":{"language":"../etc"}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"speech.language","params":{"language":"no"}}"#,
+        ] {
+            assert!(parse_message(line.as_bytes()).is_err(), "{line}");
+        }
+    }
 }

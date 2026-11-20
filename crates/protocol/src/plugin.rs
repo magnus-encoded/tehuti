@@ -205,6 +205,12 @@ pub enum Method {
     SpeechHints {
         hotwords: Vec<String>,
     },
+    /// Sets the standing dictation language for speech sessions started while the plugin's
+    /// context is focused, as a lowercase language code such as `no`.
+    #[serde(rename = "speech.language")]
+    SpeechLanguage {
+        language: String,
+    },
     /// Replaces the sending application plugin's slash-command words for the built-in `invoke` verb.
     #[serde(rename = "invoke.words")]
     InvokeWords {
@@ -270,18 +276,28 @@ fn validate_notice(method: &Method) -> Result<(), String> {
                 "status text holds at most {MAX_STATUS_CHARS} characters, without controls"
             ))
         }
+        Method::SpeechLanguage { language } if !valid_language(language) => {
+            Err("language is 2 to 8 lowercase ASCII letters".into())
+        }
         Method::Adjuster { .. }
         | Method::Initialize(_)
         | Method::Button { .. }
         | Method::Speech { .. }
         | Method::Verb { .. }
         | Method::SpeechHints { .. }
+        | Method::SpeechLanguage { .. }
         | Method::Focus { .. }
         | Method::Actions { .. }
         | Method::SubmitActions { .. }
         | Method::Status { .. }
         | Method::PadInput { .. } => Ok(()),
     }
+}
+
+/// Whether `language` looks like a Whisper language code: 2 to 8 lowercase ASCII letters.
+#[must_use]
+pub fn valid_language(language: &str) -> bool {
+    (2..=8).contains(&language.len()) && language.bytes().all(|byte| byte.is_ascii_lowercase())
 }
 
 fn validate_pad_overrides(overrides: &[PadOverride]) -> Result<(), String> {
