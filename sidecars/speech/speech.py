@@ -20,6 +20,7 @@ MAX_AUDIO_SECONDS = 60
 INTERIM_BYTES = 16000 * 2
 SILENCE_PEAK = 64
 MAX_PENDING_FINALS = 4
+INTERIM_WINDOW_BYTES = 16000 * 2 * 5
 DEFAULT_SPEECH_TAIL_MS = 150
 MAX_SPEECH_TAIL_MS = MAX_AUDIO_SECONDS * 1000
 
@@ -312,8 +313,11 @@ class Take:
         self.interim_abort = threading.Event()
         self.worker = None
         self.stopped = time.monotonic()
-        self.backend = "local"
+        self.backend = None  # set only by a session that reached a decoder
+        self.queued = 0.0
         self.decoded = 0.0
+        self.audio_seconds = 0.0
+        self.retried = False
 
     def poll(self):
         if any(r.process.poll() is None for r in self.recordings):
@@ -338,6 +342,11 @@ class Speech:
         self.capture = None
         self.session = None
         self.transcriptions = threading.BoundedSemaphore(MAX_PENDING_FINALS)
+        # One scheduler owns the model, which runs one decode at a time. No interim starts
+        # while a final is pending, so a final waits for at most one windowed interim decode.
+        self.schedule = threading.Condition()
+        self.decoding = False
+        self.finals_pending = 0
         self.interims = threading.BoundedSemaphore(1)
 
     def set_vocabulary(self, vocabulary):
@@ -411,7 +420,7 @@ class Speech:
             capture.send_signal(signal.SIGINT)
 
     def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None, beam_size=5,
-                         language=DEFAULT_LANGUAGE):
+                         language=DEFAULT_LANGUAGE, stats=None):
         priming = {"hotwords": self.hotwords} if self.hotwords else {}
         if prompt:
             priming["initial_prompt"] = prompt
@@ -433,6 +442,8 @@ class Speech:
             if not retry or len(audio) < 16000 * 2 * 1.5 or peak(audio) <= SILENCE_PEAK * 4:
                 return ""
             log("retrying clip without VAD")
+            if stats is not None:
+                stats["retried"] = True
             segments, _ = self.model.transcribe(
                 recording.name, beam_size=5, language=language, vad_filter=False,
                 temperature=0, condition_on_previous_text=False, **priming,
@@ -442,8 +453,8 @@ class Speech:
     def transcribe_take(self, take, audio, *, final):
         """Transcribe with the backend the take resolved at its start.
 
-        No call waits for another: a final never queues behind an interim or an earlier final. A remote failure
-        falls back to the local model for a final; an interim then yields nothing."""
+        A remote failure falls back to the local model for a final; an interim then yields
+        nothing. Local decodes go through the scheduler: finals first, one decode at a time."""
         if take.remote:
             try:
                 began = time.monotonic()
@@ -451,6 +462,7 @@ class Speech:
                                          None if final else take.interim_abort)
                 if final:
                     take.backend, take.decoded = "remote", time.monotonic() - began
+                    take.audio_seconds = len(audio) / 32000
                 return text
             except (OSError, ValueError, RuntimeError, TimeoutError) as error:
                 log(f"remote transcription failed ({error}); "
@@ -458,15 +470,39 @@ class Speech:
                 if not final:
                     return ""
         if final:
-            take.backend = "local"
-            began = time.monotonic()
-            try:
-                return self.transcribe_audio(audio, take.prompt, language=take.language)
-            finally:
-                take.decoded = time.monotonic() - began
-        return self.transcribe_audio(audio, take.prompt, retry=False,
-                                     abort=take.interim_abort, beam_size=1,
-                                     language=take.language)
+            return self.final_decode(take, audio)
+        with self.schedule:
+            if self.finals_pending or self.decoding:
+                return ""
+            self.decoding = True
+        try:
+            return self.transcribe_audio(audio[-INTERIM_WINDOW_BYTES:], take.prompt, retry=False,
+                                         abort=take.interim_abort, beam_size=1,
+                                         language=take.language)
+        finally:
+            with self.schedule:
+                self.decoding = False
+                self.schedule.notify_all()
+
+    def final_decode(self, take, audio):
+        asked = time.monotonic()
+        with self.schedule:
+            self.finals_pending += 1
+            while self.decoding:
+                self.schedule.wait()
+            self.decoding = True
+        began = time.monotonic()
+        stats = {}
+        take.backend, take.queued = "local", began - asked
+        take.audio_seconds = len(audio) / 32000
+        try:
+            return self.transcribe_audio(audio, take.prompt, language=take.language, stats=stats)
+        finally:
+            take.decoded, take.retried = time.monotonic() - began, bool(stats)
+            with self.schedule:
+                self.decoding = False
+                self.finals_pending -= 1
+                self.schedule.notify_all()
 
     def interim(self, session, audio, capture):
         if not self.interims.acquire(blocking=False):
@@ -535,8 +571,13 @@ class Speech:
 
         def answer(value):
             reply({"session": session, **value})
-            log(f"session {session}: language {take.language}, backend {take.backend}, "
-                f"decode {take.decoded:.2f}s, "
+            if take.backend is None:
+                detail = "no decode"
+            else:
+                detail = (f"backend {take.backend}, audio {take.audio_seconds:.1f}s, "
+                          f"queue wait {take.queued:.2f}s, decode {take.decoded:.2f}s, "
+                          f"retry {'yes' if take.retried else 'no'}")
+            log(f"session {session}: language {take.language}, {detail}, "
                 f"stop to reply {time.monotonic() - take.stopped:.2f}s")
 
         if not finished:
