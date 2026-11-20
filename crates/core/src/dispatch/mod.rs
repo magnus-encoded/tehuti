@@ -58,9 +58,9 @@ pub enum Input {
     /// The connected pads and their labels, in device path order.
     Controllers(Vec<ControllerInfo>),
     ControllerBindings(std::collections::BTreeMap<String, ButtonName>),
-    /// The saved stick deadzones by pad key, in thousandths.
+    /// The saved stick deadzones by pad id, in thousandths.
     ControllerDeadzones(std::collections::BTreeMap<String, u16>),
-    /// The saved stick rest offsets by pad key: X, Y, right X, right Y, in thousandths of half travel.
+    /// The saved stick rest offsets by pad id: X, Y, right X, right Y, in thousandths of half travel.
     ControllerRecentres(std::collections::BTreeMap<String, [i16; 4]>),
     ActiveController(String),
     /// Reply to [`Effect::ListMicrophones`]: the capture sources found.

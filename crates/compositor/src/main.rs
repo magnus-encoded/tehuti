@@ -1050,7 +1050,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         &mut data.controllers,
         |path, controller, event| {
             let key = keys
-                .key_for(path)
+                .id_for(path)
                 .map_or_else(|| controller.pad.name().to_owned(), |key| key.as_str().to_owned());
             let admitted = gate.admit(path, compositor.controller_chosen(&key), event);
             if admitted {
@@ -1125,7 +1125,7 @@ fn advance_time(data: &mut LoopData) {
     let recentres = data.compositor.take_recentre_requests();
     for (path, controller) in &mut data.controllers {
         let key = keys
-            .key_for(path)
+            .id_for(path)
             .map_or_else(|| controller.pad.name().to_owned(), |key| key.as_str().to_owned());
         let chosen = data.compositor.controller_chosen(&key);
         let measure = recentres.contains(&key);

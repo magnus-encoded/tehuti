@@ -6466,6 +6466,33 @@ fn saved_off_pads_and_buttons_land_in_one_settings_entry_per_pad() {
 }
 
 #[test]
+fn an_old_format_pad_file_loads_and_saves_with_the_same_settings() {
+    use std::collections::BTreeSet;
+    let mut world = World::default();
+    // The old files: a disabled list in insertion order with a duplicate, bindings apart.
+    let old_disabled = vec!["pad-b".to_owned(), "pad-a".to_owned(), "pad-b".to_owned()];
+    let old_bindings: std::collections::BTreeMap<String, ButtonName> = [
+        ("pad-c".to_owned(), ButtonName::Start),
+        ("pad-a".to_owned(), ButtonName::Record),
+    ]
+    .into();
+    let state = world.run(
+        State::default(),
+        Input::InputChoices {
+            controller: ControllerChoice::Auto,
+            microphone: MicrophoneChoice::All,
+            disabled_controllers: old_disabled.clone(),
+            disabled_microphones: Vec::new(),
+        },
+    );
+    let state = world.run(state, Input::ControllerBindings(old_bindings.clone()));
+    let input = &state.settings().input;
+    let saved_disabled: BTreeSet<_> = input.disabled_controllers().into_iter().collect();
+    assert_eq!(saved_disabled, old_disabled.into_iter().collect::<BTreeSet<_>>());
+    assert_eq!(input.controller_bindings(), old_bindings);
+}
+
+#[test]
 fn restoring_clears_what_the_saved_files_no_longer_hold() {
     let mut world = World::default();
     let state = world.run(
