@@ -6,7 +6,7 @@ use smithay::reexports::{
         zwp_text_input_v3::{self, ZwpTextInputV3},
     },
     wayland_server::{
-        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, Weak,
         protocol::wl_surface::WlSurface,
     },
 };
@@ -20,7 +20,8 @@ use tehuti_core::keyboard::FieldKind;
     reason = "crate visibility satisfies unreachable_pub for state shared with the sibling module"
 )]
 pub(crate) struct TextInput {
-    focus: Option<WlSurface>,
+    /// Weak: a destroyed surface must not be kept alive by its text focus.
+    focus: Option<Weak<WlSurface>>,
     instances: Vec<Instance>,
 }
 
@@ -78,7 +79,7 @@ impl Instance {
 impl TextInput {
     fn resource_status(&self, resource: &ZwpTextInputV3) -> (bool, bool) {
         let focused = self
-            .focus
+            .focused_surface()
             .as_ref()
             .is_some_and(|surface| resource.id().same_client_as(&surface.id()));
         let another_enabled = self
@@ -93,9 +94,14 @@ impl TextInput {
         Self::default()
     }
 
-    pub(crate) fn focus(&mut self, focus: Option<WlSurface>) {
+    fn focused_surface(&self) -> Option<WlSurface> {
+        self.focus.as_ref().and_then(|weak| weak.upgrade().ok())
+    }
+
+    pub(crate) fn focus(&mut self, focus: Option<&WlSurface>) {
+        let previous = self.focused_surface();
         for instance in &mut self.instances {
-            if let Some(old) = &self.focus
+            if let Some(old) = &previous
                 && instance.resource.id().same_client_as(&old.id())
             {
                 instance.resource.leave(old);
@@ -106,13 +112,13 @@ impl TextInput {
             instance.pending_kind = None;
             instance.surrounding = None;
             instance.pending_surrounding = SurroundingUpdate::Unchanged;
-            if let Some(surface) = &focus
+            if let Some(surface) = focus
                 && instance.resource.id().same_client_as(&surface.id())
             {
                 instance.resource.enter(surface);
             }
         }
-        self.focus = focus;
+        self.focus = focus.map(Resource::downgrade);
     }
 
     pub(crate) fn edit_keyboard(&self, edit: &tehuti_core::keyboard::Edit) {
@@ -126,7 +132,7 @@ impl TextInput {
         for instance in &self.instances {
             if instance.enabled
                 && self
-                    .focus
+                    .focused_surface()
                     .as_ref()
                     .is_some_and(|surface| instance.resource.id().same_client_as(&surface.id()))
             {
@@ -141,7 +147,7 @@ impl TextInput {
     }
 
     pub(crate) fn send(&self, text: &str) -> bool {
-        let Some(surface) = self.focus.as_ref().filter(|surface| surface.is_alive()) else {
+        let Some(surface) = self.focused_surface().filter(Resource::is_alive) else {
             return false;
         };
         let mut sent = false;
@@ -190,7 +196,7 @@ impl Dispatch<ZwpTextInputManagerV3, ()> for Compositor {
     ) {
         if let zwp_text_input_manager_v3::Request::GetTextInput { id: input_id, .. } = request {
             let resource = data_init.init(input_id, ());
-            if let Some(surface) = &state.text_input.focus
+            if let Some(surface) = &state.text_input.focused_surface()
                 && resource.id().same_client_as(&surface.id())
             {
                 resource.enter(surface);
