@@ -163,7 +163,7 @@ mod tests {
             Some(TurnLog::stored_at(log_path.clone())),
         ));
         let event_loop: EventLoop<Compositor> = EventLoop::try_new().unwrap();
-        let arrived = Rc::new(Cell::new(0));
+        let arrived = Rc::new(Cell::new(0_usize));
         let counter = Rc::clone(&arrived);
         let _token = event_loop
             .handle()
