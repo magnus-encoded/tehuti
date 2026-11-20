@@ -21,7 +21,7 @@ mod image_capture {
         },
     };
     use tehuti::{
-        image_capture::{BufferMismatch, FORMATS, encode},
+        image_capture::{BufferMismatch, FORMATS, MAX_SESSIONS_PER_CLIENT, MAX_SOURCES_PER_CLIENT, encode},
         scale,
         state::{ClientState, Compositor},
     };
@@ -130,6 +130,8 @@ mod image_capture {
         formats: Vec<wl_shm::Format>,
         done: bool,
         stopped: bool,
+        announced: usize,
+        stopped_count: usize,
         outcome: Option<Result<(), u32>>,
         configured: bool,
     }
@@ -164,8 +166,10 @@ mod image_capture {
                 app.formats.push(format);
             } else if matches!(event, Event::Done) {
                 app.done = true;
+                app.announced += 1;
             } else if matches!(event, Event::Stopped) {
                 app.stopped = true;
+                app.stopped_count += 1;
             }
         }
     }
@@ -235,6 +239,12 @@ mod image_capture {
         CaptureDuringSecret,
         /// Let the compositor change the output mode, wait for `stopped`, then capture.
         AwaitStop,
+        /// Let the compositor lose its output, wait for `stopped`, then capture.
+        AwaitOutputLoss,
+        /// Open more sessions than one client may hold.
+        FloodSessions,
+        /// Open more sources than one client may hold, then a session on the last.
+        FloodSources,
     }
 
     /// What a capturing client saw: buffer size, formats, outcome, and the first pixel of its buffer.
@@ -243,6 +253,8 @@ mod image_capture {
         size: Option<(u32, u32)>,
         formats: Vec<wl_shm::Format>,
         stopped: bool,
+        announced: usize,
+        stopped_count: usize,
         ready: bool,
         failed: Option<u32>,
         first_pixel: [u8; 4],
@@ -328,11 +340,29 @@ mod image_capture {
         while !app.done {
             let _dispatched = queue.roundtrip(&mut app).unwrap();
         }
+        if plan == Plan::FloodSessions {
+            for _ in 0..MAX_SESSIONS_PER_CLIENT {
+                let _extra = manager.create_session(&source, Options::empty(), &handle, ());
+            }
+            let _dispatched = queue.roundtrip(&mut app).unwrap();
+            return report(app, [0; 4]);
+        }
+        if plan == Plan::FloodSources {
+            let mut last = source;
+            for _ in 0..MAX_SOURCES_PER_CLIENT {
+                last = sources.create_source(&output, &handle, ());
+            }
+            let before = app.announced;
+            let _session = manager.create_session(&last, Options::empty(), &handle, ());
+            let _dispatched = queue.roundtrip(&mut app).unwrap();
+            app.announced -= before;
+            return report(app, [0; 4]);
+        }
         if !matches!(plan, Plan::Capture { .. }) {
             signal.send(()).unwrap();
             resume.recv().unwrap();
         }
-        if plan == Plan::AwaitStop {
+        if matches!(plan, Plan::AwaitStop | Plan::AwaitOutputLoss) {
             while !app.stopped {
                 let _dispatched = queue.roundtrip(&mut app).unwrap();
             }
@@ -343,10 +373,16 @@ mod image_capture {
             (0, 0)
         };
         let first_pixel = capture(&mut queue, &mut app, &shm, &session, grow);
+        report(app, first_pixel)
+    }
+
+    fn report(app: App, first_pixel: [u8; 4]) -> Report {
         Report {
             size: app.size,
             formats: app.formats,
             stopped: app.stopped,
+            announced: app.announced,
+            stopped_count: app.stopped_count,
             ready: app.outcome == Some(Ok(())),
             failed: app.outcome.and_then(Result::err),
             first_pixel,
@@ -470,5 +506,29 @@ mod image_capture {
             Some(FailureReason::Stopped.into()),
             "stale frames fail as stopped"
         );
+    }
+
+    #[test]
+    fn sessions_stop_when_the_output_goes_away() {
+        let report = run(Plan::AwaitOutputLoss, |compositor| {
+            compositor.output = None;
+            compositor.advance_time();
+        });
+        assert!(report.stopped, "session was not stopped: {report:?}");
+        assert_eq!(report.failed, Some(FailureReason::Stopped.into()));
+    }
+
+    #[test]
+    fn a_client_cannot_hold_more_sessions_than_the_cap() {
+        let report = run(Plan::FloodSessions, |_| {});
+        assert_eq!(report.announced, MAX_SESSIONS_PER_CLIENT, "{report:?}");
+        assert_eq!(report.stopped_count, 1, "the excess session is stopped: {report:?}");
+    }
+
+    #[test]
+    fn sources_past_the_cap_capture_nothing() {
+        let report = run(Plan::FloodSources, |_| {});
+        assert_eq!(report.announced, 0, "{report:?}");
+        assert_eq!(report.stopped_count, 1, "{report:?}");
     }
 }

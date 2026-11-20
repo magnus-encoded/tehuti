@@ -154,11 +154,23 @@ pub struct FrameData {
 
 /// Live capture sessions, told `stopped` once their output goes away or changes mode.
 #[derive(Debug, Default)]
-pub(crate) struct Sessions(Vec<ExtImageCopyCaptureSessionV1>);
+pub(crate) struct Sessions(Vec<ExtImageCopyCaptureSessionV1>, Vec<ExtImageCaptureSourceV1>);
+
+/// Most live capture sessions one client may hold; further sessions are stopped at once.
+pub const MAX_SESSIONS_PER_CLIENT: usize = 4;
+/// Most live capture sources one client may hold; sources past it capture nothing.
+pub const MAX_SOURCES_PER_CLIENT: usize = 16;
+
+fn held_by<T: Resource>(held: &[T], client: &Client) -> usize {
+    held.iter()
+        .filter(|resource| resource.is_alive() && resource.client().is_some_and(|owner| owner.id() == client.id()))
+        .count()
+}
 
 impl Compositor {
     pub(crate) fn stop_stale_captures(&mut self) {
         let sessions = core::mem::take(&mut self.capture_sessions.0);
+        self.capture_sessions.1.retain(Resource::is_alive);
         self.capture_sessions.0 = sessions
             .into_iter()
             .filter(|session| {
@@ -194,8 +206,8 @@ impl GlobalDispatch<ExtOutputImageCaptureSourceManagerV1, ()> for Compositor {
 
 impl Dispatch<ExtOutputImageCaptureSourceManagerV1, ()> for Compositor {
     fn request(
-        _: &mut Self,
-        _: &Client,
+        state: &mut Self,
+        client: &Client,
         _: &ExtOutputImageCaptureSourceManagerV1,
         request: ext_output_image_capture_source_manager_v1::Request,
         (): &(),
@@ -204,7 +216,14 @@ impl Dispatch<ExtOutputImageCaptureSourceManagerV1, ()> for Compositor {
     ) {
         if let ext_output_image_capture_source_manager_v1::Request::CreateSource { source, output } = request
         {
-            let _source = data_init.init(source, Output::from_resource(&output));
+            // Past the cap a source has no output, so sessions made from it stop at once.
+            let output = if held_by(&state.capture_sessions.1, client) < MAX_SOURCES_PER_CLIENT {
+                Output::from_resource(&output)
+            } else {
+                None
+            };
+            let source = data_init.init(source, output);
+            state.capture_sessions.1.push(source);
         }
     }
 }
@@ -257,7 +276,7 @@ fn announce(session: &ExtImageCopyCaptureSessionV1, output: Option<&Output>) {
 impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Compositor {
     fn request(
         state: &mut Self,
-        _: &Client,
+        client: &Client,
         manager: &ExtImageCopyCaptureManagerV1,
         request: ext_image_copy_capture_manager_v1::Request,
         (): &(),
@@ -277,10 +296,15 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Compositor {
                     );
                     return;
                 }
-                let output = source_output(&source);
+                let mut output = source_output(&source);
+                if held_by(&state.capture_sessions.0, client) >= MAX_SESSIONS_PER_CLIENT {
+                    output = None;
+                }
                 let session = data_init.init(session, SessionData::new(output.clone()));
                 announce(&session, output.as_ref());
-                state.capture_sessions.0.push(session);
+                if output.is_some() {
+                    state.capture_sessions.0.push(session);
+                }
             }
             ext_image_copy_capture_manager_v1::Request::CreatePointerCursorSession { session, .. } => {
                 let _session = data_init.init(session, Mutex::new(false));
