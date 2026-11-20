@@ -1044,15 +1044,7 @@ impl Compositor {
             surface,
             crate::buffer_gate::BufferBlocker(std::sync::Arc::downgrade(&gate)),
         );
-        with_states(surface, |states| {
-            let _fresh = states
-                .data_map
-                .insert_if_missing_threadsafe(crate::buffer_gate::Held::default);
-            if let Some(held) = states.data_map.get::<crate::buffer_gate::Held>() {
-                held.hold(gate);
-            }
-        });
-        self.waiting_buffers.register(surface);
+        self.waiting_buffers.hold(surface, gate);
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
