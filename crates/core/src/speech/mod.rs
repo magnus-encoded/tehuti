@@ -118,3 +118,5 @@ fn final_effect(state: &mut SpeechState, input: SpeechInput) -> Option<SpeechEff
     state.pending = None;
     Some(effect)
 }
+
+pub mod resolver;
