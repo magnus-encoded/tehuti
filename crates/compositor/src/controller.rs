@@ -29,7 +29,7 @@ pub fn keyed_controllers(
         .map(|(path, pad)| {
             let info = tehuti_core::dispatch::ControllerInfo {
                 name: sightings.remove(&path).unwrap_or_default(),
-                key: pad.key.as_str().to_owned(),
+                key: pad.id.as_str().to_owned(),
                 label: pad.label,
                 origin: pad.origin,
             };

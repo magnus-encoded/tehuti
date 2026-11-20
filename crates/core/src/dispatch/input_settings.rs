@@ -232,9 +232,9 @@ pub struct InputSettings {
     pub active_controller: Option<String>,
     /// What the user chose per pad; a pad with no entry has the defaults.
     pub pads: std::collections::BTreeMap<crate::pad::PadId, crate::pad::PadSettings>,
-    /// Saved stick deadzones by pad key, in thousandths; a pad without one uses the default.
+    /// Saved stick deadzones by pad id, in thousandths; a pad without one uses the default.
     pub controller_deadzones: std::collections::BTreeMap<String, u16>,
-    /// Where each pad's sticks rest, by pad key: X, Y, right X, right Y, in thousandths of half travel.
+    /// Where each pad's sticks rest, by pad id: X, Y, right X, right Y, in thousandths of half travel.
     pub controller_recentres: std::collections::BTreeMap<String, [i16; 4]>,
     /// Microphone node names the user turned off; never recorded, also under ALL.
     pub disabled_microphones: Vec<String>,
@@ -266,19 +266,19 @@ impl InputSettings {
         ]
     }
 
-    /// The stick deadzone of the pad with this key, in thousandths of full travel.
+    /// The stick deadzone of the pad with this id, in thousandths of full travel.
     #[must_use]
-    pub fn deadzone(&self, key: &str) -> u16 {
+    pub fn deadzone(&self, id: &str) -> u16 {
         self.controller_deadzones
-            .get(key)
+            .get(id)
             .copied()
             .unwrap_or(DEFAULT_DEADZONE)
     }
 
     /// The next deadzone after the pad's current one, wrapping round; a value off the steps moves to the next larger step.
     #[must_use]
-    pub fn next_deadzone(&self, key: &str) -> u16 {
-        let current = self.deadzone(key);
+    pub fn next_deadzone(&self, id: &str) -> u16 {
+        let current = self.deadzone(id);
         DEADZONE_STEPS
             .iter()
             .copied()
@@ -286,18 +286,18 @@ impl InputSettings {
             .unwrap_or(DEADZONE_STEPS[0])
     }
 
-    /// The saved choices of the pad with this key, or the defaults.
+    /// The saved choices of the pad with this id, or the defaults.
     #[must_use]
-    pub fn pad_settings(&self, key: &str) -> crate::pad::PadSettings {
+    pub fn pad_settings(&self, id: &str) -> crate::pad::PadSettings {
         self.pads
-            .get(&crate::pad::PadId::new(key))
+            .get(&crate::pad::PadId::new(id))
             .copied()
             .unwrap_or_default()
     }
 
     /// Stores a pad's choices; the defaults are stored as no entry.
-    pub(super) fn store_pad_settings(&mut self, key: &str, settings: crate::pad::PadSettings) {
-        let pad_id = crate::pad::PadId::new(key);
+    pub(super) fn store_pad_settings(&mut self, id: &str, settings: crate::pad::PadSettings) {
+        let pad_id = crate::pad::PadId::new(id);
         if settings == crate::pad::PadSettings::default() {
             let _removed = self.pads.remove(&pad_id);
         } else {
@@ -310,7 +310,7 @@ impl InputSettings {
         self.pad_settings(name).enabled
     }
 
-    /// Keys of the pads the user turned off, in key order.
+    /// Ids of the pads the user turned off, in id order.
     #[must_use]
     pub fn disabled_controllers(&self) -> Vec<String> {
         self.pads
@@ -320,7 +320,7 @@ impl InputSettings {
             .collect()
     }
 
-    /// The push-to-talk buttons chosen per pad key.
+    /// The push-to-talk buttons chosen per pad id.
     #[must_use]
     pub fn controller_bindings(&self) -> std::collections::BTreeMap<String, tehuti_protocol::ButtonName> {
         self.pads
@@ -338,31 +338,31 @@ impl InputSettings {
         &mut self,
         bindings: &std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
     ) {
-        let keys: Vec<String> = self
+        let ids: Vec<String> = self
             .pads
             .keys()
             .map(|pad_id| pad_id.as_str().to_owned())
             .chain(bindings.keys().cloned())
             .collect();
-        for key in keys {
-            let mut settings = self.pad_settings(&key);
-            settings.push_to_talk = bindings.get(&key).copied();
-            self.store_pad_settings(&key, settings);
+        for id in ids {
+            let mut settings = self.pad_settings(&id);
+            settings.push_to_talk = bindings.get(&id).copied();
+            self.store_pad_settings(&id, settings);
         }
     }
 
     /// Replaces every pad's on/off choice: exactly `disabled` are off; push-to-talk choices stay.
     pub(super) fn restore_disabled(&mut self, disabled: &[String]) {
-        let keys: Vec<String> = self
+        let ids: Vec<String> = self
             .pads
             .keys()
             .map(|pad_id| pad_id.as_str().to_owned())
             .chain(disabled.iter().cloned())
             .collect();
-        for key in keys {
-            let mut settings = self.pad_settings(&key);
-            settings.enabled = !disabled.contains(&key);
-            self.store_pad_settings(&key, settings);
+        for id in ids {
+            let mut settings = self.pad_settings(&id);
+            settings.enabled = !disabled.contains(&id);
+            self.store_pad_settings(&id, settings);
         }
     }
 
@@ -422,7 +422,7 @@ impl InputSettings {
     #[must_use]
     pub fn talk_choice(&self) -> Option<tehuti_protocol::ButtonName> {
         self.selected_controller()
-            .and_then(|pad| self.pad_settings(&pad.key).push_to_talk)
+            .and_then(|pad| self.pad_settings(&pad.id).push_to_talk)
     }
 
     #[must_use]

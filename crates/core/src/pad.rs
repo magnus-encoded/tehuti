@@ -55,14 +55,14 @@ impl Origin {
     }
 }
 
-/// A pad's key: stable across reconnects, the same string `ControllerInfo::key` holds today.
+/// A pad's id: stable across reconnects, the same string `ControllerInfo::key` holds today.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PadId(String);
 
 impl PadId {
     #[must_use]
-    pub fn new(key: impl Into<String>) -> Self {
-        Self(key.into())
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
     }
 
     #[must_use]
@@ -91,13 +91,11 @@ impl Default for PadSettings {
 /// One controller as the rest of Tehuti sees it: runtime facts only, no settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pad {
-    pub key: PadId,
+    pub id: PadId,
     pub label: String,
     pub model: Identity,
     pub origin: Origin,
     pub presence: Presence,
-    /// Buttons pressed and not yet released; a drop releases them once.
-    pub held: Vec<ButtonName>,
 }
 
 /// What the compositor must do after a pad changes state.
@@ -109,32 +107,7 @@ pub enum PadEffect {
     ForgetGate,
 }
 
-impl Pad {
-    /// Records a press or release so a drop knows what is held.
-    pub fn on_button(&mut self, name: ButtonName, pressed: bool) {
-        self.held.retain(|button| *button != name);
-        if pressed {
-            self.held.push(name);
-        }
-    }
-
-    /// The node vanished. Effects come once; a pad already gone yields none.
-    pub fn on_gone(&mut self) -> Vec<PadEffect> {
-        if self.presence == Presence::Gone {
-            return Vec::new();
-        }
-        self.presence = Presence::Gone;
-        let held = core::mem::take(&mut self.held);
-        let mut effects = Vec::new();
-        if !held.is_empty() {
-            effects.push(PadEffect::ReleaseHeld(held));
-        }
-        effects.push(PadEffect::ForgetGate);
-        effects
-    }
-}
-
-/// One pad node as discovery sees it: the facts keying needs, before any key exists.
+/// One pad node as discovery sees it: the facts identifying needs, before any id exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PadSighting {
     pub path: PathBuf,
@@ -146,27 +119,31 @@ pub struct PadSighting {
     pub origin: Origin,
 }
 
-/// Keeps pad keys: owns the keying rules and the path-to-key memory between sightings.
+/// Keeps pad ids: owns the identifying rules and the path-to-id memory between sightings.
+///
+/// Held buttons are one map, button to the paths of the pads holding it: a release is due only
+/// when a button's set empties, so a shared button is never released early or twice.
 #[derive(Debug, Clone, Default)]
 pub struct Pads {
     known: BTreeMap<PathBuf, Pad>,
+    held: BTreeMap<ButtonName, BTreeSet<PathBuf>>,
     effects: Vec<(PathBuf, PadEffect)>,
 }
 
 impl Pads {
     /// Takes the pads present now, in any order, and returns them in path order.
     ///
-    /// Labels count each model independently. A pad's key survives a reconnect: the unique id
+    /// Labels count each model independently. A pad's id survives a reconnect: the unique id
     /// or physical path when it is the pad's alone, else the kernel name with an index. A pad
-    /// seen on the previous call keeps its key whatever attaches beside it; a new pad takes the
-    /// first key of its identity that no pad holds. Pads missing from `sightings` are forgotten.
+    /// seen on the previous call keeps its id whatever attaches beside it; a new pad takes the
+    /// first id of its identity that no pad holds. Pads missing from `sightings` are forgotten.
     pub fn observe(&mut self, sightings: impl IntoIterator<Item = PadSighting>) -> Vec<(PathBuf, Pad)> {
         let mut sightings: Vec<_> = sightings.into_iter().collect();
         sightings.sort_by(|left, right| left.path.cmp(&right.path));
         let mut taken: BTreeSet<String> = sightings
             .iter()
             .filter_map(|sighting| self.known.get(&sighting.path))
-            .map(|pad| pad.key.0.clone())
+            .map(|pad| pad.id.0.clone())
             .collect();
         let mut counts = BTreeMap::<String, usize>::new();
         let mut next = BTreeMap::new();
@@ -177,7 +154,7 @@ impl Pads {
                 let model_name = model.model_name(&sighting.name);
                 let count = counts.entry(model_name.clone()).or_default();
                 *count = count.saturating_add(1);
-                let key = self.known.get(&sighting.path).map_or_else(
+                let id = self.known.get(&sighting.path).map_or_else(
                     || {
                         let identity = &sighting.uniq;
                         let name = &sighting.name;
@@ -188,23 +165,19 @@ impl Pads {
                         });
                         let free = candidates
                             .into_iter()
-                            .find(|key| !taken.contains(key))
+                            .find(|id| !taken.contains(id))
                             .unwrap_or_default();
                         let _fresh = taken.insert(free.clone());
                         PadId(free)
                     },
-                    |pad| pad.key.clone(),
+                    |pad| pad.id.clone(),
                 );
                 let pad = Pad {
-                    key,
+                    id,
                     label: format!("{model_name} #{count}"),
                     model,
                     origin: sighting.origin,
                     presence: Presence::Present,
-                    held: self
-                        .known
-                        .get(&sighting.path)
-                        .map_or_else(Vec::new, |pad| pad.held.clone()),
                 };
                 let _old = next.insert(sighting.path.clone(), pad.clone());
                 (sighting.path, pad)
@@ -217,45 +190,43 @@ impl Pads {
 
     /// Queues the effects of each pad in `previous` that has vanished.
     fn forget(&mut self, previous: BTreeMap<PathBuf, Pad>) {
-        for (path, mut pad) in previous {
-            if !self.known.contains_key(&path) {
-                let effects = pad.on_gone();
-                self.effects.extend(
-                    self.without_shared_releases(effects)
-                        .into_iter()
-                        .map(|effect| (path.clone(), effect)),
-                );
+        for path in previous.into_keys() {
+            if self.known.contains_key(&path) {
+                continue;
             }
+            let mut released = Vec::new();
+            self.held.retain(|button, holders| {
+                let _removed = holders.remove(&path);
+                if holders.is_empty() {
+                    released.push(*button);
+                }
+                !holders.is_empty()
+            });
+            if !released.is_empty() {
+                self.effects.push((path.clone(), PadEffect::ReleaseHeld(released)));
+            }
+            self.effects.push((path, PadEffect::ForgetGate));
         }
     }
 
-    /// Drops from a release the buttons another present pad still holds: that press goes on.
-    fn without_shared_releases(&self, effects: Vec<PadEffect>) -> Vec<PadEffect> {
-        effects
-            .into_iter()
-            .filter_map(|effect| match effect {
-                PadEffect::ReleaseHeld(buttons) => {
-                    let buttons: Vec<_> = buttons
-                        .into_iter()
-                        .filter(|button| !self.known.values().any(|other| other.held.contains(button)))
-                        .collect();
-                    (!buttons.is_empty()).then_some(PadEffect::ReleaseHeld(buttons))
-                }
-                PadEffect::ForgetGate => Some(PadEffect::ForgetGate),
-            })
-            .collect()
-    }
-
-    /// The key the pad at `path` holds, while it is present.
+    /// The id the pad at `path` holds, while it is present.
     #[must_use]
-    pub fn key_for(&self, path: &Path) -> Option<&PadId> {
-        self.known.get(path).map(|pad| &pad.key)
+    pub fn id_for(&self, path: &Path) -> Option<&PadId> {
+        self.known.get(path).map(|pad| &pad.id)
     }
 
     /// Records a press or release on the pad at `path`.
     pub fn on_button(&mut self, path: &Path, name: ButtonName, pressed: bool) {
-        if let Some(pad) = self.known.get_mut(path) {
-            pad.on_button(name, pressed);
+        if !self.known.contains_key(path) {
+            return;
+        }
+        if pressed {
+            let _new = self.held.entry(name).or_default().insert(path.to_path_buf());
+        } else if let Some(holders) = self.held.get_mut(&name) {
+            let _removed = holders.remove(path);
+            if holders.is_empty() {
+                let _gone = self.held.remove(&name);
+            }
         }
     }
 
@@ -278,12 +249,11 @@ mod pad_type_tests {
     #[test]
     fn pad_carries_origin_and_presence() {
         let pad = Pad {
-            key: PadId::new("k"),
+            id: PadId::new("k"),
             label: "PAD #1".into(),
             model: Identity::default(),
             origin: Origin::Bluetooth,
             presence: Presence::Connecting,
-            held: Vec::new(),
         };
         assert_eq!(pad.origin.caption(), "BLUETOOTH");
         assert_eq!(pad.presence.label(), "CONNECTING");
@@ -757,7 +727,7 @@ const DPAD_SHAPES: &[(ButtonName, Direction)] = &[
 ];
 
 #[cfg(test)]
-mod roster_tests {
+mod pads_tests {
     use super::*;
     use proptest::prelude::*;
 
@@ -772,38 +742,38 @@ mod roster_tests {
         }
     }
 
-    fn keys(pads: &[(PathBuf, Pad)]) -> Vec<&str> {
-        pads.iter().map(|(_, pad)| pad.key.as_str()).collect()
+    fn ids(pads: &[(PathBuf, Pad)]) -> Vec<&str> {
+        pads.iter().map(|(_, pad)| pad.id.as_str()).collect()
     }
 
     #[test]
-    fn pads_of_different_names_sharing_an_identity_get_different_keys() {
+    fn pads_of_different_names_sharing_an_identity_get_different_ids() {
         let pads = Pads::default().observe([
             sighting("/dev/input/event1", "Pad A", "shared"),
             sighting("/dev/input/event2", "Pad B", "shared"),
         ]);
-        assert_ne!(pads[0].1.key, pads[1].1.key);
+        assert_ne!(pads[0].1.id, pads[1].1.id);
     }
 
     #[test]
-    fn a_duplicate_attaching_never_rekeys_the_pad_already_there() {
-        let mut roster = Pads::default();
+    fn a_duplicate_attaching_never_reassigns_the_pad_already_there() {
+        let mut pads = Pads::default();
         let original = sighting("/dev/input/event5", "Pad", "shared");
-        let before = roster.observe([original.clone()]);
+        let before = pads.observe([original.clone()]);
         // The newcomer's node sorts before the original's.
-        let after = roster.observe([sighting("/dev/input/event2", "Pad", "shared"), original]);
+        let after = pads.observe([sighting("/dev/input/event2", "Pad", "shared"), original]);
         assert_eq!(after[1].0, PathBuf::from("/dev/input/event5"));
-        assert_eq!(after[1].1.key, before[0].1.key);
-        assert_ne!(after[0].1.key, after[1].1.key);
+        assert_eq!(after[1].1.id, before[0].1.id);
+        assert_ne!(after[0].1.id, after[1].1.id);
     }
 
     #[test]
-    fn identical_pads_without_ids_take_indexed_name_keys() {
+    fn identical_pads_without_ids_take_indexed_name_ids() {
         let pads = Pads::default().observe([
             sighting("/dev/input/event1", "Pad", ""),
             sighting("/dev/input/event2", "Pad", ""),
         ]);
-        assert_eq!(keys(&pads), ["Pad#1", "Pad#2"]);
+        assert_eq!(ids(&pads), ["Pad#1", "Pad#2"]);
     }
 
     #[test]
@@ -834,14 +804,14 @@ mod roster_tests {
                 1..12,
             ),
         ) {
-            let mut roster = Pads::default();
+            let mut pads = Pads::default();
             for step in steps {
                 let present = step.into_iter().map(|(node, (name, has_id))| {
                     let uniq = if has_id { format!("id{}", name % 2) } else { String::new() };
                     sighting(&format!("/dev/input/event{node}"), &format!("Pad{name}"), &uniq)
                 });
-                let pads = roster.observe(present);
-                let unique: BTreeSet<_> = pads.iter().map(|(_, pad)| &pad.key).collect();
+                let pads = pads.observe(present);
+                let unique: BTreeSet<_> = pads.iter().map(|(_, pad)| &pad.id).collect();
                 prop_assert_eq!(unique.len(), pads.len());
             }
         }
