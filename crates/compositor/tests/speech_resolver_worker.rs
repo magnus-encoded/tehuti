@@ -169,7 +169,7 @@ mod tests {
             .handle()
             .insert_source(receiver, move |event, (), target| {
                 if let calloop::channel::Event::Msg(reply) = event {
-                    counter.set(counter.get() + 1);
+                    counter.set(counter.get().saturating_add(1));
                     target.resolver_replied(&reply);
                 }
             })
