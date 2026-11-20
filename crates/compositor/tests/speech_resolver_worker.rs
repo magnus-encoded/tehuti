@@ -47,9 +47,7 @@ mod tests {
         ApiKey::new("secret-key-123".into())
     }
 
-    fn worker_into(
-        delays: Vec<(&'static str, Duration)>,
-    ) -> (Worker, calloop::channel::Channel<Reply>) {
+    fn worker_into(delays: Vec<(&'static str, Duration)>) -> (Worker, calloop::channel::Channel<Reply>) {
         let (sender, receiver) = calloop::channel::channel();
         let worker = Worker::spawn(Resolver::new(Slow { delays }, key()), move |reply| {
             sender.send(reply).is_ok()
@@ -76,11 +74,16 @@ mod tests {
             transcript: "slow words".into(),
             commands: vec!["mute".into(), "pause".into()],
         }));
-        assert!(started.elapsed() < Duration::from_millis(100), "submit waited for the model");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "submit waited for the model"
+        );
         let mut replies = Vec::new();
         let mut turns = 0_u32;
         while replies.is_empty() && started.elapsed() < Duration::from_secs(5) {
-            event_loop.dispatch(Duration::from_millis(5), &mut replies).unwrap();
+            event_loop
+                .dispatch(Duration::from_millis(5), &mut replies)
+                .unwrap();
             turns += 1;
         }
         assert_eq!(replies.len(), 1, "the reply arrived through the loop");
@@ -159,18 +162,32 @@ mod tests {
         compositor.handle(&said("first unknown words"));
         assert!(compositor.speech_resolver_waiting());
         compositor.handle(&said("second unknown words"));
-        assert!(started.elapsed() < Duration::from_millis(200), "handling waited for the model");
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "handling waited for the model"
+        );
         while compositor.speech_resolver_waiting() && started.elapsed() < Duration::from_secs(5) {
-            event_loop.dispatch(Duration::from_millis(5), &mut compositor).unwrap();
+            event_loop
+                .dispatch(Duration::from_millis(5), &mut compositor)
+                .unwrap();
         }
         // Let the superseded utterance's reply arrive late.
         while started.elapsed() < Duration::from_millis(900) {
-            event_loop.dispatch(Duration::from_millis(5), &mut compositor).unwrap();
+            event_loop
+                .dispatch(Duration::from_millis(5), &mut compositor)
+                .unwrap();
         }
         let turns = lines(&log_path);
-        assert_eq!(turns.len(), 2, "one line per utterance, the late reply adds none: {turns:?}");
+        assert_eq!(
+            turns.len(),
+            2,
+            "one line per utterance, the late reply adds none: {turns:?}"
+        );
         assert_eq!(turns[0]["heard"], "first unknown words");
-        assert_eq!(turns[0]["outcome"], "dictated", "the superseded utterance dictates in order");
+        assert_eq!(
+            turns[0]["outcome"], "dictated",
+            "the superseded utterance dictates in order"
+        );
         assert_eq!(turns[1]["heard"], "second unknown words");
         assert_eq!(turns[1]["outcome"], "ran");
         assert_eq!(turns[1]["chosen"]["command"], "mute");
@@ -227,9 +244,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let curl = Curl::at(script(directory.path(), "exec sleep 30"));
         let started = Instant::now();
-        let error = curl.post(&key().unwrap(), "{}", Duration::from_millis(100)).unwrap_err();
+        let error = curl
+            .post(&key().unwrap(), "{}", Duration::from_millis(100))
+            .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(2), "the child was not killed");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the child was not killed"
+        );
     }
 
     #[test]
@@ -238,12 +260,19 @@ mod tests {
         let arguments = directory.path().join("arguments");
         let program = script(
             directory.path(),
-            &format!("printf '%s\\n' \"$@\" > '{}'\ncat > /dev/null\necho '{{}}'", arguments.display()),
+            &format!(
+                "printf '%s\\n' \"$@\" > '{}'\ncat > /dev/null\necho '{{}}'",
+                arguments.display()
+            ),
         );
         let reply = Curl::at(program).post(&key().unwrap(), "{}", DEADLINE).unwrap();
         assert_eq!(reply.trim(), "{}");
         let seen = std::fs::read_to_string(arguments).unwrap();
-        assert_eq!(seen.lines().next(), Some("-q"), "-q must come first so ~/.curlrc is ignored");
+        assert_eq!(
+            seen.lines().next(),
+            Some("-q"),
+            "-q must come first so ~/.curlrc is ignored"
+        );
         assert!(!seen.contains("secret-key-123"));
     }
 

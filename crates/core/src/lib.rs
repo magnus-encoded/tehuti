@@ -789,7 +789,11 @@ pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<Stri
     }
     let focused = focused_context(state);
     let global = global_context(state);
-    if [focused, global].into_iter().flatten().any(|context| maps_phrase(context, phrase)) {
+    if [focused, global]
+        .into_iter()
+        .flatten()
+        .any(|context| maps_phrase(context, phrase))
+    {
         return None;
     }
     let fell_through = match route_speech(focused, global, phrase)? {

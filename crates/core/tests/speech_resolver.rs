@@ -178,7 +178,10 @@ mod speech_resolver {
 
         #[test]
         fn nothing_is_offered_when_no_phrase_is_mapped() {
-            assert_eq!(unmatched_speech_commands(&focused(&[], true), "hello there"), None);
+            assert_eq!(
+                unmatched_speech_commands(&focused(&[], true), "hello there"),
+                None
+            );
         }
     }
 }

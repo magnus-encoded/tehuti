@@ -995,7 +995,9 @@ fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor
         warn!(%error, "speech resolver unavailable");
         return;
     }
-    match Worker::spawn(Resolver::new(transport, Some(key)), move |reply| sender.send(reply).is_ok()) {
+    match Worker::spawn(Resolver::new(transport, Some(key)), move |reply| {
+        sender.send(reply).is_ok()
+    }) {
         Ok(worker) => compositor.set_speech_resolver(Link {
             worker,
             pending: Pending::default(),

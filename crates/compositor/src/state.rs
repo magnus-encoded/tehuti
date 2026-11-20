@@ -910,7 +910,9 @@ impl Compositor {
     }
 
     fn speech_resolver_abandon(&mut self) -> Option<crate::speech::resolver_worker::Waiting> {
-        self.speech_resolver.as_mut().and_then(|link| link.pending.abandon())
+        self.speech_resolver
+            .as_mut()
+            .and_then(|link| link.pending.abandon())
     }
 
     /// Takes the resolver's reply back on the loop. A reply for an utterance that a
@@ -944,7 +946,10 @@ impl Compositor {
     ) {
         use tehuti_core::speech::resolver::{Resolution, Turn};
         if let Some(log) = self.speech_resolver.as_ref().and_then(|link| link.log.as_ref())
-            && let Err(error) = log.append(&Turn::new(&waiting.transcript, answer.as_ref(), &resolution), false)
+            && let Err(error) = log.append(
+                &Turn::new(&waiting.transcript, answer.as_ref(), &resolution),
+                false,
+            )
         {
             tracing::warn!(%error, "speech turn log not written");
         }
