@@ -404,7 +404,8 @@ impl Compositor {
         };
     }
 
-    pub(crate) const fn use_driver_clock(&mut self) {
+    /// Stops reading the wall clock: time then advances only through `Event::Tick`.
+    pub const fn use_driver_clock(&mut self) {
         self.driver_clock = crate::driver::Clock::Manual;
     }
 

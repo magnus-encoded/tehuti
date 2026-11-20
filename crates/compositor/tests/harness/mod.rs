@@ -22,13 +22,73 @@ use std::{
     os::unix::net::UnixStream,
     sync::{Arc, mpsc},
     thread,
+    time::Instant,
 };
 
-use smithay::reexports::wayland_server::Display;
+use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 use tehuti::state::Compositor;
+use tehuti_protocol::Event;
 
 /// How long the server waits with no socket traffic and no wake before the test fails.
 pub const STALL_LIMIT: Duration = Duration::from_secs(20);
+
+/// How long a polled wait sleeps in `poll` between turns.
+const POLL_STEP: Duration = Duration::from_millis(2);
+
+/// The longest a test waits on a real subprocess before it fails.
+pub const SUBPROCESS_LIMIT: Duration = Duration::from_secs(60);
+
+/// A fake clock: the compositor reads no wall time, and time passes only when the test says so.
+#[derive(Debug, Default)]
+pub struct FakeClock {
+    elapsed: Duration,
+}
+
+impl FakeClock {
+    /// Switches `compositor` to the driver clock and starts at zero.
+    pub fn install(compositor: &mut Compositor) -> Self {
+        compositor.use_driver_clock();
+        Self::default()
+    }
+
+    /// Lets `by` pass: ticks the compositor, then releases the keys that have come due.
+    pub fn advance(&mut self, compositor: &mut Compositor, by: Duration) {
+        self.elapsed = self.elapsed.saturating_add(by);
+        compositor.handle(&Event::Tick { elapsed: by });
+        compositor.release_due_keys();
+    }
+
+    /// Fake time that has passed since [`Self::install`].
+    pub const fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+}
+
+/// Real elapsed time, for tests whose subject is a real subprocess that keeps its own clock.
+#[derive(Debug)]
+pub struct Stopwatch {
+    start: Instant,
+    lap: Instant,
+}
+
+impl Stopwatch {
+    pub fn start() -> Self {
+        let now = Instant::now();
+        Self { start: now, lap: now }
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.start.elapsed()
+    }
+
+    /// Time since the previous call to `lap` (or the start).
+    pub fn lap(&mut self) -> Duration {
+        let now = Instant::now();
+        let passed = now.duration_since(self.lap);
+        self.lap = now;
+        passed
+    }
+}
 
 /// Sends a value to the test body and, when made by [`Harness::channel`], wakes the server loop.
 pub struct Notifier<T> {
@@ -56,6 +116,36 @@ impl<T> Notifier<T> {
 pub fn silent_channel<T>() -> (Notifier<T>, mpsc::Receiver<T>) {
     let (sender, receiver) = mpsc::channel();
     (Notifier { sender, wake: None }, receiver)
+}
+
+/// Runs the event loop until `done` holds. Bounded by [`SUBPROCESS_LIMIT`].
+pub fn pump_until(
+    event_loop: &mut EventLoop<'static, Compositor>,
+    compositor: &mut Compositor,
+    mut done: impl FnMut(&mut Compositor) -> bool,
+) {
+    let began = Instant::now();
+    while !done(compositor) {
+        assert!(
+            began.elapsed() < SUBPROCESS_LIMIT,
+            "subprocess did not finish within {SUBPROCESS_LIMIT:?}"
+        );
+        event_loop.dispatch(POLL_STEP, compositor).unwrap();
+    }
+}
+
+/// Runs the event loop for `span` of real time, calling `each` after every dispatch.
+pub fn pump_for(
+    event_loop: &mut EventLoop<'static, Compositor>,
+    compositor: &mut Compositor,
+    span: Duration,
+    mut each: impl FnMut(&mut Compositor),
+) {
+    let began = Instant::now();
+    while began.elapsed() < span {
+        event_loop.dispatch(POLL_STEP, compositor).unwrap();
+        each(compositor);
+    }
 }
 
 /// A client thread that wakes the server loop when it ends, even by panic.
@@ -173,7 +263,38 @@ impl Harness {
         });
     }
 
+    /// Like [`Self::serve_turns`], for tests that wait on a real subprocess whose output reaches
+    /// the compositor through its own event loop, so no wake pipe fires. Waits are short polls;
+    /// the test fails after [`SUBPROCESS_LIMIT`].
+    pub fn serve_polled(
+        &mut self,
+        display: &mut Display<Compositor>,
+        compositor: &mut Compositor,
+        mut turn: impl FnMut(&mut Compositor) -> bool,
+    ) {
+        let began = Instant::now();
+        loop {
+            let _dispatched = display.dispatch_clients(compositor).unwrap();
+            let done = turn(compositor);
+            display.flush_clients().unwrap();
+            if done {
+                return;
+            }
+            assert!(
+                began.elapsed() < SUBPROCESS_LIMIT,
+                "subprocess did not finish within {SUBPROCESS_LIMIT:?}"
+            );
+            let _ready = self.poll_for(display, POLL_STEP);
+        }
+    }
+
     fn wait(&mut self, display: &mut Display<Compositor>) {
+        let ready = self.poll_for(display, STALL_LIMIT);
+        assert!(ready, "no client traffic, notice or end within {STALL_LIMIT:?}");
+    }
+
+    /// Waits up to `limit` for socket traffic or a wake, and drains the wake pipe.
+    fn poll_for(&mut self, display: &mut Display<Compositor>, limit: Duration) -> bool {
         use rustix::event::{PollFd, PollFlags, poll};
         let backend = display.backend();
         let display_fd = backend.poll_fd();
@@ -181,19 +302,14 @@ impl Harness {
             PollFd::new(&display_fd, PollFlags::IN),
             PollFd::new(&self.wake_read, PollFlags::IN),
         ];
-        let limit = rustix::event::Timespec {
-            tv_sec: STALL_LIMIT.as_secs().try_into().unwrap(),
-            tv_nsec: 0,
+        let timeout = rustix::event::Timespec {
+            tv_sec: limit.as_secs().try_into().unwrap(),
+            tv_nsec: limit.subsec_nanos().into(),
         };
-        let polled = poll(&mut fds, Some(&limit));
-        if polled != Err(rustix::io::Errno::INTR) {
-            let ready = polled.unwrap();
-            assert!(
-                ready > 0,
-                "no client traffic, notice or end within {STALL_LIMIT:?}"
-            );
-        }
+        let polled = poll(&mut fds, Some(&timeout));
+        let ready = polled == Err(rustix::io::Errno::INTR) || polled.unwrap() > 0;
         let mut drained = [0_u8; 64];
         while matches!(self.wake_read.read(&mut drained), Ok(count) if count > 0) {}
+        ready
     }
 }
