@@ -135,7 +135,7 @@ mod stuck_buffer {
         }
         let (width, height) = app.size.unwrap();
         let stride = u32::try_from(width).unwrap().checked_mul(4).unwrap();
-        let mut reads = Vec::new();
+        let mut held_reads = Vec::new();
         for _ in 0..commits {
             let (read, write) = rustix::pipe::pipe().unwrap();
             pipe_write.send(std::fs::File::from(write)).unwrap();
@@ -149,7 +149,7 @@ mod stuck_buffer {
                 &handle,
                 (),
             );
-            reads.push(read);
+            held_reads.push(read);
             surface.attach(Some(&buffer), 0, 0);
             surface.damage_buffer(0, 0, width, height);
             surface.commit();
@@ -201,7 +201,7 @@ mod stuck_buffer {
     struct Scene {
         display: Display<Compositor>,
         compositor: Compositor,
-        thread: thread::JoinHandle<()>,
+        thread: Option<thread::JoinHandle<()>>,
         stop: mpsc::Sender<()>,
         pipes: mpsc::Receiver<std::fs::File>,
     }
@@ -229,7 +229,7 @@ mod stuck_buffer {
             let mut scene = Self {
                 display,
                 compositor,
-                thread,
+                thread: Some(thread),
                 stop,
                 pipes,
             };
@@ -246,12 +246,15 @@ mod stuck_buffer {
 
         /// Pumps until the client thread ends, failing at the deadline.
         fn finish(&mut self) {
+            let Some(thread) = self.thread.take() else {
+                return;
+            };
             let started = Instant::now();
-            while !self.thread.is_finished() {
+            while !thread.is_finished() {
                 assert!(started.elapsed() < DEADLINE, "client thread did not end");
                 pump(&mut self.display, &mut self.compositor);
             }
-            self.thread.join().unwrap();
+            thread.join().unwrap();
         }
     }
 
