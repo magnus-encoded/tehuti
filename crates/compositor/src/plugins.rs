@@ -1540,7 +1540,10 @@ mod tests {
             drop(plugins.supervise_at(now));
             mark_healthy(&plugins, now);
             let young = Duration::from_millis(3200);
-            assert_eq!(plugins.entries[0].restart.delay, young, "backoff kept while young");
+            assert_eq!(
+                plugins.entries[0].restart.delay, young,
+                "backoff kept while young"
+            );
             drop(plugins.supervise_at(later(now, 29_999)));
             assert_eq!(plugins.entries[0].restart.delay, young, "not reset before 30 s");
             drop(plugins.supervise_at(later(now, 30_000)));

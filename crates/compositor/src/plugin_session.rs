@@ -717,7 +717,10 @@ mod tests {
         session.supervise(late);
         let line = format!("{{\"jsonrpc\":\"2.0\",\"id\":{request_id},\"result\":{{\"actions\":[]}}}}\n");
         let _deliveries = session.receive(line.as_bytes(), late);
-        assert_eq!(session.missed_decisions, 1, "the miss stands; the late reply does not clear it");
+        assert_eq!(
+            session.missed_decisions, 1,
+            "the miss stands; the late reply does not clear it"
+        );
     }
 
     #[test]
