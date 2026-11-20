@@ -51,10 +51,10 @@ impl FakeClock {
         Self::default()
     }
 
-    /// Lets `by` pass: ticks the compositor, then releases the keys that have come due.
-    pub fn advance(&mut self, compositor: &mut Compositor, by: Duration) {
-        self.elapsed = self.elapsed.saturating_add(by);
-        compositor.handle(&Event::Tick { elapsed: by });
+    /// Lets `span` pass: ticks the compositor, then releases the keys that have come due.
+    pub fn advance(&mut self, compositor: &mut Compositor, span: Duration) {
+        self.elapsed = self.elapsed.saturating_add(span);
+        compositor.handle(&Event::Tick { elapsed: span });
         compositor.release_due_keys();
     }
 

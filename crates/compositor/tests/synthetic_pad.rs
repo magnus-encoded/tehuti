@@ -1357,7 +1357,7 @@ mod synthetic_pad {
                 Some("launcher"),
             )
         });
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -1370,7 +1370,7 @@ mod synthetic_pad {
             state: ButtonState::Pressed,
         });
         route(&mut compositor, &mut pad).unwrap();
-        dispatch_until_finished(
+        await_finished(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3246,7 +3246,7 @@ else:
         let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3262,7 +3262,7 @@ else:
         for key in [Key::Modifier(Modifier::Control), Key::Char('c')] {
             select_osk_key(&mut compositor, &mut pad, key);
         }
-        dispatch_until_finished(
+        await_finished(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3357,7 +3357,7 @@ else:
         let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3370,7 +3370,7 @@ else:
         compositor.host_key(letter_a, true);
         compositor.host_key(letter_a, false);
         compositor.release_host_keys();
-        dispatch_until_finished(
+        await_finished(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3422,7 +3422,7 @@ else:
         let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3480,7 +3480,7 @@ else:
         let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3508,7 +3508,7 @@ else:
         }
         compositor.host_key(meta, false);
         compositor.release_host_keys();
-        dispatch_until_finished(
+        await_finished(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3547,7 +3547,7 @@ else:
         let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3578,7 +3578,7 @@ else:
         host_tap(&mut compositor, down_arrow);
         compositor.host_key(meta, false);
         assert_eq!(active(&compositor), 1, "a late release leaves the chord");
-        dispatch_until_finished(
+        await_finished(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3623,7 +3623,7 @@ else:
         let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -3660,7 +3660,7 @@ else:
         compositor.host_key(plain_key, true);
         compositor.host_key(plain_key, false);
         compositor.release_host_keys();
-        dispatch_until_finished(
+        await_finished(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -4093,7 +4093,7 @@ for line in sys.stdin:
         }
     }
 
-    fn dispatch_until_ready(
+    fn await_ready(
         harness: &mut crate::harness::Harness,
         display: &mut Display<Compositor>,
         event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
@@ -4106,7 +4106,7 @@ for line in sys.stdin:
         });
     }
 
-    fn dispatch_until_finished(
+    fn await_finished(
         harness: &mut crate::harness::Harness,
         display: &mut Display<Compositor>,
         event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
@@ -4219,7 +4219,7 @@ for line in sys.stdin:
         let (ready_sender, ready_receiver) = harness.channel();
         let client =
             harness.client(move || run_client(client_end, "test", ClientTextState::Enabled, &ready_sender));
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -4246,7 +4246,7 @@ for line in sys.stdin:
         }
         route(&mut compositor, &mut pad).unwrap();
 
-        dispatch_until_finished(
+        await_finished(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -4290,7 +4290,7 @@ for line in sys.stdin:
                 let (sender, receiver) = harness.channel();
                 let client = harness
                     .client(move || run_client_with_app_id(client_end, "test", "test", text_state, &sender));
-                dispatch_until_ready(
+                await_ready(
                     &mut harness,
                     &mut display,
                     &mut event_loop,
@@ -4316,7 +4316,7 @@ for line in sys.stdin:
                     }
                 }
                 route(&mut compositor, &mut pad).unwrap();
-                dispatch_until_finished(
+                await_finished(
                     &mut harness,
                     &mut display,
                     &mut event_loop,
@@ -4376,7 +4376,7 @@ for line in sys.stdin:
         let (sender, receiver) = harness.channel();
         let client =
             harness.client(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -4408,7 +4408,7 @@ for line in sys.stdin:
             }
         }
         route(&mut compositor, &mut pad).unwrap();
-        dispatch_until_finished(
+        await_finished(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -4444,7 +4444,7 @@ for line in sys.stdin:
                 &sender,
             )
         });
-        dispatch_until_ready(
+        await_ready(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -4468,7 +4468,7 @@ for line in sys.stdin:
             });
         }
         route(&mut compositor, &mut pad).unwrap();
-        dispatch_until_finished(
+        await_finished(
             &mut harness,
             &mut display,
             &mut event_loop,
@@ -4495,7 +4495,7 @@ for line in sys.stdin:
             let (sender, receiver) = harness.channel();
             let client =
                 harness.client(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
-            dispatch_until_ready(
+            await_ready(
                 &mut harness,
                 &mut display,
                 &mut event_loop,
@@ -4521,7 +4521,7 @@ for line in sys.stdin:
                 }
             }
             route(&mut compositor, &mut pad).unwrap();
-            dispatch_until_finished(
+            await_finished(
                 &mut harness,
                 &mut display,
                 &mut event_loop,
@@ -4559,7 +4559,7 @@ for line in sys.stdin:
             let client = harness.client(move || {
                 run_client_with_app_id(client, "test", "test", ClientTextState::Purpose(purpose), &sender)
             });
-            dispatch_until_ready(
+            await_ready(
                 &mut harness,
                 &mut display,
                 &mut event_loop,
@@ -4583,7 +4583,7 @@ for line in sys.stdin:
                 });
             }
             route(&mut compositor, &mut pad).unwrap();
-            dispatch_until_finished(
+            await_finished(
                 &mut harness,
                 &mut display,
                 &mut event_loop,
