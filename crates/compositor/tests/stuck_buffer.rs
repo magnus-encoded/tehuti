@@ -164,10 +164,7 @@ mod stuck_buffer {
         thread::sleep(Duration::from_millis(1));
     }
 
-    #[test]
-    fn a_buffer_that_never_becomes_ready_leaves_the_rest_of_the_output_drawing() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut display = Display::<Compositor>::new().unwrap();
+    fn compositor_with_linear_dmabuf(display: &Display<Compositor>) -> Compositor {
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
         compositor
@@ -181,6 +178,14 @@ mod stuck_buffer {
                 |_| true,
             )
             .unwrap();
+        compositor
+    }
+
+    #[test]
+    fn a_buffer_that_never_becomes_ready_leaves_the_rest_of_the_output_drawing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = compositor_with_linear_dmabuf(&display);
         let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
         let (server, stream) = UnixStream::pair().unwrap();
         let _client = display
