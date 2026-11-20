@@ -125,6 +125,8 @@ mod speech_resolver {
     }
 
     mod fall_through {
+        use core::fmt::Write as _;
+
         use proptest::prelude::*;
         use tehuti_core::{State, step, unmatched_speech_commands};
         use tehuti_protocol::{Event, parse_context};
@@ -136,7 +138,7 @@ mod speech_resolver {
             }
             source.push_str("[buttons]\n[speech]\n");
             for phrase in phrases {
-                source.push_str(&format!("'{phrase}' = {{ notify = 'ok' }}\n"));
+                let _ = writeln!(source, "'{phrase}' = {{ notify = 'ok' }}");
             }
             let state = State::with_contexts(vec![parse_context(&source).unwrap()]);
             step(
@@ -170,7 +172,7 @@ mod speech_resolver {
                 let phrases: Vec<String> = phrases.into_iter().collect();
                 let state = focused(&phrases, unmatched);
                 let offered = unmatched_speech_commands(&state, "ZZZ 123 unlisted").unwrap();
-                let mut expected = phrases.clone();
+                let mut expected = phrases;
                 expected.sort();
                 prop_assert_eq!(offered, expected);
             }
