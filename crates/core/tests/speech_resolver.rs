@@ -138,7 +138,7 @@ mod speech_resolver {
             }
             source.push_str("[buttons]\n[speech]\n");
             for phrase in phrases {
-                let _ = writeln!(source, "'{phrase}' = {{ notify = 'ok' }}");
+                writeln!(source, "'{phrase}' = {{ notify = 'ok' }}").unwrap();
             }
             let state = State::with_contexts(vec![parse_context(&source).unwrap()]);
             step(
