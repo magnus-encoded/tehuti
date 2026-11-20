@@ -162,12 +162,12 @@ impl Settings {
         &mut self,
         controller: ControllerChoice,
         microphone: super::MicrophoneChoice,
-        disabled_controllers: Vec<String>,
+        disabled_controllers: &[String],
         disabled_microphones: Vec<String>,
     ) {
         self.input.controller = controller;
         self.input.microphone = microphone;
-        self.input.restore_disabled(&disabled_controllers);
+        self.input.restore_disabled(disabled_controllers);
         self.input.disabled_microphones = disabled_microphones;
     }
 

@@ -297,11 +297,11 @@ impl InputSettings {
 
     /// Stores a pad's choices; the defaults are stored as no entry.
     pub(super) fn store_pad_settings(&mut self, key: &str, settings: crate::pad::PadSettings) {
-        let id = crate::pad::PadId::new(key);
+        let pad_id = crate::pad::PadId::new(key);
         if settings == crate::pad::PadSettings::default() {
-            let _removed = self.pads.remove(&id);
+            let _removed = self.pads.remove(&pad_id);
         } else {
-            let _previous = self.pads.insert(id, settings);
+            let _previous = self.pads.insert(pad_id, settings);
         }
     }
 
@@ -316,7 +316,7 @@ impl InputSettings {
         self.pads
             .iter()
             .filter(|(_, settings)| !settings.enabled)
-            .map(|(id, _)| id.as_str().to_owned())
+            .map(|(pad_id, _)| pad_id.as_str().to_owned())
             .collect()
     }
 
@@ -325,10 +325,10 @@ impl InputSettings {
     pub fn controller_bindings(&self) -> std::collections::BTreeMap<String, tehuti_protocol::ButtonName> {
         self.pads
             .iter()
-            .filter_map(|(id, settings)| {
+            .filter_map(|(pad_id, settings)| {
                 settings
                     .push_to_talk
-                    .map(|button| (id.as_str().to_owned(), button))
+                    .map(|button| (pad_id.as_str().to_owned(), button))
             })
             .collect()
     }
@@ -341,7 +341,7 @@ impl InputSettings {
         let keys: Vec<String> = self
             .pads
             .keys()
-            .map(|id| id.as_str().to_owned())
+            .map(|pad_id| pad_id.as_str().to_owned())
             .chain(bindings.keys().cloned())
             .collect();
         for key in keys {
@@ -356,7 +356,7 @@ impl InputSettings {
         let keys: Vec<String> = self
             .pads
             .keys()
-            .map(|id| id.as_str().to_owned())
+            .map(|pad_id| pad_id.as_str().to_owned())
             .chain(disabled.iter().cloned())
             .collect();
         for key in keys {

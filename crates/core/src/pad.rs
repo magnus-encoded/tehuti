@@ -211,30 +211,39 @@ impl Pads {
             })
             .collect();
         let previous = core::mem::replace(&mut self.known, next);
+        self.forget(previous);
+        pads
+    }
+
+    /// Queues the effects of each pad in `previous` that is no longer known.
+    fn forget(&mut self, previous: BTreeMap<PathBuf, Pad>) {
         for (path, mut pad) in previous {
             if !self.known.contains_key(&path) {
-                for effect in pad.on_gone() {
-                    let effect = match effect {
-                        // A button another present pad still holds stays pressed: its press goes on.
-                        PadEffect::ReleaseHeld(buttons) => {
-                            let buttons: Vec<_> = buttons
-                                .into_iter()
-                                .filter(|button| {
-                                    !self.known.values().any(|other| other.held.contains(button))
-                                })
-                                .collect();
-                            if buttons.is_empty() {
-                                continue;
-                            }
-                            PadEffect::ReleaseHeld(buttons)
-                        }
-                        PadEffect::ForgetGate => PadEffect::ForgetGate,
-                    };
-                    self.effects.push((path.clone(), effect));
-                }
+                let effects = pad.on_gone();
+                self.effects.extend(
+                    self.without_shared_releases(effects)
+                        .into_iter()
+                        .map(|effect| (path.clone(), effect)),
+                );
             }
         }
-        pads
+    }
+
+    /// Drops from a release the buttons another present pad still holds: that press goes on.
+    fn without_shared_releases(&self, effects: Vec<PadEffect>) -> Vec<PadEffect> {
+        effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                PadEffect::ReleaseHeld(buttons) => {
+                    let buttons: Vec<_> = buttons
+                        .into_iter()
+                        .filter(|button| !self.known.values().any(|other| other.held.contains(button)))
+                        .collect();
+                    (!buttons.is_empty()).then_some(PadEffect::ReleaseHeld(buttons))
+                }
+                PadEffect::ForgetGate => Some(PadEffect::ForgetGate),
+            })
+            .collect()
     }
 
     /// The key the pad at `path` holds, while it is present.
