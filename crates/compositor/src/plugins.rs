@@ -1338,7 +1338,7 @@ mod tests {
                 );
                 prop_assert_eq!(entry.restart.delay, expected.backoff, "plugin {} backoff", index);
                 prop_assert_eq!(
-                    entry.restart.at,
+                    entry.restart.retry_at,
                     expected.restart_at,
                     "plugin {} restart time",
                     index
@@ -1507,7 +1507,7 @@ mod tests {
             let mut delays = Vec::new();
             for _attempt in 0..12 {
                 drop(plugins.supervise_at(now));
-                let restart_at = plugins.entries[0].restart.at.unwrap();
+                let restart_at = plugins.entries[0].restart.retry_at.unwrap();
                 delays.push(restart_at.duration_since(now).as_millis());
                 drop(plugins.supervise_at(restart_at.checked_sub(Duration::from_millis(1)).unwrap()));
                 assert_eq!(
@@ -1534,7 +1534,7 @@ mod tests {
             let mut now = Instant::now();
             for _attempt in 0..5 {
                 drop(plugins.supervise_at(now));
-                now = plugins.entries[0].restart.at.unwrap();
+                now = plugins.entries[0].restart.retry_at.unwrap();
             }
             succeed.borrow_mut()[0] = true;
             drop(plugins.supervise_at(now));

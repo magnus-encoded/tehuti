@@ -14,18 +14,18 @@ use tehuti_protocol::{
     RpcVersion, Subscription,
 };
 
-pub(crate) const HANG_TIMEOUT: Duration = Duration::from_secs(2);
-pub(crate) const INVALID_MESSAGE_LIMIT: usize = 16;
-pub(crate) const FLOOD_WINDOW: Duration = Duration::from_secs(1);
-pub(crate) const FLOOD_BYTES: usize = 262_144;
-pub(crate) const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
-pub(crate) const RESTART_BACKOFF_CAP: Duration = Duration::from_secs(30);
-pub(crate) const RESTART_BACKOFF_RESET: Duration = Duration::from_secs(30);
+pub const HANG_TIMEOUT: Duration = Duration::from_secs(2);
+pub const INVALID_MESSAGE_LIMIT: usize = 16;
+pub const FLOOD_WINDOW: Duration = Duration::from_secs(1);
+pub const FLOOD_BYTES: usize = 262_144;
+pub const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(100);
+pub const RESTART_BACKOFF_CAP: Duration = Duration::from_secs(30);
+pub const RESTART_BACKOFF_RESET: Duration = Duration::from_secs(30);
 
 /// When a plugin may be started again, and how long the next wait is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Backoff {
-    pub(crate) at: Option<Instant>,
+pub struct Backoff {
+    pub(crate) retry_at: Option<Instant>,
     pub(crate) delay: Duration,
 }
 
@@ -33,7 +33,7 @@ impl Backoff {
     #[must_use]
     pub(crate) const fn new() -> Self {
         Self {
-            at: None,
+            retry_at: None,
             delay: RESTART_BACKOFF_BASE,
         }
     }
@@ -41,17 +41,17 @@ impl Backoff {
     /// Whether a start is allowed at `now`.
     #[must_use]
     pub(crate) fn due(&self, now: Instant) -> bool {
-        self.at.is_none_or(|deadline| now >= deadline)
+        self.retry_at.is_none_or(|deadline| now >= deadline)
     }
 
     /// Records that a start is being made.
     pub(crate) const fn started(&mut self) {
-        self.at = None;
+        self.retry_at = None;
     }
 
     /// Schedules the next start after the current delay, then doubles the delay up to the cap.
     pub(crate) fn schedule(&mut self, now: Instant) {
-        self.at = now.checked_add(self.delay);
+        self.retry_at = now.checked_add(self.delay);
         self.delay = self.delay.saturating_mul(2).min(RESTART_BACKOFF_CAP);
     }
 }
@@ -64,7 +64,7 @@ impl Default for Backoff {
 
 /// What a session hands the compositor after reading plugin output.
 #[derive(Debug)]
-pub(crate) enum Delivery {
+pub enum Delivery {
     Reply {
         key: tehuti_core::plugin::RequestKey,
         result: Result<Vec<Action>, String>,
@@ -79,7 +79,7 @@ pub(crate) enum Delivery {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Status {
+pub enum Status {
     Starting,
     Ready,
     Refused,
@@ -87,7 +87,7 @@ pub(crate) enum Status {
 }
 
 #[derive(Debug)]
-pub(crate) struct Session {
+pub struct Session {
     pub(crate) output: VecDeque<u8>,
     pub(crate) input: Vec<u8>,
     pub(crate) dropping_line: bool,
