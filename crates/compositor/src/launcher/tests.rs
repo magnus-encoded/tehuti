@@ -1,7 +1,7 @@
-use super::{Children, InvitationView, Session};
+use super::{InvitationView, Session};
 use crate::destinations::{Target, Window};
 use core::time::Duration;
-use std::{process::Command, time::Instant};
+use std::time::Instant;
 use tehuti_core::unit_verbs::DestinationKind;
 
 fn session() -> Session {
@@ -67,17 +67,23 @@ fn invitation_waits_ten_seconds_after_selection_and_failure_releases_it() {
 }
 
 #[test]
-fn completed_children_are_reaped_and_failure_is_reported_once() {
-    let mut children = Children::default();
-    for code in ["0", "7"] {
-        let mut child = Command::new("sh")
-            .args(["-c", &format!("exit {code}")])
-            .spawn()
-            .expect("child starts");
-        let _status = child.wait().expect("child exits");
-        children.track(child);
-    }
-    assert!(!children.is_full());
-    assert!(children.poll());
-    assert!(!children.poll());
+fn close_resets_launching_during_the_grace() {
+    let mut launcher = session();
+    let now = Instant::now();
+    launcher.enable_invitation();
+    assert!(launcher.update_windows(vec![window(1)]));
+    let _rows = launcher.rows(DestinationKind::Application, None);
+    assert!(launcher.choose(0, true, now).is_some());
+    assert_eq!(
+        launcher.invitation(false, false, now + Duration::from_secs(1)),
+        InvitationView::Hidden
+    );
+    assert_eq!(
+        launcher.invitation(true, false, now + Duration::from_secs(2)),
+        InvitationView::Close
+    );
+    assert_eq!(
+        launcher.invitation(false, false, now + Duration::from_secs(3)),
+        InvitationView::Show
+    );
 }

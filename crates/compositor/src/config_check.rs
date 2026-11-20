@@ -3,7 +3,10 @@
 use core::fmt;
 use std::path::{Path, PathBuf};
 
-use tehuti_core::shadowing::{ButtonOwner, Shadowing, shadowed};
+use tehuti_core::{
+    ownership::Why,
+    shadowing::{Shadowing, shadowed},
+};
 use tehuti_protocol::ButtonName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +28,8 @@ pub struct Finding {
 pub struct Report {
     /// Files read, whether or not they parsed.
     pub checked: usize,
+    /// The shared sections that exist, sorted.
+    pub shared: Vec<String>,
     pub findings: Vec<Finding>,
 }
 
@@ -70,6 +75,9 @@ impl fmt::Display for Report {
                 writeln!(formatter, "    {line}")?;
             }
         }
+        if !self.shared.is_empty() {
+            writeln!(formatter, "shared sections: {}", self.shared.join(", "))?;
+        }
         writeln!(
             formatter,
             "{} files checked, {} errors, {} warnings",
@@ -83,7 +91,10 @@ impl fmt::Display for Report {
 /// Checks every `context.toml` that Tehuti would load from `directory`, and its `menu.toml`.
 #[must_use]
 pub fn check(directory: &Path) -> Report {
-    let mut report = Report::default();
+    let mut report = Report {
+        shared: crate::shared_sections::names(directory),
+        ..Report::default()
+    };
     match crate::contexts::load_each(directory) {
         Ok(outcomes) => {
             report.checked = outcomes.len();
@@ -94,9 +105,12 @@ pub fn check(directory: &Path) -> Report {
                     Err(error) => report.push(&error.path, Severity::Error, error.message),
                 }
             }
+            report_skipped_phrases(&mut report, &loaded);
             report_shadowing(&mut report, &loaded);
             report_legacy_favourites(&mut report, &loaded);
+            report_overridden_shared(&mut report, &loaded, directory);
             report_unknown_ticker_buttons(&mut report, &loaded);
+            report_voice_only(&mut report, &loaded);
         }
         Err(error) => report.push(&error.path, Severity::Error, error.message),
     }
@@ -165,6 +179,22 @@ fn check_plugins(directory: &Path, report: &mut Report) {
     }
 }
 
+fn report_overridden_shared(
+    report: &mut Report,
+    loaded: &[(PathBuf, tehuti_protocol::Context)],
+    directory: &Path,
+) {
+    for (path, _) in loaded {
+        let overridden = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|source| crate::shared_sections::resolve(&source, directory).ok())
+            .map_or_default(|resolved| resolved.overridden);
+        for message in overridden {
+            report.push(path, Severity::Warning, message);
+        }
+    }
+}
+
 fn report_legacy_favourites(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
     for (path, _) in loaded {
         let has_favourites = std::fs::read_to_string(path)
@@ -193,25 +223,110 @@ fn report_unknown_ticker_buttons(report: &mut Report, loaded: &[(PathBuf, tehuti
     }
 }
 
-fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
-    let contexts: Vec<_> = loaded.iter().map(|(_, context)| context.clone()).collect();
+/// Warns about each phrase whose action no button reaches in its context or the global one, and the system
+/// menu does not hold (the menu holds Restart, which the checked actions leave out). Typed results (keys, text, notices, secrets, launches) are whole units that voice
+/// owns; the actions checked are the ones a controller can do too.
+fn report_voice_only(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
+    use tehuti_protocol::Action;
     for (path, context) in loaded {
-        let mut reserved: Vec<_> = context
+        let mut voice_only: Vec<_> = context
             .speech_mappings()
-            .filter(|mapping| tehuti_core::unit_verbs::launcher_request(mapping.phrase).is_some())
+            .filter(|mapping| {
+                matches!(
+                    mapping.action,
+                    Action::Layout { .. } | Action::Close | Action::ToggleTicker | Action::UndoDictation
+                )
+            })
+            .filter(|mapping| {
+                !loaded
+                    .iter()
+                    .map(|(_, other)| other)
+                    .filter(|other| core::ptr::eq(*other, context) || other.app_id() == "*")
+                    .any(|other| {
+                        other
+                            .mapped_buttons()
+                            .any(|button| other.action_for(button).as_ref() == Some(&mapping.action))
+                    })
+            })
             .collect();
-        reserved.sort_by_key(|mapping| mapping.phrase);
-        for mapping in reserved {
+        voice_only.sort_by_key(|mapping| mapping.phrase);
+        for mapping in voice_only {
             report.push(
                 path,
                 Severity::Warning,
                 format!(
-                    "[speech] {:?} never fires: core owns this reserved unit verb",
+                    "[speech] {:?} is reachable only by voice: no button maps the same action",
                     mapping.phrase
                 ),
             );
         }
     }
+}
+
+/// Warns, in phrase order, about each speech phrase core claims before contexts.
+fn report_unreachable_speech(
+    report: &mut Report,
+    loaded: &[(PathBuf, tehuti_protocol::Context)],
+    claimed: impl Fn(&str) -> Option<String>,
+) {
+    for (path, context) in loaded {
+        let mut unreachable: Vec<_> = context
+            .speech_mappings()
+            .filter_map(|mapping| claimed(mapping.phrase).map(|reason| (mapping, reason)))
+            .collect();
+        unreachable.sort_by_key(|(mapping, _)| mapping.phrase);
+        for (mapping, reason) in unreachable {
+            report.push(
+                path,
+                Severity::Warning,
+                format!("[speech] {:?} never fires: {reason}", mapping.phrase),
+            );
+        }
+    }
+}
+
+/// A phrase the loader drops, such as a duplicate after normalization, is an error here.
+fn report_skipped_phrases(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
+    for (path, context) in loaded {
+        for message in context.skipped_phrases() {
+            report.push(path, Severity::Error, message.clone());
+        }
+    }
+}
+
+const fn shadowing_reason(why: Why) -> &'static str {
+    match why {
+        Why::EscapeChord => "the escape chord consumes every Guide press",
+        Why::GlobalEnter => "the global layer sends Enter for South unless a focused context maps it",
+        Why::PushToTalk => "it is in the global context's push_to_talk list (default record)",
+        Why::GuideDpadChord
+        | Why::ChordStart
+        | Why::SystemMenu
+        | Why::MenuRelease
+        | Why::ColumnsLevel
+        | Why::PluginRequest
+        | Why::StickModifier
+        | Why::HeldKey
+        | Why::ContextMapping
+        | Why::Passthrough
+        | Why::Unmapped => "an earlier routing layer consumes it",
+    }
+}
+
+fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Context)]) {
+    let contexts: Vec<_> = loaded.iter().map(|(_, context)| context.clone()).collect();
+    report_unreachable_speech(report, loaded, |phrase| {
+        tehuti_core::unit_verbs::reserved_word(phrase)
+            .map(|word| format!("core owns this reserved unit verb {word:?}"))
+    });
+    report_unreachable_speech(report, loaded, |phrase| {
+        tehuti_core::unit_verbs::is_scratch_that(phrase)
+            .then(|| "core owns this reserved unit verb \"scratch that\"".to_owned())
+    });
+    report_unreachable_speech(report, loaded, |phrase| {
+        tehuti_core::invoke::slash_command(phrase, [])
+            .map(|_| "the built-in invoke verb types it as a slash command".to_owned())
+    });
     for shadowing in shadowed(&contexts) {
         match shadowing {
             Shadowing::Context { context, earlier } => {
@@ -236,15 +351,7 @@ fn report_shadowing(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::Co
                 owner,
             } => {
                 if let Some((path, _)) = loaded.get(context) {
-                    let reason = match owner {
-                        ButtonOwner::EscapeChord => "the escape chord consumes every Guide press",
-                        ButtonOwner::GlobalEnter => {
-                            "the global layer sends Enter for South unless a focused context maps it"
-                        }
-                        ButtonOwner::PushToTalk => {
-                            "it is in the global context's push_to_talk list (default record)"
-                        }
-                    };
+                    let reason = shadowing_reason(owner);
                     report.push(
                         path,
                         Severity::Warning,

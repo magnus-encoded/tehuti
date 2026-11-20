@@ -412,6 +412,53 @@ time.sleep(60)
             speech.interims.release()
         self.assertEqual(output.getvalue(), "", "cancelled capture cannot publish a preview")
 
+    def test_final_is_not_queued_behind_a_running_interim(self):
+        interim_started = threading.Event()
+        segment = types.SimpleNamespace(text="w", no_speech_prob=0, avg_logprob=0)
+
+        class Model:
+            def transcribe(self, path, **options):
+                if options.get("vad_filter") and not interim_started.is_set():
+                    interim_started.set()
+
+                    def slow():
+                        for _ in range(100):
+                            time.sleep(0.05)
+                            yield segment
+                    return slow(), None
+                return iter([segment]), None
+
+        class Process:
+            stdout = io.BytesIO()
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        speech = module.Speech(Model(), sources=lambda: [None])
+        take = module.Take(4)
+        recording = module.Recording("default", Process())
+        recording.extend(b"\x00\x10" * 32000)
+        recording.reader = threading.Thread(target=lambda: None)
+        recording.reader.start()
+        take.recordings.append(recording)
+        speech.capture, speech.session = take, 4
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            speech.interim(4, bytes(recording.audio), take)
+            self.assertTrue(interim_started.wait(3))
+            began = time.monotonic()
+            speech.stop(4, True)
+            speech.releasing.worker.join(3)
+            while not output.getvalue() and time.monotonic() - began < 3:
+                time.sleep(0.01)
+            elapsed = time.monotonic() - began
+        self.assertLess(elapsed, 2.0, "interim would hold the model for 5 s")
+        self.assertEqual([json.loads(l) for l in output.getvalue().splitlines()],
+                         [{"session": 4, "text": "w"}])
+
     def test_hallucinated_whole_transcripts_are_empty(self):
         for text in [
             ' "THANK YOU VERY MUCH FOR WATCHING AND BYE BYE!" ',
@@ -428,6 +475,36 @@ time.sleep(60)
     def test_real_sentences_preserve_the_original_text(self):
         for text in ["Thank you for fixing the build.", "Say goodbye to the legacy module.",
                      "Can you please subscribe to this event?", "Put this at the end."]:
+            with self.subTest(text=text):
+                segment = types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), text)
+
+    def test_repetition_loop_of_primed_verbs_is_dropped_and_logged(self):
+        loop = "build. " + "Invoke. " * 70
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            segment = types.SimpleNamespace(text=loop, no_speech_prob=0, avg_logprob=0)
+            self.assertEqual(module.transcript([segment]), "")
+            self.assertIn("repetition-loop", Path(directory, "log").read_text())
+
+    def test_phrase_and_punctuation_variant_loops_are_dropped_and_logged(self):
+        for text in ["go down " * 12, "open the file " * 8, "Invoke; invoke\u2026 INVOKE, " * 8]:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as directory, patch.dict(
+                    os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+                segment = types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), "")
+                self.assertIn("repetition-loop", Path(directory, "log").read_text())
+
+    def test_repeat_boundary_seven_passes_and_eight_drops(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
+            for count, expected in [(7, "down " * 7), (8, "")]:
+                segment = types.SimpleNamespace(text="down " * count, no_speech_prob=0, avg_logprob=0)
+                self.assertEqual(module.transcript([segment]), expected.strip())
+
+    def test_deliberate_repeats_and_diluted_repeats_go_through(self):
+        for text in ["down down down", "down down down down",
+                     "scroll down down down down then open the file and save it now"]:
             with self.subTest(text=text):
                 segment = types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)
                 self.assertEqual(module.transcript([segment]), text)
@@ -538,6 +615,81 @@ time.sleep(60)
                     else:
                         path.write_text(choice + "\n")
                     self.assertEqual(module.list_sources(), expected)
+
+    def test_turned_off_microphones_are_never_listed_even_under_all(self):
+        listing = json.dumps([{"type": "PipeWire:Interface:Node",
+                               "info": {"props": {"node.name": name, "media.class": "Audio/Source"}}}
+                              for name in ["front", "headset"]]).encode()
+        dump = types.SimpleNamespace(stdout=listing)
+        cases = [("all", ["front"]), ("front", ["front"]), ("headset", ["front"]),
+                 ("all", []), ("all", ["front", "headset"])]
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}), \
+                patch.object(module.subprocess, "run", return_value=dump):
+            os.environ.pop("TEHUTI_SPEECH_SOURCE", None)
+            (Path(directory) / "tehuti").mkdir()
+            for choice, off in cases:
+                with self.subTest(choice=choice, off=off):
+                    (Path(directory) / "tehuti" / "speech-source").write_text(choice + "\n")
+                    (Path(directory) / "tehuti" / "microphones-disabled.json").write_text(json.dumps(off))
+                    expected = [name for name in ["front", "headset"] if name not in off]
+                    self.assertEqual(module.list_sources(), expected)
+
+    def test_auto_honours_the_off_list_and_the_fallback_does_too(self):
+        def dump(default):
+            nodes = [{"type": "PipeWire:Interface:Node",
+                      "info": {"props": {"node.name": name, "media.class": "Audio/Source"}}}
+                     for name in ["front", "headset"]]
+            meta = {"type": "PipeWire:Interface:Metadata",
+                    "metadata": [{"key": "default.audio.source", "value": {"name": default}}]}
+            return types.SimpleNamespace(stdout=json.dumps(nodes + [meta]).encode())
+        cases = [("auto", [], "front", [None]), ("auto", ["headset"], "front", [None]),
+                 ("auto", ["front"], "front", []), ("all", ["front", "headset"], "front", [])]
+        for choice, off, default, expected in cases:
+            with self.subTest(choice=choice, off=off), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}), \
+                    patch.object(module.subprocess, "run", return_value=dump(default)):
+                os.environ.pop("TEHUTI_SPEECH_SOURCE", None)
+                (Path(directory) / "tehuti").mkdir()
+                (Path(directory) / "tehuti" / "speech-source").write_text(choice + "\n")
+                (Path(directory) / "tehuti" / "microphones-disabled.json").write_text(json.dumps(off))
+                self.assertEqual(module.list_sources(), expected)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}), \
+                patch.object(module.subprocess, "run", side_effect=OSError("no pw-dump")):
+            os.environ.pop("TEHUTI_SPEECH_SOURCE", None)
+            (Path(directory) / "tehuti").mkdir()
+            self.assertEqual(module.list_sources(), [None])
+            (Path(directory) / "tehuti" / "microphones-disabled.json").write_text(json.dumps(["front"]))
+            self.assertEqual(module.list_sources(), [])
+
+    def test_a_missing_saved_source_is_reported_and_falls_back(self):
+        listing = json.dumps([{"type": "PipeWire:Interface:Node",
+                               "info": {"props": {"node.name": "front", "media.class": "Audio/Source"}}}]).encode()
+        dump = types.SimpleNamespace(stdout=listing)
+        for choice, missing in [("unplugged", ["unplugged"]), ("front", []), ("all", []), ("auto", []), (None, [])]:
+            with self.subTest(choice=choice), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}), \
+                    patch.object(module.subprocess, "run", return_value=dump):
+                os.environ.pop("TEHUTI_SPEECH_SOURCE", None)
+                (Path(directory) / "tehuti").mkdir()
+                if choice is not None:
+                    (Path(directory) / "tehuti" / "speech-source").write_text(choice + "\n")
+                seen = []
+                self.assertEqual(module.list_sources(seen.append), ["front"] if choice != "auto" else [None])
+                self.assertEqual(seen, missing)
+
+    def test_speech_warns_in_log_and_to_the_compositor_when_the_saved_source_is_missing(self):
+        speech = module.Speech(object())
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}), contextlib.redirect_stdout(output):
+            speech.warn_missing_source("unplugged")
+            speech.warn_missing_source("unplugged")
+            logged = Path(directory, "log").read_text()
+        self.assertEqual(json.loads(output.getvalue()), {"warning": "source missing"})
+        self.assertIn("WARN speech: saved source unplugged is missing", logged)
+        self.assertEqual(logged.count("WARN"), 1)
 
     def test_all_sources_record_at_once_and_failed_sources_are_skipped(self):
         class Model:

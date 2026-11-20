@@ -46,6 +46,12 @@ pub fn configure_display(display: Option<std::ffi::OsString>) -> std::io::Result
         .map_err(|_| std::io::Error::other("child display already configured"))
 }
 
+/// The configured session display, if any.
+#[must_use]
+pub fn display() -> Option<&'static std::ffi::OsStr> {
+    DISPLAY.get().and_then(|display| display.as_deref())
+}
+
 /// Applies the session display, clearing inherited X11 state in Wayland-only sessions.
 pub fn set_display(command: &mut std::process::Command, display: Option<&std::ffi::OsStr>) {
     if let Some(display) = display {

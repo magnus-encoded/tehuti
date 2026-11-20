@@ -6,15 +6,147 @@ use core::time::Duration;
 use tehuti_protocol::{ButtonName, ButtonState, KeyName};
 
 /// How long a D-pad direction is held before the highlight starts repeating.
-pub const REPEAT_DELAY: Duration = Duration::from_millis(400);
+pub const REPEAT_DELAY: Duration = Duration::from_millis(300);
 /// How long Y stays held before it dictates instead of typing a space.
 pub const TALK_HOLD: Duration = Duration::from_millis(300);
-/// Time between highlight moves while a D-pad direction stays held.
-pub const REPEAT_INTERVAL: Duration = Duration::from_millis(80);
+/// Keys a second when a held D-pad direction starts repeating.
+pub const REPEAT_RATE: u16 = 12;
+/// Keys a second a held D-pad direction speeds up to.
+pub const REPEAT_MAX_RATE: u16 = 30;
+/// How long a direction repeats before it reaches [`REPEAT_MAX_RATE`].
+pub const REPEAT_RAMP: Duration = Duration::from_millis(2000);
+
+/// How a held D-pad direction repeats: a delay, then a rate that climbs to a ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Repeat {
+    delay: Duration,
+    rate: u16,
+    max_rate: u16,
+    ramp: Duration,
+}
+
+impl Default for Repeat {
+    fn default() -> Self {
+        Self::new(None, None, None, None)
+    }
+}
+
+impl Repeat {
+    /// Configured values over the defaults; a ceiling below the start rate is raised to it.
+    #[must_use]
+    pub fn new(
+        delay_ms: Option<u16>,
+        rate: Option<u16>,
+        max_rate: Option<u16>,
+        ramp_ms: Option<u16>,
+    ) -> Self {
+        let rate = rate.unwrap_or(REPEAT_RATE).max(1);
+        Self {
+            delay: delay_ms.map_or(REPEAT_DELAY, |millis| Duration::from_millis(u64::from(millis))),
+            rate,
+            max_rate: max_rate.unwrap_or(REPEAT_MAX_RATE).max(rate),
+            ramp: ramp_ms.map_or(REPEAT_RAMP, |millis| Duration::from_millis(u64::from(millis))),
+        }
+    }
+
+    /// How long a direction is held before it starts repeating.
+    pub(crate) const fn delay(self) -> Duration {
+        self.delay
+    }
+
+    /// Time to the next move after repeating for `held`: faster the longer the hold.
+    pub(crate) fn interval(self, held: Duration) -> Duration {
+        let ramp = self.ramp.as_micros().max(1);
+        let progress = held.as_micros().min(ramp);
+        let climb = u128::from(self.max_rate.saturating_sub(self.rate));
+        let rate = u128::from(self.rate)
+            .saturating_mul(ramp)
+            .saturating_add(climb.saturating_mul(progress));
+        // Keys a second scaled by `ramp`: interval = 1 s / (rate / ramp).
+        let micros = 1_000_000_u128
+            .saturating_mul(ramp)
+            .checked_div(rate)
+            .unwrap_or(1_000_000)
+            .max(1);
+        Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX))
+    }
+}
 /// Left stick deflection, in thousandths, that picks the next or previous word.
 pub const WORD_PICK_DEFLECTION: i16 = 500;
 /// The left stick must return inside this deflection before it picks another word.
 const WORD_PICK_RELEASE: i16 = 250;
+/// Left stick depth, in thousandths, from which a held push keeps picking words.
+pub const WORD_REPEAT_FROM: u16 = 800;
+/// How long a deep push waits before it keeps picking words.
+pub const WORD_REPEAT_DELAY: Duration = Duration::from_millis(350);
+/// Words a second at the shallowest repeating push.
+pub const WORD_MIN_RATE: u16 = 2;
+/// Words a second at a full push.
+pub const WORD_MAX_RATE: u16 = 10;
+
+/// How a held left stick keeps picking words: not at all while gentle, faster the deeper the push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WordRepeat {
+    from: u16,
+    delay: Duration,
+    min_rate: u16,
+    max_rate: u16,
+}
+
+impl Default for WordRepeat {
+    fn default() -> Self {
+        Self::new(None, None, None, None)
+    }
+}
+
+impl WordRepeat {
+    /// Configured values over the defaults; a ceiling below the floor is raised to it.
+    #[must_use]
+    pub fn new(
+        from: Option<u16>,
+        delay_ms: Option<u16>,
+        min_rate: Option<u16>,
+        max_rate: Option<u16>,
+    ) -> Self {
+        let min_rate = min_rate.unwrap_or(WORD_MIN_RATE).max(1);
+        Self {
+            from: from
+                .unwrap_or(WORD_REPEAT_FROM)
+                .clamp(WORD_PICK_DEFLECTION.unsigned_abs(), 1000),
+            delay: delay_ms.map_or(WORD_REPEAT_DELAY, |millis| {
+                Duration::from_millis(u64::from(millis))
+            }),
+            min_rate,
+            max_rate: max_rate.unwrap_or(WORD_MAX_RATE).max(min_rate),
+        }
+    }
+
+    /// Time between picks at a push `depth` thousandths deep.
+    fn interval(self, depth: u16) -> Duration {
+        let span = u32::from(1000_u16.saturating_sub(self.from)).max(1);
+        let into = u32::from(depth.clamp(self.from, 1000).saturating_sub(self.from));
+        let climb = u32::from(self.max_rate.saturating_sub(self.min_rate));
+        // Words a second times `span`, so the integer maths keeps its precision.
+        let scaled = u64::from(self.min_rate)
+            .saturating_mul(u64::from(span))
+            .saturating_add(u64::from(climb).saturating_mul(u64::from(into)));
+        let micros = 1_000_000_u64
+            .saturating_mul(u64::from(span))
+            .checked_div(scaled)
+            .unwrap_or(1_000_000)
+            .max(1);
+        Duration::from_micros(micros)
+    }
+}
+
+/// A left stick held deep enough to keep picking words: which way, how deep, time to the next pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeldStick {
+    forward: bool,
+    depth: u16,
+    remaining: Duration,
+}
+
 /// Every row spans this many width units.
 pub const ROW_UNITS: u8 = 28;
 
@@ -354,7 +486,11 @@ impl Direction {
             | ButtonName::Start
             | ButtonName::Guide
             | ButtonName::LeftStick
-            | ButtonName::RightStick => None,
+            | ButtonName::RightStick
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4 => None,
         }
     }
 }
@@ -402,6 +538,14 @@ pub struct Edit {
     pub caret: usize,
 }
 
+/// A held D-pad direction: time to its next move, and how long it has repeated (`None` while waiting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeldDirection {
+    direction: Direction,
+    remaining: Duration,
+    repeating: Option<Duration>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Keyboard {
     pad_family: crate::pad::PadFamily,
@@ -419,8 +563,11 @@ pub struct Keyboard {
     caret: usize,
     word: Option<Range<usize>>,
     captured: Vec<ButtonName>,
-    repeat: Option<(Direction, Duration)>,
+    repeat: Option<HeldDirection>,
+    repeat_speed: Repeat,
     stick_engaged: bool,
+    word_repeat: WordRepeat,
+    held_stick: Option<HeldStick>,
     send_on_start_release: bool,
     space: Option<SpaceHold>,
     start: Option<SpaceHold>,
@@ -462,6 +609,8 @@ impl Keyboard {
             highlight: (usize::from(self.rows().len() > LETTERS.len()), 1),
             captured: core::mem::take(&mut self.captured),
             stick_engaged: self.stick_engaged,
+            word_repeat: self.word_repeat,
+            repeat_speed: self.repeat_speed,
             ..Self::default()
         };
     }
@@ -476,8 +625,19 @@ impl Keyboard {
         }
         self.word = None;
         self.repeat = None;
+        self.held_stick = None;
         self.layer = Layer::Letters;
         self.latched = Modifiers::default();
+    }
+
+    /// Sets how a held left stick keeps picking words; a push in progress keeps its pace.
+    pub const fn set_word_repeat(&mut self, repeat: WordRepeat) {
+        self.word_repeat = repeat;
+    }
+
+    /// Sets how a held D-pad direction repeats; a hold in progress keeps its pace.
+    pub const fn set_repeat(&mut self, repeat: Repeat) {
+        self.repeat_speed = repeat;
     }
 
     /// Chooses whether closing keeps the local draft.
@@ -768,7 +928,11 @@ impl Keyboard {
     fn press(&mut self, name: ButtonName) -> Response {
         if let Some(direction) = Direction::from_button(name) {
             self.move_highlight(direction);
-            self.repeat = Some((direction, REPEAT_DELAY));
+            self.repeat = Some(HeldDirection {
+                direction,
+                remaining: self.repeat_speed.delay,
+                repeating: None,
+            });
             return Response::Consumed;
         }
         if name == self.pad_family.button(crate::pad::Role::Confirm) {
@@ -795,6 +959,10 @@ impl Keyboard {
             ButtonName::South
             | ButtonName::East
             | ButtonName::RightStick
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4
             | ButtonName::LeftTrigger
             | ButtonName::RightTrigger
             | ButtonName::Select
@@ -925,6 +1093,7 @@ impl Keyboard {
     pub fn tick(&mut self, elapsed: Duration) -> bool {
         let talk = self.tick_space(elapsed) | self.tick_start(elapsed);
         self.tick_reveal_and_repeat(elapsed);
+        self.tick_stick(elapsed);
         talk
     }
 
@@ -960,16 +1129,27 @@ impl Keyboard {
                 self.revealed = None;
             }
         }
-        let Some((direction, mut remaining)) = self.repeat else {
+        let Some(mut held) = self.repeat else {
             return;
         };
         let mut elapsed = elapsed.min(Duration::from_secs(1));
-        while elapsed >= remaining {
-            self.move_highlight(direction);
-            elapsed = elapsed.saturating_sub(remaining);
-            remaining = REPEAT_INTERVAL;
+        let mut repeating = held.repeating.unwrap_or_default();
+        while elapsed >= held.remaining {
+            self.move_highlight(held.direction);
+            elapsed = elapsed.saturating_sub(held.remaining);
+            repeating = repeating.saturating_add(if held.repeating.is_some() {
+                held.remaining
+            } else {
+                Duration::ZERO
+            });
+            held.repeating = Some(repeating);
+            held.remaining = self.repeat_speed.interval(repeating);
         }
-        self.repeat = Some((direction, remaining.saturating_sub(elapsed)));
+        if let Some(clock) = &mut held.repeating {
+            *clock = clock.saturating_add(elapsed);
+        }
+        held.remaining = held.remaining.saturating_sub(elapsed);
+        self.repeat = Some(held);
     }
 
     /// A left-stick flick picks a word horizontally or moves the caret one line vertically.
@@ -977,12 +1157,19 @@ impl Keyboard {
         let deflection = x.unsigned_abs().max(y.unsigned_abs());
         if deflection < WORD_PICK_RELEASE.unsigned_abs() {
             self.stick_engaged = false;
+            self.held_stick = None;
             return;
         }
-        if self.stick_engaged || deflection < WORD_PICK_DEFLECTION.unsigned_abs() {
+        let horizontal = x.unsigned_abs() >= y.unsigned_abs();
+        if self.stick_engaged {
+            self.hold_stick(x, horizontal, deflection);
+            return;
+        }
+        if deflection < WORD_PICK_DEFLECTION.unsigned_abs() {
             return;
         }
         self.stick_engaged = true;
+        self.hold_stick(x, horizontal, deflection);
         if self.open {
             if x.unsigned_abs() >= y.unsigned_abs() {
                 self.pick_word(x > 0);
@@ -990,6 +1177,41 @@ impl Keyboard {
                 self.move_line(y > 0);
             }
         }
+    }
+
+    /// Follows a deep horizontal push so a held stick keeps picking; anything else stops it.
+    const fn hold_stick(&mut self, x: i16, horizontal: bool, deflection: u16) {
+        if !horizontal || deflection < self.word_repeat.from {
+            self.held_stick = None;
+            return;
+        }
+        let forward = x > 0;
+        let remaining = match self.held_stick {
+            Some(held) if held.forward == forward => held.remaining,
+            _ => self.word_repeat.delay,
+        };
+        self.held_stick = Some(HeldStick {
+            forward,
+            depth: deflection,
+            remaining,
+        });
+    }
+
+    fn tick_stick(&mut self, elapsed: Duration) {
+        let Some(mut held) = self.held_stick else {
+            return;
+        };
+        if !self.open {
+            return;
+        }
+        let mut elapsed = elapsed.min(Duration::from_secs(1));
+        while elapsed >= held.remaining {
+            self.pick_word(held.forward);
+            elapsed = elapsed.saturating_sub(held.remaining);
+            held.remaining = self.word_repeat.interval(held.depth);
+        }
+        held.remaining = held.remaining.saturating_sub(elapsed);
+        self.held_stick = Some(held);
     }
 
     fn move_line(&mut self, down: bool) {
@@ -1184,6 +1406,10 @@ const fn captures(name: ButtonName, shoulders_move_caret: bool) -> bool {
         | ButtonName::Start
         | ButtonName::LeftStick
         | ButtonName::RightStick
+        | ButtonName::Paddle1
+        | ButtonName::Paddle2
+        | ButtonName::Paddle3
+        | ButtonName::Paddle4
         | ButtonName::LeftTrigger
         | ButtonName::RightTrigger
         | ButtonName::DpadUp

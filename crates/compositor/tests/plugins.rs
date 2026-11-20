@@ -194,6 +194,8 @@ for line in sys.stdin:
             plugin_id: None,
             author: None,
             security_contact: None,
+            kind: tehuti_protocol::PluginKind::Application,
+            verbs: Vec::new(),
             executable: "plugin.py".into(),
             app_ids: vec!["test".into()],
             events: vec![Subscription::Button, Subscription::Focus],
@@ -231,6 +233,10 @@ for line in sys.stdin:
     }
 
     /// The reply a dispatch effect asks for, recording routed plugin events.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match names every effect that needs no reply"
+    )]
     fn answer(
         effect: tehuti_core::dispatch::Effect,
         routed: &mut Vec<Event>,
@@ -257,6 +263,8 @@ for line in sys.stdin:
             | Effect::LauncherUsed(_)
             | Effect::OpenLauncher(_)
             | Effect::ReadVolume
+            | Effect::ReadWindowSize(_)
+            | Effect::SetWindowSize { .. }
             | Effect::SetVolume(_)
             | Effect::AdjusterValue { .. }
             | Effect::RunMenuCommand(_)
@@ -266,8 +274,14 @@ for line in sys.stdin:
             | Effect::SettingsScale(_)
             | Effect::SettingsController(_)
             | Effect::PersistControllerTalk(_, _)
+            | Effect::PersistControllerDeadzone(_, _)
+            | Effect::RecentreController(_)
             | Effect::PersistController(_)
             | Effect::SettingsMicrophone(_)
+            | Effect::SettingsControllerEnabled { .. }
+            | Effect::SettingsMicrophoneEnabled { .. }
+            | Effect::ListRemoteHosts
+            | Effect::ConnectRemoteMicrophone { .. }
             | Effect::WallpaperPreview(_)
             | Effect::WallpaperSave(_)
             | Effect::UnlockWallpapers
@@ -915,6 +929,175 @@ for line in sys.stdin:
                 "refusal is logged"
             );
         }
+    }
+
+    fn speech(text: &str) -> Event {
+        Event::Speech {
+            text: tehuti_protocol::Text::new(text.into()).unwrap(),
+        }
+    }
+
+    fn settle(harness: &mut Harness) {
+        for _attempt in 0..20 {
+            harness
+                .event_loop
+                .dispatch(Duration::from_millis(5), &mut harness.compositor)
+                .unwrap();
+        }
+    }
+
+    fn verb_harness(verbs: &[&str], accept: bool) -> Harness {
+        let mut configuration = manifest();
+        configuration.kind = tehuti_protocol::PluginKind::Verb;
+        configuration.verbs = verbs.iter().map(|verb| (*verb).to_owned()).collect();
+        configuration.app_ids.clear();
+        configuration.events = vec![Subscription::Speech];
+        configuration.permissions = vec![Permission::Text];
+        let mut harness = Harness::with_script(&configuration, include_str!("fixtures/plugins/verb.py"));
+        if accept {
+            std::fs::write(harness.directory.path().join("accept"), "yes").unwrap();
+        }
+        harness.ready();
+        harness
+    }
+
+    fn verb_requests(harness: &Harness) -> Vec<String> {
+        harness
+            .received()
+            .iter()
+            .filter(|message| message["method"] == "verb")
+            .map(|message| message["params"]["verb"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_verb_beats_a_context_phrase_and_an_empty_reply_routes_the_phrase() {
+        for accept in [false, true] {
+            let mut harness = verb_harness(&["ada"], accept);
+            harness.compositor.set_contexts(vec![
+                tehuti_protocol::parse_context(
+                    "app_id = 'test'\n[buttons]\n[speech]\n'ada hello there' = { text = 'context' }",
+                )
+                .unwrap(),
+            ]);
+            let typed = text_actions(|| {
+                harness.send([focus("test"), speech("ada hello there")]);
+                harness.pump_until(|harness| !verb_requests(harness).is_empty());
+                settle(&mut harness);
+            });
+            assert_eq!(
+                verb_requests(&harness),
+                ["ada"],
+                "the verb plugin hears the phrase first"
+            );
+            assert_eq!(
+                typed,
+                if accept { 2 } else { 1 },
+                "an accepted verb replaces the context phrase; a declined one routes it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_built_in_invoke_verb_beats_a_plugin_that_claims_it() {
+        let mut harness = verb_harness(&["invoke", "ada"], true);
+        let typed = text_actions(|| {
+            harness.send([speech("invoke usage report"), speech("ada done")]);
+            harness.pump_until(|harness| !verb_requests(harness).is_empty());
+            settle(&mut harness);
+        });
+        assert_eq!(
+            verb_requests(&harness),
+            ["ada"],
+            "the plugin never hears the invoke verb"
+        );
+        assert_eq!(
+            typed, 3,
+            "the built-in slash command, then the plugin's two texts"
+        );
+    }
+
+    #[test]
+    fn tehuti_phrases_beat_verbs() {
+        let mut harness = verb_harness(&["open", "ada"], false);
+        harness.send([speech("ada done")]);
+        harness.pump_until(|harness| !verb_requests(harness).is_empty());
+        harness.send([speech("open the terminal")]);
+        settle(&mut harness);
+        assert_eq!(
+            verb_requests(&harness),
+            ["ada"],
+            "the launcher phrase stays Tehuti's"
+        );
+    }
+
+    #[test]
+    fn a_verb_plugin_hears_only_speech_after_its_current_verbs() {
+        let mut harness = verb_harness(&["ada"], false);
+        std::fs::write(harness.directory.path().join("swap"), "yes").unwrap();
+        harness.send([
+            button(ButtonName::East),
+            speech("hello there"),
+            speech("Ada, sum up the reviews"),
+        ]);
+        harness.pump_until(|harness| harness.directory.path().join("swapped").exists());
+        settle(&mut harness);
+        harness.send([speech("ada still there"), speech("Orion open the notes")]);
+        harness.pump_until(|harness| {
+            harness
+                .received()
+                .iter()
+                .filter(|message| message["method"] == "verb")
+                .count()
+                == 2
+        });
+        settle(&mut harness);
+        let delivered: Vec<(String, String)> = harness
+            .received()
+            .iter()
+            .filter(|message| message["method"] != "initialize")
+            .map(|message| {
+                assert_eq!(message["method"], "verb", "a verb plugin hears only verbs");
+                (
+                    message["params"]["verb"].as_str().unwrap().to_owned(),
+                    message["params"]["text"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            delivered,
+            vec![
+                ("ada".to_owned(), "sum up the reviews".to_owned()),
+                ("orion".to_owned(), "open the notes".to_owned()),
+            ],
+            "the verb is stripped and replaced verbs stop routing"
+        );
+    }
+
+    #[test]
+    fn manifests_keep_each_kind_to_its_own_permissions() {
+        let parse =
+            |manifest: &Manifest| tehuti_protocol::parse_manifest(&serde_json::to_vec(manifest).unwrap());
+        let mut application = manifest();
+        assert!(parse(&application).is_ok(), "application is the default kind");
+        application.verbs = vec!["ada".into()];
+        assert!(
+            parse(&application).is_err(),
+            "an application plugin declares no verbs"
+        );
+        let mut verb = manifest();
+        verb.kind = tehuti_protocol::PluginKind::Verb;
+        verb.verbs = vec!["ada".into()];
+        assert!(
+            parse(&verb).is_err(),
+            "a verb plugin names no applications or buttons"
+        );
+        verb.app_ids.clear();
+        verb.events = vec![Subscription::Speech];
+        verb.permissions = vec![Permission::Text];
+        assert!(parse(&verb).is_ok(), "a speech-only verb plugin is valid");
+        verb.verbs = vec!["two words".into()];
+        assert!(parse(&verb).is_err(), "a verb is one word");
     }
 
     #[test]

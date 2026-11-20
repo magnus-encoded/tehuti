@@ -1,6 +1,9 @@
 //! The pure core step: state and one event in, state and actions out.
 
-use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, KeyName, LayoutAction};
+use tehuti_protocol::{Action, ButtonName, ButtonState, Context, Event, GuideMode, KeyName, LayoutAction};
+
+/// Shown once per focus on a window whose context gives Guide to the application.
+const GUIDE_APP_NOTICE: &str = "GUIDE GOES TO THE APP. HOLD GUIDE+START 3 S TO QUIT TEHUTI";
 
 /// The longest Guide press that still counts as a tap.
 pub const GUIDE_TAP_WINDOW: core::time::Duration = core::time::Duration::from_millis(500);
@@ -57,9 +60,122 @@ pub struct State {
     pad_family: pad::PadFamily,
     controller_talk: Option<ButtonName>,
     app_names: Vec<(String, String)>,
+    plugin_invoke_words: Vec<String>,
+    sticks: stick_actions::StickActions,
+    /// Characters of the last dictated phrase, while nothing else was typed after it.
+    dictated: Option<usize>,
+    /// The button whose undo press is still held, so it repeats Backspace.
+    undo_hold: Option<UndoHold>,
 }
 
+/// A held undo button: how long it has been down and when its next Backspace is due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UndoHold {
+    button: ButtonName,
+    level: Level,
+    held: core::time::Duration,
+    next: core::time::Duration,
+}
+
+/// Most Backspaces one tick may owe, so a stalled clock cannot flood the focused window.
+const MAX_REPEATS_PER_TICK: usize = 64;
+
 impl State {
+    /// Expands undo into backspaces and remembers what a spoken phrase typed, until anything else is typed.
+    fn track_dictation(&mut self, event: &Event, actions: Vec<Action>) -> Vec<Action> {
+        if matches!(event, Event::Focus { .. }) {
+            self.dictated = None;
+        }
+        let mut tracked = Vec::with_capacity(actions.len());
+        for action in actions {
+            match action {
+                Action::UndoDictation => {
+                    let count = self.dictated.take().unwrap_or(1);
+                    tracked.extend((0..count).map(|_| Action::Key {
+                        key: KeyName::Backspace,
+                        mods: Vec::new(),
+                    }));
+                }
+                Action::Text { ref text } => {
+                    self.dictated =
+                        matches!(event, Event::Speech { .. }).then(|| text.as_str().chars().count());
+                    tracked.push(action);
+                }
+                Action::Key { .. } | Action::KeyDown { .. } | Action::SecretRequest { .. } => {
+                    self.dictated = None;
+                    tracked.push(action);
+                }
+                Action::Launch { .. }
+                | Action::Close
+                | Action::Quit
+                | Action::Restart
+                | Action::Notice { .. }
+                | Action::Layout { .. }
+                | Action::KeyUp { .. }
+                | Action::ToggleTicker => tracked.push(action),
+            }
+        }
+        tracked
+    }
+
+    /// Starts, ends and advances the Backspace repeat of a held undo button.
+    fn repeat_undo(&mut self, event: &Event, undone: bool) -> Vec<Action> {
+        if self.menu.is_some() || self.undo_hold.is_some_and(|hold| hold.level != self.level) {
+            self.undo_hold = None;
+        }
+        match event {
+            Event::Button {
+                name,
+                state: ButtonState::Pressed,
+            } if undone => {
+                self.undo_hold = Some(UndoHold {
+                    button: *name,
+                    level: self.level,
+                    held: core::time::Duration::ZERO,
+                    next: self.keyboard_repeat().delay(),
+                });
+            }
+            Event::Button {
+                name,
+                state: ButtonState::Released,
+            } => {
+                if self.undo_hold.is_some_and(|hold| hold.button == *name) {
+                    self.undo_hold = None;
+                }
+            }
+            Event::Focus { .. } => self.undo_hold = None,
+            Event::Tick { elapsed } => {
+                let repeat = self.keyboard_repeat();
+                let delay = repeat.delay();
+                let Some(hold) = &mut self.undo_hold else {
+                    return Vec::new();
+                };
+                hold.held = hold.held.saturating_add(*elapsed);
+                let mut due = 0;
+                while hold.held >= hold.next && due < MAX_REPEATS_PER_TICK {
+                    due = due.saturating_add(1);
+                    hold.next = hold
+                        .next
+                        .saturating_add(repeat.interval(hold.next.saturating_sub(delay)));
+                }
+                if hold.held >= hold.next {
+                    // A stalled clock owes more than the cap: drop the backlog.
+                    hold.next = hold
+                        .held
+                        .saturating_add(repeat.interval(hold.held.saturating_sub(delay)));
+                }
+                return (0..due)
+                    .map(|_| Action::Key {
+                        key: KeyName::Backspace,
+                        mods: Vec::new(),
+                    })
+                    .collect();
+            }
+            Event::Button { .. } | Event::Speech { .. } => {}
+        }
+        Vec::new()
+    }
+
     pub fn set_menu_entries(&mut self, entries: Vec<String>) {
         self.menu_entries = entries;
     }
@@ -93,6 +209,22 @@ impl State {
     #[must_use]
     pub fn virtual_pad(&self) -> bool {
         self.passthrough() && focused_context(self).is_some_and(Context::virtual_pad)
+    }
+
+    /// Who receives Guide now: the focused context's choice at the app level, else Tehuti alone.
+    #[must_use]
+    pub fn guide_mode(&self) -> GuideMode {
+        if self.passthrough() {
+            focused_context(self).map_or(GuideMode::Tehuti, Context::guide_mode)
+        } else {
+            GuideMode::Tehuti
+        }
+    }
+
+    /// Whether a Guide press reaches the application through the virtual pad.
+    #[must_use]
+    pub fn guide_forwarded(&self) -> bool {
+        self.guide_mode() != GuideMode::Tehuti
     }
 
     /// Whether `app_id` and `title` name the focused window.
@@ -150,6 +282,10 @@ impl State {
             pad_family: pad::PadFamily::Letters,
             controller_talk: None,
             app_names: Vec::new(),
+            plugin_invoke_words: Vec::new(),
+            sticks: stick_actions::StickActions::default(),
+            dictated: None,
+            undo_hold: None,
         };
         state.refresh_ticker();
         state.refresh_labels();
@@ -216,6 +352,42 @@ impl State {
             .unwrap_or(false)
     }
 
+    /// Resolves the D-pad hold-repeat speeds over the global context.
+    #[must_use]
+    pub fn keyboard_repeat(&self) -> keyboard::Repeat {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        let active = focused_context(self);
+        let pick = |field: fn(&tehuti_protocol::KeyboardConfig) -> Option<u16>| {
+            active
+                .and_then(|context| field(context.keyboard()))
+                .or_else(|| global.and_then(|context| field(context.keyboard())))
+        };
+        keyboard::Repeat::new(
+            pick(|config| config.repeat_delay_ms),
+            pick(|config| config.repeat_rate),
+            pick(|config| config.repeat_max_rate),
+            pick(|config| config.repeat_ramp_ms),
+        )
+    }
+
+    /// Resolves the left-stick word-picking speeds over the global context.
+    #[must_use]
+    pub fn keyboard_word_repeat(&self) -> keyboard::WordRepeat {
+        let global = self.contexts.iter().find(|context| context.app_id() == "*");
+        let active = focused_context(self);
+        let pick = |field: fn(&tehuti_protocol::KeyboardConfig) -> Option<u16>| {
+            active
+                .and_then(|context| field(context.keyboard()))
+                .or_else(|| global.and_then(|context| field(context.keyboard())))
+        };
+        keyboard::WordRepeat::new(
+            pick(|config| config.word_repeat_from),
+            pick(|config| config.word_repeat_delay_ms),
+            pick(|config| config.word_min_rate),
+            pick(|config| config.word_max_rate),
+        )
+    }
+
     /// Whether the focused context marks a terminal, plus its legacy level-opening option.
     #[must_use]
     pub fn terminal_config(&self) -> (bool, bool) {
@@ -247,8 +419,20 @@ impl State {
     /// Swaps the contexts and keeps focus, held buttons and pending plugin decisions.
     pub fn replace_contexts(&mut self, contexts: Vec<Context>) {
         self.contexts = contexts;
+        self.undo_hold = None;
         self.refresh_ticker();
         self.refresh_labels();
+    }
+
+    /// The extra invoke words application plugins currently supply.
+    #[must_use]
+    pub fn plugin_invoke_words(&self) -> &[String] {
+        &self.plugin_invoke_words
+    }
+
+    /// Replaces the extra invoke words application plugins supply for the focused window.
+    pub fn set_plugin_invoke_words(&mut self, words: Vec<String>) {
+        self.plugin_invoke_words = words;
     }
 
     /// Supplies each application's desktop entry `Name`, keyed by app id.
@@ -282,7 +466,18 @@ impl State {
             .chain(self.app_names.iter().map(|(app_id, _)| app_id.as_str()))
             .filter_map(|app_id| Some((app_id.to_owned(), self.label(Some(app_id))?.to_owned())))
             .collect();
-        self.bar.set_labels(labels);
+        let titled = self
+            .contexts
+            .iter()
+            .filter(|context| context.app_id() != GLOBAL_APP_ID)
+            .filter_map(|context| {
+                Some((
+                    (context.app_id().to_owned(), context.title()?.to_owned()),
+                    context.label()?.to_owned(),
+                ))
+            })
+            .collect();
+        self.bar.set_labels(labels, titled);
     }
 
     /// Names buttons on the ticker as the pad in use prints them.
@@ -302,6 +497,17 @@ impl State {
         fuzzy_speech_match(focused_context(self), global_context(self), phrase)
     }
 
+    /// Whether the focused or global context maps the phrase, exactly, folded, by plural or fuzzily.
+    #[must_use]
+    pub fn context_maps_speech(&self, phrase: &str) -> bool {
+        let (focused, global) = (focused_context(self), global_context(self));
+        [focused, global]
+            .into_iter()
+            .flatten()
+            .any(|context| maps_phrase(context, phrase))
+            || fuzzy_speech_match(focused, global, phrase).is_some()
+    }
+
     /// Hides a shown mapping ticker or shows a hidden one; the choice outlasts focus changes.
     pub const fn toggle_ticker(&mut self) {
         self.bar.toggle_ticker();
@@ -311,9 +517,42 @@ impl State {
     fn refresh_ticker(&mut self) {
         let focused = focused_context(self);
         let global = global_context(self);
-        let entries = ticker::enabled_for(focused, global)
-            .then(|| ticker::entries_for(focused, global, self.pad_family, self.level));
+        let entries = ticker::enabled_for(focused, global).then(|| {
+            ticker::entries_for(
+                focused,
+                global,
+                self.pad_family,
+                self.level,
+                self.sticks.active_modifier(),
+            )
+        });
         self.bar.set_ticker(entries);
+    }
+
+    /// Whether the focused context's `[sticks]` maps `stick`, which then leaves mouse mode.
+    #[must_use]
+    pub fn maps_stick(&self, stick: tehuti_protocol::Stick) -> bool {
+        focused_context(self).is_some_and(|context| context.maps_stick(stick))
+    }
+
+    /// The actions the focused context's `[sticks]` fire for one tick of stick samples.
+    pub fn stick_actions(
+        &mut self,
+        elapsed: core::time::Duration,
+        left: (i16, i16),
+        right: (i16, i16),
+    ) -> Vec<Action> {
+        let mut sticks = core::mem::take(&mut self.sticks);
+        let actions =
+            focused_context(self).map_or_else(Vec::new, |context| sticks.tick(context, elapsed, left, right));
+        self.sticks = sticks;
+        actions
+    }
+
+    /// The face button whose `[sticks]` layer applies, if one is held.
+    #[must_use]
+    pub fn held_stick_modifier(&self) -> Option<ButtonName> {
+        self.sticks.active_modifier()
     }
 
     /// The installed contexts, in priority order.
@@ -324,6 +563,7 @@ impl State {
 
     /// Cancels controller holds when the device disconnects or the seat pauses.
     pub fn controller_disconnected(&mut self) {
+        self.undo_hold = None;
         self.guide_held = None;
         self.guide_tap = None;
         self.start_held = false;
@@ -365,6 +605,9 @@ impl State {
     pub fn push_to_talk(&self, button: ButtonName) -> bool {
         if let Some(binding) = self.controller_talk {
             return binding == button;
+        }
+        if let Some(own) = focused_context(self).and_then(Context::own_push_to_talk) {
+            return own.contains(&button);
         }
         global_context(self).map_or(button == ButtonName::Record, |context| {
             context.push_to_talk(button)
@@ -417,12 +660,18 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
     };
     let level = state.level;
     let (mut next, mut actions, routed) = route(state, event, plugin_active);
+    if matches!(event, Event::Focus { .. }) {
+        next.sticks.reset();
+    }
     if matches!(event, Event::Focus { .. }) || next.level != level {
         next.refresh_ticker();
     }
     if let Some(release) = released {
         actions.insert(0, release);
     }
+    let undone = actions.contains(&Action::UndoDictation);
+    actions = next.track_dictation(event, actions);
+    actions.extend(next.repeat_undo(event, undone));
     if matches!(event, Event::Focus { .. }) {
         next.bar.event(event);
     }
@@ -430,6 +679,24 @@ pub fn step_with_plugin(mut state: State, event: &Event, plugin_active: bool) ->
         next.bar.resolve(&actions);
     }
     (next, actions, routed)
+}
+
+/// Records the focused window and shows the Guide notice when focus lands on an `app` guide context.
+fn focus_changed(state: &mut State, event: &Event) -> Vec<Action> {
+    let Event::Focus { app_id, title } = event else {
+        return Vec::new();
+    };
+    let mut actions = plugin::expire(state, core::time::Duration::MAX);
+    let changed = state.focused_app_id != *app_id || state.focused_title != *title;
+    state.focused_app_id.clone_from(app_id);
+    state.focused_title.clone_from(title);
+    if changed
+        && focused_context(state).is_some_and(|context| context.guide_mode() == GuideMode::App)
+        && let Ok(text) = tehuti_protocol::Text::new(GUIDE_APP_NOTICE.into())
+    {
+        actions.push(Action::Notice { text });
+    }
+    actions
 }
 
 fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Action>, bool) {
@@ -440,10 +707,8 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         }
         return (state, actions, false);
     }
-    if let Event::Focus { app_id, title } = event {
-        let actions = plugin::expire(&mut state, core::time::Duration::MAX);
-        state.focused_app_id.clone_from(app_id);
-        state.focused_title.clone_from(title);
+    if matches!(event, Event::Focus { .. }) {
+        let actions = focus_changed(&mut state, event);
         return (state, actions, false);
     }
     if menu_button_release(&mut state, event) {
@@ -470,14 +735,14 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         };
         return (state, actions, false);
     }
+    if let Some((actions, routed)) = stick_modifier(&mut state, event, plugin_active) {
+        return (state, actions, routed);
+    }
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
     }
-    if matches!(
-        event,
-        Event::Button { name, .. } if state.push_to_talk(*name)
-    ) {
-        return (state, Vec::new(), false);
+    if let Some(actions) = talk_or_invoke(&state, event) {
+        return (state, actions, false);
     }
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
         return (state, Vec::new(), true);
@@ -492,8 +757,28 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     (state, actions, false)
 }
 
+/// A push-to-talk press does nothing more. Speech meets the built-in `invoke` verb
+/// ahead of plugin verbs and context phrases; its words snap to the focused and
+/// global contexts' invoke words.
+fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
+    let transcript = match event {
+        Event::Button { name, .. } if state.push_to_talk(*name) => return Some(Vec::new()),
+        Event::Speech { text } => text,
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => return None,
+    };
+    let known = [focused_context(state), global_context(state)]
+        .into_iter()
+        .flatten()
+        .flat_map(|context| context.invoke_words().iter().map(String::as_str))
+        .chain(state.plugin_invoke_words.iter().map(String::as_str));
+    let typed = invoke::slash_command(transcript.as_str(), known)?;
+    tehuti_protocol::Text::new(typed)
+        .ok()
+        .map(|slash| vec![Action::Text { text: slash }])
+}
+
 /// Every exact match in chain order, then the built-in close, then folded
-/// matches, then plurals, then fuzzy, then unmatched dictation.
+/// matches, then plurals, then prefix rules, then fuzzy, then unmatched dictation.
 fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
     focused
         .and_then(|context| context.mapped_speech_action(phrase))
@@ -503,6 +788,7 @@ fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &st
         .or_else(|| global.and_then(|context| context.folded_speech_action(phrase)))
         .or_else(|| focused.and_then(|context| context.plural_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.plural_speech_action(phrase)))
+        .or_else(|| prefix_speech_action(focused, global, phrase))
         .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.action))
         .or_else(|| focused.and_then(|context| context.unmatched_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.unmatched_speech_action(phrase)))
@@ -511,6 +797,14 @@ fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &st
                 .ok()
                 .map(|notice| Action::Notice { text: notice })
         })
+}
+
+/// The `text_after` rule of the focused context, else of the global one.
+fn prefix_speech_action(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
+    focused
+        .and_then(|context| context.prefix_speech_action(phrase))
+        .or_else(|| global.and_then(|context| context.prefix_speech_action(phrase)))
+        .flatten()
 }
 
 /// Whether a context maps the phrase exactly, folded or by plural.
@@ -531,7 +825,12 @@ fn spoken_key_actions(state: &State, event: &Event) -> Option<Vec<Action>> {
     {
         return None;
     }
-    spoken_keys::actions(text.as_str())
+    let actions = spoken_keys::actions(text.as_str())?;
+    // A prefix rule types what is not a key sequence; key sequences keep working.
+    let unknown_key = matches!(actions.as_slice(), [Action::Notice { .. }]);
+    (!unknown_key
+        || prefix_speech_action(focused_context(state), global_context(state), text.as_str()).is_none())
+    .then_some(actions)
 }
 
 /// Whether the focused context maps the pressed button, which then replaces the global layer.
@@ -540,6 +839,47 @@ fn focused_maps(state: &State, event: &Event) -> bool {
         return false;
     };
     focused_context(state).is_some_and(|context| context.action_for(*name).is_some())
+}
+
+/// A face button named by `[sticks]` `with` gates stick mappings while held; a tap
+/// without a stick move fires its own action on release, as press and release.
+fn stick_modifier(state: &mut State, event: &Event, plugin_active: bool) -> Option<(Vec<Action>, bool)> {
+    let Event::Button { name, state: button } = event else {
+        return None;
+    };
+    if state.sticks.replaying() {
+        return None;
+    }
+    match button {
+        ButtonState::Pressed => {
+            if !focused_context(state).is_some_and(|context| context.stick_modifier(*name)) {
+                return None;
+            }
+            state.sticks.press_modifier(*name);
+            state.refresh_ticker();
+            Some((Vec::new(), false))
+        }
+        ButtonState::Released => {
+            if !state.sticks.holds(*name) {
+                return None;
+            }
+            let tapped = state.sticks.release_modifier(*name);
+            state.refresh_ticker();
+            if !tapped {
+                return Some((Vec::new(), false));
+            }
+            state.sticks.set_replaying(true);
+            let press = Event::Button {
+                name: *name,
+                state: ButtonState::Pressed,
+            };
+            let (mut next, mut actions, routed) = route(core::mem::take(state), &press, plugin_active);
+            next.sticks.set_replaying(false);
+            actions.extend(next.release_held_button(*name));
+            *state = next;
+            Some((actions, routed))
+        }
+    }
 }
 
 /// A `hold = true` mapping presses its key until the button's release.
@@ -617,6 +957,9 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
                     })
                     .flatten();
             }
+        }
+        if state.level == Level::App && unit_verbs::is_scratch_that(phrase) {
+            return Some(Action::UndoDictation);
         }
         let focused = focused_context(state);
         let global = global_context(state);
@@ -759,7 +1102,13 @@ fn menu_input(state: &mut State, event: &Event) -> Option<menu::Command> {
 }
 
 fn guide_button(state: &mut State, button_state: ButtonState) {
+    // In "app" mode Guide belongs to the application; only the escape chord still watches it.
+    let ours = state.guide_mode() != GuideMode::App;
     match button_state {
+        ButtonState::Pressed if !ours => {
+            let _held = state.guide_held.get_or_insert(core::time::Duration::ZERO);
+        }
+        ButtonState::Released if !ours => state.guide_held = None,
         ButtonState::Pressed => {
             if state.menu.take().is_some() {
                 state.guide_tap = None;
@@ -828,7 +1177,9 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             name:
                 name @ (ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight),
             state: button_state,
-        } if state.guide_held.is_some() || state.chord_buttons.contains(name) => {
+        } if (state.guide_held.is_some() && state.guide_mode() != GuideMode::App)
+            || state.chord_buttons.contains(name) =>
+        {
             Some(guide_dpad(state, *name, *button_state))
         }
         Event::Button {
@@ -873,15 +1224,19 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     }
 }
 
+pub mod invoke;
 pub mod secret;
 pub mod shadowing;
 pub mod speech;
 pub mod tool_words;
 pub mod unit_verbs;
+pub mod verbs;
 
 pub mod plugin;
 
 pub mod dispatch;
+
+pub mod tiles;
 
 pub mod controller;
 
@@ -890,8 +1245,10 @@ pub mod windows;
 pub mod layout;
 pub mod layout_trace;
 
+pub mod audio_source;
 pub mod bar;
 pub mod overlay;
+pub mod ownership;
 pub mod pad;
 pub mod ticker;
 pub mod vpad;
@@ -906,4 +1263,5 @@ mod spoken_keys;
 pub mod adjuster;
 pub mod launcher;
 
+pub mod stick_actions;
 pub mod tap_hold;

@@ -13,7 +13,7 @@ use smithay::{
         session::{Event, Session, libseat::LibSeatSession},
         udev::{UdevBackend, primary_gpu},
     },
-    output::{Output, PhysicalProperties, Subpixel},
+    output::Output,
     reexports::{
         calloop::{EventLoop, RegistrationToken},
         drm::control::{Device, Mode, ModeTypeFlags, connector, framebuffer},
@@ -27,6 +27,8 @@ use tracing::{info, trace, warn};
 
 struct Tty {
     keyboard: tehuti::backend::EscapeKeyboard,
+    /// Whether a key arrived since the last device removal, so the first one after a re-attach is logged.
+    keyboard_seen: bool,
     libinput: smithay::reexports::input::Libinput,
     scanout: Option<Scanout>,
     device: DrmDevice,
@@ -120,7 +122,7 @@ pub(crate) fn insert(
     let path = primary_gpu(session.seat())?
         .or_else(|| udev.device_list().next().map(|(_, path)| path.to_owned()))
         .ok_or("no DRM device on seat")?;
-    let (initialized_tty, drm_notifier) = create_output(session, &path, display, compositor)?;
+    let (initialized_tty, drm_notifier) = create_output_reporting_busy(session, path, display, compositor)?;
     let tty = Rc::new(RefCell::new(initialized_tty));
     let seat_token = insert_seat(event_loop, notifier, &tty)?;
     let keyboard_token = insert_keyboard(event_loop, &tty)?;
@@ -128,7 +130,6 @@ pub(crate) fn insert(
     let frames = tehuti::frame_recovery::Driver::new(&frames_handle, &tty, event_loop.get_signal());
     let flip_tty = tty.clone();
     let flip_frames = frames.clone();
-    let flip_stop = event_loop.get_signal();
     let drm_token = event_loop
         .handle()
         .insert_source(drm_notifier, move |event, _, data| match event {
@@ -140,8 +141,12 @@ pub(crate) fn insert(
                 flip_frames.render(data, true);
             }
             DrmEvent::Error(error) => {
-                warn!(%error, "DRM event failed");
-                flip_stop.stop();
+                // A lost flip event must not wedge scanout; the next frame retries it.
+                warn!(%error, "DRM event failed; continuing");
+                if let Some(scanout) = &mut flip_tty.borrow_mut().scanout {
+                    scanout.pending = false;
+                }
+                flip_frames.render(data, true);
             }
         })?;
     let udev_token = insert_device_watch(event_loop, udev, &tty)?;
@@ -257,7 +262,14 @@ fn insert_keyboard(
             if !data.seat_active {
                 return;
             }
+            if let InputEvent::DeviceAdded { device } = &event {
+                info!(name = %smithay::backend::input::Device::name(device), "input device added");
+            }
             if let InputEvent::Keyboard { event } = event {
+                if !keyboard_tty.borrow().keyboard_seen {
+                    info!("keyboard input resumed");
+                    keyboard_tty.borrow_mut().keyboard_seen = true;
+                }
                 let key = u32::from(event.key_code()).saturating_sub(8);
                 let escape = keyboard_tty
                     .borrow_mut()
@@ -279,7 +291,9 @@ fn insert_keyboard(
                         data.pacing.input_arrived = true;
                     }
                 }
-            } else if matches!(event, InputEvent::DeviceRemoved { .. }) {
+            } else if let InputEvent::DeviceRemoved { device } = &event {
+                info!(name = %smithay::backend::input::Device::name(device), "input device removed");
+                keyboard_tty.borrow_mut().keyboard_seen = false;
                 keyboard_tty.borrow_mut().keyboard = tehuti::backend::EscapeKeyboard::default();
                 data.compositor.release_host_keys();
             } else {
@@ -324,6 +338,8 @@ fn insert_seat(
                     tty.device.pause();
                     if let Some(scanout) = &mut tty.scanout {
                         scanout.pending = false;
+                        // Time away from the seat must not count as failed frames.
+                        scanout.recovery.reset();
                     }
                 }
                 Event::ActivateSession => match tty.device.activate(true) {
@@ -348,30 +364,38 @@ fn insert_seat(
 }
 
 /// The DRM output at its mode and `TEHUTI_SCALE`, advertised to clients.
-fn drm_output(display: &DisplayHandle, mode: Mode) -> (Output, GlobalId) {
-    let output = Output::new(
-        "tehuti-drm".into(),
-        PhysicalProperties {
-            size: (0, 0).into(),
-            subpixel: Subpixel::Unknown,
-            make: "Tehuti".into(),
-            model: "DRM".into(),
-        },
-    );
-    let global = output.create_global::<Compositor>(display);
-    output.change_current_state(
-        Some(mode.into()),
-        Some(Transform::Normal),
-        None,
-        Some((0, 0).into()),
-    );
-    tehuti::scale::apply(
-        &output,
+fn drm_output(
+    display: &DisplayHandle,
+    previous: Option<(Output, GlobalId)>,
+    mode: Mode,
+) -> (Output, GlobalId) {
+    tehuti::drm_hotplug::publish_output(
+        display,
+        previous,
         mode.into(),
         tehuti::scale::from_env(i32::from(mode.size().0)),
-    );
-    output.set_preferred(mode.into());
-    (output, global)
+    )
+}
+
+fn create_output_reporting_busy(
+    session: LibSeatSession,
+    path: std::path::PathBuf,
+    display: &DisplayHandle,
+    compositor: &mut Compositor,
+) -> Result<(Tty, smithay::backend::drm::DrmDeviceNotifier), Box<dyn Error>> {
+    match create_output(session, &path, display, compositor) {
+        Ok(created) => {
+            compositor.set_display_holders("/proc".into(), path);
+            Ok(created)
+        }
+        Err(error) if tehuti::drm_holders::is_busy(&*error) => {
+            Err(Box::new(tehuti::drm_holders::DeviceBusy {
+                holders: tehuti::drm_holders::find(std::path::Path::new("/proc"), &path),
+                device: path,
+            }))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn create_output(
@@ -393,7 +417,7 @@ fn create_output(
     advertise(&mut renderer, display, compositor);
     let mode = surface.pending_mode();
 
-    let (output, global) = drm_output(display, mode);
+    let (output, global) = drm_output(display, None, mode);
     compositor.space.map_output(&output, (0, 0));
     compositor.output = Some(output.clone());
     compositor.configure_display_modes(
@@ -408,6 +432,7 @@ fn create_output(
     let scanout = Scanout::new(surface, renderer, remaining_modes, listed_modes, output, global);
     let tty = Tty {
         keyboard: tehuti::backend::EscapeKeyboard::default(),
+        keyboard_seen: false,
         libinput,
         scanout: Some(scanout),
         device,
@@ -434,15 +459,39 @@ struct ConnectedSurface {
     listed_modes: Vec<Mode>,
 }
 
+/// Connected connectors in the order a rescan tries them: the configured fallback comes last.
+fn connected_in_try_order(
+    device: &DrmDevice,
+    resources: &smithay::reexports::drm::control::ResourceHandles,
+) -> Result<Vec<(connector::Handle, connector::Info)>, Box<dyn Error>> {
+    let mut connected = Vec::new();
+    for handle in resources.connectors() {
+        let connector = device.get_connector(*handle, true)?;
+        if connector.state() == connector::State::Connected {
+            connected.push((*handle, connector));
+        }
+    }
+    let names: Vec<String> = connected
+        .iter()
+        .map(|(_, connector)| {
+            tehuti::output_choice::connector_name(connector.interface(), connector.interface_id())
+        })
+        .collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let fallback = tehuti::output_choice::fallback_from_env();
+    let mut pool: Vec<_> = connected.into_iter().map(Some).collect();
+    Ok(tehuti::output_choice::try_order(&name_refs, fallback.as_deref())
+        .into_iter()
+        .filter_map(|slot| pool.get_mut(slot).and_then(Option::take))
+        .collect())
+}
+
 fn connected_surface(device: &mut DrmDevice) -> Result<ConnectedSurface, Box<dyn Error>> {
     let request = std::env::var("TEHUTI_MODE").ok();
     let parsed = request.as_deref().and_then(mode::Request::parse);
     let resources = device.resource_handles()?;
-    for handle in resources.connectors() {
-        let connector = device.get_connector(*handle, true)?;
-        if connector.state() != connector::State::Connected {
-            continue;
-        }
+    let connected = connected_in_try_order(device, &resources)?;
+    for (handle, connector) in &connected {
         let listed: Vec<_> = connector
             .modes()
             .iter()
@@ -521,13 +570,11 @@ impl Tty {
         if let Err(error) = self.device.reset_state() {
             warn!(%error, "DRM state reset failed during connector rescan");
         }
-        if let Some(scanout) = self.scanout.take() {
+        // The global stays advertised across the rescan: clients (the X11 helper) must not see it go.
+        let previous = self.scanout.take().map(|scanout| {
             data.compositor.space.unmap_output(&scanout.output);
-            data.display
-                .handle()
-                .remove_global::<Compositor>(scanout.global.clone());
-            drop(scanout);
-        }
+            (scanout.output.clone(), scanout.global)
+        });
         data.compositor.output = None;
         data.compositor.configure_display_modes(Vec::new(), 0);
         match connected_surface(&mut self.device) {
@@ -539,7 +586,7 @@ impl Tty {
             }) => {
                 advertise(&mut renderer, &data.display.handle(), &mut data.compositor);
                 let mode = surface.pending_mode();
-                let (output, global) = drm_output(&data.display.handle(), mode);
+                let (output, global) = drm_output(&data.display.handle(), previous, mode);
                 data.compositor.space.map_output(&output, (0, 0));
                 data.compositor.output = Some(output.clone());
                 data.compositor.configure_display_modes(
@@ -560,6 +607,9 @@ impl Tty {
                 ));
             }
             Err(error) => {
+                if let Some((_, global)) = previous {
+                    data.display.handle().remove_global::<Compositor>(global);
+                }
                 warn!(%error, "DRM connector rescan found no usable output; waiting for a device change");
             }
         }
@@ -685,7 +735,7 @@ impl Scanout {
         self.modeset = true;
         // Keep the confirmed scanout alive until the preview is confirmed or reverted.
         let retained = self.rollback.take();
-        match self.render_frame(data) {
+        match self.render_frame(data, device) {
             Ok(()) => {
                 self.recovery.reset();
                 if !reverting {
@@ -826,7 +876,7 @@ impl Scanout {
         let mut mode_error = None;
         let result = mode::retry(
             &mut (&mut *self, &mut *data),
-            |(tty, data)| tty.render_frame(data),
+            |(tty, data)| tty.render_frame(data, device),
             |(tty, data), error| {
                 tty.damage = OutputDamageTracker::from_output(&tty.output);
                 if tty.recovery.fallback_attempted() || tty.reject_preview(data)? || !tty.modeset {
@@ -841,7 +891,8 @@ impl Scanout {
         let mut fall_back = false;
         let retry = self
             .recovery
-            .finish(std::time::Instant::now(), result, || fall_back = true)?;
+            .finish(std::time::Instant::now(), result, || fall_back = true)
+            .inspect_err(|_| data.frames = crate::Frames::Failed)?;
         if fall_back {
             self.restore_mode(device, self.confirmed_mode, data);
             self.modeset = true;
@@ -850,19 +901,24 @@ impl Scanout {
         Ok(retry)
     }
 
-    fn render_frame(&mut self, data: &mut LoopData) -> Result<(), Box<dyn Error>> {
+    fn render_frame(&mut self, data: &mut LoopData, device: &DrmDevice) -> Result<(), Box<dyn Error>> {
         let started = std::time::Instant::now();
-        let drawn = render::draw(
+        let (drawn, switched) = render::draw(
             &mut self.renderer,
             self.next,
-            render::Pass {
+            &mut render::Pass {
                 drawn: &mut self.drawn,
                 full: self.modeset,
             },
             &self.output,
             &mut self.damage,
             &data.compositor,
+            (device.device_fd(), &self.surface),
         )?;
+        if switched {
+            advertise(&mut self.renderer, &data.display.handle(), &mut data.compositor);
+            self.modeset = true;
+        }
         self.statistics.count(drawn.is_some());
         let Some(drawn) = drawn else {
             trace!(elapsed = ?started.elapsed(), "DRM frame unchanged");

@@ -102,4 +102,22 @@ mod contract {
             assert!(parse_message(line.as_bytes()).is_err(), "{line}");
         }
     }
+
+    #[test]
+    fn invoke_words_are_a_notice_of_slash_command_names() {
+        let good = r#"{"jsonrpc":"2.0","method":"invoke.words","params":{"words":["usage","code-review"]}}"#;
+        assert!(parse_message(good.as_bytes()).is_ok(), "{good}");
+        let many = format!(
+            r#"{{"jsonrpc":"2.0","method":"invoke.words","params":{{"words":[{}]}}}}"#,
+            vec![r#""word""#; 129].join(",")
+        );
+        for line in [
+            r#"{"jsonrpc":"2.0","method":"invoke.words","params":{"words":["Bad Word"]}}"#,
+            r#"{"jsonrpc":"2.0","method":"invoke.words","params":{"words":["a--b"]}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"invoke.words","params":{"words":[]}}"#,
+            many.as_str(),
+        ] {
+            assert!(parse_message(line.as_bytes()).is_err(), "{line}");
+        }
+    }
 }

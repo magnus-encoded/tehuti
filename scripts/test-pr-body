@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Tests for scripts/pr-body, with a stub gh on PATH.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+mkdir "$tmp/bin"
+cat > "$tmp/bin/gh" <<'STUB'
+#!/bin/sh
+case "$3" in 1) echo OPEN;; 2) echo CLOSED;; *) exit 1;; esac
+STUB
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH"
+fail=0
+run() { # expected body
+    printf '%s\n' "$2" > "$tmp/body.md"
+    scripts/pr-body "$tmp/body.md" >/dev/null 2>&1; got=$?
+    if { [ "$1" = ok ] && [ $got -ne 0 ]; } || { [ "$1" = bad ] && [ $got -eq 0 ]; }; then
+        echo "FAIL ($1): $2"; fail=1; fi
+}
+run ok 'Closes #1.'
+run ok 'Closes #1'
+run ok 'Fixes #1, and more.'
+run bad 'Closes #1-fix.'
+run bad 'Closes #1x'
+run bad 'Closes #2.'
+run bad 'Closes #3.'
+run bad 'No reference.'
+run bad "Closes #1. $(yes word | head -n 130 | tr '\n' ' ')"
+exit $fail

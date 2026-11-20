@@ -1,5 +1,8 @@
 //! Destination discovery, launcher views, invitation state and launched children.
-use crate::destinations::{Destination, Route};
+use crate::{
+    destinations::{Destination, Route},
+    launch::{Failure, Launch, Launches},
+};
 use std::time::Instant;
 use tehuti_core::unit_verbs::DestinationKind;
 
@@ -35,6 +38,7 @@ pub fn destinations(
                 extra_names: entry.extra_names.clone(),
                 route: description,
                 open,
+                settings: entry.settings,
                 focused: route
                     .context
                     .as_deref()
@@ -114,7 +118,7 @@ pub(crate) enum InvitationView {
 
 #[derive(Debug)]
 pub(crate) struct Session {
-    children: Children,
+    children: Launches,
     desktop_entries: crate::desktop::EntryCache,
     paths: crate::destinations::Paths,
     table: crate::destinations::Table,
@@ -126,7 +130,7 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn new() -> std::io::Result<Self> {
         Ok(Self {
-            children: Children::default(),
+            children: Launches::default(),
             desktop_entries: crate::desktop::EntryCache::new()?,
             paths: crate::destinations::Paths::default(),
             table: crate::destinations::Table::default(),
@@ -181,6 +185,8 @@ impl Session {
         true
     }
 
+    /// Builds the launcher view. It rewrites the routes through `rows`, so
+    /// indices from an earlier view are stale.
     pub(crate) fn show(
         &mut self,
         request: &tehuti_core::unit_verbs::LauncherRequest,
@@ -235,6 +241,8 @@ impl Session {
         launcher
     }
 
+    /// Rewrites the routes that `choose` and `route` index into; call it
+    /// whenever the rows shown change.
     pub(crate) fn rows(
         &mut self,
         kind: DestinationKind,
@@ -291,16 +299,11 @@ impl Session {
         let result = socket
             .ok_or_else(|| "no compositor socket".to_owned())
             .and_then(|socket| {
-                if self.children.is_full() {
-                    return Err("too many pending launches".into());
-                }
-                crate::desktop::launch(entry, socket)
+                let launch = crate::desktop::launch_for(entry, socket)?.labelled(&self.display_name(entry));
+                self.children.start(&launch, Instant::now())
             });
         match result {
-            Ok(child) => {
-                self.children.track(child);
-                true
-            }
+            Ok(()) => true,
             Err(error) => {
                 tracing::warn!(%error, "desktop launch failed");
                 false
@@ -308,24 +311,33 @@ impl Session {
         }
     }
 
+    /// The name the launcher shows for a desktop entry id, else the id without its suffix.
+    fn display_name(&self, entry: &str) -> String {
+        use crate::destinations::Target;
+        self.table
+            .entries()
+            .iter()
+            .find(|candidate| {
+                candidate.routes.iter().any(|route| {
+                    route
+                        .steps
+                        .iter()
+                        .any(|step| matches!(&step.target, Target::Desktop(value) if value == entry))
+                })
+            })
+            .map_or_else(
+                || entry.strip_suffix(".desktop").unwrap_or(entry).to_owned(),
+                |candidate| candidate.name.clone(),
+            )
+    }
+
     pub(crate) fn launch_url(&mut self, url: &str, socket: Option<&std::ffi::OsStr>) -> bool {
         let Some(socket) = socket else {
             return false;
         };
-        if self.children.is_full() {
-            return false;
-        }
-        match crate::client_env::command(std::ffi::OsStr::new("xdg-open"), socket)
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(child) => {
-                self.children.track(child);
-                true
-            }
+        let launch = Launch::new("xdg-open", "Link").arg(url).on_socket(socket);
+        match self.children.start(&launch, Instant::now()) {
+            Ok(()) => true,
             Err(error) => {
                 tracing::warn!(%error, "launcher URL failed");
                 false
@@ -334,57 +346,13 @@ impl Session {
     }
 
     pub(crate) fn shutdown(&mut self) {
-        self.children.terminate();
+        self.children = Launches::default();
     }
 
-    pub(crate) fn poll(&mut self) -> bool {
-        let failed = self.children.poll();
+    pub(crate) fn poll(&mut self, now: Instant) -> Vec<Failure> {
+        let failed = self.children.poll(now);
         self.desktop_entries.poll();
         failed
-    }
-}
-
-#[derive(Debug, Default)]
-struct Children(Vec<std::process::Child>);
-
-impl Children {
-    const fn is_full(&self) -> bool {
-        self.0.len() >= 16
-    }
-    fn track(&mut self, child: std::process::Child) {
-        self.0.push(child);
-    }
-    fn poll(&mut self) -> bool {
-        let mut failed = false;
-        self.0.retain_mut(|child| match child.try_wait() {
-            Ok(None) => true,
-            Ok(Some(status)) => {
-                failed |= !status.success();
-                false
-            }
-            Err(error) => {
-                tracing::warn!(%error, "desktop launcher wait failed");
-                failed = true;
-                let _killed = child.kill();
-                let _reaped = child.wait();
-                false
-            }
-        });
-        failed
-    }
-}
-
-impl Children {
-    fn terminate(&mut self) {
-        for mut child in self.0.drain(..) {
-            crate::shutdown::terminate(&mut child, false);
-        }
-    }
-}
-
-impl Drop for Children {
-    fn drop(&mut self) {
-        self.terminate();
     }
 }
 

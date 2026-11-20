@@ -14,6 +14,7 @@ mod tests {
 
     /// Every frame each virtual pad sent, and how many existed at once.
     #[derive(Debug, Default)]
+    #[expect(clippy::struct_excessive_bools, reason = "independent fault switches")]
     struct Log {
         frames: Vec<Sent>,
         live: usize,
@@ -22,6 +23,10 @@ mod tests {
         refuse: bool,
         /// The physical pad is unplugged: reads fail with ENODEV.
         gone: bool,
+        /// Reads fail with this errno instead, when set.
+        read_errno: Option<i32>,
+        /// Writes to a virtual pad fail.
+        write_fails: bool,
         unsigned_axes: bool,
         grabs: usize,
         ungrabs: usize,
@@ -31,6 +36,9 @@ mod tests {
 
     impl MirrorSink for Sink {
         fn emit(&mut self, frame: &[InputEvent]) -> io::Result<()> {
+            if self.1.borrow().write_fails {
+                return Err(io::Error::from_raw_os_error(5));
+            }
             let frame = frame
                 .iter()
                 .map(|event| (event.event_type().0, event.code(), event.value()))
@@ -53,6 +61,7 @@ mod tests {
         raw: Rc<RefCell<VecDeque<InputEvent>>>,
         held: Rc<RefCell<Vec<u16>>>,
         hat: Rc<core::cell::Cell<i32>>,
+        rest: Rc<core::cell::Cell<i32>>,
         log: Rc<RefCell<Log>>,
     }
 
@@ -86,7 +95,7 @@ mod tests {
                 ),
                 (
                     AbsoluteAxisCode::ABS_X,
-                    evdev::AbsInfo::new(0, -100, 100, 0, 0, 0),
+                    evdev::AbsInfo::new(self.rest.get(), -100, 100, 0, 0, 0),
                 ),
                 (AbsoluteAxisCode::ABS_Z, evdev::AbsInfo::new(0, 0, 255, 0, 0, 0)),
             ])
@@ -113,6 +122,9 @@ mod tests {
             if self.log.borrow().gone {
                 return Err(io::Error::from_raw_os_error(19));
             }
+            if let Some(errno) = self.log.borrow().read_errno {
+                return Err(io::Error::from_raw_os_error(errno));
+            }
             let mut raw = self.raw.borrow_mut();
             let count = raw.len().min(2);
             Ok(raw.drain(..count).collect())
@@ -123,21 +135,26 @@ mod tests {
         raw: Rc<RefCell<VecDeque<InputEvent>>>,
         held: Rc<RefCell<Vec<u16>>>,
         hat: Rc<core::cell::Cell<i32>>,
+        rest: Rc<core::cell::Cell<i32>>,
     }
 
     fn pad(name: &'static str, log: &Rc<RefCell<Log>>) -> (EvdevPad<Synthetic>, Handles) {
         let raw = Rc::default();
         let held = Rc::default();
         let hat = Rc::default();
+        let rest: Rc<core::cell::Cell<i32>> = Rc::default();
         let device = |queue: &Rc<_>, keys: &Rc<_>| Synthetic {
             name,
             raw: Rc::clone(queue),
             held: Rc::clone(keys),
             hat: Rc::clone(&hat),
+            rest: Rc::clone(&rest),
             log: Rc::clone(log),
         };
-        let pad = EvdevPad::new(device(&raw, &held), device(&raw, &held), DpadHat::default());
-        (pad, Handles { raw, held, hat })
+        let mut pad = EvdevPad::new(device(&raw, &held), device(&raw, &held), DpadHat::default());
+        // These tests follow raw values through the mirror; the deadzone has its own tests below.
+        pad.set_deadzone(0);
+        (pad, Handles { raw, held, hat, rest })
     }
 
     fn queue(handles: &Handles, code: KeyCode, value: i32) {
@@ -365,6 +382,71 @@ mod tests {
         KeyCode::BTN_DPAD_LEFT,
         KeyCode::BTN_DPAD_RIGHT,
     ];
+
+    /// The `ABS_X` the application sees after the pad sends `raw` with this deadzone.
+    fn forwarded_x(deadzone: u16, raw: i32) -> Option<i32> {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut controller, handles) = pad("pad", &log);
+        controller.set_deadzone(deadzone);
+        assert!(controller.set_mirror(true, &|_| false).unwrap());
+        handles
+            .raw
+            .borrow_mut()
+            .extend(axis(AbsoluteAxisCode::ABS_X, raw));
+        controller.pump_mirror(&mut |_, _| false).unwrap();
+        shown(&log.borrow())
+            .get(&(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0))
+            .copied()
+    }
+
+    #[test]
+    fn a_pad_resting_off_centre_reads_as_centred_inside_its_deadzone_and_still_reaches_the_ends() {
+        let centred = forwarded_x(250, 0);
+        assert!(centred.is_some());
+        assert_eq!(
+            forwarded_x(250, 20),
+            centred,
+            "20% off centre is inside a 25% deadzone"
+        );
+        assert_ne!(
+            forwarded_x(0, 20),
+            centred,
+            "without a deadzone the drift passes through"
+        );
+        assert_eq!(
+            forwarded_x(250, 100),
+            forwarded_x(0, 100),
+            "full travel still reaches the end"
+        );
+    }
+
+    #[test]
+    fn a_measured_rest_is_applied_to_what_the_game_is_sent() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut controller, handles) = pad("pad", &log);
+        handles.rest.set(20);
+        assert!(controller.set_mirror(true, &|_| false).unwrap());
+        // Without a request the saved rest is used and nothing is measured.
+        assert_eq!(controller.calibrate(0, [0; 4], false).unwrap(), None);
+        // The tile asked: the pad measures its rest, 20 of a 100 half travel.
+        assert_eq!(
+            controller.calibrate(0, [0; 4], true).unwrap(),
+            Some([200, 0, 0, 0])
+        );
+        handles.raw.borrow_mut().extend(axis(AbsoluteAxisCode::ABS_X, 20));
+        controller.pump_mirror(&mut |_, _| false).unwrap();
+        let resting = shown(&log.borrow())
+            .get(&(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0))
+            .copied();
+        assert_eq!(
+            resting,
+            forwarded_x(0, 0),
+            "the drifted rest reaches the game as the middle"
+        );
+        // A later start applies the saved rest without measuring.
+        let (mut again, _) = pad("pad", &log);
+        assert_eq!(again.calibrate(0, [200, 0, 0, 0], false).unwrap(), None);
+    }
 
     #[test]
     fn mirror_drops_non_gamepad_input_from_held_state_and_live_frames() {
@@ -672,9 +754,302 @@ mod tests {
     }
     }
 
+    #[test]
+    fn guide_taps_in_a_passthrough_context_follow_the_four_step_level_cycle() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor_with(&display.handle(), "['record']", "guide = 'both'");
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
+        // (forwarded to the stream, local level afterwards): local starts at the app level.
+        let steps = [(true, false), (false, true), (true, false), (false, true)];
+        for (step, (forwarded, app_level)) in steps.into_iter().enumerate() {
+            let guide_frames = |sent: &Log| {
+                sent.frames
+                    .iter()
+                    .filter(|(_, frame)| frame.iter().any(|(_, code, _)| *code == KeyCode::BTN_MODE.code()))
+                    .count()
+            };
+            let before = guide_frames(&log.borrow());
+            for value in [1, 0] {
+                queue(&handles, KeyCode::BTN_MODE, value);
+                pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                    .unwrap();
+                route(&mut compositor, &mut pad).unwrap();
+            }
+            let sent = guide_frames(&log.borrow()) > before;
+            assert_eq!(sent, forwarded, "step {step}: forwarding");
+            assert_eq!(
+                compositor.pad_passthrough(),
+                app_level,
+                "step {step}: local level"
+            );
+        }
+    }
+
+    #[test]
+    fn a_guide_tap_into_the_columns_level_never_reaches_a_game_that_does_not_ask_for_it() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor(&display.handle(), "['record']");
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
+        for (step, app_level) in [false, true, false, true].into_iter().enumerate() {
+            for value in [1, 0] {
+                queue(&handles, KeyCode::BTN_MODE, value);
+                pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                    .unwrap();
+                route(&mut compositor, &mut pad).unwrap();
+            }
+            assert_eq!(
+                compositor.pad_passthrough(),
+                app_level,
+                "step {step}: local level"
+            );
+        }
+        assert!(
+            never_sent(&log.borrow(), KeyCode::BTN_MODE),
+            "Guide stays with Tehuti"
+        );
+    }
+
+    #[test]
+    fn in_app_mode_guide_reaches_only_the_game_and_the_escape_chord_stays_with_tehuti() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor_with(&display.handle(), "['record']", "guide = 'app'");
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
+        for (key, value) in [
+            (KeyCode::BTN_MODE, 1),
+            (KeyCode::BTN_MODE, 0),
+            (KeyCode::BTN_MODE, 1),
+            (KeyCode::BTN_START, 1),
+            (KeyCode::BTN_START, 0),
+            (KeyCode::BTN_MODE, 0),
+        ] {
+            queue(&handles, key, value);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(&mut compositor, &mut pad).unwrap();
+        }
+        assert!(compositor.pad_passthrough(), "Tehuti ignored the Guide taps");
+        assert_eq!(
+            values(&log.borrow(), KeyCode::BTN_MODE),
+            vec![1, 0, 1, 0],
+            "the game got Guide"
+        );
+        assert!(
+            never_sent(&log.borrow(), KeyCode::BTN_START),
+            "the chord's Start is never forwarded"
+        );
+    }
+
+    #[test]
+    fn the_chord_start_stays_out_whichever_button_is_released_first() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        for guide_first in [true, false] {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = talk_compositor_with(&display.handle(), "['record']", "guide = 'app'");
+            let log = Rc::new(RefCell::new(Log::default()));
+            let (mut pad, handles) = pad("game", &log);
+            assert!(
+                pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                    .unwrap()
+            );
+            let releases = if guide_first {
+                [(KeyCode::BTN_MODE, 0), (KeyCode::BTN_START, 0)]
+            } else {
+                [(KeyCode::BTN_START, 0), (KeyCode::BTN_MODE, 0)]
+            };
+            // Both presses arrive in one batch, before the core has seen either.
+            queue(&handles, KeyCode::BTN_MODE, 1);
+            queue(&handles, KeyCode::BTN_START, 1);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(&mut compositor, &mut pad).unwrap();
+            for (key, value) in releases {
+                queue(&handles, key, value);
+                pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                    .unwrap();
+                route(&mut compositor, &mut pad).unwrap();
+            }
+            assert!(
+                never_sent(&log.borrow(), KeyCode::BTN_START),
+                "guide_first {guide_first}: neither Start press nor release reaches the stream"
+            );
+            assert_eq!(values(&log.borrow(), KeyCode::BTN_MODE), vec![1, 0]);
+        }
+    }
+
+    #[test]
+    fn a_long_guide_hold_at_the_app_level_reaches_the_game_as_a_held_press() {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor_with(&display.handle(), "['record']", "guide = 'both'");
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
+        let guide_values = |sent: &Log| -> Vec<i32> {
+            sent.frames
+                .iter()
+                .flat_map(|(_, frame)| frame.iter())
+                .filter(|(_, code, _)| *code == KeyCode::BTN_MODE.code())
+                .map(|(_, _, value)| *value)
+                .collect()
+        };
+        queue(&handles, KeyCode::BTN_MODE, 1);
+        pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+            .unwrap();
+        route(&mut compositor, &mut pad).unwrap();
+        // Tehuti's own hold handling runs while the press stays down; the stream sees only the press.
+        for _ in 0..3 {
+            compositor.advance_time();
+        }
+        assert_eq!(
+            guide_values(&log.borrow()),
+            vec![1],
+            "press forwarded at once, held"
+        );
+        queue(&handles, KeyCode::BTN_MODE, 0);
+        pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+            .unwrap();
+        route(&mut compositor, &mut pad).unwrap();
+        assert_eq!(
+            guide_values(&log.borrow()),
+            vec![1, 0],
+            "release forwarded on release"
+        );
+    }
+
+    fn values(log: &Log, key: KeyCode) -> Vec<i32> {
+        log.frames
+            .iter()
+            .flat_map(|(_, frame)| frame.iter())
+            .filter(|(kind, code, _)| *kind == EventType::KEY.0 && *code == key.code())
+            .map(|(_, _, value)| *value)
+            .collect()
+    }
+
+    /// Plays `steps` (key, value) through a mirrored pad in a passthrough context and returns what the game saw.
+    fn play(steps: &[(KeyCode, i32)]) -> Rc<RefCell<Log>> {
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::{input::route, state::Compositor};
+
+        let display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = talk_compositor(&display.handle(), "['record']");
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut pad, handles) = pad("game", &log);
+        assert!(
+            pad.set_mirror(true, &|button| compositor.virtual_pad_consumed(button))
+                .unwrap()
+        );
+        for (key, value) in steps {
+            queue(&handles, *key, *value);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(&mut compositor, &mut pad).unwrap();
+        }
+        log
+    }
+
+    #[test]
+    fn menu_and_view_together_tap_guide_on_the_stream() {
+        for order in [
+            [
+                (KeyCode::BTN_START, 1),
+                (KeyCode::BTN_SELECT, 1),
+                (KeyCode::BTN_SELECT, 0),
+                (KeyCode::BTN_START, 0),
+            ],
+            [
+                (KeyCode::BTN_SELECT, 1),
+                (KeyCode::BTN_START, 1),
+                (KeyCode::BTN_START, 0),
+                (KeyCode::BTN_SELECT, 0),
+            ],
+            [
+                (KeyCode::BTN_START, 1),
+                (KeyCode::BTN_SELECT, 1),
+                (KeyCode::BTN_START, 0),
+                (KeyCode::BTN_SELECT, 0),
+            ],
+        ] {
+            let log = play(&order);
+            let log = log.borrow();
+            assert_eq!(values(&log, KeyCode::BTN_MODE), vec![1, 0]);
+            let (first, second) = (order[0].0, order[1].0);
+            assert_eq!(
+                values(&log, first),
+                vec![1, 0],
+                "the first button is forwarded as normal"
+            );
+            assert!(never_sent(&log, second), "the completing button stays out");
+        }
+    }
+
+    #[test]
+    fn menu_and_view_held_keep_guide_pressed_until_the_chord_ends() {
+        let held = play(&[(KeyCode::BTN_START, 1), (KeyCode::BTN_SELECT, 1)]);
+        assert_eq!(
+            values(&held.borrow(), KeyCode::BTN_MODE),
+            vec![1],
+            "held as long as the chord"
+        );
+        let released = play(&[
+            (KeyCode::BTN_START, 1),
+            (KeyCode::BTN_SELECT, 1),
+            (KeyCode::BTN_SELECT, 0),
+        ]);
+        assert_eq!(values(&released.borrow(), KeyCode::BTN_MODE), vec![1, 0]);
+    }
+
+    #[test]
+    fn menu_or_view_alone_is_forwarded_as_normal() {
+        for key in [KeyCode::BTN_START, KeyCode::BTN_SELECT] {
+            let log = play(&[(key, 1), (key, 0)]);
+            let log = log.borrow();
+            assert_eq!(values(&log, key), vec![1, 0]);
+            assert!(never_sent(&log, KeyCode::BTN_MODE));
+        }
+    }
+
     fn talk_compositor(
         display: &smithay::reexports::wayland_server::DisplayHandle,
         chord: &str,
+    ) -> tehuti::state::Compositor {
+        talk_compositor_with(display, chord, "")
+    }
+
+    fn talk_compositor_with(
+        display: &smithay::reexports::wayland_server::DisplayHandle,
+        chord: &str,
+        extra_pad: &str,
     ) -> tehuti::state::Compositor {
         use tehuti::state::Compositor;
         use tehuti_protocol::Event;
@@ -682,7 +1057,7 @@ mod tests {
         let mut compositor = Compositor::new(display).unwrap();
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(&format!(
-                "app_id = 'game'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\npush_to_talk = {chord}"
+                "app_id = 'game'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\n{extra_pad}\npush_to_talk = {chord}"
             ))
             .unwrap(),
         ]);
@@ -884,6 +1259,78 @@ mod tests {
                 vec![(EventType::KEY.0, KeyCode::BTN_EAST.code(), 1)]
             ))
         );
+    }
+
+    #[test]
+    fn a_virtual_pad_write_error_keeps_the_physical_pad_and_discards_the_virtual_one() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let path = Path::new("/dev/input/event1");
+        let (mut only, handles) = pad("pad", &log);
+        let _sync = sync_mirrors(&mut [(path, &mut only)], true, Some(path), &mut None, &|_| false);
+        log.borrow_mut().write_fails = true;
+        queue(&handles, KeyCode::BTN_SOUTH, 1);
+        let _result = only.pump_mirror(&mut |_, _| false);
+        assert!(!only.lost(), "the physical pad still works");
+        assert!(only.mirror_unavailable());
+        assert!(
+            only.detach_virtual_pad().is_none(),
+            "a possibly broken pad is not kept"
+        );
+    }
+
+    #[test]
+    fn a_read_error_other_than_device_gone_loses_the_pad_and_keeps_the_virtual_pad() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let path = Path::new("/dev/input/event1");
+        let (mut only, _handles) = pad("pad", &log);
+        let _sync = sync_mirrors(&mut [(path, &mut only)], true, Some(path), &mut None, &|_| false);
+        log.borrow_mut().read_errno = Some(5);
+        assert!(only.pump_mirror(&mut |_, _| false).is_err());
+        assert!(only.lost());
+        let kept = only.detach_virtual_pad();
+        assert!(kept.is_some());
+        assert_eq!(log.borrow().live, 1);
+    }
+
+    #[test]
+    fn a_drop_with_no_mirror_and_no_held_button_is_lost_quietly() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut only, _handles) = pad("pad", &log);
+        log.borrow_mut().gone = true;
+        assert!(only.pump_mirror(&mut |_, _| panic!("nothing was held")).is_ok());
+        assert!(only.detach_virtual_pad().is_none());
+    }
+
+    #[test]
+    fn one_of_two_pads_dropping_leaves_the_other_and_one_virtual_pad() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (first_path, second_path) = (Path::new("/dev/input/event1"), Path::new("/dev/input/event2"));
+        let (mut first, _a) = pad("first", &log);
+        let (mut second, handles) = pad("second", &log);
+        let _sync = sync_mirrors(
+            &mut [(first_path, &mut first), (second_path, &mut second)],
+            true,
+            Some(second_path),
+            &mut None,
+            &|_| false,
+        );
+        queue(&handles, KeyCode::BTN_SOUTH, 1);
+        second.pump_mirror(&mut |_, _| false).unwrap();
+        assert_eq!(log.borrow().most_live, 1);
+        log.borrow_mut().read_errno = Some(19);
+        assert!(second.pump_mirror(&mut |_, _| false).is_err());
+        let mut spare = second.detach_virtual_pad();
+        log.borrow_mut().read_errno = None;
+        let _resync = sync_mirrors(
+            &mut [(first_path, &mut first)],
+            true,
+            Some(first_path),
+            &mut spare,
+            &|_| false,
+        );
+        assert!(first.mirrored() && spare.is_none());
+        let log = log.borrow();
+        assert_eq!((log.created, log.live, log.most_live), (1, 1, 1));
     }
 
     #[test]

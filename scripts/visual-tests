@@ -14,7 +14,11 @@ from PIL import Image, ImageChops, ImageEnhance
 ROOT = Path(__file__).resolve().parent.parent
 GOLDENS = ROOT / "tests/visual/goldens"
 PENDING = {"launcher-empty", "launcher-window"}  # #379 owns launcher layout.
-REVIEW = {"menu"}  # Captured for review in the artefact; no golden yet.
+REVIEW = {"menu", "settings-display", "settings-display-font", "settings-input", "settings-input-options", "settings-input-options-end", "settings-input-mics", "settings-input-mics-end", "settings-input-relay", "settings-input-remote"}  # Captured for review in the artefact; no golden yet.
+
+
+# The settings page prints the commit it was built from; ignore that line.
+MASKED = {"settings.png": (820, 180, 1200, 224)}
 
 
 def compare(actual, expected, diff):
@@ -25,6 +29,10 @@ def compare(actual, expected, diff):
         baseline = Image.new("RGB", size)
         current.paste(captured.convert("RGB"))
         baseline.paste(golden.convert("RGB"))
+        box = MASKED.get(Path(actual).name)
+        if box:
+            for image in (current, baseline):
+                image.paste((0, 0, 0), box)
         delta = ImageChops.difference(current, baseline)
         ImageEnhance.Brightness(delta).enhance(8).save(diff)
         # Every channel of every pixel must remain within three levels.
@@ -136,13 +144,50 @@ steps = [{ icon = "book", target = { kind = "action", value = { type = "notice",
             drive("release", "guide")
             drive("wait-for", "/overlays/menu", "true")
             capture("menu", lambda s: s["overlays"]["menu"])
-            drive("press", "dpad_up")
-            drive("press", "dpad_up")
-            drive("press", "dpad_up")
+            drive("menu-select", "SETTINGS")
             drive("press", "A")
             drive("wait-for", "/overlays/settings", "true")
             capture("settings", lambda s: s["overlays"]["settings"])
-            drive("press", "B")
+            def tap(button):
+                drive("clock", "advance", "1000")
+                drive("release", button)
+                drive("press", button)
+                time.sleep(0.5)
+
+            tap("A")
+            drive("fixture", "display")
+            time.sleep(0.5)
+            capture("settings-display", lambda s: s["overlays"]["settings"])
+            for button in ("dpad_down", "dpad_down", "dpad_down"):
+                tap(button)
+            capture("settings-display-font", lambda s: s["overlays"]["settings"])
+            tap("B")
+            tap("dpad_down")
+            tap("A")
+            time.sleep(2)
+            drive("fixture", "input")
+            for button in ("dpad_up", "dpad_up", "dpad_right"):
+                tap(button)
+            capture("settings-input", lambda s: s["overlays"]["settings"])
+            tap("dpad_down")
+            capture("settings-input-options", lambda s: s["overlays"]["settings"])
+            for _ in range(5):
+                tap("dpad_right")
+            capture("settings-input-options-end", lambda s: s["overlays"]["settings"])
+            for _ in range(5):
+                tap("dpad_left")
+            tap("dpad_down")
+            capture("settings-input-mics", lambda s: s["overlays"]["settings"])
+            for _ in range(7):
+                tap("dpad_right")
+            capture("settings-input-mics-end", lambda s: s["overlays"]["settings"])
+            for _ in range(2):
+                tap("dpad_right")
+            capture("settings-input-relay", lambda s: s["overlays"]["settings"])
+            tap("dpad_down")
+            capture("settings-input-remote", lambda s: s["overlays"]["settings"])
+            tap("B")
+            tap("B")
             drive("say", "keyboard")
             drive("wait-for", "/overlays/keyboard", "true")
             capture("keyboard", lambda s: s["keyboard"])

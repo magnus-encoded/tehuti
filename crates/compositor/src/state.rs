@@ -62,6 +62,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::ClockRead(elapsed) => *elapsed,
         DispatchInput::Menu(_)
         | DispatchInput::Volume(_)
+        | DispatchInput::WindowSize(_)
         | DispatchInput::Adjusters(_)
         | DispatchInput::Launcher(_)
         | DispatchInput::CloseInvitation
@@ -72,12 +73,16 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::DisplayScale(_)
         | DispatchInput::ModeApplied(_)
         | DispatchInput::ControllerBindings(_)
+        | DispatchInput::ControllerDeadzones(_)
+        | DispatchInput::ControllerRecentres(_)
         | DispatchInput::ActiveController(_)
         | DispatchInput::Controllers(_)
         | DispatchInput::Microphones(_)
+        | DispatchInput::RemoteHosts(_)
         | DispatchInput::InputChoices { .. }
         | DispatchInput::Speech(_)
         | DispatchInput::PluginReply { .. }
+        | DispatchInput::PluginHandled { .. }
         | DispatchInput::PluginExited { .. }
         | DispatchInput::TextField { .. }
         | DispatchInput::ControllerDisconnected
@@ -99,6 +104,9 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
 /// XKB keycodes are evdev codes plus 8.
 const XKB_KEYCODE_OFFSET: u32 = 8;
 
+/// How long the warning about display holders shows before the session leaves.
+const HANDOFF_WARNING_HOLD: core::time::Duration = core::time::Duration::from_secs(2);
+
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
@@ -109,20 +117,28 @@ pub struct Compositor {
     pub output: Option<Output>,
     dispatch: tehuti_core::dispatch::State,
     menu_config: crate::system_menu::Config,
+    display_holders: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    holders_cache: Vec<crate::drm_holders::Holder>,
+    exit_hold: Option<(u8, Instant)>,
     menu_failures: (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>),
     settings_display: crate::settings::Display,
     bar_font_store: Option<crate::display_mode_store::Store>,
     /// The pad that drives Tehuti; previews before confirmation too.
-    controller_choice: tehuti_core::dispatch::ControllerChoice,
     controller_names: Vec<String>,
+    /// Pads the user turned off on the Input page.
+    disabled_controllers: Vec<String>,
+    /// Pads whose rest the user asked to measure; the event loop answers from the pad.
+    recentre_requests: Vec<String>,
     input_choices: Option<crate::input_choice_store::Store>,
     volume: Option<crate::volume::Backend>,
+    remote_host_listing: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
     driver_clock: crate::driver::Clock,
     driver_elapsed: core::time::Duration,
     dim_elapsed: core::time::Duration,
     focus_outline_ids: [smithay::backend::renderer::element::Id; 4],
+    step_mark_ids: [smithay::backend::renderer::element::Id; 4],
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
@@ -136,8 +152,11 @@ pub struct Compositor {
     recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
     launcher: crate::launcher::Session,
+    /// Each installed context with its file, so a broken edit keeps the last good version.
+    context_files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>,
     speech_context: Option<String>,
     speech_title: String,
+    warned_hotwords: crate::speech_vocabulary::OverCapWarned,
     launch_socket: Option<std::ffi::OsString>,
     placement: crate::window_placement::Placement<WlSurface, LayoutWindow>,
     surfaces: CompositorState,
@@ -149,6 +168,11 @@ pub struct Compositor {
     pub(crate) dmabuf: crate::rendering::DmabufSupport,
     recording: Option<recording::Session>,
     recording_runtime: Option<std::rc::Rc<dyn crate::recording_encoder::Runtime>>,
+    timeline_level: crate::timeline_level::TimelineLevel,
+    /// Last stick reading kept for the timeline at `info`.
+    last_kept_sticks: Option<[i16; 4]>,
+    /// Whether the last timeline input written was `CloseInvitation`.
+    close_invitation_written: crate::timeline_level::CloseWritten,
     pub(crate) capture_source: crate::screenshot::CaptureSource,
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
@@ -174,6 +198,8 @@ pub struct Compositor {
     /// Host keys a Meta chord consumed, so their release is consumed too.
     consumed_host_keys: Vec<Keycode>,
     virtual_pad_buttons: Vec<tehuti_protocol::ButtonName>,
+    /// Buttons pressed with Guide held (Start for the escape chord); the stream sees neither their press nor their release.
+    chord_buttons: Vec<tehuti_protocol::ButtonName>,
     virtual_pad_talk: Vec<tehuti_protocol::ButtonName>,
     display: DisplayHandle,
 }
@@ -252,6 +278,9 @@ impl Compositor {
         crate::image_capture::register(display);
         let mut compositor = Self {
             menu_config: crate::system_menu::Config::default(),
+            display_holders: None,
+            holders_cache: Vec::new(),
+            exit_hold: None,
             menu_failures: std::sync::mpsc::channel(),
             start_time: Instant::now(),
             pointer,
@@ -265,16 +294,19 @@ impl Compositor {
             ),
             settings_display: crate::settings::Display::default(),
             bar_font_store: None,
-            controller_choice: tehuti_core::dispatch::ControllerChoice::Auto,
             controller_names: Vec::new(),
+            disabled_controllers: Vec::new(),
+            recentre_requests: Vec::new(),
             input_choices: None,
             volume: None,
+            remote_host_listing: None,
             microphone_listing: None,
             driver_clock: crate::driver::Clock::Live,
             driver_elapsed: core::time::Duration::ZERO,
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
             focus_outline_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
+            step_mark_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
@@ -290,10 +322,12 @@ impl Compositor {
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
             launcher: crate::launcher::Session::new()?,
+            context_files: Vec::new(),
             placement: crate::window_placement::Placement::new(),
             launch_socket: None,
             speech_context: None,
             speech_title: String::new(),
+            warned_hotwords: crate::speech_vocabulary::OverCapWarned::default(),
             surfaces: CompositorState::new_v6::<Self>(display),
             xdg_shell_state: XdgShellState::new::<Self>(display),
             decoration_state: None,
@@ -303,6 +337,9 @@ impl Compositor {
             dmabuf: crate::rendering::DmabufSupport::default(),
             recording: None,
             recording_runtime: None,
+            timeline_level: crate::timeline_level::TimelineLevel::default(),
+            last_kept_sticks: None,
+            close_invitation_written: crate::timeline_level::CloseWritten::Not,
             capture_source: crate::screenshot::CaptureSource::default(),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(display),
             seat_state,
@@ -321,6 +358,7 @@ impl Compositor {
             meta_held: Vec::new(),
             consumed_host_keys: Vec::new(),
             virtual_pad_buttons: Vec::new(),
+            chord_buttons: Vec::new(),
             virtual_pad_talk: Vec::new(),
             display: display.clone(),
         };
@@ -335,19 +373,7 @@ impl Compositor {
             Ok(config) => compositor.menu_config = config,
             Err(error) => compositor.show_notice(&format!("MENU CONFIG: {error}")),
         }
-        let notices = compositor.menu_config.notices().join("\n");
-        if !notices.is_empty() {
-            tracing::warn!(%notices, "invalid menu entries skipped");
-            compositor.show_notice(&notices);
-        }
-        compositor
-            .dispatch
-            .core_mut()
-            .set_menu_entries(compositor.menu_config.labels());
-        compositor
-            .dispatch
-            .core_mut()
-            .set_menu_hidden(compositor.menu_config.hidden());
+        compositor.announce_menu_config();
         compositor.rebuild_destinations();
         Ok(compositor)
     }
@@ -430,19 +456,112 @@ impl Compositor {
             "recording": self.recording_active()})
     }
 
+    /// The system menu config in use.
+    #[must_use]
+    pub const fn menu_config(&self) -> &crate::system_menu::Config {
+        &self.menu_config
+    }
+
+    /// Replaces the system menu with a freshly loaded config; a failed load keeps the old menu.
+    pub fn reload_menu_config(&mut self, loaded: std::io::Result<crate::system_menu::Config>) {
+        match loaded {
+            Ok(config) => {
+                self.menu_config = config;
+                self.announce_menu_config();
+                self.rebuild_destinations();
+            }
+            Err(error) => {
+                tracing::warn!(%error, "menu config reload failed; keeping the previous menu");
+                self.show_notice(&format!(
+                    "MENU CONFIG: {}",
+                    crate::contexts::short_error(&error.to_string())
+                ));
+            }
+        }
+    }
+
+    /// Where `/proc` is read and which device to look for holders of.
+    pub fn set_display_holders(&mut self, proc_root: std::path::PathBuf, device: std::path::PathBuf) {
+        self.display_holders = Some((proc_root, device));
+        self.scan_display_holders();
+    }
+
+    /// Reads `/proc` for processes of this user, other than Tehuti, holding the display device.
+    fn scan_display_holders(&mut self) {
+        self.holders_cache = self
+            .display_holders
+            .as_ref()
+            .map_or_default(|(proc_root, device)| {
+                let found = crate::drm_holders::find(proc_root, device);
+                let mine =
+                    crate::drm_holders::owned_by(proc_root, &found, rustix::process::getuid().as_raw());
+                crate::drm_holders::closable(&mine, std::process::id())
+            });
+        self.refresh_menu_hidden();
+    }
+
+    /// Menu rows with nothing to do: the close row shows only while a holder was seen.
+    fn menu_hidden(&self) -> Vec<tehuti_core::menu::Command> {
+        let mut hidden = self.menu_config.hidden();
+        if self.holders_cache.is_empty() {
+            hidden.push(tehuti_core::menu::Command::CloseHolder);
+        }
+        hidden
+    }
+
+    fn refresh_menu_hidden(&mut self) {
+        let hidden = self.menu_hidden();
+        self.dispatch.core_mut().set_menu_hidden(hidden);
+    }
+
+    /// Raises the notice for skipped menu entries and gives the core the configured entries.
+    fn announce_menu_config(&mut self) {
+        let notices = self.menu_config.notices().join("\n");
+        if !notices.is_empty() {
+            tracing::warn!(%notices, "invalid menu entries skipped");
+            self.show_notice(&notices);
+        }
+        let hidden = self.menu_hidden();
+        self.dispatch
+            .core_mut()
+            .set_menu_entries(self.menu_config.labels());
+        self.dispatch.core_mut().set_menu_hidden(hidden);
+    }
+
     /// Installs contexts before accepting clients.
     pub fn set_contexts(&mut self, mut contexts: Vec<tehuti_protocol::Context>) {
         crate::speech_vocabulary::configure_projects(&mut contexts, &self.launcher.paths().projects);
         *self.dispatch.core_mut() = tehuti_core::State::with_contexts(contexts);
+        let hidden = self.menu_hidden();
         self.dispatch
             .core_mut()
             .set_menu_entries(self.menu_config.labels());
-        self.dispatch
-            .core_mut()
-            .set_menu_hidden(self.menu_config.hidden());
+        self.dispatch.core_mut().set_menu_hidden(hidden);
         self.window_focus = None;
         self.sync_window_focus();
         self.rebuild_destinations();
+    }
+
+    /// Installs contexts with their files before accepting clients.
+    pub fn set_context_files(&mut self, files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>) {
+        self.set_contexts(files.iter().map(|(_, context)| context.clone()).collect());
+        let skipped = files.iter().flat_map(|(path, context)| {
+            context
+                .skipped_phrases()
+                .iter()
+                .map(|message| crate::contexts::LoadError {
+                    path: path.clone(),
+                    message: message.clone(),
+                })
+        });
+        let skipped: Vec<_> = skipped.collect();
+        for warning in &skipped {
+            tracing::warn!(%warning, "speech phrase skipped");
+        }
+        if let Some(notice) = crate::contexts::LoadError::phrase_notice_for(&skipped) {
+            self.show_notice(&notice);
+        }
+        self.context_files = files;
     }
 
     /// Names ticker buttons after the pad that sent the latest input.
@@ -478,17 +597,36 @@ impl Compositor {
         }
     }
 
-    /// Applies a reload; each skipped file is logged and the last one is named in a notice.
+    /// Applies a reload. A skipped file keeps its last good version; each skipped file
+    /// and dropped phrase is logged, and the last of them is named in a notice.
     pub fn apply_reload(&mut self, reload: Result<crate::contexts::Reloaded, crate::contexts::LoadError>) {
         match reload {
             Ok(reloaded) => {
-                let crate::contexts::Reloaded { contexts, skipped } = reloaded;
-                self.reload_contexts(Ok(contexts));
+                let crate::contexts::Reloaded {
+                    contexts,
+                    paths,
+                    skipped,
+                    phrase_warnings,
+                } = reloaded;
+                let mut files: Vec<_> = paths.into_iter().zip(contexts).collect();
                 for error in &skipped {
-                    tracing::warn!(%error, "context skipped on reload");
+                    if let Some(kept) = self.context_files.iter().find(|(path, _)| *path == error.path) {
+                        files.push(kept.clone());
+                    }
+                }
+                files.sort_by(|left, right| left.0.cmp(&right.0));
+                self.reload_contexts(Ok(files.iter().map(|(_, context)| context.clone()).collect()));
+                self.context_files = files;
+                for error in &skipped {
+                    tracing::warn!(%error, "context skipped on reload; keeping its last good version");
+                }
+                for warning in &phrase_warnings {
+                    tracing::warn!(%warning, "speech phrase skipped on reload");
                 }
                 if let Some(error) = skipped.last() {
                     self.show_notice(&error.notice());
+                } else if let Some(notice) = crate::contexts::LoadError::phrase_notice_for(&phrase_warnings) {
+                    self.show_notice(&notice);
                 }
             }
             Err(error) => self.reload_contexts(Err(error)),
@@ -530,6 +668,10 @@ impl Compositor {
         self.dispatch(DispatchInput::PluginReply { key, result })
     }
 
+    pub(crate) fn plugin_handled(&mut self, key: tehuti_core::plugin::RequestKey) {
+        drop(self.dispatch(DispatchInput::PluginHandled { key }));
+    }
+
     pub fn set_speech(&mut self, mut process: crate::speech::SpeechProcess) {
         if let Err(error) = process.set_vocabulary(&self.destination_vocabulary()) {
             tracing::warn!(%error, "speech vocabulary unavailable");
@@ -562,7 +704,7 @@ impl Compositor {
     fn rebuild_destinations(&mut self) {
         match self.launcher.rebuild(
             self.dispatch.core().contexts(),
-            &self.menu_config.hidden(),
+            &self.menu_hidden(),
             &self.placement.snapshot(),
         ) {
             Ok(app_names) => {
@@ -576,7 +718,7 @@ impl Compositor {
         self.refresh_speech_vocabulary();
     }
 
-    fn destination_vocabulary(&self) -> Vec<String> {
+    fn destination_vocabulary(&mut self) -> Vec<String> {
         let mut words = self
             .launcher
             .table()
@@ -592,15 +734,51 @@ impl Compositor {
             .cloned()
             .collect();
         let project_names = crate::speech_vocabulary::directory_names(&self.launcher.paths().projects);
-        words.extend(
+        let context_hotwords = own
+            .into_iter()
+            .chain(self.contexts().iter().filter(|context| context.app_id() == "*"))
+            .flat_map(|context| context.hotwords().iter().cloned())
+            .collect();
+        let plugin_hints = self
+            .speech_context
+            .as_deref()
+            .zip(self.plugins.as_ref())
+            .map_or_default(|(app_id, plugins)| plugins.speech_hints(app_id));
+        let (hotwords, dropped) = crate::speech_vocabulary::hotwords(context_hotwords, plugin_hints);
+        if dropped > 0
+            && let Some(app_id) = self.speech_context.as_deref()
+            && self.warned_hotwords.first_time(app_id)
+        {
+            tracing::warn!(
+                cap = crate::speech_vocabulary::MAX_HOTWORDS,
+                dropped,
+                app_id,
+                "speech hotwords over the cap; dropped the latest plugin hints"
+            );
+        }
+        let mut ordered = hotwords;
+        ordered.append(&mut words);
+        ordered.extend(
             crate::speech_vocabulary::load(&contexts)
                 .into_iter()
                 .filter(|word| !project_names.contains(word)),
         );
-        crate::speech_vocabulary::bounded(words)
+        crate::speech_vocabulary::bounded(ordered)
     }
 
-    fn refresh_speech_vocabulary(&mut self) {
+    /// The invoke words plugins currently supply to the core, for tests.
+    #[must_use]
+    pub fn plugin_invoke_words(&mut self) -> Vec<String> {
+        self.dispatch.core_mut().plugin_invoke_words().to_vec()
+    }
+
+    pub(crate) fn refresh_speech_vocabulary(&mut self) {
+        let invoke_words = self
+            .speech_context
+            .as_deref()
+            .zip(self.plugins.as_ref())
+            .map_or_default(|(app_id, plugins)| plugins.invoke_words(app_id));
+        self.dispatch.core_mut().set_plugin_invoke_words(invoke_words);
         if self.speech_process.is_some() {
             let words = self.destination_vocabulary();
             if let Some(process) = &mut self.speech_process
@@ -672,7 +850,7 @@ impl Compositor {
 
     /// Routes a typed phrase through the same event path as an admitted transcript.
     pub fn say(&mut self, text: tehuti_protocol::Text) {
-        tracing::info!(text = text.as_str(), "speech transcript received");
+        tracing::info!(bytes = text.as_str().len(), "speech transcript received");
         self.handle(&Event::Speech { text });
     }
 
@@ -691,6 +869,7 @@ impl Compositor {
     /// Forgets held physical buttons when the virtual pad starts.
     pub fn reset_virtual_pad(&mut self) {
         self.virtual_pad_buttons.clear();
+        self.chord_buttons.clear();
         self.virtual_pad_talk.clear();
         if let Some(plugins) = &mut self.plugins {
             plugins.reset_pad();
@@ -700,7 +879,9 @@ impl Compositor {
     /// Whether Tehuti holds `button` from the virtual pad; reads only, so a new mirror can ask.
     #[must_use]
     pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
-        self.virtual_pad_talk.contains(&button)
+        (button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded())
+            || self.chord_buttons.contains(&button)
+            || self.virtual_pad_talk.contains(&button)
             || self
                 .plugins
                 .as_ref()
@@ -743,11 +924,33 @@ impl Compositor {
             .plugins
             .as_mut()
             .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk));
-        talk || plugin
+        // Guide reaches the application only at the app level and only when the context forwards it.
+        let local_guide =
+            button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded();
+        // Start pressed while Guide is held belongs to the escape chord in every mode, and so does its release.
+        // Guide is read from this hook's own held list: a batch of raw events reaches here before the core sees any.
+        let chord_start = if button != tehuti_protocol::ButtonName::Start {
+            false
+        } else if state == tehuti_protocol::ButtonState::Pressed {
+            if self
+                .virtual_pad_buttons
+                .contains(&tehuti_protocol::ButtonName::Guide)
+                && !self.chord_buttons.contains(&button)
+            {
+                self.chord_buttons.push(button);
+            }
+            self.chord_buttons.contains(&button)
+        } else {
+            let chorded = self.chord_buttons.contains(&button);
+            self.chord_buttons.retain(|held| *held != button);
+            chorded
+        };
+        talk || plugin || local_guide || chord_start
     }
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
         let _rejection = self.dispatch(DispatchInput::PluginExited { plugin });
+        self.refresh_speech_vocabulary();
     }
 
     pub(crate) fn supervise_plugins(&mut self) {
@@ -770,6 +973,12 @@ impl Compositor {
         self.keep_invitation();
         self.poll_recording();
         self.stop_stale_captures();
+        if let Some((status, due)) = self.exit_hold
+            && Instant::now() >= due
+        {
+            self.exit_hold = None;
+            self.leave_session(status);
+        }
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
@@ -1020,8 +1229,53 @@ impl Compositor {
         elapsed
     }
 
+    /// Sets how much the recording timeline writes; `info` leaves out per-frame events.
+    pub const fn set_timeline_level(&mut self, level: crate::timeline_level::TimelineLevel) {
+        self.timeline_level = level;
+    }
+
+    /// Logs one button press or release at debug level: which pad, which button, and who took it.
+    fn log_button(&self, name: tehuti_protocol::ButtonName, state: tehuti_protocol::ButtonState) {
+        if !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
+        let in_context = self
+            .speech_context
+            .as_deref()
+            .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &self.speech_title))
+            .is_some_and(|context| context.mapped_buttons().any(|mapped| mapped == name));
+        let taken_by = if self
+            .plugins
+            .as_ref()
+            .is_some_and(|plugins| plugins.pad_consumed(name))
+        {
+            "plugin"
+        } else if self.virtual_pad_consumed(name) {
+            "virtual pad"
+        } else if in_context {
+            "context"
+        } else {
+            "core"
+        };
+        let controller = self
+            .settings()
+            .input
+            .active_controller
+            .as_deref()
+            .unwrap_or("none");
+        tracing::debug!(controller, button = ?name, ?state, taken_by, "controller button");
+    }
+
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if let Event::Button { name, state } = event {
+            self.log_button(*name, *state);
+            // The menu opens a moment after Guide goes down; look for holders once, now.
+            if *name == tehuti_protocol::ButtonName::Guide && *state == tehuti_protocol::ButtonState::Pressed
+            {
+                self.scan_display_holders();
+            }
+        }
         if matches!(
             event,
             Event::Button {
@@ -1107,6 +1361,7 @@ impl Compositor {
             tehuti_core::pad::PadFamily::Letters => "Share",
             tehuti_core::pad::PadFamily::Symbols => "Create",
             tehuti_core::pad::PadFamily::Nintendo => "Capture",
+            tehuti_core::pad::PadFamily::Remote | tehuti_core::pad::PadFamily::RemotePaired => "+",
         });
         let invitation = tehuti_core::launcher::Launcher::invitation(button);
         let _rejection = self.dispatch(DispatchInput::Launcher(Box::new(invitation)));
@@ -1116,8 +1371,20 @@ impl Compositor {
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
         // Loop ticks are not timeline events; sticks are sampled once per video frame.
         if let DispatchInput::Sticks(sticks) = &input {
-            self.record_sample("input", "sticks", sticks);
+            let now = [sticks.left.0, sticks.left.1, sticks.right.0, sticks.right.1];
+            if self.timeline_level.keeps_sticks(self.last_kept_sticks, now) {
+                self.last_kept_sticks = Some(now);
+                self.record_sample("input", "sticks", sticks);
+            }
+        } else if matches!(input, DispatchInput::CloseInvitation) {
+            let repeat = self.close_invitation_written == crate::timeline_level::CloseWritten::Yes
+                && self.timeline_level == crate::timeline_level::TimelineLevel::Info;
+            if !repeat {
+                self.record_debug("input", &input);
+            }
+            self.close_invitation_written = crate::timeline_level::CloseWritten::Yes;
         } else if !matches!(input, DispatchInput::Tick { .. }) {
+            self.close_invitation_written = crate::timeline_level::CloseWritten::Not;
             self.record_debug("input", &input);
         }
         let elapsed = dispatch_elapsed(&input);
@@ -1396,16 +1663,36 @@ impl Compositor {
             tracing::warn!(%error, "saved microphone unreadable; using every microphone");
             tehuti_core::dispatch::MicrophoneChoice::All
         });
+        let disabled_controllers = store.disabled_controllers().unwrap_or_else(|error| {
+            tracing::warn!(%error, "disabled controllers unreadable; using every pad");
+            Vec::new()
+        });
+        self.disabled_controllers.clone_from(&disabled_controllers);
+        let disabled_microphones = store.disabled_microphones().unwrap_or_else(|error| {
+            tracing::warn!(%error, "disabled microphones unreadable; using every microphone");
+            Vec::new()
+        });
         let bindings = store.controller_bindings().unwrap_or_else(|error| {
             tracing::warn!(%error, "controller bindings unreadable; using context defaults");
             std::collections::BTreeMap::new()
         });
         let _bindings_rejection = self.dispatch(DispatchInput::ControllerBindings(bindings));
-        self.controller_choice = controller.clone();
+        let deadzones = store.controller_deadzones().unwrap_or_else(|error| {
+            tracing::warn!(%error, "controller deadzones unreadable; using the default");
+            std::collections::BTreeMap::new()
+        });
+        let rests = store.controller_recentres().unwrap_or_else(|error| {
+            tracing::warn!(%error, "controller rests unreadable; using the middle");
+            std::collections::BTreeMap::new()
+        });
+        let _rests_rejection = self.dispatch(DispatchInput::ControllerRecentres(rests));
+        let _deadzones_rejection = self.dispatch(DispatchInput::ControllerDeadzones(deadzones));
         self.input_choices = Some(store);
         let _rejection = self.dispatch(DispatchInput::InputChoices {
             controller,
             microphone,
+            disabled_controllers,
+            disabled_microphones,
         });
     }
 
@@ -1422,22 +1709,51 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Controllers(controllers));
     }
 
-    /// Whether input from the pad named `name` drives Tehuti.
+    /// Whether input from the pad with this stable key drives Tehuti: every pad that is not turned off.
     #[must_use]
-    pub fn controller_chosen(&self, name: &str) -> bool {
-        crate::input::chosen(&self.controller_choice, &self.controller_names, name)
+    pub fn controller_chosen(&self, key: &str) -> bool {
+        !self.disabled_controllers.iter().any(|disabled| disabled == key)
+    }
+
+    /// The stick deadzone of the pad with this stable key, in thousandths of full travel.
+    #[must_use]
+    pub fn controller_deadzone(&self, key: &str) -> u16 {
+        self.settings().input.deadzone(key)
+    }
+
+    /// The pads the user asked to recentre since the last call.
+    pub fn take_recentre_requests(&mut self) -> Vec<String> {
+        core::mem::take(&mut self.recentre_requests)
+    }
+
+    /// Where the sticks of the pad with this stable key rest, in thousandths of half travel.
+    #[must_use]
+    pub fn controller_recentre(&self, key: &str) -> [i16; 4] {
+        self.settings()
+            .input
+            .controller_recentres
+            .get(key)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Keeps a measured rest for the pad and saves it.
+    pub fn store_recentre(&mut self, key: String, rest: [i16; 4]) {
+        let mut rests = self.settings().input.controller_recentres.clone();
+        let _previous = rests.insert(key, rest);
+        self.save_input_choice(|store| store.set_controller_recentres(&rests));
+        let _rejection = self.dispatch(DispatchInput::ControllerRecentres(rests));
     }
 
     pub fn activate_controller(&mut self, name: String) {
         let _rejection = self.dispatch(DispatchInput::ActiveController(name));
     }
 
-    fn choose_controller(&mut self, choice: tehuti_core::dispatch::ControllerChoice, persist: bool) {
+    fn choose_controller(&mut self, choice: &tehuti_core::dispatch::ControllerChoice, persist: bool) {
         tracing::info!(?choice, persist, "controller choice");
         if persist {
-            self.save_input_choice(|store| store.set_controller(&choice));
+            self.save_input_choice(|store| store.set_controller(choice));
         }
-        self.controller_choice = choice;
     }
 
     fn choose_microphone(&mut self, choice: &tehuti_core::dispatch::MicrophoneChoice) {
@@ -1455,6 +1771,20 @@ impl Compositor {
         }
     }
 
+    fn poll_remote_hosts(&mut self) {
+        let Some(listing) = &self.remote_host_listing else {
+            return;
+        };
+        match listing.try_recv() {
+            Ok(hosts) => {
+                self.remote_host_listing = None;
+                let _hosts_rejection = self.dispatch(DispatchInput::RemoteHosts(hosts));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.remote_host_listing = None,
+        }
+    }
+
     fn poll_microphones(&mut self) {
         let Some(listing) = &self.microphone_listing else {
             return;
@@ -1467,6 +1797,82 @@ impl Compositor {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.microphone_listing = None,
         }
+    }
+
+    /// Fills the Display or Input page with invented hardware for the visual run.
+    ///
+    /// # Errors
+    /// Names the fixture when it is not known.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each fixture lists its invented hardware inline"
+    )]
+    pub fn show_fixture(&mut self, name: &str) -> Result<(), String> {
+        use tehuti_core::dispatch::Origin;
+        let pad = |label: &str, key: &str, origin| tehuti_core::dispatch::ControllerInfo {
+            origin,
+            name: label.to_owned(),
+            key: key.to_owned(),
+            label: format!(
+                "{} #{}",
+                label.to_uppercase(),
+                key.rsplit('-').next().unwrap_or("1")
+            ),
+        };
+        let mic = |node: &str, description: &str| tehuti_core::dispatch::Microphone {
+            name: node.to_owned(),
+            description: description.to_owned(),
+            relay: None,
+        };
+        match name {
+            "display" => {
+                let modes = [
+                    "1920x1080@60",
+                    "1920x1080@144",
+                    "2560x1080@60",
+                    "2560x1080@120",
+                    "1280x1024@60",
+                    "1280x1024@75",
+                ];
+                self.configure_display_modes(modes.map(str::to_owned).to_vec(), 0);
+            }
+            "input" => {
+                // The real listing must not answer over the invented sources.
+                self.microphone_listing = None;
+                self.configure_controllers(vec![
+                    pad("Xbox Wireless Controller", "xbox-1", Origin::Usb),
+                    pad("Switch Joy-Con", "switch-2", Origin::Bluetooth),
+                    pad("USB Gamepad", "generic-3", Origin::Dongle),
+                    pad("DualSense Wireless Controller", "dualsense-4", Origin::Streamed),
+                    pad("Xbox Wireless Controller", "xbox-5", Origin::VirtualOther),
+                    pad("Xbox Wireless Controller", "xbox-6", Origin::Tehuti),
+                    pad("Generic Pad", "generic-7", Origin::Unknown),
+                ]);
+                let _rejection = self.dispatch(DispatchInput::Microphones(vec![
+                    mic("bluez_input.headset", "Arctis Headset"),
+                    mic("alsa_input.usb-desk", "USB Desk Microphone"),
+                    mic("alsa_input.pci-analog", "Built-in Analog Stereo"),
+                    mic("rtp-source", "Network RTP Stream"),
+                    mic("phone-mic", "Phone Microphone"),
+                    mic("alsa_output.analog.monitor", "Monitor of Built-in Speakers"),
+                    tehuti_core::dispatch::Microphone {
+                        relay: Some(tehuti_core::dispatch::RelayState::Connected),
+                        ..mic("audiorelay-virtual-mic", "Phone One")
+                    },
+                    tehuti_core::dispatch::Microphone {
+                        relay: Some(tehuti_core::dispatch::RelayState::Waiting),
+                        ..mic("audiorelay-virtual-mic-2", "Phone Two")
+                    },
+                ]));
+                self.remote_host_listing = None;
+                let _hosts_rejection = self.dispatch(DispatchInput::RemoteHosts(vec![
+                    "desk-pc".to_owned(),
+                    "laptop.tail1234.ts.net".to_owned(),
+                ]));
+            }
+            _ => return Err(format!("unknown fixture {name}")),
+        }
+        Ok(())
     }
 
     pub fn configure_display_modes(&mut self, modes: Vec<String>, current: usize) {
@@ -1569,6 +1975,8 @@ impl Compositor {
             | DispatchEffect::OpenLauncher(_)
             | DispatchEffect::ReadVolume
             | DispatchEffect::SetVolume(_)
+            | DispatchEffect::ReadWindowSize(_)
+            | DispatchEffect::SetWindowSize { .. }
             | DispatchEffect::AdjusterValue { .. }
             | DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
@@ -1578,9 +1986,15 @@ impl Compositor {
             | DispatchEffect::WallpaperSave(_)
             | DispatchEffect::SettingsController(_)
             | DispatchEffect::PersistControllerTalk(_, _)
+            | DispatchEffect::PersistControllerDeadzone(_, _)
+            | DispatchEffect::RecentreController(_)
             | DispatchEffect::PersistController(_)
             | DispatchEffect::SettingsMicrophone(_)
+            | DispatchEffect::SettingsControllerEnabled { .. }
+            | DispatchEffect::SettingsMicrophoneEnabled { .. }
             | DispatchEffect::ListMicrophones
+            | DispatchEffect::ListRemoteHosts
+            | DispatchEffect::ConnectRemoteMicrophone { .. }
             | DispatchEffect::PasswordSpeechIgnored
             | DispatchEffect::RunMenuCommand(_)
             | DispatchEffect::MovePointer { .. }
@@ -1652,10 +2066,23 @@ impl Compositor {
             self.apply(&Action::Restart);
             return;
         }
+        if command == tehuti_core::menu::Command::CloseHolder {
+            self.close_display_holders();
+            return;
+        }
         if let Some(status) = self.menu_config.session_exit_status(command) {
-            self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
-            self.session_exit_status = Some(status);
-            self.quit_requested = true;
+            self.scan_display_holders();
+            if let Some(warning) = crate::drm_holders::warning(&self.holders_cache) {
+                tracing::warn!(%warning, "leaving the session with clients holding the display");
+                self.show_notice(&warning);
+                // Leave after the notice has been on screen for a moment.
+                if self.exit_hold.is_none() {
+                    let now = Instant::now();
+                    self.exit_hold = Some((status, now.checked_add(HANDOFF_WARNING_HOLD).unwrap_or(now)));
+                }
+                return;
+            }
+            self.leave_session(status);
             return;
         }
         let result = self
@@ -1670,6 +2097,37 @@ impl Compositor {
             tracing::warn!(?command, %error, "system menu command failed");
             self.show_notice(&format!("{label} FAILED: {error}"));
         }
+    }
+
+    fn leave_session(&mut self, status: u8) {
+        self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
+        self.session_exit_status = Some(status);
+        self.quit_requested = true;
+    }
+
+    fn close_display_holders(&mut self) {
+        self.scan_display_holders();
+        let closed = crate::drm_holders::close(
+            &self.holders_cache,
+            std::process::id(),
+            crate::drm_holders::terminate,
+        );
+        let mut lines: Vec<String> = closed
+            .closed
+            .iter()
+            .map(|holder| format!("CLOSED {} (pid {})", holder.command, holder.pid))
+            .collect();
+        lines.extend(
+            closed.failed.iter().map(|(holder, error)| {
+                format!("CLOSE FAILED {} (pid {}): {error}", holder.command, holder.pid)
+            }),
+        );
+        if lines.is_empty() {
+            lines.push("NO PROGRAM HOLDS THE DISPLAY".into());
+        }
+        tracing::info!(?lines, "closed display holders");
+        self.show_notice(&lines.join("\n"));
+        self.scan_display_holders();
     }
 
     fn poll_menu_failures(&mut self) {
@@ -1764,7 +2222,7 @@ impl Compositor {
                 self.open_launcher(&request);
             }
             DispatchEffect::LauncherUsed(usage) => {
-                tracing::info!("{}", crate::launcher_log::line(&usage));
+                tracing::debug!("{}", crate::launcher_log::line(&usage));
             }
             DispatchEffect::ChooseLauncher(index) => {
                 if let Some(route) = self
@@ -1776,6 +2234,13 @@ impl Compositor {
             }
             DispatchEffect::ReadVolume => self.volume_request(crate::volume::Request::Read),
             DispatchEffect::SetVolume(value) => self.volume_request(crate::volume::Request::Set(value)),
+            DispatchEffect::ReadWindowSize(axis) => {
+                let size = axis.read(&self.placement.snapshot());
+                let _rejection = self.dispatch(DispatchInput::WindowSize(size));
+            }
+            DispatchEffect::SetWindowSize { axis, millionths } => {
+                self.apply_layout_command(axis.command(millionths));
+            }
             DispatchEffect::AdjusterValue {
                 plugin,
                 name,
@@ -1819,7 +2284,7 @@ impl Compositor {
             }
             DispatchEffect::SettingsMode(index) => self.queue_settings(index, false),
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
-            DispatchEffect::SettingsController(choice) => self.choose_controller(choice, false),
+            DispatchEffect::SettingsController(choice) => self.choose_controller(&choice, false),
             DispatchEffect::PersistControllerTalk(controller_name, button) => {
                 let mut bindings = self.settings().input.controller_bindings.clone();
                 if let Some(button) = button {
@@ -1832,9 +2297,34 @@ impl Compositor {
                     self.activate_controller(name);
                 }
             }
-            DispatchEffect::PersistController(choice) => self.choose_controller(choice, true),
+            DispatchEffect::PersistControllerDeadzone(name, deadzone) => {
+                tracing::info!(%name, deadzone, "controller deadzone set");
+                let deadzones = self.settings().input.controller_deadzones.clone();
+                self.save_input_choice(|store| store.set_controller_deadzones(&deadzones));
+            }
+            DispatchEffect::RecentreController(name) => self.recentre_requests.push(name),
+            DispatchEffect::PersistController(choice) => self.choose_controller(&choice, true),
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
+            DispatchEffect::SettingsControllerEnabled { name, enabled } => {
+                tracing::info!(%name, enabled, "controller enabled");
+                self.disabled_controllers = self.settings().input.disabled_controllers.clone();
+                let disabled = self.disabled_controllers.clone();
+                self.save_input_choice(|store| store.set_disabled_controllers(&disabled));
+            }
+            DispatchEffect::SettingsMicrophoneEnabled { name, enabled } => {
+                tracing::info!(%name, enabled, "microphone enabled");
+                let disabled = self.settings().input.disabled_microphones.clone();
+                self.save_input_choice(|store| store.set_disabled_microphones(&disabled));
+            }
             DispatchEffect::ListMicrophones => {
+                self.microphone_listing = Some(crate::input_choice_store::list_microphones());
+            }
+            DispatchEffect::ListRemoteHosts => {
+                self.remote_host_listing = Some(crate::remote_hosts::list_remote_hosts());
+            }
+            DispatchEffect::ConnectRemoteMicrophone { host } => {
+                tracing::info!(%host, "remote microphone requested");
+                self.show_notice(&format!("CONNECTING TO {}", host.to_uppercase()));
                 self.microphone_listing = Some(crate::input_choice_store::list_microphones());
             }
             DispatchEffect::PasswordSpeechIgnored => {
@@ -1868,6 +2358,7 @@ impl Compositor {
                 self.poll_secret_lookup();
                 self.poll_launchers();
                 self.poll_microphones();
+                self.poll_remote_hosts();
                 self.poll_menu_failures();
                 self.poll_volume();
             }
@@ -2091,6 +2582,8 @@ impl Compositor {
                 self.show_notice(text.as_str());
             }
             Action::ToggleTicker => self.dispatch.core_mut().toggle_ticker(),
+            // The core expands it into backspaces before any action reaches here.
+            Action::UndoDictation => {}
         }
     }
 
@@ -2251,7 +2744,28 @@ impl Compositor {
         }
     }
 
+    /// The hold time the focused context sets for key taps, else the global context's, else the default.
+    fn key_hold(&self) -> core::time::Duration {
+        let own = self
+            .speech_context
+            .as_deref()
+            .and_then(|app_id| tehuti_core::own_context(self.contexts(), app_id, &self.speech_title))
+            .and_then(tehuti_protocol::Context::key_hold_ms);
+        let global = || {
+            self.contexts()
+                .iter()
+                .filter(|context| context.app_id() == "*")
+                .find_map(tehuti_protocol::Context::key_hold_ms)
+        };
+        own.or_else(global)
+            .map_or(tehuti_core::tap_hold::TAP_HOLD, |millis| {
+                core::time::Duration::from_millis(u64::from(millis))
+            })
+    }
+
     fn tap_held(&mut self, keycode: Keycode, modifiers: &[Keycode]) {
+        let hold = self.key_hold();
+        self.taps.set_hold(hold);
         let events = self.taps.tap(self.clock_elapsed(), keycode, modifiers);
         self.apply_tap_events(events);
     }
@@ -2324,6 +2838,9 @@ impl Compositor {
         if self.host_key_as_pad(keycode, pressed) {
             return;
         }
+        if self.host_key_opens_launcher(keycode, pressed) {
+            return;
+        }
         if self.host_key_in_launcher(keycode, pressed) {
             return;
         }
@@ -2335,15 +2852,40 @@ impl Compositor {
         self.send_keycode(keycode, state);
     }
 
+    /// Meta+Space opens the launcher, as the spoken route does; the client never sees the Space.
+    fn host_key_opens_launcher(&mut self, keycode: Keycode, pressed: bool) -> bool {
+        const KEY_SPACE: u32 = 57;
+        if keycode.raw().saturating_sub(XKB_KEYCODE_OFFSET) != KEY_SPACE {
+            return false;
+        }
+        if !pressed {
+            // Release consumes a Space that opened the launcher; other releases fall through.
+            let consumed = self.consumed_host_keys.contains(&keycode);
+            self.consumed_host_keys.retain(|held| *held != keycode);
+            return consumed;
+        }
+        if self.meta_held.is_empty() {
+            return false;
+        }
+        if !self.consumed_host_keys.contains(&keycode) {
+            self.consumed_host_keys.push(keycode);
+        }
+        self.retype_launcher(String::new());
+        true
+    }
+
     /// While the launcher is open, typing filters it, Enter opens the selection and Escape closes it.
     ///
     /// This is the fallback when speech is down; the client never sees these keys.
+    #[expect(clippy::too_many_lines, reason = "one flat table of launcher keys")]
     fn host_key_in_launcher(&mut self, keycode: Keycode, pressed: bool) -> bool {
         use tehuti_protocol::{ButtonName, ButtonState};
         const KEY_ESC: u32 = 1;
         const KEY_BACKSPACE: u32 = 14;
         const KEY_ENTER: u32 = 28;
         const KEY_KPENTER: u32 = 96;
+        const KEY_UP: u32 = 103;
+        const KEY_DOWN: u32 = 108;
         if !pressed {
             let consumed = self.consumed_host_keys.contains(&keycode);
             self.consumed_host_keys.retain(|held| *held != keycode);
@@ -2367,6 +2909,8 @@ impl Compositor {
         match code {
             KEY_ENTER | KEY_KPENTER => press(self, family.button(tehuti_core::pad::Role::Confirm)),
             KEY_ESC => press(self, family.button(tehuti_core::pad::Role::Back)),
+            KEY_UP => press(self, ButtonName::DpadUp),
+            KEY_DOWN => press(self, ButtonName::DpadDown),
             KEY_BACKSPACE => {
                 let mut query = query;
                 let _removed = query.pop();
@@ -2474,10 +3018,41 @@ impl Compositor {
     /// Releases every held host and pad key, so a key held when the host window loses focus or the seat pauses does not stick.
     pub fn release_host_keys(&mut self) {
         self.held_pad_keys.clear();
-        self.meta_held.clear();
+        self.release_synthesised_pad_buttons();
         self.consumed_host_keys.clear();
         for keycode in self.keyboard.pressed_keys() {
             self.send_keycode(keycode, smithay::backend::input::KeyState::Released);
+        }
+    }
+
+    /// Releases the d-pad arrows and Guide that held host keys stand for, so core never keeps them down.
+    fn release_synthesised_pad_buttons(&mut self) {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let arrows = [
+            (103, ButtonName::DpadUp),
+            (105, ButtonName::DpadLeft),
+            (106, ButtonName::DpadRight),
+            (108, ButtonName::DpadDown),
+        ];
+        let consumed = core::mem::take(&mut self.consumed_host_keys);
+        for (code, name) in arrows {
+            if consumed
+                .iter()
+                .any(|key| key.raw().saturating_sub(XKB_KEYCODE_OFFSET) == code)
+            {
+                self.handle(&Event::Button {
+                    name,
+                    state: ButtonState::Released,
+                });
+            }
+        }
+        self.consumed_host_keys = consumed;
+        if !self.meta_held.is_empty() {
+            self.meta_held.clear();
+            self.handle(&Event::Button {
+                name: ButtonName::Guide,
+                state: ButtonState::Released,
+            });
         }
     }
 
@@ -2615,11 +3190,20 @@ impl Compositor {
             location.y.saturating_sub(area.loc.y),
         );
         let bounds = Rectangle::new(location.into(), window.client_geometry().size);
-        crate::focus_outline::elements(
-            bounds,
-            output.current_scale().fractional_scale(),
-            &self.focus_outline_ids,
-        )
+        let scale = output.current_scale().fractional_scale();
+        let mut elements = crate::focus_outline::elements(bounds, scale, &self.focus_outline_ids);
+        if let Some(gauge) = self.adjuster()
+            && let Some((axis, _)) = gauge.fraction()
+        {
+            elements.extend(crate::focus_outline::step_marks(
+                bounds,
+                scale,
+                axis,
+                usize::try_from(gauge.value()).unwrap_or_default(),
+                &self.step_mark_ids,
+            ));
+        }
+        elements
     }
 
     #[must_use]
@@ -2934,6 +3518,10 @@ impl Compositor {
     fn set_layout_state(toplevel: &ToplevelSurface, tile: &tehuti_core::layout::TileView, focused: bool) {
         let tiled = !tile.fullscreen_requested;
         toplevel.with_pending_state(|pending| {
+            // A maximize request is answered at the tile size and stays reported
+            // until the client unmaximizes, so it reads every tile configure as
+            // still maximized instead of as a restore to fight.
+            let maximized = tiled && pending.states.contains(xdg_toplevel::State::Maximized);
             pending.size = Some(
                 smithay::utils::Size::<f64, smithay::utils::Logical>::from((
                     tile.requested_client.width,
@@ -2948,7 +3536,7 @@ impl Compositor {
                 (xdg_toplevel::State::TiledRight, tiled),
                 (xdg_toplevel::State::TiledTop, tiled),
                 (xdg_toplevel::State::TiledBottom, tiled),
-                (xdg_toplevel::State::Maximized, false),
+                (xdg_toplevel::State::Maximized, maximized),
             ] {
                 if enabled {
                     let _changed = pending.states.set(state);
@@ -2963,8 +3551,22 @@ impl Compositor {
     ///
     /// Fullscreen requests go through the layout; maximize requests keep the
     /// tile and only hear its current size and states.
-    fn answer_state_request(&mut self, surface: &ToplevelSurface, fullscreen: Option<bool>) {
+    fn answer_state_request(
+        &mut self,
+        surface: &ToplevelSurface,
+        fullscreen: Option<bool>,
+        maximized: Option<bool>,
+    ) {
         let mapped = self.placement.window(surface.wl_surface()).is_some();
+        if let Some(maximized) = maximized {
+            surface.with_pending_state(|pending| {
+                let _changed = if maximized {
+                    pending.states.set(xdg_toplevel::State::Maximized)
+                } else {
+                    pending.states.unset(xdg_toplevel::State::Maximized)
+                };
+            });
+        }
         if let Some(fullscreen) = fullscreen
             && let Err(error) = self.placement.fullscreen(surface.wl_surface(), fullscreen)
         {
@@ -2986,6 +3588,33 @@ impl Compositor {
             let _serial = surface.send_configure();
         }
         self.place_layout();
+    }
+
+    /// Sends the tile configure again after a client commits a new size that
+    /// is not its tile, so an oversized client is asked back.
+    ///
+    /// Skipped while a configure awaits its ack: that one already asks, and a
+    /// client that answers every configure with a new size would never settle.
+    fn ask_back_to_tile(&self, root: &WlSurface, window: &LayoutWindow) {
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        if !toplevel.is_initial_configure_sent()
+            || window.client_geometry().size == window.layout_size()
+            || !Self::awaits_answer(toplevel)
+        {
+            return;
+        }
+        if let Some(placed) = self
+            .placement
+            .placed(|_| 0.0)
+            .iter()
+            .find(|placed| placed.key == root)
+            && let Some((tile, _)) = &placed.tile
+        {
+            Self::set_layout_state(toplevel, tile, placed.focused);
+            let _serial = toplevel.send_configure();
+        }
     }
 
     /// A request that changes nothing still deserves one configure, unless the
@@ -3045,8 +3674,15 @@ impl Compositor {
     }
 
     fn poll_launchers(&mut self) {
-        if self.launcher.poll() {
+        let now = Instant::now();
+        let failures = self.launcher.poll(now);
+        let summary = crate::launch::Failure::summary(&failures);
+        if failures.iter().any(|failure| !failure.early) {
             self.show_launch_failure();
+        }
+        if let Some(text) = summary {
+            self.launcher.launch_failed();
+            self.show_notice(&text);
         }
     }
 
@@ -3302,9 +3938,10 @@ impl CompositorHandler for Compositor {
                 self.log_window_size(&window, old, requested, "client request");
             }
             window.on_commit();
+            let previous_size = window.replace_committed_size(window.client_geometry().size);
             self.log_window_size(
                 &window,
-                window.replace_committed_size(window.client_geometry().size),
+                previous_size,
                 window.client_geometry().size,
                 "client commit",
             );
@@ -3320,6 +3957,9 @@ impl CompositorHandler for Compositor {
                 && !toplevel.is_initial_configure_sent()
             {
                 let _serial = toplevel.send_configure();
+            }
+            if previous_size != window.client_geometry().size {
+                self.ask_back_to_tile(&root, &window);
             }
         }
         self.record_surface_change();
@@ -3442,7 +4082,10 @@ impl Compositor {
                     })
                 })
             });
-        let rules = Self::window_rules(&surface, context);
+        let context = context.cloned();
+        let width = context.as_ref().and_then(|context| self.opening_width(context));
+        let context = context.as_ref();
+        let rules = Self::window_rules(&surface, context, width);
         let key = surface.wl_surface().clone();
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
@@ -3451,9 +4094,50 @@ impl Compositor {
         }
     }
 
+    /// The opening width fraction of a context. A pixel or decimal setting is
+    /// converted against the output in front of it and rewritten in the file.
+    fn opening_width(&mut self, context: &tehuti_protocol::Context) -> Option<f64> {
+        use core::ops::Div;
+        use tehuti_protocol::WindowWidth;
+        let (raw, screen) = match context.window_width()? {
+            WindowWidth::Fraction(value) => return Some(value),
+            WindowWidth::Decimal(value) => (value, None),
+            WindowWidth::Pixels(pixels) => {
+                let screen = self
+                    .placement
+                    .snapshot()
+                    .outputs
+                    .first()
+                    .map(|output| output.geometry.area.width)
+                    .filter(|width| *width >= 1.0)?;
+                let screen = tehuti_protocol::whole_pixels(screen);
+                (f64::from(pixels).div(f64::from(screen)), Some(screen))
+            }
+        };
+        if raw > 1.0 {
+            tracing::error!(
+                width = raw,
+                "context window width exceeds the screen and is ignored"
+            );
+            self.show_notice("WINDOW WIDTH IS WIDER THAN THE SCREEN");
+            return None;
+        }
+        let fraction = tehuti_protocol::nearest_fraction(raw);
+        if let Some((path, _)) = self
+            .context_files
+            .iter()
+            .find(|(_, file)| file.app_id() == context.app_id() && file.title() == context.title())
+            && let Err(error) = crate::width_rewrite::rewrite_file(path, fraction, screen)
+        {
+            tracing::warn!(%error, path = %path.display(), "window width not rewritten");
+        }
+        Some(tehuti_protocol::fraction_value(fraction))
+    }
+
     fn window_rules(
         surface: &ToplevelSurface,
         context: Option<&tehuti_protocol::Context>,
+        width: Option<f64>,
     ) -> tehuti_core::layout::WindowRules {
         tehuti_core::layout::WindowRules {
             kind: if Self::is_helper(surface) {
@@ -3462,9 +4146,7 @@ impl Compositor {
                 tehuti_core::layout::WindowKind::Ordinary
             },
             open_fullscreen: context.is_some_and(tehuti_protocol::Context::open_fullscreen),
-            default_column_width: context
-                .and_then(tehuti_protocol::Context::window_column_width)
-                .map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
+            default_column_width: width.map(|width| Some(tehuti_core::layout::PresetSize::Proportion(width))),
             default_window_height: context
                 .and_then(tehuti_protocol::Context::window_height)
                 .map(tehuti_core::layout::PresetSize::Proportion),
@@ -3481,11 +4163,11 @@ impl XdgShellHandler for Compositor {
     fn new_toplevel(&mut self, _surface: ToplevelSurface) {}
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        self.answer_state_request(&surface, None);
+        self.answer_state_request(&surface, None, Some(true));
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        self.answer_state_request(&surface, None);
+        self.answer_state_request(&surface, None, Some(false));
     }
 
     fn fullscreen_request(
@@ -3493,11 +4175,11 @@ impl XdgShellHandler for Compositor {
         surface: ToplevelSurface,
         _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
-        self.answer_state_request(&surface, Some(true));
+        self.answer_state_request(&surface, Some(true), None);
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        self.answer_state_request(&surface, Some(false));
+        self.answer_state_request(&surface, Some(false), None);
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
@@ -3645,14 +4327,30 @@ delegate_seat!(Compositor);
 delegate_data_device!(Compositor);
 delegate_output!(Compositor);
 
+/// An action for the log, with typed and noticed text reduced to its length.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "every other action carries no free text"
+)]
+fn redacted_action(action: &Action) -> String {
+    match action {
+        Action::Text { text } => format!("Text({} bytes)", text.as_str().len()),
+        Action::Notice { text } => format!("Notice({} bytes)", text.as_str().len()),
+        other => format!("{other:?}"),
+    }
+}
+
 fn log_speech_route(text: &tehuti_protocol::Text, first: Option<&Action>, plugin: bool) {
     match first {
         Some(Action::Notice { text: notice }) if notice.as_str() == "NO SPEECH MAPPING" => {
-            tracing::info!(text = text.as_str(), "speech has no mapping");
+            tracing::info!(bytes = text.as_str().len(), "speech has no mapping");
         }
-        Some(action) => tracing::info!(text = text.as_str(), ?action, "speech mapped"),
-        None if plugin => tracing::info!(text = text.as_str(), "speech routed to a plugin"),
-        None => tracing::info!(text = text.as_str(), "speech produced no action"),
+        Some(action) => {
+            let shown = redacted_action(action);
+            tracing::info!(bytes = text.as_str().len(), action = shown, "speech mapped");
+        }
+        None if plugin => tracing::info!(bytes = text.as_str().len(), "speech routed to a plugin"),
+        None => tracing::info!(bytes = text.as_str().len(), "speech produced no action"),
     }
 }
 
@@ -3666,7 +4364,7 @@ fn thousandths(score: u16) -> String {
 }
 
 fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
-    tracing::info!(session, text = text.as_str(), "speech transcript received");
+    tracing::info!(session, bytes = text.as_str().len(), "speech transcript received");
     if !admitted {
         tracing::info!("speech transcript dropped for a stale session");
     }
@@ -3746,6 +4444,47 @@ mod tests {
     use smithay::reexports::wayland_server::Display;
     use tehuti_protocol::Event;
 
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn info_logs_carry_the_transcript_length_not_the_text() {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer({
+                let capture = capture.clone();
+                move || capture.clone()
+            })
+            .finish();
+        let secret = tehuti_protocol::Text::new("zebra password hunter2".into()).unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_transcript(1, &secret, true);
+            super::log_speech_route(&secret, None, false);
+            super::log_speech_route(&secret, None, true);
+            let action = tehuti_protocol::Action::Text { text: secret.clone() };
+            super::log_speech_route(&secret, Some(&action), false);
+        });
+        let logged = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(!logged.contains("hunter2"), "{logged}");
+        assert!(logged.contains("bytes=22"), "{logged}");
+    }
+
     #[test]
     fn polling_speech_shows_the_process_outage_notice() {
         let display: Display<Compositor> = Display::new().unwrap();
@@ -3796,6 +4535,71 @@ mod tests {
         compositor.release_due_keys();
         assert!(!is_down(&compositor, 9));
         assert_eq!(compositor.release_timer_fired(), None);
+    }
+
+    #[test]
+    fn the_focused_context_sets_how_long_a_tap_is_held() {
+        let (_display, mut compositor) = compositor();
+        let context =
+            tehuti_protocol::parse_context("app_id = 'org.example.Game'\nkey_hold_ms = 120\nbuttons = {}\n")
+                .unwrap();
+        compositor.set_contexts(vec![context]);
+        compositor.speech_context = Some("org.example.Game".to_owned());
+        compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
+
+        compositor.advance_clocks(Duration::from_millis(119));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+
+        compositor.advance_clocks(Duration::from_millis(1));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 9));
+    }
+
+    fn hold_ms_after_tap(compositor: &mut Compositor, focus: &str) -> u64 {
+        compositor.speech_context = Some(focus.to_owned());
+        u64::try_from(compositor.key_hold().as_millis()).unwrap()
+    }
+
+    fn context(source: &str) -> tehuti_protocol::Context {
+        tehuti_protocol::parse_context(source).unwrap()
+    }
+
+    #[test]
+    fn key_hold_falls_back_from_own_context_to_global_to_default() {
+        let (_display, mut compositor) = compositor();
+        compositor.set_contexts(vec![
+            context("app_id = '*'\nkey_hold_ms = 80\nbuttons = {}\n"),
+            context("app_id = 'org.example.Slow'\nkey_hold_ms = 120\nbuttons = {}\n"),
+            context("app_id = 'org.example.Plain'\nbuttons = {}\n"),
+        ]);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Plain"), 80);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Slow"), 120);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Plain"), 80);
+        compositor.set_contexts(vec![context("app_id = 'org.example.Plain'\nbuttons = {}\n")]);
+        assert_eq!(hold_ms_after_tap(&mut compositor, "org.example.Plain"), 40);
+    }
+
+    #[test]
+    fn hold_changes_when_focus_moves_to_a_context_without_one() {
+        let (_display, mut compositor) = compositor();
+        compositor.set_contexts(vec![
+            context("app_id = 'org.example.Slow'\nkey_hold_ms = 120\nbuttons = {}\n"),
+            context("app_id = 'org.example.Plain'\nbuttons = {}\n"),
+        ]);
+        let key = smithay::input::keyboard::Keycode::new(9);
+        compositor.speech_context = Some("org.example.Slow".to_owned());
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(120));
+        compositor.release_due_keys();
+        compositor.speech_context = Some("org.example.Plain".to_owned());
+        compositor.tap_held(key, &[]);
+        compositor.advance_clocks(Duration::from_millis(39));
+        compositor.release_due_keys();
+        assert!(is_down(&compositor, 9));
+        compositor.advance_clocks(Duration::from_millis(1));
+        compositor.release_due_keys();
+        assert!(!is_down(&compositor, 9));
     }
 
     #[test]

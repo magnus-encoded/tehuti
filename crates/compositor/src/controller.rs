@@ -11,25 +11,42 @@ use tracing::warn;
 
 use crate::input::InputSource;
 
-/// Labels pads in path order, counting each model independently.
+/// Labels pads in path order and keys them through `roster`; see [`PadRoster::observe`].
+#[must_use]
+pub fn keyed_controllers(
+    roster: &mut tehuti_core::pad::PadRoster,
+    devices: impl IntoIterator<Item = tehuti_core::pad::PadSighting>,
+) -> Vec<(std::path::PathBuf, tehuti_core::dispatch::ControllerInfo)> {
+    let mut sightings = std::collections::BTreeMap::new();
+    let devices: Vec<_> = devices
+        .into_iter()
+        .inspect(|sighting| {
+            let _old = sightings.insert(sighting.path.clone(), sighting.name.clone());
+        })
+        .collect();
+    roster
+        .observe(devices)
+        .into_iter()
+        .map(|(path, pad)| {
+            let info = tehuti_core::dispatch::ControllerInfo {
+                name: sightings.remove(&path).unwrap_or_default(),
+                key: pad.key.as_str().to_owned(),
+                label: pad.label,
+                origin: pad.origin,
+            };
+            (path, info)
+        })
+        .collect()
+}
+
+/// [`keyed_controllers`] for a first sighting, without the node paths.
 #[must_use]
 pub fn numbered_controllers(
-    devices: impl IntoIterator<Item = (std::path::PathBuf, String, u16, u16)>,
+    devices: impl IntoIterator<Item = tehuti_core::pad::PadSighting>,
 ) -> Vec<tehuti_core::dispatch::ControllerInfo> {
-    let mut devices: Vec<_> = devices.into_iter().collect();
-    devices.sort_by(|left, right| left.0.cmp(&right.0));
-    let mut counts = std::collections::BTreeMap::<String, usize>::new();
-    devices
+    keyed_controllers(&mut tehuti_core::pad::PadRoster::default(), devices)
         .into_iter()
-        .map(|(_, name, vendor, product)| {
-            let model = tehuti_core::pad::Identity::for_device(vendor, product).model_name(&name);
-            let count = counts.entry(model.clone()).or_default();
-            *count = count.saturating_add(1);
-            tehuti_core::dispatch::ControllerInfo {
-                name,
-                label: format!("{model} #{count}"),
-            }
-        })
+        .map(|(_, info)| info)
         .collect()
 }
 
@@ -54,7 +71,11 @@ pub fn open_grabbed(
         })
         .filter_map(|(path, mut device)| match grab_nonblocking(&mut device) {
             Ok(()) => {
-                let mut translator = DpadHat::for_device(device.input_id().vendor(), device.input_id().product());
+                let mut translator = DpadHat::for_node(
+                    device.input_id().vendor(),
+                    device.input_id().product(),
+                    device.name().unwrap_or_default(),
+                );
                 if let Ok(axes) = device.get_absinfo() {
                     for (axis, info) in axes {
                         translator.set_trigger_range(axis, info.minimum(), info.maximum());
@@ -67,7 +88,12 @@ pub fn open_grabbed(
                     "controller face layout selected"
                 );
                 match Device::open(&path) {
-                    Ok(probe) => Some((path, EvdevPad::new(device, probe, translator))),
+                    Ok(probe) => {
+                        let sysfs = path.file_name().and_then(|node| {
+                            std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok()
+                        });
+                        Some((path, EvdevPad::new(device, probe, translator).with_sysfs(sysfs)))
+                    }
                     Err(error) => {
                         warn!(%error, "controller probe open failed; skipping it");
                         None
@@ -80,6 +106,20 @@ pub fn open_grabbed(
             }
         })
         .collect()
+}
+
+/// True while a Wii remote's nunchuk extension node exists; it has no south button, so it is
+/// never opened as a pad, and its name is read from sysfs instead.
+#[must_use]
+pub fn nunchuk_present() -> bool {
+    std::fs::read_dir("/sys/class/input")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            std::fs::read_to_string(entry.path().join("name"))
+                .is_ok_and(|name| name.trim() == "Nintendo Wii Remote Nunchuk")
+        })
 }
 
 /// Opens the input devices that could be pads. Opening and closing a device is slow on some kernels
@@ -167,6 +207,78 @@ pub fn is_physical(bus: evdev::BusType, sysfs: Option<&std::path::Path>) -> bool
     })
 }
 
+/// What the kernel reports about a pad, enough to tell where it comes from.
+#[derive(Debug, Clone, Copy)]
+pub struct PadOrigin<'a> {
+    pub bus: evdev::BusType,
+    pub vendor: u16,
+    pub product: u16,
+    /// The canonical sysfs path of the event node, when it could be read.
+    pub sysfs: Option<&'a std::path::Path>,
+    pub name: &'a str,
+    pub phys: &'a str,
+    pub uniq: &'a str,
+}
+
+/// The wireless receivers that carry Xbox pads, by USB vendor and product id.
+const XBOX_RECEIVERS: [(u16, u16); 6] = [
+    (0x045e, 0x0291),
+    (0x045e, 0x02a9),
+    (0x045e, 0x0719),
+    (0x045e, 0x02e6),
+    (0x045e, 0x02fe),
+    (0x045e, 0x02f9),
+];
+
+/// Names the origin of a pad: cable, dongle, Bluetooth, streamed, or virtual.
+///
+/// Bluetooth needs proof: the device sits under a Bluetooth controller in sysfs, or `BlueZ` made it
+/// through UHID. A device under `/sys/devices/virtual/input` was made by a program through uinput
+/// and is never Bluetooth. Without a sysfs path only unambiguous signs count, else the origin is unknown.
+#[must_use]
+pub fn classify_origin(pad: &PadOrigin<'_>) -> tehuti_core::dispatch::Origin {
+    use tehuti_core::dispatch::Origin;
+    if pad.name == VIRTUAL_PAD_NAME {
+        return Origin::Tehuti;
+    }
+    let known_dongle = XBOX_RECEIVERS.contains(&(pad.vendor, pad.product));
+    let Some(path) = pad.sysfs else {
+        return match pad.bus.0 {
+            0x03 if known_dongle => Origin::Dongle,
+            0x03 => Origin::Usb,
+            _ => Origin::Unknown,
+        };
+    };
+    let part = |text: &str| {
+        path.components()
+            .any(|component| component.as_os_str().to_string_lossy().starts_with(text))
+    };
+    if path.starts_with("/sys/devices/virtual/misc/uhid") {
+        return if pad.bus == evdev::BusType::BUS_BLUETOOTH {
+            Origin::Bluetooth
+        } else {
+            Origin::Unknown
+        };
+    }
+    if path.starts_with("/sys/devices/virtual") {
+        let signs = format!("{} {} {}", pad.name, pad.phys, pad.uniq).to_lowercase();
+        return if signs.contains("sunshine") {
+            Origin::Streamed
+        } else {
+            Origin::VirtualOther
+        };
+    }
+    if part("hci") || part("bluetooth") {
+        Origin::Bluetooth
+    } else if known_dongle || part("xone") || part("gip") {
+        Origin::Dongle
+    } else if part("usb") {
+        Origin::Usb
+    } else {
+        Origin::Unknown
+    }
+}
+
 /// Device operations needed to acquire exclusive, nonblocking input.
 pub trait GrabDevice {
     /// Acquires exclusive input ownership.
@@ -231,11 +343,19 @@ pub struct EvdevPad<D = Device> {
     /// The virtual controller kept while hidden, so the application never sees it unplugged.
     parked: Option<Mirror>,
     mirror_failed: bool,
+    /// The canonical sysfs path of the event node, when known.
+    sysfs: Option<std::path::PathBuf>,
     /// The physical pad failed a read; it feeds nothing until the event loop drops it.
     lost: bool,
     first_emit_after_focus: Option<std::time::Instant>,
     plugin_held: Vec<ButtonName>,
     buffered: Vec<Event>,
+    /// This pad's stick deadzone in thousandths of full travel, for its own reading and for forwarding.
+    deadzone: u16,
+    /// Where the sticks rest, by axis X, Y, right X, right Y, in thousandths of half travel.
+    recentre: [i16; 4],
+    /// The pad's axis ranges, read once when forwarding needs them: code, minimum, maximum.
+    ranges: Vec<(u16, i32, i32)>,
 }
 
 /// The virtual controller presented to the application, with inputs kept from it.
@@ -301,6 +421,23 @@ impl MirrorSink for evdev::uinput::VirtualDevice {
 #[must_use]
 pub fn mirror_wanted(mirrored: bool, active: Option<&std::path::Path>, path: &std::path::Path) -> bool {
     mirrored && active == Some(path)
+}
+
+/// Why copying pending input stopped.
+enum Copy {
+    /// The physical pad could not be read.
+    Read(io::Error),
+    /// The virtual pad could not be written.
+    Write(io::Error),
+}
+
+/// Parks `kept` as the spare unless one is already parked; the extra virtual pad is dropped.
+pub fn keep_spare(spare: &mut Option<VirtualPad>, kept: VirtualPad) {
+    if spare.is_some() {
+        warn!("a spare virtual pad is already parked; dropping the extra one");
+    } else {
+        *spare = Some(kept);
+    }
 }
 
 /// What [`sync_mirrors`] changed.
@@ -394,9 +531,59 @@ struct MirrorCopy {
     buffered: Vec<Event>,
     /// Keys and hat axes the virtual controller currently shows as held.
     held: Vec<(u16, u16)>,
+    /// Menu and View as the physical pad holds them, for the Guide chord.
+    menu_down: bool,
+    view_down: bool,
+    /// The key whose press completed the chord and went to the stream as Guide instead.
+    chord_key: Option<(u16, u16)>,
+    chord_live: bool,
 }
 
 impl MirrorCopy {
+    /// Menu + View together reach the stream as Guide, held as long as the chord is; the completing button stays out.
+    /// Returns whether `key`'s own event is kept from the stream.
+    fn chord(&mut self, name: ButtonName, state: ButtonState, key: (u16, u16)) -> bool {
+        if name != ButtonName::Start && name != ButtonName::Select {
+            return false;
+        }
+        let menu = name == ButtonName::Start;
+        let guide = (evdev::EventType::KEY.0, KeyCode::BTN_MODE.code());
+        let mut kept = self.chord_key == Some(key);
+        match state {
+            ButtonState::Pressed => {
+                if menu {
+                    self.menu_down = true;
+                } else {
+                    self.view_down = true;
+                }
+                if self.menu_down && self.view_down && self.chord_key.is_none() {
+                    self.chord_key = Some(key);
+                    self.chord_live = true;
+                    self.held.retain(|held| *held != guide);
+                    self.held.push(guide);
+                    self.frame.push(evdev::InputEvent::new(guide.0, guide.1, 1));
+                    kept = true;
+                }
+            }
+            ButtonState::Released => {
+                if menu {
+                    self.menu_down = false;
+                } else {
+                    self.view_down = false;
+                }
+                if self.chord_live {
+                    self.chord_live = false;
+                    self.held.retain(|held| *held != guide);
+                    self.frame.push(evdev::InputEvent::new(guide.0, guide.1, 0));
+                }
+                if self.chord_key == Some(key) {
+                    self.chord_key = None;
+                }
+            }
+        }
+        kept
+    }
+
     /// Hands over every translated event taken so far, for [`InputSource::drain`].
     fn drain(&mut self) -> Vec<Event> {
         core::mem::take(&mut self.buffered)
@@ -418,6 +605,10 @@ impl MirrorCopy {
         let mut kept = self.blocked.contains(&key);
         for input in &translated {
             if let Event::Button { name, state } = input
+                && self.chord(*name, *state, key)
+            {
+                kept = true;
+            } else if let Event::Button { name, state } = input
                 && consume(*name, *state)
             {
                 kept = true;
@@ -486,6 +677,10 @@ impl MirrorCopy {
 
     /// A frame that lets go of every key and hat the virtual controller shows as held.
     fn release(&mut self) -> Option<Vec<evdev::InputEvent>> {
+        self.menu_down = false;
+        self.view_down = false;
+        self.chord_key = None;
+        self.chord_live = false;
         if self.held.is_empty() {
             return None;
         }
@@ -773,6 +968,34 @@ impl EvdevPad {
         self.handles.events.name().unwrap_or("unnamed")
     }
 
+    /// The unique id the pad reports, else its physical path, else nothing.
+    #[must_use]
+    pub fn device_identity(&self) -> String {
+        let events = &self.handles.events;
+        events
+            .unique_name()
+            .filter(|text| !text.is_empty())
+            .or_else(|| events.physical_path().filter(|text| !text.is_empty()))
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    /// Where the pad comes from: cable, dongle, Bluetooth, streamed or virtual, else unknown.
+    #[must_use]
+    pub fn connection(&self) -> tehuti_core::dispatch::Origin {
+        let events = &self.handles.events;
+        let input_id = events.input_id();
+        classify_origin(&PadOrigin {
+            bus: input_id.bus_type(),
+            vendor: input_id.vendor(),
+            product: input_id.product(),
+            sysfs: self.sysfs.as_deref(),
+            name: events.name().unwrap_or_default(),
+            phys: events.physical_path().unwrap_or_default(),
+            uniq: events.unique_name().unwrap_or_default(),
+        })
+    }
+
     #[must_use]
     pub fn usb_id(&self) -> (u16, u16) {
         let input_id = self.handles.events.input_id();
@@ -780,9 +1003,13 @@ impl EvdevPad {
     }
 
     #[must_use]
-    pub fn identity(&self) -> tehuti_core::pad::Identity {
-        let input_id = self.handles.events.input_id();
-        tehuti_core::pad::Identity::for_device(input_id.vendor(), input_id.product())
+    pub const fn identity(&self) -> tehuti_core::pad::Identity {
+        self.translator.identity
+    }
+
+    /// Tells a Wii remote whether another pad or a nunchuk is attached beside it.
+    pub const fn set_companion(&mut self, companion: bool) {
+        self.translator.set_companion(companion);
     }
 }
 
@@ -927,11 +1154,23 @@ impl<D: PadDevice> EvdevPad<D> {
         if self.lost {
             return Ok(());
         }
-        let copied = self.copy_pending(&mut *consume);
-        if copied.is_err() {
-            self.lose(consume);
+        match self.copy_pending(&mut *consume) {
+            Ok(()) => Ok(()),
+            Err(Copy::Read(error)) => {
+                self.lose(consume);
+                Err(error)
+            }
+            Err(Copy::Write(error)) => {
+                // The physical pad still works; only the virtual one is suspect, so it is not kept.
+                warn!(%error, "virtual pad write failed; passing the physical pad through");
+                self.mirror = None;
+                self.mirror_failed = true;
+                for button in core::mem::take(&mut self.plugin_held) {
+                    let _kept = consume(button, ButtonState::Released);
+                }
+                Ok(())
+            }
         }
-        copied
     }
 
     /// Whether a failed read lost this physical pad.
@@ -955,18 +1194,23 @@ impl<D: PadDevice> EvdevPad<D> {
         }
     }
 
-    fn copy_pending(&mut self, consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool) -> io::Result<()> {
+    fn copy_pending(&mut self, consume: &mut dyn FnMut(ButtonName, ButtonState) -> bool) -> Result<(), Copy> {
         if self.mirror.is_none() && self.plugin_held.is_empty() {
             return Ok(());
         }
         loop {
-            let raw = self.handles.events().fetch_raw()?;
+            let raw = self.handles.events().fetch_raw().map_err(Copy::Read)?;
             if raw.is_empty() {
                 break;
             }
             let read_at = std::time::SystemTime::now();
             for event in raw {
                 tracing::debug!(target: "pad_latency", stage = "read", at_us = timestamp_us(read_at), physical_us = timestamp_us(event.timestamp()));
+                let event = if self.mirror.is_some() {
+                    self.deadzoned(event)
+                } else {
+                    event
+                };
                 if let Some(mirror) = &mut self.mirror {
                     let plugin_held = &mut self.plugin_held;
                     let mut track = |button, state| {
@@ -978,7 +1222,7 @@ impl<D: PadDevice> EvdevPad<D> {
                         kept
                     };
                     if let Some(frame) = mirror.copy.take(event, &mut self.translator, &mut track) {
-                        mirror.device.emit(&frame)?;
+                        mirror.device.emit(&frame).map_err(Copy::Write)?;
                         let first_after_focus = self.first_emit_after_focus.take();
                         tracing::debug!(target: "pad_latency", stage = "emit", at_us = timestamp_us(std::time::SystemTime::now()), read_us = timestamp_us(read_at), physical_us = timestamp_us(event.timestamp()), first_after_focus = first_after_focus.is_some(), since_focus_us = first_after_focus.map_or(0, |focus| focus.elapsed().as_micros()));
                     }
@@ -1028,11 +1272,92 @@ impl<D: PadDevice> EvdevPad<D> {
             mirror: None,
             parked: None,
             mirror_failed: false,
+            sysfs: None,
             lost: false,
             first_emit_after_focus: None,
             plugin_held: Vec::new(),
             buffered: Vec::new(),
+            deadzone: DEFAULT_DEADZONE,
+            recentre: [0; 4],
+            ranges: Vec::new(),
         }
+    }
+
+    /// Records where sysfs places the pad, so its origin can be told.
+    #[must_use]
+    pub fn with_sysfs(mut self, sysfs: Option<std::path::PathBuf>) -> Self {
+        self.sysfs = sysfs;
+        self
+    }
+
+    /// Sets the stick deadzone, in thousandths of full travel, for this pad's reading and forwarding.
+    pub const fn set_deadzone(&mut self, deadzone: u16) {
+        self.deadzone = deadzone;
+    }
+
+    /// Applies the pad's saved calibration and, when `measure` is set, first measures where its sticks
+    /// rest now and keeps that. Returns the new rest when one was measured.
+    /// # Errors
+    /// The kernel could not read the controller axis state.
+    pub fn calibrate(
+        &mut self,
+        deadzone: u16,
+        saved: [i16; 4],
+        measure: bool,
+    ) -> io::Result<Option<[i16; 4]>> {
+        self.deadzone = deadzone;
+        self.recentre = saved;
+        if !measure {
+            return Ok(None);
+        }
+        let rest = self.rest_offsets()?;
+        self.recentre = rest;
+        Ok(Some(rest))
+    }
+
+    /// Sets where the sticks rest, as measured by [`Self::rest_offsets`].
+    pub const fn set_recentre(&mut self, recentre: [i16; 4]) {
+        self.recentre = recentre;
+    }
+
+    /// Measures where the sticks rest now, as offsets from their middle in thousandths of half travel.
+    /// # Errors
+    /// The kernel could not read the controller axis state.
+    pub fn rest_offsets(&self) -> io::Result<[i16; 4]> {
+        let mut rest = [0; 4];
+        for (axis, info) in self.handles.probe().get_absinfo()? {
+            if let Some(slot) = stick_slot(axis).and_then(|slot| rest.get_mut(slot)) {
+                *slot = rest_offset(info.value(), info.minimum(), info.maximum());
+            }
+        }
+        Ok(rest)
+    }
+
+    /// The event with a stick value inside the deadzone moved to the centre and the rest rescaled; others unchanged.
+    fn deadzoned(&mut self, event: evdev::InputEvent) -> evdev::InputEvent {
+        if event.event_type() != evdev::EventType::ABSOLUTE || !is_stick_axis(AbsoluteAxisCode(event.code()))
+        {
+            return event;
+        }
+        if self.ranges.is_empty()
+            && let Ok(axes) = self.handles.probe().get_absinfo()
+        {
+            self.ranges = axes
+                .into_iter()
+                .map(|(axis, info)| (axis.0, info.minimum(), info.maximum()))
+                .collect();
+        }
+        let Some((_, minimum, maximum)) = self.ranges.iter().find(|(code, _, _)| *code == event.code())
+        else {
+            return event;
+        };
+        let offset = stick_slot(AbsoluteAxisCode(event.code()))
+            .and_then(|slot| self.recentre.get(slot))
+            .copied()
+            .unwrap_or_default();
+        let shifted = shifted_value(event.value(), offset, *minimum, *maximum);
+        let value = deadzoned_value(shifted, *minimum, *maximum, self.deadzone);
+        evdev::InputEvent::new(event.event_type().0, event.code(), value)
     }
 
     /// Samples the current calibrated stick axes, including a 15 percent deadzone.
@@ -1042,7 +1367,12 @@ impl<D: PadDevice> EvdevPad<D> {
         use evdev::AbsoluteAxisCode;
         let mut sticks = tehuti_core::dispatch::Sticks::default();
         for (axis, info) in self.handles.probe().get_absinfo()? {
-            let value = stick_axis(info.value(), info.minimum(), info.maximum());
+            let offset = stick_slot(axis)
+                .and_then(|slot| self.recentre.get(slot))
+                .copied()
+                .unwrap_or_default();
+            let shifted = shifted_value(info.value(), offset, info.minimum(), info.maximum());
+            let value = stick_axis(shifted, info.minimum(), info.maximum(), self.deadzone);
             match axis {
                 AbsoluteAxisCode::ABS_X => sticks.left.0 = value,
                 AbsoluteAxisCode::ABS_Y => sticks.left.1 = value,
@@ -1213,6 +1543,16 @@ impl DpadHat {
         }
     }
 
+    /// Like [`Self::for_device`], with the node name that tells a Wii remote's buttons node from
+    /// the extension nodes that share its id.
+    #[must_use]
+    pub fn for_node(vendor: u16, product: u16, name: &str) -> Self {
+        Self {
+            identity: tehuti_core::pad::Identity::for_node(vendor, product, name),
+            ..Self::default()
+        }
+    }
+
     /// Records the device's reported range for a trigger axis; other axes are ignored.
     pub const fn set_trigger_range(&mut self, axis: AbsoluteAxisCode, minimum: i32, maximum: i32) {
         let trigger = match axis {
@@ -1226,10 +1566,44 @@ impl DpadHat {
         }
     }
 
+    /// Switches a Wii remote between its alone and paired layouts; other pads ignore it.
+    pub const fn set_companion(&mut self, companion: bool) {
+        self.identity = self.identity.with_companion(companion);
+    }
+
+    /// Moves a key onto the position its pad family reads it from.
+    ///
+    /// The Wii remote is held sideways, so its d-pad turns a quarter turn anticlockwise (its
+    /// up arm points left). Alone, 1 confirms, 2 goes back and A opens the keyboard; with a
+    /// companion A confirms, B goes back and 1 opens the keyboard. + is push-to-talk and − View
+    /// either way. The leftover buttons map to a code nothing reads.
     const fn face_code(&self, code: KeyCode) -> KeyCode {
-        match (self.identity.swap_north_west, code) {
-            (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
-            (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+        use tehuti_core::pad::PadFamily;
+        let unmapped = KeyCode::BTN_TRIGGER_HAPPY1;
+        let paired = match self.identity.family {
+            PadFamily::Remote => false,
+            PadFamily::RemotePaired => true,
+            PadFamily::Letters | PadFamily::Symbols | PadFamily::Nintendo => {
+                return match (self.identity.swap_north_west, code) {
+                    (true, KeyCode::BTN_NORTH) => KeyCode::BTN_WEST,
+                    (true, KeyCode::BTN_WEST) => KeyCode::BTN_NORTH,
+                    _ => code,
+                };
+            }
+        };
+        match code {
+            KeyCode::KEY_UP => KeyCode::BTN_DPAD_LEFT,
+            KeyCode::KEY_RIGHT => KeyCode::BTN_DPAD_UP,
+            KeyCode::KEY_DOWN => KeyCode::BTN_DPAD_RIGHT,
+            KeyCode::KEY_LEFT => KeyCode::BTN_DPAD_DOWN,
+            KeyCode::KEY_NEXT => KeyCode::KEY_RECORD,
+            KeyCode::KEY_PREVIOUS => KeyCode::BTN_SELECT,
+            KeyCode::BTN_1 if paired => KeyCode::BTN_NORTH,
+            KeyCode::BTN_1 => KeyCode::BTN_SOUTH,
+            KeyCode::BTN_2 if paired => unmapped,
+            KeyCode::BTN_2 => KeyCode::BTN_EAST,
+            KeyCode::BTN_SOUTH if !paired => KeyCode::BTN_NORTH,
+            KeyCode::BTN_EAST if !paired => unmapped,
             _ => code,
         }
     }
@@ -1297,6 +1671,12 @@ fn trigger_event(trigger: &mut Trigger, value: i32, name: ButtonName) -> Vec<Eve
         .collect()
 }
 
+/// Back paddles: `BTN_GRIPL`, `BTN_GRIPR`, `BTN_GRIPL2` and `BTN_GRIPR2` (0x224-0x227).
+const PADDLE_1: KeyCode = KeyCode::new(0x224);
+const PADDLE_2: KeyCode = KeyCode::new(0x225);
+const PADDLE_3: KeyCode = KeyCode::new(0x226);
+const PADDLE_4: KeyCode = KeyCode::new(0x227);
+
 /// Parses an evdev key event. Autorepeat (value 2) and unknown codes give `None`.
 const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
     let state = match value {
@@ -1321,6 +1701,10 @@ const fn parse_button(code: KeyCode, value: i32) -> Option<Event> {
         KeyCode::BTN_DPAD_DOWN => ButtonName::DpadDown,
         KeyCode::BTN_DPAD_LEFT => ButtonName::DpadLeft,
         KeyCode::BTN_DPAD_RIGHT => ButtonName::DpadRight,
+        PADDLE_1 => ButtonName::Paddle1,
+        PADDLE_2 => ButtonName::Paddle2,
+        PADDLE_3 => ButtonName::Paddle3,
+        PADDLE_4 => ButtonName::Paddle4,
         _ => return None,
     };
     Some(Event::Button { name, state })
@@ -1334,6 +1718,39 @@ mod mirror_tests {
 
     fn key(code: KeyCode, value: i32) -> InputEvent {
         InputEvent::new(EventType::KEY.0, code.code(), value)
+    }
+
+    struct Counted(std::rc::Rc<core::cell::Cell<usize>>);
+
+    impl super::MirrorSink for Counted {
+        fn emit(&mut self, _frame: &[InputEvent]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.set(self.0.get().saturating_add(1));
+        }
+    }
+
+    fn virtual_pad(drops: &std::rc::Rc<core::cell::Cell<usize>>) -> super::VirtualPad {
+        super::VirtualPad(super::Mirror {
+            device: Box::new(Counted(std::rc::Rc::clone(drops))),
+            copy: MirrorCopy::default(),
+            centres: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn parking_a_spare_keeps_the_one_already_parked() {
+        let drops = std::rc::Rc::default();
+        let mut spare = Some(virtual_pad(&drops));
+        super::keep_spare(&mut spare, virtual_pad(&drops));
+        assert!(spare.is_some());
+        assert_eq!(drops.get(), 1, "the extra virtual pad is dropped");
+        super::keep_spare(&mut None, virtual_pad(&drops));
+        assert_eq!(drops.get(), 2);
     }
 
     #[test]
@@ -1377,6 +1794,26 @@ mod mirror_tests {
 
     fn sync() -> InputEvent {
         InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0)
+    }
+
+    #[test]
+    fn release_forgets_a_half_held_chord() {
+        let mut copy = MirrorCopy::default();
+        let mut translator = DpadHat::default();
+        let mut consume = |_: ButtonName, _: ButtonState| false;
+        for event in [key(KeyCode::BTN_START, 1), sync()] {
+            let _frame = copy.take(event, &mut translator, &mut consume);
+        }
+        let _released = copy.release();
+        let sent: Vec<_> = [key(KeyCode::BTN_SELECT, 1), sync()]
+            .into_iter()
+            .filter_map(|event| copy.take(event, &mut translator, &mut consume))
+            .flatten()
+            .collect();
+        assert!(
+            sent.iter().all(|event| event.code() != KeyCode::BTN_MODE.code()),
+            "a lone View press after a release is no chord: {sent:?}"
+        );
     }
 
     proptest::proptest! {
@@ -1452,20 +1889,151 @@ mod mirror_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::{PadOrigin, classify_origin};
+    use evdev::BusType;
+    use tehuti_core::dispatch::Origin;
+
+    fn origin(bus: BusType, ids: (u16, u16), sysfs: Option<&str>, name: &str) -> Origin {
+        classify_origin(&PadOrigin {
+            bus,
+            vendor: ids.0,
+            product: ids.1,
+            sysfs: sysfs.map(std::path::Path::new),
+            name,
+            phys: "",
+            uniq: "",
+        })
+    }
+
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "a table of recorded sysfs samples")]
+    fn recorded_sysfs_samples_give_one_origin_each() {
+        let pad = (0x045e, 0x0b12);
+        let cases = [
+            (
+                BusType::BUS_USB,
+                pad,
+                "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3:1.0/input/input5/event4",
+                "Pad",
+                Origin::Usb,
+            ),
+            (
+                BusType::BUS_USB,
+                (0x045e, 0x0291),
+                "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0/input/input6/event5",
+                "Pad",
+                Origin::Dongle,
+            ),
+            (
+                BusType::BUS_VIRTUAL,
+                pad,
+                "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0/gip0/gip0.0/input/input7/event6",
+                "Pad",
+                Origin::Dongle,
+            ),
+            (
+                BusType::BUS_BLUETOOTH,
+                pad,
+                "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-4/1-4:1.0/bluetooth/hci0/hci0:11/0005:045E:0B13.0003/input/input9/event8",
+                "Pad",
+                Origin::Bluetooth,
+            ),
+            (
+                BusType::BUS_BLUETOOTH,
+                pad,
+                "/sys/devices/virtual/misc/uhid/0005:045E:0B13.0007/input/input30/event12",
+                "Pad",
+                Origin::Bluetooth,
+            ),
+            (
+                BusType::BUS_USB,
+                pad,
+                "/sys/devices/virtual/input/input23/event16",
+                "Sunshine X-Box One (virtual) pad",
+                Origin::Streamed,
+            ),
+            (
+                BusType::BUS_USB,
+                pad,
+                "/sys/devices/virtual/input/input24/event17",
+                "Some Emulated Pad",
+                Origin::VirtualOther,
+            ),
+            (
+                BusType::BUS_BLUETOOTH,
+                pad,
+                "/sys/devices/virtual/input/input25/event18",
+                "Some Emulated Pad",
+                Origin::VirtualOther,
+            ),
+            (
+                BusType::BUS_USB,
+                pad,
+                "/sys/devices/virtual/input/input26/event19",
+                super::VIRTUAL_PAD_NAME,
+                Origin::Tehuti,
+            ),
+        ];
+        for (bus, ids, path, name, expected) in cases {
+            assert_eq!(origin(bus, ids, Some(path), name), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn bluetooth_is_never_claimed_without_proof() {
+        let pad = (0x045e, 0x0b13);
+        assert_eq!(origin(BusType::BUS_BLUETOOTH, pad, None, "Pad"), Origin::Unknown);
+        assert_eq!(
+            origin(
+                BusType::BUS_BLUETOOTH,
+                pad,
+                Some("/sys/devices/platform/odd/input/input1/event1"),
+                "Pad"
+            ),
+            Origin::Unknown
+        );
+        assert_eq!(origin(BusType::BUS_USB, pad, None, "Pad"), Origin::Usb);
+    }
+
+    #[test]
+    fn a_virtual_pad_naming_its_creator_in_phys_is_streamed() {
+        let pad = PadOrigin {
+            bus: BusType::BUS_USB,
+            vendor: 0x045e,
+            product: 0x0b12,
+            sysfs: Some(std::path::Path::new("/sys/devices/virtual/input/input23/event16")),
+            name: "Virtual Pad",
+            phys: "sunshine-gamepad-1",
+            uniq: "",
+        };
+        assert_eq!(classify_origin(&pad), Origin::Streamed);
+    }
+
+    fn sighting(path: &str, name: &str, ids: (u16, u16), origin: Origin) -> tehuti_core::pad::PadSighting {
+        tehuti_core::pad::PadSighting {
+            path: path.into(),
+            name: name.into(),
+            vendor: ids.0,
+            product: ids.1,
+            uniq: String::new(),
+            origin,
+        }
+    }
+
     #[test]
     fn usb_ids_give_distinct_models_and_keep_kernel_names() {
         let pads = super::numbered_controllers([
-            (
-                "/dev/input/event9".into(),
-                "Xbox Wireless Controller".into(),
-                0x045e,
-                0x0b13,
+            sighting(
+                "/dev/input/event9",
+                "Xbox Wireless Controller",
+                (0x045e, 0x0b13),
+                Origin::Usb,
             ),
-            (
-                "/dev/input/event2".into(),
-                "Wireless Controller".into(),
-                0x054c,
-                0x09cc,
+            sighting(
+                "/dev/input/event2",
+                "Wireless Controller",
+                (0x054c, 0x09cc),
+                Origin::Usb,
             ),
         ]);
         assert_eq!(pads[0].name, "Wireless Controller");
@@ -1475,25 +2043,14 @@ mod tests {
     }
 
     #[test]
-    fn matching_models_are_numbered_by_device_path() {
-        let pads = super::numbered_controllers([
-            (
-                "/dev/input/event9".into(),
-                "Wireless Controller".into(),
-                0x054c,
-                0x05c4,
-            ),
-            (
-                "/dev/input/event2".into(),
-                "Wireless Controller".into(),
-                0x054c,
-                0x09cc,
-            ),
-        ]);
-        assert_eq!(
-            pads.iter().map(|pad| pad.label.as_str()).collect::<Vec<_>>(),
-            ["DUALSHOCK 4 #1", "DUALSHOCK 4 #2"]
-        );
+    fn a_pads_origin_reaches_its_tile_info() {
+        let pads = super::numbered_controllers([sighting(
+            "/dev/input/event9",
+            "Xbox Wireless Controller",
+            (0x045e, 0x0b13),
+            Origin::Bluetooth,
+        )]);
+        assert_eq!(pads[0].origin, Origin::Bluetooth);
     }
 
     #[test]
@@ -1763,15 +2320,80 @@ mod tests {
 
     #[test]
     fn stick_calibration_handles_deadzone_extremes_and_invalid_ranges() {
-        assert_eq!(stick_axis(0, -32768, 32767), 0);
-        assert_eq!(stick_axis(4000, -32768, 32767), 0);
-        assert_eq!(stick_axis(-32768, -32768, 32767), -1000);
-        assert_eq!(stick_axis(32767, -32768, 32767), 1000);
-        assert_eq!(stick_axis(128, 0, 255), 0);
-        assert_eq!(stick_axis(0, 0, 255), -1000);
-        assert_eq!(stick_axis(255, 0, 255), 1000);
-        assert_eq!(stick_axis(10, 10, 10), 0);
-        assert_eq!(stick_axis(10, 20, 10), 0);
+        assert_eq!(stick_axis(0, -32768, 32767, 150), 0);
+        assert_eq!(stick_axis(4000, -32768, 32767, 150), 0);
+        assert_eq!(stick_axis(-32768, -32768, 32767, 150), -1000);
+        assert_eq!(stick_axis(32767, -32768, 32767, 150), 1000);
+        assert_eq!(stick_axis(128, 0, 255, 150), 0);
+        assert_eq!(stick_axis(0, 0, 255, 150), -1000);
+        assert_eq!(stick_axis(255, 0, 255, 150), 1000);
+        assert_eq!(stick_axis(10, 10, 10, 150), 0);
+        assert_eq!(stick_axis(10, 20, 10, 150), 0);
+    }
+
+    #[test]
+    fn a_larger_deadzone_swallows_a_pad_that_rests_off_centre() {
+        // A pad resting 24% off centre reads zero under a 25% deadzone, and still reaches full travel.
+        assert_eq!(stick_axis(-3410, -32768, 32767, 150), 0);
+        assert!(stick_axis(-9000, -32768, 32767, 150) < 0);
+        assert_eq!(stick_axis(7799, -32768, 32767, 250), 0);
+        assert_eq!(stick_axis(32767, -32768, 32767, 250), 1000);
+        assert!(stick_axis(4000, -32768, 32767, 0) > 0);
+    }
+
+    #[test]
+    fn forwarded_sticks_sit_at_the_centre_inside_the_deadzone_and_reach_the_ends() {
+        assert_eq!(deadzoned_value(120, 0, 255, 150), 127);
+        assert_eq!(deadzoned_value(-3410, -32768, 32767, 250), 0);
+        assert_eq!(deadzoned_value(32767, -32768, 32767, 250), 32767);
+        assert_eq!(deadzoned_value(-32768, -32768, 32767, 250), -32768);
+        assert_eq!(deadzoned_value(4000, -32768, 32767, 0), 4000);
+        assert_eq!(deadzoned_value(9, 5, 5, 250), 9);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn deadzoned_sticks_stay_in_range_keep_order_and_rest_at_the_centre(
+            minimum in -40000_i32..0,
+            span in 2_i32..70000,
+            deadzone in 0_u16..500,
+            first in 0_i32..70000,
+            second in 0_i32..70000,
+        ) {
+            let maximum = minimum.saturating_add(span);
+            let within = |raw: i32| minimum.saturating_add(raw.rem_euclid(span.saturating_add(1)));
+            let (one, other) = (within(first), within(second));
+            let (low, high) = (one.min(other), one.max(other));
+            let (moved_low, moved_high) = (
+                deadzoned_value(low, minimum, maximum, deadzone),
+                deadzoned_value(high, minimum, maximum, deadzone),
+            );
+            proptest::prop_assert!((minimum..=maximum).contains(&moved_low));
+            proptest::prop_assert!(moved_low <= moved_high);
+            let centre = minimum.midpoint(maximum);
+            proptest::prop_assert_eq!(deadzoned_value(centre, minimum, maximum, deadzone), centre);
+            proptest::prop_assert_eq!(deadzoned_value(low, minimum, maximum, 0), low);
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_measured_rest_reads_as_the_middle_and_the_ends_stay_in_range(
+            minimum in -40000_i32..0,
+            span in 200_i32..70000,
+            drift in -400_i32..400,
+            probe in 0_i32..70000,
+        ) {
+            let maximum = minimum.saturating_add(span);
+            let middle = minimum.midpoint(maximum);
+            let resting = middle.saturating_add(i32::try_from(i64::from(span).saturating_mul(i64::from(drift)) / 2000).unwrap_or(0));
+            let offset = rest_offset(resting, minimum, maximum);
+            let moved = shifted_value(resting, offset, minimum, maximum);
+            let tolerance = (span / 500).saturating_add(2);
+            proptest::prop_assert!(moved.abs_diff(middle) <= tolerance.unsigned_abs());
+            let any = minimum.saturating_add(probe.rem_euclid(span.saturating_add(1)));
+            proptest::prop_assert!((minimum..=maximum).contains(&shifted_value(any, offset, minimum, maximum)));
+        }
     }
 
     #[test]
@@ -1908,7 +2530,78 @@ pub fn watch(mut state: Watchdog, input: WatchInput) -> (Watchdog, WatchVerdict)
     }
 }
 
-fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
+/// The deadzone of a pad with no saved choice, in thousandths of full travel.
+const DEFAULT_DEADZONE: u16 = tehuti_core::dispatch::DEFAULT_DEADZONE;
+
+fn is_stick_axis(axis: AbsoluteAxisCode) -> bool {
+    [
+        AbsoluteAxisCode::ABS_X,
+        AbsoluteAxisCode::ABS_Y,
+        AbsoluteAxisCode::ABS_RX,
+        AbsoluteAxisCode::ABS_RY,
+    ]
+    .contains(&axis)
+}
+
+/// Which of X, Y, right X, right Y a stick axis is.
+fn stick_slot(axis: AbsoluteAxisCode) -> Option<usize> {
+    [
+        AbsoluteAxisCode::ABS_X,
+        AbsoluteAxisCode::ABS_Y,
+        AbsoluteAxisCode::ABS_RX,
+        AbsoluteAxisCode::ABS_RY,
+    ]
+    .iter()
+    .position(|stick| *stick == axis)
+}
+
+/// How far a stick value sits from the middle of its range, in thousandths of half the range.
+#[must_use]
+pub fn rest_offset(value: i32, minimum: i32, maximum: i32) -> i16 {
+    let half = i64::from(maximum).saturating_sub(i64::from(minimum)) / 2;
+    let delta = i64::from(value).saturating_sub(i64::from(minimum.midpoint(maximum)));
+    delta.saturating_mul(1000).checked_div(half).map_or(0, |offset| {
+        i16::try_from(offset.clamp(-500, 500)).unwrap_or_default()
+    })
+}
+
+/// A stick value moved back by the rest offset, so the measured rest reads as the middle.
+#[must_use]
+pub fn shifted_value(value: i32, offset: i16, minimum: i32, maximum: i32) -> i32 {
+    if offset == 0 {
+        return value;
+    }
+    let half = i64::from(maximum).saturating_sub(i64::from(minimum)) / 2;
+    let shift = half.saturating_mul(i64::from(offset)) / 1000;
+    i32::try_from(i64::from(value).saturating_sub(shift)).map_or(value, |moved| moved.clamp(minimum, maximum))
+}
+
+/// A stick value with the deadzone cut out: inside it the stick sits at its centre,
+/// outside it the rest of the travel is stretched to reach the ends.
+#[must_use]
+pub fn deadzoned_value(value: i32, minimum: i32, maximum: i32, deadzone: u16) -> i32 {
+    let half = i64::from(maximum).saturating_sub(i64::from(minimum)) / 2;
+    if half <= 0 || deadzone == 0 {
+        return value;
+    }
+    let centre = i64::from(minimum.midpoint(maximum));
+    let delta = i64::from(value).saturating_sub(centre);
+    let limit = half.saturating_mul(i64::from(deadzone.min(900))) / 1000;
+    if delta.abs() <= limit {
+        return i32::try_from(centre).unwrap_or(value);
+    }
+    let stretched = delta
+        .abs()
+        .saturating_sub(limit)
+        .saturating_mul(half)
+        .checked_div(half.saturating_sub(limit))
+        .unwrap_or_default()
+        .saturating_mul(delta.signum());
+    i32::try_from(centre.saturating_add(stretched)).map_or(value, |moved| moved.clamp(minimum, maximum))
+}
+
+fn stick_axis(value: i32, minimum: i32, maximum: i32, deadzone: u16) -> i16 {
+    let deadzone = i64::from(deadzone.min(900));
     let range = i64::from(maximum).saturating_sub(i64::from(minimum));
     if range <= 0 {
         return 0;
@@ -1920,6 +2613,122 @@ fn stick_axis(value: i32, minimum: i32, maximum: i32) -> i16 {
         .unwrap_or_default()
         .saturating_sub(1000))
     .clamp(-1000, 1000);
-    let travel = normalized.abs().saturating_sub(150).max(0).saturating_mul(1000) / 850;
+    let travel = normalized
+        .abs()
+        .saturating_sub(deadzone)
+        .max(0)
+        .saturating_mul(1000)
+        .checked_div(1000_i64.saturating_sub(deadzone))
+        .unwrap_or_default();
     i16::try_from(travel.saturating_mul(normalized.signum())).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::DpadHat;
+    use evdev::{EventType, InputEvent, KeyCode};
+    use tehuti_protocol::{ButtonName, ButtonState, Event};
+
+    fn remote() -> DpadHat {
+        DpadHat::for_node(0x057e, 0x0306, "Nintendo Wii Remote")
+    }
+
+    fn press(hat: &mut DpadHat, code: KeyCode) -> Vec<Event> {
+        hat.translate(&InputEvent::new(EventType::KEY.0, code.code(), 1).destructure())
+    }
+
+    #[test]
+    fn back_paddles_map_from_their_evdev_codes() {
+        for (code, expected) in [
+            (0x224, "Paddle1"),
+            (0x225, "Paddle2"),
+            (0x226, "Paddle3"),
+            (0x227, "Paddle4"),
+        ] {
+            assert_eq!(
+                format!("{:?}", super::parse_button(KeyCode::new(code), 1)),
+                format!("Some(Button {{ name: {expected}, state: Pressed }})"),
+                "{code:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sideways_remote_reads_its_buttons_from_the_standard_positions() {
+        let mut hat = remote();
+        for (code, name) in [
+            (KeyCode::BTN_1, ButtonName::South),
+            (KeyCode::BTN_2, ButtonName::East),
+            (KeyCode::BTN_SOUTH, ButtonName::North),
+            (KeyCode::KEY_NEXT, ButtonName::Record),
+            (KeyCode::KEY_PREVIOUS, ButtonName::Select),
+            (KeyCode::BTN_MODE, ButtonName::Guide),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_a_companion_the_remote_confirms_on_a_and_goes_back_on_b() {
+        let mut hat = remote();
+        hat.set_companion(true);
+        for (code, name) in [
+            (KeyCode::BTN_SOUTH, ButtonName::South),
+            (KeyCode::BTN_EAST, ButtonName::East),
+            (KeyCode::BTN_1, ButtonName::North),
+            (KeyCode::KEY_NEXT, ButtonName::Record),
+            (KeyCode::KEY_PREVIOUS, ButtonName::Select),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+        assert_eq!(press(&mut hat, KeyCode::BTN_2), Vec::<Event>::new());
+        hat.set_companion(false);
+        assert_eq!(press(&mut hat, KeyCode::BTN_EAST), Vec::<Event>::new());
+    }
+
+    #[test]
+    fn the_sideways_remote_turns_its_dpad_a_quarter_turn_anticlockwise() {
+        let mut hat = remote();
+        for (code, name) in [
+            (KeyCode::KEY_UP, ButtonName::DpadLeft),
+            (KeyCode::KEY_RIGHT, ButtonName::DpadUp),
+            (KeyCode::KEY_DOWN, ButtonName::DpadRight),
+            (KeyCode::KEY_LEFT, ButtonName::DpadDown),
+        ] {
+            assert_eq!(
+                press(&mut hat, code),
+                vec![Event::Button {
+                    name,
+                    state: ButtonState::Pressed
+                }],
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_classic_controller_on_the_remote_keeps_its_own_buttons() {
+        let mut hat = DpadHat::for_node(0x057e, 0x0306, "Nintendo Wii Remote Classic Controller");
+        assert_eq!(
+            press(&mut hat, KeyCode::BTN_SOUTH),
+            vec![Event::Button {
+                name: ButtonName::South,
+                state: ButtonState::Pressed
+            }]
+        );
+    }
 }

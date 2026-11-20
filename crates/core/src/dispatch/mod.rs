@@ -12,8 +12,11 @@ use std::collections::VecDeque;
 use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission};
 
 mod input_settings;
+pub use crate::pad::Origin;
 pub use input_settings::{
-    ControllerChoice, ControllerInfo, InputRow, InputSettings, Microphone, MicrophoneChoice,
+    CONTROLLER_ROW, CONTROLLER_SETTINGS_ROW, ControllerChoice, ControllerInfo, DEADZONE_STEPS,
+    DEFAULT_DEADZONE, InputSettings, MICROPHONE_ROW, MicKind, Microphone, MicrophoneChoice, PadKind,
+    REMOTE_ROW, RelayState, TALK_OPTIONS,
 };
 
 mod settings;
@@ -35,6 +38,8 @@ pub enum Input {
     /// Closes the session-start invitation once a window exists.
     CloseInvitation,
     Volume(Option<u8>),
+    /// Reply to [`Effect::ReadWindowSize`]: the focused window's size in millionths of the screen.
+    WindowSize(Option<u32>),
     Adjusters(Vec<(usize, tehuti_protocol::Adjuster)>),
     ChoiceList(crate::choice_list::Slots),
     DisplayModes {
@@ -53,13 +58,21 @@ pub enum Input {
     /// The connected pads and their labels, in device path order.
     Controllers(Vec<ControllerInfo>),
     ControllerBindings(std::collections::BTreeMap<String, ButtonName>),
+    /// The saved stick deadzones by pad key, in thousandths.
+    ControllerDeadzones(std::collections::BTreeMap<String, u16>),
+    /// The saved stick rest offsets by pad key: X, Y, right X, right Y, in thousandths of half travel.
+    ControllerRecentres(std::collections::BTreeMap<String, [i16; 4]>),
     ActiveController(String),
     /// Reply to [`Effect::ListMicrophones`]: the capture sources found.
     Microphones(Vec<Microphone>),
+    /// Reply to [`Effect::ListRemoteHosts`]: the online hosts that could send a microphone.
+    RemoteHosts(Vec<String>),
     /// The saved input choices, read at startup.
     InputChoices {
         controller: ControllerChoice,
         microphone: MicrophoneChoice,
+        disabled_controllers: Vec<String>,
+        disabled_microphones: Vec<String>,
     },
     /// Elapsed wall time since the previous tick.
     Tick {
@@ -81,6 +94,10 @@ pub enum Input {
     PluginReply {
         key: RequestKey,
         result: Result<Vec<Action>, String>,
+    },
+    /// A plugin completed the request itself: no actions and no fallback.
+    PluginHandled {
+        key: RequestKey,
     },
     PluginExited {
         plugin: usize,
@@ -126,6 +143,13 @@ pub enum Effect {
         finished: bool,
     },
     ReadVolume,
+    /// Query: read the focused window's size. Reply [`Input::WindowSize`].
+    ReadWindowSize(crate::adjuster::SizeAxis),
+    /// Sets the focused window's size to a fraction of the screen, in millionths.
+    SetWindowSize {
+        axis: crate::adjuster::SizeAxis,
+        millionths: u32,
+    },
     SetVolume(u8),
     PasswordSpeechIgnored,
     RunMenuCommand(crate::menu::Command),
@@ -140,10 +164,30 @@ pub enum Effect {
     SettingsController(ControllerChoice),
     PersistController(ControllerChoice),
     PersistControllerTalk(String, Option<ButtonName>),
+    /// Saves the stick deadzone, in thousandths, of the pad with this key.
+    PersistControllerDeadzone(String, u16),
+    /// Measures where the pad's sticks rest now and keeps that as their centre.
+    RecentreController(String),
     /// Saves the capture sources the speech sidecar records from.
     SettingsMicrophone(MicrophoneChoice),
+    /// Whether the named pad drives Tehuti; the compositor saves it and gates the pad.
+    SettingsControllerEnabled {
+        name: String,
+        enabled: bool,
+    },
+    /// Whether the named microphone is used; the compositor saves it for the speech sidecar.
+    SettingsMicrophoneEnabled {
+        name: String,
+        enabled: bool,
+    },
     /// Lists capture sources; the compositor answers later with [`Input::Microphones`].
     ListMicrophones,
+    /// Lists hosts that could send a remote microphone; the compositor answers later with [`Input::RemoteHosts`].
+    ListRemoteHosts,
+    /// Connects the `AudioRelay` player to the host chosen in the Input page.
+    ConnectRemoteMicrophone {
+        host: String,
+    },
     /// Relative motion in millionths of a logical pixel.
     MovePointer {
         x: i32,
@@ -238,6 +282,8 @@ enum Await {
         event: Event,
         actions: Vec<Action>,
         route: bool,
+        /// A stick-modifier tap's press, dispatched ahead of the release in `event`.
+        press: Option<Event>,
     },
     Supervised,
     SecretConfirmation(Event),
@@ -285,6 +331,8 @@ pub struct State {
     secret_prompt: SecretPrompt,
     adjuster: Option<crate::adjuster::Gauge>,
     volume_pending: crate::adjuster::VolumeRead,
+    /// The axis whose size read is pending; set together with `volume_pending`.
+    size_pending: Option<crate::adjuster::SizeAxis>,
     adjusters: Vec<(usize, tehuti_protocol::Adjuster)>,
     adjuster_buttons: Vec<ButtonName>,
     /// The left stick's last vertical sample, so a gauge opens already moving.
@@ -317,6 +365,7 @@ impl State {
             secret_prompt: SecretPrompt::Hidden,
             adjuster: None,
             volume_pending: crate::adjuster::VolumeRead::Idle,
+            size_pending: None,
             adjusters: Vec::new(),
             adjuster_buttons: Vec::new(),
             adjuster_stick: 0,
@@ -445,6 +494,12 @@ enum SecretPrompt {
     #[default]
     Hidden,
     Visible,
+}
+
+impl From<bool> for SecretPrompt {
+    fn from(visible: bool) -> Self {
+        if visible { Self::Visible } else { Self::Hidden }
+    }
 }
 
 /// How long focus may rest on no window before a passthrough window gives up the pad.
@@ -617,6 +672,8 @@ fn sync_keyboard_config(state: &mut State) {
     state.settings.pad_family = state.core.pad_family();
     state.mouse.pad_family = state.core.pad_family();
     state.keyboard.set_keep_draft(state.core.keep_keyboard_draft());
+    state.keyboard.set_word_repeat(state.core.keyboard_word_repeat());
+    state.keyboard.set_repeat(state.core.keyboard_repeat());
     let terminal = state.terminal_field || state.core.terminal_config().0;
     if terminal != state.keyboard.terminal() {
         state.keyboard.set_terminal(terminal);
@@ -632,6 +689,21 @@ fn volume_read(mut state: State, value: Option<u8>) -> State {
     state
 }
 
+/// Opens a size stepper once the pending read arrives.
+fn size_read(mut state: State, value: Option<u32>) -> State {
+    let axis = state.size_pending.take();
+    if core::mem::take(&mut state.volume_pending) == crate::adjuster::VolumeRead::Pending {
+        state.adjuster = axis
+            .zip(value)
+            .map(|(axis, current)| crate::adjuster::Gauge::size(axis, current));
+    }
+    state
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive match over every input, each arm handing off"
+)]
 fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     match input {
         Input::Menu(command) => {
@@ -650,6 +722,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             (state, Vec::new())
         }
         Input::Volume(value) => (volume_read(state, value), Vec::new()),
+        Input::WindowSize(value) => (size_read(state, value), Vec::new()),
         Input::ChoiceList(slots) => {
             state.launcher = None;
             state.choice_list = Some(crate::choice_list::List::new(slots));
@@ -662,9 +735,12 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::WallpaperSaved(_)
         | Input::ModeApplied(_)
         | Input::ControllerBindings(_)
+        | Input::ControllerDeadzones(_)
+        | Input::ControllerRecentres(_)
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
+        | Input::RemoteHosts(_)
         | Input::InputChoices { .. }) => settings_input(state, input),
         input @ (Input::Tick { .. }
         | Input::Event { .. }
@@ -677,6 +753,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ControllerDisconnected
         | Input::FocusedWindowClosed) => state_input(state, &input),
         Input::PluginReply { key, result } => plugin_reply(state, key, result),
+        Input::PluginHandled { key } => plugin_handled(state, key),
         reply @ (Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -716,6 +793,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -724,9 +802,12 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
         | Input::ControllerBindings(_)
+        | Input::ControllerDeadzones(_)
+        | Input::ControllerRecentres(_)
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
+        | Input::RemoteHosts(_)
         | Input::InputChoices { .. }
         | Input::SecretPrompt(_)
         | Input::Sticks(_)
@@ -734,6 +815,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::ControllerDisconnected
         | Input::FocusedWindowClosed
         | Input::PluginReply { .. }
+        | Input::PluginHandled { .. }
         | Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -749,13 +831,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
 fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
-        Input::SecretPrompt(visible) => {
-            state.secret_prompt = if *visible {
-                SecretPrompt::Visible
-            } else {
-                SecretPrompt::Hidden
-            }
-        }
+        Input::SecretPrompt(visible) => state.secret_prompt = SecretPrompt::from(*visible),
         Input::Sticks(sticks) => adjuster_sticks(&mut state, *sticks),
         Input::TextField {
             active,
@@ -777,6 +853,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
         | Input::Wallpapers { .. }
@@ -785,9 +862,12 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::DisplayScale(_)
         | Input::ModeApplied(_)
         | Input::ControllerBindings(_)
+        | Input::ControllerDeadzones(_)
+        | Input::ControllerRecentres(_)
         | Input::ActiveController(_)
         | Input::Controllers(_)
         | Input::Microphones(_)
+        | Input::RemoteHosts(_)
         | Input::InputChoices { .. }
         | Input::Tick { .. }
         | Input::Event { .. }
@@ -795,6 +875,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::Speech(_)
         | Input::PluginExited { .. }
         | Input::PluginReply { .. }
+        | Input::PluginHandled { .. }
         | Input::ClockRead(_)
         | Input::PluginActive(_)
         | Input::PluginRequest(_)
@@ -830,6 +911,8 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::WallpaperSaved(index) => state.settings.wallpaper_saved(index),
         Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
         Input::ControllerBindings(bindings) => state.settings.input.controller_bindings = bindings,
+        Input::ControllerDeadzones(deadzones) => state.settings.input.controller_deadzones = deadzones,
+        Input::ControllerRecentres(rests) => state.settings.input.controller_recentres = rests,
         Input::ActiveController(name) => {
             let binding = state.settings.input.controller_bindings.get(&name).copied();
             state.core.set_controller_push_to_talk(binding);
@@ -837,21 +920,28 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         }
         Input::Controllers(names) => state.settings.configure_controllers(names),
         Input::Microphones(microphones) => state.settings.configure_microphones(microphones),
+        Input::RemoteHosts(hosts) => state.settings.configure_remote_hosts(hosts),
         Input::InputChoices {
             controller,
             microphone,
-        } => state.settings.restore_input(controller, microphone),
+            disabled_controllers,
+            disabled_microphones,
+        } => state
+            .settings
+            .restore_input(controller, microphone, disabled_controllers, disabled_microphones),
         Input::Menu(_)
         | Input::Launcher(_)
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::Tick { .. }
         | Input::Event { .. }
         | Input::ClockRead(_)
         | Input::Speech(_)
         | Input::PluginReply { .. }
+        | Input::PluginHandled { .. }
         | Input::PluginExited { .. }
         | Input::TextField { .. }
         | Input::ControllerDisconnected
@@ -881,6 +971,12 @@ fn plugin_reply(
     let mut effects: Vec<_> = actions.into_iter().map(Effect::PluginAction).collect();
     effects.extend(rejection.map(Effect::PluginRejected));
     (state, effects)
+}
+
+fn plugin_handled(mut state: State, key: RequestKey) -> (State, Vec<Effect>) {
+    let (next, _actions, _rejection) = crate::plugin::step(state.core, crate::plugin::Input::Handled { key });
+    state.core = next;
+    (state, Vec::new())
 }
 
 fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
@@ -1046,9 +1142,23 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
     };
     match (awaiting, reply) {
         (Await::PluginActive(event), Input::PluginActive(active)) => {
-            let (next, actions, route) =
-                crate::step_with_plugin(core::mem::take(&mut state.core), &event, active);
-            state.core = next;
+            // "new <words>" opens the creation launcher unless a plugin handles speech or a context maps it.
+            if !active && let Some(request) = unmapped_new_request(&state.core, &event) {
+                effects.push(Effect::OpenLauncher(request));
+                return;
+            }
+            frame.awaiting = Some(plugin_decision(&mut state.core, event, active, effects));
+        }
+        (
+            Await::PluginRequest {
+                event,
+                mut actions,
+                route,
+                press: Some(press),
+            },
+            Input::PluginRequest(request),
+        ) => {
+            replay_press(&mut state.core, press, request, &mut actions);
             effects.push(Effect::DispatchPlugin {
                 event: event.clone(),
                 route,
@@ -1057,6 +1167,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 event,
                 actions,
                 route,
+                press: None,
             });
         }
         (
@@ -1064,6 +1175,7 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
                 event,
                 actions,
                 route,
+                press: None,
             },
             Input::PluginRequest(request),
         ) => finish_route(state, event, actions, route, request, effects),
@@ -1077,6 +1189,73 @@ fn resume(state: &mut State, reply: Input, effects: &mut Vec<Effect>) {
             effects.push(Effect::InvalidReply);
         }
     }
+}
+
+/// Steps core for an event and asks the plugin to decide it.
+fn plugin_decision(core: &mut crate::State, event: Event, active: bool, effects: &mut Vec<Effect>) -> Await {
+    let (actions, route, press) = step_routed(core, &event, active);
+    effects.push(Effect::DispatchPlugin {
+        event: press.clone().unwrap_or_else(|| event.clone()),
+        route,
+    });
+    Await::PluginRequest {
+        event,
+        actions,
+        route,
+        press,
+    }
+}
+
+/// The creation request for a "new <words>" phrase no context maps.
+fn unmapped_new_request(core: &crate::State, event: &Event) -> Option<crate::unit_verbs::LauncherRequest> {
+    let Event::Speech { text } = event else {
+        return None;
+    };
+    crate::unit_verbs::new_request(text.as_str()).filter(|_| !core.context_maps_speech(text.as_str()))
+}
+
+/// Steps core for an event; a routed stick-modifier tap also returns its held-back press.
+fn step_routed(
+    core_state: &mut crate::State,
+    event: &Event,
+    active: bool,
+) -> (Vec<Action>, bool, Option<Event>) {
+    let held = matches!(
+        event,
+        Event::Button { name, state: tehuti_protocol::ButtonState::Released } if core_state.sticks.holds(*name)
+    );
+    let (next, actions, route) = crate::step_with_plugin(core::mem::take(core_state), event, active);
+    *core_state = next;
+    let press = match event {
+        Event::Button { name, .. } if held && route => Some(Event::Button {
+            name: *name,
+            state: tehuti_protocol::ButtonState::Pressed,
+        }),
+        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } | Event::Speech { .. } => None,
+    };
+    (actions, route, press)
+}
+
+/// Hands a replayed press to the plugin's request, if it made one.
+fn replay_press(
+    core_state: &mut crate::State,
+    press: Event,
+    request: Option<(RequestKey, Vec<Permission>)>,
+    actions: &mut Vec<Action>,
+) {
+    let Some((key, permissions)) = request else {
+        return;
+    };
+    let (next, mut routed, _) = crate::plugin::step(
+        core::mem::take(core_state),
+        crate::plugin::Input::Request {
+            key,
+            event: press,
+            permissions,
+        },
+    );
+    *core_state = next;
+    actions.append(&mut routed);
 }
 
 fn queue_reply(frame: &mut Frame, pair: (Await, Input)) {
@@ -1316,6 +1495,10 @@ fn recording_event(event: &Event, effects: &mut Vec<Effect>) -> bool {
     true
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered list of routing layers reads best whole"
+)]
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if matches!(event, Event::Focus { .. }) {
         state.tool_pad = ToolPad::Idle;
@@ -1363,7 +1546,13 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         if state.keyboard.tick(elapsed) {
             route_frame.tasks.push_front(Task::Speech(SpeechInput::Press));
         }
-        if state.mouse.tick(elapsed, !state.keyboard.is_open(), effects) {
+        if stick_tick(
+            &mut state.core,
+            &mut state.mouse,
+            state.keyboard.is_open(),
+            elapsed,
+            effects,
+        ) {
             for button in [ButtonState::Released, ButtonState::Pressed] {
                 route_frame.tasks.push_front(Task::Route(Event::Button {
                     name: ButtonName::Select,
@@ -1374,6 +1563,29 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     }
     effects.push(Effect::QueryPlugin(event.clone()));
     route_frame.awaiting = Some(Await::PluginActive(event));
+}
+
+/// Fires the focused context's `[sticks]` actions and moves the pointer with the sticks they leave
+/// to mouse mode; true on a single View tap.
+fn stick_tick(
+    core: &mut crate::State,
+    mouse: &mut mouse::State,
+    keyboard_open: bool,
+    elapsed: Duration,
+    effects: &mut Vec<Effect>,
+) -> bool {
+    if !keyboard_open {
+        effects.extend(
+            core.stick_actions(elapsed, mouse.sticks.left, mouse.sticks.right)
+                .into_iter()
+                .map(Effect::Apply),
+        );
+    }
+    let mapped = [
+        core.maps_stick(tehuti_protocol::Stick::Left),
+        core.maps_stick(tehuti_protocol::Stick::Right),
+    ];
+    mouse.tick(elapsed, !keyboard_open, mapped, effects)
 }
 
 fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {

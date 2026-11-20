@@ -24,6 +24,17 @@
 )]
 mod layout_laws {
     use proptest::prelude::*;
+
+    /// Laws whose preconditions are `prop_assume!`d (not generated) reject many
+    /// cases; the default budget of 1024 global rejects aborts them at 5000
+    /// cases. Scale it with the case count so the law still gets its cases.
+    fn assume_heavy() -> ProptestConfig {
+        let base = ProptestConfig::default();
+        ProptestConfig {
+            max_global_rejects: base.cases.saturating_mul(20).max(1024),
+            ..base
+        }
+    }
     use tehuti_core::layout::{
         CenterFocusedColumn, ColumnDisplay, ColumnView, Command, Direction, Layout, LayoutConfig,
         LayoutError, OutputGeometry, OutputId, OutputView, PresetSize, Rect, SizeChange, Snapshot, Struts,
@@ -685,6 +696,7 @@ mod layout_laws {
     // NW: column widths and presets.
 
     proptest! {
+        #![proptest_config(assume_heavy())]
         #[test]
         fn nw_1_a_column_width_is_a_proportion_or_a_fixed_size(
             config in config_strategy(),
@@ -1241,6 +1253,7 @@ mod layout_laws {
     // NWS: workspaces stacked vertically.
 
     proptest! {
+        #![proptest_config(assume_heavy())]
         #[test]
         fn nws_1_to_nws_5_each_output_keeps_its_empty_workspaces_in_place(
             config in config_strategy(),
@@ -2025,6 +2038,29 @@ mod layout_laws {
         }
     }
 
+    #[test]
+    fn expanding_a_fullscreen_column_keeps_its_output_edge_anchor() {
+        let config = LayoutConfig {
+            struts: Struts {
+                left: -12.0,
+                right: 0.0,
+                top: 0.0,
+                bottom: 0.0,
+            },
+            ..LayoutConfig::default()
+        };
+        let mut world = World::single(config, geometry_at(0.0, 0.0, 800.0, 600.0, 0.0)).unwrap();
+        world
+            .run(&[Step::Open, Step::Run(Command::ToggleFullscreen)])
+            .unwrap();
+        let anchored = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
+        world
+            .run(&[Step::Run(Command::ExpandColumnToAvailableWidth)])
+            .unwrap();
+        let after = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
+        assert_eq!(anchored, after);
+    }
+
     /// The centring rules a config enables: NV.2 ("always") and NV.4 (lone column).
     fn centring_rules(config: &LayoutConfig) -> (bool, bool) {
         (
@@ -2114,6 +2150,7 @@ mod layout_laws {
     }
 
     proptest! {
+        #![proptest_config(assume_heavy())]
         #[test]
         fn nv_1_never_scrolls_the_minimum_to_the_nearest_edge(
             config in with_center(CenterFocusedColumn::Never),
@@ -2274,6 +2311,36 @@ mod layout_laws {
         let snap = world.snap();
         assert!(tile_of(&snap, closed).is_none());
         assert!(tile_of(&snap, kept).is_some());
+        Ok(())
+    }
+
+    /// Shrunk NN.9 counterexample (#755): fullscreen, maximize and unfullscreen on three
+    /// columns, then an unfocused window opens and closes.
+    #[test]
+    fn nn_9_replay_closing_restores_the_view_after_fullscreen_and_maximize() -> Result<(), LayoutError> {
+        let config = LayoutConfig {
+            gaps: 0.0,
+            border: 0.0,
+            default_column_width: Some(PresetSize::Proportion(0.1)),
+            ..LayoutConfig::default()
+        };
+        let mut world = World::single(config, geometry_at(0.0, 0.0, 800.0, 600.0, 0.0))?;
+        world.run(&[
+            Step::Open,
+            Step::Open,
+            Step::Open,
+            Step::Run(Command::ToggleFullscreen),
+            Step::Run(Command::MaximizeColumn),
+            Step::Run(Command::ToggleFullscreen),
+        ])?;
+        let before = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
+        let window = world.open_with(WindowRules {
+            open_focused: Some(false),
+            ..WindowRules::default()
+        })?;
+        world.close(window)?;
+        let after = focused_workspace(&world.snap()).map(|workspace| workspace.view_offset);
+        assert_eq!(before, after);
         Ok(())
     }
 

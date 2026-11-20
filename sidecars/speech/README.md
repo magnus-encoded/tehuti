@@ -45,7 +45,8 @@ peak and logs the winner once per released capture session to the Tehuti log. A 
 to start is skipped. The Input page of Tehuti's settings writes
 `$XDG_CONFIG_HOME/tehuti/speech-source`: `all` (or no file) keeps this,
 `auto` records the default source, and a PipeWire node name records that
-source while it is listed. `TEHUTI_SPEECH_SOURCE` pins one source by its
+source while it is listed. Sources listed in `tehuti/microphones-disabled.json` (a JSON array of node names) are
+never recorded, also under `all`. `TEHUTI_SPEECH_SOURCE` pins one source by its
 PipeWire name and overrides both.
 
 ## Transport and limits
@@ -64,7 +65,13 @@ Commands and replies are one JSON object per line, capped at 64 KiB:
 {"session":0,"text":"confirm"}
 {"session":1,"error":"model failed"}
 {"session":2,"error":"silent"}
+{"warning":"source missing"}
 ```
+
+The `source missing` warning is sent at most once per sidecar run, when the
+microphone saved in settings is not among the capture devices; the sidecar
+falls back to the other sources and the compositor shows "Saved mic missing,
+using another".
 
 An `error` reply shows SPEECH FAILED instead of NO SPEECH MAPPING. The
 `silent` error shows MIC SILENT: the sidecar sends it without transcribing

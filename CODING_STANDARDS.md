@@ -53,6 +53,7 @@ A test states a rule about behaviour. It never computes its expected value by co
 - Tests go through public seams. They never reach into private state, mock internal modules or assert on call order between internal functions.
 - Every documented promise has an automated test, except where a spec or ADR says it is checked by hand.
 - No test needs a real device, uinput, display or microphone. Core tests drive the pure step with generated events; compositor tests use the synthetic pad.
+- CI checks that a PR's new or edited tests fail without its source change: `scripts/check-red-test` restores the base version of the changed `crates/*/src` files (keeping the PR's inline test modules) and runs those tests; at least one must fail. A base that does not build is inconclusive and fails the job unless the PR has the `red-test-build-ok` label and the body gives the reason. A fix only in a newly added source file also fails the job. Label a PR `no-red-test` to skip the job (docs, refactors).
 - Mutation testing measures this: a surviving mutant is a missing test.
 
 ## Separable concerns
@@ -63,3 +64,7 @@ Tehuti is built so that a part can be swapped out: another window manager or com
 - If it does and the move is small, make it in the same PR as its own commit. If it is large, open an issue and leave the code where it is.
 - A concern depends on another only through a named interface: a type or a protocol message, never a shared field or a call into its internals.
 - Do not refactor for its own sake, and do not move code in an unrelated PR beyond what the touched function needs.
+
+## UI and settings
+
+- Settings pages are realtime: a page draws at once from state Tehuti already holds. Anything from an outside source (network peers, PipeWire, AudioRelay, Tailscale, slow device probes) arrives later as an added tile at the end of its row, never as a wait, a spinner or a moved focus.

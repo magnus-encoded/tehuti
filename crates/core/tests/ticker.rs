@@ -90,6 +90,15 @@ right_stick = { ticker = "toggle" }
     }
 
     #[test]
+    fn a_bound_paddle_shows_in_the_ticker_on_every_pad() {
+        let contexts = contexts(&["app_id = 'editor'\n[buttons]\npaddle_2 = { key = 'x' }"]);
+        for family in [PadFamily::Letters, PadFamily::Symbols, PadFamily::Nintendo] {
+            let shown = texts(&ticker::entries(&contexts, Some("editor"), family, Level::App));
+            assert!(shown.contains(&"P2 -> [X]".to_owned()), "{shown:?}");
+        }
+    }
+
+    #[test]
     fn buttons_use_the_pads_names_and_fall_back_to_the_global_context() {
         let contexts = contexts(&[GLOBAL, GAME]);
         assert_eq!(
@@ -274,6 +283,27 @@ right_stick = { ticker = "toggle" }
             Level::App,
         ));
         assert_eq!(entries[..2], ["Pad -> app", "Hold View + LB -> \u{1f3a4}"]);
+    }
+
+    #[test]
+    fn columns_level_talk_label_names_the_context_own_chord() {
+        let contexts = contexts(&[
+            "app_id = '*'\npush_to_talk = ['start']\n[buttons]",
+            "app_id = 'game'\n[buttons]\n[pad]\npush_to_talk = ['select', 'left_bumper']",
+        ]);
+        let entries = texts(&ticker::entries(
+            &contexts,
+            Some("game"),
+            PadFamily::Letters,
+            Level::Columns,
+        ));
+        let talk: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.contains('\u{1f3a4}'))
+            .collect();
+        assert!(talk.iter().any(|entry| entry.starts_with("View")), "{entries:?}");
+        assert!(talk.iter().any(|entry| entry.starts_with("LB")), "{entries:?}");
+        assert!(!talk.iter().any(|entry| entry.starts_with("Menu")), "{entries:?}");
     }
 
     #[test]

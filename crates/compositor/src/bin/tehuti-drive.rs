@@ -20,7 +20,9 @@ key KEY                      Tap a protocol key name\n\
 text TEXT                    Type text into the focused client\n\
 say TEXT                     Deliver a final transcript\n\
 scene --json                 Inspect windows, focus, launcher, bar and notices\n\
+fixture NAME                 Fill the Display or Input page with invented hardware\n\
 shot PATH                    Save a whole-output PNG\n\
+menu-select LABEL            Move the system menu selection to the entry with that label\n\
 wait-for POINTER JSON [MS]    Wait for a JSON pointer to equal a value (default 5000 ms)\n\
 clock advance MS             Advance the manual test clock\n\
 --help                       Show this help\n\
@@ -58,6 +60,13 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
                 return Err("unexpected argument".into());
             }
             wait(&socket, &pointer, &expected, Duration::from_millis(timeout))?
+        }
+        "menu-select" => {
+            let label = next(&mut arguments)?;
+            if arguments.next().is_some() {
+                return Err("unexpected argument".into());
+            }
+            menu_select(&socket, &label)?
         }
         _ => {
             let action = parse_action(&command, &mut arguments)?;
@@ -107,6 +116,9 @@ fn parse_action(
         "shot" => Request::Shot {
             path: next(arguments)?.into(),
         },
+        "fixture" => Request::Fixture {
+            name: next(arguments)?,
+        },
         "clock" => {
             if next(arguments)? != "advance" {
                 return Err("use clock advance MS".into());
@@ -118,6 +130,61 @@ fn parse_action(
         _ => return Err("unknown command; see --help".into()),
     };
     Ok(action)
+}
+
+/// Splits the system menu text into its entry labels and the index of the selected one.
+fn menu_entries(scene: &Value) -> Result<(Vec<String>, usize), Box<dyn Error>> {
+    let text = scene
+        .get("menu_text")
+        .and_then(Value::as_str)
+        .ok_or("the system menu is not open")?;
+    let mut lines: Vec<&str> = text.lines().collect();
+    // Drop the title and the closing hint.
+    if lines.len() < 2 {
+        return Err("the system menu has no entries".into());
+    }
+    let _hint = lines.pop();
+    let _title = lines.remove(0);
+    let selected = lines
+        .iter()
+        .position(|line| line.starts_with("> "))
+        .ok_or("the system menu is asking for confirmation")?;
+    let labels = lines
+        .iter()
+        .map(|line| line.get(2..).unwrap_or_default().to_owned())
+        .collect();
+    Ok((labels, selected))
+}
+
+fn menu_select(socket: &Path, label: &str) -> Result<Value, Box<dyn Error>> {
+    let scene = request(socket, &Request::Scene)?;
+    let (labels, selected) = menu_entries(&scene)?;
+    let target = labels
+        .iter()
+        .position(|entry| entry.eq_ignore_ascii_case(label))
+        .ok_or_else(|| {
+            format!(
+                "no system menu entry labelled {label:?}; entries: {}",
+                labels.join(", ")
+            )
+        })?;
+    let count = labels.len();
+    let down = target
+        .saturating_add(count)
+        .saturating_sub(selected)
+        .checked_rem(count)
+        .unwrap_or_default();
+    let upward = count.saturating_sub(down);
+    let (steps, name) = if down <= upward {
+        (down, "dpad_down")
+    } else {
+        (upward, "dpad_up")
+    };
+    for _ in 0..steps {
+        let button = serde_json::from_value(json!(name))?;
+        let _reply = request(socket, &Request::Press { button })?;
+    }
+    request(socket, &Request::Scene)
 }
 
 fn wait(socket: &Path, pointer: &str, expected: &Value, timeout: Duration) -> Result<Value, Box<dyn Error>> {
@@ -179,6 +246,7 @@ fn start(socket: &Path, mut arguments: impl Iterator<Item = String>) -> Result<V
     if let Some(size) = size {
         let _command = command.env("TEHUTI_TEST_SIZE", size);
     }
+    seed_wallpaper(&runtime)?;
     let log = std::fs::File::create(runtime.join("session.log"))?;
     let mut child = command
         .arg(config)
@@ -194,6 +262,20 @@ fn start(socket: &Path, mut arguments: impl Iterator<Item = String>) -> Result<V
         .stderr(log)
         .spawn()?;
     await_start(&mut child, &selected_socket)
+}
+
+/// Copies the wallpaper pack and selection from `TEHUTI_DRIVE_WALLPAPER_SEED` into the isolated
+/// session's data and config directories, so a capture can show a real wallpaper.
+fn seed_wallpaper(runtime: &Path) -> Result<(), Box<dyn Error>> {
+    let Some(seed) = std::env::var_os("TEHUTI_DRIVE_WALLPAPER_SEED").map(PathBuf::from) else {
+        return Ok(());
+    };
+    for (name, directory) in [("wallpapers.pak", "data"), ("wallpaper", "config")] {
+        let target = runtime.join(directory).join("tehuti");
+        std::fs::create_dir_all(&target)?;
+        let _bytes = std::fs::copy(seed.join(name), target.join(name))?;
+    }
+    Ok(())
 }
 
 fn await_start(child: &mut std::process::Child, socket: &Path) -> Result<Value, Box<dyn Error>> {

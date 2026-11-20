@@ -6,7 +6,7 @@ mod speech_templates {
     use tehuti_protocol::{Action, Event, KeyName, Text, parse_context};
 
     #[test]
-    fn invoke_tail_is_typed_in_its_context_and_fixed_phrases_win() {
+    fn invoke_tail_is_typed_by_its_context_template_and_by_the_built_in_verb_elsewhere() {
         let context = parse_context("app_id = 'agent'\n[buttons]\n[speech]\n'Invoke <name>' = { text = '/{name} ' }\n'Invoke help' = { key = 'enter' }").unwrap();
         assert_eq!(
             context.speech_action("Invoke Review-Code."),
@@ -34,7 +34,13 @@ mod speech_templates {
                 text: Text::new("Invoke review".into()).unwrap(),
             },
         );
-        assert!(matches!(actions.as_slice(), [Action::Notice { .. }]));
+        assert_eq!(
+            actions,
+            vec![Action::Text {
+                text: Text::new("/review ".into()).unwrap(),
+            }],
+            "the built-in invoke verb types in any window"
+        );
     }
     #[test]
     fn type_converts_symbols_letters_digits_and_named_keys_without_partial_input() {

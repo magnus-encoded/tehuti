@@ -1,7 +1,213 @@
 //! Pad identity, physical positions, interaction roles and printed glyphs.
 
 use crate::ticker::{Direction, Piece, Rgb, Shape};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use tehuti_protocol::ButtonName;
+
+pub use crate::audio_source::Presence;
+
+/// Where a pad comes from; the tile shows it so the user sees which device is where.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Origin {
+    #[default]
+    Usb,
+    Bluetooth,
+    /// A radio dongle that is not Bluetooth.
+    Dongle,
+    /// A virtual device made by a game-streaming host.
+    Streamed,
+    /// A virtual device made by a program that could not be named.
+    VirtualOther,
+    /// Tehuti's own virtual pad.
+    Tehuti,
+    /// The source could not be told; the tile draws no glyph.
+    Unknown,
+}
+
+impl Origin {
+    /// The short caption line on the pad tile; empty when the source is unknown.
+    #[must_use]
+    pub const fn caption(self) -> &'static str {
+        match self {
+            Self::Usb => "USB CABLE",
+            Self::Bluetooth => "BLUETOOTH",
+            Self::Dongle => "WIRELESS DONGLE",
+            Self::Streamed => "STREAMED: SUNSHINE",
+            Self::VirtualOther => "VIRTUAL (OTHER APP)",
+            Self::Tehuti => "TEHUTI VIRTUAL PAD",
+            Self::Unknown => "",
+        }
+    }
+
+    /// The name of the glyph asset, or none when the source is unknown.
+    #[must_use]
+    pub const fn glyph(self) -> Option<&'static str> {
+        match self {
+            Self::Usb => Some("cable"),
+            Self::Bluetooth => Some("bluetooth"),
+            Self::Dongle => Some("dongle"),
+            Self::Streamed => Some("streamed"),
+            Self::VirtualOther => Some("virtual"),
+            Self::Tehuti => Some("tehuti"),
+            Self::Unknown => None,
+        }
+    }
+}
+
+/// A pad's key: stable across reconnects, the same string `ControllerInfo::key` holds today.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PadKey(String);
+
+impl PadKey {
+    #[must_use]
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One controller as the rest of Tehuti sees it: runtime facts only, no settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pad {
+    pub key: PadKey,
+    pub label: String,
+    pub model: Identity,
+    pub origin: Origin,
+    pub presence: Presence,
+}
+
+/// One pad node as discovery sees it: the facts keying needs, before any key exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PadSighting {
+    pub path: PathBuf,
+    pub name: String,
+    pub vendor: u16,
+    pub product: u16,
+    /// The device's own unique id or physical path; empty when it reports neither.
+    pub uniq: String,
+    pub origin: Origin,
+}
+
+/// Keeps pad keys: owns the keying rules and the path-to-key memory between sightings.
+#[derive(Debug, Clone, Default)]
+pub struct PadRoster {
+    known: BTreeMap<PathBuf, PadKey>,
+}
+
+impl PadRoster {
+    /// Takes the pads present now, in any order, and returns them in path order.
+    ///
+    /// Labels count each model independently. A pad's key survives a reconnect: the unique id
+    /// or physical path when it is the pad's alone, else the kernel name with an index. A pad
+    /// seen on the previous call keeps its key whatever attaches beside it; a new pad takes the
+    /// first key of its identity that no pad holds. Pads missing from `sightings` are forgotten.
+    pub fn observe(&mut self, sightings: impl IntoIterator<Item = PadSighting>) -> Vec<(PathBuf, Pad)> {
+        let mut sightings: Vec<_> = sightings.into_iter().collect();
+        sightings.sort_by(|left, right| left.path.cmp(&right.path));
+        let mut taken: BTreeSet<String> = sightings
+            .iter()
+            .filter_map(|sighting| self.known.get(&sighting.path))
+            .map(|key| key.0.clone())
+            .collect();
+        let mut counts = BTreeMap::<String, usize>::new();
+        let mut next = BTreeMap::new();
+        let pads = sightings
+            .into_iter()
+            .map(|sighting| {
+                let model = Identity::for_node(sighting.vendor, sighting.product, &sighting.name);
+                let model_name = model.model_name(&sighting.name);
+                let count = counts.entry(model_name.clone()).or_default();
+                *count = count.saturating_add(1);
+                let key = self.known.get(&sighting.path).cloned().unwrap_or_else(|| {
+                    let identity = &sighting.uniq;
+                    let name = &sighting.name;
+                    let candidates = (1_usize..).map(|index| match (identity.is_empty(), index) {
+                        (false, 1) => identity.clone(),
+                        (false, _) => format!("{identity}#{index}"),
+                        (true, _) => format!("{name}#{index}"),
+                    });
+                    let free = candidates
+                        .into_iter()
+                        .find(|key| !taken.contains(key))
+                        .unwrap_or_default();
+                    let _fresh = taken.insert(free.clone());
+                    PadKey(free)
+                });
+                let _old = next.insert(sighting.path.clone(), key.clone());
+                let pad = Pad {
+                    key,
+                    label: format!("{model_name} #{count}"),
+                    model,
+                    origin: sighting.origin,
+                    presence: Presence::Present,
+                };
+                (sighting.path, pad)
+            })
+            .collect();
+        self.known = next;
+        pads
+    }
+
+    /// The key the pad at `path` holds, while it is present.
+    #[must_use]
+    pub fn key_for(&self, path: &Path) -> Option<&PadKey> {
+        self.known.get(path)
+    }
+}
+
+#[cfg(test)]
+mod pad_type_tests {
+    use super::*;
+
+    #[test]
+    fn pad_key_keeps_its_text_and_orders_by_it() {
+        assert_eq!(PadKey::new("xbox-1").as_str(), "xbox-1");
+        assert!(PadKey::new("a") < PadKey::new("b"));
+    }
+
+    #[test]
+    fn pad_carries_origin_and_presence() {
+        let pad = Pad {
+            key: PadKey::new("k"),
+            label: "PAD #1".into(),
+            model: Identity::default(),
+            origin: Origin::Bluetooth,
+            presence: Presence::Connecting,
+        };
+        assert_eq!(pad.origin.caption(), "BLUETOOTH");
+        assert_eq!(pad.presence.label(), "CONNECTING");
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::Origin;
+
+    #[test]
+    fn every_known_origin_has_its_own_glyph_and_caption_and_unknown_has_none() {
+        let known = [
+            Origin::Usb,
+            Origin::Bluetooth,
+            Origin::Dongle,
+            Origin::Streamed,
+            Origin::VirtualOther,
+            Origin::Tehuti,
+        ];
+        let glyphs: std::collections::BTreeSet<_> =
+            known.iter().filter_map(|origin| origin.glyph()).collect();
+        let captions: std::collections::BTreeSet<_> = known.iter().map(|origin| origin.caption()).collect();
+        assert_eq!(glyphs.len(), known.len());
+        assert_eq!(captions.len(), known.len());
+        assert!(captions.iter().all(|caption| !caption.is_empty()));
+        assert_eq!(Origin::Unknown.glyph(), None);
+        assert_eq!(Origin::Unknown.caption(), "");
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -38,6 +244,37 @@ const FALLBACK: Profile = Profile {
     roles: STANDARD_ROLES,
     faces: &LETTER_FACES,
     labels: LETTER_LABELS,
+};
+/// The Wii remote's USB-style id and the name of its buttons node. Its Classic Controller
+/// extension reuses the id under a longer name, so the name is part of the match.
+const WII_REMOTE_ID: (u16, u16) = (0x057e, 0x0306);
+const WII_REMOTE_NODE: &str = "Nintendo Wii Remote";
+/// Held sideways and used alone, 1 and 2 are the pad: 1 confirms, 2 goes back, A opens the
+/// keyboard and + carries push-to-talk as Record. The input layer remaps the buttons onto the
+/// standard positions, so the standard roles apply. B is left unmapped.
+const REMOTE: Profile = Profile {
+    vendor: 0x057e,
+    identity: Identity {
+        family: PadFamily::Remote,
+        swap_north_west: false,
+        model: Some("WII REMOTE"),
+    },
+    roles: STANDARD_ROLES,
+    faces: &REMOTE_FACES,
+    labels: REMOTE_LABELS,
+};
+/// With a nunchuk or another pad attached, A confirms and B goes back, 1 opens the keyboard and
+/// + still carries push-to-talk. 2 is left unmapped.
+const REMOTE_PAIRED: Profile = Profile {
+    vendor: 0x057e,
+    identity: Identity {
+        family: PadFamily::RemotePaired,
+        swap_north_west: false,
+        model: Some("WII REMOTE"),
+    },
+    roles: STANDARD_ROLES,
+    faces: &REMOTE_PAIRED_FACES,
+    labels: REMOTE_LABELS,
 };
 const PROFILES: [Profile; 3] = [
     Profile {
@@ -95,6 +332,27 @@ impl Identity {
         identity
     }
 
+    /// The same pad once a nunchuk or another pad is attached beside it, or alone again.
+    #[must_use]
+    pub const fn with_companion(mut self, companion: bool) -> Self {
+        self.family = match (self.family, companion) {
+            (PadFamily::Remote | PadFamily::RemotePaired, true) => PadFamily::RemotePaired,
+            (PadFamily::Remote | PadFamily::RemotePaired, false) => PadFamily::Remote,
+            (family, _) => family,
+        };
+        self
+    }
+
+    /// Like [`Self::for_device`], with the node name that tells a Wii remote's buttons node
+    /// from the extension nodes that share its id.
+    #[must_use]
+    pub fn for_node(vendor: u16, product: u16, name: &str) -> Self {
+        if (vendor, product) == WII_REMOTE_ID && name == WII_REMOTE_NODE {
+            return REMOTE.identity;
+        }
+        Self::for_device(vendor, product)
+    }
+
     #[must_use]
     pub fn model_name(self, kernel_name: &str) -> String {
         self.model
@@ -109,9 +367,17 @@ pub enum PadFamily {
     Letters,
     Symbols,
     Nintendo,
+    Remote,
+    RemotePaired,
 }
 
 impl PadFamily {
+    /// True for a Wii remote in either layout.
+    #[must_use]
+    pub const fn is_remote(self) -> bool {
+        matches!(self, Self::Remote | Self::RemotePaired)
+    }
+
     #[must_use]
     pub fn button(self, role: Role) -> ButtonName {
         let profile = self.profile();
@@ -129,6 +395,11 @@ impl PadFamily {
     }
 
     fn profile(self) -> &'static Profile {
+        match self {
+            Self::Remote => return &REMOTE,
+            Self::RemotePaired => return &REMOTE_PAIRED,
+            Self::Letters | Self::Symbols | Self::Nintendo => {}
+        }
         PROFILES
             .iter()
             .find(|profile| profile.identity.family == self)
@@ -264,6 +535,54 @@ const NINTENDO_LABELS: &[(ButtonName, &str)] = &[
     (ButtonName::RightStick, "RS"),
 ];
 
+const REMOTE_FACES: [FaceGlyph; 3] = [
+    FaceGlyph {
+        button: ButtonName::South,
+        label: "1",
+        shape: Shape::Disc('1'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::East,
+        label: "2",
+        shape: Shape::Disc('2'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::North,
+        label: "A",
+        shape: Shape::Disc('A'),
+        colour: Rgb::WHITE,
+    },
+];
+
+const REMOTE_PAIRED_FACES: [FaceGlyph; 3] = [
+    FaceGlyph {
+        button: ButtonName::South,
+        label: "A",
+        shape: Shape::Disc('A'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::East,
+        label: "B",
+        shape: Shape::Disc('B'),
+        colour: Rgb::WHITE,
+    },
+    FaceGlyph {
+        button: ButtonName::North,
+        label: "1",
+        shape: Shape::Disc('1'),
+        colour: Rgb::WHITE,
+    },
+];
+
+const REMOTE_LABELS: &[(ButtonName, &str)] = &[
+    (ButtonName::Select, "−"),
+    (ButtonName::Record, "+"),
+    (ButtonName::Guide, "Home"),
+];
+
 const SYMBOL_FACES: [FaceGlyph; 4] = [
     FaceGlyph {
         button: ButtonName::South,
@@ -314,6 +633,10 @@ const SYMBOL_LABELS: &[(ButtonName, &str)] = &[
 ];
 
 const COMMON_LABELS: &[(ButtonName, &str)] = &[
+    (ButtonName::Paddle1, "P1"),
+    (ButtonName::Paddle2, "P2"),
+    (ButtonName::Paddle3, "P3"),
+    (ButtonName::Paddle4, "P4"),
     (ButtonName::Guide, "Guide"),
     (ButtonName::DpadUp, "Up"),
     (ButtonName::DpadDown, "Down"),
@@ -326,3 +649,95 @@ const DPAD_SHAPES: &[(ButtonName, Direction)] = &[
     (ButtonName::DpadLeft, Direction::Left),
     (ButtonName::DpadRight, Direction::Right),
 ];
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn sighting(path: &str, name: &str, uniq: &str) -> PadSighting {
+        PadSighting {
+            path: path.into(),
+            name: name.into(),
+            vendor: 0x045e,
+            product: 0x0b13,
+            uniq: uniq.into(),
+            origin: Origin::Usb,
+        }
+    }
+
+    fn keys(pads: &[(PathBuf, Pad)]) -> Vec<&str> {
+        pads.iter().map(|(_, pad)| pad.key.as_str()).collect()
+    }
+
+    #[test]
+    fn pads_of_different_names_sharing_an_identity_get_different_keys() {
+        let pads = PadRoster::default().observe([
+            sighting("/dev/input/event1", "Pad A", "shared"),
+            sighting("/dev/input/event2", "Pad B", "shared"),
+        ]);
+        assert_ne!(pads[0].1.key, pads[1].1.key);
+    }
+
+    #[test]
+    fn a_duplicate_attaching_never_rekeys_the_pad_already_there() {
+        let mut roster = PadRoster::default();
+        let original = sighting("/dev/input/event5", "Pad", "shared");
+        let before = roster.observe([original.clone()]);
+        // The newcomer's node sorts before the original's.
+        let after = roster.observe([sighting("/dev/input/event2", "Pad", "shared"), original]);
+        assert_eq!(after[1].0, PathBuf::from("/dev/input/event5"));
+        assert_eq!(after[1].1.key, before[0].1.key);
+        assert_ne!(after[0].1.key, after[1].1.key);
+    }
+
+    #[test]
+    fn identical_pads_without_ids_take_indexed_name_keys() {
+        let pads = PadRoster::default().observe([
+            sighting("/dev/input/event1", "Pad", ""),
+            sighting("/dev/input/event2", "Pad", ""),
+        ]);
+        assert_eq!(keys(&pads), ["Pad#1", "Pad#2"]);
+    }
+
+    #[test]
+    fn matching_models_are_numbered_by_device_path() {
+        let mut first = sighting("/dev/input/event9", "Wireless Controller", "");
+        let mut second = sighting("/dev/input/event2", "Wireless Controller", "");
+        (first.vendor, first.product) = (0x054c, 0x05c4);
+        (second.vendor, second.product) = (0x054c, 0x09cc);
+        let pads = PadRoster::default().observe([first, second]);
+        let labels: Vec<_> = pads.iter().map(|(_, pad)| pad.label.as_str()).collect();
+        assert_eq!(labels, ["DUALSHOCK 4 #1", "DUALSHOCK 4 #2"]);
+    }
+
+    #[test]
+    fn an_origin_reaches_the_pad() {
+        let mut seen = sighting("/dev/input/event9", "Xbox Wireless Controller", "");
+        seen.origin = Origin::Bluetooth;
+        let pads = PadRoster::default().observe([seen]);
+        assert_eq!(pads[0].1.origin, Origin::Bluetooth);
+    }
+
+    proptest! {
+        /// Each step is the set of nodes present after a sighting or a drop.
+        #[test]
+        fn any_interleaving_of_sightings_and_drops_keeps_present_keys_unique(
+            steps in proptest::collection::vec(
+                proptest::collection::btree_map(0_u8..6, (0_u8..3, any::<bool>()), 0..6),
+                1..12,
+            ),
+        ) {
+            let mut roster = PadRoster::default();
+            for step in steps {
+                let present = step.into_iter().map(|(node, (name, has_id))| {
+                    let uniq = if has_id { format!("id{}", name % 2) } else { String::new() };
+                    sighting(&format!("/dev/input/event{node}"), &format!("Pad{name}"), &uniq)
+                });
+                let pads = roster.observe(present);
+                let unique: BTreeSet<_> = pads.iter().map(|(_, pad)| &pad.key).collect();
+                prop_assert_eq!(unique.len(), pads.len());
+            }
+        }
+    }
+}

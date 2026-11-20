@@ -23,3 +23,5 @@ Run `scripts/check` before every commit; CI runs the same gate. Review rules are
 ## Decisions
 
 Raise every hard-to-reverse decision in the PR body: describe the decision and its options, finish the rest of the ticket, and open the PR as a draft. The repo owner, @magnus-encoded, writes and accepts every ADR. Never add or edit an ADR, whether in `docs/adr/` or in `crates/<context>/docs/adr/`.
+
+Run `scripts/install-hooks` once per clone. Before `gh pr create`, run `scripts/pr-body <file>`.

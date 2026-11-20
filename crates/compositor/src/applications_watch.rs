@@ -29,6 +29,8 @@ pub fn relevant(name: Option<&[u8]>, is_directory: bool, overflow: bool) -> bool
 }
 
 /// A watch on every `applications` directory under the data directories.
+///
+/// A data directory without one is watched itself until the folder is created.
 #[derive(Debug)]
 pub struct ApplicationsWatch {
     directories: Vec<PathBuf>,
@@ -96,6 +98,14 @@ impl ApplicationsWatch {
 
     fn watch_directories(&self) {
         for directory in &self.directories {
+            if !directory.is_dir()
+                && let Some(parent) = directory.parent()
+            {
+                // Until `applications` appears, its creation is seen on the data directory.
+                if let Err(error) = inotify::add_watch(&*self.watcher, parent, WATCH_FLAGS) {
+                    tracing::debug!(%error, "data directory not watched");
+                }
+            }
             self.watch_tree(directory, 0);
         }
     }

@@ -93,8 +93,13 @@ impl State {
         &mut self,
         elapsed: Duration,
         left_stick_moves_pointer: bool,
+        mapped_sticks: [bool; 2],
         effects: &mut Vec<Effect>,
     ) -> bool {
+        let [left_mapped, right_mapped] = mapped_sticks;
+        let unmapped = |mapped: bool, sample: (i16, i16)| if mapped { (0, 0) } else { sample };
+        let left = unmapped(left_mapped, self.sticks.left);
+        let right = unmapped(right_mapped, self.sticks.right);
         let single_tap = self.tick_view(elapsed);
         let nanos = i64::try_from(elapsed.as_nanos().min(100_000_000)).unwrap_or(100_000_000);
         let motion = |axis: i16| {
@@ -107,7 +112,7 @@ impl State {
             .unwrap_or(0)
         };
         if self.active {
-            let (x, y) = self.sticks.left;
+            let (x, y) = left;
             if left_stick_moves_pointer && (x != 0 || y != 0) {
                 effects.push(Effect::MovePointer {
                     x: motion(x),
@@ -115,7 +120,7 @@ impl State {
                 });
             }
         }
-        let (scroll_x, scroll_y) = self.sticks.right;
+        let (scroll_x, scroll_y) = right;
         let scroll_x = if self.active { scroll_x } else { 0 };
         if scroll_x != 0 || scroll_y != 0 {
             effects.push(Effect::Scroll {

@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Passes when a test the PR adds or edits fails with the base commit's version of the PR's source files.
+# Usage: check-red-test BASE_COMMIT   (run in a checkout of the PR head)
+# Env: CARGO overrides cargo; RED_TEST_BUILD_OK=1 accepts a base build failure (label red-test-build-ok).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+base=${1:?usage: check-red-test BASE_COMMIT}
+# Diff from the merge base, so a branch behind the base tip is not charged with the tip's newer tests.
+base=$(git merge-base "$base" HEAD)
+cargo=${CARGO:-cargo}
+is_test() {
+    [[ $1 == crates/*/tests/*.rs || $1 == crates/*/src/*tests.rs || $1 == crates/*/src/*/tests.rs || $1 == crates/*/src/*/tests/*.rs ]]
+}
+# First line of the inline test module (0 when none), in the file on stdin.
+test_start() { awk '/^[[:space:]]*#\[cfg\(test\)\]/ { print NR; found = 1; exit } END { if (!found) print 0 }'; }
+# Names of the fns enclosing the changed lines of $1 (after line $2 when $2 > 0).
+changed_fns() {
+    local file=$1 from=$2
+    git diff -U0 "$base" HEAD -- "$file" | sed -nE 's/^@@ [^+]*\+([0-9]+)(,([0-9]+))? @@.*/\1 \3/p' |
+        awk -v from="$from" -v file="$file" '
+            BEGIN { while ((getline l < file) > 0) lines[++n] = l }
+            { start = $1; count = ($2 == "") ? 1 : $2; if (count == 0) count = 1
+              for (i = start; i < start + count && i <= n; i++) {
+                  if (i < from) continue
+                  # An attribute or blank line belongs to the fn that follows it.
+                  fwd = (lines[i] ~ /^[[:space:]]*(#\[.*)?$/)
+                  for (j = i; j >= 1 && j <= n; j += (fwd ? 1 : -1)) if (match(lines[j], /fn [A-Za-z0-9_]+/)) {
+                      print substr(lines[j], RSTART + 3, RLENGTH - 3); break } } }' | sort -u
+}
+tests=()
+sources=()
+added=()
+while IFS=$'\t' read -r status path; do
+    [[ $path == crates/*.rs ]] || continue
+    if is_test "$path"; then
+        [ "$status" = D ] || tests+=("$path")
+    elif [[ $path == crates/*/src/* ]]; then
+        if [ "$status" = A ]; then added+=("$path"); elif [ "$status" != D ]; then sources+=("$path"); fi
+    fi
+done < <(git diff --name-status --no-renames "$base" HEAD)
+names=()
+for file in ${tests[@]+"${tests[@]}"}; do
+    while IFS= read -r name; do names+=("$name"); done < <(changed_fns "$file" 0)
+done
+for file in ${sources[@]+"${sources[@]}"} ${added[@]+"${added[@]}"}; do
+    start=$(test_start <"$file")
+    [ "$start" -gt 0 ] || continue
+    while IFS= read -r name; do names+=("$name"); done < <(changed_fns "$file" "$start")
+done
+if [ "${#names[@]}" -eq 0 ]; then
+    echo "check-red-test: the PR adds or edits no test function; skipping."
+    exit 0
+fi
+if [ "${#sources[@]}" -eq 0 ]; then
+    if [ "${#added[@]}" -gt 0 ]; then
+        echo "check-red-test: the change is only in newly added source files (${added[*]})." >&2
+        echo "They cannot be reverted to the base, so this job cannot show a red test. Label the PR no-red-test and say why in the body." >&2
+        exit 1
+    fi
+    echo "check-red-test: the PR changes no source file under crates/*/src; skipping."
+    exit 0
+fi
+trap 'git checkout -q HEAD -- "${sources[@]}"' EXIT
+for file in "${sources[@]}"; do
+    if ! git cat-file -e "$base:$file" 2>/dev/null; then continue; fi
+    head_start=$(test_start <"$file")
+    git show "$base:$file" >"$file.base"
+    base_start=$(test_start <"$file.base")
+    if [ "$head_start" -gt 0 ]; then
+        # Keep the PR's inline test module on top of the base's non-test code.
+        { if [ "$base_start" -gt 0 ]; then head -n $((base_start - 1)) "$file.base"; else cat "$file.base"; fi
+          tail -n +"$head_start" "$file"; } >"$file.mixed"
+        mv "$file.mixed" "$file"
+    else
+        cp "$file.base" "$file"
+    fi
+    rm -f "$file.base"
+done
+echo "check-red-test: running ${#names[@]} test name(s) against base sources: ${names[*]}"
+log=$(mktemp)
+if XKB_DEFAULT_LAYOUT=us "$cargo" test --workspace --locked -- --test-threads=1 "${names[@]}" >"$log" 2>&1; then
+    cat "$log"
+    echo "check-red-test: every added or edited test passes without the source change." >&2
+    echo "Make a test fail on the base code, or label the PR no-red-test (docs, refactors)." >&2
+    exit 1
+fi
+cat "$log"
+if grep -qE 'could not compile|^error(\[E[0-9]+\])?:' "$log"; then
+    if [ "${RED_TEST_BUILD_OK:-}" = 1 ]; then
+        echo "check-red-test: the base does not build with the PR's tests; accepted by the red-test-build-ok label."
+        exit 0
+    fi
+    echo "check-red-test: the base does not build with the PR's tests, which proves nothing about behaviour." >&2
+    echo "Label the PR red-test-build-ok and give the reason in the body, or make the test compile against the base." >&2
+    exit 1
+fi
+echo "check-red-test: at least one added or edited test fails without the source change."

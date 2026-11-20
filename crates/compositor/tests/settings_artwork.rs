@@ -2,32 +2,87 @@
 mod tests {
     use tehuti_core::dispatch::{Page, Settings};
 
+    const CYAN: [u8; 4] = [240, 218, 64, 255];
+    const FACE: [u8; 4] = [36, 26, 14, 255];
+
+    fn pixels_of(settings: &Settings) -> Result<Vec<[u8; 4]>, Box<dyn core::error::Error>> {
+        let mut buffer = tehuti::settings::buffer(settings, "OFF", (1280, 720)).ok_or("missing artwork")?;
+        let mut copy = Vec::new();
+        buffer.render().draw(|pixels| {
+            copy = pixels.as_chunks::<4>().0.to_vec();
+            Ok::<_, std::io::Error>(Vec::new())
+        })?;
+        Ok(copy)
+    }
+
+    fn pixel_at(pixels: &[[u8; 4]], x: usize, y: usize) -> [u8; 4] {
+        pixels
+            .get(y.saturating_mul(1280).saturating_add(x))
+            .copied()
+            .unwrap_or_default()
+    }
+
     #[test]
-    fn display_modes_draw_a_size_preview_and_refresh_wave() -> Result<(), Box<dyn core::error::Error>> {
+    fn display_tiles_are_square_rows_with_the_focused_tile_outlined()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let mut settings = Settings::default();
+        settings.open = true;
+        settings.page = Page::Display;
+        settings.modes = vec!["1920x1080@60".into(), "1920x1080@120".into()];
+        let pixels = pixels_of(&settings)?;
+        assert_eq!(
+            pixel_at(&pixels, 100, 223),
+            CYAN,
+            "the focused resolution tile has a cyan edge"
+        );
+        assert_ne!(
+            pixel_at(&pixels, 100, 321),
+            CYAN,
+            "the refresh tile below is not focused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn font_tiles_show_sample_glyphs() -> Result<(), Box<dyn core::error::Error>> {
         let mut settings = Settings::default();
         settings.open = true;
         settings.page = Page::Display;
         settings.modes = vec!["1920x1080@60".into()];
-        let mut buffer = tehuti::settings::buffer(&settings, "OFF", (1280, 720)).ok_or("missing artwork")?;
-        buffer.render().draw(|pixels| {
-            for (left, top, width, height) in [(960_usize, 230_usize, 200, 120), (960, 430, 150, 30)] {
-                let cyan = pixels
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, pixel)| {
-                        let x = index.checked_rem(1280).unwrap_or_default();
-                        let y = index.checked_div(1280).unwrap_or_default();
-                        (left..left.saturating_add(width)).contains(&x)
-                            && (top..top.saturating_add(height)).contains(&y)
-                            && **pixel == [240, 218, 64, 255]
-                    })
-                    .count();
-                assert!(cyan > 100, "the graphical preview must be visible");
-            }
-            Ok::<_, std::io::Error>(Vec::new())
-        })?;
+        settings.display_focus = tehuti_core::tiles::Focus { row: 3, col: 1 };
+        let pixels = pixels_of(&settings)?;
+        let inked = (440..540)
+            .flat_map(|y| (100..260).map(move |x| (x, y)))
+            .filter(|(x, y)| pixel_at(&pixels, *x, *y) != FACE)
+            .count();
+        assert!(inked > 50, "the large sample is drawn inside the first font tile");
+        Ok(())
+    }
+
+    #[test]
+    fn input_tiles_are_equal_squares() -> Result<(), Box<dyn core::error::Error>> {
+        let mut settings = Settings::default();
+        settings.open = true;
+        settings.page = Page::Input;
+        settings.input.focus = tehuti_core::tiles::Focus { row: 2, col: 0 };
+        let pixels = pixels_of(&settings)?;
+        for (x, y) in [(100, 223), (100, 400), (81, 300), (258, 300)] {
+            assert_eq!(
+                pixel_at(&pixels, x, y),
+                CYAN,
+                "the focused tile's edge at {x},{y}"
+            );
+        }
+        assert_ne!(
+            pixel_at(&pixels, 100, 410),
+            CYAN,
+            "the tile is as tall as it is wide"
+        );
+        assert_ne!(
+            pixel_at(&pixels, 270, 300),
+            CYAN,
+            "the tile is as wide as it is tall"
+        );
         Ok(())
     }
 
@@ -46,7 +101,7 @@ mod tests {
                 .filter(|(index, pixel)| {
                     let x = index.checked_rem(1280).unwrap_or_default();
                     let y = index.checked_div(1280).unwrap_or_default();
-                    (360..1200).contains(&x) && (620..650).contains(&y) && **pixel == colour
+                    (760..1270).contains(&x) && (84..120).contains(&y) && **pixel == colour
                 })
                 .count();
             Ok::<_, std::io::Error>(Vec::new())
@@ -68,6 +123,64 @@ mod tests {
             "a CPU fallback must stand out"
         );
         assert_eq!(speech_pixels("", cyan)?, 0);
+        Ok(())
+    }
+
+    /// The pixels of the open controller's settings row, with the DEADZONE tile (the fifth) focused.
+    fn deadzone_row(deadzone: Option<u16>) -> Result<Vec<[u8; 4]>, Box<dyn core::error::Error>> {
+        let mut settings = Settings::default();
+        settings.open = true;
+        settings.page = Page::Input;
+        settings.input.controllers = vec!["Pad".into()];
+        if let Some(deadzone) = deadzone {
+            let _previous = settings.input.controller_deadzones.insert("Pad".into(), deadzone);
+        }
+        settings.input.focus = tehuti_core::tiles::Focus { row: 1, col: 4 };
+        pixels_of(&settings)
+    }
+
+    fn lit(pixels: &[[u8; 4]], area: (usize, usize, usize, usize)) -> usize {
+        (area.1..area.1.saturating_add(area.3))
+            .flat_map(|y| (area.0..area.0.saturating_add(area.2)).map(move |x| (x, y)))
+            .filter(|(x, y)| pixel_at(pixels, *x, *y) == [244, 240, 225, 255])
+            .count()
+    }
+
+    #[test]
+    fn the_deadzone_tile_sits_fifth_in_the_controller_row_with_its_own_value()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let default = deadzone_row(None)?;
+        // The tiles shrink to fit three rows, so look at everything under the pad row.
+        let tile = (80, 330, 1120, 330);
+        assert!(lit(&default, tile) > 100, "the row carries its labels");
+        assert!(
+            default != deadzone_row(Some(250))?,
+            "the shown value follows the saved deadzone"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_recentre_tile_is_the_last_of_the_row_and_shows_once_measured()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let drawn = |measured: bool| -> Result<Vec<[u8; 4]>, Box<dyn core::error::Error>> {
+            let mut settings = Settings::default();
+            settings.open = true;
+            settings.page = Page::Input;
+            settings.input.controllers = vec!["Pad".into()];
+            if measured {
+                let _previous = settings
+                    .input
+                    .controller_recentres
+                    .insert("Pad".into(), [-104, 238, 0, 0]);
+            }
+            settings.input.focus = tehuti_core::tiles::Focus { row: 1, col: 5 };
+            pixels_of(&settings)
+        };
+        let tile = (80, 330, 1120, 330);
+        let (open, measured) = (drawn(false)?, drawn(true)?);
+        assert!(lit(&open, tile) > 100, "the row carries its labels");
+        assert!(open != measured, "a measured rest shows on the tile");
         Ok(())
     }
 }

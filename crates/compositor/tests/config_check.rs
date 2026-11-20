@@ -24,6 +24,42 @@ mod config_check {
     }
 
     #[test]
+    fn duplicate_normalized_speech_phrases_are_an_error() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Go' = { key = 'enter' }\n'go.' = { key = 'tab' }\n",
+        );
+        let report = check(directory.path());
+        assert!(report.has_errors(), "{report}");
+        assert!(report.to_string().contains("normalize to"), "{report}");
+    }
+
+    #[test]
+    fn shipped_contexts_have_no_duplicate_or_empty_speech_phrases() {
+        let report = check(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dist/contexts"));
+        assert!(!report.has_errors(), "{report}");
+    }
+
+    #[test]
+    fn check_config_rejects_a_key_hold_outside_one_to_a_thousand() {
+        for (value, rejected) in [("0", true), ("1001", true), ("1", false), ("1000", false)] {
+            let directory = tempfile::tempdir().unwrap();
+            write(
+                directory.path(),
+                "global/context.toml",
+                &format!("app_id = '*'\nkey_hold_ms = {value}\n[buttons]\n"),
+            );
+            let report = check(directory.path());
+            assert_eq!(report.has_errors(), rejected, "{value}: {report}");
+            if rejected {
+                assert!(report.to_string().contains("key_hold_ms"), "{report}");
+            }
+        }
+    }
+
+    #[test]
     fn unknown_ticker_button_names_warn_without_failing() {
         let directory = tempfile::tempdir().unwrap();
         write(
@@ -62,6 +98,96 @@ order = 1
         assert!(report.to_string().contains("entry[0]"));
         assert!(report.to_string().contains("unknown"));
         assert!(report.has_errors());
+    }
+
+    #[test]
+    fn a_context_phrase_core_claims_as_scratch_that_never_fires() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Scratch that.' = { key = 'a' }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+        assert!(report.to_string().contains("reserved unit verb"), "{report}");
+        assert!(report.to_string().contains("scratch that"), "{report}");
+    }
+
+    #[test]
+    fn a_layout_phrase_with_no_button_is_flagged_as_voice_only() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Half width' = { layout = 'maximize-column' }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.message.contains("only by voice"))
+            .unwrap_or_else(|| panic!("no voice-only warning: {report}"));
+        assert_eq!(finding.severity, Severity::Warning);
+        assert!(finding.message.contains("Half width"), "{report}");
+    }
+
+    #[test]
+    fn a_layout_phrase_with_a_button_is_not_voice_only() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\nnorth = { layout = 'maximize-column' }\n[speech]\n'Half width' = { layout = 'maximize-column' }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.to_string().contains("only by voice"), "{report}");
+    }
+
+    #[test]
+    fn shipped_examples_map_no_voice_only_step_phrases() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let report = check(&examples);
+        assert!(!report.to_string().contains("only by voice"), "{report}");
+        let global = std::fs::read_to_string(examples.join("global/context.toml")).unwrap();
+        let context = tehuti_protocol::parse_context(&global).unwrap();
+        for mapping in context.speech_mappings() {
+            assert!(
+                !matches!(
+                    mapping.action,
+                    tehuti_protocol::Action::Layout {
+                        action: tehuti_protocol::LayoutAction::SwitchPresetColumnWidth
+                            | tehuti_protocol::LayoutAction::SwitchPresetColumnWidthBack
+                    }
+                ),
+                "step phrase {:?} remains",
+                mapping.phrase
+            );
+        }
+    }
+
+    #[test]
+    fn goal_phrases_and_menu_actions_are_not_voice_only() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Half width' = { key = 'h' }\n'Restart' = { restart = true }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.to_string().contains("only by voice"), "{report}");
+    }
+
+    #[test]
+    fn an_undo_dictation_phrase_with_no_button_is_voice_only() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "global/context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Oops' = { undo_dictation = true }\n",
+        );
+        assert!(check(directory.path()).to_string().contains("only by voice"));
     }
 
     fn write(directory: &Path, relative: &str, text: &str) {
@@ -207,6 +333,30 @@ order = 1
     }
 
     #[test]
+    fn invoke_phrases_warn_but_a_lone_invoke_remains_reachable() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "context.toml",
+            "app_id = '*'\n[buttons]\n[speech]\n'Invoke help' = { key = 'enter' }\n'Invoke <name>' = { text = '/{name} ' }\n'Invoke' = { key = 'enter' }\n'Inventory help' = { key = 'enter' }",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
+        let invoked: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.message.contains("built-in invoke verb"))
+            .collect();
+        assert_eq!(invoked.len(), 2, "{report}");
+        assert!(
+            invoked
+                .iter()
+                .all(|finding| finding.severity == Severity::Warning),
+            "{report}"
+        );
+    }
+
+    #[test]
     fn reserved_unit_verbs_warn_but_unrelated_phrases_remain_reachable() {
         let directory = tempfile::tempdir().unwrap();
         write(
@@ -225,6 +375,13 @@ order = 1
                     && finding.message.contains("reserved unit verb")),
             "{report}"
         );
+        let text = report.to_string();
+        for word in ["\"open\"", "\"åpne\"", "\"work on\""] {
+            assert!(
+                text.contains(&format!("reserved unit verb {word}")),
+                "{word}: {text}"
+            );
+        }
         let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
             .args(["--check-config".as_ref(), directory.path().as_os_str()])
             .env_clear()
@@ -232,6 +389,40 @@ order = 1
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         assert!(String::from_utf8(output.stdout).unwrap().contains("3 warnings"));
+    }
+
+    #[test]
+    fn invalid_window_widths_are_errors_and_valid_ones_are_not() {
+        for bad in ["\"3/2\"", "\"0/3\"", "\"two\"", "1.5", "0.0", "-5", "0"] {
+            let directory = tempfile::tempdir().unwrap();
+            write(
+                directory.path(),
+                "game/context.toml",
+                &format!("app_id = 'org.example.Game'\nbuttons = {{}}\n[window]\nwidth = {bad}\n"),
+            );
+            let report = check(directory.path());
+            assert!(report.has_errors(), "{bad}: {report}");
+            assert!(
+                report.to_string().contains("game/context.toml: error:"),
+                "{bad}: {report}"
+            );
+            let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
+                .args(["--check-config".as_ref(), directory.path().as_os_str()])
+                .env_clear()
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{bad}: {output:?}");
+        }
+        for good in ["\"2/3\"", "1280", "0.667", "1"] {
+            let directory = tempfile::tempdir().unwrap();
+            write(
+                directory.path(),
+                "game/context.toml",
+                &format!("app_id = 'org.example.Game'\nbuttons = {{}}\n[window]\nwidth = {good}\n"),
+            );
+            let report = check(directory.path());
+            assert!(!report.has_errors(), "{good}: {report}");
+        }
     }
 
     #[test]
@@ -264,6 +455,18 @@ order = 1
                 .unwrap();
             assert!(output.status.success(), "{output:?}");
         }
+    }
+
+    #[test]
+    fn a_speech_only_context_checks_clean() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "notes/context.toml",
+            "app_id = 'org.example.Notes'\n[speech]\n'save it' = { key = 's', mods = ['ctrl'] }\n",
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "{report}");
     }
 
     #[test]

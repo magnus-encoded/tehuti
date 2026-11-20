@@ -5,7 +5,7 @@ use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::Transform,
 };
-use tehuti_core::dispatch::{Category, InputRow, Page, Settings};
+use tehuti_core::dispatch::{Category, Page, Settings};
 
 #[derive(Debug, Default)]
 pub(crate) struct Display {
@@ -24,13 +24,11 @@ pub struct Artwork {
 struct View {
     page: Page,
     category: Category,
-    row: InputRow,
-    controller: String,
-    microphone: String,
-    push_to_talk: String,
+    input: tehuti_core::dispatch::InputSettings,
     speech: String,
     hint: String,
-    selected: usize,
+    display_focus: tehuti_core::tiles::Focus,
+    display_resolution: usize,
     current: usize,
     modes: Vec<String>,
     wallpapers: Vec<String>,
@@ -48,13 +46,11 @@ impl View {
         Self {
             page: settings.page,
             category: settings.category,
-            row: settings.input.row,
-            controller: settings.input.controller_label(),
-            microphone: settings.input.microphone_label(),
-            push_to_talk: settings.input.push_to_talk_label(),
+            input: settings.input.clone(),
             speech: speech.to_owned(),
             hint: settings.button_hint(),
-            selected: settings.selected,
+            display_focus: settings.display_focus,
+            display_resolution: settings.display_resolution,
             current: settings.current,
             modes: settings.modes.clone(),
             wallpapers: settings.wallpapers.clone(),
@@ -141,6 +137,9 @@ const AMBER: [u8; 4] = [56, 184, 255, 255];
 const WHITE: [u8; 4] = [244, 240, 225, 255];
 
 pub(crate) mod canvas;
+mod input_icons;
+mod pages;
+mod tiles;
 use canvas::Canvas;
 
 impl Canvas {
@@ -172,116 +171,6 @@ impl Canvas {
             self.text(96, y.saturating_add(20), name, 5, WHITE);
             self.text(600, y.saturating_add(32), detail, 3, CYAN);
         }
-    }
-
-    fn display(&mut self, settings: &Settings) {
-        let first = settings.selected.saturating_sub(2);
-        let rows: Vec<String> = settings
-            .modes
-            .iter()
-            .map(|mode| format!("{} HZ", mode.replace('x', " X ").replace('@', " / ")))
-            .chain(core::iter::once(format!(
-                "SCALE {}  (LEFT / RIGHT)",
-                settings.scale
-            )))
-            .chain(core::iter::once(format!(
-                "BAR FONT: {}  (LEFT / RIGHT)",
-                settings.bar_font.label()
-            )))
-            .collect();
-        for (row, (index, mode)) in rows.iter().enumerate().skip(first).take(5).enumerate() {
-            let y = 244usize.saturating_add(row.saturating_mul(64));
-            if index == settings.selected {
-                self.rectangle(72, y.saturating_sub(12), 850, 54, [65, 43, 12, 255]);
-                self.rectangle(72, y.saturating_sub(12), 4, 54, CYAN);
-            }
-            self.text(96, y, mode, 4, WHITE);
-            if index == settings.current && index < settings.modes.len() {
-                self.text(720, y.saturating_add(6), "ACTIVE", 2, CYAN);
-            }
-        }
-        if settings.modes.is_empty() {
-            self.text(96, 568, "NO DRIVER MODES AVAILABLE", 3, AMBER);
-        }
-        if let Some(mode) = settings.modes.get(settings.selected) {
-            self.mode_preview(mode);
-        }
-    }
-
-    fn mode_preview(&mut self, mode: &str) {
-        let Some((size, refresh)) = mode.split_once('@') else {
-            return;
-        };
-        let Some((width, height)) = size.split_once('x') else {
-            return;
-        };
-        let (Ok(width), Ok(height), Ok(refresh)) = (
-            width.parse::<usize>(),
-            height.parse::<usize>(),
-            refresh.parse::<f32>(),
-        ) else {
-            return;
-        };
-        if width == 0 || height == 0 {
-            return;
-        }
-        let preview_width = 200.min(width.saturating_mul(120).checked_div(height).unwrap_or_default());
-        let preview_height = 120.min(height.saturating_mul(200).checked_div(width).unwrap_or_default());
-        self.rectangle(960, 230, preview_width, 2, CYAN);
-        self.rectangle(960, 230, 2, preview_height, CYAN);
-        self.rectangle(
-            960,
-            230usize.saturating_add(preview_height),
-            preview_width,
-            2,
-            CYAN,
-        );
-        self.rectangle(
-            960usize.saturating_add(preview_width),
-            230,
-            2,
-            preview_height,
-            CYAN,
-        );
-        self.wave(960, 445, refresh);
-    }
-
-    fn input(&mut self, settings: &Settings, speech: &str) {
-        let rows = [
-            (
-                InputRow::Controller,
-                "CONTROLLER",
-                settings.input.controller_label(),
-            ),
-            (
-                InputRow::PushToTalk,
-                "PUSH TO TALK",
-                settings.input.push_to_talk_label(),
-            ),
-            (
-                InputRow::Microphone,
-                "MICROPHONE",
-                settings.input.microphone_label(),
-            ),
-        ];
-        for (index, (row, name, value)) in rows.into_iter().enumerate() {
-            let y = 230usize.saturating_add(index.saturating_mul(124));
-            if row == settings.input.row {
-                self.highlight(y, 108);
-            }
-            self.text(96, y.saturating_add(14), name, 4, WHITE);
-            let value: String = value.chars().take(36).collect();
-            self.text(96, y.saturating_add(66), &format!("<  {value}  >"), 3, CYAN);
-        }
-        self.text(96, 630, "SPEECH RUNS ON", 2, WHITE);
-        let speech: String = speech.chars().take(36).collect();
-        self.text(
-            360,
-            626,
-            &speech,
-            3,
-            if speech.starts_with("CPU") { AMBER } else { CYAN },
-        );
     }
 
     fn wallpaper(&mut self, settings: &Settings) {
@@ -346,13 +235,27 @@ impl Canvas {
     }
 }
 
+/// The running version and short commit SHA, as `v0.134.1 · 1a2b3c4`.
+#[must_use]
+fn version_line(version: &str, commit: &str) -> String {
+    format!("v{version} \u{b7} {commit}")
+}
+
+#[must_use]
+fn build_line() -> String {
+    version_line(
+        option_env!("TEHUTI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+        env!("TEHUTI_GIT_HASH"),
+    )
+}
+
 #[must_use]
 pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<MemoryRenderBuffer> {
     if !settings.open {
         return None;
     }
     let mut canvas = Canvas::new(size)?;
-    canvas.rectangle(0, 0, WIDTH, HEIGHT, [20, 14, 8, 235]);
+    canvas.rectangle(0, 0, WIDTH, HEIGHT, [20, 14, 8, 255]);
     canvas.rectangle(48, 52, 6, 80, CYAN);
     canvas.text(80, 54, "TEHUTI / SYSTEM", 3, CYAN);
     canvas.text(
@@ -368,7 +271,16 @@ pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<Mem
         WHITE,
     );
     canvas.rectangle(80, 166, 1120, 2, CYAN);
-    canvas.text(80, 190, "POP THE HOOD", 2, AMBER);
+    // The Input page names its first row at the left, so the hood label moves right, clear of any row heading.
+    let hood_left = if settings.page == Page::Input {
+        1200 - 12 * 12
+    } else {
+        80
+    };
+    canvas.text(hood_left, 190, "POP THE HOOD", 2, AMBER);
+    if settings.page == Page::Categories {
+        canvas.text(1200 - 24 * 15, 186, &build_line(), 3, WHITE);
+    }
     canvas.contents(settings, speech);
     if let Some(remaining) = settings.remaining {
         canvas.ring(remaining);
@@ -401,6 +313,101 @@ mod tests {
     };
     use tehuti_protocol::{Event, Text};
 
+    /// Writes the Input page to `$SHOT_DIR/input-page.png` when that is set; the PR screenshots come from here.
+    #[test]
+    fn the_input_page_can_be_written_as_a_screenshot() -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let Some(directory) = std::env::var_os("SHOT_DIR") else {
+            return Ok(());
+        };
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.show_fixture("input")?;
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        for name in [ButtonName::DpadDown, ButtonName::South] {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                compositor.handle(&Event::Button { name, state });
+            }
+        }
+        let mut buffer = compositor
+            .settings_buffer((1280, 720))
+            .ok_or("missing Input artwork")?;
+        let mut rgba = Vec::new();
+        buffer.render().draw(|pixels| {
+            for pixel in pixels.as_chunks::<4>().0 {
+                rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+            }
+            Ok::<_, Box<dyn core::error::Error>>(Vec::new())
+        })?;
+        let path = std::path::Path::new(&directory).join("input-page.png");
+        image::save_buffer(path, &rgba, 1280, 720, image::ColorType::Rgba8)?;
+        Ok(())
+    }
+
+    #[test]
+    fn input_silhouettes_have_smooth_edges_at_each_output_size() -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.show_fixture("input")?;
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        for name in [ButtonName::DpadDown, ButtonName::South] {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                compositor.handle(&Event::Button { name, state });
+            }
+        }
+        let input = &compositor.settings().input;
+        let grid = super::tiles::Grid::input(&input.rows(), input.focus);
+        let (left, top) = grid.origin(0, 0).ok_or("missing controller tile")?;
+        let side = grid.side();
+        for (width, height) in [(1280, 720), (1920, 1080), (3840, 2160)] {
+            let mut buffer = compositor
+                .settings_buffer((width, height))
+                .ok_or("missing Input artwork")?;
+            let width = usize::try_from(width)?;
+            let height = usize::try_from(height)?;
+            buffer.render().draw(|pixels| {
+                let colours: std::collections::HashSet<_> = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| {
+                        let x = index.checked_rem(width).unwrap_or_default().saturating_mul(1280) / width;
+                        let y = index.saturating_div(width).saturating_mul(720) / height;
+                        (left.saturating_add(side / 4)..left.saturating_add(side.saturating_mul(3) / 4))
+                            .contains(&x)
+                            && (top.saturating_add(side / 10)..top.saturating_add(side.saturating_mul(3) / 5))
+                                .contains(&y)
+                    })
+                    .map(|(_, pixel)| pixel.to_vec())
+                    .collect();
+                assert!(
+                    colours.len() > 30,
+                    "Input outlines have fractional coverage at {width}x{height}"
+                );
+                Ok::<_, Box<dyn core::error::Error>>(Vec::new())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_top_page_shows_the_compiled_in_version_and_commit() {
+        assert_eq!(
+            super::version_line("0.134.1", "1a2b3c4"),
+            "v0.134.1 \u{b7} 1a2b3c4"
+        );
+        let line = super::build_line();
+        let version = option_env!("TEHUTI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+        assert_eq!(line, format!("v{version} \u{b7} {}", env!("TEHUTI_GIT_HASH")));
+        assert_ne!(env!("TEHUTI_GIT_HASH"), "");
+    }
+
     #[test]
     fn native_artwork_has_smooth_text_and_countdown_edges() -> Result<(), Box<dyn core::error::Error>> {
         let display = Display::<Compositor>::new()?;
@@ -411,7 +418,7 @@ mod tests {
         });
         for name in [
             tehuti_protocol::ButtonName::South,
-            tehuti_protocol::ButtonName::DpadDown,
+            tehuti_protocol::ButtonName::DpadRight,
             tehuti_protocol::ButtonName::South,
         ] {
             compositor.handle(&Event::Button {
@@ -557,26 +564,24 @@ mod tests {
     }
 
     fn input_test_controllers() -> Vec<tehuti_core::dispatch::ControllerInfo> {
+        let sighting = |path: &str, name: &str, product| tehuti_core::pad::PadSighting {
+            path: path.into(),
+            name: name.into(),
+            vendor: if product == 0x09cc { 0x054c } else { 0x045e },
+            product,
+            uniq: String::new(),
+            origin: tehuti_core::dispatch::Origin::Usb,
+        };
         crate::controller::numbered_controllers([
-            (
-                "/dev/input/event2".into(),
-                "Wireless Controller".into(),
-                0x054c,
-                0x09cc,
-            ),
-            (
-                "/dev/input/event9".into(),
-                "Xbox Controller".into(),
-                0x045e,
-                0x0b13,
-            ),
+            sighting("/dev/input/event2", "Wireless Controller", 0x09cc),
+            sighting("/dev/input/event9", "Xbox Controller", 0x0b13),
         ])
     }
 
     #[test]
-    fn the_input_page_confirms_a_pad_and_saves_its_binding_and_microphone()
+    fn the_input_page_disables_a_pad_and_saves_it_with_its_binding_and_microphone()
     -> Result<(), Box<dyn core::error::Error>> {
-        use tehuti_core::dispatch::{ControllerChoice, MicrophoneChoice};
+        use tehuti_core::dispatch::MicrophoneChoice;
         use tehuti_protocol::{ButtonName, ButtonState};
         let directory = tempfile::tempdir()?;
         let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
@@ -584,6 +589,7 @@ mod tests {
         let mut compositor = Compositor::new(&display.handle())?;
         compositor.load_input_choices(store.clone());
         compositor.configure_controllers(input_test_controllers());
+        compositor.activate_controller("Wireless Controller#1".into());
         compositor.handle(&Event::Speech {
             text: Text::new("Pop the hood.".into())?,
         });
@@ -595,42 +601,124 @@ mod tests {
         press(&mut compositor, ButtonName::DpadDown);
         press(&mut compositor, ButtonName::South);
         assert_eq!(compositor.settings().page, tehuti_core::dispatch::Page::Input);
-        assert_eq!(
-            compositor.settings().input.controller_label(),
-            "AUTO: DUALSHOCK 4 #1 +1"
-        );
         assert!(compositor.settings_buffer((1024, 600)).is_some());
         press(&mut compositor, ButtonName::DpadRight);
-        assert_eq!(compositor.settings().input.controller_label(), "DUALSHOCK 4 #1");
-        assert!(compositor.controller_chosen("Wireless Controller"));
-        assert!(compositor.controller_chosen("Xbox Controller"));
+        assert!(
+            compositor.controller_chosen("Xbox Controller#1"),
+            "moving disables nothing"
+        );
+        press(&mut compositor, ButtonName::South);
+        assert!(!compositor.controller_chosen("Xbox Controller#1"));
+        assert!(compositor.controller_chosen("Wireless Controller#1"));
         assert_eq!(
-            store.controller()?,
-            ControllerChoice::Auto,
-            "a preview is not saved"
+            store.disabled_controllers()?,
+            vec!["Xbox Controller#1".to_owned()]
+        );
+        press(&mut compositor, ButtonName::South);
+        assert!(compositor.controller_chosen("Xbox Controller#1"));
+        assert_eq!(store.disabled_controllers()?, Vec::<String>::new());
+        press(&mut compositor, ButtonName::DpadDown);
+        for _ in 0..3 {
+            press(&mut compositor, ButtonName::DpadRight);
+        }
+        press(&mut compositor, ButtonName::South);
+        assert_eq!(
+            store.controller_bindings()?.get("Xbox Controller#1"),
+            Some(&ButtonName::Start)
+        );
+        press(&mut compositor, ButtonName::DpadLeft);
+        press(&mut compositor, ButtonName::DpadLeft);
+        press(&mut compositor, ButtonName::DpadDown);
+        press(&mut compositor, ButtonName::South);
+        assert_eq!(store.microphone()?, MicrophoneChoice::Auto);
+        Ok(())
+    }
+
+    #[test]
+    fn the_recentre_tile_queues_a_measurement_that_is_saved_and_handed_back()
+    -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let directory = tempfile::tempdir()?;
+        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.load_input_choices(store.clone());
+        compositor.configure_controllers(input_test_controllers());
+        compositor.activate_controller("Wireless Controller#1".into());
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        let press = |target: &mut Compositor, name| {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                target.handle(&Event::Button { name, state });
+            }
+        };
+        press(&mut compositor, ButtonName::DpadDown);
+        press(&mut compositor, ButtonName::South);
+        assert_eq!(compositor.settings().page, tehuti_core::dispatch::Page::Input);
+        assert!(compositor.settings_buffer((1024, 600)).is_some());
+        press(&mut compositor, ButtonName::DpadDown);
+        for _ in 0..5 {
+            press(&mut compositor, ButtonName::DpadRight);
+        }
+        assert_eq!(
+            compositor.settings().input.focus,
+            tehuti_core::tiles::Focus { row: 1, col: 5 }
+        );
+        assert!(
+            compositor.take_recentre_requests().is_empty(),
+            "moving asks for nothing"
         );
         press(&mut compositor, ButtonName::South);
         assert_eq!(
-            store.controller()?,
-            ControllerChoice::Named("Wireless Controller".into())
+            compositor.take_recentre_requests(),
+            vec!["Wireless Controller#1".to_owned()]
         );
-        assert!(!compositor.controller_chosen("Xbox Controller"));
-        press(&mut compositor, ButtonName::DpadDown);
-        press(&mut compositor, ButtonName::DpadRight);
-        press(&mut compositor, ButtonName::DpadRight);
-        assert_eq!(compositor.settings().input.push_to_talk_label(), "MENU");
-        assert_eq!(
-            store.controller_bindings()?.get("Wireless Controller"),
-            Some(&ButtonName::Start)
-        );
-        press(&mut compositor, ButtonName::DpadDown);
-        press(&mut compositor, ButtonName::DpadRight);
-        assert_eq!(store.microphone()?, MicrophoneChoice::Auto);
-        compositor.configure_controllers(vec!["Xbox Controller".into()]);
         assert!(
-            compositor.controller_chosen("Xbox Controller"),
-            "every pad drives while the chosen one is away"
+            compositor.take_recentre_requests().is_empty(),
+            "a request is answered once"
         );
+        compositor.store_recentre("Wireless Controller#1".into(), [200, 0, 0, 0]);
+        assert_eq!(
+            compositor.controller_recentre("Wireless Controller#1"),
+            [200, 0, 0, 0]
+        );
+        assert_eq!(compositor.controller_recentre("Xbox Controller#1"), [0; 4]);
+        assert_eq!(
+            store.controller_recentres()?.get("Wireless Controller#1"),
+            Some(&[200, 0, 0, 0])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_saved_single_pad_choice_never_rejects_other_enabled_pads() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
+        store.set_controller(&tehuti_core::dispatch::ControllerChoice::Named(
+            "Wireless Controller".into(),
+        ))?;
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.load_input_choices(store);
+        compositor.configure_controllers(input_test_controllers());
+        assert!(compositor.controller_chosen("Wireless Controller#1"));
+        assert!(compositor.controller_chosen("Xbox Controller#1"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_saved_disabled_pad_stays_disabled_after_a_restart() -> Result<(), Box<dyn core::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let store = crate::input_choice_store::Store::new(directory.path().join("tehuti"));
+        store.set_disabled_controllers(&["Xbox Controller".to_owned()])?;
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.load_input_choices(store);
+        assert!(!compositor.controller_chosen("Xbox Controller"));
+        assert!(compositor.controller_chosen("Wireless Controller"));
+        assert!(!compositor.settings().input.controller_enabled("Xbox Controller"));
         Ok(())
     }
 }

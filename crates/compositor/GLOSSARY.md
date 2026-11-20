@@ -20,5 +20,7 @@
 | Keyboard intent | Permission to open the keyboard with Y in an active text field or terminal. A context can allow Y everywhere or pass it to the application. Saying keyboard opens it in any application. |
 | Terminal layout | The on-screen keyboard in a terminal: a local draft with letters and shell symbols on the base layer. Esc, Tab, Ctrl combinations, arrows and paging keys go straight to the application and keep the draft. B closes it. Menu submits the draft with Enter and keeps it open. |
 | Secret destination | One live Wayland surface during one focus generation; secret insertion checks it again after lookup. |
+| Launch | One child process Tehuti starts for the user: program, arguments, label and the app id its window carries. A specialised launch, such as a terminal with its own class, gets its own context through that app id. |
+| Launch owner | The single module (`launch`) that starts launches, tracks them until they exit or crash, and produces the notice when one closes right away. Tests use its fake spawner. |
 
 Starting without a controller logs a warning. Discovery continues every 250 ms and on input directory changes until a controller can be grabbed.

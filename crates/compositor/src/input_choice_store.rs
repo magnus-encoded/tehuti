@@ -7,7 +7,7 @@
 use core::time::Duration;
 use std::{io, io::Write as _, path::PathBuf};
 
-use tehuti_core::dispatch::{ControllerChoice, Microphone, MicrophoneChoice};
+use tehuti_core::dispatch::{ControllerChoice, Microphone, MicrophoneChoice, RelayState};
 
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -75,6 +75,44 @@ impl Store {
     }
 
     /// # Errors
+    /// Returns read errors or invalid saved data.
+    pub fn disabled_controllers(&self) -> io::Result<Vec<String>> {
+        let Some(source) = self.line("controllers-disabled.json")? else {
+            return Ok(Vec::new());
+        };
+        serde_json::from_str(&source).map_err(io::Error::other)
+    }
+
+    /// # Errors
+    /// Returns serialization, file write and replacement errors.
+    pub fn set_disabled_controllers(&self, names: &[String]) -> io::Result<()> {
+        self.replace(
+            "controllers-disabled.json",
+            &serde_json::to_string(names).map_err(io::Error::other)?,
+        )
+    }
+
+    /// Microphone node names the user turned off.
+    ///
+    /// # Errors
+    /// Returns read errors or invalid saved data.
+    pub fn disabled_microphones(&self) -> io::Result<Vec<String>> {
+        let Some(source) = self.line("microphones-disabled.json")? else {
+            return Ok(Vec::new());
+        };
+        serde_json::from_str(&source).map_err(io::Error::other)
+    }
+
+    /// # Errors
+    /// Returns serialization, file write and replacement errors.
+    pub fn set_disabled_microphones(&self, names: &[String]) -> io::Result<()> {
+        self.replace(
+            "microphones-disabled.json",
+            &serde_json::to_string(names).map_err(io::Error::other)?,
+        )
+    }
+
+    /// # Errors
     /// Returns read errors or invalid controller binding data.
     pub fn controller_bindings(
         &self,
@@ -107,6 +145,66 @@ impl Store {
         self.replace(
             "controller-talk.json",
             &serde_json::to_string(bindings).map_err(io::Error::other)?,
+        )
+    }
+
+    /// The saved stick deadzones by pad key, in thousandths of full travel.
+    /// # Errors
+    /// Returns read errors or a deadzone of half the travel or more.
+    pub fn controller_deadzones(&self) -> io::Result<std::collections::BTreeMap<String, u16>> {
+        let Some(source) = self.line("controller-deadzone.json")? else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+        let deadzones: std::collections::BTreeMap<String, u16> =
+            serde_json::from_str(&source).map_err(io::Error::other)?;
+        if deadzones.values().any(|deadzone| *deadzone >= 500) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "controller deadzone must be under half the travel",
+            ));
+        }
+        Ok(deadzones)
+    }
+
+    /// # Errors
+    /// Returns serialization, file write and replacement errors.
+    pub fn set_controller_deadzones(
+        &self,
+        deadzones: &std::collections::BTreeMap<String, u16>,
+    ) -> io::Result<()> {
+        self.replace(
+            "controller-deadzone.json",
+            &serde_json::to_string(deadzones).map_err(io::Error::other)?,
+        )
+    }
+
+    /// The saved stick rest offsets by pad key, in thousandths of half travel.
+    /// # Errors
+    /// Returns read errors or an offset beyond half the travel.
+    pub fn controller_recentres(&self) -> io::Result<std::collections::BTreeMap<String, [i16; 4]>> {
+        let Some(source) = self.line("controller-recentre.json")? else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+        let rests: std::collections::BTreeMap<String, [i16; 4]> =
+            serde_json::from_str(&source).map_err(io::Error::other)?;
+        if rests.values().flatten().any(|offset| offset.abs() > 500) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "controller rest must stay within half the travel",
+            ));
+        }
+        Ok(rests)
+    }
+
+    /// # Errors
+    /// Returns serialization, file write and replacement errors.
+    pub fn set_controller_recentres(
+        &self,
+        rests: &std::collections::BTreeMap<String, [i16; 4]>,
+    ) -> io::Result<()> {
+        self.replace(
+            "controller-recentre.json",
+            &serde_json::to_string(rests).map_err(io::Error::other)?,
         )
     }
 
@@ -159,12 +257,28 @@ pub fn capture_sources(listing: &serde_json::Value) -> Vec<Microphone> {
         {
             continue;
         }
+        let description = text("node.description")
+            .or_else(|| text("node.nick"))
+            .unwrap_or(name);
+        let relay = [Some(name), Some(description), text("application.name")]
+            .into_iter()
+            .flatten()
+            .any(|word| {
+                word.to_lowercase()
+                    .replace([' ', '-', '_'], "")
+                    .contains("audiorelay")
+            })
+            .then(|| {
+                if node.pointer("/info/state").and_then(serde_json::Value::as_str) == Some("running") {
+                    RelayState::Connected
+                } else {
+                    RelayState::Waiting
+                }
+            });
         microphones.push(Microphone {
             name: name.to_owned(),
-            description: text("node.description")
-                .or_else(|| text("node.nick"))
-                .unwrap_or(name)
-                .to_owned(),
+            description: description.to_owned(),
+            relay,
         });
     }
     microphones
@@ -221,7 +335,7 @@ fn run_pw_dump() -> io::Result<Vec<Microphone>> {
 #[cfg(test)]
 mod tests {
     use super::{Store, capture_sources};
-    use tehuti_core::dispatch::{ControllerChoice, Microphone, MicrophoneChoice};
+    use tehuti_core::dispatch::{ControllerChoice, Microphone, MicrophoneChoice, RelayState};
 
     #[test]
     fn choices_survive_reopening_and_auto_controller_removes_its_file() -> std::io::Result<()> {
@@ -251,6 +365,19 @@ mod tests {
     }
 
     #[test]
+    fn off_microphones_survive_reopening() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::new(directory.path().to_path_buf());
+        assert_eq!(store.disabled_microphones()?, Vec::<String>::new());
+        store.set_disabled_microphones(&["alsa_input.analog".to_owned()])?;
+        assert_eq!(
+            Store::new(directory.path().to_path_buf()).disabled_microphones()?,
+            vec!["alsa_input.analog".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn controller_bindings_survive_reopening_and_reject_invalid_buttons() -> std::io::Result<()> {
         use tehuti_protocol::ButtonName;
         let directory = tempfile::tempdir()?;
@@ -267,6 +394,43 @@ mod tests {
             r#"{"Pad":"guide"}"#,
         )?;
         assert!(reopened.controller_bindings().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn controller_deadzones_survive_reopening_and_reject_absurd_values() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::new(directory.path().to_path_buf());
+        assert!(store.controller_deadzones()?.is_empty());
+        let deadzones =
+            std::collections::BTreeMap::from([("Elite".to_owned(), 250), ("Plain".to_owned(), 0)]);
+        store.set_controller_deadzones(&deadzones)?;
+        let reopened = Store::new(directory.path().to_path_buf());
+        assert_eq!(reopened.controller_deadzones()?, deadzones);
+        std::fs::write(
+            directory.path().join("controller-deadzone.json"),
+            r#"{"Pad":900}"#,
+        )?;
+        assert!(reopened.controller_deadzones().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn controller_rests_survive_reopening_and_reject_absurd_values() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::new(directory.path().to_path_buf());
+        assert!(store.controller_recentres()?.is_empty());
+        let rests = std::collections::BTreeMap::from([("Elite".to_owned(), [-104, 238, 0, 12])]);
+        store.set_controller_recentres(&rests)?;
+        assert_eq!(
+            Store::new(directory.path().to_path_buf()).controller_recentres()?,
+            rests
+        );
+        std::fs::write(
+            directory.path().join("controller-recentre.json"),
+            r#"{"Pad":[900,0,0,0]}"#,
+        )?;
+        assert!(store.controller_recentres().is_err());
         Ok(())
     }
 
@@ -295,12 +459,46 @@ mod tests {
                 Microphone {
                     name: "alsa_input.pci-0000_00_1b.0.analog-stereo".into(),
                     description: "Built-in Audio Analog Stereo".into(),
+                    relay: None,
                 },
                 Microphone {
                     name: "bluez_input.headset".into(),
                     description: "bluez_input.headset".into(),
+                    relay: None,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn audiorelay_sources_carry_their_connection() {
+        let listing = serde_json::json!([
+            {"type": "PipeWire:Interface:Node", "info": {"state": "running", "props": {
+                "node.name": "audiorelay-virtual-mic-a",
+                "node.description": "Phone One",
+                "media.class": "Audio/Source"}}},
+            {"type": "PipeWire:Interface:Node", "info": {"state": "idle", "props": {
+                "node.name": "input.b", "application.name": "Audio Relay",
+                "media.class": "Audio/Source"}}},
+            {"type": "PipeWire:Interface:Node", "info": {"state": "running", "props": {
+                "node.name": "alsa_input.desk", "media.class": "Audio/Source"}}}
+        ]);
+        let relays: Vec<_> = capture_sources(&listing)
+            .into_iter()
+            .map(|mic| mic.relay)
+            .collect();
+        assert_eq!(
+            relays,
+            vec![Some(RelayState::Connected), Some(RelayState::Waiting), None]
+        );
+    }
+
+    #[test]
+    fn without_audiorelay_no_source_is_marked() {
+        let listing = serde_json::json!([
+            {"type": "PipeWire:Interface:Node", "info": {"state": "running", "props": {
+                "node.name": "alsa_input.desk", "media.class": "Audio/Source"}}}
+        ]);
+        assert!(capture_sources(&listing).iter().all(|mic| mic.relay.is_none()));
     }
 }

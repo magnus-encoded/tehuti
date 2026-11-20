@@ -2,7 +2,8 @@
 
 use core::time::Duration;
 use tehuti_protocol::{
-    Action, ButtonName, Context, KeyName, LayoutAction, Modifier, TickerSpeech, normalize_phrase,
+    Action, ButtonName, Context, KeyName, LayoutAction, Modifier, Stick, StickDirection, TickerSpeech,
+    normalize_phrase,
 };
 
 /// How long the ticker holds one scroll position. A few steps a second keep redraws rare.
@@ -116,7 +117,7 @@ impl Piece {
 }
 
 /// The order buttons appear in; Guide is reserved for Tehuti and never listed.
-const BUTTONS: [ButtonName; 17] = [
+const BUTTONS: [ButtonName; 21] = [
     ButtonName::South,
     ButtonName::East,
     ButtonName::West,
@@ -134,6 +135,10 @@ const BUTTONS: [ButtonName; 17] = [
     ButtonName::Select,
     ButtonName::Start,
     ButtonName::Record,
+    ButtonName::Paddle1,
+    ButtonName::Paddle2,
+    ButtonName::Paddle3,
+    ButtonName::Paddle4,
 ];
 
 /// Recognisable actions and the icon each gets when its mapping names none.
@@ -233,6 +238,7 @@ pub fn action_text(action: &Action) -> String {
         Action::Restart => "Restart".into(),
         Action::Layout { action } => layout_text(*action).into(),
         Action::ToggleTicker => "Ticker".into(),
+        Action::UndoDictation => "Undo".into(),
     }
 }
 
@@ -302,7 +308,8 @@ pub fn action_pieces(action: &Action) -> Vec<Piece> {
         | Action::Quit
         | Action::Restart
         | Action::Layout { .. }
-        | Action::ToggleTicker => vec![Piece::Text(action_text(action))],
+        | Action::ToggleTicker
+        | Action::UndoDictation => vec![Piece::Text(action_text(action))],
     }
 }
 
@@ -389,7 +396,20 @@ pub fn entries(
     level: crate::Level,
 ) -> Vec<Entry> {
     let (active, global) = active_and_global(contexts, focused);
-    entries_for(active, global, pad, level)
+    entries_for(active, global, pad, level, None)
+}
+
+/// [`entries`] while `modifier` is held: the stick entries are that modifier's layer.
+#[must_use]
+pub fn entries_with_modifier(
+    contexts: &[Context],
+    focused: Option<&str>,
+    pad: PadFamily,
+    level: crate::Level,
+    modifier: Option<ButtonName>,
+) -> Vec<Entry> {
+    let (active, global) = active_and_global(contexts, focused);
+    entries_for(active, global, pad, level, modifier)
 }
 
 pub(crate) fn entries_for(
@@ -397,8 +417,12 @@ pub(crate) fn entries_for(
     global: Option<&Context>,
     pad: PadFamily,
     level: crate::Level,
+    modifier: Option<ButtonName>,
 ) -> Vec<Entry> {
     let mut entries = button_entries(active, global, pad, level);
+    if !(level == crate::Level::App && active.is_some_and(Context::passthrough)) {
+        entries.extend(stick_entries(active, pad, modifier));
+    }
     let speech = active
         .and_then(|context| context.ticker().speech)
         .or_else(|| global.and_then(|context| context.ticker().speech))
@@ -428,7 +452,9 @@ fn button_entries(
     pad: PadFamily,
     level: crate::Level,
 ) -> Vec<Entry> {
-    let talk = global.map_or(&[ButtonName::Record][..], Context::push_to_talk_buttons);
+    let talk = active
+        .and_then(Context::own_push_to_talk)
+        .unwrap_or_else(|| global.map_or(&[ButtonName::Record][..], Context::push_to_talk_buttons));
     if level == crate::Level::App && active.is_some_and(Context::passthrough) {
         let mut entries = vec![Entry {
             trigger: vec![Piece::Text("Pad".into())],
@@ -477,6 +503,29 @@ fn button_entries(
         .collect()
 }
 
+/// The focused context's stick mappings for the held modifier, or the unmodified ones.
+fn stick_entries(active: Option<&Context>, pad: PadFamily, modifier: Option<ButtonName>) -> Vec<Entry> {
+    let Some(context) = active else {
+        return Vec::new();
+    };
+    [(Stick::Left, "L"), (Stick::Right, "R")]
+        .into_iter()
+        .flat_map(|(stick, side)| {
+            StickDirection::ALL.into_iter().filter_map(move |direction| {
+                let mapping = context.stick_mapping(stick, direction, modifier)?;
+                let mut trigger =
+                    modifier.map_or_else(Vec::new, |held| vec![pad.piece(held), Piece::Text("+".into())]);
+                trigger.push(Piece::Chip(format!("{side}{}", direction.arrow())));
+                let mut entry = Entry::new(trigger, &mapping.action, None);
+                if let Some(name) = key_name(context, &mapping.action) {
+                    entry.result = vec![Piece::Text(name.into())];
+                }
+                Some(entry)
+            })
+        })
+        .collect()
+}
+
 /// What a bumper does at the columns level, if it is one.
 const fn column_action(button: ButtonName) -> Option<Action> {
     match button {
@@ -498,6 +547,10 @@ const fn column_action(button: ButtonName) -> Option<Action> {
         | ButtonName::Guide
         | ButtonName::LeftStick
         | ButtonName::RightStick
+        | ButtonName::Paddle1
+        | ButtonName::Paddle2
+        | ButtonName::Paddle3
+        | ButtonName::Paddle4
         | ButtonName::DpadUp
         | ButtonName::DpadDown
         | ButtonName::DpadLeft
@@ -544,7 +597,8 @@ fn key_name<'context>(context: &'context Context, action: &Action) -> Option<&'c
         | Action::Quit
         | Action::Restart
         | Action::Layout { .. }
-        | Action::ToggleTicker => None,
+        | Action::ToggleTicker
+        | Action::UndoDictation => None,
     }
 }
 

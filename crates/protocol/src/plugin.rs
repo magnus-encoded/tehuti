@@ -37,9 +37,49 @@ pub enum Permission {
     Quit,
 }
 
+/// What a plugin extends, which sets the permissions it may request (ADR 0007).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginKind {
+    /// Serves the applications its manifest names, only while one has focus.
+    #[default]
+    Application,
+    /// Hears, in any window, the speech that follows one of its own verbs.
+    Verb,
+}
+
+/// The most verbs one plugin may hold at once.
+pub const MAX_VERBS: usize = 16;
+
+/// The most characters one verb may have.
+pub const MAX_VERB_CHARS: usize = 32;
+
+/// Checks a verb list: at most [`MAX_VERBS`] single words of letters.
+///
+/// # Errors
+/// Too many verbs, or a verb that is empty, too long or not one word of letters.
+pub fn validate_verbs(verbs: &[String]) -> Result<(), String> {
+    if verbs.len() > MAX_VERBS {
+        return Err(format!("at most {MAX_VERBS} verbs are accepted"));
+    }
+    if verbs.iter().any(|verb| {
+        verb.is_empty() || verb.chars().count() > MAX_VERB_CHARS || !verb.chars().all(char::is_alphabetic)
+    }) {
+        return Err(format!(
+            "each verb is one word of letters, at most {MAX_VERB_CHARS} characters"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    #[serde(default)]
+    pub kind: PluginKind,
+    /// The verbs a verb plugin starts with; it may replace them at runtime.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verbs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub adjusters: Vec<crate::Adjuster>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,7 +117,39 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, String> {
     {
         return Err("adjuster names must be unique, with at most 32 registrations".into());
     }
+    validate_kind(&manifest)?;
     Ok(manifest)
+}
+
+/// Keeps each kind to its own permissions: an application plugin declares no verbs,
+/// and a verb plugin names no applications, hears only speech and only types text.
+fn validate_kind(manifest: &Manifest) -> Result<(), String> {
+    match manifest.kind {
+        PluginKind::Application if !manifest.verbs.is_empty() => {
+            Err("an application plugin declares no verbs".into())
+        }
+        PluginKind::Application => Ok(()),
+        PluginKind::Verb => {
+            validate_verbs(&manifest.verbs)?;
+            if !manifest.app_ids.is_empty() || !manifest.adjusters.is_empty() {
+                return Err("a verb plugin names no applications and registers no adjusters".into());
+            }
+            if manifest.events.iter().any(|event| *event != Subscription::Speech) {
+                return Err("a verb plugin subscribes only to speech".into());
+            }
+            if manifest
+                .permissions
+                .iter()
+                .any(|permission| *permission != Permission::Text)
+            {
+                return Err("a verb plugin may request only the text permission".into());
+            }
+            if manifest.start != StartPolicy::Always {
+                return Err("a verb plugin starts always".into());
+            }
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +191,25 @@ pub enum Method {
     Speech {
         text: crate::Text,
     },
+    /// Speech that began with one of the plugin's verbs, without that verb.
+    Verb {
+        verb: String,
+        text: crate::Text,
+    },
+    /// Replaces the sending verb plugin's verbs.
+    Verbs {
+        verbs: Vec<String>,
+    },
+    /// Replaces the sending plugin's speech hotwords.
+    #[serde(rename = "speech.hints")]
+    SpeechHints {
+        hotwords: Vec<String>,
+    },
+    /// Replaces the sending application plugin's slash-command words for the built-in `invoke` verb.
+    #[serde(rename = "invoke.words")]
+    InvokeWords {
+        words: Vec<String>,
+    },
     Focus {
         app_id: Option<String>,
         title: String,
@@ -148,6 +239,9 @@ pub enum Method {
 /// The longest powerline status a plugin may set, in characters.
 pub const MAX_STATUS_CHARS: usize = 32;
 
+/// The most invoke words one `invoke.words` notice may set.
+pub const MAX_INVOKE_WORDS: usize = 128;
+
 /// The most overrides one `pad_overrides` notice may set.
 pub const MAX_PAD_OVERRIDES: usize = 64;
 
@@ -164,6 +258,11 @@ pub struct PadOverride {
 fn validate_notice(method: &Method) -> Result<(), String> {
     match method {
         Method::PadOverrides { overrides } => validate_pad_overrides(overrides),
+        Method::Verbs { verbs } => validate_verbs(verbs),
+        Method::InvokeWords { words } if words.len() > MAX_INVOKE_WORDS => {
+            Err(format!("at most {MAX_INVOKE_WORDS} invoke words are accepted"))
+        }
+        Method::InvokeWords { words } => crate::validate_invoke_words(words.clone()).map(|_| ()),
         Method::Status { text: Some(text) }
             if text.chars().count() > MAX_STATUS_CHARS || text.chars().any(char::is_control) =>
         {
@@ -175,6 +274,8 @@ fn validate_notice(method: &Method) -> Result<(), String> {
         | Method::Initialize(_)
         | Method::Button { .. }
         | Method::Speech { .. }
+        | Method::Verb { .. }
+        | Method::SpeechHints { .. }
         | Method::Focus { .. }
         | Method::Actions { .. }
         | Method::SubmitActions { .. }
@@ -218,6 +319,36 @@ pub struct Call {
 pub enum ResultValue {
     Initialized(Initialized),
     Actions(Vec<Action>),
+    /// A speech reply `{"handled": true}`: the plugin acted, so no fallback notice shows.
+    Handled(HandledReply),
+}
+
+/// The marker object `{"handled": true}`; `false` is not a valid reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandledReply;
+
+impl Serialize for HandledReply {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("handled", &true)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for HandledReply {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            handled: bool,
+        }
+        if Fields::deserialize(deserializer)?.handled {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("handled must be true"))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,11 +409,12 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
             Method::Initialize(_)
                 | Method::Button { .. }
                 | Method::Speech { .. }
+                | Method::Verb { .. }
                 | Method::SubmitActions { .. }
         );
         if needs_reply != call.request_id.is_some() {
             return Err(
-                "initialize/button/speech/submit_actions require an id; focus/actions must be notices".into(),
+                "initialize/button/speech/verb/submit_actions require an id; focus/actions/verbs must be notices".into(),
             );
         }
         validate_notice(&call.method)?;
@@ -301,7 +433,9 @@ pub fn parse_message(bytes: &[u8]) -> Result<Message, String> {
             result: serde_json::Value,
         }
         let envelope: Envelope = serde_json::from_value(value).map_err(|error| error.to_string())?;
-        let result = if envelope.result.is_object() {
+        let result = if envelope.result.get("handled").is_some() {
+            ResultValue::Handled(serde_json::from_value(envelope.result).map_err(|error| error.to_string())?)
+        } else if envelope.result.is_object() {
             ResultValue::Initialized(
                 serde_json::from_value(envelope.result).map_err(|error| error.to_string())?,
             )

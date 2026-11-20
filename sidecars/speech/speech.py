@@ -29,13 +29,49 @@ HALLUCINATION = re.compile(
 )
 
 
+LOOP_MIN_REPEATS = 8
+LOOP_MAX_PHRASE = 3
+LOOP_MIN_SHARE = 0.6
+
+
+def repetition_loop(words):
+    """True when one word or short phrase repeats LOOP_MIN_REPEATS+ times in a row
+    and those repeats make up most of the words."""
+    words = [word for word in (re.sub(r"\W", "", w.lower()) for w in words) if word]
+    for size in range(1, LOOP_MAX_PHRASE + 1):
+        start = 0
+        while start + size * LOOP_MIN_REPEATS <= len(words):
+            unit = words[start:start + size]
+            end = start + size
+            while words[end:end + size] == unit:
+                end += size
+            repeats = (end - start) // size
+            if repeats >= LOOP_MIN_REPEATS and (end - start) / len(words) >= LOOP_MIN_SHARE:
+                return True
+            start += 1
+    return False
+
+
 def transcript(segments):
     text = " ".join(
         segment.text.strip() for segment in segments
         if not (segment.no_speech_prob > 0.6 and segment.avg_logprob < -1.0)
     ).strip()
     normalized = " ".join(re.sub(r"[.!?,'\"]", "", text.lower()).replace("-", " ").split())
-    return "" if HALLUCINATION.fullmatch(normalized) else text
+    if HALLUCINATION.fullmatch(normalized):
+        return ""
+    if repetition_loop(normalized.split()):
+        log(f"dropped repetition-loop transcript ({len(normalized.split())} words): {text[:60]!r}")
+        return ""
+    return text
+
+
+def until(segments, abort):
+    """Segments, ending early once abort is set (the decode is lazy)."""
+    for segment in segments:
+        if abort is not None and abort.is_set():
+            return
+        yield segment
 
 
 def peak(audio):
@@ -73,6 +109,20 @@ def capture_sources(listing):
     return names
 
 
+def default_source(listing):
+    """The node name PipeWire's metadata names as the default capture source, if it says."""
+    for node in listing:
+        if node.get("type") != "PipeWire:Interface:Metadata":
+            continue
+        for entry in node.get("metadata", []):
+            if entry.get("key") == "default.audio.source":
+                value = entry.get("value")
+                name = value.get("name") if isinstance(value, dict) else value
+                if isinstance(name, str) and name:
+                    return name
+    return None
+
+
 def chosen_source():
     """The microphone picked in Tehuti's settings: "all", "auto", a node name, or None."""
     root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
@@ -83,26 +133,54 @@ def chosen_source():
         return None
 
 
-def list_sources():
-    """The pinned source, else the settings choice, else every capture device, else the default."""
+def disabled_sources():
+    """Microphone node names turned off in Tehuti's settings; never recorded, also under "all"."""
+    root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    try:
+        with open(os.path.join(root, "tehuti", "microphones-disabled.json"), encoding="utf-8") as saved:
+            names = json.load(saved)
+    except (OSError, ValueError):
+        return set()
+    return {name for name in names if isinstance(name, str)} if isinstance(names, list) else set()
+
+
+def list_sources(missing=None):
+    """The pinned source, else the settings choice, else every capture device, else the default.
+
+    `missing` is called with the saved source name when it is not among the capture devices."""
     pinned = os.environ.get("TEHUTI_SPEECH_SOURCE")
     if pinned:
         return [pinned]
     choice = chosen_source()
-    if choice == "auto":
+    off = disabled_sources()
+    if choice == "auto" and not off:
         return [None]
+    listed = True
+    default = None
     try:
         listing = subprocess.run(
             ["pw-dump"],
             capture_output=True, check=True, timeout=2,
         ).stdout
-        names = capture_sources(json.loads(listing))
+        dump = json.loads(listing)
+        names = capture_sources(dump)
+        default = default_source(dump)
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"speech source listing failed: {error}", file=sys.stderr, flush=True)
         names = []
-    if choice in names:
+        listed = False
+    if choice == "auto":
+        # The default source cannot be recorded by name here: record it only when it is known to be on.
+        return [None] if default is not None and default not in off else []
+    enabled = [name for name in names if name not in off]
+    if choice in enabled:
         return [choice]
-    return names or [None]
+    if missing is not None and choice not in (None, "all", "auto") and choice not in off and listed:
+        missing(choice)
+    if names:
+        return enabled
+    # Discovery found nothing: the default source stands in only when no microphone is off.
+    return [] if off else [None]
 
 
 def speech_tails(value):
@@ -147,6 +225,7 @@ class Take:
         self.prompt = prompt
         self.recordings = []
         self.cancelled = threading.Event()
+        self.interim_abort = threading.Event()
         self.worker = None
 
     def poll(self):
@@ -161,10 +240,11 @@ def choose(recordings):
 
 
 class Speech:
-    def __init__(self, model, sources=list_sources):
+    def __init__(self, model, sources=None):
         self.model = model
         self.hotwords = ""
-        self.sources = sources
+        self.warned_missing = False
+        self.sources = sources or (lambda: list_sources(self.warn_missing_source))
         self.tails = speech_tails(os.environ.get("TEHUTI_SPEECH_TAIL_MS"))
         self.releasing = None
         self.capture = None
@@ -184,6 +264,13 @@ class Speech:
             if len(self.model.hf_tokenizer.encode(" " + candidate, add_special_tokens=False).ids) <= MAX_HOTWORD_TOKENS:
                 words.append(word)
         self.hotwords = ", ".join(words)
+
+    def warn_missing_source(self, name):
+        if self.warned_missing:
+            return
+        self.warned_missing = True
+        log(f"saved source {name} is missing; capturing from the other sources", level="WARN")
+        reply({"warning": "source missing"})
 
     def cancel_tail(self):
         if self.releasing is not None:
@@ -236,7 +323,7 @@ class Speech:
         if remaining == 0 and capture.poll() is None:
             capture.send_signal(signal.SIGINT)
 
-    def transcribe_audio(self, audio, prompt="", *, retry=True):
+    def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None):
         priming = {"hotwords": self.hotwords} if self.hotwords else {}
         if prompt:
             priming["initial_prompt"] = prompt
@@ -251,8 +338,8 @@ class Speech:
                 vad_parameters={"threshold": 0.3, "min_speech_duration_ms": 80,
                                 "speech_pad_ms": 300},
             )
-            text = transcript(segments)
-            if text:
+            text = transcript(until(segments, abort))
+            if text or (abort is not None and abort.is_set()):
                 return text
             log(f"VAD returned empty text for clip ({len(audio)} bytes)")
             if not retry or len(audio) < 16000 * 2 * 1.5 or peak(audio) <= SILENCE_PEAK * 4:
@@ -275,7 +362,8 @@ class Speech:
                 if not self.model_lock.acquire(blocking=False):
                     return
                 try:
-                    text = self.transcribe_audio(audio, capture.prompt, retry=False)
+                    text = self.transcribe_audio(audio, capture.prompt, retry=False,
+                                                abort=capture.interim_abort)
                 finally:
                     self.model_lock.release()
                 if self.capture is capture and text:
@@ -295,6 +383,7 @@ class Speech:
             return
         take = self.capture
         self.capture = self.session = None
+        take.interim_abort.set()
         if transcribe:
             self.cancel_tail()
             self.releasing = take

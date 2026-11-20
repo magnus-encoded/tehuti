@@ -33,6 +33,7 @@ pub struct TapHold<Key> {
     release_timer: ReleaseTimer,
     focus_epoch: u32,
     hold_duration: Duration,
+    instant: bool,
 }
 
 impl<Key: Copy + Eq> Default for TapHold<Key> {
@@ -42,13 +43,23 @@ impl<Key: Copy + Eq> Default for TapHold<Key> {
             release_timer: ReleaseTimer::Idle,
             focus_epoch: 0,
             hold_duration: TAP_HOLD,
+            instant: false,
         }
     }
 }
 
 impl<Key: Copy + Eq> TapHold<Key> {
+    /// Makes taps press and release at once, with no hold time.
     pub const fn instant_taps(&mut self) {
         self.hold_duration = Duration::ZERO;
+        self.instant = true;
+    }
+
+    /// Sets how long later taps stay down; instant taps stay instant.
+    pub const fn set_hold(&mut self, hold: Duration) {
+        if !self.instant {
+            self.hold_duration = hold;
+        }
     }
     /// Extends shared modifiers and restarts repeated keys after a release gap.
     pub fn tap(&mut self, now: Duration, keycode: Key, modifiers: &[Key]) -> Vec<(Key, bool)> {
@@ -124,6 +135,7 @@ impl<Key: Copy + Eq> TapHold<Key> {
         events
     }
 
+    /// Releases every held key now, keys before modifiers.
     pub fn release_all(&mut self) -> Vec<(Key, bool)> {
         self.release(|_| true)
     }
@@ -136,7 +148,8 @@ impl<Key: Copy + Eq> TapHold<Key> {
     /// Releases holds from earlier focus generations.
     pub fn flush_focus(&mut self) -> Vec<(Key, bool)> {
         let epoch = self.focus_epoch;
-        self.release(|held| held.epoch < epoch)
+        // Wrapping comparison: a held epoch is older when the distance is positive as i32.
+        self.release(|held| epoch.wrapping_sub(held.epoch).cast_signed() > 0)
     }
 
     fn release(&mut self, selected: impl Fn(&HeldKey<Key>) -> bool) -> Vec<(Key, bool)> {
@@ -152,11 +165,13 @@ impl<Key: Copy + Eq> TapHold<Key> {
             .collect()
     }
 
+    /// Handles a failed release timer: releases everything and allows a new timer.
     pub fn timer_failed(&mut self) -> Vec<(Key, bool)> {
         self.release_timer = ReleaseTimer::Idle;
         self.release_all()
     }
 
+    /// Returns the delay for a new release timer, or `None` if one is armed or nothing is held.
     pub fn take_release_request(&mut self, now: Duration) -> Option<Duration> {
         if self.release_timer == ReleaseTimer::Armed {
             return None;
@@ -166,6 +181,7 @@ impl<Key: Copy + Eq> TapHold<Key> {
         Some(due.saturating_sub(now))
     }
 
+    /// Handles a fired timer: advances holds and returns the delay for the next timer, if any.
     pub fn timer_fired(&mut self, now: Duration) -> (Vec<(Key, bool)>, Option<Duration>) {
         let events = self.tick(now);
         let due = self.held_taps.iter().map(|held| held.due).min();
@@ -178,5 +194,22 @@ impl<Key: Copy + Eq> TapHold<Key> {
             events,
             due.map(|due| due.saturating_sub(now).max(Duration::from_millis(1))),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TapHold;
+    use core::time::Duration;
+
+    #[test]
+    fn focus_flush_survives_epoch_wraparound() {
+        let mut taps = TapHold::<i32> {
+            focus_epoch: u32::MAX,
+            ..TapHold::default()
+        };
+        assert_eq!(taps.tap(Duration::ZERO, 1, &[]), [(1, true)]);
+        taps.focus_changed();
+        assert_eq!(taps.flush_focus(), [(1, false)]);
     }
 }
