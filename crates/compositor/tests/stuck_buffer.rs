@@ -109,12 +109,13 @@ mod stuck_buffer {
     delegate_noop!(App: ignore ZwpLinuxDmabufV1);
     delegate_noop!(App: ignore ZwpLinuxBufferParamsV1);
 
+    /// Commits `commits` buffers, each on a pipe that is unreadable until the test writes to it.
     fn client(
         stream: UnixStream,
         pipe_write: &mpsc::Sender<std::fs::File>,
         ready: &mpsc::Sender<()>,
         stop: &mpsc::Receiver<()>,
-        destroy_first: bool,
+        (commits, destroy_first): (usize, bool),
     ) {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
@@ -134,29 +135,34 @@ mod stuck_buffer {
         }
         let (width, height) = app.size.unwrap();
         let stride = u32::try_from(width).unwrap().checked_mul(4).unwrap();
-        // The read end never becomes readable until the test writes to the other end.
-        let (read, write) = rustix::pipe::pipe().unwrap();
-        pipe_write.send(std::fs::File::from(write)).unwrap();
-        let params = dmabuf.create_params(&handle, ());
-        params.add(read.as_fd(), 0, 0, stride, 0, 0);
-        let buffer = params.create_immed(
-            width,
-            height,
-            u32::from_le_bytes(*b"AR24"),
-            zwp_linux_buffer_params_v1::Flags::empty(),
-            &handle,
-            (),
-        );
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, width, height);
-        surface.commit();
-        let _committed = queue.roundtrip(&mut app).unwrap();
+        let mut reads = Vec::new();
+        for _ in 0..commits {
+            let (read, write) = rustix::pipe::pipe().unwrap();
+            pipe_write.send(std::fs::File::from(write)).unwrap();
+            let params = dmabuf.create_params(&handle, ());
+            params.add(read.as_fd(), 0, 0, stride, 0, 0);
+            let buffer = params.create_immed(
+                width,
+                height,
+                u32::from_le_bytes(*b"AR24"),
+                zwp_linux_buffer_params_v1::Flags::empty(),
+                &handle,
+                (),
+            );
+            reads.push(read);
+            surface.attach(Some(&buffer), 0, 0);
+            surface.damage_buffer(0, 0, width, height);
+            surface.commit();
+            let _committed = queue.roundtrip(&mut app).unwrap();
+        }
         ready.send(()).unwrap();
         while stop.try_recv().is_err() {
             let _dispatched = queue.roundtrip(&mut app).unwrap();
             thread::sleep(Duration::from_millis(1));
         }
         if destroy_first {
+            toplevel.destroy();
+            xdg.destroy();
             surface.destroy();
             while stop.try_recv().is_err() {
                 let _dispatched = queue.roundtrip(&mut app).unwrap();
@@ -189,38 +195,83 @@ mod stuck_buffer {
         compositor
     }
 
+    const DEADLINE: Duration = Duration::from_secs(10);
+
+    /// A compositor with a client holding `commits` unready buffers.
+    struct Scene {
+        display: Display<Compositor>,
+        compositor: Compositor,
+        thread: thread::JoinHandle<()>,
+        stop: mpsc::Sender<()>,
+        pipes: mpsc::Receiver<std::fs::File>,
+    }
+
+    impl Scene {
+        fn new(commits: usize, destroy_first: bool) -> Self {
+            let mut display = Display::<Compositor>::new().unwrap();
+            let mut compositor = compositor_with_linear_dmabuf(&display);
+            let (server, stream) = UnixStream::pair().unwrap();
+            let _client = display
+                .handle()
+                .insert_client(server, Arc::new(ClientState::default()))
+                .unwrap();
+            let (pipe_write, pipes) = mpsc::channel();
+            let (ready, received) = mpsc::channel();
+            let (stop, stopped) = mpsc::channel();
+            let thread = thread::spawn(move || {
+                client(stream, &pipe_write, &ready, &stopped, (commits, destroy_first))
+            });
+            let started = Instant::now();
+            while received.try_recv().is_err() {
+                assert!(started.elapsed() < DEADLINE, "client timed out");
+                pump(&mut display, &mut compositor);
+            }
+            let mut scene = Self {
+                display,
+                compositor,
+                thread,
+                stop,
+                pipes,
+            };
+            scene.settle();
+            scene
+        }
+
+        fn settle(&mut self) {
+            for _ in 0..50 {
+                pump(&mut self.display, &mut self.compositor);
+                self.compositor.advance_time();
+            }
+        }
+
+        /// Pumps until the client thread ends, failing at the deadline.
+        fn finish(mut self) {
+            let started = Instant::now();
+            while !self.thread.is_finished() {
+                assert!(started.elapsed() < DEADLINE, "client thread did not end");
+                pump(&mut self.display, &mut self.compositor);
+            }
+            self.thread.join().unwrap();
+        }
+    }
+
+    fn ready(mut write: std::fs::File) {
+        write.write_all(b"x").unwrap();
+    }
+
     #[test]
     fn a_buffer_that_never_becomes_ready_leaves_the_rest_of_the_output_drawing() {
         let directory = tempfile::tempdir().unwrap();
-        let mut display = Display::<Compositor>::new().unwrap();
-        let mut compositor = compositor_with_linear_dmabuf(&display);
         let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
-        let (server, stream) = UnixStream::pair().unwrap();
-        let _client = display
-            .handle()
-            .insert_client(server, Arc::new(ClientState::default()))
-            .unwrap();
-        let (pipe_write, pipe_end) = mpsc::channel();
-        let (ready, received) = mpsc::channel();
-        let (stop, stopped) = mpsc::channel();
-        let thread = thread::spawn(move || client(stream, &pipe_write, &ready, &stopped, false));
-        let started = Instant::now();
-        while received.try_recv().is_err() {
-            assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
-            pump(&mut display, &mut compositor);
-        }
-        for _ in 0..50 {
-            pump(&mut display, &mut compositor);
-            compositor.advance_time();
-        }
+        let mut scene = Scene::new(1, false);
         assert_eq!(
-            compositor.buffers_waiting(),
+            scene.compositor.buffers_waiting(),
             1,
             "the unfinished buffer holds its commit"
         );
         let path = directory.path().join("shot.png");
         let _shot = driver
-            .execute(&mut compositor, Request::Shot { path: path.clone() })
+            .execute(&mut scene.compositor, Request::Shot { path: path.clone() })
             .unwrap();
         let image = image::open(&path).unwrap().to_rgba8();
         let bottom = image.height() - 8;
@@ -229,70 +280,74 @@ mod stuck_buffer {
             image::Rgba([0, 0, 0, 255]),
             "the voice bar still renders while the client buffer is stuck"
         );
-        let mut write = pipe_end.recv().unwrap();
-        write.write_all(b"x").unwrap();
-        for _ in 0..50 {
-            pump(&mut display, &mut compositor);
-            compositor.advance_time();
-        }
+        ready(scene.pipes.recv().unwrap());
+        scene.settle();
         assert_eq!(
-            compositor.buffers_waiting(),
+            scene.compositor.buffers_waiting(),
             0,
             "the commit goes through once the buffer is ready"
         );
-        stop.send(()).unwrap();
-        while !thread.is_finished() {
-            pump(&mut display, &mut compositor);
-        }
-        thread.join().unwrap();
+        scene.stop.send(()).unwrap();
+        scene.finish();
     }
 
-    /// Holds a never-ready buffer, then ends the client's side as `destroy_first` says.
-    fn waiting_after(destroy_first: bool) -> usize {
-        let mut display = Display::<Compositor>::new().unwrap();
-        let mut compositor = compositor_with_linear_dmabuf(&display);
-        let (server, stream) = UnixStream::pair().unwrap();
-        let _client = display
-            .handle()
-            .insert_client(server, Arc::new(ClientState::default()))
-            .unwrap();
-        let (pipe_write, _pipe_end) = mpsc::channel();
-        let (ready, received) = mpsc::channel();
-        let (stop, stopped) = mpsc::channel();
-        let thread = thread::spawn(move || client(stream, &pipe_write, &ready, &stopped, destroy_first));
-        let started = Instant::now();
-        while received.try_recv().is_err() {
-            assert!(started.elapsed() < Duration::from_secs(5), "client timed out");
-            pump(&mut display, &mut compositor);
-        }
-        for _ in 0..20 {
-            pump(&mut display, &mut compositor);
-            compositor.advance_time();
-        }
-        assert_eq!(compositor.buffers_waiting(), 1, "the buffer is held first");
-        stop.send(()).unwrap();
-        for _ in 0..50 {
-            pump(&mut display, &mut compositor);
-            compositor.advance_time();
-        }
-        let waiting = compositor.buffers_waiting();
+    #[test]
+    fn a_newer_buffer_ready_first_does_not_strand_the_older_one() {
+        let mut scene = Scene::new(2, false);
+        assert_eq!(
+            scene.compositor.held_gate_probes().len(),
+            2,
+            "each commit owns a gate"
+        );
+        let older = scene.pipes.recv().unwrap();
+        let newer = scene.pipes.recv().unwrap();
+        ready(newer);
+        scene.settle();
+        assert_eq!(
+            scene.compositor.held_gate_probes().len(),
+            1,
+            "the ready gate went, the older one stays"
+        );
+        assert_eq!(
+            scene.compositor.buffers_waiting(),
+            1,
+            "the older commit is still held"
+        );
+        ready(older);
+        scene.settle();
+        assert_eq!(
+            scene.compositor.buffers_waiting(),
+            0,
+            "the older commit is released too"
+        );
+        assert!(scene.compositor.held_gate_probes().is_empty());
+        scene.stop.send(()).unwrap();
+        scene.finish();
+    }
+
+    /// Ends the client's side as `destroy_first` says and returns what was left behind.
+    fn left_after(destroy_first: bool) -> (usize, usize) {
+        let mut scene = Scene::new(2, destroy_first);
+        let probes = scene.compositor.held_gate_probes();
+        assert_eq!(probes.len(), 2, "both gates are held first");
+        scene.stop.send(()).unwrap();
+        scene.settle();
+        let waiting = scene.compositor.buffers_waiting();
+        let alive = probes.iter().filter(|gate| gate.upgrade().is_some()).count();
         if destroy_first {
-            stop.send(()).unwrap();
+            scene.stop.send(()).unwrap();
         }
-        while !thread.is_finished() {
-            pump(&mut display, &mut compositor);
-        }
-        thread.join().unwrap();
-        waiting
+        scene.finish();
+        (waiting, alive)
     }
 
     #[test]
-    fn a_client_that_disconnects_while_held_leaves_nothing_waiting() {
-        assert_eq!(waiting_after(false), 0);
+    fn a_client_that_disconnects_while_held_drops_its_gates() {
+        assert_eq!(left_after(false), (0, 0));
     }
 
     #[test]
-    fn a_surface_destroyed_while_held_leaves_nothing_waiting() {
-        assert_eq!(waiting_after(true), 0);
+    fn a_surface_destroyed_while_held_drops_its_gates() {
+        assert_eq!(left_after(true), (0, 0));
     }
 }

@@ -993,9 +993,15 @@ impl Compositor {
         }
     }
 
+    /// Weak handles to every held gate; test use, to check teardown dropped them.
+    #[must_use]
+    pub fn held_gate_probes(&self) -> Vec<std::sync::Weak<crate::buffer_gate::Gate>> {
+        self.waiting_buffers.gate_probes()
+    }
+
     /// Commits whose client buffer is still not ready.
     #[must_use]
-    pub const fn buffers_waiting(&self) -> usize {
+    pub fn buffers_waiting(&self) -> usize {
         self.waiting_buffers.len()
     }
 
@@ -1040,10 +1046,10 @@ impl Compositor {
                 .data_map
                 .insert_if_missing_threadsafe(crate::buffer_gate::Held::default);
             if let Some(held) = states.data_map.get::<crate::buffer_gate::Held>() {
-                *held.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+                held.hold(gate);
             }
         });
-        self.waiting_buffers.push(surface);
+        self.waiting_buffers.register(surface);
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
