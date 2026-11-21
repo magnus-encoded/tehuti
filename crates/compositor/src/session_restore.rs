@@ -49,14 +49,21 @@ impl Saved {
         installed: &[String],
     ) -> Self {
         let mut windows = Vec::new();
-        let workspaces = snapshot.outputs.first().map(|output| output.workspaces.as_slice());
+        let workspaces = snapshot
+            .outputs
+            .first()
+            .map(|output| output.workspaces.as_slice());
         let mut rank = 0;
         for workspace in workspaces.unwrap_or_default() {
             let before = windows.len();
             for (column, view) in workspace.columns.iter().enumerate() {
                 for tile in &view.tiles {
                     if let Some(app_id) = app_id_of(tile.window).filter(|app_id| installed.contains(app_id)) {
-                        windows.push(SavedWindow { app_id, workspace: rank, column });
+                        windows.push(SavedWindow {
+                            app_id,
+                            workspace: rank,
+                            column,
+                        });
                     }
                 }
             }
@@ -64,7 +71,10 @@ impl Saved {
                 rank = rank.saturating_add(1);
             }
         }
-        Self { version: VERSION, windows }
+        Self {
+            version: VERSION,
+            windows,
+        }
     }
 
     #[must_use]
@@ -80,13 +90,16 @@ impl Saved {
     /// # Errors
     /// The text is not a version 1 session file with plain desktop entry ids.
     pub fn parse(text: &str) -> Result<Self, LoadError> {
-        let saved: Self = serde_json::from_str(text).map_err(|error| LoadError::Invalid(error.to_string()))?;
+        let saved: Self =
+            serde_json::from_str(text).map_err(|error| LoadError::Invalid(error.to_string()))?;
         if saved.version != VERSION {
-            return Err(LoadError::Invalid(format!("unsupported version {}", saved.version)));
+            return Err(LoadError::Invalid(format!(
+                "unsupported version {}",
+                saved.version
+            )));
         }
-        let plain = |id: &str| {
-            !id.is_empty() && !id.starts_with('-') && !id.contains('/') && !id.contains('\0')
-        };
+        let plain =
+            |id: &str| !id.is_empty() && !id.starts_with('-') && !id.contains('/') && !id.contains('\0');
         if saved.windows.iter().any(|window| !plain(&window.app_id)) {
             return Err(LoadError::Invalid("invalid desktop entry id".into()));
         }
