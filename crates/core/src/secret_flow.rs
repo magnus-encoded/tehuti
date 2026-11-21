@@ -142,7 +142,7 @@ impl SecretFlow {
         }
     }
 
-    fn raise_notice(&mut self, now: Duration) {
+    const fn raise_notice(&mut self, now: Duration) {
         self.notice_until = now.checked_add(NOTICE_LIFETIME);
     }
 
@@ -232,7 +232,8 @@ impl SecretFlow {
             .gate
             .pending(now, destination)
             .map(crate::secret::PendingSecretDelivery::confirmation_id);
-        let authorization = confirmation.and_then(|id| self.gate.confirm(id, now, destination));
+        let authorization =
+            confirmation.and_then(|pending_id| self.gate.confirm(pending_id, now, destination));
         let Some(authorization) = authorization else {
             self.phase = Phase::Idle;
             return vec![SecretEffect::ConsumeButton];
@@ -273,7 +274,7 @@ impl SecretFlow {
         let Phase::Confirming { prompt, .. } = &self.phase else {
             return None;
         };
-        self.gate.pending(now, current?)?;
+        let _pending = self.gate.pending(now, current?)?;
         Some(prompt)
     }
 
@@ -334,7 +335,9 @@ mod tests {
         surface: 1,
         focus_generation: 2,
     };
-    const T0: Duration = Duration::from_secs(100);
+    const START: Duration = Duration::from_secs(100);
+
+    const NONE: [SecretEffect; 0] = [];
 
     fn request() -> SecretInput {
         SecretInput::Request {
@@ -344,7 +347,11 @@ mod tests {
     }
 
     fn step(flow: &mut SecretFlow, input: SecretInput) -> Vec<SecretEffect> {
-        flow.step(input, T0, Some(DEST))
+        flow.step(input, START, Some(DEST))
+    }
+
+    fn feed(flow: &mut SecretFlow, input: SecretInput) {
+        let _effects = step(flow, input);
     }
 
     fn started(effects: &[SecretEffect]) -> bool {
@@ -355,8 +362,8 @@ mod tests {
 
     fn armed_flow() -> SecretFlow {
         let mut flow = SecretFlow::new();
-        assert!(step(&mut flow, request()).is_empty());
-        step(&mut flow, SecretInput::FramePresented);
+        feed(&mut flow, request());
+        feed(&mut flow, SecretInput::FramePresented);
         flow
     }
 
@@ -367,17 +374,17 @@ mod tests {
         assert!(started(&effects));
         assert!(effects.contains(&SecretEffect::ConsumeButton));
         assert!(flow.looking());
-        assert!(flow.prompt(T0, Some(DEST)).is_none());
+        assert!(flow.prompt(START, Some(DEST)).is_none());
     }
 
     #[test]
     fn press_before_the_frame_is_presented_does_not_confirm() {
         let mut flow = SecretFlow::new();
-        step(&mut flow, request());
+        feed(&mut flow, request());
         let effects = step(&mut flow, SecretInput::Button(ButtonState::Pressed));
         assert!(!started(&effects));
         assert_eq!(effects, [SecretEffect::ConsumeButton]);
-        step(&mut flow, SecretInput::FramePresented);
+        feed(&mut flow, SecretInput::FramePresented);
         assert!(!started(&step(
             &mut flow,
             SecretInput::Button(ButtonState::Pressed)
@@ -387,14 +394,14 @@ mod tests {
     #[test]
     fn button_held_when_the_frame_arrives_needs_a_release() {
         let mut flow = SecretFlow::new();
-        step(&mut flow, SecretInput::ButtonHeld(true));
-        step(&mut flow, request());
-        step(&mut flow, SecretInput::FramePresented);
+        feed(&mut flow, SecretInput::ButtonHeld(true));
+        feed(&mut flow, request());
+        feed(&mut flow, SecretInput::FramePresented);
         assert!(!started(&step(
             &mut flow,
             SecretInput::Button(ButtonState::Pressed)
         )));
-        step(&mut flow, SecretInput::Button(ButtonState::Released));
+        feed(&mut flow, SecretInput::Button(ButtonState::Released));
         assert!(started(&step(
             &mut flow,
             SecretInput::Button(ButtonState::Pressed)
@@ -404,10 +411,10 @@ mod tests {
     #[test]
     fn release_before_the_frame_arms_on_the_frame() {
         let mut flow = SecretFlow::new();
-        step(&mut flow, SecretInput::ButtonHeld(true));
-        step(&mut flow, request());
-        step(&mut flow, SecretInput::Button(ButtonState::Released));
-        step(&mut flow, SecretInput::FramePresented);
+        feed(&mut flow, SecretInput::ButtonHeld(true));
+        feed(&mut flow, request());
+        feed(&mut flow, SecretInput::Button(ButtonState::Released));
+        feed(&mut flow, SecretInput::FramePresented);
         assert!(started(&step(
             &mut flow,
             SecretInput::Button(ButtonState::Pressed)
@@ -421,7 +428,7 @@ mod tests {
             &mut flow,
             SecretInput::Button(ButtonState::Pressed)
         )));
-        step(&mut flow, SecretInput::Button(ButtonState::Released));
+        feed(&mut flow, SecretInput::Button(ButtonState::Released));
         assert!(!started(&step(
             &mut flow,
             SecretInput::Button(ButtonState::Pressed)
@@ -431,25 +438,25 @@ mod tests {
     #[test]
     fn buttons_pass_through_when_nothing_is_shown() {
         let mut flow = SecretFlow::new();
-        assert!(step(&mut flow, SecretInput::Button(ButtonState::Pressed)).is_empty());
+        assert_eq!(step(&mut flow, SecretInput::Button(ButtonState::Pressed)), NONE);
     }
 
     #[test]
     fn focus_change_cancels_the_confirmation() {
         let mut flow = armed_flow();
-        step(&mut flow, SecretInput::FocusChanged);
-        let effects = flow.step(SecretInput::Button(ButtonState::Pressed), T0, Some(OTHER));
-        assert!(effects.is_empty());
-        assert!(flow.prompt(T0, Some(OTHER)).is_none());
+        feed(&mut flow, SecretInput::FocusChanged);
+        let effects = flow.step(SecretInput::Button(ButtonState::Pressed), START, Some(OTHER));
+        assert_eq!(effects, NONE);
+        assert!(flow.prompt(START, Some(OTHER)).is_none());
     }
 
     #[test]
     fn a_press_from_another_destination_does_not_confirm() {
         let mut flow = armed_flow();
-        let effects = flow.step(SecretInput::Button(ButtonState::Pressed), T0, Some(OTHER));
+        let effects = flow.step(SecretInput::Button(ButtonState::Pressed), START, Some(OTHER));
         assert!(!started(&effects));
         assert!(
-            flow.step(SecretInput::Button(ButtonState::Pressed), T0, None)
+            flow.step(SecretInput::Button(ButtonState::Pressed), START, None)
                 .is_empty()
         );
     }
@@ -457,7 +464,7 @@ mod tests {
     #[test]
     fn the_confirmation_expires() {
         let mut flow = armed_flow();
-        let late = T0 + CONFIRMATION_LIFETIME;
+        let late = START.saturating_add(CONFIRMATION_LIFETIME);
         assert!(flow.prompt(late, Some(DEST)).is_none());
         let effects = flow.step(SecretInput::Button(ButtonState::Pressed), late, Some(DEST));
         assert!(!started(&effects));
@@ -472,8 +479,8 @@ mod tests {
             },
             target: "x".repeat(40),
         };
-        step(&mut flow, input);
-        let prompt = flow.prompt(T0, Some(DEST)).expect("prompt shown");
+        feed(&mut flow, input);
+        let prompt = flow.prompt(START, Some(DEST)).expect("prompt shown");
         assert_eq!(prompt.entry, "caf??");
         assert_eq!(prompt.target, format!("{}...", "x".repeat(29)));
     }
@@ -481,14 +488,14 @@ mod tests {
     #[test]
     fn request_without_focus_is_refused() {
         let mut flow = SecretFlow::new();
-        assert_eq!(flow.step(request(), T0, None), [SecretEffect::Refused]);
-        assert!(flow.prompt(T0, None).is_none());
+        assert_eq!(flow.step(request(), START, None), [SecretEffect::Refused]);
+        assert!(flow.prompt(START, None).is_none());
     }
 
     #[test]
     fn request_during_a_lookup_is_refused() {
         let mut flow = armed_flow();
-        step(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        feed(&mut flow, SecretInput::Button(ButtonState::Pressed));
         assert_eq!(step(&mut flow, request()), [SecretEffect::Refused]);
         assert!(flow.looking());
     }
@@ -496,7 +503,7 @@ mod tests {
     #[test]
     fn found_value_is_delivered_to_the_still_current_destination() {
         let mut flow = armed_flow();
-        step(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        feed(&mut flow, SecretInput::Button(ButtonState::Pressed));
         let effects = step(&mut flow, SecretInput::LookupFinished { found: true });
         assert_eq!(effects, [SecretEffect::Deliver(DEST)]);
         assert!(!flow.looking());
@@ -505,36 +512,39 @@ mod tests {
     #[test]
     fn found_value_is_dropped_when_focus_moved_during_the_lookup() {
         let mut flow = armed_flow();
-        step(&mut flow, SecretInput::Button(ButtonState::Pressed));
-        step(&mut flow, SecretInput::FocusChanged);
-        let effects = flow.step(SecretInput::LookupFinished { found: true }, T0, Some(OTHER));
-        assert!(effects.is_empty());
+        feed(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        feed(&mut flow, SecretInput::FocusChanged);
+        let effects = flow.step(SecretInput::LookupFinished { found: true }, START, Some(OTHER));
+        assert_eq!(effects, NONE);
         assert!(!flow.looking());
     }
 
     #[test]
     fn failed_lookup_raises_the_notice_for_a_short_time() {
         let mut flow = armed_flow();
-        step(&mut flow, SecretInput::Button(ButtonState::Pressed));
-        assert!(step(&mut flow, SecretInput::LookupFinished { found: false }).is_empty());
-        assert!(flow.notice_active(T0));
-        assert!(!flow.notice_active(T0 + NOTICE_LIFETIME));
+        feed(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        assert_eq!(
+            step(&mut flow, SecretInput::LookupFinished { found: false }),
+            NONE
+        );
+        assert!(flow.notice_active(START));
+        assert!(!flow.notice_active(START.saturating_add(NOTICE_LIFETIME)));
     }
 
     #[test]
     fn refused_request_and_failed_delivery_raise_the_notice() {
-        let mut flow = SecretFlow::new();
-        flow.step(request(), T0, None);
-        assert!(flow.notice_active(T0));
-        let mut flow = SecretFlow::new();
-        step(&mut flow, SecretInput::DeliveryFailed);
-        assert!(flow.notice_active(T0));
+        let mut refused = SecretFlow::new();
+        let _effects = refused.step(request(), START, None);
+        assert!(refused.notice_active(START));
+        let mut failed = SecretFlow::new();
+        feed(&mut failed, SecretInput::DeliveryFailed);
+        assert!(failed.notice_active(START));
     }
 
     #[test]
     fn lookup_result_without_a_lookup_is_ignored() {
         let mut flow = SecretFlow::new();
-        assert!(step(&mut flow, SecretInput::LookupFinished { found: true }).is_empty());
+        assert_eq!(step(&mut flow, SecretInput::LookupFinished { found: true }), NONE);
     }
 
     #[derive(Debug, Clone)]
@@ -571,7 +581,7 @@ mod tests {
             events in proptest::collection::vec(event(), 0..60)
         ) {
             let mut flow = SecretFlow::new();
-            let mut now = T0;
+            let mut now = START;
             let mut generation = 1_u64;
             let mut requested: Option<(Duration, u64)> = None;
             let mut frame_seen = false;
@@ -588,12 +598,12 @@ mod tests {
                     Event::Release => SecretInput::Button(ButtonState::Released),
                     Event::Held(held) => SecretInput::ButtonHeld(held),
                     Event::Focus => {
-                        generation += 1;
+                        generation = generation.saturating_add(1);
                         SecretInput::FocusChanged
                     }
                     Event::Finish(found) => SecretInput::LookupFinished { found },
                     Event::Wait(seconds) => {
-                        now += Duration::from_secs(seconds);
+                        now = now.saturating_add(Duration::from_secs(seconds));
                         continue;
                     }
                 };
@@ -612,11 +622,11 @@ mod tests {
                 }
                 if started(&effects) {
                     prop_assert!(!was_looking);
-                    let (at, made_in) = requested.expect("a request preceded the lookup");
+                    let (requested_at, made_in) = requested.expect("a request preceded the lookup");
                     prop_assert!(frame_seen);
                     prop_assert_eq!(made_in, generation);
-                    prop_assert!(now < at + CONFIRMATION_LIFETIME);
-                    starts_for_request += 1;
+                    prop_assert!(now < requested_at.saturating_add(CONFIRMATION_LIFETIME));
+                    starts_for_request = starts_for_request.saturating_add(1);
                     prop_assert_eq!(starts_for_request, 1);
                 }
                 for effect in &effects {

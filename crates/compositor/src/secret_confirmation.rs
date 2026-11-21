@@ -63,21 +63,22 @@ impl<S: PartialEq> SecretConfirmation<S> {
             self.focus_surface = focus;
         }
         // The destination used here is irrelevant: this input ignores it.
-        self.flow.step(SecretInput::FocusChanged, Duration::ZERO, None);
+        let _effects = self.flow.step(SecretInput::FocusChanged, Duration::ZERO, None);
     }
 
     pub fn confirm_pressed(&mut self, pressed: bool) {
-        self.flow
+        let _effects = self
+            .flow
             .step(SecretInput::ButtonHeld(pressed), Duration::ZERO, None);
     }
 
     pub fn frame_submitted(&mut self, focus: Option<&S>, now: Duration) {
         let current = self.current_secret_destination(focus);
-        self.flow.step(SecretInput::FramePresented, now, current);
+        let _effects = self.flow.step(SecretInput::FramePresented, now, current);
     }
 
     pub fn delivery_unavailable(&mut self, now: Duration) {
-        self.flow.step(SecretInput::DeliveryFailed, now, None);
+        let _effects = self.flow.step(SecretInput::DeliveryFailed, now, None);
     }
 
     #[must_use]
