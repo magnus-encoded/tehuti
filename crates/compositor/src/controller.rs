@@ -108,29 +108,53 @@ pub fn open_grabbed(
         .collect()
 }
 
-/// Names of the hidraw nodes that belong to the same HID device as a pad's event node.
-/// `sysfs` is the canonical sysfs path of the event node; the hidraw directory sits on an ancestor.
+/// The hidraw nodes of one HID device, and the physical path its udev rules can match.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct HidrawSiblings {
+    /// Node names such as `hidraw3`.
+    pub nodes: Vec<String>,
+    /// The device's `HID_PHYS`, when its uevent names one.
+    pub phys: Option<String>,
+}
+
+/// The hidraw nodes that belong to the same HID device as a pad's event node.
+/// `sysfs` is the canonical sysfs path of the event node. The walk stops at the first ancestor
+/// whose subsystem is `hid`, so a parent device's hidraw nodes are never picked.
 #[must_use]
-pub fn hidraw_siblings(sysfs: &std::path::Path) -> Vec<String> {
-    for ancestor in sysfs.ancestors().skip(1) {
-        let Ok(entries) = std::fs::read_dir(ancestor.join("hidraw")) else {
-            continue;
-        };
-        let mut names: Vec<String> = entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect();
-        names.sort();
-        return names;
-    }
-    Vec::new()
+pub fn hidraw_siblings(sysfs: &std::path::Path) -> HidrawSiblings {
+    let hid = sysfs.ancestors().skip(1).find(|ancestor| {
+        std::fs::canonicalize(ancestor.join("subsystem"))
+            .ok()
+            .and_then(|subsystem| subsystem.file_name().map(|name| name == "hid"))
+            .unwrap_or(false)
+    });
+    let Some(hid) = hid else {
+        return HidrawSiblings::default();
+    };
+    let mut nodes: Vec<String> = std::fs::read_dir(hid.join("hidraw"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    nodes.sort();
+    let phys = std::fs::read_to_string(hid.join("uevent")).ok().and_then(|text| {
+        text.lines()
+            .find_map(|line| line.strip_prefix("HID_PHYS=").map(str::to_owned))
+    });
+    HidrawSiblings { nodes, phys }
 }
 
 /// The warning for a grabbed pad whose hidraw siblings stay readable, or `None` when all are closed.
 /// A grab only covers the event node; a readable hidraw node still feeds other programs.
 #[must_use]
-pub fn hidraw_warning(pad: &str, siblings: &[String], readable: impl Fn(&str) -> bool) -> Option<String> {
+pub fn hidraw_warning(
+    pad: &str,
+    siblings: &HidrawSiblings,
+    readable: impl Fn(&str) -> bool,
+) -> Option<String> {
     let open: Vec<&str> = siblings
+        .nodes
         .iter()
         .map(String::as_str)
         .filter(|node| readable(node))
@@ -138,9 +162,10 @@ pub fn hidraw_warning(pad: &str, siblings: &[String], readable: impl Fn(&str) ->
     if open.is_empty() {
         return None;
     }
+    let phys = siblings.phys.as_deref().unwrap_or("<pad phys>");
     Some(format!(
         "grabbed pad {pad} is still readable through /dev/{}; other programs can read it regardless of focus. \
-         Restrict it with a udev rule such as: KERNEL==\"hidraw*\", ENV{{HID_PHYS}}==\"<pad phys>\", TAG-=\"uaccess\", MODE=\"0600\"",
+         Restrict it with a udev rule such as: KERNEL==\"hidraw*\", ENV{{HID_PHYS}}==\"{phys}\", TAG-=\"uaccess\", MODE=\"0600\"",
         open.join(", /dev/")
     ))
 }

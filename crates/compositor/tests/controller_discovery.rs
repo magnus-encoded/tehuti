@@ -109,29 +109,58 @@ mod tests {
 
 #[cfg(test)]
 mod hidraw_tests {
-    use tehuti::controller::{hidraw_siblings, hidraw_warning};
+    use tehuti::controller::{HidrawSiblings, hidraw_siblings, hidraw_warning};
+
+    fn hid_device(root: &std::path::Path, dir: &str) -> std::path::PathBuf {
+        let hid = root.join(dir);
+        std::fs::create_dir_all(&hid).expect("hid dir");
+        std::fs::create_dir_all(root.join("bus/hid")).expect("bus dir");
+        std::os::unix::fs::symlink(root.join("bus/hid"), hid.join("subsystem")).expect("subsystem link");
+        hid
+    }
 
     #[test]
-    fn siblings_are_found_beside_the_input_directory() {
+    fn siblings_and_phys_come_from_the_hid_device_only() {
         let root = tempfile::tempdir().expect("tempdir");
-        let hid = root.path().join("devices/hid0001");
+        let parent = hid_device(root.path(), "devices/parent");
+        std::fs::create_dir_all(parent.join("hidraw/hidraw1")).expect("parent hidraw");
+        let hid = parent.join("child");
+        std::fs::create_dir_all(&hid).expect("child dir");
+        std::os::unix::fs::symlink(root.path().join("bus/hid"), hid.join("subsystem")).expect("link");
         let event = hid.join("input/input5/event5");
         std::fs::create_dir_all(&event).expect("event dir");
         std::fs::create_dir_all(hid.join("hidraw/hidraw3")).expect("hidraw dir");
-        assert_eq!(hidraw_siblings(&event), vec!["hidraw3".to_owned()]);
+        std::fs::write(hid.join("uevent"), "DRIVER=x\nHID_PHYS=pad/input0\n").expect("uevent");
         assert_eq!(
-            hidraw_siblings(&root.path().join("devices")),
-            Vec::<String>::new()
+            hidraw_siblings(&event),
+            HidrawSiblings {
+                nodes: vec!["hidraw3".to_owned()],
+                phys: Some("pad/input0".to_owned()),
+            }
         );
     }
 
     #[test]
-    fn readable_sibling_warns_with_the_rule_and_closed_ones_stay_quiet() {
-        let nodes = vec!["hidraw3".to_owned(), "hidraw4".to_owned()];
-        let message = hidraw_warning("Pad", &nodes, |node| node == "hidraw4").expect("warns");
+    fn a_parent_hidraw_is_not_a_sibling_without_a_hid_device() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let parent = root.path().join("devices/usb");
+        let event = parent.join("input/input5/event5");
+        std::fs::create_dir_all(&event).expect("event dir");
+        std::fs::create_dir_all(parent.join("hidraw/hidraw1")).expect("hidraw dir");
+        assert_eq!(hidraw_siblings(&event), HidrawSiblings::default());
+    }
+
+    #[test]
+    fn readable_sibling_warns_with_the_real_rule_and_closed_ones_stay_quiet() {
+        let siblings = HidrawSiblings {
+            nodes: vec!["hidraw3".to_owned(), "hidraw4".to_owned()],
+            phys: Some("pad/input0".to_owned()),
+        };
+        let message = hidraw_warning("Pad", &siblings, |node| node == "hidraw4").expect("warns");
         assert!(message.contains("/dev/hidraw4"));
         assert!(!message.contains("/dev/hidraw3"));
+        assert!(message.contains("ENV{HID_PHYS}==\"pad/input0\""));
         assert!(message.contains("TAG-=\"uaccess\""));
-        assert!(hidraw_warning("Pad", &nodes, |_| false).is_none());
+        assert!(hidraw_warning("Pad", &siblings, |_| false).is_none());
     }
 }
