@@ -164,7 +164,7 @@ impl SecretServiceProvider {
         }
         let ((_session, _parameters, value, _content_type),) = reply?;
         let value = zeroize::Zeroizing::new(value);
-        let text = std::str::from_utf8(&value).map_err(|_| SecretProviderUnavailable)?;
+        let text = core::str::from_utf8(&value).map_err(|_| SecretProviderUnavailable)?;
         Ok(SecretValue::new(text.to_owned()))
     }
 }
