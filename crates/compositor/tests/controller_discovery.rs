@@ -106,3 +106,29 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod hidraw_tests {
+    use tehuti::controller::{hidraw_siblings, hidraw_warning};
+
+    #[test]
+    fn siblings_are_found_beside_the_input_directory() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let hid = root.path().join("devices/hid0001");
+        let event = hid.join("input/input5/event5");
+        std::fs::create_dir_all(&event).expect("event dir");
+        std::fs::create_dir_all(hid.join("hidraw/hidraw3")).expect("hidraw dir");
+        assert_eq!(hidraw_siblings(&event), vec!["hidraw3".to_owned()]);
+        assert!(hidraw_siblings(&root.path().join("devices")).is_empty());
+    }
+
+    #[test]
+    fn readable_sibling_warns_with_the_rule_and_closed_ones_stay_quiet() {
+        let nodes = vec!["hidraw3".to_owned(), "hidraw4".to_owned()];
+        let message = hidraw_warning("Pad", &nodes, |node| node == "hidraw4").expect("warns");
+        assert!(message.contains("/dev/hidraw4"));
+        assert!(!message.contains("/dev/hidraw3"));
+        assert!(message.contains("TAG-=\"uaccess\""));
+        assert!(hidraw_warning("Pad", &nodes, |_| false).is_none());
+    }
+}
