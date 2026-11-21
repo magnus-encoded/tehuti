@@ -235,6 +235,10 @@ pub enum Method {
     Status {
         text: Option<String>,
     },
+    /// Displays a reply without delivering input to the focused application.
+    Notice {
+        text: crate::Text,
+    },
     /// A physical pad input that matched one of the plugin's overrides.
     PadInput {
         button: ButtonName,
@@ -290,6 +294,7 @@ fn validate_notice(method: &Method) -> Result<(), String> {
         | Method::Actions { .. }
         | Method::SubmitActions { .. }
         | Method::Status { .. }
+        | Method::Notice { .. }
         | Method::PadInput { .. } => Ok(()),
     }
 }
