@@ -1198,15 +1198,9 @@ impl Layout {
             .filter_map(|(index, candidate)| {
                 let other = candidate.geometry.area;
                 let (distance, across) = match direction {
-                    Direction::Left if other.x < area.x => {
-                        (area.x.sub(other.x), other.y.sub(area.y).abs())
-                    }
-                    Direction::Right if other.x > area.x => {
-                        (other.x.sub(area.x), other.y.sub(area.y).abs())
-                    }
-                    Direction::Upward if other.y < area.y => {
-                        (area.y.sub(other.y), other.x.sub(area.x).abs())
-                    }
+                    Direction::Left if other.x < area.x => (area.x.sub(other.x), other.y.sub(area.y).abs()),
+                    Direction::Right if other.x > area.x => (other.x.sub(area.x), other.y.sub(area.y).abs()),
+                    Direction::Upward if other.y < area.y => (area.y.sub(other.y), other.x.sub(area.x).abs()),
                     Direction::Downward if other.y > area.y => {
                         (other.y.sub(area.y), other.x.sub(area.x).abs())
                     }
