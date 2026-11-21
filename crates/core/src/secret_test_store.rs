@@ -20,7 +20,10 @@ impl core::fmt::Debug for TestSecretStore {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("TestSecretStore")
-            .field("names", &self.entries.iter().map(|(name, _)| name).collect::<Vec<_>>())
+            .field(
+                "names",
+                &self.entries.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            )
             .field("locked", &self.locked)
             .finish()
     }
@@ -35,8 +38,10 @@ impl TestSecretStore {
     #[must_use]
     pub fn with_entry(mut self, name: &str, value: &str) -> Self {
         let value = zeroize::Zeroizing::new(value.to_owned());
-        self.entries
-            .push((name.to_owned(), Box::new(move || SecretValue::new(String::clone(&value)))));
+        self.entries.push((
+            name.to_owned(),
+            Box::new(move || SecretValue::new(String::clone(&value))),
+        ));
         self
     }
 
