@@ -129,11 +129,17 @@ pub trait SecretProvider: Send {
     /// A locked store is unlocked first, because some stores keep labels
     /// readable only while unlocked.
     ///
+    /// May block until the store's own prompt closes (up to the timeout), so
+    /// call it off the compositor thread (ADR 0007).
+    ///
     /// # Errors
     /// The provider is unavailable or the store stays locked.
     fn list_labels(&mut self) -> Result<Vec<String>, SecretProviderUnavailable>;
 
     /// Unlocks the store, letting the store ask for its own credential.
+    ///
+    /// May block until the store's own prompt closes (up to the timeout), so
+    /// call it off the compositor thread (ADR 0007).
     ///
     /// # Errors
     /// The provider is unavailable or the store stays locked.
@@ -141,18 +147,22 @@ pub trait SecretProvider: Send {
 
     /// Locks the store.
     ///
+    /// May block until the store's own prompt closes (up to the timeout), so
+    /// call it off the compositor thread (ADR 0007).
+    ///
     /// # Errors
     /// The provider is unavailable or the store stays unlocked.
     fn lock(&mut self) -> Result<(), SecretProviderUnavailable>;
 }
 
-/// A provider result that cannot be cloned or serialized and is redacted by Debug.
-pub struct SecretValue(String);
+/// A provider result that cannot be cloned or serialized, is redacted by
+/// Debug, and is zeroized when dropped.
+pub struct SecretValue(zeroize::Zeroizing<String>);
 
 impl SecretValue {
     #[must_use]
-    pub const fn new(value: String) -> Self {
-        Self(value)
+    pub fn new(value: String) -> Self {
+        Self(zeroize::Zeroizing::new(value))
     }
 
     /// Borrows the value for one synchronous delivery effect.

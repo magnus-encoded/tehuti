@@ -25,6 +25,7 @@ smithay = { version = "0.7", default-features = false, features = ["backend_wini
 tehuti-core = { path = "../core" }
 tehuti-protocol = { path = "../protocol" }
 zbus = "5"
+zeroize = "1"
 thiserror = "2.0.21"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
