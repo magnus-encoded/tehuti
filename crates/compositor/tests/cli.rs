@@ -132,3 +132,8 @@ mod cli {
         );
     }
 }
+
+#[test]
+fn help_advertises_running_session_output_mode_control() {
+    assert!(tehuti::cli::USAGE.contains("tehuti output-mode <W>x<H>[@<Hz>] | --restore"));
+}
