@@ -164,10 +164,10 @@ mod layout_wiring {
         Ok(())
     }
 
-    const fn placed(x: f64, y: f64) -> OutputGeometry {
+    const fn placed(left: f64, top: f64) -> OutputGeometry {
         let area = Rect {
-            x,
-            y,
+            x: left,
+            y: top,
             width: 800.0,
             height: 600.0,
         };
@@ -206,8 +206,8 @@ mod layout_wiring {
     fn shrinking_an_output_keeps_the_focused_column_in_view() -> Result<(), LayoutError> {
         let mut layout = Layout::try_new(LayoutConfig::default())?;
         layout.add_output(OutputId(0), geometry(1600.0), None)?;
-        for id in 0..4 {
-            layout.add_window(WindowId(id), WindowRules::default())?;
+        for index in 0..4 {
+            layout.add_window(WindowId(index), WindowRules::default())?;
         }
         layout.update_output(OutputId(0), geometry(500.0))?;
         let snapshot = layout.snapshot();
