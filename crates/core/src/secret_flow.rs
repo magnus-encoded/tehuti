@@ -108,8 +108,148 @@ impl SecretFlow {
         now: Duration,
         current: Option<SecretDestination>,
     ) -> Vec<SecretEffect> {
-        let _ = (input, now, current);
+        match input {
+            SecretInput::Request { reference, target } => self.request(reference, &target, now, current),
+            SecretInput::FocusChanged => {
+                self.gate.cancel();
+                if matches!(self.phase, Phase::Confirming { .. }) {
+                    self.phase = Phase::Idle;
+                }
+                Vec::new()
+            }
+            SecretInput::ButtonHeld(held) => {
+                self.button_held = held;
+                Vec::new()
+            }
+            SecretInput::FramePresented => {
+                self.frame_presented(now, current);
+                Vec::new()
+            }
+            SecretInput::Button(state) => self.button(state, now, current),
+            SecretInput::LookupFinished { found } => self.lookup_finished(found, now, current),
+            SecretInput::DeliveryFailed => {
+                self.raise_notice(now);
+                Vec::new()
+            }
+        }
+    }
+
+    fn raise_notice(&mut self, now: Duration) {
+        self.notice_until = now.checked_add(NOTICE_LIFETIME);
+    }
+
+    fn refuse(&mut self, now: Duration) -> Vec<SecretEffect> {
+        self.raise_notice(now);
+        vec![SecretEffect::Refused]
+    }
+
+    fn request(
+        &mut self,
+        reference: SecretReference,
+        target: &str,
+        now: Duration,
+        current: Option<SecretDestination>,
+    ) -> Vec<SecretEffect> {
+        let Some(destination) = current else {
+            return self.refuse(now);
+        };
+        if self.looking() {
+            return self.refuse(now);
+        }
+        let prompt = ConfirmationPrompt {
+            entry: sanitize_label(&reference.entry, ENTRY_LABEL_LIMIT),
+            target: sanitize_label(target, TARGET_LABEL_LIMIT),
+        };
+        if self
+            .gate
+            .request(reference, destination, now, CONFIRMATION_LIFETIME)
+            .is_none()
+        {
+            return self.refuse(now);
+        }
+        self.phase = Phase::Confirming {
+            arming: Arming::AwaitingFrame,
+            prompt,
+        };
         Vec::new()
+    }
+
+    fn frame_presented(&mut self, now: Duration, current: Option<SecretDestination>) {
+        if self.prompt(now, current).is_none() {
+            return;
+        }
+        let held = self.button_held;
+        if let Phase::Confirming { arming, .. } = &mut self.phase {
+            *arming = if held { Arming::AwaitingRelease } else { Arming::Armed };
+        }
+    }
+
+    fn button(
+        &mut self,
+        state: ButtonState,
+        now: Duration,
+        current: Option<SecretDestination>,
+    ) -> Vec<SecretEffect> {
+        let Some(destination) = current else {
+            return Vec::new();
+        };
+        if self.prompt(now, current).is_none() {
+            return Vec::new();
+        }
+        let Phase::Confirming { arming, .. } = &mut self.phase else {
+            return Vec::new();
+        };
+        match (state, *arming) {
+            (ButtonState::Released, current_arming) => {
+                self.button_held = false;
+                if current_arming == Arming::AwaitingRelease {
+                    *arming = Arming::Armed;
+                }
+            }
+            (ButtonState::Pressed, Arming::Armed) => {
+                self.button_held = true;
+                return self.confirm(now, destination);
+            }
+            (ButtonState::Pressed, _) => self.button_held = true,
+        }
+        vec![SecretEffect::ConsumeButton]
+    }
+
+    fn confirm(&mut self, now: Duration, destination: SecretDestination) -> Vec<SecretEffect> {
+        let confirmation = self
+            .gate
+            .pending(now, destination)
+            .map(crate::secret::PendingSecretDelivery::confirmation_id);
+        let authorization = confirmation.and_then(|id| self.gate.confirm(id, now, destination));
+        let Some(authorization) = authorization else {
+            self.phase = Phase::Idle;
+            return vec![SecretEffect::ConsumeButton];
+        };
+        self.phase = Phase::Looking {
+            destination: authorization.destination,
+        };
+        vec![SecretEffect::StartLookup(authorization), SecretEffect::ConsumeButton]
+    }
+
+    fn lookup_finished(
+        &mut self,
+        found: bool,
+        now: Duration,
+        current: Option<SecretDestination>,
+    ) -> Vec<SecretEffect> {
+        let Phase::Looking { destination } = self.phase else {
+            return Vec::new();
+        };
+        self.phase = Phase::Idle;
+        if !found {
+            self.raise_notice(now);
+            return Vec::new();
+        }
+        if current == Some(destination) {
+            vec![SecretEffect::Deliver(destination)]
+        } else {
+            Vec::new()
+        }
     }
 
     /// The overlay text while a confirmation is answerable.
@@ -133,6 +273,28 @@ impl SecretFlow {
     pub const fn looking(&self) -> bool {
         matches!(self.phase, Phase::Looking { .. })
     }
+}
+
+/// Keeps printable ASCII, replaces the rest, and shortens to `maximum`.
+fn sanitize_label(value: &str, maximum: usize) -> String {
+    let mut label: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_graphic() || character == ' ' {
+                character
+            } else {
+                '?'
+            }
+        })
+        .take(maximum)
+        .collect();
+    if value.chars().count() > maximum {
+        label.push_str("...");
+    }
+    if label.is_empty() {
+        label.push_str("unnamed");
+    }
+    label
 }
 
 impl Default for SecretFlow {

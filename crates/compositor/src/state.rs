@@ -2606,9 +2606,8 @@ impl Compositor {
 
     /// Records that a damaged frame containing the confirmation was submitted.
     pub fn note_secret_confirmation_frame_submitted(&mut self) {
-        if self.secret_confirmation_text().is_some() {
-            self.confirmation.frame_submitted();
-        }
+        self.confirmation
+            .frame_submitted(self.live_secret_focus().as_ref(), self.clock_elapsed());
     }
 
     fn handle_secret_confirmation_button(&mut self, state: tehuti_protocol::ButtonState) -> bool {
