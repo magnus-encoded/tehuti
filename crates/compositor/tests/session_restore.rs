@@ -1,7 +1,8 @@
 //! Session restore: capture, store and paced relaunch.
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use core::time::Duration;
+    use std::time::Instant;
 
     use tehuti::session_restore::{Restore, Saved, Store};
     use tehuti_core::layout::{
