@@ -118,6 +118,7 @@ pub struct HidrawSiblings {
 }
 
 /// The hidraw nodes that belong to the same HID device as a pad's event node.
+///
 /// `sysfs` is the canonical sysfs path of the event node. The walk stops at the first ancestor
 /// whose subsystem is `hid`, so a parent device's hidraw nodes are never picked.
 #[must_use]
