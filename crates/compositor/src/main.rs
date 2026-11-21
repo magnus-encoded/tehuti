@@ -434,6 +434,9 @@ fn start_session(
         &mut compositor,
     )?;
     compositor.set_launch_socket(socket_name.clone());
+    if driver.is_none() {
+        restore_session(&mut compositor);
+    }
     if driver.is_none()
         && let Err(error) = insert_controller_watch(&event_loop)
     {
@@ -521,9 +524,31 @@ fn start_session(
     data.compositor.advance_time();
     let result = run(&mut event_loop, &mut data, child);
     let code = data.exit_code();
+    if result.is_ok() && data.driver.is_none() && data.compositor.quit_requested() {
+        save_session(&data.compositor);
+    }
     shut_down(event_loop, data);
     result?;
     Ok(code)
+}
+
+fn restore_session(compositor: &mut tehuti::state::Compositor) {
+    let taken = tehuti::session_restore::Store::from_env()
+        .map_err(|error| error.to_string())
+        .and_then(|store| store.take().map_err(|error| error.to_string()));
+    match taken {
+        Ok(Some(saved)) => compositor.begin_session_restore(saved),
+        Ok(None) => {}
+        Err(error) => warn!(%error, "session restore skipped"),
+    }
+}
+
+fn save_session(compositor: &tehuti::state::Compositor) {
+    let saved = compositor.session_to_save();
+    let result = tehuti::session_restore::Store::from_env().and_then(|store| store.save(&saved));
+    if let Err(error) = result {
+        warn!(%error, "session not saved");
+    }
 }
 
 fn install_xwayland(

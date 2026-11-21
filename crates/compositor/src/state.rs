@@ -142,6 +142,7 @@ pub struct Compositor {
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    restore: Option<crate::session_restore::Restore>,
     session_exit_status: Option<u8>,
     restart_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
@@ -310,6 +311,7 @@ impl Compositor {
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
+            restore: None,
             session_exit_status: None,
             restart_requested: false,
             speech_process: None,
@@ -972,6 +974,7 @@ impl Compositor {
         self.release_due_keys();
         self.keep_invitation();
         self.poll_recording();
+        self.poll_session_restore();
         self.release_ready_buffers();
         if let Some((status, due)) = self.exit_hold
             && Instant::now() >= due
@@ -3767,6 +3770,65 @@ impl Compositor {
             .launch_application(desktop_entry.as_str(), self.launch_socket.as_deref())
         {
             self.show_launch_failure();
+        }
+    }
+
+    /// Starts relaunching the saved applications, one at a time, from the main loop.
+    pub fn begin_session_restore(&mut self, saved: crate::session_restore::Saved) {
+        self.restore = Some(crate::session_restore::Restore::new(saved));
+    }
+
+    /// The restorable windows now open, for the clean-exit save.
+    #[must_use]
+    pub fn session_to_save(&self) -> crate::session_restore::Saved {
+        let apps: std::collections::HashMap<_, _> = self
+            .placement
+            .placed(|_| 0.0)
+            .into_iter()
+            .filter_map(|placed| {
+                let app_id = placed.window.toplevel().and_then(toplevel_app_id)?;
+                Some((placed.identity, app_id))
+            })
+            .collect();
+        crate::session_restore::Saved::capture(
+            &self.placement.snapshot(),
+            |window| apps.get(&window.0).cloned(),
+            &self.launcher.installed(),
+        )
+    }
+
+    fn poll_session_restore(&mut self) {
+        let Some(mut restore) = self.restore.take() else {
+            return;
+        };
+        let open: Vec<String> = self
+            .placement
+            .windows()
+            .filter_map(|window| window.toplevel().and_then(toplevel_app_id))
+            .collect();
+        if let Some(window) = restore.next(Instant::now(), &open) {
+            let workspace = self
+                .placement
+                .snapshot()
+                .outputs
+                .first()
+                .and_then(|output| output.workspaces.get(window.workspace).map(|view| view.workspace));
+            if let Some(workspace) = workspace
+                && let Err(error) = self.placement.focus_workspace_id(workspace)
+            {
+                tracing::warn!(%error, "restore workspace focus failed");
+            }
+            if !self.launcher.installed().contains(&window.app_id) {
+                tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
+            } else if !self
+                .launcher
+                .launch_application(&window.app_id, self.launch_socket.as_deref())
+            {
+                tracing::warn!(app_id = %window.app_id, "restore launch failed");
+            }
+        }
+        if !restore.is_done() {
+            self.restore = Some(restore);
         }
     }
 
