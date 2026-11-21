@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod layout_wiring {
     use tehuti_core::layout::{
-        CenterFocusedColumn, Command, Layout, LayoutConfig, LayoutError, OutputGeometry, OutputId,
+        CenterFocusedColumn, Command, Direction, Layout, LayoutConfig, LayoutError, OutputGeometry, OutputId,
         PresetSize, Rect, WindowId, WindowRules,
     };
 
@@ -161,6 +161,62 @@ mod layout_wiring {
             Err(LayoutError::UnknownWindow(WindowId(99)))
         );
         assert_eq!(layout.snapshot(), before);
+        Ok(())
+    }
+
+    const fn placed(left: f64, top: f64) -> OutputGeometry {
+        let area = Rect {
+            x: left,
+            y: top,
+            width: 800.0,
+            height: 600.0,
+        };
+        OutputGeometry { area, usable: area }
+    }
+
+    #[test]
+    fn monitor_focus_prefers_the_output_aligned_on_the_other_axis() -> Result<(), LayoutError> {
+        let mut layout = Layout::try_new(LayoutConfig::default())?;
+        layout.add_output(OutputId(0), placed(0.0, 0.0), None)?;
+        layout.add_output(OutputId(1), placed(800.0, 5000.0), None)?;
+        layout.add_output(OutputId(2), placed(800.0, 0.0), None)?;
+        layout.apply(Command::FocusMonitor(Direction::Right));
+        assert_eq!(layout.snapshot().focused_output, Some(OutputId(2)));
+        Ok(())
+    }
+
+    #[test]
+    fn removing_a_window_from_a_detached_workspace_forgets_it() -> Result<(), LayoutError> {
+        let mut layout = Layout::try_new(LayoutConfig::default())?;
+        layout.add_output(OutputId(0), geometry(1200.0), None)?;
+        layout.add_window(WindowId(0), WindowRules::default())?;
+        layout.add_window(WindowId(1), WindowRules::default())?;
+        layout.remove_output(OutputId(0))?;
+        layout.remove_window(WindowId(0))?;
+        assert_eq!(
+            layout.remove_window(WindowId(0)),
+            Err(LayoutError::UnknownWindow(WindowId(0)))
+        );
+        layout.add_output(OutputId(0), geometry(1200.0), None)?;
+        assert_eq!(layout.snapshot().focused_window, Some(WindowId(1)));
+        Ok(())
+    }
+
+    #[test]
+    fn shrinking_an_output_keeps_the_focused_column_in_view() -> Result<(), LayoutError> {
+        let mut layout = Layout::try_new(LayoutConfig::default())?;
+        layout.add_output(OutputId(0), geometry(1600.0), None)?;
+        for index in 0..4 {
+            layout.add_window(WindowId(index), WindowRules::default())?;
+        }
+        layout.update_output(OutputId(0), geometry(500.0))?;
+        let snapshot = layout.snapshot();
+        let workspace = &snapshot.outputs[0].workspaces[0];
+        let focused = workspace
+            .focused_column
+            .and_then(|column| workspace.columns.get(column))
+            .and_then(|column| column.tiles.get(column.focused_tile));
+        assert!(focused.is_some_and(|tile| tile.tile.x >= 0.0 && tile.tile.x < 500.0));
         Ok(())
     }
 }
