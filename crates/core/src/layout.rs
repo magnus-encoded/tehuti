@@ -904,13 +904,18 @@ impl Layout {
     /// # Errors
     /// Returns an error for an unknown output or invalid geometry.
     pub fn update_output(&mut self, identity: OutputId, geometry: OutputGeometry) -> Result<(), LayoutError> {
+        let index = self
+            .outputs
+            .iter()
+            .position(|output| output.identity == identity)
+            .ok_or(LayoutError::UnknownOutput(identity))?;
         let output = self
             .outputs
-            .iter_mut()
-            .find(|output| output.identity == identity)
+            .get_mut(index)
             .ok_or(LayoutError::UnknownOutput(identity))?;
         validate_output(geometry, &output.config)?;
         output.geometry = geometry;
+        self.scroll(index, None, false);
         Ok(())
     }
 
@@ -1192,16 +1197,26 @@ impl Layout {
             .filter(|(index, _)| *index != output)
             .filter_map(|(index, candidate)| {
                 let other = candidate.geometry.area;
-                let distance = match direction {
-                    Direction::Left if other.x < area.x => area.x.sub(other.x),
-                    Direction::Right if other.x > area.x => other.x.sub(area.x),
-                    Direction::Upward if other.y < area.y => area.y.sub(other.y),
-                    Direction::Downward if other.y > area.y => other.y.sub(area.y),
+                let (distance, across) = match direction {
+                    Direction::Left if other.x < area.x => {
+                        (area.x.sub(other.x), other.y.sub(area.y).abs())
+                    }
+                    Direction::Right if other.x > area.x => {
+                        (other.x.sub(area.x), other.y.sub(area.y).abs())
+                    }
+                    Direction::Upward if other.y < area.y => {
+                        (area.y.sub(other.y), other.x.sub(area.x).abs())
+                    }
+                    Direction::Downward if other.y > area.y => {
+                        (other.y.sub(area.y), other.x.sub(area.x).abs())
+                    }
                     _ => return None,
                 };
-                Some((index, distance))
+                Some((index, distance, across))
             })
-            .min_by(|(_, left), (_, right)| left.total_cmp(right))
+            .min_by(|(_, left, left_across), (_, right, right_across)| {
+                left.total_cmp(right).then(left_across.total_cmp(right_across))
+            })
             .map(|(index, _)| index)
     }
     fn move_column(&mut self, output: usize, destination: usize, workspace: usize) {
