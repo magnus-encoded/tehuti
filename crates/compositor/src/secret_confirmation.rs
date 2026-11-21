@@ -146,7 +146,7 @@ impl<S: PartialEq> SecretConfirmation<S> {
     /// failed lookup.
     fn start_lookup(&mut self, authorization: tehuti_core::secret::AuthorizedSecretLookup, now: Duration) {
         let Some(mut provider) = self.provider.take() else {
-            self.finish_lookup(false, now, None);
+            let _delivered = self.finish_lookup(false, now, None);
             return;
         };
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -161,7 +161,7 @@ impl<S: PartialEq> SecretConfirmation<S> {
                 });
             });
         if spawned.is_err() {
-            self.finish_lookup(false, now, None);
+            let _delivered = self.finish_lookup(false, now, None);
             return;
         }
         self.lookup = Some(receiver);
@@ -187,7 +187,7 @@ impl<S: PartialEq> SecretConfirmation<S> {
             Err(std::sync::mpsc::TryRecvError::Empty) => return None,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.lookup = None;
-                self.finish_lookup(false, now, None);
+                let _delivered = self.finish_lookup(false, now, None);
                 return None;
             }
         };

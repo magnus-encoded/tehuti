@@ -585,7 +585,7 @@ mod tests {
             let mut generation = 1_u64;
             let mut requested: Option<(Duration, u64)> = None;
             let mut frame_seen = false;
-            let mut starts_for_request = 0;
+            let mut starts_for_request = 0_u32;
             for event in events {
                 let current = Some(SecretDestination { surface: 1, focus_generation: generation });
                 let input = match event {
@@ -615,7 +615,7 @@ mod tests {
                 if is_request && !effects.contains(&SecretEffect::Refused) {
                     requested = Some((now, generation));
                     frame_seen = false;
-                    starts_for_request = 0;
+                    starts_for_request = 0_u32;
                 }
                 if is_frame && flow.prompt(now, current_before).is_some() {
                     frame_seen = true;
