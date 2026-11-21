@@ -455,10 +455,8 @@ mod tests {
         let mut flow = armed_flow();
         let effects = flow.step(SecretInput::Button(ButtonState::Pressed), START, Some(OTHER));
         assert!(!started(&effects));
-        assert!(
-            flow.step(SecretInput::Button(ButtonState::Pressed), START, None)
-                .is_empty()
-        );
+        let unfocused = flow.step(SecretInput::Button(ButtonState::Pressed), START, None);
+        assert_eq!(unfocused, NONE);
     }
 
     #[test]
