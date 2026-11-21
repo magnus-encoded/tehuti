@@ -143,11 +143,11 @@ mod output_mode_help {
 
 #[cfg(test)]
 mod output_mode_control {
+    use core::time::Duration;
     use std::{
         io::{Read, Write},
         os::unix::net::UnixListener,
         process::Command,
-        time::Duration,
     };
 
     #[test]

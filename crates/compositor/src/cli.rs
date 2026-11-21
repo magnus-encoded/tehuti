@@ -9,12 +9,14 @@ usage: tehuti <context-directory> [application] [arguments...]
        tehuti --version | -V
        tehuti --check-config [config-directory]
        tehuti --install-skill [path]
+       tehuti output-mode <W>x<H>[@<Hz>] | --restore
        tehuti config share <context> <section>... [--as <name>]
 ";
 
 /// What one run of the binary does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
+    OutputMode(String),
     Help,
     Version,
     /// Check the configuration directory; the rest of the arguments follow the option.
@@ -35,6 +37,8 @@ pub enum Invocation {
 pub enum UsageError {
     #[error("missing context directory")]
     MissingContextDirectory,
+    #[error("usage: tehuti output-mode <W>x<H>[@<Hz>] | --restore")]
+    InvalidOutputMode,
     #[error("unknown option {}", .0.to_string_lossy())]
     UnknownOption(OsString),
     #[error(
@@ -103,6 +107,17 @@ pub fn parse_with(
 ) -> Result<Invocation, UsageError> {
     let mut arguments = arguments.into_iter().peekable();
     let first = arguments.next().ok_or(UsageError::MissingContextDirectory)?;
+    if first == "output-mode" {
+        let value = arguments
+            .next()
+            .and_then(|value| value.into_string().ok())
+            .filter(|value| crate::output_mode::Request::parse(value).is_some())
+            .ok_or(UsageError::InvalidOutputMode)?;
+        if arguments.next().is_some() {
+            return Err(UsageError::InvalidOutputMode);
+        }
+        return Ok(Invocation::OutputMode(value));
+    }
     // `config share` cannot be a context directory with the application `share`.
     if first == "config" && arguments.peek().is_some_and(|word| word == "share") {
         return Ok(Invocation::Config(arguments.collect()));

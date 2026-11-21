@@ -205,3 +205,26 @@ Licensing is decided in [ADR 0004](docs/adr/0004-licensing.md); the texts are in
 - Docs take the licence of the part they describe.
 - Plugins are separate programs and may use any licence.
 - The bundled Liberation fonts keep their own licence, in `crates/compositor/assets/Liberation-LICENSE`.
+
+### Streaming output mode
+
+On a running seat session, use `tehuti output-mode 1920x1080@60` (or
+`1920x1080` without a refresh rate). Tehuti chooses the supported mode with the
+closest dimensions, then the closest refresh rate. Without a refresh rate,
+driver order breaks ties. The command returns an error if the mode cannot be
+applied. Nested sessions do not expose this control socket.
+
+For Sunshine, add this application `prep-cmd`:
+
+```json
+{
+  "do": "tehuti output-mode ${SUNSHINE_CLIENT_WIDTH}x${SUNSHINE_CLIENT_HEIGHT}@${SUNSHINE_CLIENT_FPS}",
+  "undo": "tehuti output-mode --restore"
+}
+```
+
+Run both commands as the session user with the session's `XDG_RUNTIME_DIR`.
+Repeated mode requests retain the first restore point; `--restore` returns to
+that mode and clears it. Restoring without a saved mode succeeds without a
+change. These commands do not write `display-mode`. A new session uses its
+normal startup configuration.
