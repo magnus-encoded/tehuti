@@ -34,7 +34,10 @@ pub struct Saved {
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
     #[error("session file unreadable: {0}")]
-    Io(#[from] io::Error),
+    Io {
+        #[from]
+        source: io::Error,
+    },
     #[error("session file invalid: {0}")]
     Invalid(String),
 }
@@ -98,8 +101,9 @@ impl Saved {
                 saved.version
             )));
         }
-        let plain =
-            |id: &str| !id.is_empty() && !id.starts_with('-') && !id.contains('/') && !id.contains('\0');
+        let plain = |entry: &str| {
+            !entry.is_empty() && !entry.starts_with('-') && !entry.contains('/') && !entry.contains('\0')
+        };
         if saved.windows.iter().any(|window| !plain(&window.app_id)) {
             return Err(LoadError::Invalid("invalid desktop entry id".into()));
         }
@@ -206,16 +210,14 @@ impl Restore {
             self.awaiting = None;
         }
         while let Some(window) = self.pending.pop_front() {
-            let nth = match self.seen.iter_mut().find(|(app_id, _)| *app_id == window.app_id) {
-                Some((_, seen)) => {
+            let nth =
+                if let Some((_, seen)) = self.seen.iter_mut().find(|(app_id, _)| *app_id == window.app_id) {
                     *seen = seen.saturating_add(1);
                     *seen
-                }
-                None => {
+                } else {
                     self.seen.push((window.app_id.clone(), 1));
                     1
-                }
-            };
+                };
             let open_now = count(&window.app_id);
             if open_now >= nth {
                 continue;
