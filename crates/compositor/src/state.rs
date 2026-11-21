@@ -4815,14 +4815,14 @@ mod tests {
 /// unmaximizes, so it reads every tile configure as still maximized instead of
 /// as a restore to fight.
 #[derive(Debug, Default)]
-struct MaximizeRequest(std::sync::atomic::AtomicBool);
+struct MaximizeRequest(core::sync::atomic::AtomicBool);
 
 fn maximize_requested(toplevel: &ToplevelSurface) -> bool {
     smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
         states
             .data_map
             .get::<MaximizeRequest>()
-            .is_some_and(|request| request.0.load(std::sync::atomic::Ordering::Relaxed))
+            .is_some_and(|request| request.0.load(core::sync::atomic::Ordering::Relaxed))
     })
 }
 
@@ -4832,7 +4832,7 @@ fn set_maximize_request(toplevel: &ToplevelSurface, maximized: bool) {
             .data_map
             .insert_if_missing_threadsafe(MaximizeRequest::default);
         if let Some(request) = states.data_map.get::<MaximizeRequest>() {
-            request.0.store(maximized, std::sync::atomic::Ordering::Relaxed);
+            request.0.store(maximized, core::sync::atomic::Ordering::Relaxed);
         }
     });
 }
