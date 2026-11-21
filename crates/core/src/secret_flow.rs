@@ -146,8 +146,8 @@ impl SecretFlow {
         self.notice_until = now.checked_add(NOTICE_LIFETIME);
     }
 
-    fn refuse(&mut self, now: Duration) -> Vec<SecretEffect> {
-        self.raise_notice(now);
+    /// A refusal is only reported: the caller decides whether to show a notice.
+    fn refuse() -> Vec<SecretEffect> {
         vec![SecretEffect::Refused]
     }
 
@@ -159,10 +159,10 @@ impl SecretFlow {
         current: Option<SecretDestination>,
     ) -> Vec<SecretEffect> {
         let Some(destination) = current else {
-            return self.refuse(now);
+            return Self::refuse();
         };
         if self.looking() {
-            return self.refuse(now);
+            return Self::refuse();
         }
         let prompt = ConfirmationPrompt {
             entry: sanitize_label(&reference.entry, ENTRY_LABEL_LIMIT),
@@ -173,7 +173,7 @@ impl SecretFlow {
             .request(reference, destination, now, CONFIRMATION_LIFETIME)
             .is_none()
         {
-            return self.refuse(now);
+            return Self::refuse();
         }
         self.phase = Phase::Confirming {
             arming: Arming::AwaitingFrame,
@@ -530,10 +530,10 @@ mod tests {
     }
 
     #[test]
-    fn refused_request_and_failed_delivery_raise_the_notice() {
+    fn refused_requests_raise_no_notice_but_failed_delivery_does() {
         let mut refused = SecretFlow::new();
         let _effects = refused.step(request(), START, None);
-        assert!(refused.notice_active(START));
+        assert!(!refused.notice_active(START));
         let mut failed = SecretFlow::new();
         feed(&mut failed, SecretInput::DeliveryFailed);
         assert!(failed.notice_active(START));
