@@ -179,13 +179,13 @@ impl Server {
                 "control directory must be private and owned by the session user",
             ));
         }
-        if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-            if !metadata.file_type().is_socket() {
+        if let Ok(socket_metadata) = std::fs::symlink_metadata(&path) {
+            if !socket_metadata.file_type().is_socket() {
                 return Err(io::Error::other("control path is not a socket"));
             }
             match UnixStream::connect(&path) {
                 Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                    std::fs::remove_file(&path)?
+                    std::fs::remove_file(&path)?;
                 }
                 _ => return Err(io::Error::other("another session owns the control socket")),
             }
@@ -228,7 +228,7 @@ impl Server {
                 return false;
             }
             if client.bytes.contains(&b'\n') {
-                let result = std::str::from_utf8(&client.bytes)
+                let result = core::str::from_utf8(&client.bytes)
                     .ok()
                     .and_then(|value| value.strip_suffix('\n'))
                     .and_then(Request::parse)
@@ -248,7 +248,7 @@ impl Drop for Server {
     fn drop(&mut self) {
         let _removed = std::fs::remove_file(&self.path);
         if let Some(directory) = self.path.parent() {
-            let _removed = std::fs::remove_dir(directory);
+            let _directory_removed = std::fs::remove_dir(directory);
         }
     }
 }
