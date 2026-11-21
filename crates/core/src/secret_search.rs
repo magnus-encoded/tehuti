@@ -105,7 +105,10 @@ mod tests {
     #[test]
     fn non_matching_entries_are_left_out() {
         let labels = names(&["bank"]);
-        assert!(rank(&labels, "zebra", &SearchContext::default()).is_empty());
+        assert_eq!(
+            rank(&labels, "zebra", &SearchContext::default()),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
