@@ -133,7 +133,60 @@ mod cli {
     }
 }
 
-#[test]
-fn help_advertises_running_session_output_mode_control() {
-    assert!(tehuti::cli::USAGE.contains("tehuti output-mode <W>x<H>[@<Hz>] | --restore"));
+#[cfg(test)]
+mod output_mode_help {
+    #[test]
+    fn help_advertises_running_session_output_mode_control() {
+        assert!(tehuti::cli::USAGE.contains("tehuti output-mode <W>x<H>[@<Hz>] | --restore"));
+    }
+}
+
+#[cfg(test)]
+mod output_mode_control {
+    use std::{
+        io::{Read, Write},
+        os::unix::net::UnixListener,
+        process::Command,
+        time::Duration,
+    };
+
+    #[test]
+    fn commands_send_the_mode_and_restore_over_the_session_socket() {
+        let runtime = tempfile::tempdir().unwrap();
+        let directory = runtime.path().join("tehuti-control");
+        std::fs::create_dir(&directory).unwrap();
+        let listener = UnixListener::bind(directory.join("output-mode")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        for argument in ["1280x720@60", "--restore"] {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_tehuti"))
+                .args(["output-mode", argument])
+                .env_clear()
+                .env("XDG_RUNTIME_DIR", runtime.path())
+                .spawn()
+                .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let stream = loop {
+                if let Ok((stream, _)) = listener.accept() {
+                    break Some(stream);
+                }
+                if child.try_wait().unwrap().is_some() || std::time::Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            if let Some(mut stream) = stream {
+                stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                let mut bytes = [0; 128];
+                let count = stream.read(&mut bytes).unwrap();
+                assert_eq!(bytes.get(..count).unwrap(), format!("{argument}\n").as_bytes());
+                stream.write_all(b"ok\n").unwrap();
+                drop(stream);
+                assert!(child.wait().unwrap().success());
+            } else {
+                let _killed = child.kill();
+                let _waited = child.wait();
+                panic!("command did not contact the session socket");
+            }
+        }
+    }
 }
