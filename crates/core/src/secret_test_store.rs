@@ -6,10 +6,24 @@ use crate::secret::{SecretProvider, SecretProviderUnavailable, SecretValue};
 
 /// Entries held in memory; can start locked. Values leave it only as
 /// [`SecretValue`].
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct TestSecretStore {
-    entries: Vec<(String, SecretValue)>,
+    entries: Vec<(String, Mint)>,
     locked: bool,
+}
+
+/// Makes a fresh [`SecretValue`] per lookup; the plaintext lives only in the
+/// closure, which has no Debug and zeroizes it on drop.
+type Mint = Box<dyn Fn() -> SecretValue + Send>;
+
+impl core::fmt::Debug for TestSecretStore {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("TestSecretStore")
+            .field("names", &self.entries.iter().map(|(name, _)| name).collect::<Vec<_>>())
+            .field("locked", &self.locked)
+            .finish()
+    }
 }
 
 impl TestSecretStore {
@@ -20,8 +34,9 @@ impl TestSecretStore {
 
     #[must_use]
     pub fn with_entry(mut self, name: &str, value: &str) -> Self {
+        let value = zeroize::Zeroizing::new(value.to_owned());
         self.entries
-            .push((name.to_owned(), SecretValue::new(value.to_owned())));
+            .push((name.to_owned(), Box::new(move || SecretValue::new(String::clone(&value)))));
         self
     }
 
@@ -51,7 +66,7 @@ impl SecretProvider for TestSecretStore {
         self.entries
             .iter()
             .find(|(name, _)| *name == reference.entry)
-            .map(|(_, value)| value.duplicate())
+            .map(|(_, mint)| mint())
             .ok_or(SecretProviderUnavailable)
     }
 
