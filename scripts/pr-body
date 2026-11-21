@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
-# Local copy of the CI pr-body checks that need only the body file: issue reference, 120-word cap, prose rules.
-# Usage: scripts/pr-body <body-file>
+# PR body checks, shared by CI and local use: issue reference, word limit, prose-lint.
+# Usage: scripts/pr-body [--no-issue] <file>   (--no-issue: ADR-only PRs)
 set -uo pipefail
 cd "$(dirname "$0")/.."
-[ $# -eq 1 ] && [ -f "$1" ] || { echo "usage: scripts/pr-body <body-file>"; exit 2; }
-grep -qE '^(Closes|Fixes|Resolves) #[0-9]+' "$1" || { echo "PR body must reference the issue it answers: Closes #N"; exit 1; }
-[ "$(wc -w < "$1")" -le 120 ] || { echo "PR body over 120 words"; exit 1; }
-scripts/prose-lint "$1"
+need_issue=true
+if [ "${1:-}" = --no-issue ]; then need_issue=false; shift; fi
+file=${1:?usage: scripts/pr-body [--no-issue] <file>}
+[ -f "$file" ] || { echo "pr-body: no such file: $file"; exit 2; }
+
+if [ "$need_issue" = true ]; then
+    # #N then whitespace, punctuation (not - or _) or end of line; "#557-fix" fails.
+    n=$(grep -oE '^(Closes|Fixes|Resolves) #[0-9]+([[:space:]]|[.,;:!?)]|$)' "$file" | head -n1 | grep -oE '[0-9]+')
+    [ -n "$n" ] || {
+        echo "PR body must reference the issue it answers: 'Closes #N' followed by space or punctuation"; exit 1; }
+    state=$(gh issue view "$n" --json state --jq .state 2>/dev/null) || {
+        echo "pr-body: issue #$n not found"; exit 1; }
+    [ "$state" = OPEN ] || { echo "pr-body: issue #$n is $state, not open"; exit 1; }
+fi
+[ "$(wc -w < "$file")" -le 120 ] || { echo "PR body over 120 words"; exit 1; }
+scripts/prose-lint "$file"
