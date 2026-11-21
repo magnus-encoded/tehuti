@@ -3530,7 +3530,7 @@ impl Compositor {
                 Self::announce_scale(output, toplevel.wl_surface());
             }
             if configure && let Some(toplevel) = window.toplevel() {
-                Self::configure_layout_window(toplevel, tile, placed.focused, placed.maximized);
+                Self::configure_layout_window(toplevel, tile, placed.focused);
             }
         }
         self.sync_window_focus();
@@ -3612,9 +3612,8 @@ impl Compositor {
         toplevel: &ToplevelSurface,
         tile: &tehuti_core::layout::TileView,
         focused: bool,
-        maximized: bool,
     ) {
-        Self::set_layout_state(toplevel, tile, focused, maximized);
+        Self::set_layout_state(toplevel, tile, focused);
         if toplevel.is_initial_configure_sent() {
             let _serial = toplevel.send_pending_configure();
         }
@@ -3624,21 +3623,14 @@ impl Compositor {
     ///
     /// Every tile that is not fullscreen is tiled on all four edges, so clients
     /// take the size they are given instead of choosing their own.
-    ///
-    /// This is the only writer of the Maximized state, taken from the window
-    /// model, so a client never hears a state the model does not hold. A
-    /// maximize request is answered at the tile size and stays reported until
-    /// the client unmaximizes, so it reads every tile configure as still
-    /// maximized instead of as a restore to fight.
-    fn set_layout_state(
-        toplevel: &ToplevelSurface,
-        tile: &tehuti_core::layout::TileView,
-        focused: bool,
-        maximized: bool,
-    ) {
+    fn set_layout_state(toplevel: &ToplevelSurface, tile: &tehuti_core::layout::TileView, focused: bool) {
         let tiled = !tile.fullscreen_requested;
+        if !tiled {
+            // Fullscreen ends the maximize request for good.
+            set_maximize_request(toplevel, false);
+        }
+        let maximized = tiled && maximize_requested(toplevel);
         toplevel.with_pending_state(|pending| {
-            let maximized = tiled && maximized;
             pending.size = Some(
                 smithay::utils::Size::<f64, smithay::utils::Logical>::from((
                     tile.requested_client.width,
@@ -3653,7 +3645,6 @@ impl Compositor {
                 (xdg_toplevel::State::TiledRight, tiled),
                 (xdg_toplevel::State::TiledTop, tiled),
                 (xdg_toplevel::State::TiledBottom, tiled),
-                (xdg_toplevel::State::Maximized, maximized),
             ] {
                 if enabled {
                     let _changed = pending.states.set(state);
@@ -3661,6 +3652,7 @@ impl Compositor {
                     let _changed = pending.states.unset(state);
                 }
             }
+            write_maximized(pending, maximized);
         });
     }
 
@@ -3676,7 +3668,9 @@ impl Compositor {
     ) {
         let mapped = self.placement.window(surface.wl_surface()).is_some();
         if let Some(maximized) = maximized {
-            self.placement.set_maximized(surface.wl_surface(), maximized);
+            set_maximize_request(surface, maximized);
+            // A window without a tile yet hears it in the configure this triggers.
+            surface.with_pending_state(|pending| write_maximized(pending, maximized));
         }
         if let Some(fullscreen) = fullscreen
             && let Err(error) = self.placement.fullscreen(surface.wl_surface(), fullscreen)
@@ -3693,7 +3687,7 @@ impl Compositor {
             .find(|placed| placed.key == surface.wl_surface())
             && let Some((tile, _)) = &placed.tile
         {
-            Self::set_layout_state(surface, tile, placed.focused, placed.maximized);
+            Self::set_layout_state(surface, tile, placed.focused);
         }
         if surface.has_pending_changes() || Self::awaits_answer(surface) {
             let _serial = surface.send_configure();
@@ -3723,7 +3717,7 @@ impl Compositor {
             .find(|placed| placed.key == root)
             && let Some((tile, _)) = &placed.tile
         {
-            Self::set_layout_state(toplevel, tile, placed.focused, placed.maximized);
+            Self::set_layout_state(toplevel, tile, placed.focused);
             let _serial = toplevel.send_configure();
         }
     }
@@ -4812,4 +4806,40 @@ mod tests {
         compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
         assert!(compositor.take_release_request().is_some());
     }
+}
+
+/// Whether the client asked to be maximized and has not asked to be restored.
+///
+/// Held in the surface's own data, so it dies with the window. A maximize
+/// request is answered at the tile size and stays reported until the client
+/// unmaximizes, so it reads every tile configure as still maximized instead of
+/// as a restore to fight.
+#[derive(Debug, Default)]
+struct MaximizeRequest(std::sync::atomic::AtomicBool);
+
+fn maximize_requested(toplevel: &ToplevelSurface) -> bool {
+    smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<MaximizeRequest>()
+            .is_some_and(|request| request.0.load(std::sync::atomic::Ordering::Relaxed))
+    })
+}
+
+fn set_maximize_request(toplevel: &ToplevelSurface, maximized: bool) {
+    smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+        let _inserted = states.data_map.insert_if_missing_threadsafe(MaximizeRequest::default);
+        if let Some(request) = states.data_map.get::<MaximizeRequest>() {
+            request.0.store(maximized, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
+/// The only writer of the Maximized state clients hear.
+fn write_maximized(pending: &mut smithay::wayland::shell::xdg::ToplevelState, maximized: bool) {
+    let _changed = if maximized {
+        pending.states.set(xdg_toplevel::State::Maximized)
+    } else {
+        pending.states.unset(xdg_toplevel::State::Maximized)
+    };
 }

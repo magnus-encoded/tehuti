@@ -20,8 +20,6 @@ pub(crate) struct Placement<Key, Window> {
     layout: Layout,
     entries: Vec<Entry<Key, Window>>,
     early_fullscreen: Vec<Key>,
-    /// Windows whose client asked to be maximized; the one source of that state.
-    maximized: Vec<Key>,
     trace: tehuti_core::layout_trace::LayoutTrace,
     next_window: u64,
     windows: tehuti_core::windows::Windows<Key>,
@@ -37,8 +35,6 @@ pub(crate) struct Placed<'a, Key, Window> {
     pub window: &'a Window,
     pub identity: u64,
     pub focused: bool,
-    /// The client asked to be maximized and has not asked to be restored.
-    pub maximized: bool,
     pub helper: bool,
     pub helper_position: Option<(f64, f64)>,
     pub tile: Option<(TileView, f64)>,
@@ -50,7 +46,6 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
             layout: Layout::new(LayoutConfig::default()),
             entries: Vec::new(),
             early_fullscreen: Vec::new(),
-            maximized: Vec::new(),
             trace: tehuti_core::layout_trace::LayoutTrace::default(),
             next_window: 0,
             windows: tehuti_core::windows::Windows::new(),
@@ -110,7 +105,6 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
 
     pub(crate) fn unmap(&mut self, key: &Key) -> Option<Window> {
         self.early_fullscreen.retain(|candidate| candidate != key);
-        self.maximized.retain(|candidate| candidate != key);
         let index = self.entries.iter().position(|entry| &entry.key == key)?;
         let entry = self.entries.remove(index);
         let _effect = self.windows.step(tehuti_core::windows::Input::Unmap(entry.key));
@@ -118,14 +112,6 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
             tracing::warn!(%error, "window removal failed");
         }
         Some(entry.window)
-    }
-
-    /// Records whether the client asks to be maximized, mapped or not.
-    pub(crate) fn set_maximized(&mut self, key: &Key, maximized: bool) {
-        self.maximized.retain(|candidate| candidate != key);
-        if maximized {
-            self.maximized.push(key.clone());
-        }
     }
 
     pub(crate) fn fullscreen(&mut self, key: &Key, fullscreen: bool) -> Result<(), LayoutError> {
@@ -241,7 +227,6 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
                     window: &entry.window,
                     identity: entry.identity.0,
                     focused: placement.is_some_and(|placement| placement.focused),
-                    maximized: self.maximized.contains(&entry.key),
                     helper: placement.is_some_and(|placement| placement.helper),
                     helper_position,
                     tile,
