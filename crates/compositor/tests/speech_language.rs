@@ -48,7 +48,7 @@ for line in sys.stdin:
     impl Harness {
         fn new() -> Self {
             Self::with_plugin(
-                serde_json::json!({
+                &serde_json::json!({
                     "executable":"plugin.py", "app_ids":["chatty"], "events":["focus"],
                     "start":"always", "permissions":[]
                 }),
@@ -56,14 +56,14 @@ for line in sys.stdin:
             )
         }
 
-        fn with_plugin(manifest: serde_json::Value, source: &str) -> Self {
+        fn with_plugin(manifest: &serde_json::Value, source: &str) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let executable = directory.path().join("plugin.py");
             std::fs::write(&executable, source).unwrap();
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::write(
                 directory.path().join("plugin.json"),
-                serde_json::to_vec(&manifest).unwrap(),
+                serde_json::to_vec(manifest).unwrap(),
             )
             .unwrap();
             let display: Display<Compositor> = Display::new().unwrap();

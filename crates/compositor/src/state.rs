@@ -1691,7 +1691,7 @@ impl Compositor {
         let verbs = self
             .plugins
             .as_ref()
-            .map_or_else(Vec::new, |plugins| plugins.speech_verbs());
+            .map_or_else(Vec::new, crate::plugins::Plugins::speech_verbs);
         self.speech_process.as_mut().is_none_or(|process| {
             process
                 .send_with_verbs(command, &prompt, language.as_deref(), &verbs)

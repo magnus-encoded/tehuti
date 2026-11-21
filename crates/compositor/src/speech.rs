@@ -184,7 +184,7 @@ impl SpeechProcess {
                     fields.extend([("language".to_owned(), language.into())]);
                 }
                 if !verbs.is_empty() {
-                    fields.insert("verbs".into(), serde_json::to_value(verbs)?);
+                    fields.extend([("verbs".into(), serde_json::to_value(verbs)?)]);
                 }
                 serde_json::Value::Object(fields)
             }
