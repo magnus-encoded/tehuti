@@ -164,6 +164,8 @@ mod client_state_requests {
         unfullscreen: Option<Vec<u32>>,
         unfullscreen_size: Option<(i32, i32)>,
         windowed_configures: usize,
+        maximized_fullscreen: Option<Vec<u32>>,
+        maximized_unfullscreen: Option<Vec<u32>>,
     }
 
     /// Roundtrips until the compositor goes quiet, drawing every acknowledged configure.
@@ -277,6 +279,14 @@ mod client_state_requests {
         settle(queue, app, shm, surface);
         report.unfullscreen = app.configures.last().map(|configure| configure.2.clone());
         report.unfullscreen_size = app.configures.last().map(|configure| (configure.0, configure.1));
+        toplevel.set_maximized();
+        settle(queue, app, shm, surface);
+        toplevel.set_fullscreen(None);
+        settle(queue, app, shm, surface);
+        report.maximized_fullscreen = app.configures.last().map(|configure| configure.2.clone());
+        toplevel.unset_fullscreen();
+        settle(queue, app, shm, surface);
+        report.maximized_unfullscreen = app.configures.last().map(|configure| configure.2.clone());
     }
 
     fn pump(display: &mut Display<Compositor>, compositor: &mut Compositor, duration: Duration) {
@@ -368,6 +378,22 @@ mod client_state_requests {
             report.after_unmaximize, 1,
             "unmaximize gets exactly one configure"
         );
+        let maximized_state = u32::from(xdg_toplevel::State::Maximized);
+        assert!(
+            tiled.iter().all(|state| states.contains(state)),
+            "a maximized tile is still tiled: {report:?}"
+        );
+        let held = report.maximized_fullscreen.clone().unwrap();
+        assert!(
+            !held.contains(&maximized_state),
+            "fullscreen is not maximized: {held:?}"
+        );
+        let left = report.maximized_unfullscreen.clone().unwrap();
+        assert!(
+            !left.contains(&maximized_state),
+            "leaving fullscreen does not report Maximized again: {left:?}"
+        );
+        assert!(left.contains(&tiled[0]), "{left:?}");
         let fullscreen = report.fullscreen.unwrap();
         assert!(fullscreen.contains(&fullscreen_state), "{fullscreen:?}");
         assert!(!fullscreen.contains(&tiled[0]), "{fullscreen:?}");

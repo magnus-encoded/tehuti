@@ -3625,11 +3625,12 @@ impl Compositor {
     /// take the size they are given instead of choosing their own.
     fn set_layout_state(toplevel: &ToplevelSurface, tile: &tehuti_core::layout::TileView, focused: bool) {
         let tiled = !tile.fullscreen_requested;
+        if !tiled {
+            // Fullscreen ends the maximize request for good.
+            set_maximize_request(toplevel, false);
+        }
+        let maximized = tiled && maximize_requested(toplevel);
         toplevel.with_pending_state(|pending| {
-            // A maximize request is answered at the tile size and stays reported
-            // until the client unmaximizes, so it reads every tile configure as
-            // still maximized instead of as a restore to fight.
-            let maximized = tiled && pending.states.contains(xdg_toplevel::State::Maximized);
             pending.size = Some(
                 smithay::utils::Size::<f64, smithay::utils::Logical>::from((
                     tile.requested_client.width,
@@ -3644,7 +3645,6 @@ impl Compositor {
                 (xdg_toplevel::State::TiledRight, tiled),
                 (xdg_toplevel::State::TiledTop, tiled),
                 (xdg_toplevel::State::TiledBottom, tiled),
-                (xdg_toplevel::State::Maximized, maximized),
             ] {
                 if enabled {
                     let _changed = pending.states.set(state);
@@ -3652,6 +3652,7 @@ impl Compositor {
                     let _changed = pending.states.unset(state);
                 }
             }
+            write_maximized(pending, maximized);
         });
     }
 
@@ -3667,13 +3668,9 @@ impl Compositor {
     ) {
         let mapped = self.placement.window(surface.wl_surface()).is_some();
         if let Some(maximized) = maximized {
-            surface.with_pending_state(|pending| {
-                let _changed = if maximized {
-                    pending.states.set(xdg_toplevel::State::Maximized)
-                } else {
-                    pending.states.unset(xdg_toplevel::State::Maximized)
-                };
-            });
+            set_maximize_request(surface, maximized);
+            // A window without a tile yet hears it in the configure this triggers.
+            surface.with_pending_state(|pending| write_maximized(pending, maximized));
         }
         if let Some(fullscreen) = fullscreen
             && let Err(error) = self.placement.fullscreen(surface.wl_surface(), fullscreen)
@@ -4809,4 +4806,42 @@ mod tests {
         compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
         assert!(compositor.take_release_request().is_some());
     }
+}
+
+/// Whether the client asked to be maximized and has not asked to be restored.
+///
+/// Held in the surface's own data, so it dies with the window. A maximize
+/// request is answered at the tile size and stays reported until the client
+/// unmaximizes, so it reads every tile configure as still maximized instead of
+/// as a restore to fight.
+#[derive(Debug, Default)]
+struct MaximizeRequest(core::sync::atomic::AtomicBool);
+
+fn maximize_requested(toplevel: &ToplevelSurface) -> bool {
+    smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<MaximizeRequest>()
+            .is_some_and(|request| request.0.load(core::sync::atomic::Ordering::Relaxed))
+    })
+}
+
+fn set_maximize_request(toplevel: &ToplevelSurface, maximized: bool) {
+    smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+        let _inserted = states
+            .data_map
+            .insert_if_missing_threadsafe(MaximizeRequest::default);
+        if let Some(request) = states.data_map.get::<MaximizeRequest>() {
+            request.0.store(maximized, core::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
+/// The only writer of the Maximized state clients hear.
+fn write_maximized(pending: &mut smithay::wayland::shell::xdg::ToplevelState, maximized: bool) {
+    let _changed = if maximized {
+        pending.states.set(xdg_toplevel::State::Maximized)
+    } else {
+        pending.states.unset(xdg_toplevel::State::Maximized)
+    };
 }
