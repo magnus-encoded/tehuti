@@ -31,16 +31,22 @@ pub struct Saved {
     windows: Vec<SavedWindow>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum LoadError {
-    #[error("session file unreadable: {source}")]
-    Io {
-        #[from]
-        source: io::Error,
-    },
-    #[error("session file invalid: {0}")]
+    Io(io::Error),
     Invalid(String),
 }
+
+impl core::fmt::Display for LoadError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "session file unreadable: {error}"),
+            Self::Invalid(reason) => write!(formatter, "session file invalid: {reason}"),
+        }
+    }
+}
+
+impl core::error::Error for LoadError {}
 
 impl Saved {
     /// The restorable windows of the first output, in layout order. Windows whose app id is
@@ -160,7 +166,7 @@ impl Store {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(LoadError::Io(error)),
         };
         if let Err(error) = std::fs::remove_file(&self.path) {
             tracing::warn!(%error, "session file not removed");
