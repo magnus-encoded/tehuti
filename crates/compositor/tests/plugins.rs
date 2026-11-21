@@ -954,19 +954,14 @@ for line in sys.stdin:
         configuration.app_ids.clear();
         configuration.events = vec![Subscription::Speech];
         configuration.permissions.clear();
-        let mut harness = Harness::with_script(
-            &configuration,
-            include_str!("fixtures/plugins/chief-notice.py"),
-        );
+        let mut harness =
+            Harness::with_script(&configuration, include_str!("fixtures/plugins/chief-notice.py"));
         harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1);
         settle(&mut harness);
         assert!(has_pending_chip(&harness));
         harness.send([speech("ada review this")]);
         harness.pump_until(|harness| harness.compositor.visible_notice().is_some());
-        assert_eq!(
-            harness.compositor.visible_notice().unwrap().1,
-            "Review complete"
-        );
+        assert_eq!(harness.compositor.visible_notice().unwrap().1, "Review complete");
         settle(&mut harness);
         assert!(!has_pending_chip(&harness));
     }
