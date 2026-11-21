@@ -33,14 +33,14 @@ pub struct Saved {
 
 #[derive(Debug)]
 pub enum LoadError {
-    Io(io::Error),
+    Unreadable(io::Error),
     Invalid(String),
 }
 
 impl core::fmt::Display for LoadError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Io(error) => write!(formatter, "session file unreadable: {error}"),
+            Self::Unreadable(error) => write!(formatter, "session file unreadable: {error}"),
             Self::Invalid(reason) => write!(formatter, "session file invalid: {reason}"),
         }
     }
@@ -166,7 +166,7 @@ impl Store {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(LoadError::Io(error)),
+            Err(error) => return Err(LoadError::Unreadable(error)),
         };
         if let Err(error) = std::fs::remove_file(&self.path) {
             tracing::warn!(%error, "session file not removed");
