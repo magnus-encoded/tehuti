@@ -6,6 +6,47 @@ mod contract {
     use tehuti_protocol::{Message, parse_message};
 
     #[test]
+    fn pinned_verbs_reject_unsupported_locales_and_invalid_hints() {
+        for entry in [
+            serde_json::json!({"word":"orion","locale":"xx"}),
+            serde_json::json!({"word":"orion","locale":"en-US"}),
+            serde_json::json!({"word":"orion","locale":"EN"}),
+            serde_json::json!({"word":"orion","locale":"en","hints":vec!["chat";17]}),
+            serde_json::json!({"word":"orion","locale":"en","hints":["bad\0hint"]}),
+            serde_json::json!({"word":"two words","locale":"en"}),
+            serde_json::json!({"word":"orion","locale":"en","extra":true}),
+            serde_json::json!({"word":"orion","hints":[]}),
+        ] {
+            let notice = serde_json::json!({"jsonrpc":"2.0","method":"verbs","params":{"verbs":[entry]}});
+            assert!(
+                parse_message(&serde_json::to_vec(&notice).unwrap()).is_err(),
+                "{entry}"
+            );
+            let manifest = serde_json::json!({"kind":"verb","verbs":[entry],"executable":"./verb","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]});
+            assert!(
+                tehuti_protocol::parse_manifest(&serde_json::to_vec(&manifest).unwrap()).is_err(),
+                "{entry}"
+            );
+        }
+        let notice = serde_json::json!({"jsonrpc":"2.0","method":"verbs","params":{"verbs":[{"word":"orion","locale":"en","hints":vec!["chat";16]}]}});
+        assert!(parse_message(&serde_json::to_vec(&notice).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn pinned_verbs_round_trip_in_notices_requests_and_manifests() {
+        for value in [
+            serde_json::json!({"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada",{"word":"orion","locale":"en","hints":["chat","channel"]}]}}),
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"verb","params":{"verb":"orion","locale":"en","text":"chat with say"}}),
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"verb","params":{"verb":"ada","text":"hello"}}),
+        ] {
+            let parsed = parse_message(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+        }
+        let manifest = br#"{"kind":"verb","verbs":["ada",{"word":"orion","locale":"en","hints":["chat"]}],"executable":"./verb","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]}"#;
+        assert!(tehuti_protocol::parse_manifest(manifest).is_ok());
+    }
+
+    #[test]
     fn every_transcript_line_is_a_valid_protocol_message() {
         let guide = include_str!("../../../docs/protocol/README.md");
         let mut lines = 0;

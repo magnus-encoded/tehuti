@@ -388,12 +388,25 @@ impl Plugins {
         self.routed_verb.is_some() || self.entries.iter().any(|entry| self.matches(entry, event))
     }
 
+    pub(crate) fn speech_verbs(&self) -> Vec<tehuti_protocol::Verb> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.manifest.kind == PluginKind::Verb)
+            .filter_map(|entry| entry.session.as_ref())
+            .map(|session| session.borrow())
+            .filter(|session| {
+                session.status == Status::Ready && session.events.contains(&Subscription::Speech)
+            })
+            .flat_map(|session| session.verbs.clone())
+            .collect()
+    }
+
     /// The ready verb plugin whose verb begins this speech, checked before application plugins.
     fn verb_route(&self, event: &Event) -> Option<tehuti_core::verbs::VerbMatch> {
         let Event::Speech { text } = event else {
             return None;
         };
-        let owners: Vec<(usize, Vec<String>)> = self
+        let owners: Vec<(usize, Vec<tehuti_protocol::Verb>)> = self
             .entries
             .iter()
             .enumerate()
@@ -423,6 +436,7 @@ impl Plugins {
             jsonrpc: RpcVersion::Two,
             request_id: Some(request_id),
             method: Method::Verb {
+                locale: matched.locale,
                 verb: matched.verb,
                 text: matched.text,
             },
@@ -1193,7 +1207,7 @@ mod tests {
             let mut plugins = plugins(&succeed, &starts);
             let first = &mut plugins.entries[0];
             first.manifest.kind = PluginKind::Verb;
-            first.manifest.verbs = verbs.iter().map(|verb| (*verb).to_owned()).collect();
+            first.manifest.verbs = verbs.iter().map(|verb| (*verb).into()).collect();
             let _exited = plugins.supervise_at(Instant::now());
             for entry in &plugins.entries {
                 entry.session.as_ref().unwrap().borrow_mut().events = vec![Subscription::Speech];
@@ -1205,6 +1219,28 @@ mod tests {
             Event::Speech {
                 text: tehuti_protocol::Text::new(text.into()).unwrap(),
             }
+        }
+
+        #[test]
+        fn a_pinned_route_sends_its_locale_and_stripped_text() {
+            let mut plugins = verb_plugins(&[]);
+            let notice = tehuti_protocol::parse_message(br#"{"jsonrpc":"2.0","method":"verbs","params":{"verbs":[{"word":"orion","locale":"en","hints":["chat"]}]}}"#).unwrap();
+            let session = plugins.entries[0].session.clone().unwrap();
+            let _deliveries = session.borrow_mut().message(notice, Instant::now());
+            let heard = speech("Orion, chat with say");
+            assert!(plugins.active(&heard));
+            session.borrow_mut().set_verbs(vec!["ada".into()], Instant::now());
+            assert!(plugins.dispatch(&heard, true).is_some());
+            let wire = String::from_utf8(session.borrow().output.iter().copied().collect()).unwrap();
+            let request: serde_json::Value = wire
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|value| value["method"] == "verb")
+                .unwrap();
+            assert_eq!(
+                request["params"],
+                serde_json::json!({"verb":"orion","locale":"en","text":"chat with say"})
+            );
         }
 
         #[test]

@@ -1688,9 +1688,13 @@ impl Compositor {
             self.speech_context.as_deref(),
             &self.speech_title,
         );
+        let verbs = self
+            .plugins
+            .as_ref()
+            .map_or_else(Vec::new, crate::plugins::Plugins::speech_verbs);
         self.speech_process.as_mut().is_none_or(|process| {
             process
-                .send_with_language(command, &prompt, language.as_deref())
+                .send_with_verbs(command, &prompt, language.as_deref(), &verbs)
                 .inspect_err(|error| tracing::warn!(%error, "speech command failed"))
                 .is_ok()
         })

@@ -54,20 +54,79 @@ pub const MAX_VERBS: usize = 16;
 /// The most characters one verb may have.
 pub const MAX_VERB_CHARS: usize = 32;
 
+/// A verb in the session language, or one decoded in a pinned language.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Verb {
+    Word(String),
+    Pinned(PinnedVerb),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedVerb {
+    pub word: String,
+    pub locale: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<String>,
+}
+
+impl AsRef<str> for Verb {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Word(word) => word,
+            Self::Pinned(verb) => &verb.word,
+        }
+    }
+}
+
+impl From<String> for Verb {
+    fn from(word: String) -> Self {
+        Self::Word(word)
+    }
+}
+
+impl From<&str> for Verb {
+    fn from(word: &str) -> Self {
+        Self::Word(word.into())
+    }
+}
+
+/// Primary language tags supported by the local Whisper backend.
+pub const VERB_LOCALES: &str = "af am ar as az ba be bg bn bo br bs ca cs cy da de el en es et eu fa fi fo fr gl gu ha haw he hi hr ht hu hy id is it ja jw ka kk km kn ko la lb ln lo lt lv mg mi mk ml mn mr ms mt my ne nl nn no oc pa pl ps pt ro ru sa sd si sk sl sn so sq sr su sv sw ta te tg th tk tl tr tt uk ur uz vi yi yo yue zh";
+
+#[must_use]
+pub fn valid_verb_locale(locale: &str) -> bool {
+    VERB_LOCALES
+        .split_whitespace()
+        .any(|supported| supported == locale)
+}
+
 /// Checks a verb list: at most [`MAX_VERBS`] single words of letters.
 ///
 /// # Errors
 /// Too many verbs, or a verb that is empty, too long or not one word of letters.
-pub fn validate_verbs(verbs: &[String]) -> Result<(), String> {
+pub fn validate_verbs(verbs: &[Verb]) -> Result<(), String> {
     if verbs.len() > MAX_VERBS {
         return Err(format!("at most {MAX_VERBS} verbs are accepted"));
     }
     if verbs.iter().any(|verb| {
+        let verb = verb.as_ref();
         verb.is_empty() || verb.chars().count() > MAX_VERB_CHARS || !verb.chars().all(char::is_alphabetic)
     }) {
         return Err(format!(
             "each verb is one word of letters, at most {MAX_VERB_CHARS} characters"
         ));
+    }
+    for verb in verbs {
+        if let Verb::Pinned(verb) = verb {
+            if !valid_verb_locale(&verb.locale) {
+                return Err("verb locale must be a supported primary language tag".into());
+            }
+            if verb.hints.len() > 16 || verb.hints.iter().any(|hint| hint.contains('\0')) {
+                return Err("a verb accepts at most 16 hints without NUL".into());
+            }
+        }
     }
     Ok(())
 }
@@ -79,7 +138,7 @@ pub struct Manifest {
     pub kind: PluginKind,
     /// The verbs a verb plugin starts with; it may replace them at runtime.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub verbs: Vec<String>,
+    pub verbs: Vec<Verb>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub adjusters: Vec<crate::Adjuster>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -194,11 +253,13 @@ pub enum Method {
     /// Speech that began with one of the plugin's verbs, without that verb.
     Verb {
         verb: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locale: Option<String>,
         text: crate::Text,
     },
     /// Replaces the sending verb plugin's verbs.
     Verbs {
-        verbs: Vec<String>,
+        verbs: Vec<Verb>,
     },
     /// Replaces the sending plugin's speech hotwords.
     #[serde(rename = "speech.hints")]
@@ -263,6 +324,9 @@ pub struct PadOverride {
 
 fn validate_notice(method: &Method) -> Result<(), String> {
     match method {
+        Method::Verb {
+            locale: Some(locale), ..
+        } if !valid_verb_locale(locale) => Err("verb locale must be a supported primary language tag".into()),
         Method::PadOverrides { overrides } => validate_pad_overrides(overrides),
         Method::Verbs { verbs } => validate_verbs(verbs),
         Method::InvokeWords { words } if words.len() > MAX_INVOKE_WORDS => {
