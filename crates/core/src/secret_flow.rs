@@ -8,7 +8,7 @@ use core::time::Duration;
 
 use tehuti_protocol::{ButtonState, SecretReference};
 
-use crate::secret::{AuthorizedSecretLookup, SecretConfirmationGate, SecretDestination};
+use crate::secret::{AuthorizedSecretLookup, SecretDestination};
 
 /// How long a confirmation request stays answerable.
 pub const CONFIRMATION_LIFETIME: Duration = Duration::from_secs(20);
@@ -40,13 +40,27 @@ pub struct ConfirmationPrompt {
     pub target: String,
 }
 
+/// One unanswered request: the only record of it, so expiry and the
+/// destination are checked on this value and nowhere else.
+#[derive(Debug)]
+struct Confirming {
+    reference: SecretReference,
+    destination: SecretDestination,
+    expires_at: Duration,
+    arming: Arming,
+    prompt: ConfirmationPrompt,
+}
+
+impl Confirming {
+    fn answerable(&self, now: Duration, current: Option<SecretDestination>) -> bool {
+        self.expires_at > now && current == Some(self.destination)
+    }
+}
+
 #[derive(Debug)]
 enum Phase {
     Idle,
-    Confirming {
-        arming: Arming,
-        prompt: ConfirmationPrompt,
-    },
+    Confirming(Confirming),
     /// Confirmed; the caller is looking the value up for this destination.
     Looking {
         destination: SecretDestination,
@@ -63,9 +77,9 @@ pub enum SecretInput {
     },
     /// Keyboard focus moved: any unanswered confirmation is cancelled.
     FocusChanged,
-    /// The confirmation button changed, seen while a confirmation may be shown.
+    /// The confirmation button was pressed or released.
     Button(ButtonState),
-    /// The confirmation button changed; tracked even with nothing shown.
+    /// Whether the confirmation button is down; the only input that sets it.
     ButtonHeld(bool),
     /// A frame carrying the prompt reached the screen.
     FramePresented,
@@ -91,7 +105,6 @@ pub enum SecretEffect {
 /// Confirmation state for one session.
 #[derive(Debug)]
 pub struct SecretFlow {
-    gate: SecretConfirmationGate,
     phase: Phase,
     button_held: bool,
     notice_until: Option<Duration>,
@@ -101,7 +114,6 @@ impl SecretFlow {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            gate: SecretConfirmationGate::new(),
             phase: Phase::Idle,
             button_held: false,
             notice_until: None,
@@ -119,8 +131,7 @@ impl SecretFlow {
         match input {
             SecretInput::Request { reference, target } => self.request(reference, &target, now, current),
             SecretInput::FocusChanged => {
-                self.gate.cancel();
-                if matches!(self.phase, Phase::Confirming { .. }) {
+                if matches!(self.phase, Phase::Confirming(_)) {
                     self.phase = Phase::Idle;
                 }
                 Vec::new()
@@ -164,31 +175,29 @@ impl SecretFlow {
         if self.looking() {
             return Self::refuse();
         }
+        let Some(expires_at) = now.checked_add(CONFIRMATION_LIFETIME) else {
+            return Self::refuse();
+        };
         let prompt = ConfirmationPrompt {
             entry: sanitize_label(&reference.entry, ENTRY_LABEL_LIMIT),
             target: sanitize_label(target, TARGET_LABEL_LIMIT),
         };
-        if self
-            .gate
-            .request(reference, destination, now, CONFIRMATION_LIFETIME)
-            .is_none()
-        {
-            return Self::refuse();
-        }
-        self.phase = Phase::Confirming {
+        self.phase = Phase::Confirming(Confirming {
+            reference,
+            destination,
+            expires_at,
             arming: Arming::AwaitingFrame,
             prompt,
-        };
+        });
         Vec::new()
     }
 
     fn frame_presented(&mut self, now: Duration, current: Option<SecretDestination>) {
-        if self.prompt(now, current).is_none() {
-            return;
-        }
         let held = self.button_held;
-        if let Phase::Confirming { arming, .. } = &mut self.phase {
-            *arming = if held {
+        if let Phase::Confirming(confirming) = &mut self.phase
+            && confirming.answerable(now, current)
+        {
+            confirming.arming = if held {
                 Arming::AwaitingRelease
             } else {
                 Arming::Armed
@@ -202,47 +211,32 @@ impl SecretFlow {
         now: Duration,
         current: Option<SecretDestination>,
     ) -> Vec<SecretEffect> {
-        let Some(destination) = current else {
+        let Phase::Confirming(confirming) = &mut self.phase else {
             return Vec::new();
         };
-        if self.prompt(now, current).is_none() {
+        if !confirming.answerable(now, current) {
             return Vec::new();
         }
-        let Phase::Confirming { arming, .. } = &mut self.phase else {
-            return Vec::new();
-        };
-        match (state, *arming) {
-            (ButtonState::Released, current_arming) => {
-                self.button_held = false;
-                if current_arming == Arming::AwaitingRelease {
-                    *arming = Arming::Armed;
-                }
-            }
-            (ButtonState::Pressed, Arming::Armed) => {
-                self.button_held = true;
-                return self.confirm(now, destination);
-            }
-            (ButtonState::Pressed, _) => self.button_held = true,
+        match (state, confirming.arming) {
+            (ButtonState::Released, Arming::AwaitingRelease) => confirming.arming = Arming::Armed,
+            (ButtonState::Pressed, Arming::Armed) => return self.confirm(),
+            _ => {}
         }
         vec![SecretEffect::ConsumeButton]
     }
 
-    fn confirm(&mut self, now: Duration, destination: SecretDestination) -> Vec<SecretEffect> {
-        let confirmation = self
-            .gate
-            .pending(now, destination)
-            .map(crate::secret::PendingSecretDelivery::confirmation_id);
-        let authorization =
-            confirmation.and_then(|pending_id| self.gate.confirm(pending_id, now, destination));
-        let Some(authorization) = authorization else {
-            self.phase = Phase::Idle;
-            return vec![SecretEffect::ConsumeButton];
+    /// Leaves `Confirming` for `Looking`; only reached from an armed, answerable request.
+    fn confirm(&mut self) -> Vec<SecretEffect> {
+        let Phase::Confirming(confirming) = core::mem::replace(&mut self.phase, Phase::Idle) else {
+            return Vec::new();
         };
-        self.phase = Phase::Looking {
-            destination: authorization.destination,
-        };
+        let destination = confirming.destination;
+        self.phase = Phase::Looking { destination };
         vec![
-            SecretEffect::StartLookup(authorization),
+            SecretEffect::StartLookup(AuthorizedSecretLookup {
+                reference: confirming.reference,
+                destination,
+            }),
             SecretEffect::ConsumeButton,
         ]
     }
@@ -271,11 +265,10 @@ impl SecretFlow {
     /// The overlay text while a confirmation is answerable.
     #[must_use]
     pub fn prompt(&self, now: Duration, current: Option<SecretDestination>) -> Option<&ConfirmationPrompt> {
-        let Phase::Confirming { prompt, .. } = &self.phase else {
+        let Phase::Confirming(confirming) = &self.phase else {
             return None;
         };
-        let _pending = self.gate.pending(now, current?)?;
-        Some(prompt)
+        confirming.answerable(now, current).then_some(&confirming.prompt)
     }
 
     /// Whether the "delivery unavailable" notice is showing.
@@ -338,6 +331,8 @@ mod tests {
     const START: Duration = Duration::from_secs(100);
 
     const NONE: [SecretEffect; 0] = [];
+    const PRESS: SecretInput = SecretInput::Button(ButtonState::Pressed);
+    const RELEASE: SecretInput = SecretInput::Button(ButtonState::Released);
 
     fn request() -> SecretInput {
         SecretInput::Request {
@@ -346,7 +341,16 @@ mod tests {
         }
     }
 
+    /// Steps like the compositor does: a button input is preceded by the
+    /// held-state input, the only one that sets it.
     fn step(flow: &mut SecretFlow, input: SecretInput) -> Vec<SecretEffect> {
+        if let SecretInput::Button(state) = &input {
+            let _held = flow.step(
+                SecretInput::ButtonHeld(*state == ButtonState::Pressed),
+                START,
+                Some(DEST),
+            );
+        }
         flow.step(input, START, Some(DEST))
     }
 
@@ -370,7 +374,7 @@ mod tests {
     #[test]
     fn press_after_presented_frame_starts_the_lookup() {
         let mut flow = armed_flow();
-        let effects = step(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        let effects = step(&mut flow, PRESS);
         assert!(started(&effects));
         assert!(effects.contains(&SecretEffect::ConsumeButton));
         assert!(flow.looking());
@@ -381,14 +385,11 @@ mod tests {
     fn press_before_the_frame_is_presented_does_not_confirm() {
         let mut flow = SecretFlow::new();
         feed(&mut flow, request());
-        let effects = step(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        let effects = step(&mut flow, PRESS);
         assert!(!started(&effects));
         assert_eq!(effects, [SecretEffect::ConsumeButton]);
         feed(&mut flow, SecretInput::FramePresented);
-        assert!(!started(&step(
-            &mut flow,
-            SecretInput::Button(ButtonState::Pressed)
-        )));
+        assert!(!started(&step(&mut flow, PRESS)));
     }
 
     #[test]
@@ -397,15 +398,9 @@ mod tests {
         feed(&mut flow, SecretInput::ButtonHeld(true));
         feed(&mut flow, request());
         feed(&mut flow, SecretInput::FramePresented);
-        assert!(!started(&step(
-            &mut flow,
-            SecretInput::Button(ButtonState::Pressed)
-        )));
-        feed(&mut flow, SecretInput::Button(ButtonState::Released));
-        assert!(started(&step(
-            &mut flow,
-            SecretInput::Button(ButtonState::Pressed)
-        )));
+        assert!(!started(&step(&mut flow, PRESS)));
+        feed(&mut flow, RELEASE);
+        assert!(started(&step(&mut flow, PRESS)));
     }
 
     #[test]
@@ -413,39 +408,40 @@ mod tests {
         let mut flow = SecretFlow::new();
         feed(&mut flow, SecretInput::ButtonHeld(true));
         feed(&mut flow, request());
-        feed(&mut flow, SecretInput::Button(ButtonState::Released));
+        feed(&mut flow, RELEASE);
         feed(&mut flow, SecretInput::FramePresented);
-        assert!(started(&step(
-            &mut flow,
-            SecretInput::Button(ButtonState::Pressed)
-        )));
+        assert!(started(&step(&mut flow, PRESS)));
     }
 
     #[test]
     fn a_confirmation_confirms_once() {
         let mut flow = armed_flow();
-        assert!(started(&step(
-            &mut flow,
-            SecretInput::Button(ButtonState::Pressed)
-        )));
-        feed(&mut flow, SecretInput::Button(ButtonState::Released));
-        assert!(!started(&step(
-            &mut flow,
-            SecretInput::Button(ButtonState::Pressed)
-        )));
+        assert!(started(&step(&mut flow, PRESS)));
+        feed(&mut flow, RELEASE);
+        assert!(!started(&step(&mut flow, PRESS)));
+    }
+
+    #[test]
+    fn a_request_after_an_expired_one_starts_unarmed() {
+        let mut flow = armed_flow();
+        let late = START.saturating_add(CONFIRMATION_LIFETIME);
+        let _effects = flow.step(request(), late, Some(DEST));
+        let effects = flow.step(PRESS, late, Some(DEST));
+        assert!(!started(&effects));
+        assert!(flow.prompt(late, Some(DEST)).is_some());
     }
 
     #[test]
     fn buttons_pass_through_when_nothing_is_shown() {
         let mut flow = SecretFlow::new();
-        assert_eq!(step(&mut flow, SecretInput::Button(ButtonState::Pressed)), NONE);
+        assert_eq!(step(&mut flow, PRESS), NONE);
     }
 
     #[test]
     fn focus_change_cancels_the_confirmation() {
         let mut flow = armed_flow();
         feed(&mut flow, SecretInput::FocusChanged);
-        let effects = flow.step(SecretInput::Button(ButtonState::Pressed), START, Some(OTHER));
+        let effects = flow.step(PRESS, START, Some(OTHER));
         assert_eq!(effects, NONE);
         assert!(flow.prompt(START, Some(OTHER)).is_none());
     }
@@ -453,9 +449,9 @@ mod tests {
     #[test]
     fn a_press_from_another_destination_does_not_confirm() {
         let mut flow = armed_flow();
-        let effects = flow.step(SecretInput::Button(ButtonState::Pressed), START, Some(OTHER));
+        let effects = flow.step(PRESS, START, Some(OTHER));
         assert!(!started(&effects));
-        let unfocused = flow.step(SecretInput::Button(ButtonState::Pressed), START, None);
+        let unfocused = flow.step(PRESS, START, None);
         assert_eq!(unfocused, NONE);
     }
 
@@ -464,7 +460,7 @@ mod tests {
         let mut flow = armed_flow();
         let late = START.saturating_add(CONFIRMATION_LIFETIME);
         assert!(flow.prompt(late, Some(DEST)).is_none());
-        let effects = flow.step(SecretInput::Button(ButtonState::Pressed), late, Some(DEST));
+        let effects = flow.step(PRESS, late, Some(DEST));
         assert!(!started(&effects));
     }
 
@@ -493,7 +489,7 @@ mod tests {
     #[test]
     fn request_during_a_lookup_is_refused() {
         let mut flow = armed_flow();
-        feed(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        feed(&mut flow, PRESS);
         assert_eq!(step(&mut flow, request()), [SecretEffect::Refused]);
         assert!(flow.looking());
     }
@@ -501,7 +497,7 @@ mod tests {
     #[test]
     fn found_value_is_delivered_to_the_still_current_destination() {
         let mut flow = armed_flow();
-        feed(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        feed(&mut flow, PRESS);
         let effects = step(&mut flow, SecretInput::LookupFinished { found: true });
         assert_eq!(effects, [SecretEffect::Deliver(DEST)]);
         assert!(!flow.looking());
@@ -510,7 +506,7 @@ mod tests {
     #[test]
     fn found_value_is_dropped_when_focus_moved_during_the_lookup() {
         let mut flow = armed_flow();
-        feed(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        feed(&mut flow, PRESS);
         feed(&mut flow, SecretInput::FocusChanged);
         let effects = flow.step(SecretInput::LookupFinished { found: true }, START, Some(OTHER));
         assert_eq!(effects, NONE);
@@ -520,7 +516,7 @@ mod tests {
     #[test]
     fn failed_lookup_raises_the_notice_for_a_short_time() {
         let mut flow = armed_flow();
-        feed(&mut flow, SecretInput::Button(ButtonState::Pressed));
+        feed(&mut flow, PRESS);
         assert_eq!(
             step(&mut flow, SecretInput::LookupFinished { found: false }),
             NONE
@@ -592,8 +588,8 @@ mod tests {
                         target: "Inbox".into(),
                     },
                     Event::Frame => SecretInput::FramePresented,
-                    Event::Press => SecretInput::Button(ButtonState::Pressed),
-                    Event::Release => SecretInput::Button(ButtonState::Released),
+                    Event::Press => PRESS,
+                    Event::Release => RELEASE,
                     Event::Held(held) => SecretInput::ButtonHeld(held),
                     Event::Focus => {
                         generation = generation.saturating_add(1);
@@ -609,6 +605,13 @@ mod tests {
                 let is_request = matches!(input, SecretInput::Request { .. });
                 let is_frame = matches!(input, SecretInput::FramePresented);
                 let current_before = current;
+                if let SecretInput::Button(state) = &input {
+                    let _held = flow.step(
+                        SecretInput::ButtonHeld(*state == ButtonState::Pressed),
+                        now,
+                        current_before,
+                    );
+                }
                 let effects = flow.step(input, now, current_before);
                 if is_request && !effects.contains(&SecretEffect::Refused) {
                     requested = Some((now, generation));

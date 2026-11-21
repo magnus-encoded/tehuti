@@ -130,6 +130,11 @@ impl<S: PartialEq> SecretConfirmation<S> {
 
     pub fn button(&mut self, state: tehuti_protocol::ButtonState, focus: Option<&S>, now: Duration) -> bool {
         let current = self.current_secret_destination(focus);
+        let _held = self.flow.step(
+            SecretInput::ButtonHeld(state == tehuti_protocol::ButtonState::Pressed),
+            now,
+            current,
+        );
         let effects = self.flow.step(SecretInput::Button(state), now, current);
         let mut consumed = false;
         for effect in effects {
