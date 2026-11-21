@@ -4828,7 +4828,9 @@ fn maximize_requested(toplevel: &ToplevelSurface) -> bool {
 
 fn set_maximize_request(toplevel: &ToplevelSurface, maximized: bool) {
     smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
-        let _inserted = states.data_map.insert_if_missing_threadsafe(MaximizeRequest::default);
+        let _inserted = states
+            .data_map
+            .insert_if_missing_threadsafe(MaximizeRequest::default);
         if let Some(request) = states.data_map.get::<MaximizeRequest>() {
             request.0.store(maximized, std::sync::atomic::Ordering::Relaxed);
         }

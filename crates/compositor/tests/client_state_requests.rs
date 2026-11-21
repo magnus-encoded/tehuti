@@ -384,7 +384,10 @@ mod client_state_requests {
             "a maximized tile is still tiled: {report:?}"
         );
         let held = report.maximized_fullscreen.clone().unwrap();
-        assert!(!held.contains(&maximized_state), "fullscreen is not maximized: {held:?}");
+        assert!(
+            !held.contains(&maximized_state),
+            "fullscreen is not maximized: {held:?}"
+        );
         let left = report.maximized_unfullscreen.clone().unwrap();
         assert!(
             !left.contains(&maximized_state),
