@@ -208,7 +208,8 @@ mod tests {
 
     #[test]
     fn capture_stops_at_the_window_cap() {
-        let names: Vec<(u64, &str)> = (0..=MAX_WINDOWS as u64)
+        let count = u64::try_from(MAX_WINDOWS).expect("fits");
+        let names: Vec<(u64, &str)> = (0..=count)
             .map(|identity| (identity, "org.example.Alpha"))
             .collect();
         let (layout, names) = layout_with(&names, &[]);
