@@ -149,7 +149,7 @@ for line in sys.stdin:
             .replace("'speech.language'", "'verbs'")
             .replace("'language': text", "'verbs': json.loads(text)");
         let mut harness = Harness::with_plugin(
-            serde_json::json!({
+            &serde_json::json!({
                 "kind":"verb", "verbs":verbs, "executable":"plugin.py", "app_ids":[],
                 "events":["speech"], "start":"always", "permissions":["text"]
             }),
