@@ -5,6 +5,15 @@ mod verb_routing {
     use tehuti_core::verbs::{VerbMatch, route};
     use tehuti_protocol::Text;
 
+    #[test]
+    fn a_pinned_verb_routes_a_session_spelling_by_sound() {
+        let manifest = tehuti_protocol::parse_manifest(br#"{"kind":"verb","verbs":[{"word":"invoke","locale":"en","hints":["chat"]}],"executable":"./verb","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]}"#).unwrap();
+        let matched = route([(7, manifest.verbs.as_slice())], "Invoce, chat with say").unwrap();
+        assert_eq!(matched.plugin, 7);
+        assert_eq!(matched.verb, "invoke");
+        assert_eq!(matched.text.as_str(), "chat with say");
+    }
+
     fn owners(verbs: &[(usize, Vec<String>)]) -> impl Iterator<Item = (usize, &[String])> {
         verbs.iter().map(|(plugin, list)| (*plugin, list.as_slice()))
     }

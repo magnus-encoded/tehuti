@@ -19,6 +19,29 @@ spec.loader.exec_module(module)
 
 
 class SpeechTests(unittest.TestCase):
+    def test_a_pinned_verb_redecodes_the_same_audio_in_its_locale(self):
+        class Model:
+            def __init__(self):
+                self.calls = []
+
+            def transcribe(self, path, **options):
+                with wave.open(path) as recording:
+                    audio = recording.readframes(recording.getnframes())
+                self.calls.append((audio, options))
+                text = "Invoce, snakk med say" if options["language"] == "no" else "Invoke, chat with say"
+                return iter([types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)]), None
+
+        model = Model()
+        speech = module.Speech(model, remotes=dict)
+        take = module.Take(1, "", "no")
+        take.verbs = [{"word": "invoke", "locale": "en", "hints": ["chat", "channel"]}]
+        audio = b"\x00\x10" * 100
+        self.assertEqual(speech.transcribe_take(take, audio, final=True), "invoke chat with say")
+        self.assertEqual([call[0] for call in model.calls], [audio, audio])
+        self.assertEqual([call[1]["language"] for call in model.calls], ["no", "en"])
+        self.assertIn("chat", model.calls[1][1]["initial_prompt"])
+        self.assertIn("channel", model.calls[1][1]["hotwords"])
+
     def test_start_prompt_is_optional_bounded_and_used_on_both_vad_attempts(self):
         class Capture:
             def __init__(self):

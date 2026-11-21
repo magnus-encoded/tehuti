@@ -6,6 +6,20 @@ mod contract {
     use tehuti_protocol::{Message, parse_message};
 
     #[test]
+    fn pinned_verbs_round_trip_in_notices_requests_and_manifests() {
+        for value in [
+            serde_json::json!({"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada",{"word":"orion","locale":"en","hints":["chat","channel"]}]}}),
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"verb","params":{"verb":"orion","locale":"en","text":"chat with say"}}),
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"verb","params":{"verb":"ada","text":"hello"}}),
+        ] {
+            let parsed = parse_message(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+        }
+        let manifest = br#"{"kind":"verb","verbs":["ada",{"word":"orion","locale":"en","hints":["chat"]}],"executable":"./verb","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]}"#;
+        assert!(tehuti_protocol::parse_manifest(manifest).is_ok());
+    }
+
+    #[test]
     fn every_transcript_line_is_a_valid_protocol_message() {
         let guide = include_str!("../../../docs/protocol/README.md");
         let mut lines = 0;
