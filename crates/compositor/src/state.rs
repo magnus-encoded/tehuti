@@ -142,7 +142,7 @@ pub struct Compositor {
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
-    restore: Option<crate::session_restore::Restore>,
+    placements: Option<crate::session_restore::Placements>,
     session_exit_status: Option<u8>,
     restart_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
@@ -311,7 +311,7 @@ impl Compositor {
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
-            restore: None,
+            placements: None,
             session_exit_status: None,
             restart_requested: false,
             speech_process: None,
@@ -974,7 +974,6 @@ impl Compositor {
         self.release_due_keys();
         self.keep_invitation();
         self.poll_recording();
-        self.poll_session_restore();
         self.release_ready_buffers();
         if let Some((status, due)) = self.exit_hold
             && Instant::now() >= due
@@ -3773,9 +3772,21 @@ impl Compositor {
         }
     }
 
-    /// Starts relaunching the saved applications, one at a time, from the main loop.
-    pub fn begin_session_restore(&mut self, saved: crate::session_restore::Saved) {
-        self.restore = Some(crate::session_restore::Restore::new(saved));
+    /// Launches every saved application and remembers where each window goes; the windows
+    /// are placed as they open, whatever their order, and focus is never touched.
+    pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
+        let installed = self.launcher.installed();
+        for window in saved.windows() {
+            if !installed.contains(&window.app_id) {
+                tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
+            } else if !self
+                .launcher
+                .launch_application(&window.app_id, self.launch_socket.as_deref())
+            {
+                tracing::warn!(app_id = %window.app_id, "restore launch failed");
+            }
+        }
+        self.placements = Some(crate::session_restore::Placements::new(saved, Instant::now()));
     }
 
     /// The restorable windows now open, for the clean-exit save.
@@ -3795,41 +3806,6 @@ impl Compositor {
             |window| apps.get(&window.0).cloned(),
             &self.launcher.installed(),
         )
-    }
-
-    fn poll_session_restore(&mut self) {
-        let Some(mut restore) = self.restore.take() else {
-            return;
-        };
-        let open: Vec<String> = self
-            .placement
-            .windows()
-            .filter_map(|window| window.toplevel().and_then(toplevel_app_id))
-            .collect();
-        if let Some(window) = restore.next(Instant::now(), &open) {
-            let workspace = self
-                .placement
-                .snapshot()
-                .outputs
-                .first()
-                .and_then(|output| output.workspaces.get(window.workspace).map(|view| view.workspace));
-            if let Some(workspace) = workspace
-                && let Err(error) = self.placement.focus_workspace_id(workspace)
-            {
-                tracing::warn!(%error, "restore workspace focus failed");
-            }
-            if !self.launcher.installed().contains(&window.app_id) {
-                tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
-            } else if !self
-                .launcher
-                .launch_application(&window.app_id, self.launch_socket.as_deref())
-            {
-                tracing::warn!(app_id = %window.app_id, "restore launch failed");
-            }
-        }
-        if !restore.is_done() {
-            self.restore = Some(restore);
-        }
     }
 
     pub fn set_launch_socket(&mut self, socket: std::ffi::OsString) {
@@ -4260,7 +4236,8 @@ impl Compositor {
         let context = context.cloned();
         let width = context.as_ref().and_then(|context| self.opening_width(context));
         let context = context.as_ref();
-        let rules = Self::window_rules(&surface, context, width);
+        let mut rules = Self::window_rules(&surface, context, width);
+        rules.open_at = self.claim_restored_place(&surface);
         let key = surface.wl_surface().clone();
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
@@ -4307,6 +4284,15 @@ impl Compositor {
             tracing::warn!(%error, path = %path.display(), "window width not rewritten");
         }
         Some(tehuti_protocol::fraction_value(fraction))
+    }
+
+    fn claim_restored_place(&mut self, surface: &ToplevelSurface) -> Option<tehuti_core::layout::OpenAt> {
+        let placements = self.placements.as_mut()?;
+        let place = toplevel_app_id(surface).and_then(|app_id| placements.claim(&app_id, Instant::now()));
+        if placements.is_empty() {
+            self.placements = None;
+        }
+        place
     }
 
     fn window_rules(

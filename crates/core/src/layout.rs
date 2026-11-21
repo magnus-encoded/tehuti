@@ -144,6 +144,14 @@ pub enum WindowKind {
     Helper,
 }
 
+/// A fixed place to open a window: workspace and column positions, clamped to what exists.
+/// A window opened this way never takes focus or changes the active workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenAt {
+    pub workspace: usize,
+    pub column: usize,
+}
+
 /// Opening properties; applied once, when the window is added.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WindowRules {
@@ -161,6 +169,7 @@ pub struct WindowRules {
     pub open_maximized_to_edges: bool,
     pub open_on_output: Option<OutputId>,
     pub open_on_workspace: Option<String>,
+    pub open_at: Option<OpenAt>,
 }
 
 /// Rectangles in global logical coordinates.
@@ -760,6 +769,11 @@ impl Layout {
         );
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let workspace = named.map_or(self.outputs[output].active, |(_, workspace)| workspace);
+        if let Some(place) = rules.open_at {
+            #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+            let last = self.outputs[output].workspaces.len().saturating_sub(1);
+            return Ok((output, place.workspace.min(last), false));
+        }
         Ok((
             output,
             workspace,
@@ -823,6 +837,16 @@ impl Layout {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let target = &mut self.outputs[output].workspaces[workspace];
         target.original_output = Some(output_id);
+        if let Some(place) = rules.open_at {
+            let position = place.column.min(target.columns.len());
+            target.columns.insert(position, column);
+            match target.focused {
+                Some(focused) if position <= focused => target.focused = Some(focused.saturating_add(1)),
+                Some(_) => {}
+                None => target.focused = Some(position),
+            }
+            return position;
+        }
         let position = target
             .focused
             .map_or(target.columns.len(), |index| index.saturating_add(1));

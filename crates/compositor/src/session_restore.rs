@@ -5,14 +5,18 @@
 //! place, never commands: reading it can only start an installed application.
 
 use core::time::Duration;
-use std::{collections::VecDeque, io, io::Write as _, path::PathBuf, time::Instant};
+use std::{io, io::Read as _, io::Write as _, path::PathBuf, time::Instant};
 
 use serde::{Deserialize, Serialize};
-use tehuti_core::layout::{Snapshot, WindowId};
+use tehuti_core::layout::{OpenAt, Snapshot, WindowId};
 
 const VERSION: u32 = 1;
-/// How long a restored application may take to open its window before the next one starts.
-const WINDOW_WAIT: Duration = Duration::from_secs(5);
+/// How long a launched application has to open its window before its place is forgotten.
+const PLACEMENT_LIFETIME: Duration = Duration::from_secs(60);
+/// The largest session file read.
+pub const MAX_FILE_BYTES: u64 = 64 * 1024;
+/// The most windows saved or restored.
+pub const MAX_WINDOWS: usize = 64;
 
 /// One saved window: the desktop entry to launch and the place it had.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,7 +71,10 @@ impl Saved {
             let before = windows.len();
             for (column, view) in workspace.columns.iter().enumerate() {
                 for tile in &view.tiles {
-                    if let Some(app_id) = app_id_of(tile.window).filter(|app_id| installed.contains(app_id)) {
+                    if windows.len() < MAX_WINDOWS
+                        && let Some(app_id) =
+                            app_id_of(tile.window).filter(|app_id| installed.contains(app_id))
+                    {
                         windows.push(SavedWindow {
                             app_id,
                             workspace: rank,
@@ -101,6 +108,9 @@ impl Saved {
     pub fn parse(text: &str) -> Result<Self, LoadError> {
         let saved: Self =
             serde_json::from_str(text).map_err(|error| LoadError::Invalid(error.to_string()))?;
+        if saved.windows.len() > MAX_WINDOWS {
+            return Err(LoadError::Invalid(format!("more than {MAX_WINDOWS} windows")));
+        }
         if saved.version != VERSION {
             return Err(LoadError::Invalid(format!(
                 "unsupported version {}",
@@ -163,78 +173,104 @@ impl Store {
     /// # Errors
     /// The file is unreadable or invalid; it is removed anyway.
     pub fn take(&self) -> Result<Option<Saved>, LoadError> {
-        let text = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text,
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(LoadError::Unreadable(error)),
         };
+        if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
+            self.discard();
+            return Err(LoadError::Invalid("not a regular file under the size cap".into()));
+        }
+        let mut text = String::new();
+        let read = std::fs::File::open(&self.path).and_then(|file| {
+            file.take(MAX_FILE_BYTES.saturating_add(1))
+                .read_to_string(&mut text)
+        });
+        self.discard();
+        read.map_err(LoadError::Unreadable)?;
+        Saved::parse(&text).map(Some)
+    }
+
+    fn discard(&self) {
         if let Err(error) = std::fs::remove_file(&self.path) {
             tracing::warn!(%error, "session file not removed");
         }
-        Saved::parse(&text).map(Some)
     }
 }
 
+/// Where each launched application's windows still have to go. A window that opens claims
+/// the first entry for its app id; entries nobody claims expire.
 #[derive(Debug)]
-struct Awaiting {
-    app_id: String,
-    open_before: usize,
-    deadline: Instant,
+pub struct Placements {
+    pending: Vec<(SavedWindow, Instant)>,
 }
 
-/// Hands out saved windows one at a time, so each lands next to the previous one.
-#[derive(Debug)]
-pub struct Restore {
-    pending: VecDeque<SavedWindow>,
-    seen: Vec<(String, usize)>,
-    awaiting: Option<Awaiting>,
-}
-
-impl Restore {
+impl Placements {
     #[must_use]
-    pub fn new(saved: Saved) -> Self {
+    pub fn new(saved: &Saved, now: Instant) -> Self {
+        let expires = now.checked_add(PLACEMENT_LIFETIME).unwrap_or(now);
         Self {
-            pending: saved.windows.into(),
-            seen: Vec::new(),
-            awaiting: None,
+            pending: saved
+                .windows
+                .iter()
+                .map(|window| (window.clone(), expires))
+                .collect(),
         }
+    }
+
+    /// The saved place for a window that just opened, removed from the list. `None` for a
+    /// window nothing was saved for, or whose entry expired: it opens as usual.
+    pub fn claim(&mut self, app_id: &str, now: Instant) -> Option<OpenAt> {
+        self.pending.retain(|(_, expires)| now < *expires);
+        let index = self
+            .pending
+            .iter()
+            .position(|(window, _)| window.app_id == app_id)?;
+        let (window, _) = self.pending.remove(index);
+        Some(OpenAt {
+            workspace: window.workspace,
+            column: window.column,
+        })
     }
 
     #[must_use]
-    pub fn is_done(&self) -> bool {
-        self.pending.is_empty() && self.awaiting.is_none()
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
     }
+}
 
-    /// The next window to launch, given the app ids of the windows open now. Waits for the
-    /// previous launch to open a window or time out; skips windows already open.
-    pub fn next(&mut self, now: Instant, open: &[String]) -> Option<SavedWindow> {
-        let count = |app_id: &str| open.iter().filter(|open| open.as_str() == app_id).count();
-        if let Some(awaiting) = &self.awaiting {
-            if count(&awaiting.app_id) <= awaiting.open_before && now < awaiting.deadline {
-                return None;
-            }
-            self.awaiting = None;
-        }
-        while let Some(window) = self.pending.pop_front() {
-            let nth =
-                if let Some((_, seen)) = self.seen.iter_mut().find(|(app_id, _)| *app_id == window.app_id) {
-                    *seen = seen.saturating_add(1);
-                    *seen
-                } else {
-                    self.seen.push((window.app_id.clone(), 1));
-                    1
-                };
-            let open_now = count(&window.app_id);
-            if open_now >= nth {
-                continue;
-            }
-            self.awaiting = Some(Awaiting {
-                app_id: window.app_id.clone(),
-                open_before: open_now,
-                deadline: now.checked_add(WINDOW_WAIT).unwrap_or(now),
-            });
-            return Some(window);
-        }
-        None
+/// Whether the exit writes the session: only a clean quit, with Session Restore on.
+#[must_use]
+pub const fn save_due(loop_ok: bool, quit_requested: bool, enabled: bool) -> bool {
+    loop_ok && quit_requested && enabled
+}
+
+/// Reads `restore_session = true | false` from the text of `session.toml`.
+///
+/// # Errors
+/// The text is not TOML or the value is not a boolean.
+pub fn parse_enabled(text: &str) -> Result<bool, String> {
+    let table: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+    match table.get("restore_session").map(toml::Value::as_bool) {
+        None => Ok(false),
+        Some(Some(enabled)) => Ok(enabled),
+        Some(None) => Err("restore_session must be true or false".into()),
     }
+}
+
+/// Whether Session Restore is on: `session.toml` in the config directory, off when missing or bad.
+#[must_use]
+pub fn enabled() -> bool {
+    let Ok(root) = crate::display_mode_store::config_root() else {
+        return false;
+    };
+    let path = root.join("tehuti/session.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    parse_enabled(&text).unwrap_or_else(|error| {
+        tracing::warn!(%error, path = %path.display(), "session config ignored; restore stays off");
+        false
+    })
 }

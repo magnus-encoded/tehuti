@@ -524,7 +524,13 @@ fn start_session(
     data.compositor.advance_time();
     let result = run(&mut event_loop, &mut data, child);
     let code = data.exit_code();
-    if result.is_ok() && data.driver.is_none() && data.compositor.quit_requested() {
+    if data.driver.is_none()
+        && tehuti::session_restore::save_due(
+            result.is_ok(),
+            data.compositor.quit_requested(),
+            tehuti::session_restore::enabled(),
+        )
+    {
         save_session(&data.compositor);
     }
     shut_down(event_loop, data);
@@ -533,11 +539,14 @@ fn start_session(
 }
 
 fn restore_session(compositor: &mut tehuti::state::Compositor) {
+    if !tehuti::session_restore::enabled() {
+        return;
+    }
     let taken = tehuti::session_restore::Store::from_env()
         .map_err(|error| error.to_string())
         .and_then(|store| store.take().map_err(|error| error.to_string()));
     match taken {
-        Ok(Some(saved)) => compositor.begin_session_restore(saved),
+        Ok(Some(saved)) => compositor.begin_session_restore(&saved),
         Ok(None) => {}
         Err(error) => warn!(%error, "session restore skipped"),
     }

@@ -4,9 +4,11 @@ mod tests {
     use core::time::Duration;
     use std::time::Instant;
 
-    use tehuti::session_restore::{Restore, Saved, Store};
+    use tehuti::session_restore::{
+        MAX_FILE_BYTES, MAX_WINDOWS, Placements, Saved, Store, parse_enabled, save_due,
+    };
     use tehuti_core::layout::{
-        Command, Layout, LayoutConfig, OutputGeometry, OutputId, Rect, WindowId, WindowRules,
+        Command, Layout, LayoutConfig, OpenAt, OutputGeometry, OutputId, Rect, WindowId, WindowRules,
     };
 
     fn layout_with(windows: &[(u64, &str)], workspace_breaks: &[u64]) -> (Layout, Vec<(u64, String)>) {
@@ -131,31 +133,105 @@ mod tests {
     }
 
     #[test]
-    fn restore_launches_one_window_at_a_time_in_saved_order() {
-        let mut restore = Restore::new(two_of_one_and_one_other());
-        let start = Instant::now();
-        let first = restore.next(start, &[]).expect("first");
-        assert_eq!((first.app_id.as_str(), first.column), ("org.example.Alpha", 0));
-        assert!(restore.next(start, &[]).is_none(), "waits for the first window");
-        let open = vec!["org.example.Alpha".to_owned()];
-        let second = restore.next(start, &open).expect("second");
-        assert_eq!((second.app_id.as_str(), second.column), ("org.example.Alpha", 1));
+    fn a_window_claims_its_saved_place_once_in_saved_order() {
+        let now = Instant::now();
+        let mut placements = Placements::new(&two_of_one_and_one_other(), now);
+        let first = placements.claim("org.example.Alpha", now).expect("first");
+        let second = placements.claim("org.example.Alpha", now).expect("second");
+        assert_eq!((first.column, second.column), (0, 1));
+        assert!(placements.claim("org.example.Alpha", now).is_none());
+        assert!(placements.claim("org.example.Other", now).is_none());
     }
 
     #[test]
-    fn restore_moves_on_when_a_window_never_appears() {
-        let mut restore = Restore::new(two_of_one_and_one_other());
-        let start = Instant::now();
-        let _first = restore.next(start, &[]).expect("first");
-        let later = start.checked_add(Duration::from_secs(60)).expect("time");
-        assert!(restore.next(later, &[]).is_some());
+    fn a_slow_launch_still_lands_in_its_saved_place() {
+        let now = Instant::now();
+        let mut placements = Placements::new(&two_of_one_and_one_other(), now);
+        let late = now.checked_add(Duration::from_secs(30)).expect("time");
+        assert!(placements.claim("org.example.Beta", late).is_some());
     }
 
     #[test]
-    fn restore_never_duplicates_windows_that_are_already_open() {
-        let mut restore = Restore::new(two_of_one_and_one_other());
-        let open = vec!["org.example.Alpha".to_owned(), "org.example.Alpha".to_owned()];
-        let first = restore.next(Instant::now(), &open).expect("beta only");
-        assert_eq!(first.app_id, "org.example.Beta");
+    fn unclaimed_places_expire() {
+        let now = Instant::now();
+        let mut placements = Placements::new(&two_of_one_and_one_other(), now);
+        let late = now.checked_add(Duration::from_secs(3600)).expect("time");
+        assert!(placements.claim("org.example.Beta", late).is_none());
+        assert!(placements.is_empty());
+    }
+
+    #[test]
+    fn placed_windows_land_in_their_place_and_leave_focus_alone() {
+        let (mut layout, _) = layout_with(&[(1, "a"), (2, "b")], &[]);
+        let focused = layout.snapshot().focused_window;
+        let active = layout.snapshot().outputs[0].active_workspace;
+        let place = |workspace, column| WindowRules {
+            open_at: Some(OpenAt { workspace, column }),
+            ..WindowRules::default()
+        };
+        layout.add_window(WindowId(10), place(0, 0)).expect("first");
+        layout.add_window(WindowId(11), place(1, 0)).expect("second");
+        let snapshot = layout.snapshot();
+        assert_eq!(snapshot.focused_window, focused);
+        assert_eq!(snapshot.outputs[0].active_workspace, active);
+        let columns = |workspace: usize| -> Vec<u64> {
+            snapshot.outputs[0].workspaces[workspace]
+                .columns
+                .iter()
+                .map(|column| column.tiles[0].window.0)
+                .collect()
+        };
+        assert_eq!(columns(0), vec![10, 1, 2]);
+        assert!(columns(1).contains(&11));
+    }
+
+    #[test]
+    fn the_file_is_capped_in_size_and_window_count() {
+        let directory = tempfile::tempdir().expect("dir");
+        let path = directory.path().join("session.json");
+        let store = Store::new(path.clone());
+        std::fs::write(
+            &path,
+            vec![b' '; usize::try_from(MAX_FILE_BYTES).expect("fits") + 1],
+        )
+        .expect("write");
+        assert!(store.take().is_err());
+        assert!(!path.exists());
+        let many: Vec<String> = (0..=MAX_WINDOWS)
+            .map(|index| {
+                format!("{{\"app_id\":\"org.example.A{index}\",\"workspace\":0,\"column\":{index}}}")
+            })
+            .collect();
+        let text = format!("{{\"version\":1,\"windows\":[{}]}}", many.join(","));
+        assert!(Saved::parse(&text).is_err());
+    }
+
+    #[test]
+    fn capture_stops_at_the_window_cap() {
+        let names: Vec<(u64, &str)> = (0..=MAX_WINDOWS as u64)
+            .map(|identity| (identity, "org.example.Alpha"))
+            .collect();
+        let (layout, names) = layout_with(&names, &[]);
+        assert_eq!(
+            capture(&layout, &names, &["org.example.Alpha"]).windows().len(),
+            MAX_WINDOWS
+        );
+    }
+
+    #[test]
+    fn saves_only_on_a_clean_quit_with_the_setting_on() {
+        assert!(save_due(true, true, true));
+        assert!(!save_due(false, true, true));
+        assert!(!save_due(true, false, true));
+        assert!(!save_due(true, true, false));
+    }
+
+    #[test]
+    fn the_setting_defaults_to_off() {
+        assert_eq!(parse_enabled(""), Ok(false));
+        assert_eq!(parse_enabled("restore_session = true"), Ok(true));
+        assert_eq!(parse_enabled("restore_session = false"), Ok(false));
+        assert!(parse_enabled("restore_session = 3").is_err());
+        assert!(parse_enabled("[[").is_err());
     }
 }
