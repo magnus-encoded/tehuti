@@ -130,7 +130,11 @@ pub fn hidraw_siblings(sysfs: &std::path::Path) -> Vec<String> {
 /// A grab only covers the event node; a readable hidraw node still feeds other programs.
 #[must_use]
 pub fn hidraw_warning(pad: &str, siblings: &[String], readable: impl Fn(&str) -> bool) -> Option<String> {
-    let open: Vec<&str> = siblings.iter().map(String::as_str).filter(|node| readable(node)).collect();
+    let open: Vec<&str> = siblings
+        .iter()
+        .map(String::as_str)
+        .filter(|node| readable(node))
+        .collect();
     if open.is_empty() {
         return None;
     }
@@ -146,7 +150,11 @@ fn warn_readable_hidraw(name: &str, sysfs: Option<&std::path::Path>) {
     let Some(sysfs) = sysfs else { return };
     let siblings = hidraw_siblings(sysfs);
     let readable = |node: &str| {
-        rustix::fs::access(std::path::Path::new("/dev").join(node), rustix::fs::Access::READ_OK).is_ok()
+        rustix::fs::access(
+            std::path::Path::new("/dev").join(node),
+            rustix::fs::Access::READ_OK,
+        )
+        .is_ok()
     };
     if let Some(message) = hidraw_warning(name, &siblings, readable) {
         warn!("{message}");
