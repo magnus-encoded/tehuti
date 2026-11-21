@@ -30,7 +30,7 @@ One concrete desired change per issue: the observable behaviour after the change
 
 ## Pull requests
 
-`Closes #N`, then one to three sentences on how the change answers that issue. CI caps the body at 120 words.
+`Closes #N`, then one to three sentences on how the change answers that issue. CI caps the body at 120 words; run `scripts/pr-body <body-file>` (and `scripts/prose-lint <body-file>`) before opening or editing a PR.
 
 Every ADR change needs owner signoff. The owner applies the `adr-accepted` label to the PR after deciding; CI checks the label and verifies the owner applied it. ADR-only PRs may omit an issue reference when this signoff is present. PRs that also change other files still need an issue reference.
 
@@ -68,3 +68,7 @@ Tehuti is built so that a part can be swapped out: another window manager or com
 ## UI and settings
 
 - Settings pages are realtime: a page draws at once from state Tehuti already holds. Anything from an outside source (network peers, PipeWire, AudioRelay, Tailscale, slow device probes) arrives later as an added tile at the end of its row, never as a wait, a spinner or a moved focus.
+
+## Review findings
+
+- A finding about a leak, a stale entry or an invalid state must name the structure that makes it unrepresentable: an owner with the same lifetime, a weak back-reference, or a type that cannot hold the bad combination. Pruning or cleanup code is the fallback only.
