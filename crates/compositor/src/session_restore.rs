@@ -188,7 +188,7 @@ impl Store {
                 .read_to_string(&mut text)
         });
         self.discard();
-        read.map_err(LoadError::Unreadable)?;
+        let _read_bytes = read.map_err(LoadError::Unreadable)?;
         Saved::parse(&text).map(Some)
     }
 
@@ -235,7 +235,7 @@ impl Placements {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
 }
