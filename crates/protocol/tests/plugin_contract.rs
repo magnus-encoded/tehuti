@@ -17,13 +17,12 @@ mod contract {
             serde_json::json!({"word":"orion","locale":"en","extra":true}),
             serde_json::json!({"word":"orion","hints":[]}),
         ] {
-            let notice =
-                serde_json::json!({"jsonrpc":"2.0","method":"verbs","params":{"verbs":[entry.clone()]}});
+            let notice = serde_json::json!({"jsonrpc":"2.0","method":"verbs","params":{"verbs":[entry]}});
             assert!(
                 parse_message(&serde_json::to_vec(&notice).unwrap()).is_err(),
                 "{entry}"
             );
-            let manifest = serde_json::json!({"kind":"verb","verbs":[entry.clone()],"executable":"./verb","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]});
+            let manifest = serde_json::json!({"kind":"verb","verbs":[entry],"executable":"./verb","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]});
             assert!(
                 tehuti_protocol::parse_manifest(&serde_json::to_vec(&manifest).unwrap()).is_err(),
                 "{entry}"

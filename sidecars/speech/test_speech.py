@@ -80,6 +80,20 @@ class SpeechTests(unittest.TestCase):
                 self.assertEqual(speech.transcribe_take(take, b"\x00\x10" * 100, final=final), expected)
                 self.assertEqual(model.languages, languages)
 
+    def test_pinned_decode_is_logged_on_the_session_line(self):
+        class Model:
+            def transcribe(self, path, **options):
+                text = "Orion snakk" if options["language"] == "no" else "Orion chat"
+                return iter([types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)]), None
+
+        speech = module.Speech(Model(), remotes=dict)
+        take, _ = self.final_take(speech)
+        take.language = "no"
+        take.verbs = [{"word": "orion", "locale": "en", "hints": ["chat"]}]
+        replies, log = self.run_stop(speech)
+        self.assertEqual(replies, [{"session": 4, "text": "orion chat"}])
+        self.assertRegex(log, r"session 4: language no, backend local, .*verb locale en, stop to reply")
+
     def test_start_snapshots_validated_verb_definitions(self):
         class Capture:
             def __init__(self):
