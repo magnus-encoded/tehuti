@@ -386,6 +386,27 @@ A plugin holds at most 16 verbs. Each verb is one word of letters, with at most
 32 characters. The core rejects a `verbs` notice from an application plugin in
 the same way as an invalid action.
 
+A verb entry may also pin a supported Whisper primary language tag and up to
+16 hints (strings without NUL), in both the manifest and a notice:
+
+```json
+{"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada",{"word":"orion","locale":"en","hints":["chat","channel"]}]}}
+```
+
+Speech first decodes in the session language. When its first word sounds like
+a pinned verb, the sidecar decodes the same audio once more in that verb's
+locale with its hints. This extra decode appears on the session's speech log
+line. If its first word does not match the verb, the session transcript is
+used. The core strips the verb and sends the remainder with the pinned locale:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"verb","params":{"verb":"orion","locale":"en","text":"chat with say"}}
+```
+
+String verbs keep the session language and omit `locale` from the request.
+Unsupported tags, regional tags such as `en-US`, and more than 16 hints reject
+the notice. Locales on other text do not change.
+
 Focus is a notice with no reply:
 
 ```json

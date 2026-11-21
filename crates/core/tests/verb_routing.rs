@@ -2,7 +2,7 @@
 #[cfg(test)]
 mod verb_routing {
     use proptest::prelude::*;
-    use tehuti_core::verbs::{VerbMatch, route};
+    use tehuti_core::verbs::route;
     use tehuti_protocol::Text;
 
     #[test]
@@ -102,15 +102,10 @@ mod verb_routing {
     fn sound_folding_catches_misheard_verbs_but_not_other_words() {
         let table = [(0, vec!["invoke".to_owned()]), (1, vec!["ada".to_owned()])];
         let heard = |text: &str| route(owners(&table), text);
-        assert_eq!(
-            heard("Invoce usage report"),
-            Some(VerbMatch {
-                plugin: 0,
-                verb: "invoke".into(),
-                text: Text::new("usage report".into()).unwrap(),
-            }),
-            "a folded spelling matches"
-        );
+        let matched = heard("Invoce usage report").unwrap();
+        assert_eq!(matched.plugin, 0);
+        assert_eq!(matched.verb, "invoke");
+        assert_eq!(matched.text, Text::new("usage report".into()).unwrap());
         assert_eq!(
             heard("Ada, summarise the reviews").map(|found| found.text),
             Some(Text::new("summarise the reviews".into()).unwrap()),

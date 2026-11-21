@@ -42,6 +42,67 @@ class SpeechTests(unittest.TestCase):
         self.assertIn("chat", model.calls[1][1]["initial_prompt"])
         self.assertIn("channel", model.calls[1][1]["hotwords"])
 
+    def test_sound_matching_obeys_first_word_priority_and_word_boundaries(self):
+        verbs = ["ada", {"word": "invoke", "locale": "en"}, {"word": "literal", "locale": "en"}]
+        self.assertEqual(module.match_verb("Invoce, usage report", verbs), (verbs[1], "usage report"))
+        self.assertEqual(module.match_verb("Literel says hi", verbs), (verbs[2], "says hi"))
+        for text in ("invoke", "invoke   ", "please invoke chat", "Invoked functions return",
+                     "Literally nothing changed", "Adam was here"):
+            self.assertIsNone(module.match_verb(text, verbs), text)
+        self.assertEqual(module.match_verb("Ada hello", ["ada", {"word": "ada", "locale": "en"}]),
+                         ("ada", "hello"))
+
+    def test_only_a_matching_pinned_final_gets_one_extra_decode(self):
+        class Model:
+            def __init__(self, texts):
+                self.texts = iter(texts)
+                self.languages = []
+
+            def transcribe(self, path, **options):
+                self.languages.append(options["language"])
+                text = next(self.texts)
+                return iter([types.SimpleNamespace(text=text, no_speech_prob=0, avg_logprob=0)]), None
+
+        pinned = {"word": "invoke", "locale": "en", "hints": ["chat"]}
+        cases = [
+            (["Invoce snakk", "Something else"], [pinned], True, "Invoce snakk", ["no", "en"]),
+            (["Invoce snakk", ""], [pinned], True, "Invoce snakk", ["no", "en"]),
+            (["Invoce snakk"], ["invoke"], True, "Invoce snakk", ["no"]),
+            (["please invoke chat"], [pinned], True, "please invoke chat", ["no"]),
+            (["Invoce snakk"], [pinned], False, "Invoce snakk", ["no"]),
+            (["Invoce snakk"], ["invoke", pinned], True, "Invoce snakk", ["no"]),
+        ]
+        for texts, verbs, final, expected, languages in cases:
+            with self.subTest(texts=texts, verbs=verbs, final=final):
+                model = Model(texts)
+                speech = module.Speech(model, remotes=dict)
+                take = module.Take(1, "", "no", verbs=verbs)
+                self.assertEqual(speech.transcribe_take(take, b"\x00\x10" * 100, final=final), expected)
+                self.assertEqual(model.languages, languages)
+
+    def test_start_snapshots_validated_verb_definitions(self):
+        class Capture:
+            def __init__(self):
+                self.verbs = None
+
+            def start(self, session, prompt, language, verbs=()):
+                self.verbs = verbs
+
+            def close(self):
+                pass
+
+        verbs = ["ada", {"word": "invoke", "locale": "en", "hints": ["chat"]}]
+        capture = Capture()
+        with contextlib.redirect_stdout(io.StringIO()):
+            module.run(io.StringIO(json.dumps({"start": 1, "language": "no", "verbs": verbs}) + "\n"), capture)
+        self.assertEqual(capture.verbs, verbs)
+        for invalid in ([{"word": "invoke", "locale": "xx"}],
+                        [{"word": "invoke", "locale": "en-US"}],
+                        [{"word": "invoke", "locale": "en", "hints": ["x"] * 17}],
+                        [7], [{"word": "two words", "locale": "en"}]):
+            with self.assertRaises(ValueError), contextlib.redirect_stdout(io.StringIO()):
+                module.run(io.StringIO(json.dumps({"start": 2, "verbs": invalid}) + "\n"), capture)
+
     def test_start_prompt_is_optional_bounded_and_used_on_both_vad_attempts(self):
         class Capture:
             def __init__(self):

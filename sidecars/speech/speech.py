@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import wave
+import unicodedata
 
 DEFAULT_LANGUAGE = "en"
 MAX_HOTWORD_TOKENS = 64
@@ -23,6 +24,80 @@ MAX_PENDING_FINALS = 4
 INTERIM_WINDOW_BYTES = 16000 * 2 * 5
 DEFAULT_SPEECH_TAIL_MS = 150
 MAX_SPEECH_TAIL_MS = MAX_AUDIO_SECONDS * 1000
+
+
+VERB_LOCALES = set("af am ar as az ba be bg bn bo br bs ca cs cy da de el en es et eu fa fi fo fr gl gu ha haw he hi hr ht hu hy id is it ja jw ka kk km kn ko la lb ln lo lt lv mg mi mk ml mn mr ms mt my ne nl nn no oc pa pl ps pt ro ru sa sd si sk sl sn so sq sr su sv sw ta te tg th tk tl tr tt uk ur uz vi yi yo yue zh".split())
+
+
+def verb_key(word):
+    word = word.lower().replace("æ", "e").replace("ø", "o")
+    word = "".join(c for c in unicodedata.normalize("NFD", word)
+                   if not unicodedata.combining(c) and c.isalnum())
+    for written, folded in (("ae", "e"), ("oe", "o"), ("ph", "f"), ("th", "t"),
+                            ("ch", "k"), ("c", "k"), ("q", "k"), ("w", "v"), ("z", "s")):
+        word = word.replace(written, folded)
+    for written, folded in (("hv", "v"), ("hj", "j"), ("gj", "j")):
+        if word.startswith(written):
+            word = folded + word[len(written):]
+    word = re.sub(r"(.)\1+", r"\1", word.replace("x", "ks"))
+    if len(word) >= 4:
+        for ending in ("ene", "et", "en", "er", "e", "t"):
+            if word.endswith(ending) and len(word) - len(ending) >= 3:
+                return word[:-len(ending)]
+    return word
+
+
+def verb_score(heard, word):
+    word = verb_key(word)
+    if not word:
+        return 0
+    if heard == word:
+        return 1000
+    if heard.startswith(word) or min(len(heard), len(word)) < 5:
+        return 0
+    table = [list(range(len(word) + 1))]
+    for i, left in enumerate(heard, 1):
+        row = [i]
+        for j, right in enumerate(word, 1):
+            cost = min(row[-1] + 1, table[-1][j] + 1, table[-1][j - 1] + (left != right))
+            if i > 1 and j > 1 and left == word[j - 2] and heard[i - 2] == right:
+                cost = min(cost, table[i - 2][j - 2] + 1)
+            row.append(cost)
+        table.append(row)
+    return 1000 - table[-1][-1] * 1000 // max(len(heard), len(word))
+
+
+def match_verb(text, verbs):
+    """The best first-word sound match and its remainder; ties keep registration order."""
+    parts = text.lstrip().split(maxsplit=1)
+    if len(parts) != 2:
+        return None
+    remainder = parts[1].lstrip(" \t\r\n,.:;!?")
+    if not remainder:
+        return None
+    heard = verb_key(parts[0])
+    best, score = None, 849
+    for verb in verbs:
+        word = verb if isinstance(verb, str) else verb["word"]
+        found = verb_score(heard, word)
+        if found > score:
+            best, score = (verb, remainder), found
+    return best
+
+
+def valid_verbs(verbs):
+    if not isinstance(verbs, list):
+        return False
+    for verb in verbs:
+        word = verb if isinstance(verb, str) else verb.get("word") if isinstance(verb, dict) else None
+        if not isinstance(word, str) or not word.isalpha() or len(word) > 32:
+            return False
+        if isinstance(verb, dict):
+            if (set(verb) - {"word", "locale", "hints"} or verb.get("locale") not in VERB_LOCALES
+                    or not isinstance(verb.get("hints", []), list) or len(verb.get("hints", [])) > 16
+                    or any(not isinstance(hint, str) or "\0" in hint for hint in verb.get("hints", []))):
+                return False
+    return True
 
 
 HALLUCINATION = re.compile(
@@ -303,7 +378,9 @@ class Recording:
 
 class Take:
     """One push-to-talk, recorded from every source at once."""
-    def __init__(self, session, prompt="", language=DEFAULT_LANGUAGE, remote=None):
+    def __init__(self, session, prompt="", language=DEFAULT_LANGUAGE, remote=None, verbs=()):
+        self.verbs = list(verbs)
+        self.verb_locale = None
         self.remote = remote  # the backend, resolved once: a socket path, else the local model
         self.session = session
         self.prompt = prompt
@@ -374,11 +451,11 @@ class Speech:
             self.releasing.worker.join()
             self.releasing = None
 
-    def start(self, session, prompt="", language=DEFAULT_LANGUAGE):
+    def start(self, session, prompt="", language=DEFAULT_LANGUAGE, verbs=()):
         self.cancel_tail()
         if self.capture is not None:
             return
-        take = Take(session, prompt, language, self.remotes().get(language))
+        take = Take(session, prompt, language, self.remotes().get(language), verbs)
         for source in self.sources():
             target = [] if source is None else ["--target", source]
             try:
@@ -420,8 +497,9 @@ class Speech:
             capture.send_signal(signal.SIGINT)
 
     def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None, beam_size=5,
-                         language=DEFAULT_LANGUAGE, stats=None):
-        priming = {"hotwords": self.hotwords} if self.hotwords else {}
+                         language=DEFAULT_LANGUAGE, stats=None, hotwords=None):
+        words = self.hotwords if hotwords is None else hotwords
+        priming = {"hotwords": words} if words else {}
         if prompt:
             priming["initial_prompt"] = prompt
         with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
@@ -463,6 +541,9 @@ class Speech:
                 if final:
                     take.backend, take.decoded = "remote", time.monotonic() - began
                     take.audio_seconds = len(audio) / 32000
+                    matched = match_verb(text, take.verbs)
+                    if matched and isinstance(matched[0], dict):
+                        return self.final_decode(take, audio, first=text)
                 return text
             except (OSError, ValueError, RuntimeError, TimeoutError) as error:
                 log(f"remote transcription failed ({error}); "
@@ -484,7 +565,7 @@ class Speech:
                 self.decoding = False
                 self.schedule.notify_all()
 
-    def final_decode(self, take, audio):
+    def final_decode(self, take, audio, first=None):
         asked = time.monotonic()
         with self.schedule:
             self.finals_pending += 1
@@ -496,7 +577,22 @@ class Speech:
         take.backend, take.queued = "local", began - asked
         take.audio_seconds = len(audio) / 32000
         try:
-            return self.transcribe_audio(audio, take.prompt, language=take.language, stats=stats)
+            text = first if first is not None else self.transcribe_audio(
+                audio, take.prompt, language=take.language, stats=stats)
+            matched = match_verb(text, take.verbs)
+            if not matched or isinstance(matched[0], str) or take.cancelled.is_set():
+                return text
+            verb = matched[0]
+            take.verb_locale = verb["locale"]
+            hints = ", ".join([verb["word"], *verb.get("hints", [])])
+            try:
+                decoded = self.transcribe_audio(audio, hints, language=verb["locale"],
+                                                retry=False, hotwords=hints)
+                second = match_verb(decoded, [verb])
+                return verb["word"] + " " + second[1] if second else text
+            except Exception as error:
+                log(f"verb locale decode failed ({error}); using session transcript", level="WARN")
+                return text
         finally:
             take.decoded, take.retried = time.monotonic() - began, bool(stats)
             with self.schedule:
@@ -577,6 +673,8 @@ class Speech:
                 detail = (f"backend {take.backend}, audio {take.audio_seconds:.1f}s, "
                           f"queue wait {take.queued:.2f}s, decode {take.decoded:.2f}s, "
                           f"retry {'yes' if take.retried else 'no'}")
+                if take.verb_locale:
+                    detail += f", verb locale {take.verb_locale}"
             log(f"session {session}: language {take.language}, {detail}, "
                 f"stop to reply {time.monotonic() - take.stopped:.2f}s")
 
@@ -629,13 +727,15 @@ def run(stream, speech, device=None):
                 log("unknown speech command ignored")
                 continue
             if (isinstance(command, dict) and "start" in command
-                    and set(command) <= {"start", "prompt", "language"}
+                    and set(command) <= {"start", "prompt", "language", "verbs"}
                     and type(command["start"]) is int and command["start"] >= 0
                     and isinstance(command.get("prompt", ""), str) and "\0" not in command.get("prompt", "")
                     and isinstance(command.get("language", DEFAULT_LANGUAGE), str)
-                    and re.fullmatch(r"[a-z]{2,8}", command.get("language", DEFAULT_LANGUAGE))):
+                    and re.fullmatch(r"[a-z]{2,8}", command.get("language", DEFAULT_LANGUAGE))
+                    and valid_verbs(command.get("verbs", []))):
                 speech.start(command["start"], " ".join(command.get("prompt", "").split()[:100]),
-                             command.get("language", DEFAULT_LANGUAGE))
+                             command.get("language", DEFAULT_LANGUAGE),
+                             **({"verbs": command["verbs"]} if "verbs" in command else {}))
             elif (set(command) == {"stop", "transcribe"}
                   and type(command["stop"]) is int and command["stop"] >= 0
                   and type(command["transcribe"]) is bool):
