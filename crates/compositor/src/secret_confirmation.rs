@@ -67,7 +67,8 @@ impl<S: PartialEq> SecretConfirmation<S> {
     }
 
     pub fn confirm_pressed(&mut self, pressed: bool) {
-        self.flow.step(SecretInput::ButtonHeld(pressed), Duration::ZERO, None);
+        self.flow
+            .step(SecretInput::ButtonHeld(pressed), Duration::ZERO, None);
     }
 
     pub fn frame_submitted(&mut self, focus: Option<&S>, now: Duration) {
@@ -106,7 +107,10 @@ impl<S: PartialEq> SecretConfirmation<S> {
     #[must_use]
     pub fn text(&self, focus: Option<&S>, now: Duration) -> Option<String> {
         let prompt = self.flow.prompt(now, self.current_secret_destination(focus))?;
-        Some(format!("CONFIRM SECRET: {}\nTARGET: {}", prompt.entry, prompt.target))
+        Some(format!(
+            "CONFIRM SECRET: {}\nTARGET: {}",
+            prompt.entry, prompt.target
+        ))
     }
 
     fn current_secret_destination(
@@ -162,7 +166,12 @@ impl<S: PartialEq> SecretConfirmation<S> {
         self.lookup = Some(receiver);
     }
 
-    fn finish_lookup(&mut self, found: bool, now: Duration, current: Option<tehuti_core::secret::SecretDestination>) -> bool {
+    fn finish_lookup(
+        &mut self,
+        found: bool,
+        now: Duration,
+        current: Option<tehuti_core::secret::SecretDestination>,
+    ) -> bool {
         self.flow
             .step(SecretInput::LookupFinished { found }, now, current)
             .iter()
