@@ -292,6 +292,10 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         let _flag = arguments.next();
     }
     let (context_directory, program, application) = match tehuti::cli::parse(arguments) {
+        Ok(tehuti::cli::Invocation::OutputMode(value)) => {
+            tehuti::output_mode::send(&tehuti::output_mode::socket_path()?, &value)?;
+            return Ok(ExitCode::SUCCESS);
+        }
         Ok(tehuti::cli::Invocation::Help) => return print_usage(),
         Ok(tehuti::cli::Invocation::Version) => return print_version(),
         Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
