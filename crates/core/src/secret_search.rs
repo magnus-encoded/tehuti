@@ -115,7 +115,10 @@ mod tests {
             app: Some("zulu".into()),
             field: None,
         };
-        assert_eq!(rank(&labels, "mail", &context), names(&["Zulu mail", "Alpha mail"]));
+        assert_eq!(
+            rank(&labels, "mail", &context),
+            names(&["Zulu mail", "Alpha mail"])
+        );
     }
 
     #[test]
@@ -125,7 +128,10 @@ mod tests {
             app: None,
             field: Some("number".into()),
         };
-        assert_eq!(rank(&labels, "card", &context), names(&["Card number", "Card pin"]));
+        assert_eq!(
+            rank(&labels, "card", &context),
+            names(&["Card number", "Card pin"])
+        );
     }
 
     proptest! {
