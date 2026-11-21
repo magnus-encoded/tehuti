@@ -8,7 +8,7 @@ use crate::secret::{SecretProvider, SecretProviderUnavailable, SecretValue};
 /// [`SecretValue`].
 #[derive(Debug, Default)]
 pub struct TestSecretStore {
-    entries: Vec<(String, String)>,
+    entries: Vec<(String, SecretValue)>,
     locked: bool,
 }
 
@@ -20,7 +20,7 @@ impl TestSecretStore {
 
     #[must_use]
     pub fn with_entry(mut self, name: &str, value: &str) -> Self {
-        self.entries.push((name.to_owned(), value.to_owned()));
+        self.entries.push((name.to_owned(), SecretValue::new(value.to_owned())));
         self
     }
 
@@ -50,7 +50,7 @@ impl SecretProvider for TestSecretStore {
         self.entries
             .iter()
             .find(|(name, _)| *name == reference.entry)
-            .map(|(_, value)| SecretValue::new(value.clone()))
+            .map(|(_, value)| value.duplicate())
             .ok_or(SecretProviderUnavailable)
     }
 
@@ -89,6 +89,12 @@ mod tests {
         let found = store.search("bank", &SearchContext::default()).expect("search");
         assert_eq!(found, ["Bank"]);
         assert!(!format!("{found:?}").contains("pw-two"));
+    }
+
+    #[test]
+    fn debug_of_the_store_never_prints_a_value() {
+        let text = format!("{:?}", store());
+        assert!(!text.contains("pw-one") && !text.contains("pw-two"));
     }
 
     #[test]

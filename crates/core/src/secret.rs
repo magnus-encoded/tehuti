@@ -181,6 +181,12 @@ impl SecretValue {
         Self(zeroize::Zeroizing::new(value))
     }
 
+    /// A second handle on the same value, for in-crate stores that hand the
+    /// value out more than once. Not public: callers never copy a secret.
+    pub(crate) fn duplicate(&self) -> Self {
+        Self::new(String::clone(&self.0))
+    }
+
     /// Borrows the value for one synchronous delivery effect.
     ///
     /// The callback cannot return the plaintext; it must send it directly to
