@@ -39,7 +39,7 @@ mod tests {
             |window| {
                 names
                     .iter()
-                    .find(|(id, _)| *id == window.0)
+                    .find(|(identity, _)| *identity == window.0)
                     .map(|(_, name)| name.clone())
             },
             &installed,
