@@ -20,7 +20,8 @@ impl TestSecretStore {
 
     #[must_use]
     pub fn with_entry(mut self, name: &str, value: &str) -> Self {
-        self.entries.push((name.to_owned(), SecretValue::new(value.to_owned())));
+        self.entries
+            .push((name.to_owned(), SecretValue::new(value.to_owned())));
         self
     }
 
