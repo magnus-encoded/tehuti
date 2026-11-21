@@ -161,7 +161,7 @@ pub struct SecretValue(zeroize::Zeroizing<String>);
 
 impl SecretValue {
     #[must_use]
-    pub const fn new(value: String) -> Self {
+    pub fn new(value: String) -> Self {
         Self(zeroize::Zeroizing::new(value))
     }
 
