@@ -1800,11 +1800,11 @@ mod synthetic_pad {
                 if requests > 0 {
                     let pid = std::fs::read_to_string(directory.path().join("pid")).unwrap();
                     thread::sleep(tehuti_core::plugin::BUTTON_BUDGET.saturating_add(Duration::from_millis(10)));
-                    model.misses[0] = model.misses[0].saturating_add(1);
+                    model.misses[0] = model.misses[0].saturating_add(requests);
                     compositor.handle(&Event::Tick { elapsed: tehuti_core::plugin::BUTTON_BUDGET.saturating_add(Duration::from_millis(10)) });
                     prop_assert_eq!(compositor.pending_plugin_decisions(), 0, "every decision settles");
-                    if model.misses[0] == 3 {
-                        prop_assert_eq!(compositor.initialized_plugins(), 0, "three expiry batches stop the plugin");
+                    if model.misses[0] >= 3 {
+                        prop_assert_eq!(compositor.initialized_plugins(), 0, "three missed decisions stop the plugin");
                         let failed = Instant::now();
                         while failed.elapsed() < model.backoff.saturating_sub(Duration::from_millis(20)) {
                             event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
@@ -1818,7 +1818,7 @@ mod synthetic_pad {
                         model.misses[0] = 0;
                         model.backoff = model.backoff.saturating_mul(2).min(Duration::from_secs(30));
                     } else {
-                        prop_assert_eq!(compositor.initialized_plugins(), 1, "fewer than three expiry batches keep the plugin alive");
+                        prop_assert_eq!(compositor.initialized_plugins(), 1, "fewer than three missed decisions keep the plugin alive");
                         prop_assert_eq!(std::fs::read_to_string(directory.path().join("pid")).unwrap(), pid);
                     }
                 }
