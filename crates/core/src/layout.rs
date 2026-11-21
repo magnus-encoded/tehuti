@@ -502,6 +502,20 @@ struct Workspace {
     view: f64,
 }
 
+impl Workspace {
+    /// Inserts without taking focus; the focused column stays the same column.
+    fn insert_at_column(&mut self, column: Column, wanted: usize) -> usize {
+        let position = wanted.min(self.columns.len());
+        self.columns.insert(position, column);
+        match self.focused {
+            Some(focused) if position <= focused => self.focused = Some(focused.saturating_add(1)),
+            Some(_) => {}
+            None => self.focused = Some(position),
+        }
+        position
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Output {
     identity: OutputId,
@@ -838,14 +852,7 @@ impl Layout {
         let target = &mut self.outputs[output].workspaces[workspace];
         target.original_output = Some(output_id);
         if let Some(place) = rules.open_at {
-            let position = place.column.min(target.columns.len());
-            target.columns.insert(position, column);
-            match target.focused {
-                Some(focused) if position <= focused => target.focused = Some(focused.saturating_add(1)),
-                Some(_) => {}
-                None => target.focused = Some(position),
-            }
-            return position;
+            return target.insert_at_column(column, place.column);
         }
         let position = target
             .focused
