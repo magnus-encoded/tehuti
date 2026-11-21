@@ -1226,6 +1226,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
 
 pub mod invoke;
 pub mod secret;
+pub mod secret_flow;
 pub mod shadowing;
 pub mod speech;
 pub mod tool_words;
