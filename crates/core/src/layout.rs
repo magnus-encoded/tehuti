@@ -1211,7 +1211,7 @@ impl Layout {
             .min_by(|(_, left, left_across), (_, right, right_across)| {
                 left.total_cmp(right).then(left_across.total_cmp(right_across))
             })
-            .map(|(index, _)| index)
+            .map(|(index, _, _)| index)
     }
     fn move_column(&mut self, output: usize, destination: usize, workspace: usize) {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
