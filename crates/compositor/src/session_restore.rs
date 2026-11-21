@@ -33,7 +33,7 @@ pub struct Saved {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
-    #[error("session file unreadable: {0}")]
+    #[error("session file unreadable: {source}")]
     Io {
         #[from]
         source: io::Error,
