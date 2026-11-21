@@ -119,7 +119,10 @@ mod hidraw_tests {
         std::fs::create_dir_all(&event).expect("event dir");
         std::fs::create_dir_all(hid.join("hidraw/hidraw3")).expect("hidraw dir");
         assert_eq!(hidraw_siblings(&event), vec!["hidraw3".to_owned()]);
-        assert_eq!(hidraw_siblings(&root.path().join("devices")), Vec::<String>::new());
+        assert_eq!(
+            hidraw_siblings(&root.path().join("devices")),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
