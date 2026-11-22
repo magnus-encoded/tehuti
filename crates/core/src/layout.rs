@@ -144,6 +144,14 @@ pub enum WindowKind {
     Helper,
 }
 
+/// A fixed place to open a window: workspace and column positions, clamped to what exists.
+/// A window opened this way never takes focus or changes the active workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenAt {
+    pub workspace: usize,
+    pub column: usize,
+}
+
 /// Opening properties; applied once, when the window is added.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WindowRules {
@@ -161,6 +169,7 @@ pub struct WindowRules {
     pub open_maximized_to_edges: bool,
     pub open_on_output: Option<OutputId>,
     pub open_on_workspace: Option<String>,
+    pub open_at: Option<OpenAt>,
 }
 
 /// Rectangles in global logical coordinates.
@@ -493,6 +502,20 @@ struct Workspace {
     view: f64,
 }
 
+impl Workspace {
+    /// Inserts without taking focus; the focused column stays the same column.
+    fn insert_at_column(&mut self, column: Column, wanted: usize) -> usize {
+        let position = wanted.min(self.columns.len());
+        self.columns.insert(position, column);
+        match self.focused {
+            Some(focused) if position <= focused => self.focused = Some(focused.saturating_add(1)),
+            Some(_) => {}
+            None => self.focused = Some(position),
+        }
+        position
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Output {
     identity: OutputId,
@@ -760,6 +783,11 @@ impl Layout {
         );
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let workspace = named.map_or(self.outputs[output].active, |(_, workspace)| workspace);
+        if let Some(place) = rules.open_at {
+            #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+            let last = self.outputs[output].workspaces.len().saturating_sub(1);
+            return Ok((output, place.workspace.min(last), false));
+        }
         Ok((
             output,
             workspace,
@@ -823,6 +851,9 @@ impl Layout {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let target = &mut self.outputs[output].workspaces[workspace];
         target.original_output = Some(output_id);
+        if let Some(place) = rules.open_at {
+            return target.insert_at_column(column, place.column);
+        }
         let position = target
             .focused
             .map_or(target.columns.len(), |index| index.saturating_add(1));
