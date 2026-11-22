@@ -851,7 +851,9 @@ impl Layout {
             && let Some((_, _, position, _)) = self.find_window(sibling)
         {
             #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
-            self.outputs[output].workspaces[workspace].columns[position].tiles.push(tile);
+            self.outputs[output].workspaces[workspace].columns[position]
+                .tiles
+                .push(tile);
             return position;
         }
         let width = if rules.open_maximized {

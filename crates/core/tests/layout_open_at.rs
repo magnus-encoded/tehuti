@@ -107,9 +107,15 @@ mod layout_open_at {
     fn stacked_under_joins_the_column_of_its_sibling_and_keeps_focus() {
         let mut layout = layout_with_two_workspaces();
         let before = layout.snapshot();
-        layout.add_window(WindowId(10), stacked_under(1)).expect("stacked");
-        layout.add_window(WindowId(11), stacked_under(1)).expect("stacked");
-        layout.add_window(WindowId(12), stacked_under(3)).expect("other workspace");
+        layout
+            .add_window(WindowId(10), stacked_under(1))
+            .expect("stacked");
+        layout
+            .add_window(WindowId(11), stacked_under(1))
+            .expect("stacked");
+        layout
+            .add_window(WindowId(12), stacked_under(3))
+            .expect("other workspace");
         assert_eq!(tiles(&layout, 0), vec![vec![1, 10, 11], vec![2]]);
         assert_eq!(tiles(&layout, 1), vec![vec![3, 12]]);
         let after = layout.snapshot();
@@ -123,7 +129,9 @@ mod layout_open_at {
     #[test]
     fn stacked_under_a_missing_window_opens_as_usual() {
         let mut layout = layout_with_two_workspaces();
-        layout.add_window(WindowId(10), stacked_under(99)).expect("opened");
+        layout
+            .add_window(WindowId(10), stacked_under(99))
+            .expect("opened");
         assert_eq!(tiles(&layout, 0), vec![vec![1], vec![2], vec![10]]);
     }
 }

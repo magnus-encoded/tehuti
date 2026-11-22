@@ -5,7 +5,7 @@ mod tests {
     use std::time::Instant;
 
     use tehuti::session_restore::{
-        MAX_ENVIRON_BYTES, MAX_FILE_BYTES, MAX_WINDOWS, Claim, Placements, Saved, Store, TOKEN_VARIABLE,
+        Claim, MAX_ENVIRON_BYTES, MAX_FILE_BYTES, MAX_WINDOWS, Placements, Saved, Store, TOKEN_VARIABLE,
         parse_enabled, save_due, token_from_environment, token_from_reader,
     };
     use tehuti_core::layout::{
@@ -334,9 +334,7 @@ mod tests {
         let now = Instant::now();
         let mut placements = Placements::<u64>::new(&saved, now);
         for (token, identity) in [(0_usize, 10_u64), (1, 11), (2, 12)] {
-            let claim = placements
-                .claim(Some(token), now, &identity)
-                .expect("claimed");
+            let claim = placements.claim(Some(token), now, &identity).expect("claimed");
             let open_at = match claim {
                 Claim::Column(place) => place,
                 Claim::Under(anchor, _) => OpenAt::StackedUnder(WindowId(anchor)),
@@ -365,6 +363,12 @@ mod tests {
             panic!("not stacked");
         };
         assert_eq!(anchor, 10);
-        assert_eq!(fallback, OpenAt::Column { workspace: 0, column: 0 });
+        assert_eq!(
+            fallback,
+            OpenAt::Column {
+                workspace: 0,
+                column: 0
+            }
+        );
     }
 }
