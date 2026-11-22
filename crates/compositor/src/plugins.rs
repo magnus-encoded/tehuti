@@ -439,17 +439,14 @@ impl Plugins {
                 )
             })
             .collect();
-        owners.sort_by_key(|(scope, ..)| *scope);
+        owners.sort_by_key(|(_, scope, _)| *scope);
         owners
-            .into_iter()
-            .map(|(_, index, verbs)| (index, verbs))
-            .collect()
     }
 
     pub(crate) fn speech_verbs(&self) -> Vec<tehuti_protocol::Verb> {
         self.verb_owners()
             .into_iter()
-            .flat_map(|(_, verbs)| verbs)
+            .flat_map(|(_, _, verbs)| verbs)
             .collect()
     }
 
