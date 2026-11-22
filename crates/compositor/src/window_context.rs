@@ -43,6 +43,7 @@ pub fn ancestors(surface: &WlSurface, windows: &[WlSurface], display: &DisplayHa
 }
 
 /// The restore launch token of the process that owns the surface, if it has one.
+#[must_use]
 pub fn restore_token(surface: &WlSurface, display: &DisplayHandle) -> Option<usize> {
     let process = pid(surface, display)?;
     let environ = std::fs::read(format!("/proc/{process}/environ")).ok()?;

@@ -79,11 +79,12 @@ mod layout_open_at {
         layout.add_window(WindowId(10), placed(0, 99)).expect("column");
         assert_eq!(columns(&layout, 0), vec![1, 2, 10]);
         layout.add_window(WindowId(11), placed(99, 0)).expect("workspace");
-        let all: Vec<u64> = layout.snapshot().outputs[0]
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.columns.iter().map(|column| column.tiles[0].window.0))
-            .collect();
-        assert!(all.contains(&11));
+        assert!(
+            layout.snapshot().outputs[0]
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.columns.iter())
+                .any(|column| column.tiles[0].window.0 == 11)
+        );
     }
 }
