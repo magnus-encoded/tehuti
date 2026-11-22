@@ -303,7 +303,11 @@ impl<K: Clone + PartialEq> Placements<K> {
     /// Ends the pending focus restore if focus is not where the restore left it: the user
     /// moved it.
     pub fn cancel_focus_if_moved(&mut self, current: Option<&K>) {
-        if self.expected_focus.as_ref().is_some_and(|expected| Some(expected) != current) {
+        if self
+            .expected_focus
+            .as_ref()
+            .is_some_and(|expected| Some(expected) != current)
+        {
             self.focus = FocusRestore::Off;
         }
     }

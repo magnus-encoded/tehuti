@@ -239,13 +239,15 @@ impl Restore {
             ..WindowRules::default()
         };
         self.placement.map(key, key, rules).unwrap();
-        self.placement.finish_restored_focus(&mut self.placements, self.now);
+        self.placement
+            .finish_restored_focus(&mut self.placements, self.now);
     }
 
     fn tick(&mut self, later: core::time::Duration) {
         self.now += later;
         self.placement.guard_restored_focus(&mut self.placements);
-        self.placement.finish_restored_focus(&mut self.placements, self.now);
+        self.placement
+            .finish_restored_focus(&mut self.placements, self.now);
     }
 }
 
