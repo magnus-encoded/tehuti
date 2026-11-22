@@ -283,13 +283,11 @@ impl<K: Clone> Placements<K> {
             column: saved.column,
         };
         let group = (saved.workspace, saved.column);
-        match self.anchors.iter().find(|(candidate, _)| *candidate == group) {
-            Some((_, anchor)) => Some(Claim::Under(anchor.clone(), place)),
-            None => {
-                self.anchors.push((group, window.clone()));
-                Some(Claim::Column(place))
-            }
+        if let Some((_, anchor)) = self.anchors.iter().find(|(candidate, _)| *candidate == group) {
+            return Some(Claim::Under(anchor.clone(), place));
         }
+        self.anchors.push((group, window.clone()));
+        Some(Claim::Column(place))
     }
 
     #[must_use]
