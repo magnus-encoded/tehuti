@@ -46,16 +46,17 @@ mod tests {
         let state = Discovery::Searching {
             retry_at: Duration::from_millis(250),
         };
-        let (state, notice) = controller::scan_discovery(state, Duration::from_millis(249), false, || {
+        let (state, early) = controller::scan_discovery(state, Duration::from_millis(249), false, || {
             panic!("scan before deadline")
         });
-        assert_eq!(notice, None);
-        let (state, notice) = controller::scan_discovery(state, Duration::from_millis(250), false, || false);
-        assert_eq!(notice, None, "a refused or missing controller cannot reconnect");
-        let (state, notice) = controller::scan_discovery(state, Duration::from_millis(251), true, || true);
-        assert_eq!(notice, Some(DiscoveryEffect::Reconnected));
-        let (_, notice) = controller::scan_discovery(state, Duration::from_secs(1), true, || true);
-        assert_eq!(notice, None, "an attached controller cannot reconnect twice");
+        assert_eq!(early, None);
+        let (state, refused) = controller::scan_discovery(state, Duration::from_millis(250), false, || false);
+        assert_eq!(refused, None, "a refused or missing controller cannot reconnect");
+        let (state, reconnected) =
+            controller::scan_discovery(state, Duration::from_millis(251), true, || true);
+        assert_eq!(reconnected, Some(DiscoveryEffect::Reconnected));
+        let (_, again) = controller::scan_discovery(state, Duration::from_secs(1), true, || true);
+        assert_eq!(again, None, "an attached controller cannot reconnect twice");
     }
 
     #[test]
