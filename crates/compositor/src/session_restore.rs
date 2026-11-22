@@ -235,10 +235,21 @@ pub struct Placements<K> {
     pending: Vec<(usize, SavedWindow, Instant)>,
     /// The first window opened in each saved column, which later tiles of it stack under.
     anchors: Vec<((usize, usize), K)>,
-    /// The token of the saved window that had focus, until it opens.
-    focus_token: Option<usize>,
-    /// The opened window to focus once every other launch has opened or expired.
-    focus_window: Option<K>,
+    focus: FocusRestore<K>,
+    /// The focus the restore itself last caused; any other focus is the user's choice.
+    expected_focus: Option<K>,
+}
+
+/// The pending return of the prior focus. A user focus change ends it, so a restore cannot
+/// override the user.
+#[derive(Debug)]
+enum FocusRestore<K> {
+    /// Nothing to restore, or the user took over.
+    Off,
+    /// The saved window has not opened yet; its launch token.
+    Awaiting(usize),
+    /// The saved window is open; it gets focus once every launch has opened or expired.
+    Armed(K),
 }
 
 /// Where a claimed window goes.
@@ -288,6 +299,16 @@ pub fn token_from_environment(environ: &[u8]) -> Option<usize> {
         .and_then(|value| value.parse().ok())
 }
 
+impl<K: Clone + PartialEq> Placements<K> {
+    /// Ends the pending focus restore if focus is not where the restore left it: the user
+    /// moved it.
+    pub fn cancel_focus_if_moved(&mut self, current: Option<&K>) {
+        if self.expected_focus.as_ref().is_some_and(|expected| Some(expected) != current) {
+            self.focus = FocusRestore::Off;
+        }
+    }
+}
+
 impl<K: Clone> Placements<K> {
     #[must_use]
     pub fn new(saved: &Saved, now: Instant) -> Self {
@@ -300,8 +321,8 @@ impl<K: Clone> Placements<K> {
                 .map(|(token, window)| (token, window.clone(), expires))
                 .collect(),
             anchors: Vec::new(),
-            focus_token: saved.focused,
-            focus_window: None,
+            focus: saved.focused.map_or(FocusRestore::Off, FocusRestore::Awaiting),
+            expected_focus: None,
         }
     }
 
@@ -315,9 +336,8 @@ impl<K: Clone> Placements<K> {
         let (_, saved, _) = self.pending.remove(index);
         let (workspace, column) = (saved.workspace, saved.column);
         let group = (workspace, column);
-        if self.focus_token == Some(token) {
-            self.focus_token = None;
-            self.focus_window = Some(window.clone());
+        if matches!(self.focus, FocusRestore::Awaiting(wanted) if wanted == token) {
+            self.focus = FocusRestore::Armed(window.clone());
         }
         if let Some((_, anchor)) = self.anchors.iter().find(|(candidate, _)| *candidate == group) {
             return Some(Claim::Under {
@@ -330,20 +350,26 @@ impl<K: Clone> Placements<K> {
         Some(Claim::Column { workspace, column })
     }
 
-    /// The window that had focus before the exit, once nothing else is still opening, so a
-    /// later window cannot take focus back. Given out once.
-    pub fn settled_focus(&mut self, now: Instant) -> Option<K> {
-        self.pending.retain(|(_, _, expires)| now < *expires);
-        if self.pending.is_empty() {
-            self.focus_window.take()
-        } else {
-            None
-        }
+    /// Records the focus the restore just caused.
+    pub fn note_focus(&mut self, current: Option<&K>) {
+        self.expected_focus = current.cloned();
     }
 
+    /// The window that had focus before the exit, once every launch has opened or expired,
+    /// so a later window cannot take focus back. Given out once.
+    pub fn settled_focus(&mut self, now: Instant) -> Option<K> {
+        self.pending.retain(|(_, _, expires)| now < *expires);
+        if !self.pending.is_empty() {
+            return None;
+        }
+        match core::mem::replace(&mut self.focus, FocusRestore::Off) {
+            FocusRestore::Armed(window) => Some(window),
+            FocusRestore::Off | FocusRestore::Awaiting(_) => None,
+        }
+    }
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.focus_window.is_none()
+        self.pending.is_empty() && !matches!(self.focus, FocusRestore::Armed(_))
     }
 }
 
