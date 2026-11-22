@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(placements.settled_focus(late), Some(10));
 
         let mut missing = Placements::<usize>::new(&saved, start);
-        let _claim = missing.claim(Some(1), start, &11);
+        let _other = missing.claim(Some(1), start, &11);
         assert_eq!(missing.settled_focus(late), None);
         assert!(missing.is_empty());
     }
