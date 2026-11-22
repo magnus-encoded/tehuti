@@ -244,7 +244,7 @@ impl Restore {
     }
 
     fn tick(&mut self, later: core::time::Duration) {
-        self.now += later;
+        self.now = self.now.checked_add(later).unwrap();
         self.placement.guard_restored_focus(&mut self.placements);
         self.placement
             .finish_restored_focus(&mut self.placements, self.now);
