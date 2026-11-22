@@ -126,37 +126,35 @@ fn remapping_a_surface_has_a_new_destination_and_trace() {
     assert_ne!(placement.focused_destination(), before);
 }
 
+/// A saved session whose first two windows share a column and whose third has its own.
+fn saved_stack() -> crate::session_restore::Saved {
+    use tehuti_core::layout::{Layout, LayoutConfig, OutputId, WindowId};
+    let mut layout = Layout::new(LayoutConfig::default());
+    let area = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1200.0,
+        height: 800.0,
+    };
+    layout
+        .add_output(OutputId(0), OutputGeometry { area, usable: area }, None)
+        .unwrap();
+    for window in 1..=3_u64 {
+        layout
+            .add_window(WindowId(window), WindowRules::default())
+            .unwrap();
+    }
+    layout.apply(Command::FocusColumnFirst);
+    layout.apply(Command::ConsumeWindowIntoColumn);
+    let installed = vec!["app".to_owned()];
+    crate::session_restore::Saved::capture(&layout.snapshot(), |_| Some("app".to_owned()), &installed)
+}
+
 /// Opens each key through a restore claim, as the compositor does, and returns the window
 /// keys of every column of the first workspace.
 fn restored(opens: &[(u8, usize)], closed: &[u8]) -> Vec<Vec<u8>> {
-    use crate::session_restore::{Placements, Saved};
-    use tehuti_core::layout::{Layout, LayoutConfig, WindowId};
-    let layout = {
-        let mut layout = Layout::new(LayoutConfig::default());
-        let area = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 1200.0,
-            height: 800.0,
-        };
-        layout
-            .add_output(
-                tehuti_core::layout::OutputId(0),
-                OutputGeometry { area, usable: area },
-                None,
-            )
-            .unwrap();
-        for id in 1..=3_u64 {
-            layout.add_window(WindowId(id), WindowRules::default()).unwrap();
-        }
-        layout.apply(Command::FocusColumnFirst);
-        layout.apply(Command::ConsumeWindowIntoColumn);
-        layout
-    };
-    let installed = vec!["a".to_owned()];
-    let saved = Saved::capture(&layout.snapshot(), |_| Some("a".to_owned()), &installed);
     let now = std::time::Instant::now();
-    let mut placements = Placements::<u8>::new(&saved, now);
+    let mut placements = crate::session_restore::Placements::<u8>::new(&saved_stack(), now);
     let mut placement = placement();
     for (key, token) in opens {
         let claim = placements.claim(Some(*token), now, key).unwrap();
@@ -170,13 +168,12 @@ fn restored(opens: &[(u8, usize)], closed: &[u8]) -> Vec<Vec<u8>> {
             let _window = placement.unmap(key);
         }
     }
-    let snapshot = placement.snapshot();
-    let identities: Vec<(u64, u8)> = placement
+    let keys: Vec<(u64, u8)> = placement
         .placed(|_| 0.0)
         .iter()
-        .map(|p| (p.identity, *p.key))
+        .map(|placed| (placed.identity, *placed.key))
         .collect();
-    snapshot.outputs[0].workspaces[0]
+    placement.snapshot().outputs[0].workspaces[0]
         .columns
         .iter()
         .map(|column| {
@@ -184,9 +181,8 @@ fn restored(opens: &[(u8, usize)], closed: &[u8]) -> Vec<Vec<u8>> {
                 .tiles
                 .iter()
                 .filter_map(|tile| {
-                    identities
-                        .iter()
-                        .find(|(id, _)| *id == tile.window.0)
+                    keys.iter()
+                        .find(|(identity, _)| *identity == tile.window.0)
                         .map(|(_, key)| *key)
                 })
                 .collect()
