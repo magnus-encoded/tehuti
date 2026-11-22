@@ -107,6 +107,15 @@ const XKB_KEYCODE_OFFSET: u32 = 8;
 /// How long the warning about display holders shows before the session leaves.
 const HANDOFF_WARNING_HOLD: core::time::Duration = core::time::Duration::from_secs(2);
 
+/// An injected monotonic clock.
+struct InjectedClock(std::rc::Rc<dyn Fn() -> Instant>);
+
+impl core::fmt::Debug for InjectedClock {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("InjectedClock")
+    }
+}
+
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
@@ -134,7 +143,7 @@ pub struct Compositor {
     remote_host_listing: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
-    injected_clock: Option<std::rc::Rc<dyn Fn() -> Instant>>,
+    injected_clock: Option<InjectedClock>,
     driver_clock: crate::driver::Clock,
     driver_elapsed: core::time::Duration,
     dim_elapsed: core::time::Duration,
@@ -390,7 +399,7 @@ impl Compositor {
     }
 
     fn clock_now(&self) -> Instant {
-        if let Some(clock) = &self.injected_clock {
+        if let Some(InjectedClock(clock)) = &self.injected_clock {
             return clock();
         }
         if matches!(self.driver_clock, crate::driver::Clock::Live) {
@@ -1333,7 +1342,7 @@ impl Compositor {
     pub fn set_clock(&mut self, clock: std::rc::Rc<dyn Fn() -> Instant>) {
         self.previous_tick = clock();
         self.start_time = self.previous_tick;
-        self.injected_clock = Some(clock);
+        self.injected_clock = Some(InjectedClock(clock));
     }
 
     /// Reads the clock once and returns the time since the previous read.
