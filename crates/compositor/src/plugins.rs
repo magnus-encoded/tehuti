@@ -424,7 +424,7 @@ impl Plugins {
     }
 
     /// The focus that governs verbs: the press snapshot while an utterance runs.
-    fn verb_focus(&self) -> Option<&String> {
+    const fn verb_focus(&self) -> Option<&String> {
         match &self.utterance_focus {
             UtteranceFocus::Live => self.focus.as_ref(),
             UtteranceFocus::Pressed(focus) => focus.as_ref(),
@@ -1400,7 +1400,10 @@ mod tests {
 
         impl std::io::Write for Capture {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
+                self.0
+                    .lock()
+                    .map_err(|_| std::io::Error::other("poisoned"))?
+                    .extend_from_slice(bytes);
                 Ok(bytes.len())
             }
 
