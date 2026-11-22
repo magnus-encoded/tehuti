@@ -141,7 +141,7 @@ mod tests {
         let first = placements.claim(Some(0), now, &10).expect("first");
         let column = |claim| match claim {
             Claim::Column(OpenAt::Column { column, .. }) => column,
-            other => panic!("not a plain column: {other:?}"),
+            Claim::Under(..) => panic!("stacked, not a plain column"),
         };
         assert_eq!((column(first), column(second)), (0, 1));
         assert!(placements.claim(Some(1), now, &12).is_none());
