@@ -711,8 +711,8 @@ mod tests {
             let split = split.min(count);
             // Make `split` requests expire one pass earlier than the rest.
             let early = session.pending.keys().copied().take(split).collect::<Vec<_>>();
-            for id in early {
-                if let Some(deadline) = session.pending.get_mut(&id) {
+            for request_id in early {
+                if let Some(deadline) = session.pending.get_mut(&request_id) {
                     *deadline = start;
                 }
             }
