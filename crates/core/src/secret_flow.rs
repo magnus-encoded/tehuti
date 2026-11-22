@@ -65,6 +65,9 @@ enum Phase {
     Looking {
         destination: SecretDestination,
     },
+    /// The lookup found the store locked; the keyboard shows the unlock path
+    /// until the store is unlocked, focus moves or a new request replaces it.
+    StoreLocked,
 }
 
 /// Everything the step reacts to.
@@ -85,6 +88,10 @@ pub enum SecretInput {
     FramePresented,
     /// The caller's lookup ended; `found` is false when the store failed.
     LookupFinished { found: bool },
+    /// The caller's lookup stopped because the store is locked.
+    LookupLocked,
+    /// The store was unlocked (or the unlock path was dismissed).
+    StoreUnlocked,
     /// The caller could not deliver the looked-up value.
     DeliveryFailed,
 }
@@ -98,6 +105,8 @@ pub enum SecretEffect {
     Deliver(SecretDestination),
     /// The button belonged to the confirmation; do not route it further.
     ConsumeButton,
+    /// The store is locked: show the controller unlock path (ADR 0006).
+    StoreLocked,
     /// The request was not accepted.
     Refused,
 }
@@ -131,7 +140,7 @@ impl SecretFlow {
         match input {
             SecretInput::Request { reference, target } => self.request(reference, &target, now, current),
             SecretInput::FocusChanged => {
-                if matches!(self.phase, Phase::Confirming(_)) {
+                if matches!(self.phase, Phase::Confirming(_) | Phase::StoreLocked) {
                     self.phase = Phase::Idle;
                 }
                 Vec::new()
@@ -146,6 +155,13 @@ impl SecretFlow {
             }
             SecretInput::Button(state) => self.button(state, now, current),
             SecretInput::LookupFinished { found } => self.lookup_finished(found, now, current),
+            SecretInput::LookupLocked => self.lookup_locked(),
+            SecretInput::StoreUnlocked => {
+                if matches!(self.phase, Phase::StoreLocked) {
+                    self.phase = Phase::Idle;
+                }
+                Vec::new()
+            }
             SecretInput::DeliveryFailed => {
                 self.raise_notice(now);
                 Vec::new()
@@ -260,6 +276,20 @@ impl SecretFlow {
         } else {
             Vec::new()
         }
+    }
+
+    fn lookup_locked(&mut self) -> Vec<SecretEffect> {
+        if !self.looking() {
+            return Vec::new();
+        }
+        self.phase = Phase::StoreLocked;
+        vec![SecretEffect::StoreLocked]
+    }
+
+    /// Whether the unlock path should be showing.
+    #[must_use]
+    pub const fn store_locked(&self) -> bool {
+        matches!(self.phase, Phase::StoreLocked)
     }
 
     /// The overlay text while a confirmation is answerable.
@@ -541,6 +571,44 @@ mod tests {
         assert_eq!(step(&mut flow, SecretInput::LookupFinished { found: true }), NONE);
     }
 
+    #[test]
+    fn a_locked_store_raises_the_effect_and_the_state() {
+        let mut flow = armed_flow();
+        feed(&mut flow, PRESS);
+        let effects = step(&mut flow, SecretInput::LookupLocked);
+        assert_eq!(effects, [SecretEffect::StoreLocked]);
+        assert!(flow.store_locked());
+        assert!(!flow.looking());
+        assert!(!flow.notice_active(START));
+    }
+
+    #[test]
+    fn a_locked_report_without_a_lookup_is_ignored() {
+        let mut flow = SecretFlow::new();
+        assert_eq!(step(&mut flow, SecretInput::LookupLocked), NONE);
+        assert!(!flow.store_locked());
+    }
+
+    #[test]
+    fn unlocking_focus_change_or_a_new_request_ends_the_locked_state() {
+        let locked = || {
+            let mut flow = armed_flow();
+            feed(&mut flow, PRESS);
+            feed(&mut flow, SecretInput::LookupLocked);
+            flow
+        };
+        let mut unlocked = locked();
+        feed(&mut unlocked, SecretInput::StoreUnlocked);
+        assert!(!unlocked.store_locked());
+        let mut moved = locked();
+        feed(&mut moved, SecretInput::FocusChanged);
+        assert!(!moved.store_locked());
+        let mut again = locked();
+        feed(&mut again, request());
+        assert!(!again.store_locked());
+        assert!(again.prompt(START, Some(DEST)).is_some());
+    }
+
     #[derive(Debug, Clone)]
     enum Event {
         Request,
@@ -550,6 +618,7 @@ mod tests {
         Held(bool),
         Focus,
         Finish(bool),
+        Locked,
         Wait(u64),
     }
 
@@ -562,6 +631,7 @@ mod tests {
             any::<bool>().prop_map(Event::Held),
             Just(Event::Focus),
             any::<bool>().prop_map(Event::Finish),
+            Just(Event::Locked),
             (0_u64..15).prop_map(Event::Wait),
         ]
     }
@@ -596,6 +666,7 @@ mod tests {
                         SecretInput::FocusChanged
                     }
                     Event::Finish(found) => SecretInput::LookupFinished { found },
+                    Event::Locked => SecretInput::LookupLocked,
                     Event::Wait(seconds) => {
                         now = now.saturating_add(Duration::from_secs(seconds));
                         continue;

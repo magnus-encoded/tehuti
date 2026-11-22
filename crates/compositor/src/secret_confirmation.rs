@@ -141,7 +141,7 @@ impl<S: PartialEq> SecretConfirmation<S> {
             match effect {
                 SecretEffect::ConsumeButton => consumed = true,
                 SecretEffect::StartLookup(authorization) => self.start_lookup(authorization, now),
-                SecretEffect::Deliver(_) | SecretEffect::Refused => {}
+                SecretEffect::Deliver(_) | SecretEffect::StoreLocked | SecretEffect::Refused => {}
             }
         }
         consumed
