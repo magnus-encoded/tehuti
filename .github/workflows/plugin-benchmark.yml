@@ -1,0 +1,32 @@
+name: plugin benchmark
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  plugin-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test measurement and threshold actions
+        run: |
+          cargo test --locked -p tehuti-protocol --test plugin_benchmark
+          python3 -m unittest discover -s scripts -p test_plugin_benchmark.py
+      - name: Measure real stdio in release mode
+        run: cargo run --release --locked -p tehuti-protocol --bin plugin-benchmark > plugin-benchmark.json
+      - name: Report thresholds and route breaches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/plugin-benchmark.py plugin-benchmark.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plugin-benchmark
+          path: plugin-benchmark.json
