@@ -3776,12 +3776,12 @@ impl Compositor {
     /// are placed as they open, whatever their order, and focus is never touched.
     pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
         let installed = self.launcher.installed();
-        for window in saved.windows() {
+        for (token, window) in saved.windows().iter().enumerate() {
             if !installed.contains(&window.app_id) {
                 tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
             } else if !self
                 .launcher
-                .launch_application(&window.app_id, self.launch_socket.as_deref())
+                .launch_with_token(&window.app_id, self.launch_socket.as_deref(), Some(token))
             {
                 tracing::warn!(app_id = %window.app_id, "restore launch failed");
             }
@@ -4288,7 +4288,8 @@ impl Compositor {
 
     fn claim_restored_place(&mut self, surface: &ToplevelSurface) -> Option<tehuti_core::layout::OpenAt> {
         let placements = self.placements.as_mut()?;
-        let place = toplevel_app_id(surface).and_then(|app_id| placements.claim(&app_id, Instant::now()));
+        let token = crate::window_context::restore_token(surface.wl_surface(), &self.display);
+        let place = placements.claim(token, Instant::now());
         if placements.is_empty() {
             self.placements = None;
         }

@@ -5,7 +5,8 @@ mod tests {
     use std::time::Instant;
 
     use tehuti::session_restore::{
-        MAX_FILE_BYTES, MAX_WINDOWS, Placements, Saved, Store, parse_enabled, save_due,
+        MAX_FILE_BYTES, MAX_WINDOWS, Placements, Saved, Store, TOKEN_VARIABLE, parse_enabled, save_due,
+        token_from_environment,
     };
     use tehuti_core::layout::{
         Command, Layout, LayoutConfig, OpenAt, OutputGeometry, OutputId, Rect, WindowId, WindowRules,
@@ -133,14 +134,35 @@ mod tests {
     }
 
     #[test]
-    fn a_window_claims_its_saved_place_once_in_saved_order() {
+    fn a_window_claims_the_place_of_its_launch_token_once() {
         let now = Instant::now();
         let mut placements = Placements::new(&two_of_one_and_one_other(), now);
-        let first = placements.claim("org.example.Alpha", now).expect("first");
-        let second = placements.claim("org.example.Alpha", now).expect("second");
+        let second = placements.claim(Some(1), now).expect("second");
+        let first = placements.claim(Some(0), now).expect("first");
         assert_eq!((first.column, second.column), (0, 1));
-        assert!(placements.claim("org.example.Alpha", now).is_none());
-        assert!(placements.claim("org.example.Other", now).is_none());
+        assert!(placements.claim(Some(1), now).is_none());
+        assert!(placements.claim(Some(7), now).is_none());
+    }
+
+    #[test]
+    fn a_hand_opened_window_cannot_take_a_saved_place() {
+        let now = Instant::now();
+        let mut placements = Placements::new(&two_of_one_and_one_other(), now);
+        assert!(placements.claim(None, now).is_none());
+        assert!(!placements.is_empty());
+        assert!(placements.claim(Some(0), now).is_some());
+    }
+
+    #[test]
+    fn the_launch_token_is_read_from_a_process_environment() {
+        let token = format!("{}=2", TOKEN_VARIABLE);
+        let environ = format!("HOME=/home/x\0{token}\0PATH=/bin\0");
+        assert_eq!(token_from_environment(environ.as_bytes()), Some(2));
+        assert_eq!(token_from_environment(b"HOME=/home/x\0"), None);
+        let bad = format!("{TOKEN_VARIABLE}=abc\0");
+        assert_eq!(token_from_environment(bad.as_bytes()), None);
+        let lookalike = format!("X{TOKEN_VARIABLE}=1\0");
+        assert_eq!(token_from_environment(lookalike.as_bytes()), None);
     }
 
     #[test]
@@ -148,7 +170,7 @@ mod tests {
         let now = Instant::now();
         let mut placements = Placements::new(&two_of_one_and_one_other(), now);
         let late = now.checked_add(Duration::from_secs(30)).expect("time");
-        assert!(placements.claim("org.example.Beta", late).is_some());
+        assert!(placements.claim(Some(2), late).is_some());
     }
 
     #[test]
@@ -156,8 +178,38 @@ mod tests {
         let now = Instant::now();
         let mut placements = Placements::new(&two_of_one_and_one_other(), now);
         let late = now.checked_add(Duration::from_secs(3600)).expect("time");
-        assert!(placements.claim("org.example.Beta", late).is_none());
+        assert!(placements.claim(Some(2), late).is_none());
         assert!(placements.is_empty());
+    }
+
+    #[test]
+    fn the_session_file_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().expect("dir");
+        let path = directory.path().join("state/session.json");
+        let store = Store::new(path.clone());
+        let (layout, names) = layout_with(&[(1, "org.example.Alpha")], &[]);
+        let saved = capture(&layout, &names, &["org.example.Alpha"]);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(path.with_extension("tmp"), "stale").expect("stale");
+        std::fs::set_permissions(path.with_extension("tmp"), std::fs::Permissions::from_mode(0o644))
+            .expect("mode");
+        store.save(&saved).expect("save");
+        let mode = std::fs::metadata(&path).expect("file").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn an_empty_session_keeps_the_earlier_good_one() {
+        let directory = tempfile::tempdir().expect("dir");
+        let store = Store::new(directory.path().join("session.json"));
+        let (layout, names) = layout_with(&[(1, "org.example.Alpha")], &[]);
+        let good = capture(&layout, &names, &["org.example.Alpha"]);
+        store.save(&good).expect("save");
+        let empty = capture(&layout, &names, &[]);
+        assert!(empty.windows().is_empty());
+        store.save(&empty).expect("empty save is not an error");
+        assert_eq!(store.take().expect("take"), Some(good));
     }
 
     #[test]

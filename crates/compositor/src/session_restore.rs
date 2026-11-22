@@ -5,6 +5,7 @@
 //! place, never commands: reading it can only start an installed application.
 
 use core::time::Duration;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::{io, io::Read as _, io::Write as _, path::PathBuf, time::Instant};
 
 use serde::{Deserialize, Serialize};
@@ -152,16 +153,26 @@ impl Store {
         Ok(Self::new(root.join("tehuti/session.json")))
     }
 
+    /// An empty session is not written, so it never replaces an earlier good one.
+    ///
     /// # Errors
     /// Directory creation, write or atomic replacement failed.
     pub fn save(&self, saved: &Saved) -> io::Result<()> {
+        if saved.windows.is_empty() {
+            return Ok(());
+        }
         let parent = self
             .path
             .parent()
             .ok_or_else(|| io::Error::other("state directory unavailable"))?;
         std::fs::create_dir_all(parent)?;
         let temporary = self.path.with_extension("tmp");
-        let mut file = std::fs::File::create(&temporary)?;
+        let _removed = std::fs::remove_file(&temporary);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)?;
         file.write_all(saved.to_text().as_bytes())?;
         file.sync_all()?;
         std::fs::rename(&temporary, &self.path)
@@ -200,10 +211,25 @@ impl Store {
 }
 
 /// Where each launched application's windows still have to go. A window that opens claims
-/// the first entry for its app id; entries nobody claims expire.
+/// the entry whose launch token it carries; entries nobody claims expire.
 #[derive(Debug)]
 pub struct Placements {
-    pending: Vec<(SavedWindow, Instant)>,
+    pending: Vec<(usize, SavedWindow, Instant)>,
+}
+
+/// The environment variable that carries a restore launch's token (the saved window's
+/// index) into the launched process and everything it starts.
+pub const TOKEN_VARIABLE: &str = "TEHUTI_RESTORE_TOKEN";
+
+/// The launch token in the raw bytes of `/proc/<pid>/environ`, if the process has one.
+#[must_use]
+pub fn token_from_environment(environ: &[u8]) -> Option<usize> {
+    let prefix = format!("{TOKEN_VARIABLE}=");
+    environ
+        .split(|byte| *byte == 0)
+        .find_map(|entry| entry.strip_prefix(prefix.as_bytes()))
+        .and_then(|value| core::str::from_utf8(value).ok())
+        .and_then(|value| value.parse().ok())
 }
 
 impl Placements {
@@ -214,20 +240,20 @@ impl Placements {
             pending: saved
                 .windows
                 .iter()
-                .map(|window| (window.clone(), expires))
+                .enumerate()
+                .map(|(token, window)| (token, window.clone(), expires))
                 .collect(),
         }
     }
 
-    /// The saved place for a window that just opened, removed from the list. `None` for a
-    /// window nothing was saved for, or whose entry expired: it opens as usual.
-    pub fn claim(&mut self, app_id: &str, now: Instant) -> Option<OpenAt> {
-        self.pending.retain(|(_, expires)| now < *expires);
-        let index = self
-            .pending
-            .iter()
-            .position(|(window, _)| window.app_id == app_id)?;
-        let (window, _) = self.pending.remove(index);
+    /// The saved place for a window that just opened, removed from the list. The window
+    /// proves it was launched by the restore with the token its process carries; a window
+    /// without one, or whose entry expired, opens as usual.
+    pub fn claim(&mut self, token: Option<usize>, now: Instant) -> Option<OpenAt> {
+        self.pending.retain(|(_, _, expires)| now < *expires);
+        let token = token?;
+        let index = self.pending.iter().position(|(wanted, _, _)| *wanted == token)?;
+        let (_, window, _) = self.pending.remove(index);
         Some(OpenAt {
             workspace: window.workspace,
             column: window.column,
