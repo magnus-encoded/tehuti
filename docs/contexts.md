@@ -767,3 +767,7 @@ that controller in every context, including passthrough. Guide+Menu still escape
 `controller-talk.json` in the Tehuti config directory stores an object mapping
 kernel controller names to `"record"` (Share) or `"start"` (Menu). Missing entries
 use the context settings. Pads with the same kernel name share a binding.
+
+## Controller discovery
+
+Starting without a controller logs a warning. Discovery continues every 250 ms and on input directory changes until a controller can be grabbed.

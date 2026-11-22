@@ -134,6 +134,7 @@ pub struct Compositor {
     remote_host_listing: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
+    injected_clock: Option<std::rc::Rc<dyn Fn() -> Instant>>,
     driver_clock: crate::driver::Clock,
     driver_elapsed: core::time::Duration,
     dim_elapsed: core::time::Duration,
@@ -301,6 +302,7 @@ impl Compositor {
             volume: None,
             remote_host_listing: None,
             microphone_listing: None,
+            injected_clock: None,
             driver_clock: crate::driver::Clock::Live,
             driver_elapsed: core::time::Duration::ZERO,
             previous_tick: Instant::now(),
@@ -386,6 +388,9 @@ impl Compositor {
     }
 
     fn clock_now(&self) -> Instant {
+        if let Some(clock) = &self.injected_clock {
+            return clock();
+        }
         if matches!(self.driver_clock, crate::driver::Clock::Live) {
             Instant::now()
         } else {
@@ -1322,13 +1327,20 @@ impl Compositor {
         self.pointer.clone().frame(self);
     }
 
+    /// Uses an injected monotonic clock for event timing.
+    pub fn set_clock(&mut self, clock: std::rc::Rc<dyn Fn() -> Instant>) {
+        self.previous_tick = clock();
+        self.start_time = self.previous_tick;
+        self.injected_clock = Some(clock);
+    }
+
     /// Reads the clock once and returns the time since the previous read.
     fn read_clock(&mut self) -> core::time::Duration {
         if !matches!(self.driver_clock, crate::driver::Clock::Live) {
             return core::time::Duration::ZERO;
         }
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.previous_tick);
+        let now = self.clock_now();
+        let elapsed = now.saturating_duration_since(self.previous_tick);
         self.previous_tick = now;
         elapsed
     }
