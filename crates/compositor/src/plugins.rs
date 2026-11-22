@@ -114,6 +114,13 @@ impl VerbScope {
     }
 }
 
+/// Which focus verbs use: the live one, or the snapshot taken at press.
+#[derive(Debug)]
+enum UtteranceFocus {
+    Live,
+    Pressed(Option<String>),
+}
+
 pub struct Plugins {
     entries: Vec<Entry>,
     start: Start,
@@ -125,7 +132,7 @@ pub struct Plugins {
     /// Verb words already logged as clashing between a focused application and a global verb.
     logged_clashes: std::collections::BTreeSet<(usize, String)>,
     /// The focus when the current utterance began; decode and routing both use it.
-    utterance_focus: Option<Option<String>>,
+    utterance_focus: UtteranceFocus,
 }
 impl Drop for Plugins {
     fn drop(&mut self) {
@@ -413,12 +420,15 @@ impl Plugins {
 
     /// Takes the focus snapshot for a new utterance, at press.
     pub(crate) fn begin_utterance(&mut self) {
-        self.utterance_focus = Some(self.focus.clone());
+        self.utterance_focus = UtteranceFocus::Pressed(self.focus.clone());
     }
 
     /// The focus that governs verbs: the press snapshot while an utterance runs.
     fn verb_focus(&self) -> Option<&String> {
-        self.utterance_focus.as_ref().unwrap_or(&self.focus).as_ref()
+        match &self.utterance_focus {
+            UtteranceFocus::Live => self.focus.as_ref(),
+            UtteranceFocus::Pressed(focus) => focus.as_ref(),
+        }
     }
 
     /// Whether this plugin's verbs apply now, by the scope its kind gives them.
@@ -467,7 +477,7 @@ impl Plugins {
         let Event::Speech { text } = event else {
             return None;
         };
-        self.utterance_focus = None;
+        self.utterance_focus = UtteranceFocus::Live;
         let owners = self.verb_owners();
         let route_scope = |wanted: VerbScope| {
             tehuti_core::verbs::route(
@@ -652,7 +662,7 @@ pub fn install<Data: 'static>(
         cleanup_timer: Box::new(move || handle.remove(timer_token)),
         routed_verb: None,
         logged_clashes: std::collections::BTreeSet::new(),
-        utterance_focus: None,
+        utterance_focus: UtteranceFocus::Live,
     })
 }
 
@@ -1174,7 +1184,7 @@ mod tests {
                 cleanup_timer: Box::new(|| {}),
                 routed_verb: None,
                 logged_clashes: std::collections::BTreeSet::new(),
-                utterance_focus: None,
+                utterance_focus: UtteranceFocus::Live,
             }
         }
 
@@ -1386,11 +1396,11 @@ mod tests {
         }
 
         #[derive(Clone, Default)]
-        struct Capture(Rc<RefCell<Vec<u8>>>);
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
         impl std::io::Write for Capture {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.borrow_mut().extend_from_slice(bytes);
+                self.0.lock().unwrap().extend_from_slice(bytes);
                 Ok(bytes.len())
             }
 
@@ -1431,7 +1441,7 @@ mod tests {
                     );
                 }
             });
-            let log = String::from_utf8(capture.0.borrow().clone()).unwrap();
+            let log = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
             assert_eq!(log.matches("shadows a global verb").count(), 1, "{log}");
         }
 
