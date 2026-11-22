@@ -215,9 +215,9 @@ fn the_restored_focus_lands_on_the_saved_window_after_later_opens() {
     let apps = saved_layout.placed(|_| 0.0);
     let saved = crate::session_restore::Saved::capture(
         &saved_layout.snapshot(),
-        |id| {
+        |window| {
             apps.iter()
-                .find(|placed| placed.identity == id.0)
+                .find(|placed| placed.identity == window.0)
                 .map(|_| "app".to_owned())
         },
         &installed,
