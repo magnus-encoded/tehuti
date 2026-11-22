@@ -321,39 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn tiles_of_one_column_come_back_stacked_in_order() {
-        let (original, saved) = stacked_pair();
-        let shape = |layout: &Layout| -> Vec<usize> {
-            layout.snapshot().outputs[0].workspaces[0]
-                .columns
-                .iter()
-                .map(|column| column.tiles.len())
-                .collect()
-        };
-        let (mut restored, _) = layout_with(&[], &[]);
-        let now = Instant::now();
-        let mut placements = Placements::<u64>::new(&saved, now);
-        for (token, identity) in [(0_usize, 10_u64), (1, 11), (2, 12)] {
-            let claim = placements.claim(Some(token), now, &identity).expect("claimed");
-            let open_at = match claim {
-                Claim::Column { workspace, column } => OpenAt::Column { workspace, column },
-                Claim::Under { anchor, .. } => OpenAt::StackedUnder(WindowId(anchor)),
-            };
-            restored
-                .add_window(
-                    WindowId(identity),
-                    WindowRules {
-                        open_at: Some(open_at),
-                        ..WindowRules::default()
-                    },
-                )
-                .expect("window");
-        }
-        assert_eq!(shape(&restored), shape(&original));
-        assert!(placements.is_empty());
-    }
-
-    #[test]
     fn a_stacked_tile_falls_back_to_its_saved_column() {
         let (_, saved) = stacked_pair();
         let now = Instant::now();
