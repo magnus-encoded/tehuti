@@ -15,8 +15,8 @@ use std::{
     time::Instant,
 };
 use tehuti_protocol::{
-    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, PluginKind, ResultValue,
-    RpcVersion, Subscription,
+    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, ResultValue, RpcVersion,
+    Subscription,
 };
 
 pub(crate) const HANG_TIMEOUT: Duration = Duration::from_secs(2);
@@ -616,7 +616,7 @@ mod tests {
             plugin_id: None,
             author: None,
             security_contact: None,
-            kind: PluginKind::Application,
+            kind: tehuti_protocol::PluginKind::Application,
             verbs: Vec::new(),
             executable: "plugin".into(),
             app_ids: vec!["test".into()],

@@ -99,14 +99,14 @@ impl Drop for Entry {
 /// Where a plugin's verbs apply. The plugin's kind alone decides it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum VerbScope {
-    /// While a window of one of the plugin's app_ids has focus; checked first.
+    /// While a window of one of the plugin's `app_ids` has focus; checked first.
     WhileFocused,
     /// In any window, also with none focused.
     Everywhere,
 }
 
 impl VerbScope {
-    const fn of(kind: PluginKind) -> Self {
+    const fn from_kind(kind: PluginKind) -> Self {
         match kind {
             PluginKind::Application => Self::WhileFocused,
             PluginKind::Verb => Self::Everywhere,
@@ -410,7 +410,7 @@ impl Plugins {
 
     /// Whether this plugin's verbs apply now, by the scope its kind gives them.
     fn verbs_apply(&self, entry: &Entry) -> bool {
-        match VerbScope::of(entry.manifest.kind) {
+        match VerbScope::from_kind(entry.manifest.kind) {
             VerbScope::Everywhere => true,
             VerbScope::WhileFocused => self
                 .focus
@@ -420,16 +420,23 @@ impl Plugins {
     }
 
     /// Ready plugins whose verbs apply now: focused applications first, so they win ties.
-    fn verb_owners(&self) -> Vec<(usize, Vec<tehuti_protocol::Verb>)> {
-        let mut owners: Vec<(VerbScope, usize, Vec<tehuti_protocol::Verb>)> = self
+    fn verb_owners(&self) -> Vec<(usize, VerbScope, Vec<tehuti_protocol::Verb>)> {
+        let mut owners: Vec<(usize, VerbScope, Vec<tehuti_protocol::Verb>)> = self
             .entries
             .iter()
             .enumerate()
             .filter(|(_, entry)| self.verbs_apply(entry))
             .filter_map(|(index, entry)| {
                 let session = entry.session.as_ref()?.borrow();
-                (session.status == Status::Ready && session.events.contains(&Subscription::Speech))
-                    .then(|| (VerbScope::of(entry.manifest.kind), index, session.verbs.clone()))
+                (session.status == Status::Ready && session.events.contains(&Subscription::Speech)).then(
+                    || {
+                        (
+                            index,
+                            VerbScope::from_kind(entry.manifest.kind),
+                            session.verbs.clone(),
+                        )
+                    },
+                )
             })
             .collect();
         owners.sort_by_key(|(scope, ..)| *scope);
@@ -452,19 +459,22 @@ impl Plugins {
             return None;
         };
         let owners = self.verb_owners();
+        let global: Vec<&tehuti_protocol::Verb> = owners
+            .iter()
+            .filter(|(_, scope, _)| *scope == VerbScope::Everywhere)
+            .flat_map(|(_, _, verbs)| verbs)
+            .collect();
         let matched = tehuti_core::verbs::route(
-            owners.iter().map(|(index, verbs)| (*index, verbs.as_slice())),
+            owners.iter().map(|(index, _, verbs)| (*index, verbs.as_slice())),
             text.as_str(),
         )?;
-        let winner_focused =
-            VerbScope::of(self.entries.get(matched.plugin)?.manifest.kind) == VerbScope::WhileFocused;
+        let winner_focused = owners
+            .iter()
+            .any(|(index, scope, _)| *index == matched.plugin && *scope == VerbScope::WhileFocused);
         let shadows = winner_focused
-            && owners.iter().any(|(index, verbs)| {
-                VerbScope::of(self.entries[*index].manifest.kind) == VerbScope::Everywhere
-                    && verbs
-                        .iter()
-                        .any(|verb| verb.as_ref().eq_ignore_ascii_case(&matched.verb))
-            });
+            && global
+                .iter()
+                .any(|verb| verb.as_ref().eq_ignore_ascii_case(&matched.verb));
         if shadows && self.logged_clashes.insert(matched.verb.to_lowercase()) {
             tracing::warn!(verb = %matched.verb, "a focused application's verb shadows a global verb");
         }
@@ -1152,7 +1162,6 @@ mod tests {
                 pad: tehuti_core::vpad::Filter::default(),
                 cleanup_timer: Box::new(|| {}),
                 routed_verb: None,
-                logged_clashes: std::collections::BTreeSet::new(),
                 logged_clashes: std::collections::BTreeSet::new(),
             }
         }
