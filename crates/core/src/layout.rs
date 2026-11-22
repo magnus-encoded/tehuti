@@ -544,6 +544,16 @@ pub struct Layout {
     detached: Vec<Workspace>,
 }
 
+const fn opening_mode(rules: &WindowRules) -> TileMode {
+    if rules.open_fullscreen {
+        TileMode::Fullscreen
+    } else if rules.open_maximized_to_edges {
+        TileMode::MaximizedToEdges
+    } else {
+        TileMode::Normal
+    }
+}
+
 impl Layout {
     #[must_use]
     pub const fn new(config: LayoutConfig) -> Self {
@@ -832,13 +842,7 @@ impl Layout {
         let previous = self.outputs[output].workspaces[workspace].focused_window();
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let view = self.outputs[output].workspaces[workspace].view;
-        let mode = if rules.open_fullscreen {
-            TileMode::Fullscreen
-        } else if rules.open_maximized_to_edges {
-            TileMode::MaximizedToEdges
-        } else {
-            TileMode::Normal
-        };
+        let mode = opening_mode(rules);
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let anchor = self.outputs[output].column_x(
             workspace,
