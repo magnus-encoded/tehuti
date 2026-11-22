@@ -5,7 +5,8 @@ mod plugins {
     use core::time::Duration;
     use proptest::prelude::*;
     use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
-    use std::{cell::Cell, rc::Rc};
+    use core::cell::Cell;
+    use std::rc::Rc;
     use std::{
         io::Write,
         os::unix::fs::PermissionsExt,
@@ -74,7 +75,7 @@ mod plugins {
                     started.elapsed() < Duration::from_secs(5),
                     "plugin did not progress"
                 );
-                self.now.set(self.now.get() + Duration::from_millis(1));
+                self.now.set(self.now.get().checked_add(Duration::from_millis(1)).unwrap());
                 self.compositor.advance_time();
                 self.event_loop
                     .dispatch(Duration::from_millis(5), &mut self.compositor)
@@ -106,7 +107,7 @@ mod plugins {
 
         fn release_reply_after(&mut self, elapsed: Duration) {
             self.pump_until(|harness| harness.directory.path().join("waiting").exists());
-            self.now.set(self.now.get() + elapsed);
+            self.now.set(self.now.get().checked_add(elapsed).unwrap());
             std::fs::write(self.directory.path().join("gate"), b"x").unwrap();
             let started = Instant::now();
             while !self.directory.path().join("replied").exists() {
@@ -140,9 +141,9 @@ mod plugins {
         harness.compositor.controller_input(Input::Reconnected);
         harness.send([
             release.clone(),
-            press.clone(),
+            press,
             release.clone(),
-            release.clone(),
+            release,
             focus("test"),
         ]);
         harness.pump_until(|harness| {
@@ -403,12 +404,12 @@ for line in sys.stdin:
         let mut routed = Vec::new();
         let mut session = tehuti_core::controller::State::default();
         for event in events {
-            let (next, admitted) =
+            let (after_session, admitted) =
                 tehuti_core::controller::step(session, tehuti_core::controller::Input::Event(event));
-            session = next;
-            for event in admitted {
+            session = after_session;
+            for admitted_event in admitted {
                 let mut input = Input::Event {
-                    event,
+                    event: admitted_event,
                     elapsed: Duration::ZERO,
                 };
                 loop {
