@@ -1332,6 +1332,10 @@ mod tests {
             }
         }
 
+        fn refocus(plugins: &mut Plugins, app_id: &str) {
+            let _active: bool = plugins.active(&focus(app_id));
+        }
+
         fn give_verbs(plugins: &Plugins, index: usize, json: &str) {
             let notice = tehuti_protocol::parse_message(json.as_bytes()).unwrap();
             let session = plugins.entries[index].session.clone().unwrap();
@@ -1344,25 +1348,25 @@ mod tests {
         fn an_application_plugins_verbs_apply_only_while_its_application_has_focus() {
             let mut plugins = verb_plugins(&[]);
             give_verbs(&plugins, 1, ADA);
-            assert!(
+            assert_eq!(
                 plugins.entries[1]
                     .session
                     .as_ref()
                     .unwrap()
                     .borrow()
-                    .invalid_messages
-                    == 0
+                    .invalid_messages,
+                0
             );
             let heard = speech("ada sum up");
-            let _ = plugins.active(&focus("other"));
+            refocus(&mut plugins, "other");
             assert!(
                 !plugins.active(&heard),
                 "an unfocused application's verb is silent"
             );
-            let _ = plugins.active(&focus("test"));
+            refocus(&mut plugins, "test");
             assert!(plugins.active(&heard), "its own focus enables the verb");
             assert_eq!(plugins.dispatch(&heard, true).map(|(key, _)| key.plugin), Some(1));
-            let _ = plugins.active(&focus("other"));
+            refocus(&mut plugins, "other");
             assert!(!plugins.active(&heard), "focus moving away disables it again");
         }
 
@@ -1371,10 +1375,10 @@ mod tests {
             let mut plugins = verb_plugins(&["ada"]);
             give_verbs(&plugins, 1, ADA);
             let heard = speech("ada sum up");
-            let _ = plugins.active(&focus("other"));
+            refocus(&mut plugins, "other");
             assert!(plugins.active(&heard));
             assert_eq!(plugins.dispatch(&heard, true).map(|(key, _)| key.plugin), Some(0));
-            let _ = plugins.active(&focus("test"));
+            refocus(&mut plugins, "test");
             assert!(plugins.active(&heard));
             assert_eq!(
                 plugins.dispatch(&heard, true).map(|(key, _)| key.plugin),
@@ -1382,7 +1386,7 @@ mod tests {
                 "the focused application wins"
             );
             assert_eq!(plugins.logged_clashes.len(), 1);
-            let _ = plugins.active(&heard);
+            let _active: bool = plugins.active(&heard);
             assert_eq!(plugins.logged_clashes.len(), 1, "the clash is logged once");
         }
 
@@ -1394,9 +1398,9 @@ mod tests {
                 1,
                 r#"{"jsonrpc":"2.0","method":"verbs","params":{"verbs":[{"word":"orion","locale":"en","hints":["chat"]}]}}"#,
             );
-            let _ = plugins.active(&focus("other"));
-            assert!(plugins.speech_verbs().is_empty());
-            let _ = plugins.active(&focus("test"));
+            refocus(&mut plugins, "other");
+            assert_eq!(plugins.speech_verbs(), Vec::<tehuti_protocol::Verb>::new());
+            refocus(&mut plugins, "test");
             assert_eq!(
                 plugins
                     .speech_verbs()
