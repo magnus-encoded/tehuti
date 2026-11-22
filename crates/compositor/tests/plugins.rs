@@ -949,6 +949,9 @@ for line in sys.stdin:
                         started.elapsed() < Duration::from_secs(2),
                         "a continuous flood is terminated rather than drained forever"
                     );
+                    harness
+                        .now
+                        .set(harness.now.get().checked_add(Duration::from_millis(100)).unwrap());
                     let dispatched = Instant::now();
                     harness
                         .event_loop
