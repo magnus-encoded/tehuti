@@ -227,7 +227,7 @@ pub const MAX_ENVIRON_BYTES: u64 = 128 * 1024;
 /// The launch token in an environment stream, reading at most [`MAX_ENVIRON_BYTES`].
 pub fn token_from_reader(reader: impl io::Read) -> Option<usize> {
     let mut environ = Vec::new();
-    reader.take(MAX_ENVIRON_BYTES).read_to_end(&mut environ).ok()?;
+    let _read = reader.take(MAX_ENVIRON_BYTES).read_to_end(&mut environ).ok()?;
     token_from_environment(&environ)
 }
 
