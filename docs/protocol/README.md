@@ -376,7 +376,8 @@ The whole transcript then routes as if no verb had matched.
 
 The `verbs` list in the manifest is the starting set. The plugin can replace it
 at any time with a notice. The new verbs route only to that plugin. A restart
-returns to the manifest list:
+returns to the manifest list. An application plugin sends the same notice (see
+[Verbs and invoke words](#verbs-and-invoke-words)):
 
 ```json
 {"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada","orion"]}}
@@ -390,8 +391,8 @@ returns to the manifest list:
 - `locale` is a supported Whisper primary language tag such as `en` or `no`.
   Regional tags such as `en-US` and unsupported tags reject the notice. The
   list lives in `sidecars/speech/verb-locales.txt`, which Rust and Python both read.
-- The core rejects a `verbs` notice from an application plugin in the same way
-  as an invalid action.
+- An application plugin may not list `verbs` in its manifest; it sends them in
+  a `verbs` notice after `initialize`.
 
 #### Pinned locale
 
@@ -422,9 +423,22 @@ at most one decode of latency.
 
 #### Verbs and invoke words
 
-`verbs` and `invoke.words` are separate. `verbs` route speech to a verb plugin.
-`invoke.words` add slash-command words to the built-in `invoke` verb for an
-application plugin.
+`verbs` and `invoke.words` are separate. `verbs` route speech to the plugin
+that sent them. `invoke.words` add slash-command words to the built-in
+`invoke` verb for an application plugin.
+
+An application plugin sends the same `verbs` notice as a verb plugin, including
+the pinned `locale` form. The plugin's kind sets the scope of its verbs:
+
+- A verb plugin's verbs apply everywhere.
+- An application plugin's verbs apply only while a window of one of its
+  `app_ids` has focus, the same scope as `invoke.words`. Pinned locales
+  re-decode only in that scope.
+
+The `verb` request arrives on the application plugin's existing connection, and
+its `actions` reply routes as usual. When the verb of the focused application
+and a global verb are the same word, the focused application's verb wins. The
+core logs the clash once.
 
 ## Actions
 

@@ -96,6 +96,24 @@ impl Drop for Entry {
     }
 }
 
+/// Where a plugin's verbs apply. The plugin's kind alone decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum VerbScope {
+    /// While a window of one of the plugin's app_ids has focus; checked first.
+    WhileFocused,
+    /// In any window, also with none focused.
+    Everywhere,
+}
+
+impl VerbScope {
+    const fn of(kind: PluginKind) -> Self {
+        match kind {
+            PluginKind::Application => Self::WhileFocused,
+            PluginKind::Verb => Self::Everywhere,
+        }
+    }
+}
+
 pub struct Plugins {
     entries: Vec<Entry>,
     start: Start,
@@ -104,6 +122,8 @@ pub struct Plugins {
     cleanup_timer: Box<dyn Fn()>,
     /// The verb route `active` found for the utterance `dispatch` sends next.
     routed_verb: Option<(Event, tehuti_core::verbs::VerbMatch)>,
+    /// Verb words already logged as clashing between a focused application and a global verb.
+    logged_clashes: std::collections::BTreeSet<String>,
 }
 impl Drop for Plugins {
     fn drop(&mut self) {
@@ -388,39 +408,59 @@ impl Plugins {
         self.routed_verb.is_some() || self.entries.iter().any(|entry| self.matches(entry, event))
     }
 
-    pub(crate) fn speech_verbs(&self) -> Vec<tehuti_protocol::Verb> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.manifest.kind == PluginKind::Verb)
-            .filter_map(|entry| entry.session.as_ref())
-            .map(|session| session.borrow())
-            .filter(|session| {
-                session.status == Status::Ready && session.events.contains(&Subscription::Speech)
-            })
-            .flat_map(|session| session.verbs.clone())
-            .collect()
+    /// Whether this plugin's verbs apply now, by the scope its kind gives them.
+    fn verbs_apply(&self, entry: &Entry) -> bool {
+        match VerbScope::of(entry.manifest.kind) {
+            VerbScope::Everywhere => true,
+            VerbScope::WhileFocused => self
+                .focus
+                .as_ref()
+                .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id)),
+        }
     }
 
-    /// The ready verb plugin whose verb begins this speech, checked before application plugins.
-    fn verb_route(&self, event: &Event) -> Option<tehuti_core::verbs::VerbMatch> {
-        let Event::Speech { text } = event else {
-            return None;
-        };
-        let owners: Vec<(usize, Vec<tehuti_protocol::Verb>)> = self
+    /// Ready plugins whose verbs apply now: focused applications first, so they win ties.
+    fn verb_owners(&self) -> Vec<(usize, Vec<tehuti_protocol::Verb>)> {
+        let mut owners: Vec<(VerbScope, usize, Vec<tehuti_protocol::Verb>)> = self
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| entry.manifest.kind == PluginKind::Verb)
+            .filter(|(_, entry)| self.verbs_apply(entry))
             .filter_map(|(index, entry)| {
                 let session = entry.session.as_ref()?.borrow();
                 (session.status == Status::Ready && session.events.contains(&Subscription::Speech))
-                    .then(|| (index, session.verbs.clone()))
+                    .then(|| (VerbScope::of(entry.manifest.kind), index, session.verbs.clone()))
             })
             .collect();
-        tehuti_core::verbs::route(
+        owners.sort_by_key(|(scope, ..)| *scope);
+        owners.into_iter().map(|(_, index, verbs)| (index, verbs)).collect()
+    }
+
+    pub(crate) fn speech_verbs(&self) -> Vec<tehuti_protocol::Verb> {
+        self.verb_owners().into_iter().flat_map(|(_, verbs)| verbs).collect()
+    }
+
+    /// The ready plugin whose verb begins this speech, checked before application plugins.
+    fn verb_route(&mut self, event: &Event) -> Option<tehuti_core::verbs::VerbMatch> {
+        let Event::Speech { text } = event else {
+            return None;
+        };
+        let owners = self.verb_owners();
+        let matched = tehuti_core::verbs::route(
             owners.iter().map(|(index, verbs)| (*index, verbs.as_slice())),
             text.as_str(),
-        )
+        )?;
+        let winner_focused = VerbScope::of(self.entries.get(matched.plugin)?.manifest.kind)
+            == VerbScope::WhileFocused;
+        let shadows = winner_focused
+            && owners.iter().any(|(index, verbs)| {
+                VerbScope::of(self.entries[*index].manifest.kind) == VerbScope::Everywhere
+                    && verbs.iter().any(|verb| verb.as_ref().eq_ignore_ascii_case(&matched.verb))
+            });
+        if shadows && self.logged_clashes.insert(matched.verb.to_lowercase()) {
+            tracing::warn!(verb = %matched.verb, "a focused application's verb shadows a global verb");
+        }
+        Some(matched)
     }
 
     /// Sends a verb request to its owner alone.
@@ -583,6 +623,7 @@ pub fn install<Data: 'static>(
         pad: tehuti_core::vpad::Filter::default(),
         cleanup_timer: Box::new(move || handle.remove(timer_token)),
         routed_verb: None,
+        logged_clashes: std::collections::BTreeSet::new(),
     })
 }
 
@@ -1103,6 +1144,8 @@ mod tests {
                 pad: tehuti_core::vpad::Filter::default(),
                 cleanup_timer: Box::new(|| {}),
                 routed_verb: None,
+                logged_clashes: std::collections::BTreeSet::new(),
+        logged_clashes: std::collections::BTreeSet::new(),
             }
         }
 
@@ -1229,7 +1272,7 @@ mod tests {
             let _deliveries = session.borrow_mut().message(notice, Instant::now());
             let heard = speech("Orion, chat with say");
             assert!(plugins.active(&heard));
-            session.borrow_mut().set_verbs(vec!["ada".into()], Instant::now());
+            session.borrow_mut().set_verbs(vec!["ada".into()]);
             assert!(plugins.dispatch(&heard, true).is_some());
             let wire = String::from_utf8(session.borrow().output.iter().copied().collect()).unwrap();
             let request: serde_json::Value = wire
@@ -1253,7 +1296,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .borrow_mut()
-                .set_verbs(vec!["orion".into()], Instant::now());
+                .set_verbs(vec!["orion".into()]);
             let request = plugins.dispatch(&heard, true);
             assert_eq!(
                 request.map(|(key, _)| key.plugin),
@@ -1268,35 +1311,84 @@ mod tests {
             );
         }
 
+        fn focus(app_id: &str) -> Event {
+            Event::Focus {
+                app_id: Some(app_id.into()),
+                title: String::new(),
+            }
+        }
+
+        fn give_verbs(plugins: &Plugins, index: usize, json: &str) {
+            let notice = tehuti_protocol::parse_message(json.as_bytes()).unwrap();
+            let session = plugins.entries[index].session.clone().unwrap();
+            let _deliveries = session.borrow_mut().message(notice, Instant::now());
+        }
+
+        const ADA: &str = r#"{"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada"]}}"#;
+
         #[test]
-        fn an_application_plugin_cannot_take_verbs_at_runtime() {
+        fn an_application_plugins_verbs_apply_only_while_its_application_has_focus() {
             let mut plugins = verb_plugins(&[]);
-            let session = plugins.entries[1].session.clone().unwrap();
-            let deliveries = session.borrow_mut().message(
-                Message::Call(Call {
-                    jsonrpc: RpcVersion::Two,
-                    request_id: None,
-                    method: Method::Verbs {
-                        verbs: vec!["ada".into()],
-                    },
-                }),
-                Instant::now(),
-            );
-            assert!(deliveries.is_empty(), "the notice delivers nothing");
-            assert!(session.borrow().verbs.is_empty(), "the verbs are refused");
+            give_verbs(&plugins, 1, ADA);
+            assert!(plugins.entries[1].session.as_ref().unwrap().borrow().invalid_messages == 0);
+            let heard = speech("ada sum up");
+            let _ = plugins.active(&focus("other"));
+            assert!(!plugins.active(&heard), "an unfocused application's verb is silent");
+            let _ = plugins.active(&focus("test"));
+            assert!(plugins.active(&heard), "its own focus enables the verb");
+            assert_eq!(plugins.dispatch(&heard, true).map(|(key, _)| key.plugin), Some(1));
+            let _ = plugins.active(&focus("other"));
+            assert!(!plugins.active(&heard), "focus moving away disables it again");
+        }
+
+        #[test]
+        fn a_focused_applications_verb_beats_the_same_global_verb() {
+            let mut plugins = verb_plugins(&["ada"]);
+            give_verbs(&plugins, 1, ADA);
+            let heard = speech("ada sum up");
+            let _ = plugins.active(&focus("other"));
+            assert!(plugins.active(&heard));
+            assert_eq!(plugins.dispatch(&heard, true).map(|(key, _)| key.plugin), Some(0));
+            let _ = plugins.active(&focus("test"));
+            assert!(plugins.active(&heard));
             assert_eq!(
-                session.borrow().invalid_messages,
+                plugins.dispatch(&heard, true).map(|(key, _)| key.plugin),
+                Some(1),
+                "the focused application wins"
+            );
+            assert_eq!(plugins.logged_clashes.len(), 1);
+            let _ = plugins.active(&heard);
+            assert_eq!(plugins.logged_clashes.len(), 1, "the clash is logged once");
+        }
+
+        #[test]
+        fn an_application_plugins_pinned_verb_reaches_the_speech_decode_only_when_focused() {
+            let mut plugins = verb_plugins(&[]);
+            give_verbs(
+                &plugins,
                 1,
-                "the refusal counts as invalid"
+                r#"{"jsonrpc":"2.0","method":"verbs","params":{"verbs":[{"word":"orion","locale":"en","hints":["chat"]}]}}"#,
             );
-            let output: Vec<u8> = session.borrow().output.iter().copied().collect();
-            assert!(
-                String::from_utf8(output).unwrap().contains("action_rejected"),
-                "the plugin is told why"
+            let _ = plugins.active(&focus("other"));
+            assert!(plugins.speech_verbs().is_empty());
+            let _ = plugins.active(&focus("test"));
+            assert_eq!(
+                plugins.speech_verbs().iter().map(AsRef::as_ref).collect::<Vec<&str>>(),
+                ["orion"]
             );
-            assert!(
-                !plugins.active(&speech("ada sum up")),
-                "the refused verb never routes"
+            let heard = speech("Orion, chat with say");
+            assert!(plugins.active(&heard));
+            assert!(plugins.dispatch(&heard, true).is_some());
+            let session = plugins.entries[1].session.clone().unwrap();
+            let wire = String::from_utf8(session.borrow().output.iter().copied().collect()).unwrap();
+            let request: serde_json::Value = wire
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|value| value["method"] == "verb")
+                .unwrap();
+            assert_eq!(
+                request["params"],
+                serde_json::json!({"verb":"orion","locale":"en","text":"chat with say"})
             );
         }
 

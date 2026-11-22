@@ -36,6 +36,7 @@
       ]
     },
     "verbs": {
+      "description": "Starting verbs of a verb plugin. An application plugin sends verbs in a notice instead; they apply only while one of its app_ids has focus.",
       "type": "array",
       "maxItems": 16,
       "items": {
