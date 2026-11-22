@@ -1471,7 +1471,8 @@ mod tests {
             }
 
             #[test]
-            fn simultaneous_expiries_add_one_miss(count in 1_u64..257, misses in 0_usize..2) {
+            fn each_simultaneous_expiry_adds_one_miss(count in 1_u64..3, misses in 0_usize..2) {
+                prop_assume!(misses.saturating_add(usize::try_from(count).unwrap()) < 3);
                 let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
                 let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
                 let mut plugins = plugins(&succeed, &starts);
@@ -1483,10 +1484,10 @@ mod tests {
                     let _deadline = session.borrow_mut().pending.insert(request_id, now);
                 }
                 prop_assert!(plugins.supervise_at(now).is_empty());
-                prop_assert_eq!(session.borrow().missed_decisions, misses.saturating_add(1));
+                prop_assert_eq!(session.borrow().missed_decisions, misses.saturating_add(usize::try_from(count).unwrap()));
                 prop_assert_eq!(starts.borrow()[0], 1);
                 prop_assert!(plugins.supervise_at(later(now, 1)).is_empty());
-                prop_assert_eq!(session.borrow().missed_decisions, misses.saturating_add(1));
+                prop_assert_eq!(session.borrow().missed_decisions, misses.saturating_add(usize::try_from(count).unwrap()));
             }
 
             #[test]

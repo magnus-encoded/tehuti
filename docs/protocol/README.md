@@ -696,8 +696,9 @@ logs the executable, the reason and the restart delay.
 The core terminates a plugin that has not initialized within two seconds. After
 initialization, the core restarts a plugin with backoff if it misses three
 decisions in a row. A reply before its decision deadline resets the count of
-consecutive misses. The shorter decision deadlines of the core still release
-captured fallback actions on time. Idle plugins with no outstanding decisions
+consecutive misses. Each decision that passes its deadline counts as one miss,
+no matter how many expire in the same supervision pass. The shorter
+decision deadlines of the core still release captured fallback actions on time. Idle plugins with no outstanding decisions
 can stay silent. Request ids continue across restarts. A new process therefore
 cannot complete a pending decision of an earlier process.
 

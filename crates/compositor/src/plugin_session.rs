@@ -213,7 +213,7 @@ impl Session {
         self.expire_initialize(now);
         let expired = self.pending.values().filter(|deadline| now >= **deadline).count();
         self.pending.retain(|_, deadline| now < *deadline);
-        self.missed_decisions = self.missed_decisions.saturating_add(usize::from(expired > 0));
+        self.missed_decisions = self.missed_decisions.saturating_add(expired);
         if self.missed_decisions >= 3 {
             self.fail("three consecutive plugin decisions missed");
         }
@@ -697,6 +697,29 @@ mod tests {
                 session.supervise(now);
                 prop_assert_eq!(session.status == Status::Failed, miss == 3);
             }
+        }
+
+        #[test]
+        fn every_expired_decision_is_one_miss_however_supervision_passes_fall(
+            button in any::<bool>(), count in 1_usize..6, split in 0_usize..6,
+        ) {
+            let start = Instant::now();
+            let mut session = ready(start);
+            for _ in 0..count {
+                let _request = call(&mut session, button, start);
+            }
+            let split = split.min(count);
+            // Make `split` requests expire one pass earlier than the rest.
+            let early = session.pending.keys().copied().take(split).collect::<Vec<_>>();
+            for request_id in early {
+                if let Some(deadline) = session.pending.get_mut(&request_id) {
+                    *deadline = start;
+                }
+            }
+            session.supervise(start);
+            session.supervise(after(start, Duration::from_secs(3)));
+            prop_assert_eq!(session.missed_decisions, count);
+            prop_assert_eq!(session.status == Status::Failed, count >= 3);
         }
 
         #[test]
