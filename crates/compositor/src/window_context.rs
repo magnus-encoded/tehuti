@@ -46,8 +46,8 @@ pub fn ancestors(surface: &WlSurface, windows: &[WlSurface], display: &DisplayHa
 #[must_use]
 pub fn restore_token(surface: &WlSurface, display: &DisplayHandle) -> Option<usize> {
     let process = pid(surface, display)?;
-    let environ = std::fs::read(format!("/proc/{process}/environ")).ok()?;
-    crate::session_restore::token_from_environment(&environ)
+    let file = std::fs::File::open(format!("/proc/{process}/environ")).ok()?;
+    crate::session_restore::token_from_reader(file)
 }
 
 fn pid(surface: &WlSurface, display: &DisplayHandle) -> Option<i32> {

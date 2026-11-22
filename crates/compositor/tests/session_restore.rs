@@ -5,8 +5,8 @@ mod tests {
     use std::time::Instant;
 
     use tehuti::session_restore::{
-        MAX_FILE_BYTES, MAX_WINDOWS, Placements, Saved, Store, TOKEN_VARIABLE, parse_enabled, save_due,
-        token_from_environment,
+        MAX_ENVIRON_BYTES, MAX_FILE_BYTES, MAX_WINDOWS, Placements, Saved, Store, TOKEN_VARIABLE,
+        parse_enabled, save_due, token_from_environment, token_from_reader,
     };
     use tehuti_core::layout::{
         Command, Layout, LayoutConfig, OpenAt, OutputGeometry, OutputId, Rect, WindowId, WindowRules,
@@ -163,6 +163,15 @@ mod tests {
         assert_eq!(token_from_environment(bad.as_bytes()), None);
         let lookalike = format!("X{TOKEN_VARIABLE}=1\0");
         assert_eq!(token_from_environment(lookalike.as_bytes()), None);
+    }
+
+    #[test]
+    fn the_environment_is_read_only_up_to_the_cap() {
+        let padding = "P=x\0".repeat(usize::try_from(MAX_ENVIRON_BYTES).expect("fits") / 4);
+        let early = format!("{TOKEN_VARIABLE}=3\0{padding}");
+        assert_eq!(token_from_reader(early.as_bytes()), Some(3));
+        let late = format!("{padding}{TOKEN_VARIABLE}=3\0");
+        assert_eq!(token_from_reader(late.as_bytes()), None);
     }
 
     #[test]

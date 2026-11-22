@@ -221,6 +221,16 @@ pub struct Placements {
 /// index) into the launched process and everything it starts.
 pub const TOKEN_VARIABLE: &str = "TEHUTI_RESTORE_TOKEN";
 
+/// The most of a process environment read when looking for a launch token.
+pub const MAX_ENVIRON_BYTES: u64 = 128 * 1024;
+
+/// The launch token in an environment stream, reading at most [`MAX_ENVIRON_BYTES`].
+pub fn token_from_reader(reader: impl io::Read) -> Option<usize> {
+    let mut environ = Vec::new();
+    reader.take(MAX_ENVIRON_BYTES).read_to_end(&mut environ).ok()?;
+    token_from_environment(&environ)
+}
+
 /// The launch token in the raw bytes of `/proc/<pid>/environ`, if the process has one.
 #[must_use]
 pub fn token_from_environment(environ: &[u8]) -> Option<usize> {
