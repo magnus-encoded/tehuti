@@ -9,7 +9,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::{io, io::Read as _, io::Write as _, path::PathBuf, time::Instant};
 
 use serde::{Deserialize, Serialize};
-use tehuti_core::layout::{OpenAt, Snapshot, WindowId};
+use tehuti_core::layout::{Snapshot, WindowId};
 
 const VERSION: u32 = 1;
 /// How long a launched application has to open its window before its place is forgotten.
@@ -224,10 +224,22 @@ pub struct Placements<K> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Claim<K> {
     /// Into a new column at the saved place.
-    Column(OpenAt),
-    /// Under the window that opened first in the same saved column. The saved place is the
+    Column {
+        /// Workspace position among the non-empty workspaces.
+        workspace: usize,
+        /// Column position inside that workspace.
+        column: usize,
+    },
+    /// Under the window that opened first in the same saved column. The saved column is the
     /// fallback if that window has closed by then.
-    Under(K, OpenAt),
+    Under {
+        /// The window that opened first in the saved column.
+        anchor: K,
+        /// Workspace position among the non-empty workspaces.
+        workspace: usize,
+        /// Column position inside that workspace.
+        column: usize,
+    },
 }
 
 /// The environment variable that carries a restore launch's token (the saved window's
@@ -278,16 +290,17 @@ impl<K: Clone> Placements<K> {
         let token = token?;
         let index = self.pending.iter().position(|(wanted, _, _)| *wanted == token)?;
         let (_, saved, _) = self.pending.remove(index);
-        let place = OpenAt::Column {
-            workspace: saved.workspace,
-            column: saved.column,
-        };
-        let group = (saved.workspace, saved.column);
+        let (workspace, column) = (saved.workspace, saved.column);
+        let group = (workspace, column);
         if let Some((_, anchor)) = self.anchors.iter().find(|(candidate, _)| *candidate == group) {
-            return Some(Claim::Under(anchor.clone(), place));
+            return Some(Claim::Under {
+                anchor: anchor.clone(),
+                workspace,
+                column,
+            });
         }
         self.anchors.push((group, window.clone()));
-        Some(Claim::Column(place))
+        Some(Claim::Column { workspace, column })
     }
 
     #[must_use]

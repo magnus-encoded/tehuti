@@ -89,14 +89,19 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
     /// mapped, otherwise the saved column.
     pub(crate) fn open_at(&self, claim: crate::session_restore::Claim<Key>) -> tehuti_core::layout::OpenAt {
         use crate::session_restore::Claim;
+        use tehuti_core::layout::OpenAt;
         match claim {
-            Claim::Column(place) => place,
-            Claim::Under(anchor, fallback) => self
+            Claim::Column { workspace, column } => OpenAt::Column { workspace, column },
+            Claim::Under {
+                anchor,
+                workspace,
+                column,
+            } => self
                 .entries
                 .iter()
                 .find(|entry| entry.key == anchor)
-                .map_or(fallback, |entry| {
-                    tehuti_core::layout::OpenAt::StackedUnder(entry.identity)
+                .map_or(OpenAt::Column { workspace, column }, |entry| {
+                    OpenAt::StackedUnder(entry.identity)
                 }),
         }
     }

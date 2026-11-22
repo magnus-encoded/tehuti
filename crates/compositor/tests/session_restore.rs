@@ -140,8 +140,8 @@ mod tests {
         let second = placements.claim(Some(1), now, &11).expect("second");
         let first = placements.claim(Some(0), now, &10).expect("first");
         let column = |claim| match claim {
-            Claim::Column(OpenAt::Column { column, .. }) => column,
-            Claim::Under(..) => panic!("stacked, not a plain column"),
+            Claim::Column { column, .. } => column,
+            Claim::Under { .. } => panic!("stacked, not a plain column"),
         };
         assert_eq!((column(first), column(second)), (0, 1));
         assert!(placements.claim(Some(1), now, &12).is_none());
@@ -336,8 +336,8 @@ mod tests {
         for (token, identity) in [(0_usize, 10_u64), (1, 11), (2, 12)] {
             let claim = placements.claim(Some(token), now, &identity).expect("claimed");
             let open_at = match claim {
-                Claim::Column(place) => place,
-                Claim::Under(anchor, _) => OpenAt::StackedUnder(WindowId(anchor)),
+                Claim::Column { workspace, column } => OpenAt::Column { workspace, column },
+                Claim::Under { anchor, .. } => OpenAt::StackedUnder(WindowId(anchor)),
             };
             restored
                 .add_window(
@@ -359,16 +359,15 @@ mod tests {
         let now = Instant::now();
         let mut placements = Placements::<u64>::new(&saved, now);
         let _anchor = placements.claim(Some(0), now, &10).expect("anchor");
-        let Some(Claim::Under(anchor, fallback)) = placements.claim(Some(1), now, &11) else {
+        let Some(Claim::Under {
+            anchor,
+            workspace,
+            column,
+        }) = placements.claim(Some(1), now, &11)
+        else {
             panic!("not stacked");
         };
         assert_eq!(anchor, 10);
-        assert_eq!(
-            fallback,
-            OpenAt::Column {
-                workspace: 0,
-                column: 0
-            }
-        );
+        assert_eq!((workspace, column), (0, 0));
     }
 }
