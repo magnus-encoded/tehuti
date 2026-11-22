@@ -791,24 +791,33 @@ impl Layout {
         );
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let workspace = named.map_or(self.outputs[output].active, |(_, workspace)| workspace);
-        match rules.open_at {
-            Some(OpenAt::Column { workspace, .. }) => {
-                #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
-                let last = self.outputs[output].workspaces.len().saturating_sub(1);
-                return Ok((output, workspace.min(last), false));
-            }
-            Some(OpenAt::StackedUnder(sibling)) => {
-                if let Some((output, workspace, _, _)) = self.find_window(sibling) {
-                    return Ok((output, workspace, false));
-                }
-            }
-            None => {}
+        if let Some((placed_output, placed_workspace)) = self.placed_target(rules.open_at, output) {
+            return Ok((placed_output, placed_workspace, false));
         }
         Ok((
             output,
             workspace,
             rules.open_focused.unwrap_or(output == fallback),
         ))
+    }
+    /// The output and workspace a fixed place opens on, if it names a usable one.
+    fn placed_target(&self, place: Option<OpenAt>, output: usize) -> Option<(usize, usize)> {
+        match place? {
+            OpenAt::Column { workspace, .. } => {
+                let last = self.outputs.get(output)?.workspaces.len().saturating_sub(1);
+                Some((output, workspace.min(last)))
+            }
+            OpenAt::StackedUnder(sibling) => self
+                .find_window(sibling)
+                .map(|(found, workspace, _, _)| (found, workspace)),
+        }
+    }
+    fn stack_tile(&mut self, output: usize, workspace: usize, column: usize, tile: Tile) -> usize {
+        #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+        self.outputs[output].workspaces[workspace].columns[column]
+            .tiles
+            .push(tile);
+        column
     }
     fn insert_window(
         &mut self,
@@ -850,11 +859,7 @@ impl Layout {
         if let Some(OpenAt::StackedUnder(sibling)) = rules.open_at
             && let Some((_, _, position, _)) = self.find_window(sibling)
         {
-            #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
-            self.outputs[output].workspaces[workspace].columns[position]
-                .tiles
-                .push(tile);
-            return position;
+            return self.stack_tile(output, workspace, position, tile);
         }
         let width = if rules.open_maximized {
             Some(PresetSize::Proportion(1.0_f64))
