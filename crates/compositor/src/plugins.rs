@@ -477,8 +477,8 @@ impl Plugins {
         let Event::Speech { text } = event else {
             return None;
         };
-        self.utterance_focus = UtteranceFocus::Live;
         let owners = self.verb_owners();
+        self.utterance_focus = UtteranceFocus::Live;
         let route_scope = |wanted: VerbScope| {
             tehuti_core::verbs::route(
                 owners
