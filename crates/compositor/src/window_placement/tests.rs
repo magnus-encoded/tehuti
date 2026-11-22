@@ -202,3 +202,34 @@ fn saved_stack_returns_stacked_in_saved_order() {
 fn a_closed_anchor_sends_the_stacked_tile_to_its_saved_column() {
     assert_eq!(restored(&[(10, 0), (11, 1)], &[10]), vec![vec![11]]);
 }
+
+#[test]
+fn the_restored_focus_lands_on_the_saved_window_after_later_opens() {
+    let now = std::time::Instant::now();
+    let mut saved_layout = placement();
+    for key in 1..=3_u8 {
+        saved_layout.map(key, key, WindowRules::default()).unwrap();
+    }
+    saved_layout.focus(&2).unwrap();
+    let installed = vec!["app".to_owned()];
+    let apps = saved_layout.placed(|_| 0.0);
+    let saved = crate::session_restore::Saved::capture(
+        &saved_layout.snapshot(),
+        |id| apps.iter().find(|p| p.identity == id.0).map(|_| "app".to_owned()),
+        &installed,
+    );
+    let mut placements = crate::session_restore::Placements::<u8>::new(&saved, now);
+    let mut restored = placement();
+    for (key, token) in [(21_u8, 1_usize), (20, 0), (22, 2)] {
+        let claim = placements.claim(Some(token), now, &key).unwrap();
+        let rules = WindowRules {
+            open_at: Some(restored.open_at(claim)),
+            ..WindowRules::default()
+        };
+        restored.map(key, key, rules).unwrap();
+        if let Some(target) = placements.settled_focus(now) {
+            restored.focus(&target).unwrap();
+        }
+    }
+    assert_eq!(restored.focused(), Some(&21));
+}

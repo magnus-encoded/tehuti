@@ -337,4 +337,77 @@ mod tests {
         assert_eq!(anchor, 10);
         assert_eq!((workspace, column), (0, 0));
     }
+
+    fn focused_trio(focus: u64) -> Saved {
+        let (mut layout, names) = layout_with(
+            &[
+                (1, "org.example.Alpha"),
+                (2, "org.example.Beta"),
+                (3, "org.example.Gamma"),
+            ],
+            &[],
+        );
+        layout
+            .focus_window(WindowId(focus))
+            .expect("focus");
+        capture(
+            &layout,
+            &names,
+            &["org.example.Alpha", "org.example.Beta", "org.example.Gamma"],
+        )
+    }
+
+    #[test]
+    fn capture_records_the_focused_window_and_it_round_trips() {
+        for focus in 1..=3 {
+            let saved = focused_trio(focus);
+            let index = usize::try_from(focus - 1).expect("index");
+            assert_eq!(saved.focused(), saved.windows().get(index));
+            assert_eq!(Saved::parse(&saved.to_text()).expect("parse"), saved);
+        }
+    }
+
+    #[test]
+    fn a_focus_index_outside_the_list_does_not_parse() {
+        let text = "{\"version\":1,\"windows\":[],\"focused\":0}";
+        assert!(Saved::parse(text).is_err());
+        let old = "{\"version\":1,\"windows\":[]}";
+        assert_eq!(Saved::parse(old).expect("old file").focused(), None);
+    }
+
+    #[test]
+    fn focus_returns_only_after_the_last_launch_opens_whatever_the_order() {
+        let saved = focused_trio(2);
+        let now = Instant::now();
+        for order in [[0, 1, 2], [1, 0, 2], [2, 1, 0], [1, 2, 0]] {
+            let mut placements = Placements::<usize>::new(&saved, now);
+            for (step, token) in order.into_iter().enumerate() {
+                let _claim = placements.claim(Some(token), now, &(token + 10));
+                let due = placements.settled_focus(now);
+                if step < 2 {
+                    assert_eq!(due, None, "{order:?}");
+                } else {
+                    assert_eq!(due, Some(11), "{order:?}");
+                }
+            }
+            assert_eq!(placements.settled_focus(now), None);
+            assert!(placements.is_empty());
+        }
+    }
+
+    #[test]
+    fn focus_waits_for_expiry_and_is_dropped_if_its_window_never_opens() {
+        let saved = focused_trio(1);
+        let start = Instant::now();
+        let late = start + Duration::from_secs(61);
+        let mut placements = Placements::<usize>::new(&saved, start);
+        let _claim = placements.claim(Some(0), start, &10);
+        assert_eq!(placements.settled_focus(start), None);
+        assert_eq!(placements.settled_focus(late), Some(10));
+
+        let mut missing = Placements::<usize>::new(&saved, start);
+        let _claim = missing.claim(Some(1), start, &11);
+        assert_eq!(missing.settled_focus(late), None);
+        assert!(missing.is_empty());
+    }
 }

@@ -3798,7 +3798,8 @@ impl Compositor {
     }
 
     /// Launches every saved application and remembers where each window goes; the windows
-    /// are placed as they open, whatever their order, and focus is never touched.
+    /// are placed as they open, whatever their order; the window that had focus gets it back
+    /// once the last launch has opened.
     pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
         let installed = self.launcher.installed();
         for (token, window) in saved.windows().iter().enumerate() {
@@ -4268,8 +4269,27 @@ impl Compositor {
         rules.open_at = claim.map(|claim| self.placement.open_at(claim));
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
-            Ok(()) => self.place_layout(),
+            Ok(()) => {
+                self.restore_prior_focus();
+                self.place_layout();
+            }
             Err(error) => tracing::warn!(%error, "window layout failed"),
+        }
+    }
+
+    /// Focuses the window that had focus before the exit, once the restore has settled.
+    fn restore_prior_focus(&mut self) {
+        let Some(placements) = self.placements.as_mut() else {
+            return;
+        };
+        let key = placements.settled_focus(Instant::now());
+        if placements.is_empty() {
+            self.placements = None;
+        }
+        if let Some(key) = key
+            && let Err(error) = self.placement.focus(&key)
+        {
+            tracing::warn!(%error, "prior focus not restored");
         }
     }
 
