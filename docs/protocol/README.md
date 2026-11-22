@@ -437,8 +437,10 @@ the pinned `locale` form. The plugin's kind sets the scope of its verbs:
 
 The `verb` request arrives on the application plugin's existing connection, and
 its `actions` reply routes as usual. When the verb of the focused application
-and a global verb are the same word, the focused application's verb wins. The
-core logs the clash once.
+and a global verb both match the first word, the focused application's verb
+wins outright. The core logs the clash once for each plugin connection.
+The focus at the press that began the utterance governs both the decode and
+the routing, so a focus change mid-utterance changes neither.
 
 ## Actions
 

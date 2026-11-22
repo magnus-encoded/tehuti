@@ -1672,6 +1672,9 @@ impl Compositor {
         match command {
             tehuti_core::speech::SpeechEffect::Start { session } => {
                 tracing::info!(session, "speech session started");
+                if let Some(plugins) = self.plugins.as_mut() {
+                    plugins.begin_utterance();
+                }
             }
             tehuti_core::speech::SpeechEffect::Stop { session, transcribe } => {
                 tracing::info!(session, transcribe, "speech session stopped");

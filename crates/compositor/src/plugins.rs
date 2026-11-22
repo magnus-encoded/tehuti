@@ -123,7 +123,9 @@ pub struct Plugins {
     /// The verb route `active` found for the utterance `dispatch` sends next.
     routed_verb: Option<(Event, tehuti_core::verbs::VerbMatch)>,
     /// Verb words already logged as clashing between a focused application and a global verb.
-    logged_clashes: std::collections::BTreeSet<String>,
+    logged_clashes: std::collections::BTreeSet<(usize, String)>,
+    /// The focus when the current utterance began; decode and routing both use it.
+    utterance_focus: Option<Option<String>>,
 }
 impl Drop for Plugins {
     fn drop(&mut self) {
@@ -365,6 +367,7 @@ impl Plugins {
             });
             if failed {
                 exited.push(entry.plugin);
+                self.logged_clashes.retain(|(plugin, _)| *plugin != entry.plugin);
                 self.pad.clear(entry.plugin);
                 if let Some(cleanup) = entry.cleanup.take() {
                     cleanup();
@@ -408,18 +411,27 @@ impl Plugins {
         self.routed_verb.is_some() || self.entries.iter().any(|entry| self.matches(entry, event))
     }
 
+    /// Takes the focus snapshot for a new utterance, at press.
+    pub(crate) fn begin_utterance(&mut self) {
+        self.utterance_focus = Some(self.focus.clone());
+    }
+
+    /// The focus that governs verbs: the press snapshot while an utterance runs.
+    fn verb_focus(&self) -> Option<&String> {
+        self.utterance_focus.as_ref().unwrap_or(&self.focus).as_ref()
+    }
+
     /// Whether this plugin's verbs apply now, by the scope its kind gives them.
     fn verbs_apply(&self, entry: &Entry) -> bool {
         match VerbScope::from_kind(entry.manifest.kind) {
             VerbScope::Everywhere => true,
             VerbScope::WhileFocused => self
-                .focus
-                .as_ref()
+                .verb_focus()
                 .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id)),
         }
     }
 
-    /// Ready plugins whose verbs apply now: focused applications first, so they win ties.
+    /// Ready plugins whose verbs apply now: focused applications first.
     fn verb_owners(&self) -> Vec<(usize, VerbScope, Vec<tehuti_protocol::Verb>)> {
         let mut owners: Vec<(usize, VerbScope, Vec<tehuti_protocol::Verb>)> = self
             .entries
@@ -455,27 +467,28 @@ impl Plugins {
         let Event::Speech { text } = event else {
             return None;
         };
+        self.utterance_focus = None;
         let owners = self.verb_owners();
-        let global: Vec<&tehuti_protocol::Verb> = owners
-            .iter()
-            .filter(|(_, scope, _)| *scope == VerbScope::Everywhere)
-            .flat_map(|(_, _, verbs)| verbs)
-            .collect();
-        let matched = tehuti_core::verbs::route(
-            owners.iter().map(|(index, _, verbs)| (*index, verbs.as_slice())),
-            text.as_str(),
-        )?;
-        let winner_focused = owners
-            .iter()
-            .any(|(index, scope, _)| *index == matched.plugin && *scope == VerbScope::WhileFocused);
-        let shadows = winner_focused
-            && global
-                .iter()
-                .any(|verb| verb.as_ref().eq_ignore_ascii_case(&matched.verb));
-        if shadows && self.logged_clashes.insert(matched.verb.to_lowercase()) {
-            tracing::warn!(verb = %matched.verb, "a focused application's verb shadows a global verb");
+        let route_scope = |wanted: VerbScope| {
+            tehuti_core::verbs::route(
+                owners
+                    .iter()
+                    .filter(|(_, scope, _)| *scope == wanted)
+                    .map(|(index, _, verbs)| (*index, verbs.as_slice())),
+                text.as_str(),
+            )
+        };
+        let Some(focused) = route_scope(VerbScope::WhileFocused) else {
+            return route_scope(VerbScope::Everywhere);
+        };
+        if route_scope(VerbScope::Everywhere).is_some()
+            && self
+                .logged_clashes
+                .insert((focused.plugin, focused.verb.to_lowercase()))
+        {
+            tracing::warn!(verb = %focused.verb, "a focused application's verb shadows a global verb");
         }
-        Some(matched)
+        Some(focused)
     }
 
     /// Sends a verb request to its owner alone.
@@ -639,6 +652,7 @@ pub fn install<Data: 'static>(
         cleanup_timer: Box::new(move || handle.remove(timer_token)),
         routed_verb: None,
         logged_clashes: std::collections::BTreeSet::new(),
+        utterance_focus: None,
     })
 }
 
@@ -1160,6 +1174,7 @@ mod tests {
                 cleanup_timer: Box::new(|| {}),
                 routed_verb: None,
                 logged_clashes: std::collections::BTreeSet::new(),
+                utterance_focus: None,
             }
         }
 
@@ -1370,24 +1385,87 @@ mod tests {
             assert!(!plugins.active(&heard), "focus moving away disables it again");
         }
 
+        #[derive(Clone, Default)]
+        struct Capture(Rc<RefCell<Vec<u8>>>);
+
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.borrow_mut().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for Capture {
+            type Writer = Self;
+
+            fn make_writer(&'writer self) -> Self {
+                self.clone()
+            }
+        }
+
         #[test]
-        fn a_focused_applications_verb_beats_the_same_global_verb() {
-            let mut plugins = verb_plugins(&["ada"]);
-            give_verbs(&plugins, 1, ADA);
-            let heard = speech("ada sum up");
-            refocus(&mut plugins, "other");
-            assert!(plugins.active(&heard));
-            assert_eq!(plugins.dispatch(&heard, true).map(|(key, _)| key.plugin), Some(0));
+        fn a_focused_applications_verb_beats_the_same_global_verb_and_the_clash_logs_once() {
+            let capture = Capture::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(capture.clone())
+                .with_ansi(false)
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                let mut plugins = verb_plugins(&["ada"]);
+                give_verbs(&plugins, 1, ADA);
+                let heard = speech("ada sum up");
+                refocus(&mut plugins, "other");
+                assert!(plugins.active(&heard));
+                assert_eq!(plugins.dispatch(&heard, true).map(|(key, _)| key.plugin), Some(0));
+                refocus(&mut plugins, "test");
+                for _ in 0..2 {
+                    assert!(plugins.active(&heard));
+                    assert_eq!(
+                        plugins.dispatch(&heard, true).map(|(key, _)| key.plugin),
+                        Some(1),
+                        "the focused application wins"
+                    );
+                }
+            });
+            let log = String::from_utf8(capture.0.borrow().clone()).unwrap();
+            assert_eq!(log.matches("shadows a global verb").count(), 1, "{log}");
+        }
+
+        #[test]
+        fn a_focused_applications_close_verb_beats_an_exact_global_verb() {
+            let mut plugins = verb_plugins(&["literal"]);
+            give_verbs(
+                &plugins,
+                1,
+                r#"{"jsonrpc":"2.0","method":"verbs","params":{"verbs":["litteral"]}}"#,
+            );
             refocus(&mut plugins, "test");
+            let heard = speech("literal sum up");
             assert!(plugins.active(&heard));
             assert_eq!(
                 plugins.dispatch(&heard, true).map(|(key, _)| key.plugin),
                 Some(1),
-                "the focused application wins"
+                "a focused verb above the sound threshold wins outright"
             );
-            assert_eq!(plugins.logged_clashes.len(), 1);
-            let _active: bool = plugins.active(&heard);
-            assert_eq!(plugins.logged_clashes.len(), 1, "the clash is logged once");
+        }
+
+        #[test]
+        fn focus_moving_mid_utterance_cannot_split_decode_and_routing() {
+            let mut plugins = verb_plugins(&[]);
+            give_verbs(&plugins, 1, ADA);
+            refocus(&mut plugins, "test");
+            plugins.begin_utterance();
+            assert_eq!(plugins.speech_verbs().len(), 1, "decode sees the press focus");
+            refocus(&mut plugins, "other");
+            assert_eq!(plugins.speech_verbs().len(), 1, "still the press focus");
+            let heard = speech("ada sum up");
+            assert!(plugins.active(&heard), "routing uses the press focus too");
+            assert_eq!(plugins.dispatch(&heard, true).map(|(key, _)| key.plugin), Some(1));
+            assert!(!plugins.active(&heard), "the next utterance sees the new focus");
         }
 
         #[test]
