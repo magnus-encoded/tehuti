@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn the_launch_token_is_read_from_a_process_environment() {
-        let token = format!("{}=2", TOKEN_VARIABLE);
+        let token = format!("{TOKEN_VARIABLE}=2");
         let environ = format!("HOME=/home/x\0{token}\0PATH=/bin\0");
         assert_eq!(token_from_environment(environ.as_bytes()), Some(2));
         assert_eq!(token_from_environment(b"HOME=/home/x\0"), None);
@@ -207,7 +207,7 @@ mod tests {
         let good = capture(&layout, &names, &["org.example.Alpha"]);
         store.save(&good).expect("save");
         let empty = capture(&layout, &names, &[]);
-        assert!(empty.windows().is_empty());
+        assert_eq!(empty.windows().len(), 0);
         store.save(&empty).expect("empty save is not an error");
         assert_eq!(store.take().expect("take"), Some(good));
     }
