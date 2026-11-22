@@ -92,7 +92,42 @@ class SpeechTests(unittest.TestCase):
         take.verbs = [{"word": "orion", "locale": "en", "hints": ["chat"]}]
         replies, log = self.run_stop(speech)
         self.assertEqual(replies, [{"session": 4, "text": "orion chat"}])
-        self.assertRegex(log, r"session 4: language no, backend local, .*verb locale en, stop to reply")
+        self.assertRegex(log, r"session 4: language no, backend local, .*verb locale en, "
+                              r"verb backend local, stop to reply")
+
+    def test_a_remote_pinned_final_uses_local_model_and_logs_both_backends(self):
+        class Model:
+            def __init__(self):
+                self.languages = []
+
+            def transcribe(self, path, **options):
+                self.languages.append(options["language"])
+                segment = types.SimpleNamespace(text="Orion chat", no_speech_prob=0, avg_logprob=0)
+                return iter([segment]), None
+
+        model = Model()
+        speech = module.Speech(model, remotes=dict)
+        take, _ = self.final_take(speech)
+        take.language = "no"
+        take.verbs = [{"word": "orion", "locale": "en"}]
+        with tempfile.TemporaryDirectory() as directory:
+            take.remote = self.serve(directory, b'{"text":"Orion snakk"}\n')
+            replies, log = self.run_stop(speech)
+        self.assertEqual(replies, [{"session": 4, "text": "orion chat"}])
+        self.assertEqual(model.languages, ["en"])
+        self.assertIn("backend remote", log)
+        self.assertIn("verb locale en, verb backend local", log)
+
+    def test_sound_matching_threshold_accents_and_registration_order(self):
+        self.assertEqual(module.match_verb("Líterel payload", ["literal"]), ("literal", "payload"))
+        self.assertIsNone(module.match_verb("Litterxx payload", ["literal"]))
+        self.assertEqual(module.match_verb("abcdefghijklmnopqxyz payload",
+                                          ["abcdefghijklmnopqrst"]),
+                         ("abcdefghijklmnopqrst", "payload"))
+        self.assertIsNone(module.match_verb("abcdefghijklmnopwxyz payload",
+                                            ["abcdefghijklmnopqrst"]))
+        self.assertEqual(module.match_verb("Invoce payload", ["invoke", "invoce"]),
+                         ("invoke", "payload"))
 
     def test_start_snapshots_validated_verb_definitions(self):
         class Capture:
@@ -743,9 +778,7 @@ time.sleep(60)
                 patch.dict(os.environ, {"TEHUTI_LOG_FILE": directory + "/log"}):
             speech.stop(session, True)
             speech.releasing.worker.join(1)
-            deadline = time.monotonic() + 5
-            while not output.getvalue() and time.monotonic() < deadline:
-                time.sleep(0.01)
+            self.assertTrue(speech.releasing.completed.wait(5), "session log completed")
             log = Path(directory, "log").read_text() if Path(directory, "log").exists() else ""
         return [json.loads(l) for l in output.getvalue().splitlines()], log
 
@@ -830,13 +863,22 @@ time.sleep(60)
         self.assertEqual(model.calls, [(1, 5.0)])
 
     def test_silent_and_busy_sessions_log_no_backend(self):
-        speech = module.Speech(types.SimpleNamespace(), sources=lambda: [None])
-        take, _ = self.final_take(speech)
-        take.recordings[0].peak = 0
-        replies, log = self.run_stop(speech)
-        self.assertEqual(replies, [{"session": 4, "error": "silent"}])
-        self.assertIn("no decode", log)
-        self.assertNotIn("backend", log)
+        for error in ("silent", "busy"):
+            with self.subTest(error=error):
+                ticks = iter((42.0, 42.0, 43.25))
+                speech = module.Speech(types.SimpleNamespace(), sources=lambda: [None],
+                                       clock=lambda: next(ticks))
+                take, _ = self.final_take(speech)
+                if error == "silent":
+                    take.recordings[0].peak = 0
+                else:
+                    for _ in range(module.MAX_PENDING_FINALS):
+                        self.assertTrue(speech.transcriptions.acquire(blocking=False))
+                replies, log = self.run_stop(speech)
+                self.assertEqual(replies, [{"session": 4, "error": error}])
+                self.assertIn("no decode", log)
+                self.assertNotIn("backend", log)
+                self.assertIn("stop to reply 1.25s", log)
 
     def test_a_remote_interim_leaves_the_local_final_unqueued(self):
         speech = module.Speech(self.OneWorkerModel(), remotes=dict)

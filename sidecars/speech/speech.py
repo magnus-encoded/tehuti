@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Capture on core commands; return transcription without delivering input."""
+from difflib import SequenceMatcher
+from pathlib import Path
 import json
 import os
 import re
@@ -26,62 +28,30 @@ DEFAULT_SPEECH_TAIL_MS = 150
 MAX_SPEECH_TAIL_MS = MAX_AUDIO_SECONDS * 1000
 
 
-VERB_LOCALES = set("af am ar as az ba be bg bn bo br bs ca cs cy da de el en es et eu fa fi fo fr gl gu ha haw he hi hr ht hu hy id is it ja jw ka kk km kn ko la lb ln lo lt lv mg mi mk ml mn mr ms mt my ne nl nn no oc pa pl ps pt ro ru sa sd si sk sl sn so sq sr su sv sw ta te tg th tk tl tr tt uk ur uz vi yi yo yue zh".split())
-
-
-def verb_key(word):
-    word = word.lower().replace("æ", "e").replace("ø", "o")
-    word = "".join(c for c in unicodedata.normalize("NFD", word)
-                   if not unicodedata.combining(c) and c.isalnum())
-    for written, folded in (("ae", "e"), ("oe", "o"), ("ph", "f"), ("th", "t"),
-                            ("ch", "k"), ("c", "k"), ("q", "k"), ("w", "v"), ("z", "s")):
-        word = word.replace(written, folded)
-    for written, folded in (("hv", "v"), ("hj", "j"), ("gj", "j")):
-        if word.startswith(written):
-            word = folded + word[len(written):]
-    word = re.sub(r"(.)\1+", r"\1", word.replace("x", "ks"))
-    if len(word) >= 4:
-        for ending in ("ene", "et", "en", "er", "e", "t"):
-            if word.endswith(ending) and len(word) - len(ending) >= 3:
-                return word[:-len(ending)]
-    return word
-
-
-def verb_score(heard, word):
-    word = verb_key(word)
-    if not word:
-        return 0
-    if heard == word:
-        return 1000
-    if heard.startswith(word) or min(len(heard), len(word)) < 5:
-        return 0
-    table = [list(range(len(word) + 1))]
-    for i, left in enumerate(heard, 1):
-        row = [i]
-        for j, right in enumerate(word, 1):
-            cost = min(row[-1] + 1, table[-1][j] + 1, table[-1][j - 1] + (left != right))
-            if i > 1 and j > 1 and left == word[j - 2] and heard[i - 2] == right:
-                cost = min(cost, table[i - 2][j - 2] + 1)
-            row.append(cost)
-        table.append(row)
-    return 1000 - table[-1][-1] * 1000 // max(len(heard), len(word))
+VERB_LOCALES = set(Path(__file__).with_name("verb-locales.txt").read_text().split())
+MIN_VERB_SOUND_SIMILARITY = 0.85
 
 
 def match_verb(text, verbs):
-    """The best first-word sound match and its remainder; ties keep registration order."""
+    """Match the first word; equal scores keep registration order."""
+    def sound(word):
+        word = unicodedata.normalize("NFD", word.casefold())
+        return "".join(c for c in word if c.isalnum()).translate(
+            str.maketrans({"c": "k", "q": "k", "æ": "e", "ø": "o"}))
+
     parts = text.lstrip().split(maxsplit=1)
-    if len(parts) != 2:
+    if len(parts) != 2 or not (remainder := parts[1].lstrip(" \t\r\n,.:;!?")):
         return None
-    remainder = parts[1].lstrip(" \t\r\n,.:;!?")
-    if not remainder:
-        return None
-    heard = verb_key(parts[0])
-    best, score = None, 849
+    heard = sound(parts[0])
+    best, score = None, MIN_VERB_SOUND_SIMILARITY
     for verb in verbs:
-        word = verb if isinstance(verb, str) else verb["word"]
-        found = verb_score(heard, word)
-        if found > score:
-            best, score = (verb, remainder), found
+        word = sound(verb if isinstance(verb, str) else verb["word"])
+        if not word or (heard != word and
+                        (heard.startswith(word) or min(len(heard), len(word)) < 5)):
+            continue
+        similarity = SequenceMatcher(None, heard, word, autojunk=False).ratio()
+        if similarity >= MIN_VERB_SOUND_SIMILARITY and (best is None or similarity > score):
+            best, score = (verb, remainder), similarity
     return best
 
 
@@ -386,6 +356,7 @@ class Take:
         self.prompt = prompt
         self.language = language
         self.recordings = []
+        self.completed = threading.Event()
         self.cancelled = threading.Event()
         self.interim_abort = threading.Event()
         self.worker = None
@@ -408,7 +379,8 @@ def choose(recordings):
 
 
 class Speech:
-    def __init__(self, model, sources=None, remotes=None):
+    def __init__(self, model, sources=None, remotes=None, clock=time.monotonic):
+        self.clock = clock
         self.model = model
         self.remotes = remote_sockets if remotes is None else remotes
         self.hotwords = ""
@@ -535,11 +507,11 @@ class Speech:
         nothing. Local decodes go through the scheduler: finals first, one decode at a time."""
         if take.remote:
             try:
-                began = time.monotonic()
+                began = self.clock()
                 text = remote_transcribe(take.remote, audio, take.prompt, final,
                                          None if final else take.interim_abort)
                 if final:
-                    take.backend, take.decoded = "remote", time.monotonic() - began
+                    take.backend, take.decoded = "remote", self.clock() - began
                     take.audio_seconds = len(audio) / 32000
                     matched = match_verb(text, take.verbs)
                     if matched and isinstance(matched[0], dict):
@@ -566,15 +538,16 @@ class Speech:
                 self.schedule.notify_all()
 
     def final_decode(self, take, audio, first=None):
-        asked = time.monotonic()
+        asked = self.clock()
         with self.schedule:
             self.finals_pending += 1
             while self.decoding:
                 self.schedule.wait()
             self.decoding = True
-        began = time.monotonic()
+        began = self.clock()
         stats = {}
-        take.backend, take.queued = "local", began - asked
+        take.backend = take.backend or "local"
+        take.queued = began - asked
         take.audio_seconds = len(audio) / 32000
         try:
             text = first if first is not None else self.transcribe_audio(
@@ -594,7 +567,7 @@ class Speech:
                 log(f"verb locale decode failed ({error}); using session transcript", level="WARN")
                 return text
         finally:
-            take.decoded, take.retried = time.monotonic() - began, bool(stats)
+            take.decoded, take.retried = self.clock() - began, bool(stats)
             with self.schedule:
                 self.decoding = False
                 self.finals_pending -= 1
@@ -627,7 +600,7 @@ class Speech:
         take = self.capture
         self.capture = self.session = None
         take.interim_abort.set()
-        take.stopped = time.monotonic()
+        take.stopped = self.clock()
         if transcribe:
             self.cancel_tail()
             self.releasing = take
@@ -639,7 +612,7 @@ class Speech:
             self.finish_take(session, take, False)
 
     def finish_take(self, session, take, transcribe):
-        released = time.monotonic()
+        released = self.clock()
         recordings = sorted(take.recordings,
                             key=lambda r: self.tails.get(r.source, self.tails["default"]))
         for recording in recordings:
@@ -647,7 +620,7 @@ class Speech:
                 continue
             tail = self.tails.get(recording.source, self.tails["default"]) / 1000
             if transcribe:
-                take.cancelled.wait(max(0, released + tail - time.monotonic()))
+                take.cancelled.wait(max(0, released + tail - self.clock()))
             if recording.process.poll() is None:
                 recording.process.send_signal(signal.SIGINT)
         for recording in take.recordings:
@@ -674,9 +647,10 @@ class Speech:
                           f"queue wait {take.queued:.2f}s, decode {take.decoded:.2f}s, "
                           f"retry {'yes' if take.retried else 'no'}")
                 if take.verb_locale:
-                    detail += f", verb locale {take.verb_locale}"
+                    detail += f", verb locale {take.verb_locale}, verb backend local"
             log(f"session {session}: language {take.language}, {detail}, "
-                f"stop to reply {time.monotonic() - take.stopped:.2f}s")
+                f"stop to reply {self.clock() - take.stopped:.2f}s")
+            take.completed.set()
 
         if not finished:
             answer({"error": "capture did not finish"})
