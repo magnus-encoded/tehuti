@@ -33,7 +33,7 @@ mod layout_open_at {
 
     fn placed(workspace: usize, column: usize) -> WindowRules {
         WindowRules {
-            open_at: Some(OpenAt { workspace, column }),
+            open_at: Some(OpenAt::Column { workspace, column }),
             ..WindowRules::default()
         }
     }
@@ -86,5 +86,44 @@ mod layout_open_at {
                 .flat_map(|workspace| workspace.columns.iter())
                 .any(|column| column.tiles[0].window.0 == 11)
         );
+    }
+
+    fn stacked_under(sibling: u64) -> WindowRules {
+        WindowRules {
+            open_at: Some(OpenAt::StackedUnder(WindowId(sibling))),
+            ..WindowRules::default()
+        }
+    }
+
+    fn tiles(layout: &Layout, workspace: usize) -> Vec<Vec<u64>> {
+        layout.snapshot().outputs[0].workspaces[workspace]
+            .columns
+            .iter()
+            .map(|column| column.tiles.iter().map(|tile| tile.window.0).collect())
+            .collect()
+    }
+
+    #[test]
+    fn stacked_under_joins_the_column_of_its_sibling_and_keeps_focus() {
+        let mut layout = layout_with_two_workspaces();
+        let before = layout.snapshot();
+        layout.add_window(WindowId(10), stacked_under(1)).expect("stacked");
+        layout.add_window(WindowId(11), stacked_under(1)).expect("stacked");
+        layout.add_window(WindowId(12), stacked_under(3)).expect("other workspace");
+        assert_eq!(tiles(&layout, 0), vec![vec![1, 10, 11], vec![2]]);
+        assert_eq!(tiles(&layout, 1), vec![vec![3, 12]]);
+        let after = layout.snapshot();
+        assert_eq!(after.focused_window, before.focused_window);
+        assert_eq!(
+            after.outputs[0].active_workspace,
+            before.outputs[0].active_workspace
+        );
+    }
+
+    #[test]
+    fn stacked_under_a_missing_window_opens_as_usual() {
+        let mut layout = layout_with_two_workspaces();
+        layout.add_window(WindowId(10), stacked_under(99)).expect("opened");
+        assert_eq!(tiles(&layout, 0), vec![vec![1], vec![2], vec![10]]);
     }
 }

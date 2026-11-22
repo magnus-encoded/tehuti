@@ -211,10 +211,23 @@ impl Store {
 }
 
 /// Where each launched application's windows still have to go. A window that opens claims
-/// the entry whose launch token it carries; entries nobody claims expire.
+/// the entry whose launch token it carries; entries nobody claims expire. `K` names an
+/// opened window.
 #[derive(Debug)]
-pub struct Placements {
+pub struct Placements<K> {
     pending: Vec<(usize, SavedWindow, Instant)>,
+    /// The first window opened in each saved column, which later tiles of it stack under.
+    anchors: Vec<((usize, usize), K)>,
+}
+
+/// Where a claimed window goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Claim<K> {
+    /// Into a new column at the saved place.
+    Column(OpenAt),
+    /// Under the window that opened first in the same saved column. The saved place is the
+    /// fallback if that window has closed by then.
+    Under(K, OpenAt),
 }
 
 /// The environment variable that carries a restore launch's token (the saved window's
@@ -242,7 +255,7 @@ pub fn token_from_environment(environ: &[u8]) -> Option<usize> {
         .and_then(|value| value.parse().ok())
 }
 
-impl Placements {
+impl<K: Clone> Placements<K> {
     #[must_use]
     pub fn new(saved: &Saved, now: Instant) -> Self {
         let expires = now.checked_add(PLACEMENT_LIFETIME).unwrap_or(now);
@@ -253,21 +266,30 @@ impl Placements {
                 .enumerate()
                 .map(|(token, window)| (token, window.clone(), expires))
                 .collect(),
+            anchors: Vec::new(),
         }
     }
 
     /// The saved place for a window that just opened, removed from the list. The window
     /// proves it was launched by the restore with the token its process carries; a window
     /// without one, or whose entry expired, opens as usual.
-    pub fn claim(&mut self, token: Option<usize>, now: Instant) -> Option<OpenAt> {
+    pub fn claim(&mut self, token: Option<usize>, now: Instant, window: &K) -> Option<Claim<K>> {
         self.pending.retain(|(_, _, expires)| now < *expires);
         let token = token?;
         let index = self.pending.iter().position(|(wanted, _, _)| *wanted == token)?;
-        let (_, window, _) = self.pending.remove(index);
-        Some(OpenAt {
-            workspace: window.workspace,
-            column: window.column,
-        })
+        let (_, saved, _) = self.pending.remove(index);
+        let place = OpenAt::Column {
+            workspace: saved.workspace,
+            column: saved.column,
+        };
+        let group = (saved.workspace, saved.column);
+        match self.anchors.iter().find(|(candidate, _)| *candidate == group) {
+            Some((_, anchor)) => Some(Claim::Under(anchor.clone(), place)),
+            None => {
+                self.anchors.push((group, window.clone()));
+                Some(Claim::Column(place))
+            }
+        }
     }
 
     #[must_use]

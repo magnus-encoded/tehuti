@@ -85,6 +85,22 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
         }
     }
 
+    /// The layout place of a restore claim: under its anchor window when that is still
+    /// mapped, otherwise the saved column.
+    pub(crate) fn open_at(&self, claim: crate::session_restore::Claim<Key>) -> tehuti_core::layout::OpenAt {
+        use crate::session_restore::Claim;
+        match claim {
+            Claim::Column(place) => place,
+            Claim::Under(anchor, fallback) => self
+                .entries
+                .iter()
+                .find(|entry| entry.key == anchor)
+                .map_or(fallback, |entry| {
+                    tehuti_core::layout::OpenAt::StackedUnder(entry.identity)
+                }),
+        }
+    }
+
     pub(crate) fn map(&mut self, key: Key, window: Window, rules: WindowRules) -> Result<(), LayoutError> {
         let _effect = self.windows.step(tehuti_core::windows::Input::Map(key.clone()));
         let identity = WindowId(self.next_window);
