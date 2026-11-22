@@ -58,54 +58,65 @@ pub fn open_grabbed(
 ) -> Vec<(std::path::PathBuf, EvdevPad)> {
     pad_candidates(attached)
         .filter(|(path, device)| {
-            let sysfs = path
-                .file_name()
-                .and_then(|node| std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok());
-            accepts_pad(device.input_id().bus_type(), sysfs.as_deref(), device.name(), virtual_pad)
+            let sysfs = path.file_name().and_then(|node| {
+                std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok()
+            });
+            accepts_pad(
+                device.input_id().bus_type(),
+                sysfs.as_deref(),
+                device.name(),
+                virtual_pad,
+            )
         })
         .filter(|(_, device)| {
             device
                 .supported_keys()
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
-        .filter_map(|(path, mut device)| match grab_nonblocking(&mut device) {
-            Ok(()) => {
-                let mut translator = DpadHat::for_node(
-                    device.input_id().vendor(),
-                    device.input_id().product(),
-                    device.name().unwrap_or_default(),
-                );
-                if let Ok(axes) = device.get_absinfo() {
-                    for (axis, info) in axes {
-                        translator.set_trigger_range(axis, info.minimum(), info.maximum());
-                    }
-                }
-                tracing::debug!(
-                    name = device.name().unwrap_or("unnamed"),
-                    vendor = device.input_id().vendor(),
-                    identity = ?translator.identity,
-                    "controller face layout selected"
-                );
-                match Device::open(&path) {
-                    Ok(probe) => {
-                        let sysfs = path.file_name().and_then(|node| {
-                            std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok()
-                        });
-                        warn_readable_hidraw(device.name().unwrap_or("unnamed"), sysfs.as_deref());
-                        Some((path, EvdevPad::new(device, probe, translator).with_sysfs(sysfs)))
-                    }
-                    Err(error) => {
-                        warn!(%error, "controller probe open failed; skipping it");
-                        None
-                    }
+        .filter_map(|(path, device)| acquire(device).map(|device| (path, device)))
+        .filter_map(|(path, device)| {
+            let mut translator = DpadHat::for_node(
+                device.input_id().vendor(),
+                device.input_id().product(),
+                device.name().unwrap_or_default(),
+            );
+            if let Ok(axes) = device.get_absinfo() {
+                for (axis, info) in axes {
+                    translator.set_trigger_range(axis, info.minimum(), info.maximum());
                 }
             }
-            Err(error) => {
-                warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
-                None
+            tracing::debug!(
+                name = device.name().unwrap_or("unnamed"),
+                vendor = device.input_id().vendor(),
+                identity = ?translator.identity,
+                "controller face layout selected"
+            );
+            match Device::open(&path) {
+                Ok(probe) => {
+                    let sysfs = path.file_name().and_then(|node| {
+                        std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok()
+                    });
+                    warn_readable_hidraw(device.name().unwrap_or("unnamed"), sysfs.as_deref());
+                    Some((path, EvdevPad::new(device, probe, translator).with_sysfs(sysfs)))
+                }
+                Err(error) => {
+                    warn!(%error, "controller probe open failed; skipping it");
+                    None
+                }
             }
         })
         .collect()
+}
+
+/// Returns a candidate only after exclusive, nonblocking acquisition succeeds.
+pub fn acquire<D: GrabDevice>(mut device: D) -> Option<D> {
+    match grab_nonblocking(&mut device) {
+        Ok(()) => Some(device),
+        Err(error) => {
+            warn!(%error, "controller grab failed; skipping it");
+            None
+        }
+    }
 }
 
 /// The hidraw nodes of one HID device, and the physical path its udev rules can match.
@@ -2809,5 +2820,21 @@ mod remote_tests {
                 state: ButtonState::Pressed
             }]
         );
+    }
+}
+
+/// Polls discovery and reports a reconnect only after the scan installs a controller.
+#[must_use]
+pub fn scan_discovery(
+    state: Discovery,
+    now: core::time::Duration,
+    rescan: bool,
+    scan: impl FnOnce() -> bool,
+) -> (Discovery, Option<DiscoveryEffect>) {
+    let (next, effect) = discover(state, DiscoveryInput::Poll { now, rescan });
+    if effect == Some(DiscoveryEffect::Scan) && scan() {
+        discover(next, DiscoveryInput::Found)
+    } else {
+        (next, None)
     }
 }

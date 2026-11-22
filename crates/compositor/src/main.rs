@@ -806,35 +806,24 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
             retry_at: Duration::ZERO,
         },
     );
-    let (state, effect) = controller::discover(
+    let (state, notification) = controller::scan_discovery(
         state,
-        controller::DiscoveryInput::Poll {
-            now: data.discovery_epoch.elapsed(),
-            rescan: core::mem::take(&mut data.rescan_controller),
+        data.discovery_epoch.elapsed(),
+        core::mem::take(&mut data.rescan_controller),
+        || {
+            insert_controllers(
+                handle,
+                data.virtual_pad.as_deref(),
+                &mut data.controllers,
+                &mut data.controller_tokens,
+            );
+            !data.controllers.is_empty()
         },
     );
     data.discovery = state;
-    if effect == Some(controller::DiscoveryEffect::Scan) {
-        insert_controllers(
-            handle,
-            data.virtual_pad.as_deref(),
-            &mut data.controllers,
-            &mut data.controller_tokens,
-        );
-        if !data.controllers.is_empty() {
-            let searching = core::mem::replace(
-                &mut data.discovery,
-                controller::Discovery::Attached {
-                    retry_at: Duration::ZERO,
-                },
-            );
-            let (attached, notification) = controller::discover(searching, controller::DiscoveryInput::Found);
-            data.discovery = attached;
-            if notification == Some(controller::DiscoveryEffect::Reconnected) {
-                data.compositor
-                    .controller_input(tehuti_core::controller::Input::Reconnected);
-            }
-        }
+    if notification == Some(controller::DiscoveryEffect::Reconnected) {
+        data.compositor
+            .controller_input(tehuti_core::controller::Input::Reconnected);
     }
     sync_controller_names(data);
 }

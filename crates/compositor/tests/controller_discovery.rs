@@ -29,6 +29,37 @@ mod tests {
     }
 
     #[test]
+    fn acquisition_never_returns_a_refused_controller() {
+        assert!(
+            controller::acquire(FakeDevice {
+                refuse: true,
+                ..FakeDevice::default()
+            })
+            .is_none()
+        );
+        let accepted = controller::acquire(FakeDevice::default()).expect("acquired");
+        assert!(accepted.grabbed && accepted.nonblocking);
+    }
+
+    #[test]
+    fn discovery_reconnects_only_after_a_due_scan_installs_a_controller() {
+        let state = Discovery::Searching {
+            retry_at: Duration::from_millis(250),
+        };
+        let (state, early) = controller::scan_discovery(state, Duration::from_millis(249), false, || {
+            panic!("scan before deadline")
+        });
+        assert_eq!(early, None);
+        let (state, refused) = controller::scan_discovery(state, Duration::from_millis(250), false, || false);
+        assert_eq!(refused, None, "a refused or missing controller cannot reconnect");
+        let (state, reconnected) =
+            controller::scan_discovery(state, Duration::from_millis(251), true, || true);
+        assert_eq!(reconnected, Some(DiscoveryEffect::Reconnected));
+        let (_, again) = controller::scan_discovery(state, Duration::from_secs(1), true, || true);
+        assert_eq!(again, None, "an attached controller cannot reconnect twice");
+    }
+
+    #[test]
     fn acquisition_grabs_exclusively_and_reports_refusal() {
         let mut device = FakeDevice::default();
         controller::grab_nonblocking(&mut device).expect("device accepts grab");

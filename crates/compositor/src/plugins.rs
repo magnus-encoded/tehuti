@@ -99,6 +99,7 @@ impl Drop for Entry {
 pub struct Plugins {
     entries: Vec<Entry>,
     start: Start,
+    clock: Rc<dyn Fn() -> Instant>,
     focus: Option<String>,
     pad: tehuti_core::vpad::Filter,
     cleanup_timer: Box<dyn Fn()>,
@@ -330,7 +331,7 @@ impl Plugins {
     }
 
     pub(crate) fn supervise(&mut self) -> Vec<usize> {
-        self.supervise_at(Instant::now())
+        self.supervise_at((self.clock)())
     }
 
     fn supervise_at(&mut self, now: Instant) -> Vec<usize> {
@@ -376,12 +377,12 @@ impl Plugins {
                         .as_ref()
                         .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id)))
             {
-                Self::start_entry(&self.start, entry, Instant::now());
+                Self::start_entry(&self.start, entry, (self.clock)());
             }
         }
         for entry in &self.entries {
             if let Some(session) = &entry.session {
-                session.borrow_mut().expire_initialize(Instant::now());
+                session.borrow_mut().expire_initialize((self.clock)());
             }
         }
         self.routed_verb = self.verb_route(event).map(|matched| (event.clone(), matched));
@@ -441,7 +442,7 @@ impl Plugins {
                 text: matched.text,
             },
         };
-        if let Err(error) = session.queue_event(&call, Instant::now()) {
+        if let Err(error) = session.queue_event(&call, (self.clock)()) {
             tracing::warn!(%error, "plugin verb dropped");
             return None;
         }
@@ -507,7 +508,7 @@ impl Plugins {
                 continue;
             };
             let request_id = call.request_id;
-            if let Err(error) = session.queue_event(&call, Instant::now()) {
+            if let Err(error) = session.queue_event(&call, (self.clock)()) {
                 tracing::warn!(%error, "plugin event dropped");
                 continue;
             }
@@ -537,9 +538,23 @@ pub fn install<Data: 'static>(
     directory: &Path,
     compositor: fn(&mut Data) -> &mut Compositor,
 ) -> io::Result<Plugins> {
+    install_with_clock(event_loop, directory, compositor, Rc::new(Instant::now))
+}
+
+/// Installs the production plugin sources with an injected monotonic clock.
+/// # Errors
+/// The manifest directory cannot be read.
+pub fn install_with_clock<Data: 'static>(
+    event_loop: &EventLoop<'static, Data>,
+    directory: &Path,
+    compositor: fn(&mut Data) -> &mut Compositor,
+    clock: Rc<dyn Fn() -> Instant>,
+) -> io::Result<Plugins> {
     let handle = event_loop.handle();
     let start_handle = handle.clone();
-    let start: Start = Box::new(move |manifest| start_process(&start_handle, manifest, compositor));
+    let start_clock = clock.clone();
+    let start: Start =
+        Box::new(move |manifest| start_process(&start_handle, manifest, compositor, start_clock.clone()));
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(directory)? {
         paths.push(entry?.path());
@@ -560,7 +575,7 @@ pub fn install<Data: 'static>(
                 }
                 let mut entry = Entry::new(manifest, entries.len());
                 if entry.manifest.start == StartPolicy::Always {
-                    Plugins::start_entry(&start, &mut entry, Instant::now());
+                    Plugins::start_entry(&start, &mut entry, clock());
                 }
                 entries.push(entry);
             }
@@ -579,6 +594,7 @@ pub fn install<Data: 'static>(
     Ok(Plugins {
         entries,
         start,
+        clock,
         focus: None,
         pad: tehuti_core::vpad::Filter::default(),
         cleanup_timer: Box::new(move || handle.remove(timer_token)),
@@ -601,6 +617,7 @@ fn read_manifest(path: &Path) -> io::Result<Manifest> {
 
 fn create_session(
     manifest: &Manifest,
+    now: Instant,
 ) -> io::Result<(Rc<RefCell<Session>>, Process, ChildStdin, ChildStdout)> {
     let child = crate::child_process::command(&manifest.executable)
         .stdin(Stdio::piped())
@@ -622,7 +639,7 @@ fn create_session(
         .ok_or_else(|| io::Error::other("plugin stdout missing"))?;
     rustix::fs::fcntl_setfl(&stdin, rustix::fs::OFlags::NONBLOCK)?;
     rustix::fs::fcntl_setfl(&stdout, rustix::fs::OFlags::NONBLOCK)?;
-    let session = Rc::new(RefCell::new(Session::new(manifest, Instant::now())?));
+    let session = Rc::new(RefCell::new(Session::new(manifest, now)?));
     Ok((session, process, stdin, stdout))
 }
 
@@ -648,8 +665,9 @@ fn start_process<Data: 'static>(
     handle: &smithay::reexports::calloop::LoopHandle<'static, Data>,
     manifest: &Manifest,
     compositor: fn(&mut Data) -> &mut Compositor,
+    clock: Rc<dyn Fn() -> Instant>,
 ) -> io::Result<Running> {
-    let (session, process, mut stdin, stdout) = create_session(manifest)?;
+    let (session, process, mut stdin, stdout) = create_session(manifest, clock())?;
     let writer = session.clone();
     let writer_disabled = Rc::new(Cell::new(false));
     let writer_flag = writer_disabled.clone();
@@ -675,6 +693,7 @@ fn start_process<Data: 'static>(
         writer_disabled.clone(),
         token,
         compositor,
+        clock,
     ) {
         Ok(reader_token) => reader_token,
         Err(error) => {
@@ -709,6 +728,7 @@ fn insert_reader<Data: 'static>(
     writer_disabled: Rc<Cell<bool>>,
     writer_token: smithay::reexports::calloop::RegistrationToken,
     compositor: fn(&mut Data) -> &mut Compositor,
+    clock: Rc<dyn Fn() -> Instant>,
 ) -> io::Result<smithay::reexports::calloop::RegistrationToken> {
     let reader = session;
     let writer_handle = handle.downgrade();
@@ -721,7 +741,7 @@ fn insert_reader<Data: 'static>(
                 Mode::Level,
             ),
             move |_, source, data| {
-                let action = read_ready(&reader, source, data, compositor, &timer_handle);
+                let action = read_ready(&reader, source, data, compositor, &timer_handle, clock());
                 let reader_session = reader.borrow();
                 if !reader_session.output.is_empty()
                     && writer_disabled.get()
@@ -745,6 +765,7 @@ fn read_ready<Data: 'static>(
     data: &mut Data,
     compositor_of: fn(&mut Data) -> &mut Compositor,
     handle: &smithay::reexports::calloop::LoopHandle<'static, Data>,
+    now: Instant,
 ) -> PostAction {
     let compositor = compositor_of(data);
     let mut bytes = [0; 4096];
@@ -760,15 +781,15 @@ fn read_ready<Data: 'static>(
                 return PostAction::Remove;
             }
             Ok(count) => {
-                if !reader.borrow_mut().accept_bytes(count, Instant::now()) {
+                if !reader.borrow_mut().accept_bytes(count, now) {
                     compositor.plugin_exited(reader.borrow().plugin);
                     return PostAction::Remove;
                 }
                 let deliveries = reader
                     .borrow_mut()
-                    .receive(bytes.get(..count).unwrap_or_default(), Instant::now());
+                    .receive(bytes.get(..count).unwrap_or_default(), now);
                 compositor.advance_time();
-                deliver(reader, compositor, deliveries, &mut |rest| {
+                deliver(reader, compositor, deliveries, now, &mut |rest| {
                     schedule_rest(handle, compositor_of, rest);
                 });
             }
@@ -843,6 +864,7 @@ fn deliver(
     reader: &Rc<RefCell<Session>>,
     compositor: &mut Compositor,
     deliveries: Vec<Delivery>,
+    now: Instant,
     later: &mut dyn FnMut(Vec<Action>),
 ) {
     for delivery in deliveries {
@@ -857,7 +879,7 @@ fn deliver(
                 if rejection.is_some() {
                     tracing::warn!("plugin action rejected");
                     if !already_invalid {
-                        reader.borrow_mut().invalid(Instant::now());
+                        reader.borrow_mut().invalid(now);
                     }
                 }
                 let response = if let Some(request_id) = submission_id {
@@ -1099,6 +1121,7 @@ mod tests {
             Plugins {
                 entries,
                 start,
+                clock: Rc::new(Instant::now),
                 focus: None,
                 pad: tehuti_core::vpad::Filter::default(),
                 cleanup_timer: Box::new(|| {}),
