@@ -1149,6 +1149,8 @@ mod tests {
             restart_at: Option<Instant>,
             backoff: Duration,
             starts: usize,
+            /// Whether supervision may start the plugin: always-start plugins, or one a focus has started.
+            started: bool,
         }
 
         impl ModelEntry {
@@ -1160,6 +1162,30 @@ mod tests {
                     restart_at: None,
                     backoff: Duration::from_millis(100),
                     starts: 0,
+                    started: true,
+                }
+            }
+
+            fn due(&self, now: Instant) -> bool {
+                self.restart_at.is_none_or(|deadline| now >= deadline)
+            }
+
+            /// A focus on the plugin's application starts it, but only once its backoff has elapsed.
+            fn focus(&mut self, now: Instant, succeed: bool) {
+                if !self.started && !self.running && self.due(now) {
+                    self.started = true;
+                    self.attempt(now, succeed);
+                }
+            }
+
+            fn attempt(&mut self, now: Instant, succeed: bool) {
+                self.starts = self.starts.saturating_add(1);
+                self.restart_at = None;
+                if succeed {
+                    self.running = true;
+                    self.healthy_since = Some(now);
+                } else {
+                    self.schedule(now);
                 }
             }
 
@@ -1181,15 +1207,8 @@ mod tests {
                         self.backoff = Duration::from_millis(100);
                     }
                 }
-                if !self.running && self.restart_at.is_none_or(|deadline| now >= deadline) {
-                    self.starts = self.starts.saturating_add(1);
-                    self.restart_at = None;
-                    if succeed {
-                        self.running = true;
-                        self.healthy_since = Some(now);
-                    } else {
-                        self.schedule(now);
-                    }
+                if self.started && !self.running && self.due(now) {
+                    self.attempt(now, succeed);
                 }
             }
         }
@@ -1200,6 +1219,13 @@ mod tests {
             Crash(usize),
             Hang(usize),
             StartsSucceed(usize, bool),
+        }
+
+        #[derive(Debug, Clone)]
+        enum FocusOperation {
+            Advance(u64),
+            Break(usize, bool),
+            Focus(bool),
         }
 
         fn operation() -> impl Strategy<Value = Operation> {
@@ -1541,6 +1567,60 @@ mod tests {
                     } else {
                         prop_assert_eq!(exited, vec![0]);
                     }
+                }
+            }
+
+            /// Crash, hang, focus (the explicit start) and time in any order: a start never beats its backoff.
+            #[test]
+            fn a_focus_start_after_a_failure_waits_for_the_backoff(
+                ops in prop::collection::vec(
+                    prop_oneof![
+                        3 => (0_u64..5000).prop_map(FocusOperation::Advance),
+                        2 => (0..PLUGINS, any::<bool>()).prop_map(|(index, hang)| FocusOperation::Break(index, hang)),
+                        3 => any::<bool>().prop_map(FocusOperation::Focus),
+                    ],
+                    1..60,
+                ),
+            ) {
+                let succeed = Rc::new(RefCell::new(vec![true; PLUGINS]));
+                let starts = Rc::new(RefCell::new(vec![0; PLUGINS]));
+                let mut plugins = plugins(&succeed, &starts);
+                let mut model = vec![ModelEntry::new(); PLUGINS];
+                for (entry, expected) in plugins.entries.iter_mut().zip(&mut model) {
+                    entry.manifest.start = StartPolicy::OnFocus;
+                    entry.started = false;
+                    expected.started = false;
+                }
+                let mut now = Instant::now();
+                let clock = Rc::new(core::cell::Cell::new(now));
+                let read = Rc::clone(&clock);
+                plugins.clock = Rc::new(move || read.get());
+                for operation in ops {
+                    match operation {
+                        FocusOperation::Advance(millis) => {
+                            now = later(now, millis);
+                            clock.set(now);
+                        }
+                        FocusOperation::Break(index, hang) => {
+                            break_session(&plugins, index, hang, now);
+                            model[index].broken = model[index].running;
+                        }
+                        FocusOperation::Focus(matching) => {
+                            let app_id = if matching { "test" } else { "other" };
+                            let _active = plugins.active(&Event::Focus { app_id: Some(app_id.into()), title: String::new() });
+                            if matching {
+                                for (index, entry) in model.iter_mut().enumerate() {
+                                    entry.focus(now, succeed.borrow()[index]);
+                                }
+                            }
+                        }
+                    }
+                    drop(plugins.supervise_at(now));
+                    mark_healthy(&plugins, now);
+                    for (index, entry) in model.iter_mut().enumerate() {
+                        entry.supervise(now, succeed.borrow()[index]);
+                    }
+                    check(&plugins, &model, &starts.borrow())?;
                 }
             }
 
