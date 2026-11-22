@@ -17,10 +17,16 @@ mod layout_open_at {
         layout
             .add_output(OutputId(0), OutputGeometry { area, usable: area }, None)
             .expect("output");
-        layout.add_window(WindowId(1), WindowRules::default()).expect("one");
-        layout.add_window(WindowId(2), WindowRules::default()).expect("two");
+        layout
+            .add_window(WindowId(1), WindowRules::default())
+            .expect("one");
+        layout
+            .add_window(WindowId(2), WindowRules::default())
+            .expect("two");
         layout.apply(Command::FocusWorkspaceDown);
-        layout.add_window(WindowId(3), WindowRules::default()).expect("three");
+        layout
+            .add_window(WindowId(3), WindowRules::default())
+            .expect("three");
         layout.apply(Command::FocusWorkspaceUp);
         layout
     }
@@ -48,7 +54,10 @@ mod layout_open_at {
         let after = layout.snapshot();
         assert_eq!(columns(&layout, 0), vec![1, 10, 2]);
         assert_eq!(after.focused_window, before.focused_window);
-        assert_eq!(after.outputs[0].active_workspace, before.outputs[0].active_workspace);
+        assert_eq!(
+            after.outputs[0].active_workspace,
+            before.outputs[0].active_workspace
+        );
     }
 
     #[test]

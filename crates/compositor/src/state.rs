@@ -3779,10 +3779,11 @@ impl Compositor {
         for (token, window) in saved.windows().iter().enumerate() {
             if !installed.contains(&window.app_id) {
                 tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
-            } else if !self
-                .launcher
-                .launch_with_token(&window.app_id, self.launch_socket.as_deref(), Some(token))
-            {
+            } else if !self.launcher.launch_with_token(
+                &window.app_id,
+                self.launch_socket.as_deref(),
+                Some(token),
+            ) {
                 tracing::warn!(app_id = %window.app_id, "restore launch failed");
             }
         }

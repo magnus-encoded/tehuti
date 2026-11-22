@@ -309,7 +309,8 @@ impl Session {
         let result = socket
             .ok_or_else(|| "no compositor socket".to_owned())
             .and_then(|socket| {
-                let mut launch = crate::desktop::launch_for(entry, socket)?.labelled(&self.display_name(entry));
+                let mut launch =
+                    crate::desktop::launch_for(entry, socket)?.labelled(&self.display_name(entry));
                 if let Some(token) = token {
                     launch = launch.with_env(crate::session_restore::TOKEN_VARIABLE, token.to_string());
                 }
