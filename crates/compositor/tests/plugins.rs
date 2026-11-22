@@ -2,10 +2,10 @@
 
 #[cfg(test)]
 mod plugins {
+    use core::cell::Cell;
     use core::time::Duration;
     use proptest::prelude::*;
     use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
-    use core::cell::Cell;
     use std::rc::Rc;
     use std::{
         io::Write,
@@ -75,7 +75,8 @@ mod plugins {
                     started.elapsed() < Duration::from_secs(5),
                     "plugin did not progress"
                 );
-                self.now.set(self.now.get().checked_add(Duration::from_millis(1)).unwrap());
+                self.now
+                    .set(self.now.get().checked_add(Duration::from_millis(1)).unwrap());
                 self.compositor.advance_time();
                 self.event_loop
                     .dispatch(Duration::from_millis(5), &mut self.compositor)
@@ -139,13 +140,7 @@ mod plugins {
         harness.compositor.controller_input(Input::Disconnected);
         harness.send([press.clone(), release.clone()]);
         harness.compositor.controller_input(Input::Reconnected);
-        harness.send([
-            release.clone(),
-            press,
-            release.clone(),
-            release,
-            focus("test"),
-        ]);
+        harness.send([release.clone(), press, release.clone(), release, focus("test")]);
         harness.pump_until(|harness| {
             harness
                 .received()
