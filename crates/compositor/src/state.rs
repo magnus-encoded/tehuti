@@ -143,6 +143,7 @@ pub struct Compositor {
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    placements: Option<crate::session_restore::Placements>,
     session_exit_status: Option<u8>,
     restart_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
@@ -312,6 +313,7 @@ impl Compositor {
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
+            placements: None,
             session_exit_status: None,
             restart_requested: false,
             speech_process: None,
@@ -1700,9 +1702,13 @@ impl Compositor {
             self.speech_context.as_deref(),
             &self.speech_title,
         );
+        let verbs = self
+            .plugins
+            .as_ref()
+            .map_or_else(Vec::new, crate::plugins::Plugins::speech_verbs);
         self.speech_process.as_mut().is_none_or(|process| {
             process
-                .send_with_language(command, &prompt, language.as_deref())
+                .send_with_verbs(command, &prompt, language.as_deref(), &verbs)
                 .inspect_err(|error| tracing::warn!(%error, "speech command failed"))
                 .is_ok()
         })
@@ -3782,6 +3788,42 @@ impl Compositor {
         }
     }
 
+    /// Launches every saved application and remembers where each window goes; the windows
+    /// are placed as they open, whatever their order, and focus is never touched.
+    pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
+        let installed = self.launcher.installed();
+        for window in saved.windows() {
+            if !installed.contains(&window.app_id) {
+                tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
+            } else if !self
+                .launcher
+                .launch_application(&window.app_id, self.launch_socket.as_deref())
+            {
+                tracing::warn!(app_id = %window.app_id, "restore launch failed");
+            }
+        }
+        self.placements = Some(crate::session_restore::Placements::new(saved, Instant::now()));
+    }
+
+    /// The restorable windows now open, for the clean-exit save.
+    #[must_use]
+    pub fn session_to_save(&self) -> crate::session_restore::Saved {
+        let apps: std::collections::HashMap<_, _> = self
+            .placement
+            .placed(|_| 0.0)
+            .into_iter()
+            .filter_map(|placed| {
+                let app_id = placed.window.toplevel().and_then(toplevel_app_id)?;
+                Some((placed.identity, app_id))
+            })
+            .collect();
+        crate::session_restore::Saved::capture(
+            &self.placement.snapshot(),
+            |window| apps.get(&window.0).cloned(),
+            &self.launcher.installed(),
+        )
+    }
+
     pub fn set_launch_socket(&mut self, socket: std::ffi::OsString) {
         self.launch_socket = Some(socket);
     }
@@ -4210,7 +4252,8 @@ impl Compositor {
         let context = context.cloned();
         let width = context.as_ref().and_then(|context| self.opening_width(context));
         let context = context.as_ref();
-        let rules = Self::window_rules(&surface, context, width);
+        let mut rules = Self::window_rules(&surface, context, width);
+        rules.open_at = self.claim_restored_place(&surface);
         let key = surface.wl_surface().clone();
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
@@ -4257,6 +4300,15 @@ impl Compositor {
             tracing::warn!(%error, path = %path.display(), "window width not rewritten");
         }
         Some(tehuti_protocol::fraction_value(fraction))
+    }
+
+    fn claim_restored_place(&mut self, surface: &ToplevelSurface) -> Option<tehuti_core::layout::OpenAt> {
+        let placements = self.placements.as_mut()?;
+        let place = toplevel_app_id(surface).and_then(|app_id| placements.claim(&app_id, Instant::now()));
+        if placements.is_empty() {
+            self.placements = None;
+        }
+        place
     }
 
     fn window_rules(

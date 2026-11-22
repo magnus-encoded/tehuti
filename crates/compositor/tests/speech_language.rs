@@ -47,17 +47,23 @@ for line in sys.stdin:
 
     impl Harness {
         fn new() -> Self {
+            Self::with_plugin(
+                &serde_json::json!({
+                    "executable":"plugin.py", "app_ids":["chatty"], "events":["focus"],
+                    "start":"always", "permissions":[]
+                }),
+                PLUGIN,
+            )
+        }
+
+        fn with_plugin(manifest: &serde_json::Value, source: &str) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let executable = directory.path().join("plugin.py");
-            std::fs::write(&executable, PLUGIN).unwrap();
+            std::fs::write(&executable, source).unwrap();
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::write(
                 directory.path().join("plugin.json"),
-                serde_json::to_vec(&serde_json::json!({
-                    "executable":"plugin.py", "app_ids":["chatty"], "events":["focus"],
-                    "start":"always", "permissions":[]
-                }))
-                .unwrap(),
+                serde_json::to_vec(manifest).unwrap(),
             )
             .unwrap();
             let display: Display<Compositor> = Display::new().unwrap();
@@ -133,6 +139,33 @@ for line in sys.stdin:
             let starts = self.file("starts");
             serde_json::from_str(starts.lines().last().unwrap()).unwrap()
         }
+    }
+
+    #[test]
+    fn ready_verb_definitions_reach_captures_in_every_context_and_follow_notices() {
+        let verbs = serde_json::json!(["ada", {"word":"orion","locale":"en","hints":["chat"]}]);
+        let source = PLUGIN
+            .replace("['focus']", "['speech']")
+            .replace("'speech.language'", "'verbs'")
+            .replace("'language': text", "'verbs': json.loads(text)");
+        let mut harness = Harness::with_plugin(
+            &serde_json::json!({
+                "kind":"verb", "verbs":verbs, "executable":"plugin.py", "app_ids":[],
+                "events":["speech"], "start":"always", "permissions":["text"]
+            }),
+            &source,
+        );
+        harness.pump(40);
+        assert_eq!(harness.session()["verbs"], verbs);
+        harness.focus("elsewhere");
+        assert_eq!(harness.session()["verbs"], verbs);
+        let replacement = serde_json::json!([{"word":"orion","locale":"fr","hints":["canal"]}]);
+        harness.set_language(&replacement.to_string());
+        assert_eq!(harness.session()["verbs"], replacement);
+        std::fs::remove_file(harness.directory.path().join("lang")).unwrap();
+        std::fs::write(harness.directory.path().join("quit"), "").unwrap();
+        harness.pump(100);
+        assert_eq!(harness.session().get("verbs"), None);
     }
 
     #[test]

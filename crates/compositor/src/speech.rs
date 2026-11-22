@@ -159,6 +159,20 @@ impl SpeechProcess {
         prompt: &str,
         language: Option<&str>,
     ) -> io::Result<()> {
+        self.send_with_verbs(effect, prompt, language, &[])
+    }
+
+    /// Queues a capture with a snapshot of the ready plugins' verb definitions.
+    ///
+    /// # Errors
+    /// The child is absent or its bounded output queue is full.
+    pub fn send_with_verbs(
+        &mut self,
+        effect: &SpeechEffect,
+        prompt: &str,
+        language: Option<&str>,
+        verbs: &[tehuti_protocol::Verb],
+    ) -> io::Result<()> {
         let value = match effect {
             SpeechEffect::Start { session } => {
                 let mut fields = serde_json::Map::new();
@@ -168,6 +182,9 @@ impl SpeechProcess {
                 }
                 if let Some(language) = language {
                     fields.extend([("language".to_owned(), language.into())]);
+                }
+                if !verbs.is_empty() {
+                    fields.extend([("verbs".into(), serde_json::to_value(verbs)?)]);
                 }
                 serde_json::Value::Object(fields)
             }
