@@ -215,7 +215,11 @@ fn the_restored_focus_lands_on_the_saved_window_after_later_opens() {
     let apps = saved_layout.placed(|_| 0.0);
     let saved = crate::session_restore::Saved::capture(
         &saved_layout.snapshot(),
-        |id| apps.iter().find(|p| p.identity == id.0).map(|_| "app".to_owned()),
+        |id| {
+            apps.iter()
+                .find(|placed| placed.identity == id.0)
+                .map(|_| "app".to_owned())
+        },
         &installed,
     );
     let mut placements = crate::session_restore::Placements::<u8>::new(&saved, now);

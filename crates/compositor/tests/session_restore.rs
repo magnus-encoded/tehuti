@@ -347,9 +347,7 @@ mod tests {
             ],
             &[],
         );
-        layout
-            .focus_window(WindowId(focus))
-            .expect("focus");
+        layout.focus_window(WindowId(focus)).expect("focus");
         capture(
             &layout,
             &names,
