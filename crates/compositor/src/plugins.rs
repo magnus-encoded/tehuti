@@ -433,11 +433,17 @@ impl Plugins {
             })
             .collect();
         owners.sort_by_key(|(scope, ..)| *scope);
-        owners.into_iter().map(|(_, index, verbs)| (index, verbs)).collect()
+        owners
+            .into_iter()
+            .map(|(_, index, verbs)| (index, verbs))
+            .collect()
     }
 
     pub(crate) fn speech_verbs(&self) -> Vec<tehuti_protocol::Verb> {
-        self.verb_owners().into_iter().flat_map(|(_, verbs)| verbs).collect()
+        self.verb_owners()
+            .into_iter()
+            .flat_map(|(_, verbs)| verbs)
+            .collect()
     }
 
     /// The ready plugin whose verb begins this speech, checked before application plugins.
@@ -450,12 +456,14 @@ impl Plugins {
             owners.iter().map(|(index, verbs)| (*index, verbs.as_slice())),
             text.as_str(),
         )?;
-        let winner_focused = VerbScope::of(self.entries.get(matched.plugin)?.manifest.kind)
-            == VerbScope::WhileFocused;
+        let winner_focused =
+            VerbScope::of(self.entries.get(matched.plugin)?.manifest.kind) == VerbScope::WhileFocused;
         let shadows = winner_focused
             && owners.iter().any(|(index, verbs)| {
                 VerbScope::of(self.entries[*index].manifest.kind) == VerbScope::Everywhere
-                    && verbs.iter().any(|verb| verb.as_ref().eq_ignore_ascii_case(&matched.verb))
+                    && verbs
+                        .iter()
+                        .any(|verb| verb.as_ref().eq_ignore_ascii_case(&matched.verb))
             });
         if shadows && self.logged_clashes.insert(matched.verb.to_lowercase()) {
             tracing::warn!(verb = %matched.verb, "a focused application's verb shadows a global verb");
@@ -1145,7 +1153,7 @@ mod tests {
                 cleanup_timer: Box::new(|| {}),
                 routed_verb: None,
                 logged_clashes: std::collections::BTreeSet::new(),
-        logged_clashes: std::collections::BTreeSet::new(),
+                logged_clashes: std::collections::BTreeSet::new(),
             }
         }
 
@@ -1330,10 +1338,21 @@ mod tests {
         fn an_application_plugins_verbs_apply_only_while_its_application_has_focus() {
             let mut plugins = verb_plugins(&[]);
             give_verbs(&plugins, 1, ADA);
-            assert!(plugins.entries[1].session.as_ref().unwrap().borrow().invalid_messages == 0);
+            assert!(
+                plugins.entries[1]
+                    .session
+                    .as_ref()
+                    .unwrap()
+                    .borrow()
+                    .invalid_messages
+                    == 0
+            );
             let heard = speech("ada sum up");
             let _ = plugins.active(&focus("other"));
-            assert!(!plugins.active(&heard), "an unfocused application's verb is silent");
+            assert!(
+                !plugins.active(&heard),
+                "an unfocused application's verb is silent"
+            );
             let _ = plugins.active(&focus("test"));
             assert!(plugins.active(&heard), "its own focus enables the verb");
             assert_eq!(plugins.dispatch(&heard, true).map(|(key, _)| key.plugin), Some(1));
@@ -1373,7 +1392,11 @@ mod tests {
             assert!(plugins.speech_verbs().is_empty());
             let _ = plugins.active(&focus("test"));
             assert_eq!(
-                plugins.speech_verbs().iter().map(AsRef::as_ref).collect::<Vec<&str>>(),
+                plugins
+                    .speech_verbs()
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<&str>>(),
                 ["orion"]
             );
             let heard = speech("Orion, chat with say");
