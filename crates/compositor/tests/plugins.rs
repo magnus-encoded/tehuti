@@ -949,7 +949,7 @@ for line in sys.stdin:
     fn verb_harness(verbs: &[&str], accept: bool) -> Harness {
         let mut configuration = manifest();
         configuration.kind = tehuti_protocol::PluginKind::Verb;
-        configuration.verbs = verbs.iter().map(|verb| (*verb).to_owned()).collect();
+        configuration.verbs = verbs.iter().map(|verb| (*verb).into()).collect();
         configuration.app_ids.clear();
         configuration.events = vec![Subscription::Speech];
         configuration.permissions = vec![Permission::Text];

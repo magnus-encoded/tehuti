@@ -111,7 +111,7 @@ pub(crate) struct Session {
     pub(crate) read_bytes: usize,
     pub(crate) status_text: Option<String>,
     /// A verb plugin's current verbs; empty for application plugins.
-    pub(crate) verbs: Vec<String>,
+    pub(crate) verbs: Vec<tehuti_protocol::Verb>,
     /// The hotwords the plugin last sent; a restart starts empty.
     pub(crate) hints: Vec<String>,
     /// The invoke words the plugin last sent; a restart starts empty.
@@ -546,7 +546,7 @@ impl Session {
     }
 
     /// Replaces a verb plugin's verbs; an application plugin may not declare any.
-    pub(crate) fn set_verbs(&mut self, verbs: Vec<String>, now: Instant) {
+    pub(crate) fn set_verbs(&mut self, verbs: Vec<tehuti_protocol::Verb>, now: Instant) {
         if self.manifest.kind == PluginKind::Verb {
             self.verbs = verbs;
             return;

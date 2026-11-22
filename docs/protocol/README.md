@@ -382,42 +382,49 @@ returns to the manifest list:
 {"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada","orion"]}}
 ```
 
-A plugin holds at most 16 verbs. Each verb is one word of letters, with at most
-32 characters. The core rejects a `verbs` notice from an application plugin in
-the same way as an invalid action.
+#### Limits
 
-Focus is a notice with no reply:
+- A plugin holds at most 16 verbs.
+- Each verb is one word of letters, at most 32 characters.
+- A pinned verb carries at most 16 hints, strings without NUL.
+- `locale` is a supported Whisper primary language tag such as `en` or `no`.
+  Regional tags such as `en-US` and unsupported tags reject the notice. The
+  list lives in `sidecars/speech/verb-locales.txt`, which Rust and Python both read.
+- The core rejects a `verbs` notice from an application plugin in the same way
+  as an invalid action.
+
+#### Pinned locale
+
+A verb entry may pin a locale and hints, in both the manifest and a notice:
 
 ```json
-{"jsonrpc":"2.0","method":"focus","params":{"app_id":"test","title":"Example window"}}
+{"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada",{"word":"orion","locale":"en","hints":["chat","channel"]}]}}
 ```
 
-`app_id` is a string, or null for no application. `title` is always a string.
-It can be empty. It is never null. Focus notices go to every initialized focus
-subscriber, even when its manifest does not match the application.
+Speech first decodes in the session language. When its first word sounds like
+a pinned verb, the sidecar decodes the same audio once more in that verb's
+locale with its hints. If the first word of that decode does not match the
+verb, the session transcript is used. The core strips the verb and sends the
+remainder with the pinned locale:
 
-Button requests go to the first matching initialized button subscriber.
-Manifests sort by their full filesystem paths, in ascending Rust path order.
-`id` does not affect the order. Matching uses the current application id,
-exactly and case sensitively. No application matches null. A plugin that is
-starting, refused or focus-only does not take part in button selection.
+```json
+{"jsonrpc":"2.0","id":3,"method":"verb","params":{"verb":"orion","locale":"en","text":"chat with say"}}
+```
 
-The selected plugin runs before the active context. The core releases the
-context actions or fallback actions that it captured at dispatch. It does this
-exactly once, in these cases:
+String verbs keep the session language and omit `locale` from the request.
 
-- The reply is empty.
-- The reply is invalid.
-- The reply is missing.
-- The reply is late.
+#### Backend note
 
-Replies cannot complete other requests. Duplicate or stale replies cannot act
-on later input. A focus notification settles all pending decisions as
-declines. The core releases their captured actions once, in arrival order. It
-does this before it updates the active context for later events. Replies for
-these settled requests are stale and release nothing. If no plugin qualifies,
-normal context routing applies. Global mappings and the escape chord take
-priority.
+The second decode always runs on the local model, also when a remote server
+made the first decode. The speech log line of the session names both: `backend`
+for the first decode and `verb backend` for the pinned one. A pinned final adds
+at most one decode of latency.
+
+#### Verbs and invoke words
+
+`verbs` and `invoke.words` are separate. `verbs` route speech to a verb plugin.
+`invoke.words` add slash-command words to the built-in `invoke` verb for an
+application plugin.
 
 ## Actions
 
