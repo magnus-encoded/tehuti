@@ -3807,20 +3807,20 @@ impl Compositor {
     /// once the last launch has opened.
     pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
         let installed = self.launcher.installed();
-        let mut placements = crate::session_restore::Placements::new(saved, self.clock_now());
-        for (token, window) in saved.windows().iter().enumerate() {
+        let now = self.clock_now();
+        let socket = self.launch_socket.clone();
+        let launcher = &mut self.launcher;
+        let placements = crate::session_restore::Placements::begin(saved, now, |token, window| {
             if !installed.contains(&window.app_id) {
                 tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
-                placements.launch_failed(token);
-            } else if !self.launcher.launch_with_token(
-                &window.app_id,
-                self.launch_socket.as_deref(),
-                Some(token),
-            ) {
-                tracing::warn!(app_id = %window.app_id, "restore launch failed");
-                placements.launch_failed(token);
+                return false;
             }
-        }
+            let started = launcher.launch_with_token(&window.app_id, socket.as_deref(), Some(token));
+            if !started {
+                tracing::warn!(app_id = %window.app_id, "restore launch failed");
+            }
+            started
+        });
         self.placements = Some(placements);
     }
 

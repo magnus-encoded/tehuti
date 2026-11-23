@@ -348,6 +348,18 @@ impl<K: Clone> Placements<K> {
         }
     }
 
+    /// Starts a restore: `launch` is called for each saved window with its token and says
+    /// whether it started; the windows that did not start are failed at once.
+    pub fn begin(saved: &Saved, now: Instant, mut launch: impl FnMut(usize, &SavedWindow) -> bool) -> Self {
+        let mut placements = Self::new(saved, now);
+        for (token, window) in saved.windows.iter().enumerate() {
+            if !launch(token, window) {
+                placements.launch_failed(token);
+            }
+        }
+        placements
+    }
+
     /// Moves every entry whose time has run out from pending to failed.
     fn expire(&mut self, now: Instant) {
         let (live, expired): (Vec<_>, Vec<_>) = core::mem::take(&mut self.pending)
