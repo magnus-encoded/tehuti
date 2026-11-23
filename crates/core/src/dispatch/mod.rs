@@ -1805,7 +1805,9 @@ fn launcher_step(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
                 ButtonName::DpadUp,
                 ButtonName::DpadDown,
             ];
-            if !own.contains(name) {
+            // View passes through so its double tap toggles mouse mode with the
+            // launcher open; the invitation also leaves menus and shortcuts working.
+            if !own.contains(name) && (launcher.is_invitation() || *name == ButtonName::Select) {
                 return false;
             }
             if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {
