@@ -430,6 +430,7 @@ mod tests {
         assert_eq!(report.restored, 2);
         assert_eq!(report.failed, vec![names[1].clone()]);
         assert_eq!(placements.report(late), None, "given out once");
+        assert_eq!(placements.settled_focus(late), Some(10));
         assert!(placements.is_empty());
     }
 
