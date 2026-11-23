@@ -913,6 +913,30 @@ fn entering_mouse_mode_cancels_recording_and_a_later_release_does_not_restart_it
 }
 
 #[test]
+fn view_double_tap_toggles_mouse_mode_both_ways_with_the_launcher_open() {
+    let mut world = World::default();
+    let launcher = crate::launcher::Launcher::new("open", vec![launcher_row("Editor")], None);
+    let mut state = world.run(State::default(), Input::Launcher(Box::new(launcher)));
+    for active in [true, false] {
+        world.trace.clear();
+        for _ in 0..2 {
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        }
+        let modes: Vec<_> = world
+            .trace
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::MouseMode(active) => Some(*active),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(modes, vec![active]);
+        assert!(state.launcher().is_some(), "the launcher stays open");
+    }
+}
+
+#[test]
 fn escape_still_quits_when_view_toggles_mouse_mode_during_the_chord() {
     let mut world = World::default();
     let mut state = State::default();
