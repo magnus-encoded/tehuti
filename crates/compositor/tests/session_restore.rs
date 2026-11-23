@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn a_focus_change_before_the_first_window_opens_ends_the_focus_restore() {
-        let saved = focused_trio(0);
+        let saved = focused_trio(1);
         let now = Instant::now();
         let mut placements = Placements::<usize>::new(&saved, now, Some(&5));
         // The user moves focus before any restored window opened or any tick noted it.
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn focus_left_where_the_restore_began_is_not_a_user_change() {
-        let saved = focused_trio(0);
+        let saved = focused_trio(1);
         let now = Instant::now();
         let mut placements = Placements::<usize>::new(&saved, now, Some(&5));
         placements.cancel_focus_if_moved(Some(&5));
