@@ -131,4 +131,46 @@ mod launch {
             Some("2 apps closed right away: First, Second")
         );
     }
+    #[test]
+    fn applications_outlive_the_launch_owner() {
+        use std::{cell::RefCell, io, rc::Rc};
+        use tehuti::launch::{Process, Spawner};
+
+        struct Stub(Rc<RefCell<std::process::Child>>);
+        impl Process for Stub {
+            fn try_wait(&mut self) -> io::Result<Option<Exit>> {
+                Process::try_wait(&mut *self.0.borrow_mut())
+            }
+            fn terminate(&mut self) {
+                Process::terminate(&mut *self.0.borrow_mut());
+            }
+        }
+        struct StubSpawner(Rc<RefCell<std::process::Child>>);
+        impl Spawner for StubSpawner {
+            type Process = Stub;
+            fn spawn(&mut self, _: &Launch) -> io::Result<Stub> {
+                Ok(Stub(Rc::clone(&self.0)))
+            }
+        }
+        let child = Rc::new(RefCell::new(
+            Launch::new("/bin/sleep", "stub application")
+                .arg("30")
+                .command()
+                .spawn()
+                .unwrap(),
+        ));
+        let mut owner = Launches::new(StubSpawner(Rc::clone(&child)));
+        owner
+            .start(&Launch::new("stub", "stub application"), Instant::now())
+            .unwrap();
+        drop(owner);
+        let survived = child.borrow_mut().try_wait().unwrap().is_none();
+        let _killed = child.borrow_mut().kill();
+        let _status = child.borrow_mut().wait().unwrap();
+        assert!(
+            survived,
+            "completing the restore helper must leave its applications running"
+        );
+    }
+
 }
