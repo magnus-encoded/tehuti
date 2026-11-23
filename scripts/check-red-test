@@ -87,7 +87,7 @@ done
 echo "check-red-test: running ${#names[@]} test name(s) against base sources: ${names[*]}"
 log=$(mktemp)
 errlog=$(mktemp)
-if XKB_DEFAULT_LAYOUT=us "$cargo" test --workspace --locked --message-format=json -- --test-threads=1 "${names[@]}" >"$log" 2>"$errlog"; then
+if XKB_DEFAULT_LAYOUT=us "$cargo" test --workspace --locked --no-fail-fast --message-format=json -- --test-threads=1 "${names[@]}" >"$log" 2>"$errlog"; then
     cat "$log" "$errlog"
     echo "check-red-test: every added or edited test passes without the source change." >&2
     echo "Make a test fail on the base code, or label the PR no-red-test (docs, refactors)." >&2
