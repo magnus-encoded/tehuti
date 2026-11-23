@@ -241,7 +241,8 @@ impl Restore {
         self.placement.map(key, key, rules).unwrap();
         // The opened application takes focus, as a new window does in the compositor.
         self.placement.focus(&key).unwrap();
-        self.placement
+        let _report = self
+            .placement
             .finish_restored_focus(&mut self.placements, self.now);
     }
 

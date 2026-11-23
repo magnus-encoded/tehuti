@@ -152,18 +152,20 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
         placements.cancel_focus_if_moved(self.focused());
     }
 
-    /// Returns the prior focus once every restore launch has opened or expired.
+    /// Returns the prior focus once every restore launch has opened or expired, and the
+    /// restore's report once it has settled.
     pub(crate) fn finish_restored_focus(
         &mut self,
         placements: &mut crate::session_restore::Placements<Key>,
         now: std::time::Instant,
-    ) {
+    ) -> Option<crate::session_restore::Report> {
         if let Some(target) = placements.settled_focus(now)
             && let Err(error) = self.focus(&target)
         {
             tracing::warn!(%error, "prior focus not restored");
         }
         placements.note_focus(self.focused());
+        placements.report(now)
     }
 
     pub(crate) fn focus(&mut self, key: &Key) -> Result<(), LayoutError> {

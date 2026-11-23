@@ -4292,8 +4292,7 @@ impl Compositor {
     fn restore_prior_focus(&mut self) {
         let now = self.clock_now();
         if let Some(placements) = self.placements.as_mut() {
-            self.placement.finish_restored_focus(placements, now);
-            if let Some(report) = placements.report(now) {
+            if let Some(report) = self.placement.finish_restored_focus(placements, now) {
                 if report.failed.is_empty() {
                     tracing::info!(restored = report.restored, "session restored");
                 } else {
