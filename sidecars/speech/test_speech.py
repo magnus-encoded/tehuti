@@ -46,6 +46,13 @@ class SpeechTests(unittest.TestCase):
                                 and c.get("no_speech_threshold") is None
                                 and not c["vad_filter"] for c in model.calls), beam)
 
+    def test_a_failing_warm_up_does_not_stop_startup(self):
+        class Broken:
+            def transcribe(self, *args, **kwargs):
+                raise RuntimeError("no kernel for this device")
+        with contextlib.redirect_stderr(io.StringIO()):
+            module.Speech(Broken(), remotes=dict).warm()
+
     def test_a_pinned_verb_redecodes_the_same_audio_in_its_locale(self):
         class Model:
             def __init__(self):

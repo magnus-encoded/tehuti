@@ -402,7 +402,15 @@ class Speech:
         """Run every decode the first take uses, so its kernels load before "ready".
 
         Silence never reaches the decoder, so the pass forces one past the no-speech
-        gates, at the beam widths of finals (5) and interims (1), plus the VAD path."""
+        gates, at the beam widths of finals (5) and interims (1), plus the VAD path.
+        A failed warm-up is logged and startup carries on: the first take is then
+        slow, never lost."""
+        try:
+            self._warm()
+        except Exception as error:
+            log(f"speech warm-up failed, first take will be slow: {error!r}", level="WARNING")
+
+    def _warm(self):
         tone = b"".join(int(8000 * ((i % 40) / 20 - 1)).to_bytes(2, "little", signed=True)
                         for i in range(16000))
         self.transcribe_audio(tone, retry=False)
