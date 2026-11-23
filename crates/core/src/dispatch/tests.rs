@@ -926,12 +926,9 @@ fn view_double_tap_toggles_mouse_mode_both_ways_with_the_launcher_open() {
         let modes: Vec<_> = world
             .trace
             .iter()
-            .filter_map(|effect| match effect {
-                Effect::MouseMode(active) => Some(*active),
-                _ => None,
-            })
+            .filter(|effect| matches!(effect, Effect::MouseMode(_)))
             .collect();
-        assert_eq!(modes, vec![active]);
+        assert_eq!(modes, vec![&Effect::MouseMode(active)]);
         assert!(state.launcher().is_some(), "the launcher stays open");
     }
 }
