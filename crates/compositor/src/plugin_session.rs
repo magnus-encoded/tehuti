@@ -15,8 +15,8 @@ use std::{
     time::Instant,
 };
 use tehuti_protocol::{
-    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, PluginKind, ResultValue,
-    RpcVersion, Subscription,
+    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, ResultValue, RpcVersion,
+    Subscription,
 };
 
 pub(crate) const HANG_TIMEOUT: Duration = Duration::from_secs(2);
@@ -110,7 +110,7 @@ pub(crate) struct Session {
     pub(crate) read_window: Instant,
     pub(crate) read_bytes: usize,
     pub(crate) status_text: Option<String>,
-    /// A verb plugin's current verbs; empty for application plugins.
+    /// The plugin's current verbs; an application plugin's apply only while it is focused.
     pub(crate) verbs: Vec<tehuti_protocol::Verb>,
     /// The hotwords the plugin last sent; a restart starts empty.
     pub(crate) hints: Vec<String>,
@@ -519,7 +519,7 @@ impl Session {
                 Vec::new()
             }
             Method::Verbs { verbs } => {
-                self.set_verbs(verbs, now);
+                self.set_verbs(verbs);
                 Vec::new()
             }
             Method::SpeechHints { hotwords } => {
@@ -545,18 +545,9 @@ impl Session {
         }
     }
 
-    /// Replaces a verb plugin's verbs; an application plugin may not declare any.
-    pub(crate) fn set_verbs(&mut self, verbs: Vec<tehuti_protocol::Verb>, now: Instant) {
-        if self.manifest.kind == PluginKind::Verb {
-            self.verbs = verbs;
-            return;
-        }
-        let reason = "an application plugin declares no verbs";
-        self.invalid(now);
-        tracing::warn!(reason, "plugin verbs rejected");
-        if let Err(error) = self.reject(None, reason) {
-            tracing::warn!(%error, "plugin rejection dropped");
-        }
+    /// Replaces the plugin's verbs. Its kind sets their scope.
+    pub(crate) fn set_verbs(&mut self, verbs: Vec<tehuti_protocol::Verb>) {
+        self.verbs = verbs;
     }
 
     pub(crate) fn call_for_event(&mut self, event: &Event, selected: bool) -> Option<Call> {
@@ -625,7 +616,7 @@ mod tests {
             plugin_id: None,
             author: None,
             security_contact: None,
-            kind: PluginKind::Application,
+            kind: tehuti_protocol::PluginKind::Application,
             verbs: Vec::new(),
             executable: "plugin".into(),
             app_ids: vec!["test".into()],
