@@ -95,12 +95,16 @@ impl TerminalSession {
             _ => return None,
         };
         let attachment = Self::attachment(&arguments);
-        let session = Self {
+        let mut session = Self {
             emulator,
             target: attachment.as_ref().map(|(target, _)| target.clone()),
             socket: attachment.and_then(|(_, socket)| socket),
             app_id: Some(app_id),
         };
+        if !session.valid() {
+            session.target = None;
+            session.socket = None;
+        }
         session.valid().then_some(session)
     }
 
