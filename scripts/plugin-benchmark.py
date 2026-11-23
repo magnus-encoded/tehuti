@@ -11,6 +11,8 @@ import subprocess
 
 THRESHOLDS = Path(__file__).with_name('plugin-benchmark-thresholds.json')
 
+SLOW_TITLE = 'Plugin round trip exceeds its budget'
+
 
 def run(args):
     return subprocess.check_output(args, text=True).strip()
@@ -66,8 +68,14 @@ def check(results, summary, gh=run):
         gh(['gh', 'issue', 'reopen', '24'])
         gh(['gh', 'issue', 'comment', '24', '--body', text])
     if slow:
-        gh(['gh', 'issue', 'create', '--title', 'Plugin round trip exceeds its budget',
-            '--label', 'needs-triage', '--body', text])
+        existing = gh(['gh', 'issue', 'list', '--state', 'open', '--label', 'needs-triage',
+                       '--search', f'"{SLOW_TITLE}" in:title', '--json', 'number',
+                       '--jq', '.[0].number // empty'])
+        if existing:
+            gh(['gh', 'issue', 'comment', existing, '--body', text])
+        else:
+            gh(['gh', 'issue', 'create', '--title', SLOW_TITLE,
+                '--label', 'needs-triage', '--body', text])
     return int(json_breach or slow)
 
 

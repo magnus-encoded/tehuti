@@ -37,9 +37,30 @@ class PluginBenchmarkGateTests(unittest.TestCase):
             summary = pathlib.Path(directory) / 'summary.md'
             self.assertEqual(gate.check(results, summary, lambda args: calls.append(args) or ''), 1)
             self.assertIn('fast path in the core', summary.read_text())
-        self.assertEqual(calls[0][:3], ['gh', 'issue', 'create'])
+        self.assertEqual(calls[0][:3], ['gh', 'issue', 'list'])
+        self.assertEqual(calls[1][:3], ['gh', 'issue', 'create'])
+        self.assertIn('needs-triage', calls[1])
+        self.assertIn('1000001', calls[1][-1])
+
+    def test_repeat_slow_breach_comments_on_the_open_triage_issue(self):
+        spec = importlib.util.spec_from_file_location('plugin_benchmark', SCRIPT)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        calls = []
+
+        def gh(args):
+            calls.append(args)
+            return '812' if args[2] == 'list' else ''
+
+        results = {'button': {'round_trip_ns': 1_000_001, 'json_share_percent': 25},
+                   'axis': {'round_trip_ns': 900_000, 'json_share_percent': 10}}
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(gate.check(results, pathlib.Path(directory) / 's.md', gh), 1)
+        self.assertEqual([call[2] for call in calls], ['list', 'comment'])
+        self.assertIn('open', calls[0])
         self.assertIn('needs-triage', calls[0])
-        self.assertIn('1000001', calls[0][-1])
+        self.assertEqual(calls[1][:4], ['gh', 'issue', 'comment', '812'])
+        self.assertIn('1000001', calls[1][-1])
 
     def test_p99_uses_paired_json_share_and_excludes_the_slowest_one_percent(self):
         spec = importlib.util.spec_from_file_location('plugin_benchmark', SCRIPT)
@@ -75,7 +96,7 @@ class PluginBenchmarkGateTests(unittest.TestCase):
             status = gate.check(results, pathlib.Path(directory) / 'summary.md',
                                 lambda args: calls.append(args) or '')
         self.assertEqual(status, 1)
-        self.assertEqual([call[2] for call in calls], ['reopen', 'comment', 'create'])
+        self.assertEqual([call[2] for call in calls], ['reopen', 'comment', 'list', 'create'])
 
     def test_invalid_or_incomplete_samples_are_rejected(self):
         spec = importlib.util.spec_from_file_location('plugin_benchmark', SCRIPT)
@@ -94,7 +115,7 @@ class PluginBenchmarkGateTests(unittest.TestCase):
         import sys
 
         for total, codec, commands in ((1000, 251, ['reopen', 'comment']),
-                                       (1_000_001, 100, ['create'])):
+                                       (1_000_001, 100, ['list', 'create'])):
             with self.subTest(total=total, codec=codec), tempfile.TemporaryDirectory() as directory:
                 directory = pathlib.Path(directory)
                 log = directory / 'gh.jsonl'
