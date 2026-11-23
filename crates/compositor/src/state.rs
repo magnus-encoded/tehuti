@@ -3807,18 +3807,21 @@ impl Compositor {
     /// once the last launch has opened.
     pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
         let installed = self.launcher.installed();
+        let mut placements = crate::session_restore::Placements::new(saved, self.clock_now());
         for (token, window) in saved.windows().iter().enumerate() {
             if !installed.contains(&window.app_id) {
                 tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
+                placements.launch_failed(token);
             } else if !self.launcher.launch_with_token(
                 &window.app_id,
                 self.launch_socket.as_deref(),
                 Some(token),
             ) {
                 tracing::warn!(app_id = %window.app_id, "restore launch failed");
+                placements.launch_failed(token);
             }
         }
-        self.placements = Some(crate::session_restore::Placements::new(saved, self.clock_now()));
+        self.placements = Some(placements);
     }
 
     /// The restorable windows now open, for the clean-exit save.
@@ -4290,6 +4293,17 @@ impl Compositor {
         let now = self.clock_now();
         if let Some(placements) = self.placements.as_mut() {
             self.placement.finish_restored_focus(placements, now);
+            if let Some(report) = placements.report(now) {
+                if report.failed.is_empty() {
+                    tracing::info!(restored = report.restored, "session restored");
+                } else {
+                    tracing::warn!(
+                        restored = report.restored,
+                        failed = ?report.failed,
+                        "session partially restored"
+                    );
+                }
+            }
             if placements.is_empty() {
                 self.placements = None;
             }

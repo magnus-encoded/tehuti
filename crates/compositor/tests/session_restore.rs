@@ -389,6 +389,7 @@ mod tests {
                 }
             }
             assert_eq!(placements.settled_focus(now), None);
+            let _report = placements.report(now);
             assert!(placements.is_empty());
         }
     }
@@ -406,6 +407,50 @@ mod tests {
         let mut missing = Placements::<usize>::new(&saved, start);
         let _other = missing.claim(Some(1), start, &11);
         assert_eq!(missing.settled_focus(late), None);
+        let _report = missing.report(late);
         assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn report_names_the_applications_that_never_opened_once_the_rest_settled() {
+        let saved = focused_trio(0);
+        let names: Vec<String> = saved.windows().iter().map(|window| window.app_id.clone()).collect();
+        let start = Instant::now();
+        let late = start + Duration::from_secs(61);
+        let mut placements = Placements::<usize>::new(&saved, start);
+        let _claim = placements.claim(Some(0), start, &10);
+        let _claim = placements.claim(Some(2), start, &12);
+        assert_eq!(placements.report(start), None, "one launch is still pending");
+        let report = placements.report(late).expect("settled after expiry");
+        assert_eq!(report.restored, 2);
+        assert_eq!(report.failed, vec![names[1].clone()]);
+        assert_eq!(placements.report(late), None, "given out once");
+        assert!(placements.is_empty());
+    }
+
+    #[test]
+    fn a_failed_launch_is_reported_without_waiting_for_expiry() {
+        let saved = focused_trio(0);
+        let names: Vec<String> = saved.windows().iter().map(|window| window.app_id.clone()).collect();
+        let start = Instant::now();
+        let mut placements = Placements::<usize>::new(&saved, start);
+        placements.launch_failed(1);
+        let _claim = placements.claim(Some(0), start, &10);
+        let _claim = placements.claim(Some(2), start, &12);
+        let report = placements.report(start).expect("nothing pending");
+        assert_eq!(report.restored, 2);
+        assert_eq!(report.failed, vec![names[1].clone()]);
+    }
+
+    #[test]
+    fn a_fully_restored_session_reports_no_failures() {
+        let saved = focused_trio(0);
+        let start = Instant::now();
+        let mut placements = Placements::<usize>::new(&saved, start);
+        for token in 0..3 {
+            let _claim = placements.claim(Some(token), start, &(token + 10));
+        }
+        let report = placements.report(start).expect("settled");
+        assert_eq!((report.restored, report.failed.len()), (3, 0));
     }
 }
