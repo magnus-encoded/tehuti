@@ -615,7 +615,7 @@ mod tests {
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
         let executable = root.path().join("foot");
         std::fs::write(&executable,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" >>\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >>\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         let scope = root.path().join("systemd-run");
         std::fs::write(&scope, "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_SCOPE_TRACE\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n").unwrap();
