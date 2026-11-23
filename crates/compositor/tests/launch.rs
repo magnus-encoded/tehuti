@@ -133,7 +133,8 @@ mod launch {
     }
     #[test]
     fn applications_outlive_the_launch_owner() {
-        use std::{cell::RefCell, io, rc::Rc};
+        use core::cell::RefCell;
+        use std::{io, rc::Rc};
         use tehuti::launch::{Process, Spawner};
 
         struct Stub(Rc<RefCell<std::process::Child>>);
