@@ -569,7 +569,7 @@ mod tests {
             smithay::reexports::wayland_server::Display::<tehuti::state::Compositor>::new().unwrap();
         let mut compositor = tehuti::state::Compositor::new(&display.handle()).unwrap();
         compositor.set_launch_socket("restore-test".into());
-        let saved = Saved::parse(r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}},{"app_id":"org.example.Terminal.desktop","workspace":0,"column":1,"terminal":{"emulator":"foot","target":null}}]}"#).unwrap();
+        let saved = Saved::parse(r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}},{"app_id":"org.example.Terminal.desktop","workspace":0,"column":1,"terminal":{"emulator":"foot","target":null}},{"app_id":"foot.desktop","workspace":0,"column":2}]}"#).unwrap();
         compositor.begin_session_restore(&saved);
         compositor.begin_session_restore(&saved);
         let trace = std::env::var_os("TEHUTI_TERMINAL_TRACE").unwrap();
@@ -599,11 +599,20 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let applications = root.path().join("applications");
         std::fs::create_dir(&applications).unwrap();
+        for entry in ["org.example.Terminal.desktop", "foot.desktop"] {
+            std::fs::write(
+                applications.join(entry),
+                "[Desktop Entry]\nType=Application\nName=Terminal stub\nExec=foot\n",
+            )
+            .unwrap();
+        }
+        let launcher = root.path().join("gtk-launch");
         std::fs::write(
-            applications.join("org.example.Terminal.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Terminal stub\nExec=foot\n",
+            &launcher,
+            "#!/bin/sh\necho relaunch >>\"$TEHUTI_TERMINAL_TRACE\"\n",
         )
         .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
         let executable = root.path().join("foot");
         std::fs::write(&executable,
         "#!/bin/sh\nprintf '%s\\n' \"$@\" >>\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
