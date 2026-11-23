@@ -1672,6 +1672,8 @@ pub enum LayoutAction {
     MaximizeColumn,
 }
 
+/// Headless timing of the plugin JSON and stdio boundary.
+pub mod benchmark;
 mod fuzzy;
 mod plugin;
 pub use fuzzy::*;
