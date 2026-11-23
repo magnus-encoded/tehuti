@@ -132,49 +132,63 @@ mod launch {
         );
     }
     #[test]
-    fn applications_outlive_the_launch_owner() {
-        use core::cell::RefCell;
-        use std::{io, rc::Rc};
-        use tehuti::launch::{Process, Spawner};
-
-        struct Stub(Rc<RefCell<std::process::Child>>);
-        impl Process for Stub {
-            fn try_wait(&mut self) -> io::Result<Option<Exit>> {
-                Process::try_wait(&mut *self.0.borrow_mut())
-            }
-            fn terminate(&mut self) {
-                Process::terminate(&mut *self.0.borrow_mut());
-            }
+    fn applications_outlive_the_restore_helper_process() {
+        const PROBE: &str = "TEHUTI_RESTORE_HELPER_PROBE";
+        if let Some(pid_file) = std::env::var_os(PROBE) {
+            let mut owner: Launches = Launches::default();
+            owner
+                .start(
+                    &Launch::new("/bin/sleep", "stub application")
+                        .arg("30")
+                        .with_env(tehuti::session_restore::TOKEN_VARIABLE, "0"),
+                    Instant::now(),
+                )
+                .unwrap();
+            let _pid = restored_child_pid(std::path::Path::new(&pid_file));
+            return;
         }
-        struct StubSpawner(Rc<RefCell<std::process::Child>>);
-        impl Spawner for StubSpawner {
-            type Process = Stub;
-            fn spawn(&mut self, _: &Launch) -> io::Result<Stub> {
-                Ok(Stub(Rc::clone(&self.0)))
-            }
-        }
-        let child = Rc::new(RefCell::new(
-            Launch::new("/bin/sleep", "stub application")
-                .arg("30")
-                .command()
-                .spawn()
-                .unwrap(),
-        ));
-        let mut owner = Launches::new(StubSpawner(Rc::clone(&child)));
-        owner
-            .start(
-                &Launch::new("stub", "stub application")
-                    .with_env(tehuti::session_restore::TOKEN_VARIABLE, "0"),
-                Instant::now(),
-            )
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let scope = root.path().join("systemd-run");
+        std::fs::write(&scope,
+            "#!/bin/sh\necho \"$$\" >\"$TEHUTI_RESTORE_HELPER_PROBE\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pid_file = root.path().join("child-pid");
+        let helper = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "launch::applications_outlive_the_restore_helper_process",
+            ])
+            .env(PROBE, &pid_file)
+            .env("PATH", root.path())
+            .status()
             .unwrap();
-        drop(owner);
-        let survived = child.borrow_mut().try_wait().unwrap().is_none();
-        let _killed = child.borrow_mut().kill();
-        let _status = child.borrow_mut().wait().unwrap();
+        let pid = restored_child_pid(&pid_file).to_string();
+        let alive = std::process::Command::new("/bin/kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap();
+        let _terminated = std::process::Command::new("/bin/kill")
+            .args(["-TERM", &pid])
+            .status()
+            .unwrap();
+        assert!(helper.success());
         assert!(
-            survived,
-            "completing the restore helper must leave its applications running"
+            alive.success(),
+            "application must outlive its restore helper process"
         );
+    }
+
+    fn restored_child_pid(path: &std::path::Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && let Ok(pid) = text.trim().parse()
+            {
+                return pid;
+            }
+            assert!(Instant::now() < deadline, "restore helper child did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
