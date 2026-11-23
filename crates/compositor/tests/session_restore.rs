@@ -523,4 +523,31 @@ mod tests {
         let report = placements.report(start).expect("settled");
         assert_eq!((report.restored, report.failed.len()), (3, 0));
     }
+    #[test]
+    fn persistent_terminal_identity_survives_the_session_file() {
+        let text = r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}}]}"#;
+        let saved = Saved::parse(text).expect("terminal session");
+        let value: serde_json::Value = serde_json::from_str(&saved.to_text()).unwrap();
+        assert_eq!(value["windows"][0]["terminal"]["target"], "work");
+        assert_eq!(value["windows"][0]["terminal"]["socket"], "restore-tests");
+    }
+
+    #[test]
+    fn terminal_restore_rejects_commands_and_ambiguous_targets() {
+        for target in [
+            "",
+            "-other",
+            "work:1",
+            "work.1",
+            "work; command",
+            "#{session_name}",
+        ] {
+            let text = serde_json::json!({"version":1,"windows":[{
+                "app_id":"org.example.Terminal.desktop", "workspace":0, "column":0,
+                "terminal":{"emulator":"foot","target":target,"socket":null}
+            }]})
+            .to_string();
+            assert!(Saved::parse(&text).is_err(), "{target:?}");
+        }
+    }
 }
