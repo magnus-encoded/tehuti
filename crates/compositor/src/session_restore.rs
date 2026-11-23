@@ -236,7 +236,8 @@ pub struct Placements<K> {
     /// The first window opened in each saved column, which later tiles of it stack under.
     anchors: Vec<((usize, usize), K)>,
     focus: FocusRestore<K>,
-    /// The focus the restore itself last caused; any other focus is the user's choice.
+    /// The focus the restore left, from the moment it began; any other focus is the user's
+    /// choice. `None` is the state of no window focused.
     expected_focus: Option<K>,
     /// The tally of the restore until it is reported; `None` once given out.
     tally: Option<Tally>,
@@ -320,11 +321,7 @@ impl<K: Clone + PartialEq> Placements<K> {
     /// Ends the pending focus restore if focus is not where the restore left it: the user
     /// moved it.
     pub fn cancel_focus_if_moved(&mut self, current: Option<&K>) {
-        if self
-            .expected_focus
-            .as_ref()
-            .is_some_and(|expected| Some(expected) != current)
-        {
+        if self.expected_focus.as_ref() != current {
             self.focus = FocusRestore::Off;
         }
     }
@@ -332,7 +329,7 @@ impl<K: Clone + PartialEq> Placements<K> {
 
 impl<K: Clone> Placements<K> {
     #[must_use]
-    pub fn new(saved: &Saved, now: Instant) -> Self {
+    pub fn new(saved: &Saved, now: Instant, focus_at_start: Option<&K>) -> Self {
         let expires = now.checked_add(PLACEMENT_LIFETIME).unwrap_or(now);
         Self {
             pending: saved
@@ -343,15 +340,20 @@ impl<K: Clone> Placements<K> {
                 .collect(),
             anchors: Vec::new(),
             focus: saved.focused.map_or(FocusRestore::Off, FocusRestore::Awaiting),
-            expected_focus: None,
+            expected_focus: focus_at_start.cloned(),
             tally: Some(Tally::default()),
         }
     }
 
     /// Starts a restore: `launch` is called for each saved window with its token and says
     /// whether it started; the windows that did not start are failed at once.
-    pub fn begin(saved: &Saved, now: Instant, mut launch: impl FnMut(usize, &SavedWindow) -> bool) -> Self {
-        let mut placements = Self::new(saved, now);
+    pub fn begin(
+        saved: &Saved,
+        now: Instant,
+        focus_at_start: Option<&K>,
+        mut launch: impl FnMut(usize, &SavedWindow) -> bool,
+    ) -> Self {
+        let mut placements = Self::new(saved, now, focus_at_start);
         for (token, window) in saved.windows.iter().enumerate() {
             if !launch(token, window) {
                 placements.launch_failed(token);

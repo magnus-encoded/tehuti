@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn a_window_claims_the_place_of_its_launch_token_once() {
         let now = Instant::now();
-        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now);
+        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now, None);
         let second = placements.claim(Some(1), now, &11).expect("second");
         let first = placements.claim(Some(0), now, &10).expect("first");
         let column = |claim| match claim {
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn a_hand_opened_window_cannot_take_a_saved_place() {
         let now = Instant::now();
-        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now);
+        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now, None);
         assert!(placements.claim(None, now, &10).is_none());
         assert!(!placements.is_empty());
         assert!(placements.claim(Some(0), now, &10).is_some());
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn a_slow_launch_still_lands_in_its_saved_place() {
         let now = Instant::now();
-        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now);
+        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now, None);
         let late = now.checked_add(Duration::from_secs(30)).expect("time");
         assert!(placements.claim(Some(2), late, &10).is_some());
     }
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn unclaimed_places_expire() {
         let now = Instant::now();
-        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now);
+        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now, None);
         let late = now.checked_add(Duration::from_secs(3600)).expect("time");
         assert!(placements.claim(Some(2), late, &10).is_none());
         let _report = placements.report(late);
@@ -325,7 +325,7 @@ mod tests {
     fn a_stacked_tile_falls_back_to_its_saved_column() {
         let (_, saved) = stacked_pair();
         let now = Instant::now();
-        let mut placements = Placements::<u64>::new(&saved, now);
+        let mut placements = Placements::<u64>::new(&saved, now, None);
         let _anchor = placements.claim(Some(0), now, &10).expect("anchor");
         let Some(Claim::Under {
             anchor,
@@ -379,7 +379,7 @@ mod tests {
         let saved = focused_trio(2);
         let now = Instant::now();
         for order in [[0, 1, 2], [1, 0, 2], [2, 1, 0], [1, 2, 0]] {
-            let mut placements = Placements::<usize>::new(&saved, now);
+            let mut placements = Placements::<usize>::new(&saved, now, None);
             for (step, token) in order.into_iter().enumerate() {
                 let _claim = placements.claim(Some(token), now, &(token + 10));
                 let due = placements.settled_focus(now);
@@ -396,16 +396,41 @@ mod tests {
     }
 
     #[test]
+    fn a_focus_change_before_the_first_window_opens_ends_the_focus_restore() {
+        let saved = focused_trio(0);
+        let now = Instant::now();
+        let mut placements = Placements::<usize>::new(&saved, now, Some(&5));
+        // The user moves focus before any restored window opened or any tick noted it.
+        placements.cancel_focus_if_moved(Some(&6));
+        for token in 0..3 {
+            let _claim = placements.claim(Some(token), now, &(token + 10));
+        }
+        assert_eq!(placements.settled_focus(now), None);
+    }
+
+    #[test]
+    fn focus_left_where_the_restore_began_is_not_a_user_change() {
+        let saved = focused_trio(0);
+        let now = Instant::now();
+        let mut placements = Placements::<usize>::new(&saved, now, Some(&5));
+        placements.cancel_focus_if_moved(Some(&5));
+        for token in 0..3 {
+            let _claim = placements.claim(Some(token), now, &(token + 10));
+        }
+        assert_eq!(placements.settled_focus(now), Some(10));
+    }
+
+    #[test]
     fn focus_waits_for_expiry_and_is_dropped_if_its_window_never_opens() {
         let saved = focused_trio(1);
         let start = Instant::now();
         let late = start + Duration::from_secs(61);
-        let mut placements = Placements::<usize>::new(&saved, start);
+        let mut placements = Placements::<usize>::new(&saved, start, None);
         let _claim = placements.claim(Some(0), start, &10);
         assert_eq!(placements.settled_focus(start), None);
         assert_eq!(placements.settled_focus(late), Some(10));
 
-        let mut missing = Placements::<usize>::new(&saved, start);
+        let mut missing = Placements::<usize>::new(&saved, start, None);
         let _other = missing.claim(Some(1), start, &11);
         assert_eq!(missing.settled_focus(late), None);
         let _report = missing.report(late);
@@ -422,7 +447,7 @@ mod tests {
             .collect();
         let start = Instant::now();
         let late = start + Duration::from_secs(61);
-        let mut placements = Placements::<usize>::new(&saved, start);
+        let mut placements = Placements::<usize>::new(&saved, start, None);
         let _claim = placements.claim(Some(0), start, &10);
         let _third = placements.claim(Some(2), start, &12);
         assert_eq!(placements.report(start), None, "one launch is still pending");
@@ -443,7 +468,7 @@ mod tests {
             .map(|window| window.app_id.clone())
             .collect();
         let start = Instant::now();
-        let mut placements = Placements::<usize>::new(&saved, start);
+        let mut placements = Placements::<usize>::new(&saved, start, None);
         placements.launch_failed(1);
         let _claim = placements.claim(Some(0), start, &10);
         let _third = placements.claim(Some(2), start, &12);
@@ -457,14 +482,14 @@ mod tests {
         let saved = focused_trio(1);
         let start = Instant::now();
         let late = start + Duration::from_secs(61);
-        let mut failed = Placements::<usize>::new(&saved, start);
+        let mut failed = Placements::<usize>::new(&saved, start, None);
         failed.launch_failed(1);
         assert_eq!(failed.claim(Some(1), start, &11), None);
         let _first = failed.claim(Some(0), start, &10);
         let _third = failed.claim(Some(2), start, &12);
         assert_eq!(failed.report(start).expect("settled").restored, 2);
 
-        let mut expired = Placements::<usize>::new(&saved, start);
+        let mut expired = Placements::<usize>::new(&saved, start, None);
         let _opened_a = expired.claim(Some(0), start, &10);
         let _opened_c = expired.claim(Some(2), start, &12);
         assert_eq!(expired.claim(Some(1), late, &11), None);
@@ -476,14 +501,14 @@ mod tests {
     fn beginning_a_restore_fails_every_window_whose_launch_did_not_start() {
         let saved = focused_trio(1);
         let start = Instant::now();
-        let mut placements = Placements::<usize>::begin(&saved, start, |token, _| token != 1);
+        let mut placements = Placements::<usize>::begin(&saved, start, None, |token, _| token != 1);
         let _first = placements.claim(Some(0), start, &10);
         let _third = placements.claim(Some(2), start, &12);
         let report = placements.report(start).expect("nothing left pending");
         assert_eq!(report.restored, 2);
         assert_eq!(report.failed, vec![saved.windows()[1].app_id.clone()]);
 
-        let mut none = Placements::<usize>::begin(&saved, start, |_, _| false);
+        let mut none = Placements::<usize>::begin(&saved, start, None, |_, _| false);
         assert_eq!(none.report(start).expect("settled").failed.len(), 3);
     }
 
@@ -491,7 +516,7 @@ mod tests {
     fn a_fully_restored_session_reports_no_failures() {
         let saved = focused_trio(1);
         let start = Instant::now();
-        let mut placements = Placements::<usize>::new(&saved, start);
+        let mut placements = Placements::<usize>::new(&saved, start, None);
         for token in 0..3 {
             let _claim = placements.claim(Some(token), start, &(token + 10));
         }

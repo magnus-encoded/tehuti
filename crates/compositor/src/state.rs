@@ -3810,7 +3810,8 @@ impl Compositor {
         let now = self.clock_now();
         let socket = self.launch_socket.clone();
         let launcher = &mut self.launcher;
-        let placements = crate::session_restore::Placements::begin(saved, now, |token, window| {
+        let focus_at_start = self.placement.focused();
+        let placements = crate::session_restore::Placements::begin(saved, now, focus_at_start, |token, window| {
             if !installed.contains(&window.app_id) {
                 tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
                 return false;
