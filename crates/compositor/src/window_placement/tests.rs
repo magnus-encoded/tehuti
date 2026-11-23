@@ -154,7 +154,7 @@ fn saved_stack() -> crate::session_restore::Saved {
 /// keys of every column of the first workspace.
 fn restored(opens: &[(u8, usize)], closed: &[u8]) -> Vec<Vec<u8>> {
     let now = std::time::Instant::now();
-    let mut placements = crate::session_restore::Placements::<u8>::new(&saved_stack(), now);
+    let mut placements = crate::session_restore::Placements::<u8>::new(&saved_stack(), now, None);
     let mut placement = placement();
     for (key, token) in opens {
         let claim = placements.claim(Some(*token), now, key).unwrap();
@@ -226,7 +226,7 @@ impl Restore {
         );
         Self {
             now,
-            placements: crate::session_restore::Placements::new(&saved, now),
+            placements: crate::session_restore::Placements::new(&saved, now, None),
             placement: placement(),
         }
     }
