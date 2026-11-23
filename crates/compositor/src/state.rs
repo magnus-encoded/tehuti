@@ -987,6 +987,11 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
         self.release_due_keys();
         self.keep_invitation();
+        if let Some(placements) = self.placements.as_mut() {
+            self.placement.guard_restored_focus(placements);
+            self.restore_prior_focus();
+            self.place_layout();
+        }
         self.poll_recording();
         self.release_ready_buffers();
         if let Some((status, due)) = self.exit_hold
@@ -3801,7 +3806,8 @@ impl Compositor {
     }
 
     /// Launches every saved application and remembers where each window goes; the windows
-    /// are placed as they open, whatever their order, and focus is never touched.
+    /// are placed as they open, whatever their order; the window that had focus gets it back
+    /// once the last launch has opened.
     pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
         let installed = self.launcher.installed();
         for (token, window) in saved.windows().iter().enumerate() {
@@ -3815,7 +3821,7 @@ impl Compositor {
                 tracing::warn!(app_id = %window.app_id, "restore launch failed");
             }
         }
-        self.placements = Some(crate::session_restore::Placements::new(saved, Instant::now()));
+        self.placements = Some(crate::session_restore::Placements::new(saved, self.clock_now()));
     }
 
     /// The restorable windows now open, for the clean-exit save.
@@ -4267,12 +4273,29 @@ impl Compositor {
         let context = context.as_ref();
         let mut rules = Self::window_rules(&surface, context, width);
         let key = surface.wl_surface().clone();
+        if let Some(placements) = self.placements.as_mut() {
+            self.placement.guard_restored_focus(placements);
+        }
         let claim = self.claim_restored_place(&surface);
         rules.open_at = claim.map(|claim| self.placement.open_at(claim));
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
-            Ok(()) => self.place_layout(),
+            Ok(()) => {
+                self.restore_prior_focus();
+                self.place_layout();
+            }
             Err(error) => tracing::warn!(%error, "window layout failed"),
+        }
+    }
+
+    /// Focuses the window that had focus before the exit, once the restore has settled.
+    fn restore_prior_focus(&mut self) {
+        let now = self.clock_now();
+        if let Some(placements) = self.placements.as_mut() {
+            self.placement.finish_restored_focus(placements, now);
+            if placements.is_empty() {
+                self.placements = None;
+            }
         }
     }
 
@@ -4320,9 +4343,10 @@ impl Compositor {
         &mut self,
         surface: &ToplevelSurface,
     ) -> Option<crate::session_restore::Claim<WlSurface>> {
+        let now = self.clock_now();
         let placements = self.placements.as_mut()?;
         let token = crate::window_context::restore_token(surface.wl_surface(), &self.display);
-        let place = placements.claim(token, Instant::now(), surface.wl_surface());
+        let place = placements.claim(token, now, surface.wl_surface());
         if placements.is_empty() {
             self.placements = None;
         }

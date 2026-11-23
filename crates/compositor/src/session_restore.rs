@@ -34,6 +34,9 @@ pub struct SavedWindow {
 pub struct Saved {
     version: u32,
     windows: Vec<SavedWindow>,
+    /// Index into `windows` of the window that had focus; at most one, and always a real entry.
+    #[serde(default)]
+    focused: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -68,6 +71,7 @@ impl Saved {
             .first()
             .map(|output| output.workspaces.as_slice());
         let mut rank = 0;
+        let mut focused = None;
         for workspace in workspaces.unwrap_or_default() {
             let before = windows.len();
             for (column, view) in workspace.columns.iter().enumerate() {
@@ -76,6 +80,9 @@ impl Saved {
                         && let Some(app_id) =
                             app_id_of(tile.window).filter(|app_id| installed.contains(app_id))
                     {
+                        if snapshot.focused_window == Some(tile.window) {
+                            focused = Some(windows.len());
+                        }
                         windows.push(SavedWindow {
                             app_id,
                             workspace: rank,
@@ -91,7 +98,14 @@ impl Saved {
         Self {
             version: VERSION,
             windows,
+            focused,
         }
+    }
+
+    /// The saved window that had focus.
+    #[must_use]
+    pub fn focused(&self) -> Option<&SavedWindow> {
+        self.windows.get(self.focused?)
     }
 
     #[must_use]
@@ -117,6 +131,9 @@ impl Saved {
                 "unsupported version {}",
                 saved.version
             )));
+        }
+        if saved.focused.is_some_and(|index| index >= saved.windows.len()) {
+            return Err(LoadError::Invalid("focused window is not in the list".into()));
         }
         let plain = |entry: &str| {
             !entry.is_empty() && !entry.starts_with('-') && !entry.contains('/') && !entry.contains('\0')
@@ -218,6 +235,21 @@ pub struct Placements<K> {
     pending: Vec<(usize, SavedWindow, Instant)>,
     /// The first window opened in each saved column, which later tiles of it stack under.
     anchors: Vec<((usize, usize), K)>,
+    focus: FocusRestore<K>,
+    /// The focus the restore itself last caused; any other focus is the user's choice.
+    expected_focus: Option<K>,
+}
+
+/// The pending return of the prior focus. A user focus change ends it, so a restore cannot
+/// override the user.
+#[derive(Debug)]
+enum FocusRestore<K> {
+    /// Nothing to restore, or the user took over.
+    Off,
+    /// The saved window has not opened yet; its launch token.
+    Awaiting(usize),
+    /// The saved window is open; it gets focus once every launch has opened or expired.
+    Armed(K),
 }
 
 /// Where a claimed window goes.
@@ -267,6 +299,20 @@ pub fn token_from_environment(environ: &[u8]) -> Option<usize> {
         .and_then(|value| value.parse().ok())
 }
 
+impl<K: Clone + PartialEq> Placements<K> {
+    /// Ends the pending focus restore if focus is not where the restore left it: the user
+    /// moved it.
+    pub fn cancel_focus_if_moved(&mut self, current: Option<&K>) {
+        if self
+            .expected_focus
+            .as_ref()
+            .is_some_and(|expected| Some(expected) != current)
+        {
+            self.focus = FocusRestore::Off;
+        }
+    }
+}
+
 impl<K: Clone> Placements<K> {
     #[must_use]
     pub fn new(saved: &Saved, now: Instant) -> Self {
@@ -279,6 +325,8 @@ impl<K: Clone> Placements<K> {
                 .map(|(token, window)| (token, window.clone(), expires))
                 .collect(),
             anchors: Vec::new(),
+            focus: saved.focused.map_or(FocusRestore::Off, FocusRestore::Awaiting),
+            expected_focus: None,
         }
     }
 
@@ -292,6 +340,9 @@ impl<K: Clone> Placements<K> {
         let (_, saved, _) = self.pending.remove(index);
         let (workspace, column) = (saved.workspace, saved.column);
         let group = (workspace, column);
+        if matches!(self.focus, FocusRestore::Awaiting(wanted) if wanted == token) {
+            self.focus = FocusRestore::Armed(window.clone());
+        }
         if let Some((_, anchor)) = self.anchors.iter().find(|(candidate, _)| *candidate == group) {
             return Some(Claim::Under {
                 anchor: anchor.clone(),
@@ -303,9 +354,26 @@ impl<K: Clone> Placements<K> {
         Some(Claim::Column { workspace, column })
     }
 
+    /// Records the focus the restore just caused.
+    pub fn note_focus(&mut self, current: Option<&K>) {
+        self.expected_focus = current.cloned();
+    }
+
+    /// The window that had focus before the exit, once every launch has opened or expired,
+    /// so a later window cannot take focus back. Given out once.
+    pub fn settled_focus(&mut self, now: Instant) -> Option<K> {
+        self.pending.retain(|(_, _, expires)| now < *expires);
+        if !self.pending.is_empty() {
+            return None;
+        }
+        match core::mem::replace(&mut self.focus, FocusRestore::Off) {
+            FocusRestore::Armed(window) => Some(window),
+            FocusRestore::Off | FocusRestore::Awaiting(_) => None,
+        }
+    }
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.pending.is_empty()
+        self.pending.is_empty() && !matches!(self.focus, FocusRestore::Armed(_))
     }
 }
 
