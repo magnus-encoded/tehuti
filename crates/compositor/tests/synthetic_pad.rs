@@ -934,9 +934,13 @@ mod synthetic_pad {
         harness.serve_turns(&mut display, &mut compositor, |compositor| {
             if !sent && receiver.try_recv().is_ok() {
                 now.set(now.get() + Duration::from_secs(61));
-                if std::env::var("TEHUTI_RESTORE_FOCUS_MODE").unwrap() == "timer" {
+                let mode = std::env::var("TEHUTI_RESTORE_FOCUS_MODE").unwrap();
+                if mode == "capture" {
+                    assert_captured_terminals(compositor);
+                }
+                if mode == "timer" {
                     compositor.advance_time();
-                } else {
+                } else if mode != "capture" {
                     compositor.handle(&Event::Tick {
                         elapsed: Duration::ZERO,
                     });
@@ -949,8 +953,19 @@ mod synthetic_pad {
         client.join();
     }
 
+    fn assert_captured_terminals(compositor: &Compositor) {
+        let saved: serde_json::Value = serde_json::from_str(&compositor.session_to_save().to_text()).unwrap();
+        let windows = saved["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 2);
+        for window in windows {
+            assert_eq!(window["terminal"]["target"], "work");
+            assert_eq!(window["terminal"]["socket"], "restore-tests");
+            assert_eq!(window["terminal"]["app_id"], "org.example.Restore");
+        }
+    }
+
     fn restore_focus_probe() {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::{fs::PermissionsExt as _, process::CommandExt as _};
         let root = tempfile::tempdir().unwrap();
         let applications = root.path().join("applications");
         std::fs::create_dir(&applications).unwrap();
@@ -969,11 +984,20 @@ mod synthetic_pad {
         )
         .unwrap();
         std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
-        for mode in ["input", "timer"] {
+        let mut failures = Vec::new();
+        for mode in ["capture", "input", "timer"] {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg0("foot")
                 .args([
                     "--exact",
                     "synthetic_pad::restore_focus_expires_on_input_without_waiting_for_a_periodic_tick",
+                    "--",
+                    "tmux",
+                    "-L",
+                    "restore-tests",
+                    "attach-session",
+                    "-t",
+                    "work",
                 ])
                 .env("TEHUTI_RESTORE_FOCUS_PROBE", "1")
                 .env("TEHUTI_RESTORE_FOCUS_MODE", mode)
@@ -983,8 +1007,11 @@ mod synthetic_pad {
                 .env(tehuti::session_restore::TOKEN_VARIABLE, "0")
                 .status()
                 .unwrap();
-            assert!(status.success(), "{mode}");
+            if !status.success() {
+                failures.push(mode);
+            }
         }
+        assert!(failures.is_empty(), "{failures:?}");
     }
 
     fn restore_focus_client(
@@ -1006,7 +1033,7 @@ mod synthetic_pad {
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
         toplevel.set_title("Test window".into());
-        toplevel.set_app_id("pointer-test".into());
+        toplevel.set_app_id("org.example.Restore".into());
         surface.commit();
         let mut app = App::default();
         let _configured = queue.roundtrip(&mut app).unwrap();
@@ -1022,7 +1049,7 @@ mod synthetic_pad {
         let other_xdg = wm_base.get_xdg_surface(&other_surface, &handle, ());
         let other_toplevel = other_xdg.get_toplevel(&handle, ());
         other_toplevel.set_title("Test window".into());
-        other_toplevel.set_app_id("other-window".into());
+        other_toplevel.set_app_id("org.example.Restore".into());
         other_surface.commit();
         let _other_configured = queue.roundtrip(&mut app).unwrap();
         other_surface.attach(Some(&buffer), 0, 0);
@@ -1036,7 +1063,9 @@ mod synthetic_pad {
         ready.send(()).unwrap();
         proceed.recv().unwrap();
         let _finished = queue.roundtrip(&mut app).unwrap();
-        assert_eq!(app.focused, Some(wayland_client::Proxy::id(&surface)));
+        if std::env::var("TEHUTI_RESTORE_FOCUS_MODE").unwrap() != "capture" {
+            assert_eq!(app.focused, Some(wayland_client::Proxy::id(&surface)));
+        }
         assert!(app.keys.is_empty(), "restore must not type into the session");
     }
 
