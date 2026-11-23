@@ -465,8 +465,8 @@ mod tests {
         assert_eq!(failed.report(start).expect("settled").restored, 2);
 
         let mut expired = Placements::<usize>::new(&saved, start);
-        let _first = expired.claim(Some(0), start, &10);
-        let _third = expired.claim(Some(2), start, &12);
+        let _opened_a = expired.claim(Some(0), start, &10);
+        let _opened_c = expired.claim(Some(2), start, &12);
         assert_eq!(expired.claim(Some(1), late, &11), None);
         let report = expired.report(late).expect("settled");
         assert_eq!((report.restored, report.failed.len()), (2, 1));
