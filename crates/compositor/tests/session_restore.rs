@@ -423,7 +423,7 @@ mod tests {
         let late = start + Duration::from_secs(61);
         let mut placements = Placements::<usize>::new(&saved, start);
         let _claim = placements.claim(Some(0), start, &10);
-        let _claim = placements.claim(Some(2), start, &12);
+        let _third = placements.claim(Some(2), start, &12);
         assert_eq!(placements.report(start), None, "one launch is still pending");
         let report = placements.report(late).expect("settled after expiry");
         assert_eq!(report.restored, 2);
@@ -444,7 +444,7 @@ mod tests {
         let mut placements = Placements::<usize>::new(&saved, start);
         placements.launch_failed(1);
         let _claim = placements.claim(Some(0), start, &10);
-        let _claim = placements.claim(Some(2), start, &12);
+        let _third = placements.claim(Some(2), start, &12);
         let report = placements.report(start).expect("nothing pending");
         assert_eq!(report.restored, 2);
         assert_eq!(report.failed, vec![names[1].clone()]);
