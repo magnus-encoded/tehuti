@@ -1805,8 +1805,7 @@ fn launcher_step(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
                 ButtonName::DpadUp,
                 ButtonName::DpadDown,
             ];
-            if launcher.is_invitation() && !own.contains(name) {
-                // The invitation leaves menus, mouse mode and shortcuts working.
+            if !own.contains(name) {
                 return false;
             }
             if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {
