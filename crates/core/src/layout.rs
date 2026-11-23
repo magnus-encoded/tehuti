@@ -144,12 +144,20 @@ pub enum WindowKind {
     Helper,
 }
 
-/// A fixed place to open a window: workspace and column positions, clamped to what exists.
-/// A window opened this way never takes focus or changes the active workspace.
+/// A fixed place to open a window. A window opened this way never takes focus or changes
+/// the active workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpenAt {
-    pub workspace: usize,
-    pub column: usize,
+pub enum OpenAt {
+    /// A new column at these positions, clamped to what exists.
+    Column {
+        /// Workspace position on the focused output.
+        workspace: usize,
+        /// Column position inside that workspace.
+        column: usize,
+    },
+    /// The bottom of the column holding this window. When that window is gone the window
+    /// opens as usual, so the caller names the fallback place itself with [`Self::Column`].
+    StackedUnder(WindowId),
 }
 
 /// Opening properties; applied once, when the window is added.
@@ -536,6 +544,16 @@ pub struct Layout {
     detached: Vec<Workspace>,
 }
 
+const fn opening_mode(rules: &WindowRules) -> TileMode {
+    if rules.open_fullscreen {
+        TileMode::Fullscreen
+    } else if rules.open_maximized_to_edges {
+        TileMode::MaximizedToEdges
+    } else {
+        TileMode::Normal
+    }
+}
+
 impl Layout {
     #[must_use]
     pub const fn new(config: LayoutConfig) -> Self {
@@ -783,16 +801,33 @@ impl Layout {
         );
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let workspace = named.map_or(self.outputs[output].active, |(_, workspace)| workspace);
-        if let Some(place) = rules.open_at {
-            #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
-            let last = self.outputs[output].workspaces.len().saturating_sub(1);
-            return Ok((output, place.workspace.min(last), false));
+        if let Some((placed_output, placed_workspace)) = self.placed_target(rules.open_at, output) {
+            return Ok((placed_output, placed_workspace, false));
         }
         Ok((
             output,
             workspace,
             rules.open_focused.unwrap_or(output == fallback),
         ))
+    }
+    /// The output and workspace a fixed place opens on, if it names a usable one.
+    fn placed_target(&self, place: Option<OpenAt>, output: usize) -> Option<(usize, usize)> {
+        match place? {
+            OpenAt::Column { workspace, .. } => {
+                let last = self.outputs.get(output)?.workspaces.len().saturating_sub(1);
+                Some((output, workspace.min(last)))
+            }
+            OpenAt::StackedUnder(sibling) => self
+                .find_window(sibling)
+                .map(|(found, workspace, _, _)| (found, workspace)),
+        }
+    }
+    fn stack_tile(&mut self, output: usize, workspace: usize, column: usize, tile: Tile) -> usize {
+        #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+        self.outputs[output].workspaces[workspace].columns[column]
+            .tiles
+            .push(tile);
+        column
     }
     fn insert_window(
         &mut self,
@@ -807,13 +842,7 @@ impl Layout {
         let previous = self.outputs[output].workspaces[workspace].focused_window();
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let view = self.outputs[output].workspaces[workspace].view;
-        let mode = if rules.open_fullscreen {
-            TileMode::Fullscreen
-        } else if rules.open_maximized_to_edges {
-            TileMode::MaximizedToEdges
-        } else {
-            TileMode::Normal
-        };
+        let mode = opening_mode(rules);
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let anchor = self.outputs[output].column_x(
             workspace,
@@ -831,6 +860,11 @@ impl Layout {
             fullscreen_view: None,
             client_fullscreen: false,
         };
+        if let Some(OpenAt::StackedUnder(sibling)) = rules.open_at
+            && let Some((_, _, position, _)) = self.find_window(sibling)
+        {
+            return self.stack_tile(output, workspace, position, tile);
+        }
         let width = if rules.open_maximized {
             Some(PresetSize::Proportion(1.0_f64))
         } else {
@@ -851,8 +885,8 @@ impl Layout {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let target = &mut self.outputs[output].workspaces[workspace];
         target.original_output = Some(output_id);
-        if let Some(place) = rules.open_at {
-            return target.insert_at_column(column, place.column);
+        if let Some(OpenAt::Column { column: wanted, .. }) = rules.open_at {
+            return target.insert_at_column(column, wanted);
         }
         let position = target
             .focused

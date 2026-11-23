@@ -152,7 +152,7 @@ pub struct Compositor {
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
-    placements: Option<crate::session_restore::Placements>,
+    placements: Option<crate::session_restore::Placements<WlSurface>>,
     session_exit_status: Option<u8>,
     restart_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
@@ -4266,8 +4266,9 @@ impl Compositor {
         let width = context.as_ref().and_then(|context| self.opening_width(context));
         let context = context.as_ref();
         let mut rules = Self::window_rules(&surface, context, width);
-        rules.open_at = self.claim_restored_place(&surface);
         let key = surface.wl_surface().clone();
+        let claim = self.claim_restored_place(&surface);
+        rules.open_at = claim.map(|claim| self.placement.open_at(claim));
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
             Ok(()) => self.place_layout(),
@@ -4315,10 +4316,13 @@ impl Compositor {
         Some(tehuti_protocol::fraction_value(fraction))
     }
 
-    fn claim_restored_place(&mut self, surface: &ToplevelSurface) -> Option<tehuti_core::layout::OpenAt> {
+    fn claim_restored_place(
+        &mut self,
+        surface: &ToplevelSurface,
+    ) -> Option<crate::session_restore::Claim<WlSurface>> {
         let placements = self.placements.as_mut()?;
         let token = crate::window_context::restore_token(surface.wl_surface(), &self.display);
-        let place = placements.claim(token, Instant::now());
+        let place = placements.claim(token, Instant::now(), surface.wl_surface());
         if placements.is_empty() {
             self.placements = None;
         }

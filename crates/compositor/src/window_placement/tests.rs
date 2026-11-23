@@ -125,3 +125,80 @@ fn remapping_a_surface_has_a_new_destination_and_trace() {
     placement.map(1, 1, WindowRules::default()).unwrap();
     assert_ne!(placement.focused_destination(), before);
 }
+
+/// A saved session whose first two windows share a column and whose third has its own.
+fn saved_stack() -> crate::session_restore::Saved {
+    use tehuti_core::layout::{Layout, LayoutConfig, OutputId, WindowId};
+    let mut layout = Layout::new(LayoutConfig::default());
+    let area = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1200.0,
+        height: 800.0,
+    };
+    layout
+        .add_output(OutputId(0), OutputGeometry { area, usable: area }, None)
+        .unwrap();
+    for window in 1..=3_u64 {
+        layout
+            .add_window(WindowId(window), WindowRules::default())
+            .unwrap();
+    }
+    layout.apply(Command::FocusColumnFirst);
+    layout.apply(Command::ConsumeWindowIntoColumn);
+    let installed = vec!["app".to_owned()];
+    crate::session_restore::Saved::capture(&layout.snapshot(), |_| Some("app".to_owned()), &installed)
+}
+
+/// Opens each key through a restore claim, as the compositor does, and returns the window
+/// keys of every column of the first workspace.
+fn restored(opens: &[(u8, usize)], closed: &[u8]) -> Vec<Vec<u8>> {
+    let now = std::time::Instant::now();
+    let mut placements = crate::session_restore::Placements::<u8>::new(&saved_stack(), now);
+    let mut placement = placement();
+    for (key, token) in opens {
+        let claim = placements.claim(Some(*token), now, key).unwrap();
+        let open_at = placement.open_at(claim);
+        let rules = WindowRules {
+            open_at: Some(open_at),
+            ..WindowRules::default()
+        };
+        placement.map(*key, *key, rules).unwrap();
+        if closed.contains(key) {
+            let _window = placement.unmap(key);
+        }
+    }
+    let keys: Vec<(u64, u8)> = placement
+        .placed(|_| 0.0)
+        .iter()
+        .map(|placed| (placed.identity, *placed.key))
+        .collect();
+    placement.snapshot().outputs[0].workspaces[0]
+        .columns
+        .iter()
+        .map(|column| {
+            column
+                .tiles
+                .iter()
+                .filter_map(|tile| {
+                    keys.iter()
+                        .find(|(identity, _)| *identity == tile.window.0)
+                        .map(|(_, key)| *key)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn saved_stack_returns_stacked_in_saved_order() {
+    assert_eq!(
+        restored(&[(10, 0), (11, 1), (12, 2)], &[]),
+        vec![vec![10, 11], vec![12]]
+    );
+}
+
+#[test]
+fn a_closed_anchor_sends_the_stacked_tile_to_its_saved_column() {
+    assert_eq!(restored(&[(10, 0), (11, 1)], &[10]), vec![vec![11]]);
+}

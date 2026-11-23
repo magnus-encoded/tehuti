@@ -5,7 +5,7 @@ mod tests {
     use std::time::Instant;
 
     use tehuti::session_restore::{
-        MAX_ENVIRON_BYTES, MAX_FILE_BYTES, MAX_WINDOWS, Placements, Saved, Store, TOKEN_VARIABLE,
+        Claim, MAX_ENVIRON_BYTES, MAX_FILE_BYTES, MAX_WINDOWS, Placements, Saved, Store, TOKEN_VARIABLE,
         parse_enabled, save_due, token_from_environment, token_from_reader,
     };
     use tehuti_core::layout::{
@@ -136,21 +136,25 @@ mod tests {
     #[test]
     fn a_window_claims_the_place_of_its_launch_token_once() {
         let now = Instant::now();
-        let mut placements = Placements::new(&two_of_one_and_one_other(), now);
-        let second = placements.claim(Some(1), now).expect("second");
-        let first = placements.claim(Some(0), now).expect("first");
-        assert_eq!((first.column, second.column), (0, 1));
-        assert!(placements.claim(Some(1), now).is_none());
-        assert!(placements.claim(Some(7), now).is_none());
+        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now);
+        let second = placements.claim(Some(1), now, &11).expect("second");
+        let first = placements.claim(Some(0), now, &10).expect("first");
+        let column = |claim| match claim {
+            Claim::Column { column, .. } => column,
+            Claim::Under { .. } => panic!("stacked, not a plain column"),
+        };
+        assert_eq!((column(first), column(second)), (0, 1));
+        assert!(placements.claim(Some(1), now, &12).is_none());
+        assert!(placements.claim(Some(7), now, &12).is_none());
     }
 
     #[test]
     fn a_hand_opened_window_cannot_take_a_saved_place() {
         let now = Instant::now();
-        let mut placements = Placements::new(&two_of_one_and_one_other(), now);
-        assert!(placements.claim(None, now).is_none());
+        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now);
+        assert!(placements.claim(None, now, &10).is_none());
         assert!(!placements.is_empty());
-        assert!(placements.claim(Some(0), now).is_some());
+        assert!(placements.claim(Some(0), now, &10).is_some());
     }
 
     #[test]
@@ -177,17 +181,17 @@ mod tests {
     #[test]
     fn a_slow_launch_still_lands_in_its_saved_place() {
         let now = Instant::now();
-        let mut placements = Placements::new(&two_of_one_and_one_other(), now);
+        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now);
         let late = now.checked_add(Duration::from_secs(30)).expect("time");
-        assert!(placements.claim(Some(2), late).is_some());
+        assert!(placements.claim(Some(2), late, &10).is_some());
     }
 
     #[test]
     fn unclaimed_places_expire() {
         let now = Instant::now();
-        let mut placements = Placements::new(&two_of_one_and_one_other(), now);
+        let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now);
         let late = now.checked_add(Duration::from_secs(3600)).expect("time");
-        assert!(placements.claim(Some(2), late).is_none());
+        assert!(placements.claim(Some(2), late, &10).is_none());
         assert!(placements.is_empty());
     }
 
@@ -227,7 +231,7 @@ mod tests {
         let focused = layout.snapshot().focused_window;
         let active = layout.snapshot().outputs[0].active_workspace;
         let place = |workspace, column| WindowRules {
-            open_at: Some(OpenAt { workspace, column }),
+            open_at: Some(OpenAt::Column { workspace, column }),
             ..WindowRules::default()
         };
         layout.add_window(WindowId(10), place(0, 0)).expect("first");
@@ -295,5 +299,42 @@ mod tests {
         assert_eq!(parse_enabled("restore_session = false"), Ok(false));
         assert!(parse_enabled("restore_session = 3").is_err());
         assert!(parse_enabled("[[").is_err());
+    }
+
+    fn stacked_pair() -> (Layout, Saved) {
+        let (mut layout, names) = layout_with(
+            &[
+                (1, "org.example.Alpha"),
+                (2, "org.example.Beta"),
+                (3, "org.example.Gamma"),
+            ],
+            &[],
+        );
+        layout.apply(Command::FocusColumnFirst);
+        layout.apply(Command::ConsumeWindowIntoColumn);
+        let saved = capture(
+            &layout,
+            &names,
+            &["org.example.Alpha", "org.example.Beta", "org.example.Gamma"],
+        );
+        (layout, saved)
+    }
+
+    #[test]
+    fn a_stacked_tile_falls_back_to_its_saved_column() {
+        let (_, saved) = stacked_pair();
+        let now = Instant::now();
+        let mut placements = Placements::<u64>::new(&saved, now);
+        let _anchor = placements.claim(Some(0), now, &10).expect("anchor");
+        let Some(Claim::Under {
+            anchor,
+            workspace,
+            column,
+        }) = placements.claim(Some(1), now, &11)
+        else {
+            panic!("not stacked");
+        };
+        assert_eq!(anchor, 10);
+        assert_eq!((workspace, column), (0, 0));
     }
 }
