@@ -3810,18 +3810,21 @@ impl Compositor {
     /// once the last launch has opened.
     pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
         let installed = self.launcher.installed();
-        for (token, window) in saved.windows().iter().enumerate() {
+        let now = self.clock_now();
+        let socket = self.launch_socket.clone();
+        let launcher = &mut self.launcher;
+        let placements = crate::session_restore::Placements::begin(saved, now, |token, window| {
             if !installed.contains(&window.app_id) {
                 tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
-            } else if !self.launcher.launch_with_token(
-                &window.app_id,
-                self.launch_socket.as_deref(),
-                Some(token),
-            ) {
+                return false;
+            }
+            let started = launcher.launch_with_token(&window.app_id, socket.as_deref(), Some(token));
+            if !started {
                 tracing::warn!(app_id = %window.app_id, "restore launch failed");
             }
-        }
-        self.placements = Some(crate::session_restore::Placements::new(saved, self.clock_now()));
+            started
+        });
+        self.placements = Some(placements);
     }
 
     /// The restorable windows now open, for the clean-exit save.
@@ -4292,7 +4295,17 @@ impl Compositor {
     fn restore_prior_focus(&mut self) {
         let now = self.clock_now();
         if let Some(placements) = self.placements.as_mut() {
-            self.placement.finish_restored_focus(placements, now);
+            if let Some(report) = self.placement.finish_restored_focus(placements, now) {
+                if report.failed.is_empty() {
+                    tracing::info!(restored = report.restored, "session restored");
+                } else {
+                    tracing::warn!(
+                        restored = report.restored,
+                        failed = ?report.failed,
+                        "session partially restored"
+                    );
+                }
+            }
             if placements.is_empty() {
                 self.placements = None;
             }

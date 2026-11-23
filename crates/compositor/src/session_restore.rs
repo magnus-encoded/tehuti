@@ -238,6 +238,23 @@ pub struct Placements<K> {
     focus: FocusRestore<K>,
     /// The focus the restore itself last caused; any other focus is the user's choice.
     expected_focus: Option<K>,
+    /// The tally of the restore until it is reported; `None` once given out.
+    tally: Option<Tally>,
+}
+
+#[derive(Debug, Default)]
+struct Tally {
+    restored: usize,
+    failed: Vec<String>,
+}
+
+/// How a finished restore went: the windows that opened and the applications that did not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    /// Saved windows that opened and were placed.
+    pub restored: usize,
+    /// App ids of the saved windows that never opened: skipped, failed to launch or expired.
+    pub failed: Vec<String>,
 }
 
 /// The pending return of the prior focus. A user focus change ends it, so a restore cannot
@@ -327,17 +344,68 @@ impl<K: Clone> Placements<K> {
             anchors: Vec::new(),
             focus: saved.focused.map_or(FocusRestore::Off, FocusRestore::Awaiting),
             expected_focus: None,
+            tally: Some(Tally::default()),
         }
+    }
+
+    /// Starts a restore: `launch` is called for each saved window with its token and says
+    /// whether it started; the windows that did not start are failed at once.
+    pub fn begin(saved: &Saved, now: Instant, mut launch: impl FnMut(usize, &SavedWindow) -> bool) -> Self {
+        let mut placements = Self::new(saved, now);
+        for (token, window) in saved.windows.iter().enumerate() {
+            if !launch(token, window) {
+                placements.launch_failed(token);
+            }
+        }
+        placements
+    }
+
+    /// Moves every entry whose time has run out from pending to failed.
+    fn expire(&mut self, now: Instant) {
+        let (live, expired): (Vec<_>, Vec<_>) = core::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|(_, _, expires)| now < *expires);
+        self.pending = live;
+        if let Some(tally) = self.tally.as_mut() {
+            tally
+                .failed
+                .extend(expired.into_iter().map(|(_, saved, _)| saved.app_id));
+        }
+    }
+
+    /// Records that the launch with this token did not start, so its entry stops waiting.
+    pub fn launch_failed(&mut self, token: usize) {
+        if let Some(index) = self.pending.iter().position(|(wanted, _, _)| *wanted == token) {
+            let (_, saved, _) = self.pending.remove(index);
+            if let Some(tally) = self.tally.as_mut() {
+                tally.failed.push(saved.app_id);
+            }
+        }
+    }
+
+    /// The outcome once every launch has opened or failed or expired. Given out once.
+    pub fn report(&mut self, now: Instant) -> Option<Report> {
+        self.expire(now);
+        if !self.pending.is_empty() {
+            return None;
+        }
+        self.tally.take().map(|tally| Report {
+            restored: tally.restored,
+            failed: tally.failed,
+        })
     }
 
     /// The saved place for a window that just opened, removed from the list. The window
     /// proves it was launched by the restore with the token its process carries; a window
     /// without one, or whose entry expired, opens as usual.
     pub fn claim(&mut self, token: Option<usize>, now: Instant, window: &K) -> Option<Claim<K>> {
-        self.pending.retain(|(_, _, expires)| now < *expires);
+        self.expire(now);
         let token = token?;
         let index = self.pending.iter().position(|(wanted, _, _)| *wanted == token)?;
         let (_, saved, _) = self.pending.remove(index);
+        if let Some(tally) = self.tally.as_mut() {
+            tally.restored = tally.restored.saturating_add(1);
+        }
         let (workspace, column) = (saved.workspace, saved.column);
         let group = (workspace, column);
         if matches!(self.focus, FocusRestore::Awaiting(wanted) if wanted == token) {
@@ -362,7 +430,7 @@ impl<K: Clone> Placements<K> {
     /// The window that had focus before the exit, once every launch has opened or expired,
     /// so a later window cannot take focus back. Given out once.
     pub fn settled_focus(&mut self, now: Instant) -> Option<K> {
-        self.pending.retain(|(_, _, expires)| now < *expires);
+        self.expire(now);
         if !self.pending.is_empty() {
             return None;
         }
@@ -373,7 +441,7 @@ impl<K: Clone> Placements<K> {
     }
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.pending.is_empty() && !matches!(self.focus, FocusRestore::Armed(_))
+        self.pending.is_empty() && self.tally.is_none() && !matches!(self.focus, FocusRestore::Armed(_))
     }
 }
 
