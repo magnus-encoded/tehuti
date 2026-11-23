@@ -1,8 +1,8 @@
 //! Session Restore: which applications were open, and where, saved on a clean exit and
 //! relaunched on the next start.
 //!
-//! The file lives under the XDG state directory and holds only desktop entry ids with their
-//! place, never commands: reading it can only start an installed application.
+//! The XDG state file holds desktop entry ids, window places and validated terminal session
+//! identities. Restore launches installed applications and attaches existing sessions.
 
 use core::time::Duration;
 use std::os::unix::fs::OpenOptionsExt as _;
@@ -13,7 +13,7 @@ use tehuti_core::layout::{Snapshot, WindowId};
 
 const VERSION: u32 = 1;
 /// How long a launched application has to open its window before its place is forgotten.
-const PLACEMENT_LIFETIME: Duration = Duration::from_secs(60);
+pub const PLACEMENT_LIFETIME: Duration = Duration::from_secs(60);
 /// The largest session file read.
 pub const MAX_FILE_BYTES: u64 = 64 * 1024;
 /// The most windows saved or restored.
@@ -28,6 +28,118 @@ pub struct SavedWindow {
     pub workspace: usize,
     /// Column position inside that workspace.
     pub column: usize,
+    /// The existing persistent terminal session, when its launch command identifies one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<TerminalSession>,
+}
+
+impl SavedWindow {
+    pub(crate) fn launch(&self, socket: &std::ffi::OsStr) -> Result<crate::launch::Launch, String> {
+        self.terminal.as_ref().map_or_else(
+            || crate::desktop::launch_for(&self.app_id, socket),
+            |terminal| Ok(terminal.launch(&self.app_id, socket)),
+        )
+    }
+}
+
+/// A terminal emulator whose command line can identify a persistent tmux session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalEmulator {
+    Foot,
+    Alacritty,
+    Kitty,
+}
+
+/// A tmux session to attach to. No command or replacement session is stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalSession {
+    emulator: TerminalEmulator,
+    target: String,
+    #[serde(default)]
+    socket: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app_id: Option<String>,
+}
+
+impl TerminalSession {
+    fn valid(&self) -> bool {
+        let name = |value: &str| {
+            !value.is_empty()
+                && value.len() <= 128
+                && !value.starts_with('-')
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        };
+        name(&self.target)
+            && self.socket.as_deref().is_none_or(name)
+            && self.app_id.as_deref().is_none_or(|app_id| {
+                !app_id.is_empty() && !app_id.starts_with('-') && !app_id.contains(['/', '\0'])
+            })
+    }
+
+    pub(crate) fn from_command(command: &[u8], app_id: String) -> Option<Self> {
+        let arguments: Vec<_> = command
+            .split(|byte| *byte == 0)
+            .filter(|argument| !argument.is_empty())
+            .map(core::str::from_utf8)
+            .collect::<Result<_, _>>()
+            .ok()?;
+        let emulator = match std::path::Path::new(arguments.first()?).file_name()?.to_str()? {
+            "foot" => TerminalEmulator::Foot,
+            "alacritty" => TerminalEmulator::Alacritty,
+            "kitty" => TerminalEmulator::Kitty,
+            _ => return None,
+        };
+        let index = arguments.iter().position(|argument| *argument == "tmux")?;
+        let mut arguments = arguments.get(index.saturating_add(1)..)?.iter().copied();
+        let first = arguments.next()?;
+        let (socket, operation) = if first == "-L" {
+            (Some(arguments.next()?.to_owned()), arguments.next()?)
+        } else {
+            (None, first)
+        };
+        if !matches!(operation, "attach" | "attach-session") || arguments.next()? != "-t" {
+            return None;
+        }
+        let target = arguments.next()?.trim_start_matches('=').to_owned();
+        if arguments.next().is_some() {
+            return None;
+        }
+        let session = Self {
+            emulator,
+            target,
+            socket,
+            app_id: Some(app_id),
+        };
+        session.valid().then_some(session)
+    }
+
+    pub(crate) fn launch(&self, app_id: &str, socket: &std::ffi::OsStr) -> crate::launch::Launch {
+        let (program, option) = match self.emulator {
+            TerminalEmulator::Foot => ("foot", "--app-id"),
+            TerminalEmulator::Alacritty => ("alacritty", "--class"),
+            TerminalEmulator::Kitty => ("kitty", "--class"),
+        };
+        let window_app_id = self.app_id.as_deref().unwrap_or(app_id);
+        let mut launch = crate::launch::Launch::new(program, app_id)
+            .arg(option)
+            .arg(window_app_id)
+            .on_socket(socket);
+        if matches!(self.emulator, TerminalEmulator::Alacritty) {
+            launch = launch.arg("-e");
+        }
+        launch = launch.arg("tmux");
+        if let Some(socket) = &self.socket {
+            launch = launch.arg("-L").arg(socket);
+        }
+        launch
+            .arg("attach-session")
+            .arg("-t")
+            .arg(format!("={}", self.target))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +177,15 @@ impl Saved {
         app_id_of: impl Fn(WindowId) -> Option<String>,
         installed: &[String],
     ) -> Self {
+        Self::capture_with_terminals(snapshot, app_id_of, |_| None, installed)
+    }
+
+    pub(crate) fn capture_with_terminals(
+        snapshot: &Snapshot,
+        app_id_of: impl Fn(WindowId) -> Option<String>,
+        terminal_of: impl Fn(WindowId) -> Option<TerminalSession>,
+        installed: &[String],
+    ) -> Self {
         let mut windows = Vec::new();
         let workspaces = snapshot
             .outputs
@@ -77,8 +198,15 @@ impl Saved {
             for (column, view) in workspace.columns.iter().enumerate() {
                 for tile in &view.tiles {
                     if windows.len() < MAX_WINDOWS
-                        && let Some(app_id) =
-                            app_id_of(tile.window).filter(|app_id| installed.contains(app_id))
+                        && let Some(app_id) = app_id_of(tile.window).and_then(|app_id| {
+                            installed
+                                .iter()
+                                .find(|entry| {
+                                    *entry == &app_id
+                                        || entry.strip_suffix(".desktop") == Some(app_id.as_str())
+                                })
+                                .cloned()
+                        })
                     {
                         if snapshot.focused_window == Some(tile.window) {
                             focused = Some(windows.len());
@@ -87,6 +215,7 @@ impl Saved {
                             app_id,
                             workspace: rank,
                             column,
+                            terminal: terminal_of(tile.window),
                         });
                     }
                 }
@@ -140,6 +269,14 @@ impl Saved {
         };
         if saved.windows.iter().any(|window| !plain(&window.app_id)) {
             return Err(LoadError::Invalid("invalid desktop entry id".into()));
+        }
+        if saved
+            .windows
+            .iter()
+            .filter_map(|window| window.terminal.as_ref())
+            .any(|terminal| !terminal.valid())
+        {
+            return Err(LoadError::Invalid("invalid terminal session identity".into()));
         }
         Ok(saved)
     }

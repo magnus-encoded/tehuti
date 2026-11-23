@@ -82,13 +82,36 @@ impl Launch {
         self.app_id.as_deref()
     }
 
+    fn restoring(&self) -> bool {
+        self.env
+            .iter()
+            .any(|(key, _)| key == crate::session_restore::TOKEN_VARIABLE)
+    }
+
     /// The command with the session environment and detached standard streams.
     #[must_use]
     pub fn command(&self) -> std::process::Command {
+        let program = if self.restoring() {
+            std::ffi::OsStr::new("systemd-run")
+        } else {
+            &self.program
+        };
         let mut command = self.socket.as_ref().map_or_else(
-            || crate::child_process::command(&self.program),
-            |socket| crate::client_env::command(&self.program, socket),
+            || crate::child_process::command(program),
+            |socket| crate::client_env::command(program, socket),
         );
+        if self.restoring() {
+            let _command = command
+                .args([
+                    "--user",
+                    "--scope",
+                    "--collect",
+                    "--quiet",
+                    "--expand-environment=no",
+                    "--",
+                ])
+                .arg(&self.program);
+        }
         let _command = command
             .args(&self.args)
             .envs(self.env.iter().map(|(key, value)| (key, value)))
@@ -194,9 +217,10 @@ struct Running<P> {
     label: String,
     app_id: Option<String>,
     started: Instant,
+    independent: bool,
 }
 
-/// Owns every launched child until it exits; dropping it terminates the rest.
+/// Monitors launched children; dropping it terminates ordinary launches and leaves restores running.
 #[derive(Debug)]
 pub struct Launches<S: Spawner = SystemSpawner> {
     spawner: S,
@@ -231,6 +255,7 @@ impl<S: Spawner> Launches<S> {
             label: launch.label.clone(),
             app_id: launch.app_id.clone(),
             started: now,
+            independent: launch.restoring(),
         });
         Ok(())
     }
@@ -273,7 +298,9 @@ impl<S: Spawner> Launches<S> {
 impl<S: Spawner> Drop for Launches<S> {
     fn drop(&mut self) {
         for child in &mut self.running {
-            child.process.terminate();
+            if !child.independent {
+                child.process.terminate();
+            }
         }
     }
 }

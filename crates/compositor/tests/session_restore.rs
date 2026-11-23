@@ -524,6 +524,14 @@ mod tests {
         assert_eq!((report.restored, report.failed.len()), (3, 0));
     }
     #[test]
+    fn capture_resolves_window_app_ids_to_installed_desktop_entries() {
+        let (layout, names) = layout_with(&[(1, "org.example.Terminal")], &[]);
+        let saved = capture(&layout, &names, &["org.example.Terminal.desktop"]);
+        assert_eq!(saved.windows().len(), 1);
+        assert_eq!(saved.windows()[0].app_id, "org.example.Terminal.desktop");
+    }
+
+    #[test]
     fn persistent_terminal_identity_survives_the_session_file() {
         let text = r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}}]}"#;
         let saved = Saved::parse(text).expect("terminal session");
@@ -573,6 +581,18 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+    const FOOT_ATTACHMENT: [&str; 9] = [
+        "--app-id",
+        "org.example.Terminal.desktop",
+        "tmux",
+        "-L",
+        "restore-tests",
+        "attach-session",
+        "-t",
+        "=work",
+        "eof",
+    ];
+
     fn terminal_restore_probe() {
         use std::os::unix::fs::PermissionsExt as _;
         let root = tempfile::tempdir().unwrap();
@@ -587,6 +607,10 @@ mod tests {
         std::fs::write(&executable,
         "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let scope = root.path().join("systemd-run");
+        std::fs::write(&scope, "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_SCOPE_TRACE\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let scope_trace = root.path().join("scope-trace");
         let trace = root.path().join("trace");
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -598,25 +622,21 @@ mod tests {
             .env("XDG_DATA_DIRS", root.path())
             .env("PATH", root.path())
             .env("TEHUTI_TERMINAL_TRACE", &trace)
+            .env("TEHUTI_SCOPE_TRACE", &scope_trace)
             .status()
             .unwrap();
         assert!(status.success());
+        let scope_args = std::fs::read_to_string(scope_trace).unwrap();
+        assert!(
+            scope_args
+                .starts_with("--user\n--scope\n--collect\n--quiet\n--expand-environment=no\n--\nfoot\n")
+        );
         assert_eq!(
             std::fs::read_to_string(trace)
                 .unwrap()
                 .lines()
                 .collect::<Vec<_>>(),
-            [
-                "--app-id",
-                "org.example.Terminal.desktop",
-                "tmux",
-                "-L",
-                "restore-tests",
-                "attach-session",
-                "-t",
-                "=work",
-                "eof"
-            ]
+            FOOT_ATTACHMENT
         );
     }
 }

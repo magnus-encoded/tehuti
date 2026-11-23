@@ -928,16 +928,20 @@ mod synthetic_pad {
             .unwrap();
         let mut harness = crate::harness::Harness::new();
         let (ready, receiver) = harness.channel();
-        let client = harness.client(move || restore_focus_client(stream, &ready));
+        let (proceed, commands) = mpsc::channel();
+        let client = harness.client(move || restore_focus_client(stream, &ready, &commands));
         let mut sent = false;
         harness.serve_turns(&mut display, &mut compositor, |compositor| {
             if !sent && receiver.try_recv().is_ok() {
                 now.set(now.get() + Duration::from_secs(61));
-                compositor.handle(&Event::Tick {
-                    elapsed: Duration::ZERO,
-                });
-                compositor.host_pointer_button(tehuti_core::dispatch::PointerButton::Left, true);
-                compositor.host_pointer_button(tehuti_core::dispatch::PointerButton::Left, false);
+                if std::env::var("TEHUTI_RESTORE_FOCUS_MODE").unwrap() == "timer" {
+                    compositor.advance_time();
+                } else {
+                    compositor.handle(&Event::Tick {
+                        elapsed: Duration::ZERO,
+                    });
+                }
+                proceed.send(()).unwrap();
                 sent = true;
             }
             client.has_ended()
@@ -958,22 +962,36 @@ mod synthetic_pad {
         let launcher = root.path().join("gtk-launch");
         std::fs::write(&launcher, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "synthetic_pad::restore_focus_expires_on_input_without_waiting_for_a_periodic_tick",
-            ])
-            .env("TEHUTI_RESTORE_FOCUS_PROBE", "1")
-            .env("XDG_DATA_HOME", root.path())
-            .env("XDG_DATA_DIRS", root.path())
-            .env("PATH", root.path())
-            .env(tehuti::session_restore::TOKEN_VARIABLE, "0")
-            .status()
-            .unwrap();
-        assert!(status.success());
+        let scope = root.path().join("systemd-run");
+        std::fs::write(
+            &scope,
+            "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for mode in ["input", "timer"] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "synthetic_pad::restore_focus_expires_on_input_without_waiting_for_a_periodic_tick",
+                ])
+                .env("TEHUTI_RESTORE_FOCUS_PROBE", "1")
+                .env("TEHUTI_RESTORE_FOCUS_MODE", mode)
+                .env("XDG_DATA_HOME", root.path())
+                .env("XDG_DATA_DIRS", root.path())
+                .env("PATH", root.path())
+                .env(tehuti::session_restore::TOKEN_VARIABLE, "0")
+                .status()
+                .unwrap();
+            assert!(status.success(), "{mode}");
+        }
     }
 
-    fn restore_focus_client(stream: UnixStream, ready: &crate::harness::Notifier<()>) {
+    fn restore_focus_client(
+        stream: UnixStream,
+        ready: &crate::harness::Notifier<()>,
+        proceed: &mpsc::Receiver<()>,
+    ) {
         use std::os::fd::AsFd;
         use wayland_client::protocol::wl_shm::{Format, WlShm};
         let connection = Connection::from_socket(stream).unwrap();
@@ -1016,9 +1034,7 @@ mod synthetic_pad {
             "new window starts focused"
         );
         ready.send(()).unwrap();
-        while app.clicks.len() < 2 {
-            let _events = queue.blocking_dispatch(&mut app).unwrap();
-        }
+        proceed.recv().unwrap();
         let _finished = queue.roundtrip(&mut app).unwrap();
         assert_eq!(app.focused, Some(wayland_client::Proxy::id(&surface)));
         assert!(app.keys.is_empty(), "restore must not type into the session");

@@ -989,8 +989,9 @@ impl Compositor {
         self.keep_invitation();
         if let Some(placements) = self.placements.as_mut() {
             self.placement.guard_restored_focus(placements);
-            self.restore_prior_focus();
-            self.place_layout();
+            if self.restore_prior_focus() {
+                self.place_layout();
+            }
         }
         self.poll_recording();
         self.release_ready_buffers();
@@ -1400,6 +1401,12 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        if let Some(placements) = self.placements.as_mut() {
+            self.placement.guard_restored_focus(placements);
+            if self.restore_prior_focus() {
+                self.place_layout();
+            }
+        }
         if let Event::Button { name, state } = event {
             self.log_button(*name, *state);
             // The menu opens a moment after Guide goes down; look for holders once, now.
@@ -3820,7 +3827,7 @@ impl Compositor {
                     tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
                     return false;
                 }
-                let started = launcher.launch_with_token(&window.app_id, socket.as_deref(), Some(token));
+                let started = launcher.launch_restored(window, socket.as_deref(), token);
                 if !started {
                     tracing::warn!(app_id = %window.app_id, "restore launch failed");
                 }
@@ -3838,12 +3845,16 @@ impl Compositor {
             .into_iter()
             .filter_map(|placed| {
                 let app_id = placed.window.toplevel().and_then(toplevel_app_id)?;
-                Some((placed.identity, app_id))
+                let terminal = placed.window.toplevel().and_then(|surface| {
+                    crate::window_context::terminal_session(surface.wl_surface(), &self.display)
+                });
+                Some((placed.identity, (app_id, terminal)))
             })
             .collect();
-        crate::session_restore::Saved::capture(
+        crate::session_restore::Saved::capture_with_terminals(
             &self.placement.snapshot(),
-            |window| apps.get(&window.0).cloned(),
+            |window| apps.get(&window.0).map(|(app_id, _)| app_id.clone()),
+            |window| apps.get(&window.0).and_then(|(_, terminal)| terminal.clone()),
             &self.launcher.installed(),
         )
     }
@@ -4286,7 +4297,7 @@ impl Compositor {
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
             Ok(()) => {
-                self.restore_prior_focus();
+                let _focus_changed = self.restore_prior_focus();
                 self.place_layout();
             }
             Err(error) => tracing::warn!(%error, "window layout failed"),
@@ -4294,7 +4305,8 @@ impl Compositor {
     }
 
     /// Focuses the window that had focus before the exit, once the restore has settled.
-    fn restore_prior_focus(&mut self) {
+    fn restore_prior_focus(&mut self) -> bool {
+        let before = self.placement.focused().cloned();
         let now = self.clock_now();
         if let Some(placements) = self.placements.as_mut() {
             if let Some(report) = self.placement.finish_restored_focus(placements, now) {
@@ -4312,6 +4324,7 @@ impl Compositor {
                 self.placements = None;
             }
         }
+        self.placement.focused() != before.as_ref()
     }
 
     /// The opening width fraction of a context. A pixel or decimal setting is

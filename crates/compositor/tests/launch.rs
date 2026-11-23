@@ -162,7 +162,11 @@ mod launch {
         ));
         let mut owner = Launches::new(StubSpawner(Rc::clone(&child)));
         owner
-            .start(&Launch::new("stub", "stub application"), Instant::now())
+            .start(
+                &Launch::new("stub", "stub application")
+                    .with_env(tehuti::session_restore::TOKEN_VARIABLE, "0"),
+                Instant::now(),
+            )
             .unwrap();
         drop(owner);
         let survived = child.borrow_mut().try_wait().unwrap().is_none();
