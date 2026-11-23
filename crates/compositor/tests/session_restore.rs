@@ -192,6 +192,7 @@ mod tests {
         let mut placements = Placements::<u64>::new(&two_of_one_and_one_other(), now);
         let late = now.checked_add(Duration::from_secs(3600)).expect("time");
         assert!(placements.claim(Some(2), late, &10).is_none());
+        let _report = placements.report(late);
         assert!(placements.is_empty());
     }
 
@@ -413,7 +414,7 @@ mod tests {
 
     #[test]
     fn report_names_the_applications_that_never_opened_once_the_rest_settled() {
-        let saved = focused_trio(0);
+        let saved = focused_trio(1);
         let names: Vec<String> = saved
             .windows()
             .iter()
@@ -434,7 +435,7 @@ mod tests {
 
     #[test]
     fn a_failed_launch_is_reported_without_waiting_for_expiry() {
-        let saved = focused_trio(0);
+        let saved = focused_trio(1);
         let names: Vec<String> = saved
             .windows()
             .iter()
@@ -452,7 +453,7 @@ mod tests {
 
     #[test]
     fn a_fully_restored_session_reports_no_failures() {
-        let saved = focused_trio(0);
+        let saved = focused_trio(1);
         let start = Instant::now();
         let mut placements = Placements::<usize>::new(&saved, start);
         for token in 0..3 {
