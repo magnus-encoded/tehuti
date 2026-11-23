@@ -569,7 +569,8 @@ mod tests {
             smithay::reexports::wayland_server::Display::<tehuti::state::Compositor>::new().unwrap();
         let mut compositor = tehuti::state::Compositor::new(&display.handle()).unwrap();
         compositor.set_launch_socket("restore-test".into());
-        let saved = Saved::parse(r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}}]}"#).unwrap();
+        let saved = Saved::parse(r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}},{"app_id":"org.example.Terminal.desktop","workspace":0,"column":1,"terminal":{"emulator":"foot","target":null}}]}"#).unwrap();
+        compositor.begin_session_restore(&saved);
         compositor.begin_session_restore(&saved);
         let trace = std::env::var_os("TEHUTI_TERMINAL_TRACE").unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -605,7 +606,7 @@ mod tests {
         .unwrap();
         let executable = root.path().join("foot");
         std::fs::write(&executable,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >>\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         let scope = root.path().join("systemd-run");
         std::fs::write(&scope, "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_SCOPE_TRACE\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n").unwrap();

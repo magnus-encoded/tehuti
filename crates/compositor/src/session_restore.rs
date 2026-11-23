@@ -37,7 +37,7 @@ impl SavedWindow {
     pub(crate) fn launch(&self, socket: &std::ffi::OsStr) -> Result<crate::launch::Launch, String> {
         self.terminal.as_ref().map_or_else(
             || crate::desktop::launch_for(&self.app_id, socket),
-            |terminal| Ok(terminal.launch(&self.app_id, socket)),
+            |terminal| terminal.launch(&self.app_id, socket),
         )
     }
 }
@@ -56,7 +56,8 @@ pub enum TerminalEmulator {
 #[serde(deny_unknown_fields)]
 pub struct TerminalSession {
     emulator: TerminalEmulator,
-    target: String,
+    #[serde(default)]
+    target: Option<String>,
     #[serde(default)]
     socket: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,7 +74,7 @@ impl TerminalSession {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
         };
-        name(&self.target)
+        self.target.as_deref().is_none_or(name)
             && self.socket.as_deref().is_none_or(name)
             && self.app_id.as_deref().is_none_or(|app_id| {
                 !app_id.is_empty() && !app_id.starts_with('-') && !app_id.contains(['/', '\0'])
@@ -93,6 +94,17 @@ impl TerminalSession {
             "kitty" => TerminalEmulator::Kitty,
             _ => return None,
         };
+        let attachment = Self::attachment(&arguments);
+        let session = Self {
+            emulator,
+            target: attachment.as_ref().map(|(target, _)| target.clone()),
+            socket: attachment.and_then(|(_, socket)| socket),
+            app_id: Some(app_id),
+        };
+        session.valid().then_some(session)
+    }
+
+    fn attachment(arguments: &[&str]) -> Option<(String, Option<String>)> {
         let index = arguments.iter().position(|argument| *argument == "tmux")?;
         let mut arguments = arguments.get(index.saturating_add(1)..)?.iter().copied();
         let first = arguments.next()?;
@@ -108,16 +120,18 @@ impl TerminalSession {
         if arguments.next().is_some() {
             return None;
         }
-        let session = Self {
-            emulator,
-            target,
-            socket,
-            app_id: Some(app_id),
-        };
-        session.valid().then_some(session)
+        Some((target, socket))
     }
 
-    pub(crate) fn launch(&self, app_id: &str, socket: &std::ffi::OsStr) -> crate::launch::Launch {
+    pub(crate) fn launch(
+        &self,
+        app_id: &str,
+        socket: &std::ffi::OsStr,
+    ) -> Result<crate::launch::Launch, String> {
+        let target = self
+            .target
+            .as_ref()
+            .ok_or_else(|| "persistent terminal session unavailable".to_owned())?;
         let (program, option) = match self.emulator {
             TerminalEmulator::Foot => ("foot", "--app-id"),
             TerminalEmulator::Alacritty => ("alacritty", "--class"),
@@ -132,13 +146,10 @@ impl TerminalSession {
             launch = launch.arg("-e");
         }
         launch = launch.arg("tmux");
-        if let Some(socket) = &self.socket {
-            launch = launch.arg("-L").arg(socket);
+        if let Some(server) = &self.socket {
+            launch = launch.arg("-L").arg(server);
         }
-        launch
-            .arg("attach-session")
-            .arg("-t")
-            .arg(format!("={}", self.target))
+        Ok(launch.arg("attach-session").arg("-t").arg(format!("={target}")))
     }
 }
 

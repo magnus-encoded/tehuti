@@ -3816,6 +3816,9 @@ impl Compositor {
     /// are placed as they open, whatever their order; the window that had focus gets it back
     /// once the last launch has opened.
     pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
+        if self.placements.is_some() {
+            return;
+        }
         let installed = self.launcher.installed();
         let now = self.clock_now();
         let socket = self.launch_socket.clone();
