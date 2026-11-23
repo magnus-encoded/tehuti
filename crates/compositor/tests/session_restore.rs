@@ -554,50 +554,7 @@ mod tests {
     fn terminal_restore_only_attaches_and_receives_no_input() {
         const PROBE: &str = "TEHUTI_TERMINAL_RESTORE_PROBE";
         if std::env::var_os(PROBE).is_none() {
-            use std::os::unix::fs::PermissionsExt as _;
-            let root = tempfile::tempdir().unwrap();
-            let applications = root.path().join("applications");
-            std::fs::create_dir(&applications).unwrap();
-            std::fs::write(
-                applications.join("org.example.Terminal.desktop"),
-                "[Desktop Entry]\nType=Application\nName=Terminal stub\nExec=foot\n",
-            )
-            .unwrap();
-            let executable = root.path().join("foot");
-            std::fs::write(&executable,
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
-            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let trace = root.path().join("trace");
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "tests::terminal_restore_only_attaches_and_receives_no_input",
-                ])
-                .env(PROBE, "1")
-                .env("XDG_DATA_HOME", root.path())
-                .env("XDG_DATA_DIRS", root.path())
-                .env("PATH", root.path())
-                .env("TEHUTI_TERMINAL_TRACE", &trace)
-                .status()
-                .unwrap();
-            assert!(status.success());
-            assert_eq!(
-                std::fs::read_to_string(trace)
-                    .unwrap()
-                    .lines()
-                    .collect::<Vec<_>>(),
-                [
-                    "--app-id",
-                    "org.example.Terminal.desktop",
-                    "tmux",
-                    "-L",
-                    "restore-tests",
-                    "attach-session",
-                    "-t",
-                    "=work",
-                    "eof"
-                ]
-            );
+            terminal_restore_probe();
             return;
         }
         let display =
@@ -615,5 +572,51 @@ mod tests {
             assert!(Instant::now() < deadline, "terminal did not attach");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+    fn terminal_restore_probe() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let applications = root.path().join("applications");
+        std::fs::create_dir(&applications).unwrap();
+        std::fs::write(
+            applications.join("org.example.Terminal.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Terminal stub\nExec=foot\n",
+        )
+        .unwrap();
+        let executable = root.path().join("foot");
+        std::fs::write(&executable,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let trace = root.path().join("trace");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::terminal_restore_only_attaches_and_receives_no_input",
+            ])
+            .env("TEHUTI_TERMINAL_RESTORE_PROBE", "1")
+            .env("XDG_DATA_HOME", root.path())
+            .env("XDG_DATA_DIRS", root.path())
+            .env("PATH", root.path())
+            .env("TEHUTI_TERMINAL_TRACE", &trace)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read_to_string(trace)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "--app-id",
+                "org.example.Terminal.desktop",
+                "tmux",
+                "-L",
+                "restore-tests",
+                "attach-session",
+                "-t",
+                "=work",
+                "eof"
+            ]
+        );
     }
 }

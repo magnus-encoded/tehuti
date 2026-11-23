@@ -907,31 +907,7 @@ mod synthetic_pad {
     fn restore_focus_expires_on_input_without_waiting_for_a_periodic_tick() {
         const PROBE: &str = "TEHUTI_RESTORE_FOCUS_PROBE";
         if std::env::var_os(PROBE).is_none() {
-            use std::os::unix::fs::PermissionsExt as _;
-            let root = tempfile::tempdir().unwrap();
-            let applications = root.path().join("applications");
-            std::fs::create_dir(&applications).unwrap();
-            std::fs::write(
-                applications.join("org.example.Restore.desktop"),
-                "[Desktop Entry]\nType=Application\nName=Restore stub\nExec=true\n",
-            )
-            .unwrap();
-            let launcher = root.path().join("gtk-launch");
-            std::fs::write(&launcher, "#!/bin/sh\nexit 0\n").unwrap();
-            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "synthetic_pad::restore_focus_expires_on_input_without_waiting_for_a_periodic_tick",
-                ])
-                .env(PROBE, "1")
-                .env("XDG_DATA_HOME", root.path())
-                .env("XDG_DATA_DIRS", root.path())
-                .env("PATH", root.path())
-                .env(tehuti::session_restore::TOKEN_VARIABLE, "0")
-                .status()
-                .unwrap();
-            assert!(status.success());
+            restore_focus_probe();
             return;
         }
         let mut display: Display<Compositor> = Display::new().unwrap();
@@ -967,6 +943,34 @@ mod synthetic_pad {
             client.has_ended()
         });
         client.join();
+    }
+
+    fn restore_focus_probe() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let applications = root.path().join("applications");
+        std::fs::create_dir(&applications).unwrap();
+        std::fs::write(
+            applications.join("org.example.Restore.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Restore stub\nExec=true\n",
+        )
+        .unwrap();
+        let launcher = root.path().join("gtk-launch");
+        std::fs::write(&launcher, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "synthetic_pad::restore_focus_expires_on_input_without_waiting_for_a_periodic_tick",
+            ])
+            .env("TEHUTI_RESTORE_FOCUS_PROBE", "1")
+            .env("XDG_DATA_HOME", root.path())
+            .env("XDG_DATA_DIRS", root.path())
+            .env("PATH", root.path())
+            .env(tehuti::session_restore::TOKEN_VARIABLE, "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 
     fn restore_focus_client(stream: UnixStream, ready: &crate::harness::Notifier<()>) {
