@@ -18,7 +18,41 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+class RecordingModel:
+    def __init__(self):
+        self.calls = []
+
+    def transcribe(self, path, **options):
+        self.calls.append(options)
+        return iter([types.SimpleNamespace(text="hi", no_speech_prob=0, avg_logprob=0)]), None
+
+
 class SpeechTests(unittest.TestCase):
+    def test_an_interim_decodes_in_one_pass_without_temperature_fallback(self):
+        model = RecordingModel()
+        speech = module.Speech(model, remotes=dict)
+        speech.transcribe_take(module.Take(1, "", "en"), b"\x00\x10" * 100, final=False)
+        self.assertEqual(model.calls[0]["temperature"], 0)
+        self.assertIs(model.calls[0]["condition_on_previous_text"], False)
+        speech.transcribe_take(module.Take(1, "", "en"), b"\x00\x10" * 100, final=True)
+        self.assertNotIn("temperature", model.calls[1])
+
+    def test_warming_runs_the_decodes_a_take_uses_before_ready(self):
+        model = RecordingModel()
+        module.Speech(model, remotes=dict).warm()
+        self.assertTrue(any(c["vad_filter"] for c in model.calls))
+        for beam in (1, 5):
+            self.assertTrue(any(c["beam_size"] == beam and c["language"] == "en"
+                                and c.get("no_speech_threshold") is None
+                                and not c["vad_filter"] for c in model.calls), beam)
+
+    def test_a_failing_warm_up_does_not_stop_startup(self):
+        class Broken:
+            def transcribe(self, *args, **kwargs):
+                raise RuntimeError("no kernel for this device")
+        with contextlib.redirect_stderr(io.StringIO()):
+            module.Speech(Broken(), remotes=dict).warm()
+
     def test_a_pinned_verb_redecodes_the_same_audio_in_its_locale(self):
         class Model:
             def __init__(self):
