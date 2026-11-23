@@ -135,23 +135,17 @@ mod launch {
     fn applications_outlive_the_restore_helper_process() {
         const PROBE: &str = "TEHUTI_RESTORE_HELPER_PROBE";
         if let Some(pid_file) = std::env::var_os(PROBE) {
-            let mut owner: Launches = Launches::default();
-            owner
-                .start(
-                    &Launch::new("/bin/sleep", "stub application")
-                        .arg("30")
-                        .with_env(tehuti::session_restore::TOKEN_VARIABLE, "0"),
-                    Instant::now(),
-                )
-                .unwrap();
-            let _pid = restored_child_pid(std::path::Path::new(&pid_file));
+            run_restore_helper(std::path::Path::new(&pid_file));
             return;
         }
         use std::os::unix::fs::PermissionsExt as _;
         let root = tempfile::tempdir().unwrap();
         let scope = root.path().join("systemd-run");
-        std::fs::write(&scope,
-            "#!/bin/sh\necho \"$$\" >\"$TEHUTI_RESTORE_HELPER_PROBE\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n").unwrap();
+        std::fs::write(
+            &scope,
+            "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
         let pid_file = root.path().join("child-pid");
         let helper = std::process::Command::new(std::env::current_exe().unwrap())
@@ -177,6 +171,25 @@ mod launch {
             alive.success(),
             "application must outlive its restore helper process"
         );
+    }
+
+    fn run_restore_helper(pid_file: &std::path::Path) {
+        let mut owner: Launches = Launches::default();
+        owner
+            .start(
+                &Launch::new("/bin/sh", "stub application")
+                    .arg("-c")
+                    .arg("echo \"$$\" >\"$TEHUTI_RESTORE_HELPER_PROBE\"; exec /bin/sleep 30")
+                    .with_env(tehuti::session_restore::TOKEN_VARIABLE, "0"),
+                Instant::now(),
+            )
+            .unwrap();
+        let pid = restored_child_pid(pid_file);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.trim() == "sleep") {
+            assert!(Instant::now() < deadline, "stub application did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn restored_child_pid(path: &std::path::Path) -> u32 {
