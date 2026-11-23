@@ -398,6 +398,27 @@ class Speech:
         self.finals_pending = 0
         self.interims = threading.BoundedSemaphore(1)
 
+    def warm(self):
+        """Run every decode the first take uses, so its kernels load before "ready".
+
+        Silence never reaches the decoder, so the pass forces one past the no-speech
+        gates, at the beam widths of finals (5) and interims (1), plus the VAD path."""
+        tone = b"".join(int(8000 * ((i % 40) / 20 - 1)).to_bytes(2, "little", signed=True)
+                        for i in range(16000))
+        self.transcribe_audio(tone, retry=False)
+        for beam_size in (5, 1):
+            with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
+                with wave.open(recording.name, "wb") as output:
+                    output.setnchannels(1)
+                    output.setsampwidth(2)
+                    output.setframerate(16000)
+                    output.writeframes(tone)
+                segments, _ = self.model.transcribe(
+                    recording.name, beam_size=beam_size, language=DEFAULT_LANGUAGE,
+                    vad_filter=False, temperature=0, no_speech_threshold=None,
+                    log_prob_threshold=None, condition_on_previous_text=False)
+                list(segments)
+
     def set_vocabulary(self, vocabulary):
         words, seen = [], set()
         for word in vocabulary:
@@ -469,7 +490,8 @@ class Speech:
             capture.send_signal(signal.SIGINT)
 
     def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None, beam_size=5,
-                         language=DEFAULT_LANGUAGE, stats=None, hotwords=None):
+                         language=DEFAULT_LANGUAGE, stats=None, hotwords=None,
+                         single_pass=False):
         words = self.hotwords if hotwords is None else hotwords
         priming = {"hotwords": words} if words else {}
         if prompt:
@@ -481,7 +503,10 @@ class Speech:
                 output.setframerate(16000)
                 output.writeframes(audio)
             segments, _ = self.model.transcribe(
-                recording.name, beam_size=beam_size, language=language, vad_filter=True, **priming,
+                recording.name, beam_size=beam_size, language=language, vad_filter=True,
+                # One decoder pass: the default fallback re-samples up to six times.
+                **({"temperature": 0, "condition_on_previous_text": False} if single_pass else {}),
+                **priming,
                 vad_parameters={"threshold": 0.3, "min_speech_duration_ms": 80,
                                 "speech_pad_ms": 300},
             )
@@ -530,7 +555,7 @@ class Speech:
             self.decoding = True
         try:
             return self.transcribe_audio(audio[-INTERIM_WINDOW_BYTES:], take.prompt, retry=False,
-                                         abort=take.interim_abort, beam_size=1,
+                                         abort=take.interim_abort, beam_size=1, single_pass=True,
                                          language=take.language)
         finally:
             with self.schedule:
@@ -730,6 +755,7 @@ if __name__ == "__main__":
     device.reexec_with_cuda_libraries()
     choice = device.select(os.environ.get("TEHUTI_SPEECH_MODEL", "small"), log)
     speech = Speech(choice.model)
+    speech.warm()
     def terminate(_signal, _frame):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)
