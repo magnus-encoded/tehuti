@@ -414,7 +414,11 @@ mod tests {
     #[test]
     fn report_names_the_applications_that_never_opened_once_the_rest_settled() {
         let saved = focused_trio(0);
-        let names: Vec<String> = saved.windows().iter().map(|window| window.app_id.clone()).collect();
+        let names: Vec<String> = saved
+            .windows()
+            .iter()
+            .map(|window| window.app_id.clone())
+            .collect();
         let start = Instant::now();
         let late = start + Duration::from_secs(61);
         let mut placements = Placements::<usize>::new(&saved, start);
@@ -431,7 +435,11 @@ mod tests {
     #[test]
     fn a_failed_launch_is_reported_without_waiting_for_expiry() {
         let saved = focused_trio(0);
-        let names: Vec<String> = saved.windows().iter().map(|window| window.app_id.clone()).collect();
+        let names: Vec<String> = saved
+            .windows()
+            .iter()
+            .map(|window| window.app_id.clone())
+            .collect();
         let start = Instant::now();
         let mut placements = Placements::<usize>::new(&saved, start);
         placements.launch_failed(1);

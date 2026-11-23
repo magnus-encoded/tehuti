@@ -355,7 +355,9 @@ impl<K: Clone> Placements<K> {
             .partition(|(_, _, expires)| now < *expires);
         self.pending = live;
         if let Some(tally) = self.tally.as_mut() {
-            tally.failed.extend(expired.into_iter().map(|(_, saved, _)| saved.app_id));
+            tally
+                .failed
+                .extend(expired.into_iter().map(|(_, saved, _)| saved.app_id));
         }
     }
 
