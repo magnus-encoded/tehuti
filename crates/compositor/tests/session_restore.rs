@@ -550,4 +550,70 @@ mod tests {
             assert!(Saved::parse(&text).is_err(), "{target:?}");
         }
     }
+    #[test]
+    fn terminal_restore_only_attaches_and_receives_no_input() {
+        const PROBE: &str = "TEHUTI_TERMINAL_RESTORE_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            use std::os::unix::fs::PermissionsExt as _;
+            let root = tempfile::tempdir().unwrap();
+            let applications = root.path().join("applications");
+            std::fs::create_dir(&applications).unwrap();
+            std::fs::write(
+                applications.join("org.example.Terminal.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Terminal stub\nExec=foot\n",
+            )
+            .unwrap();
+            let executable = root.path().join("foot");
+            std::fs::write(&executable,
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let trace = root.path().join("trace");
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::terminal_restore_only_attaches_and_receives_no_input",
+                ])
+                .env(PROBE, "1")
+                .env("XDG_DATA_HOME", root.path())
+                .env("XDG_DATA_DIRS", root.path())
+                .env("PATH", root.path())
+                .env("TEHUTI_TERMINAL_TRACE", &trace)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            assert_eq!(
+                std::fs::read_to_string(trace)
+                    .unwrap()
+                    .lines()
+                    .collect::<Vec<_>>(),
+                [
+                    "--app-id",
+                    "org.example.Terminal.desktop",
+                    "tmux",
+                    "-L",
+                    "restore-tests",
+                    "attach-session",
+                    "-t",
+                    "=work",
+                    "eof"
+                ]
+            );
+            return;
+        }
+        let display =
+            smithay::reexports::wayland_server::Display::<tehuti::state::Compositor>::new().unwrap();
+        let mut compositor = tehuti::state::Compositor::new(&display.handle()).unwrap();
+        compositor.set_launch_socket("restore-test".into());
+        let saved = Saved::parse(r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}}]}"#).unwrap();
+        compositor.begin_session_restore(&saved);
+        let trace = std::env::var_os("TEHUTI_TERMINAL_TRACE").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::fs::read_to_string(&trace).is_ok_and(|text| text.ends_with("eof\n")) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "terminal did not attach");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
