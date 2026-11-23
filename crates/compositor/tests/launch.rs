@@ -172,5 +172,4 @@ mod launch {
             "completing the restore helper must leave its applications running"
         );
     }
-
 }

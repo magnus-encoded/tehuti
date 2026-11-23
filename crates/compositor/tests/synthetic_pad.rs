@@ -904,6 +904,123 @@ mod synthetic_pad {
     }
 
     #[test]
+    fn restore_focus_expires_on_input_without_waiting_for_a_periodic_tick() {
+        const PROBE: &str = "TEHUTI_RESTORE_FOCUS_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            use std::os::unix::fs::PermissionsExt as _;
+            let root = tempfile::tempdir().unwrap();
+            let applications = root.path().join("applications");
+            std::fs::create_dir(&applications).unwrap();
+            std::fs::write(
+                applications.join("org.example.Restore.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Restore stub\nExec=true\n",
+            )
+            .unwrap();
+            let launcher = root.path().join("gtk-launch");
+            std::fs::write(&launcher, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "synthetic_pad::restore_focus_expires_on_input_without_waiting_for_a_periodic_tick",
+                ])
+                .env(PROBE, "1")
+                .env("XDG_DATA_HOME", root.path())
+                .env("XDG_DATA_DIRS", root.path())
+                .env("PATH", root.path())
+                .env(tehuti::session_restore::TOKEN_VARIABLE, "0")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut display: Display<Compositor> = Display::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let now = std::rc::Rc::new(core::cell::Cell::new(Instant::now()));
+        let clock = std::rc::Rc::clone(&now);
+        compositor.set_clock(std::rc::Rc::new(move || clock.get()));
+        compositor.set_launch_socket("restore-test".into());
+        let saved = tehuti::session_restore::Saved::parse(
+            r#"{"version":1,"windows":[{"app_id":"org.example.Restore.desktop","workspace":0,"column":0},{"app_id":"org.example.Restore.desktop","workspace":0,"column":1}],"focused":0}"#,
+        ).unwrap();
+        compositor.begin_session_restore(&saved);
+        let (server, stream) = UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        let mut harness = crate::harness::Harness::new();
+        let (ready, receiver) = harness.channel();
+        let client = harness.client(move || restore_focus_client(stream, &ready));
+        let mut sent = false;
+        harness.serve_turns(&mut display, &mut compositor, |compositor| {
+            if !sent && receiver.try_recv().is_ok() {
+                now.set(now.get() + Duration::from_secs(61));
+                compositor.handle(&Event::Tick {
+                    elapsed: Duration::ZERO,
+                });
+                compositor.host_pointer_button(tehuti_core::dispatch::PointerButton::Left, true);
+                compositor.host_pointer_button(tehuti_core::dispatch::PointerButton::Left, false);
+                sent = true;
+            }
+            client.has_ended()
+        });
+        client.join();
+    }
+
+    fn restore_focus_client(stream: UnixStream, ready: &crate::harness::Notifier<()>) {
+        use std::os::fd::AsFd;
+        use wayland_client::protocol::wl_shm::{Format, WlShm};
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<App>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+        let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+        let seat: WlSeat = globals.bind(&handle, 1..=5, ()).unwrap();
+        let _pointer = seat.get_pointer(&handle, ());
+        let _keyboard = seat.get_keyboard(&handle, ());
+        let surface = compositor.create_surface(&handle, ());
+        let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
+        let toplevel = xdg_surface.get_toplevel(&handle, ());
+        toplevel.set_title("Test window".into());
+        toplevel.set_app_id("pointer-test".into());
+        surface.commit();
+        let mut app = App::default();
+        let _configured = queue.roundtrip(&mut app).unwrap();
+        let shm: WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(1280 * 720 * 4).unwrap();
+        let pool = shm.create_pool(file.as_fd(), 1280 * 720 * 4, &handle, ());
+        let buffer = pool.create_buffer(0, 1280, 720, 1280 * 4, Format::Argb8888, &handle, ());
+        surface.attach(Some(&buffer), 0, 0);
+        surface.commit();
+        let _mapped = queue.roundtrip(&mut app).unwrap();
+        let other_surface = compositor.create_surface(&handle, ());
+        let other_xdg = wm_base.get_xdg_surface(&other_surface, &handle, ());
+        let other_toplevel = other_xdg.get_toplevel(&handle, ());
+        other_toplevel.set_title("Test window".into());
+        other_toplevel.set_app_id("other-window".into());
+        other_surface.commit();
+        let _other_configured = queue.roundtrip(&mut app).unwrap();
+        other_surface.attach(Some(&buffer), 0, 0);
+        other_surface.commit();
+        let _other_mapped = queue.roundtrip(&mut app).unwrap();
+        assert_eq!(
+            app.focused,
+            Some(wayland_client::Proxy::id(&other_surface)),
+            "new window starts focused"
+        );
+        ready.send(()).unwrap();
+        while app.clicks.len() < 2 {
+            let _events = queue.blocking_dispatch(&mut app).unwrap();
+        }
+        let _finished = queue.roundtrip(&mut app).unwrap();
+        assert_eq!(app.focused, Some(wayland_client::Proxy::id(&surface)));
+        assert!(app.keys.is_empty(), "restore must not type into the session");
+    }
+
+    #[test]
     fn host_relative_motion_and_left_button_reach_the_focused_client() {
         use tehuti_core::dispatch::PointerButton;
         use wayland_client::protocol::wl_pointer::ButtonState as PointerState;
