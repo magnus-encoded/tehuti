@@ -1305,6 +1305,10 @@ mod synthetic_pad {
             mirror_guide_start_chord(&application, &mut compositor, &mut pad);
             if menu_open {
                 open_menu_with_synthetic_guide_hold(&mut compositor, &mut synthetic);
+                assert!(matches!(
+                    compositor.visible_notice(),
+                    Some((tehuti_core::overlay::Overlay::SystemMenu, _))
+                ));
             }
             for value in [1, 0] {
                 application.mirror_button(&mut compositor, &mut pad, KeyCode::KEY_RECORD, value);
