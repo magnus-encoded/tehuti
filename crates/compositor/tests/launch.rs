@@ -139,38 +139,43 @@ mod launch {
             run_restore_helper(std::path::Path::new(&pid_file));
             return;
         }
-        let root = tempfile::tempdir().unwrap();
-        let scope = root.path().join("systemd-run");
-        std::fs::write(
-            &scope,
-            "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let pid_file = root.path().join("child-pid");
-        let helper = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "launch::applications_outlive_the_restore_helper_process",
-            ])
-            .env(PROBE, &pid_file)
-            .env("PATH", root.path())
-            .status()
-            .unwrap();
-        let pid = restored_child_pid(&pid_file).to_string();
-        let alive = std::process::Command::new("/bin/kill")
-            .args(["-0", &pid])
-            .status()
-            .unwrap();
-        let _terminated = std::process::Command::new("/bin/kill")
-            .args(["-TERM", &pid])
-            .status()
-            .unwrap();
-        assert!(helper.success());
-        assert!(
-            alive.success(),
-            "application must outlive its restore helper process"
-        );
+        for mode in ["service", "missing", "failed"] {
+            let root = tempfile::tempdir().unwrap();
+            let scope = root.path().join("systemd-run");
+            if mode != "missing" {
+                let script = if mode == "failed" {
+                    "#!/bin/sh\nexit 1\n"
+                } else {
+                    "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\n\"$@\" &\n"
+                };
+                std::fs::write(&scope, script).unwrap();
+                std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let pid_file = root.path().join("child-pid");
+            let helper = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "launch::applications_outlive_the_restore_helper_process",
+                ])
+                .env(PROBE, &pid_file)
+                .env("PATH", root.path())
+                .status()
+                .unwrap();
+            let pid = restored_child_pid(&pid_file).to_string();
+            let alive = std::process::Command::new("/bin/kill")
+                .args(["-0", &pid])
+                .status()
+                .unwrap();
+            let _terminated = std::process::Command::new("/bin/kill")
+                .args(["-TERM", &pid])
+                .status()
+                .unwrap();
+            assert!(helper.success());
+            assert!(
+                alive.success(),
+                "application must outlive its restore helper process"
+            );
+        }
     }
 
     fn run_restore_helper(pid_file: &std::path::Path) {

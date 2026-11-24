@@ -569,13 +569,16 @@ mod tests {
             smithay::reexports::wayland_server::Display::<tehuti::state::Compositor>::new().unwrap();
         let mut compositor = tehuti::state::Compositor::new(&display.handle()).unwrap();
         compositor.set_launch_socket("restore-test".into());
-        let saved = Saved::parse(r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}},{"app_id":"org.example.Terminal.desktop","workspace":0,"column":1,"terminal":{"emulator":"foot","target":null}},{"app_id":"foot.desktop","workspace":0,"column":2}]}"#).unwrap();
+        let saved = Saved::parse(r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}},{"app_id":"org.example.Terminal.desktop","workspace":0,"column":1,"terminal":{"emulator":"foot","target":null}},{"app_id":"foot.desktop","workspace":0,"column":2,"terminal":{"emulator":"foot","target":null}},{"app_id":"org.example.kitty.desktop","workspace":0,"column":3}]}"#).unwrap();
         compositor.begin_session_restore(&saved);
         compositor.begin_session_restore(&saved);
         let trace = std::env::var_os("TEHUTI_TERMINAL_TRACE").unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if std::fs::read_to_string(&trace).is_ok_and(|text| text.ends_with("eof\n")) {
+            if std::fs::read_to_string(&trace).is_ok_and(|text| text.ends_with("eof\n"))
+                && std::fs::read_to_string(std::env::var_os("TEHUTI_APPLICATION_TRACE").unwrap())
+                    .is_ok_and(|text| text == "relaunch\n")
+            {
                 break;
             }
             assert!(Instant::now() < deadline, "terminal did not attach");
@@ -599,7 +602,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let applications = root.path().join("applications");
         std::fs::create_dir(&applications).unwrap();
-        for entry in ["org.example.Terminal.desktop", "foot.desktop"] {
+        for entry in [
+            "org.example.Terminal.desktop",
+            "foot.desktop",
+            "org.example.kitty.desktop",
+        ] {
             std::fs::write(
                 applications.join(entry),
                 "[Desktop Entry]\nType=Application\nName=Terminal stub\nExec=foot\n",
@@ -609,7 +616,7 @@ mod tests {
         let launcher = root.path().join("gtk-launch");
         std::fs::write(
             &launcher,
-            "#!/bin/sh\necho relaunch >>\"$TEHUTI_TERMINAL_TRACE\"\n",
+            "#!/bin/sh\necho relaunch >>\"$TEHUTI_APPLICATION_TRACE\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -618,10 +625,11 @@ mod tests {
         "#!/bin/sh\nprintf '%s\\n' \"$@\" >>\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         let scope = root.path().join("systemd-run");
-        std::fs::write(&scope, "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_SCOPE_TRACE\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n").unwrap();
+        std::fs::write(&scope, "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_SCOPE_TRACE\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\n\"$@\" &\n").unwrap();
         std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
         let scope_trace = root.path().join("scope-trace");
         let trace = root.path().join("trace");
+        let application_trace = root.path().join("application-trace");
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -632,14 +640,16 @@ mod tests {
             .env("XDG_DATA_DIRS", root.path())
             .env("PATH", root.path())
             .env("TEHUTI_TERMINAL_TRACE", &trace)
+            .env("TEHUTI_APPLICATION_TRACE", &application_trace)
             .env("TEHUTI_SCOPE_TRACE", &scope_trace)
             .status()
             .unwrap();
         assert!(status.success());
+        assert_eq!(std::fs::read_to_string(application_trace).unwrap(), "relaunch\n");
         let scope_args = std::fs::read_to_string(scope_trace).unwrap();
         assert!(
             scope_args
-                .starts_with("--user\n--scope\n--collect\n--quiet\n--expand-environment=no\n--\nfoot\n")
+                .starts_with("--user\n--collect\n--quiet\n--service-type=exec\n--expand-environment=no\n")
         );
         assert_eq!(
             std::fs::read_to_string(trace)

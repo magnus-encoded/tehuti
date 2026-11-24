@@ -91,27 +91,10 @@ impl Launch {
     /// The command with the session environment and detached standard streams.
     #[must_use]
     pub fn command(&self) -> std::process::Command {
-        let program = if self.restoring() {
-            std::ffi::OsStr::new("systemd-run")
-        } else {
-            &self.program
-        };
         let mut command = self.socket.as_ref().map_or_else(
-            || crate::child_process::command(program),
-            |socket| crate::client_env::command(program, socket),
+            || crate::child_process::command(&self.program),
+            |socket| crate::client_env::command(&self.program, socket),
         );
-        if self.restoring() {
-            let _command = command
-                .args([
-                    "--user",
-                    "--scope",
-                    "--collect",
-                    "--quiet",
-                    "--expand-environment=no",
-                    "--",
-                ])
-                .arg(&self.program);
-        }
         let _command = command
             .args(&self.args)
             .envs(self.env.iter().map(|(key, value)| (key, value)))
@@ -170,7 +153,49 @@ impl Spawner for SystemSpawner {
     type Process = Child;
 
     fn spawn(&mut self, launch: &Launch) -> io::Result<Child> {
-        launch.command().spawn()
+        let mut direct = launch.command();
+        if launch.restoring() {
+            let mut service = crate::child_process::command("systemd-run");
+            let _command = service.args([
+                "--user",
+                "--collect",
+                "--quiet",
+                "--service-type=exec",
+                "--expand-environment=no",
+            ]);
+            for (key, value) in direct.get_envs() {
+                let mut setting = OsString::from("--setenv=");
+                if let Some(value) = value {
+                    setting.push(key);
+                    setting.push("=");
+                    setting.push(value);
+                } else {
+                    setting = OsString::from("--property=UnsetEnvironment=");
+                    setting.push(key);
+                }
+                let _command = service.arg(setting);
+            }
+            let result = service
+                .arg("--")
+                .arg(&launch.program)
+                .args(&launch.args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .and_then(|mut child| {
+                    if child.wait()?.success() {
+                        Ok(child)
+                    } else {
+                        Err(io::Error::other("systemd service startup failed"))
+                    }
+                });
+            match result {
+                Ok(child) => return Ok(child),
+                Err(error) => tracing::warn!(%error, "restore service unavailable; launching directly"),
+            }
+        }
+        direct.spawn()
     }
 }
 

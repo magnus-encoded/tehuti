@@ -35,11 +35,6 @@ pub struct SavedWindow {
 
 impl SavedWindow {
     pub(crate) fn launch(&self, socket: &std::ffi::OsStr) -> Result<crate::launch::Launch, String> {
-        let entry = self.app_id.strip_suffix(".desktop").unwrap_or(&self.app_id);
-        let program = entry.rsplit('.').next().unwrap_or(entry).to_ascii_lowercase();
-        if self.terminal.is_none() && matches!(program.as_str(), "foot" | "alacritty" | "kitty") {
-            return Err("persistent terminal session unavailable".to_owned());
-        }
         self.terminal.as_ref().map_or_else(
             || crate::desktop::launch_for(&self.app_id, socket),
             |terminal| terminal.launch(&self.app_id, socket),
