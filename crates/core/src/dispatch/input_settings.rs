@@ -230,13 +230,12 @@ pub struct InputSettings {
     pub microphones: Vec<Microphone>,
     pub microphone: MicrophoneChoice,
     pub active_controller: Option<String>,
-    pub controller_bindings: std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
-    /// Saved stick deadzones by pad key, in thousandths; a pad without one uses the default.
+    /// What the user chose per pad; a pad with no entry has the defaults.
+    pub pads: std::collections::BTreeMap<crate::pad::PadId, crate::pad::PadSettings>,
+    /// Saved stick deadzones by pad id, in thousandths; a pad without one uses the default.
     pub controller_deadzones: std::collections::BTreeMap<String, u16>,
-    /// Where each pad's sticks rest, by pad key: X, Y, right X, right Y, in thousandths of half travel.
+    /// Where each pad's sticks rest, by pad id: X, Y, right X, right Y, in thousandths of half travel.
     pub controller_recentres: std::collections::BTreeMap<String, [i16; 4]>,
-    /// Pad names the user turned off.
-    pub disabled_controllers: Vec<String>,
     /// Microphone node names the user turned off; never recorded, also under ALL.
     pub disabled_microphones: Vec<String>,
     /// Hosts offered for a remote microphone, as the tailnet reported them; empty until an answer comes.
@@ -267,19 +266,19 @@ impl InputSettings {
         ]
     }
 
-    /// The stick deadzone of the pad with this key, in thousandths of full travel.
+    /// The stick deadzone of the pad with this id, in thousandths of full travel.
     #[must_use]
-    pub fn deadzone(&self, key: &str) -> u16 {
+    pub fn deadzone(&self, pad_id: &str) -> u16 {
         self.controller_deadzones
-            .get(key)
+            .get(pad_id)
             .copied()
             .unwrap_or(DEFAULT_DEADZONE)
     }
 
     /// The next deadzone after the pad's current one, wrapping round; a value off the steps moves to the next larger step.
     #[must_use]
-    pub fn next_deadzone(&self, key: &str) -> u16 {
-        let current = self.deadzone(key);
+    pub fn next_deadzone(&self, pad_id: &str) -> u16 {
+        let current = self.deadzone(pad_id);
         DEADZONE_STEPS
             .iter()
             .copied()
@@ -287,9 +286,84 @@ impl InputSettings {
             .unwrap_or(DEADZONE_STEPS[0])
     }
 
+    /// The saved choices of the pad with this id, or the defaults.
+    #[must_use]
+    pub fn pad_settings(&self, pad_id: &str) -> crate::pad::PadSettings {
+        self.pads
+            .get(&crate::pad::PadId::new(pad_id))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Stores a pad's choices; the defaults are stored as no entry.
+    pub(super) fn store_pad_settings(&mut self, pad_name: &str, settings: crate::pad::PadSettings) {
+        let pad_id = crate::pad::PadId::new(pad_name);
+        if settings == crate::pad::PadSettings::default() {
+            let _removed = self.pads.remove(&pad_id);
+        } else {
+            let _previous = self.pads.insert(pad_id, settings);
+        }
+    }
+
     #[must_use]
     pub fn controller_enabled(&self, name: &str) -> bool {
-        !self.disabled_controllers.iter().any(|disabled| disabled == name)
+        self.pad_settings(name).enabled
+    }
+
+    /// Ids of the pads the user turned off, in id order.
+    #[must_use]
+    pub fn disabled_controllers(&self) -> Vec<String> {
+        self.pads
+            .iter()
+            .filter(|(_, settings)| !settings.enabled)
+            .map(|(pad_id, _)| pad_id.as_str().to_owned())
+            .collect()
+    }
+
+    /// The push-to-talk buttons chosen per pad id.
+    #[must_use]
+    pub fn controller_bindings(&self) -> std::collections::BTreeMap<String, tehuti_protocol::ButtonName> {
+        self.pads
+            .iter()
+            .filter_map(|(pad_id, settings)| {
+                settings
+                    .push_to_talk
+                    .map(|button| (pad_id.as_str().to_owned(), button))
+            })
+            .collect()
+    }
+
+    /// Replaces every pad's push-to-talk choice with `bindings`; on/off choices stay.
+    pub(super) fn restore_bindings(
+        &mut self,
+        bindings: &std::collections::BTreeMap<String, tehuti_protocol::ButtonName>,
+    ) {
+        let ids: Vec<String> = self
+            .pads
+            .keys()
+            .map(|pad_id| pad_id.as_str().to_owned())
+            .chain(bindings.keys().cloned())
+            .collect();
+        for pad_id in ids {
+            let mut settings = self.pad_settings(&pad_id);
+            settings.push_to_talk = bindings.get(&pad_id).copied();
+            self.store_pad_settings(&pad_id, settings);
+        }
+    }
+
+    /// Replaces every pad's on/off choice: exactly `disabled` are off; push-to-talk choices stay.
+    pub(super) fn restore_disabled(&mut self, disabled: &[String]) {
+        let ids: Vec<String> = self
+            .pads
+            .keys()
+            .map(|pad_id| pad_id.as_str().to_owned())
+            .chain(disabled.iter().cloned())
+            .collect();
+        for pad_id in ids {
+            let mut settings = self.pad_settings(&pad_id);
+            settings.enabled = !disabled.contains(&pad_id);
+            self.store_pad_settings(&pad_id, settings);
+        }
     }
 
     /// The named capture node as an audio source; a name that is not listed is Gone.
@@ -337,10 +411,9 @@ impl InputSettings {
 
     /// Records whether `name` drives Tehuti; the effect carries the change out.
     pub(super) fn set_controller_enabled(&mut self, name: String, enabled: bool) -> Effect {
-        self.disabled_controllers.retain(|disabled| *disabled != name);
-        if !enabled {
-            self.disabled_controllers.push(name.clone());
-        }
+        let mut settings = self.pad_settings(&name);
+        settings.enabled = enabled;
+        self.store_pad_settings(&name, settings);
         self.pending_disable = None;
         Effect::SettingsControllerEnabled { name, enabled }
     }
@@ -349,8 +422,7 @@ impl InputSettings {
     #[must_use]
     pub fn talk_choice(&self) -> Option<tehuti_protocol::ButtonName> {
         self.selected_controller()
-            .and_then(|pad| self.controller_bindings.get(&pad.key))
-            .copied()
+            .and_then(|pad| self.pad_settings(&pad.key).push_to_talk)
     }
 
     #[must_use]

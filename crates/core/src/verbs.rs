@@ -16,6 +16,8 @@ pub struct VerbMatch {
     pub plugin: usize,
     /// The verb as the plugin spelled it.
     pub verb: String,
+    /// The pinned decoding language, when the owner supplied one.
+    pub locale: Option<String>,
     /// The words after the verb.
     pub text: Text,
 }
@@ -43,13 +45,33 @@ fn score(heard: &str, verb: &str) -> Option<u16> {
     (long && score >= VERB_SCORE).then_some(score)
 }
 
+/// A registered verb's spelling and optional decoding language.
+pub trait VerbDefinition: AsRef<str> {
+    fn locale(&self) -> Option<&str>;
+}
+
+impl VerbDefinition for String {
+    fn locale(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl VerbDefinition for tehuti_protocol::Verb {
+    fn locale(&self) -> Option<&str> {
+        match self {
+            Self::Word(_) => None,
+            Self::Pinned(verb) => Some(&verb.locale),
+        }
+    }
+}
+
 /// Routes a transcript to the verb its first word matches best.
 ///
 /// `owners` lists each plugin's verbs in priority order; on equal scores the earlier
 /// owner wins. A lone verb with nothing after it matches nothing.
 #[must_use]
-pub fn route<'verbs>(
-    owners: impl IntoIterator<Item = (usize, &'verbs [String])>,
+pub fn route<'verbs, V: VerbDefinition + 'verbs>(
+    owners: impl IntoIterator<Item = (usize, &'verbs [V])>,
     transcript: &str,
 ) -> Option<VerbMatch> {
     let trimmed = transcript.trim_start();
@@ -64,10 +86,10 @@ pub fn route<'verbs>(
     if heard.is_empty() {
         return None;
     }
-    let mut best: Option<(u16, usize, &str)> = None;
+    let mut best: Option<(u16, usize, &V)> = None;
     for (plugin, verbs) in owners {
         for verb in verbs {
-            if let Some(found) = score(&heard, verb)
+            if let Some(found) = score(&heard, verb.as_ref())
                 && best.is_none_or(|(leader, _, _)| found > leader)
             {
                 best = Some((found, plugin, verb));
@@ -77,7 +99,8 @@ pub fn route<'verbs>(
     let (_, plugin, verb) = best?;
     Some(VerbMatch {
         plugin,
-        verb: verb.into(),
+        verb: verb.as_ref().into(),
+        locale: verb.locale().map(str::to_owned),
         text: Text::new(remainder.into()).ok()?,
     })
 }

@@ -124,10 +124,29 @@ pub trait SecretProvider: Send {
     /// The provider is unavailable or the requested entry cannot be read.
     fn lookup(&mut self, reference: &SecretReference) -> Result<SecretValue, SecretProviderUnavailable>;
 
+    /// Searches entry names for a spoken title, best match first, never
+    /// returning values. `context` ranks ties and near matches.
+    ///
+    /// Blocks like [`Self::list_labels`]; call it off the compositor thread.
+    ///
+    /// # Errors
+    /// The provider is unavailable or the store stays locked.
+    fn search(
+        &mut self,
+        query: &str,
+        context: &crate::secret_search::SearchContext,
+    ) -> Result<Vec<String>, SecretProviderUnavailable> {
+        let labels = self.list_labels()?;
+        Ok(crate::secret_search::rank(&labels, query, context))
+    }
+
     /// Lists the labels of the stored entries, never their values.
     ///
     /// A locked store is unlocked first, because some stores keep labels
     /// readable only while unlocked.
+    ///
+    /// May block until the store's own prompt closes (up to the timeout), so
+    /// call it off the compositor thread (ADR 0007).
     ///
     /// # Errors
     /// The provider is unavailable or the store stays locked.
@@ -135,24 +154,31 @@ pub trait SecretProvider: Send {
 
     /// Unlocks the store, letting the store ask for its own credential.
     ///
+    /// May block until the store's own prompt closes (up to the timeout), so
+    /// call it off the compositor thread (ADR 0007).
+    ///
     /// # Errors
     /// The provider is unavailable or the store stays locked.
     fn unlock(&mut self) -> Result<(), SecretProviderUnavailable>;
 
     /// Locks the store.
     ///
+    /// May block until the store's own prompt closes (up to the timeout), so
+    /// call it off the compositor thread (ADR 0007).
+    ///
     /// # Errors
     /// The provider is unavailable or the store stays unlocked.
     fn lock(&mut self) -> Result<(), SecretProviderUnavailable>;
 }
 
-/// A provider result that cannot be cloned or serialized and is redacted by Debug.
-pub struct SecretValue(String);
+/// A provider result that cannot be cloned or serialized, is redacted by
+/// Debug, and is zeroized when dropped.
+pub struct SecretValue(zeroize::Zeroizing<String>);
 
 impl SecretValue {
     #[must_use]
-    pub const fn new(value: String) -> Self {
-        Self(value)
+    pub fn new(value: String) -> Self {
+        Self(zeroize::Zeroizing::new(value))
     }
 
     /// Borrows the value for one synchronous delivery effect.

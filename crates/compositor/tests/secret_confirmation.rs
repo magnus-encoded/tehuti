@@ -82,7 +82,7 @@ mod tests {
 
         fn authorize(&mut self) {
             assert!(self.request(NOW));
-            self.confirmation.frame_submitted();
+            self.confirmation.frame_submitted(Some(&TARGET), NOW);
             assert!(self.press(ButtonState::Pressed, NOW));
             self.started.recv_timeout(Duration::from_secs(5)).unwrap();
             assert!(self.confirmation.text(Some(&TARGET), NOW).is_none());
@@ -121,7 +121,7 @@ mod tests {
         );
         assert!(flow.press(ButtonState::Pressed, NOW));
         assert!(flow.started.try_recv().is_err());
-        flow.confirmation.frame_submitted();
+        flow.confirmation.frame_submitted(Some(&TARGET), NOW);
         assert!(flow.press(ButtonState::Pressed, NOW));
         assert!(flow.started.try_recv().is_err());
         assert!(flow.press(ButtonState::Released, NOW));
@@ -139,7 +139,7 @@ mod tests {
         let mut flow = Flow::new();
         flow.confirmation.confirm_pressed(true);
         assert!(flow.request(NOW));
-        flow.confirmation.frame_submitted();
+        flow.confirmation.frame_submitted(Some(&TARGET), NOW);
         assert!(flow.press(ButtonState::Pressed, NOW));
         assert!(flow.started.try_recv().is_err());
         assert!(flow.press(ButtonState::Released, NOW));
@@ -154,7 +154,7 @@ mod tests {
         for focus in [Some(8), None, Some(TARGET)] {
             let mut flow = Flow::new();
             assert!(flow.request(NOW));
-            flow.confirmation.frame_submitted();
+            flow.confirmation.frame_submitted(Some(&TARGET), NOW);
             flow.confirmation.focus_changed(focus);
             assert!(flow.confirmation.text(focus.as_ref(), NOW).is_none());
             assert!(
@@ -170,7 +170,7 @@ mod tests {
     fn timeout_at_the_deadline_hides_the_notice_and_rejects_confirmation() {
         let mut flow = Flow::new();
         assert!(flow.request(NOW));
-        flow.confirmation.frame_submitted();
+        flow.confirmation.frame_submitted(Some(&TARGET), NOW);
         assert!(
             flow.confirmation
                 .text(Some(&TARGET), NOW + Duration::from_secs(19))
@@ -230,7 +230,7 @@ mod tests {
         assert!(!flow.confirmation.unavailable(NOW + Duration::from_secs(3)));
         assert!(flow.request(NOW + Duration::from_secs(3)));
         flow.confirmation.confirm_pressed(false);
-        flow.confirmation.frame_submitted();
+        flow.confirmation.frame_submitted(Some(&TARGET), NOW);
         assert!(flow.press(ButtonState::Pressed, NOW + Duration::from_secs(3)));
         flow.started.recv_timeout(Duration::from_secs(5)).unwrap();
         flow.results.send(Ok(SecretValue::new("value".into()))).unwrap();
@@ -247,7 +247,7 @@ mod tests {
     fn replacement_requests_need_their_own_displayed_frame() {
         let mut flow = Flow::new();
         assert!(flow.request(NOW));
-        flow.confirmation.frame_submitted();
+        flow.confirmation.frame_submitted(Some(&TARGET), NOW);
         assert!(flow.request(NOW));
         assert!(flow.press(ButtonState::Pressed, NOW));
         assert!(flow.started.try_recv().is_err());

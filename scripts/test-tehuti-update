@@ -25,14 +25,31 @@ cat > "$work/bin/curl" <<'S'
 out=; for a; do [ "$prev" = -o ] && out=$a; prev=$a; done
 url=$prev
 case $url in
+    https://api.github.com/*/releases\?*) src=$WEB/releases.json ;;
     https://api.github.com/*) src=$WEB/release.json ;;
     *) src=$WEB/${url##*/} ;;
 esac
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
 S
 chmod +x "$work/bin/"*
+cat > "$work/web/releases.json" <<'J'
+[{"tag_name":"v2-pre","draft":false,"prerelease":true,"assets":[{"name":"tehuti-x86_64-linux.tar.gz"},{"name":"SHA256SUMS"}]},
+ {"tag_name":"v1","draft":false,"prerelease":false,"assets":[{"name":"tehuti-x86_64-linux.tar.gz"},{"name":"SHA256SUMS"}]}]
+J
 WEB=$work/web PATH=$work/bin:$PATH "$repo/scripts/tehuti-update" > "$work/out" 2>&1 || { cat "$work/out"; exit 1; }
 [ "$(cat "$lib/sidecars/speech/speech.py")" = new ] || { echo 'sidecar left stale' >&2; exit 1; }
 [ "$(cat "$lib/sidecars.prev/speech/speech.py")" = old ] || { echo 'old sidecar not backed up' >&2; exit 1; }
 cmp "$HOME/.local/bin/tehuti-speech" "$work/wrapper.orig"
+grep -q 'channel latest: installed v1' "$work/out" || { echo 'install message missing channel/version' >&2; cat "$work/out"; exit 1; }
+grep -q 'newer pre-release v2-pre exists' "$work/out" || { echo 'pre-release hint missing' >&2; exit 1; }
+grep -q 'TEHUTI_CHANNEL=prerelease tehuti-update' "$work/out" || { echo 'posix command missing' >&2; exit 1; }
+grep -q 'set -Ux TEHUTI_CHANNEL prerelease' "$work/out" || { echo 'fish command missing' >&2; exit 1; }
+# Already current: say which channel and version is kept, and still name the pre-release.
+WEB=$work/web PATH=$work/bin:$PATH "$repo/scripts/tehuti-update" > "$work/out2" 2>&1
+grep -q 'channel latest: kept v1' "$work/out2" || { echo 'kept message missing' >&2; cat "$work/out2"; exit 1; }
+grep -q 'set -Ux TEHUTI_CHANNEL prerelease' "$work/out2" || { echo 'hint missing when kept' >&2; exit 1; }
+# No newer pre-release: no hint.
+echo '[{"tag_name":"v1","draft":false,"prerelease":false,"assets":[{"name":"tehuti-x86_64-linux.tar.gz"}]}]' > "$work/web/releases.json"
+WEB=$work/web PATH=$work/bin:$PATH "$repo/scripts/tehuti-update" > "$work/out3" 2>&1
+! grep -q 'pre-release' "$work/out3" || { echo 'unexpected hint' >&2; exit 1; }
 echo 'tehuti-update tests passed'

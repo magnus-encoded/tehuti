@@ -107,6 +107,15 @@ const XKB_KEYCODE_OFFSET: u32 = 8;
 /// How long the warning about display holders shows before the session leaves.
 const HANDOFF_WARNING_HOLD: core::time::Duration = core::time::Duration::from_secs(2);
 
+/// An injected monotonic clock.
+struct InjectedClock(std::rc::Rc<dyn Fn() -> Instant>);
+
+impl core::fmt::Debug for InjectedClock {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("InjectedClock")
+    }
+}
+
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
@@ -134,6 +143,7 @@ pub struct Compositor {
     remote_host_listing: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
+    injected_clock: Option<InjectedClock>,
     driver_clock: crate::driver::Clock,
     driver_elapsed: core::time::Duration,
     dim_elapsed: core::time::Duration,
@@ -142,6 +152,7 @@ pub struct Compositor {
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    placements: Option<crate::session_restore::Placements<WlSurface>>,
     session_exit_status: Option<u8>,
     restart_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
@@ -180,7 +191,7 @@ pub struct Compositor {
     keyboard: KeyboardHandle<Self>,
     window_focus: Option<(WlSurface, Option<String>)>,
     /// The window focus last left for no window, until a window takes focus.
-    unfocused_window: Option<WlSurface>,
+    unfocused_window: Option<smithay::reexports::wayland_server::Weak<WlSurface>>,
     controller_session: tehuti_core::controller::State,
     seat: Seat<Self>,
     shortcut_keycodes: Vec<(Keycode, u32)>,
@@ -201,6 +212,8 @@ pub struct Compositor {
     chord_buttons: Vec<tehuti_protocol::ButtonName>,
     virtual_pad_talk: Vec<tehuti_protocol::ButtonName>,
     display: DisplayHandle,
+    /// Commits held back because their client buffer is not ready yet.
+    waiting_buffers: crate::buffer_gate::Waiting,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -299,6 +312,7 @@ impl Compositor {
             volume: None,
             remote_host_listing: None,
             microphone_listing: None,
+            injected_clock: None,
             driver_clock: crate::driver::Clock::Live,
             driver_elapsed: core::time::Duration::ZERO,
             previous_tick: Instant::now(),
@@ -308,6 +322,7 @@ impl Compositor {
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
+            placements: None,
             session_exit_status: None,
             restart_requested: false,
             speech_process: None,
@@ -333,6 +348,7 @@ impl Compositor {
             _viewporter_state: ViewporterState::new::<Self>(display),
             _fractional_scale_state: FractionalScaleManagerState::new::<Self>(display),
             dmabuf: crate::rendering::DmabufSupport::default(),
+            waiting_buffers: crate::buffer_gate::Waiting::default(),
             recording: None,
             recording_runtime: None,
             timeline_level: crate::timeline_level::TimelineLevel::default(),
@@ -383,6 +399,9 @@ impl Compositor {
     }
 
     fn clock_now(&self) -> Instant {
+        if let Some(InjectedClock(clock)) = &self.injected_clock {
+            return clock();
+        }
         if matches!(self.driver_clock, crate::driver::Clock::Live) {
             Instant::now()
         } else {
@@ -968,13 +987,123 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
         self.release_due_keys();
         self.keep_invitation();
+        if let Some(placements) = self.placements.as_mut() {
+            self.placement.guard_restored_focus(placements);
+            self.restore_prior_focus();
+            self.place_layout();
+        }
         self.poll_recording();
+        self.release_ready_buffers();
         if let Some((status, due)) = self.exit_hold
             && Instant::now() >= due
         {
             self.exit_hold = None;
             self.leave_session(status);
         }
+    }
+
+    /// Lets held commits through once their client buffers became ready.
+    fn release_ready_buffers(&mut self) {
+        let display = self.display.clone();
+        for surface in self.waiting_buffers.take_ready(Instant::now()) {
+            let Some(client) = smithay::reexports::wayland_server::Resource::client(&surface) else {
+                continue;
+            };
+            let state = self.client_compositor_state(&client);
+            state.blocker_cleared(self, &display);
+        }
+    }
+
+    /// Weak handles to every held gate; test use, to check teardown dropped them.
+    #[must_use]
+    pub fn held_gate_probes(&self) -> Vec<std::sync::Weak<crate::buffer_gate::Gate>> {
+        self.waiting_buffers.gate_probes()
+    }
+
+    /// Weak handles to the surfaces that hold a gate; test use.
+    #[must_use]
+    pub fn held_surfaces(&self) -> Vec<smithay::reexports::wayland_server::Weak<WlSurface>> {
+        self.waiting_buffers.surfaces()
+    }
+
+    /// Names the compositor fields that still hold the surface with `id` strongly; test use.
+    #[must_use]
+    pub fn surface_holders(
+        &self,
+        surface_id: &smithay::reexports::wayland_server::backend::ObjectId,
+    ) -> Vec<&'static str> {
+        use smithay::reexports::wayland_server::Resource as _;
+        let mut holders = Vec::new();
+        if self
+            .window_focus
+            .as_ref()
+            .is_some_and(|(held, _)| &held.id() == surface_id)
+        {
+            holders.push("window_focus");
+        }
+        if self.placement.windows().any(|window| {
+            window
+                .toplevel()
+                .is_some_and(|top| &top.wl_surface().id() == surface_id)
+        }) {
+            holders.push("placement");
+        }
+        if self
+            .keyboard
+            .current_focus()
+            .is_some_and(|held| &held.id() == surface_id)
+        {
+            holders.push("keyboard focus");
+        }
+        holders
+    }
+
+    /// Commits whose client buffer is still not ready.
+    #[must_use]
+    pub fn buffers_waiting(&self) -> usize {
+        self.waiting_buffers.len()
+    }
+
+    /// Holds a commit until its dmabuf is ready; the surface keeps its last good buffer meanwhile.
+    fn gate_buffer(&mut self, surface: &WlSurface) {
+        use smithay::wayland::compositor::{BufferAssignment, SurfaceAttributes, add_blocker, with_states};
+        let Some(dmabuf) = with_states(surface, |states| {
+            let mut attributes = states.cached_state.get::<SurfaceAttributes>();
+            match &attributes.pending().buffer {
+                Some(BufferAssignment::NewBuffer(buffer)) => {
+                    smithay::wayland::dmabuf::get_dmabuf(buffer).ok().cloned()
+                }
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+        let name = with_states(surface, |states| {
+            states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .and_then(|attributes| {
+                    attributes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .app_id
+                        .clone()
+                })
+        })
+        .unwrap_or_else(|| "unnamed client".to_owned());
+        let gate = std::sync::Arc::new(crate::buffer_gate::Gate::new(
+            crate::buffer_gate::planes_of(&dmabuf),
+            name,
+            Instant::now(),
+        ));
+        if gate.ready(Instant::now()) {
+            return;
+        }
+        add_blocker(
+            surface,
+            crate::buffer_gate::BufferBlocker(std::sync::Arc::downgrade(&gate)),
+        );
+        self.waiting_buffers.hold(surface, gate);
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
@@ -1214,13 +1343,20 @@ impl Compositor {
         self.pointer.clone().frame(self);
     }
 
+    /// Uses an injected monotonic clock for event timing.
+    pub fn set_clock(&mut self, clock: std::rc::Rc<dyn Fn() -> Instant>) {
+        self.previous_tick = clock();
+        self.start_time = self.previous_tick;
+        self.injected_clock = Some(InjectedClock(clock));
+    }
+
     /// Reads the clock once and returns the time since the previous read.
     fn read_clock(&mut self) -> core::time::Duration {
         if !matches!(self.driver_clock, crate::driver::Clock::Live) {
             return core::time::Duration::ZERO;
         }
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.previous_tick);
+        let now = self.clock_now();
+        let elapsed = now.saturating_duration_since(self.previous_tick);
         self.previous_tick = now;
         elapsed
     }
@@ -1562,6 +1698,9 @@ impl Compositor {
         match command {
             tehuti_core::speech::SpeechEffect::Start { session } => {
                 tracing::info!(session, "speech session started");
+                if let Some(plugins) = self.plugins.as_mut() {
+                    plugins.begin_utterance();
+                }
             }
             tehuti_core::speech::SpeechEffect::Stop { session, transcribe } => {
                 tracing::info!(session, transcribe, "speech session stopped");
@@ -1570,14 +1709,23 @@ impl Compositor {
             | tehuti_core::speech::SpeechEffect::Interim { .. }
             | tehuti_core::speech::SpeechEffect::Failed { .. } => {}
         }
+        let language = self
+            .speech_context
+            .as_deref()
+            .zip(self.plugins.as_ref())
+            .and_then(|(app_id, plugins)| plugins.speech_language(app_id));
         let prompt = crate::speech_vocabulary::prompt(
             self.contexts(),
             self.speech_context.as_deref(),
             &self.speech_title,
         );
+        let verbs = self
+            .plugins
+            .as_ref()
+            .map_or_else(Vec::new, crate::plugins::Plugins::speech_verbs);
         self.speech_process.as_mut().is_none_or(|process| {
             process
-                .send_with_prompt(command, &prompt)
+                .send_with_verbs(command, &prompt, language.as_deref(), &verbs)
                 .inspect_err(|error| tracing::warn!(%error, "speech command failed"))
                 .is_ok()
         })
@@ -2282,7 +2430,7 @@ impl Compositor {
             DispatchEffect::PersistMode(index) => self.queue_settings(index, true),
             DispatchEffect::SettingsController(choice) => self.choose_controller(&choice, false),
             DispatchEffect::PersistControllerTalk(controller_name, button) => {
-                let mut bindings = self.settings().input.controller_bindings.clone();
+                let mut bindings = self.settings().input.controller_bindings();
                 if let Some(button) = button {
                     let _previous = bindings.insert(controller_name, button);
                 } else {
@@ -2303,7 +2451,7 @@ impl Compositor {
             DispatchEffect::SettingsMicrophone(choice) => self.choose_microphone(&choice),
             DispatchEffect::SettingsControllerEnabled { name, enabled } => {
                 tracing::info!(%name, enabled, "controller enabled");
-                self.disabled_controllers = self.settings().input.disabled_controllers.clone();
+                self.disabled_controllers = self.settings().input.disabled_controllers();
                 let disabled = self.disabled_controllers.clone();
                 self.save_input_choice(|store| store.set_disabled_controllers(&disabled));
             }
@@ -2493,9 +2641,8 @@ impl Compositor {
 
     /// Records that a damaged frame containing the confirmation was submitted.
     pub fn note_secret_confirmation_frame_submitted(&mut self) {
-        if self.secret_confirmation_text().is_some() {
-            self.confirmation.frame_submitted();
-        }
+        self.confirmation
+            .frame_submitted(self.live_secret_focus().as_ref(), self.clock_elapsed());
     }
 
     fn handle_secret_confirmation_button(&mut self, state: tehuti_protocol::ButtonState) -> bool {
@@ -3658,6 +3805,49 @@ impl Compositor {
         }
     }
 
+    /// Launches every saved application and remembers where each window goes; the windows
+    /// are placed as they open, whatever their order; the window that had focus gets it back
+    /// once the last launch has opened.
+    pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
+        let installed = self.launcher.installed();
+        let now = self.clock_now();
+        let socket = self.launch_socket.clone();
+        let launcher = &mut self.launcher;
+        let focus_at_start = self.placement.focused();
+        let placements =
+            crate::session_restore::Placements::begin(saved, now, focus_at_start, |token, window| {
+                if !installed.contains(&window.app_id) {
+                    tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
+                    return false;
+                }
+                let started = launcher.launch_with_token(&window.app_id, socket.as_deref(), Some(token));
+                if !started {
+                    tracing::warn!(app_id = %window.app_id, "restore launch failed");
+                }
+                started
+            });
+        self.placements = Some(placements);
+    }
+
+    /// The restorable windows now open, for the clean-exit save.
+    #[must_use]
+    pub fn session_to_save(&self) -> crate::session_restore::Saved {
+        let apps: std::collections::HashMap<_, _> = self
+            .placement
+            .placed(|_| 0.0)
+            .into_iter()
+            .filter_map(|placed| {
+                let app_id = placed.window.toplevel().and_then(toplevel_app_id)?;
+                Some((placed.identity, app_id))
+            })
+            .collect();
+        crate::session_restore::Saved::capture(
+            &self.placement.snapshot(),
+            |window| apps.get(&window.0).cloned(),
+            &self.launcher.installed(),
+        )
+    }
+
     pub fn set_launch_socket(&mut self, socket: std::ffi::OsString) {
         self.launch_socket = Some(socket);
     }
@@ -3768,7 +3958,7 @@ impl Compositor {
             if !self.pad_passthrough() {
                 self.dispatch.core_mut().set_context_ancestors(None, Vec::new());
             }
-            self.unfocused_window = Some(surface);
+            self.unfocused_window = Some(smithay::reexports::wayland_server::Resource::downgrade(&surface));
             self.handle(&Event::Focus {
                 app_id: None,
                 title: String::new(),
@@ -3892,6 +4082,12 @@ impl CompositorHandler for Compositor {
     }
 
     fn new_surface(&mut self, surface: &WlSurface) {
+        let _hook = smithay::wayland::compositor::add_pre_commit_hook::<Self, _>(
+            surface,
+            |state, _display, surface| {
+                state.gate_buffer(surface);
+            },
+        );
         if let Some(output) = &self.output {
             Self::announce_scale(output, surface);
         }
@@ -4080,12 +4276,41 @@ impl Compositor {
         let context = context.cloned();
         let width = context.as_ref().and_then(|context| self.opening_width(context));
         let context = context.as_ref();
-        let rules = Self::window_rules(&surface, context, width);
+        let mut rules = Self::window_rules(&surface, context, width);
         let key = surface.wl_surface().clone();
+        if let Some(placements) = self.placements.as_mut() {
+            self.placement.guard_restored_focus(placements);
+        }
+        let claim = self.claim_restored_place(&surface);
+        rules.open_at = claim.map(|claim| self.placement.open_at(claim));
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
-            Ok(()) => self.place_layout(),
+            Ok(()) => {
+                self.restore_prior_focus();
+                self.place_layout();
+            }
             Err(error) => tracing::warn!(%error, "window layout failed"),
+        }
+    }
+
+    /// Focuses the window that had focus before the exit, once the restore has settled.
+    fn restore_prior_focus(&mut self) {
+        let now = self.clock_now();
+        if let Some(placements) = self.placements.as_mut() {
+            if let Some(report) = self.placement.finish_restored_focus(placements, now) {
+                if report.failed.is_empty() {
+                    tracing::info!(restored = report.restored, "session restored");
+                } else {
+                    tracing::warn!(
+                        restored = report.restored,
+                        failed = ?report.failed,
+                        "session partially restored"
+                    );
+                }
+            }
+            if placements.is_empty() {
+                self.placements = None;
+            }
         }
     }
 
@@ -4127,6 +4352,20 @@ impl Compositor {
             tracing::warn!(%error, path = %path.display(), "window width not rewritten");
         }
         Some(tehuti_protocol::fraction_value(fraction))
+    }
+
+    fn claim_restored_place(
+        &mut self,
+        surface: &ToplevelSurface,
+    ) -> Option<crate::session_restore::Claim<WlSurface>> {
+        let now = self.clock_now();
+        let placements = self.placements.as_mut()?;
+        let token = crate::window_context::restore_token(surface.wl_surface(), &self.display);
+        let place = placements.claim(token, now, surface.wl_surface());
+        if placements.is_empty() {
+            self.placements = None;
+        }
+        place
     }
 
     fn window_rules(
@@ -4197,7 +4436,12 @@ impl XdgShellHandler for Compositor {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let closing = Some(surface.wl_surface());
         if self.window_focus.as_ref().map(|(focused, _)| focused) == closing
-            || self.unfocused_window.as_ref() == closing
+            || self
+                .unfocused_window
+                .as_ref()
+                .and_then(|weak| weak.upgrade().ok())
+                .as_ref()
+                == closing
         {
             self.unfocused_window = None;
             let _rejection = self.dispatch(DispatchInput::FocusedWindowClosed);
@@ -4284,7 +4528,7 @@ impl SeatHandler for Compositor {
             seat,
             focused.and_then(smithay::reexports::wayland_server::Resource::client),
         );
-        self.text_input.focus(focused.cloned());
+        self.text_input.focus(focused);
         self.taps.focus_changed();
         // smithay holds the keyboard lock here; a dispatch can relayout and call
         // `set_focus` again, which deadlocks. Defer it until the lock is released.

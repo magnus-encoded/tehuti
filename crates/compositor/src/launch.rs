@@ -22,6 +22,7 @@ pub struct Launch {
     label: String,
     app_id: Option<String>,
     socket: Option<OsString>,
+    env: Vec<(OsString, OsString)>,
 }
 
 impl Launch {
@@ -33,6 +34,7 @@ impl Launch {
             label: label.into(),
             app_id: None,
             socket: None,
+            env: Vec::new(),
         }
     }
 
@@ -47,6 +49,13 @@ impl Launch {
     #[must_use]
     pub fn with_app_id(mut self, app_id: impl Into<String>) -> Self {
         self.app_id = Some(app_id.into());
+        self
+    }
+
+    /// Sets one environment variable for the child and everything it starts.
+    #[must_use]
+    pub fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.env.push((key.into(), value.into()));
         self
     }
 
@@ -82,6 +91,7 @@ impl Launch {
         );
         let _command = command
             .args(&self.args)
+            .envs(self.env.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

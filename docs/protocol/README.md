@@ -78,7 +78,7 @@ the core sends an unknown method to a plugin, the plugin can reply with error
 
 The core ignores valid plugin `initialize`, `button`, `speech`, `verb`,
 `focus`, `adjuster` and `pad_input` calls. A plugin sends only replies and
-these notices: `actions`, `speech.hints`, `invoke.words`, `verbs`,
+these notices: `actions`, `speech.hints`, `speech.language`, `invoke.words`, `verbs`,
 `pad_overrides` and `status`. It can also send `submit_actions` requests.
 
 Sometimes an `actions` notice lists a `key` action directly followed by a
@@ -299,6 +299,35 @@ Context `[speech] hotwords` and plugin hints share a cap of 64 entries. Context
 words come first. If the total is over the cap, the core drops the last entries
 of the plugin and logs a warning once.
 
+### Speech language
+
+An application plugin sets the dictation language with a notice. The language
+is a lowercase code of 2 to 8 ASCII letters. It is standing: every speech
+session that starts while a window of the applications of the plugin has focus
+uses it, until the plugin sends another. It is gone when the plugin stops,
+crashes or restarts, and while focus is elsewhere. Without it the language is
+"en". Interims and the final transcript use the session's language. The core
+passes it in the sidecar start command, `{"start":7,"language":"no"}`.
+
+```json
+{"jsonrpc":"2.0","method":"speech.language","params":{"language":"no"}}
+```
+
+The sidecar reads an optional `speech.toml` in the Tehuti config directory. Its
+`[remote]` table maps a language to a transcription socket. A session in that
+language goes to the socket, and the local model stays idle. `$XDG_RUNTIME_DIR`
+expands in the path:
+
+```toml
+[remote]
+no = "$XDG_RUNTIME_DIR/tehuti-transcribe.sock"
+```
+
+A request is one kind byte (`G` final, `J` interim) and the priming prompt,
+a NUL byte, then raw s16 16 kHz mono PCM until the client shuts down writing.
+The reply is one JSON line: `{"text":"..."}`, `{"error":"..."}` or
+`{"busy":true}`. The whole exchange has one deadline: 30 s for a final, 3 s for an interim. The reply is capped at 64 KiB. Keys must be language codes and paths absolute; the sidecar skips other entries with a warning. On an error, a busy reply or the deadline, a final falls back to the local model with the session's language, and an interim yields nothing.
+
 ### Invoke words
 
 An application plugin adds slash-command words to the built-in `invoke` verb
@@ -347,48 +376,71 @@ The whole transcript then routes as if no verb had matched.
 
 The `verbs` list in the manifest is the starting set. The plugin can replace it
 at any time with a notice. The new verbs route only to that plugin. A restart
-returns to the manifest list:
+returns to the manifest list. An application plugin sends the same notice (see
+[Verbs and invoke words](#verbs-and-invoke-words)):
 
 ```json
 {"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada","orion"]}}
 ```
 
-A plugin holds at most 16 verbs. Each verb is one word of letters, with at most
-32 characters. The core rejects a `verbs` notice from an application plugin in
-the same way as an invalid action.
+#### Limits
 
-Focus is a notice with no reply:
+- A plugin holds at most 16 verbs.
+- Each verb is one word of letters, at most 32 characters.
+- A pinned verb carries at most 16 hints, strings without NUL.
+- `locale` is a supported Whisper primary language tag such as `en` or `no`.
+  Regional tags such as `en-US` and unsupported tags reject the notice. The
+  list lives in `sidecars/speech/verb-locales.txt`, which Rust and Python both read.
+- An application plugin may not list `verbs` in its manifest; it sends them in
+  a `verbs` notice after `initialize`.
+
+#### Pinned locale
+
+A verb entry may pin a locale and hints, in both the manifest and a notice:
 
 ```json
-{"jsonrpc":"2.0","method":"focus","params":{"app_id":"test","title":"Example window"}}
+{"jsonrpc":"2.0","method":"verbs","params":{"verbs":["ada",{"word":"orion","locale":"en","hints":["chat","channel"]}]}}
 ```
 
-`app_id` is a string, or null for no application. `title` is always a string.
-It can be empty. It is never null. Focus notices go to every initialized focus
-subscriber, even when its manifest does not match the application.
+Speech first decodes in the session language. When its first word sounds like
+a pinned verb, the sidecar decodes the same audio once more in that verb's
+locale with its hints. If the first word of that decode does not match the
+verb, the session transcript is used. The core strips the verb and sends the
+remainder with the pinned locale:
 
-Button requests go to the first matching initialized button subscriber.
-Manifests sort by their full filesystem paths, in ascending Rust path order.
-`id` does not affect the order. Matching uses the current application id,
-exactly and case sensitively. No application matches null. A plugin that is
-starting, refused or focus-only does not take part in button selection.
+```json
+{"jsonrpc":"2.0","id":3,"method":"verb","params":{"verb":"orion","locale":"en","text":"chat with say"}}
+```
 
-The selected plugin runs before the active context. The core releases the
-context actions or fallback actions that it captured at dispatch. It does this
-exactly once, in these cases:
+String verbs keep the session language and omit `locale` from the request.
 
-- The reply is empty.
-- The reply is invalid.
-- The reply is missing.
-- The reply is late.
+#### Backend note
 
-Replies cannot complete other requests. Duplicate or stale replies cannot act
-on later input. A focus notification settles all pending decisions as
-declines. The core releases their captured actions once, in arrival order. It
-does this before it updates the active context for later events. Replies for
-these settled requests are stale and release nothing. If no plugin qualifies,
-normal context routing applies. Global mappings and the escape chord take
-priority.
+The second decode always runs on the local model, also when a remote server
+made the first decode. The speech log line of the session names both: `backend`
+for the first decode and `verb backend` for the pinned one. A pinned final adds
+at most one decode of latency.
+
+#### Verbs and invoke words
+
+`verbs` and `invoke.words` are separate. `verbs` route speech to the plugin
+that sent them. `invoke.words` add slash-command words to the built-in
+`invoke` verb for an application plugin.
+
+An application plugin sends the same `verbs` notice as a verb plugin, including
+the pinned `locale` form. The plugin's kind sets the scope of its verbs:
+
+- A verb plugin's verbs apply everywhere.
+- An application plugin's verbs apply only while a window of one of its
+  `app_ids` has focus, the same scope as `invoke.words`. Pinned locales
+  re-decode only in that scope.
+
+The `verb` request arrives on the application plugin's existing connection, and
+its `actions` reply routes as usual. When the verb of the focused application
+and a global verb both match the first word, the focused application's verb
+wins outright. The core logs the clash once for each plugin connection.
+The focus at the press that began the utterance governs both the decode and
+the routing, so a focus change mid-utterance changes neither.
 
 ## Actions
 
@@ -660,8 +712,9 @@ logs the executable, the reason and the restart delay.
 The core terminates a plugin that has not initialized within two seconds. After
 initialization, the core restarts a plugin with backoff if it misses three
 decisions in a row. A reply before its decision deadline resets the count of
-consecutive misses. The shorter decision deadlines of the core still release
-captured fallback actions on time. Idle plugins with no outstanding decisions
+consecutive misses. Each decision that passes its deadline counts as one miss,
+no matter how many expire in the same supervision pass. The shorter
+decision deadlines of the core still release captured fallback actions on time. Idle plugins with no outstanding decisions
 can stay silent. Request ids continue across restarts. A new process therefore
 cannot complete a pending decision of an earlier process.
 

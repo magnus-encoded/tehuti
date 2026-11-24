@@ -56,13 +56,6 @@ impl InputSource for SyntheticPad {
 /// # Errors
 /// The source failed to read.
 pub fn route(compositor: &mut Compositor, source: &mut dyn InputSource) -> io::Result<()> {
-    route_counted(compositor, source).map(|_| ())
-}
-
-/// Routes pending input and returns the number of events read.
-/// # Errors
-/// The source failed to read.
-pub fn route_counted(compositor: &mut Compositor, source: &mut dyn InputSource) -> io::Result<usize> {
     let events = match source.drain() {
         Ok(events) => events,
         Err(error) => {
@@ -71,14 +64,13 @@ pub fn route_counted(compositor: &mut Compositor, source: &mut dyn InputSource) 
             return Err(error);
         }
     };
-    let count = events.len();
     for event in events {
         compositor.controller_input(tehuti_core::controller::Input::Event(event));
         if compositor.quit_requested() {
             break;
         }
     }
-    Ok(count)
+    Ok(())
 }
 
 /// Releases the input source before stopping the event loop on a core quit request.

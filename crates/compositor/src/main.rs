@@ -34,7 +34,7 @@ pub(crate) struct LoopData {
     spare_virtual_pad: Option<controller::VirtualPad>,
     pad_gate: input::PadGate,
     /// Keys each attached pad; a later pad never changes the key of one already there.
-    pad_roster: tehuti_core::pad::PadRoster,
+    pads: tehuti_core::pad::Pads,
     virtual_pad: Option<String>,
     /// The pad that sent the latest admitted input; only it is mirrored to a virtual pad.
     /// Unplugging it does not clear this: no pad matches the stale path, so no mirror exists
@@ -434,6 +434,9 @@ fn start_session(
         &mut compositor,
     )?;
     compositor.set_launch_socket(socket_name.clone());
+    if driver.is_none() {
+        restore_session(&mut compositor);
+    }
     if driver.is_none()
         && let Err(error) = insert_controller_watch(&event_loop)
     {
@@ -492,7 +495,7 @@ fn start_session(
         controllers,
         spare_virtual_pad: None,
         pad_gate: input::PadGate::default(),
-        pad_roster: tehuti_core::pad::PadRoster::default(),
+        pads: tehuti_core::pad::Pads::default(),
         controller_tokens,
         virtual_pad,
         active_pad: None,
@@ -521,9 +524,40 @@ fn start_session(
     data.compositor.advance_time();
     let result = run(&mut event_loop, &mut data, child);
     let code = data.exit_code();
+    if data.driver.is_none()
+        && tehuti::session_restore::save_due(
+            result.is_ok(),
+            data.compositor.quit_requested(),
+            tehuti::session_restore::enabled(),
+        )
+    {
+        save_session(&data.compositor);
+    }
     shut_down(event_loop, data);
     result?;
     Ok(code)
+}
+
+fn restore_session(compositor: &mut tehuti::state::Compositor) {
+    if !tehuti::session_restore::enabled() {
+        return;
+    }
+    let taken = tehuti::session_restore::Store::from_env()
+        .map_err(|error| error.to_string())
+        .and_then(|store| store.take().map_err(|error| error.to_string()));
+    match taken {
+        Ok(Some(saved)) => compositor.begin_session_restore(&saved),
+        Ok(None) => {}
+        Err(error) => warn!(%error, "session restore skipped"),
+    }
+}
+
+fn save_session(compositor: &tehuti::state::Compositor) {
+    let saved = compositor.session_to_save();
+    let result = tehuti::session_restore::Store::from_env().and_then(|store| store.save(&saved));
+    if let Err(error) = result {
+        warn!(%error, "session not saved");
+    }
 }
 
 fn install_xwayland(
@@ -772,35 +806,24 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
             retry_at: Duration::ZERO,
         },
     );
-    let (state, effect) = controller::discover(
+    let (state, notification) = controller::scan_discovery(
         state,
-        controller::DiscoveryInput::Poll {
-            now: data.discovery_epoch.elapsed(),
-            rescan: core::mem::take(&mut data.rescan_controller),
+        data.discovery_epoch.elapsed(),
+        core::mem::take(&mut data.rescan_controller),
+        || {
+            insert_controllers(
+                handle,
+                data.virtual_pad.as_deref(),
+                &mut data.controllers,
+                &mut data.controller_tokens,
+            );
+            !data.controllers.is_empty()
         },
     );
     data.discovery = state;
-    if effect == Some(controller::DiscoveryEffect::Scan) {
-        insert_controllers(
-            handle,
-            data.virtual_pad.as_deref(),
-            &mut data.controllers,
-            &mut data.controller_tokens,
-        );
-        if !data.controllers.is_empty() {
-            let searching = core::mem::replace(
-                &mut data.discovery,
-                controller::Discovery::Attached {
-                    retry_at: Duration::ZERO,
-                },
-            );
-            let (attached, notification) = controller::discover(searching, controller::DiscoveryInput::Found);
-            data.discovery = attached;
-            if notification == Some(controller::DiscoveryEffect::Reconnected) {
-                data.compositor
-                    .controller_input(tehuti_core::controller::Input::Reconnected);
-            }
-        }
+    if notification == Some(controller::DiscoveryEffect::Reconnected) {
+        data.compositor
+            .controller_input(tehuti_core::controller::Input::Reconnected);
     }
     sync_controller_names(data);
 }
@@ -822,8 +845,8 @@ fn sync_controller_names(data: &mut LoopData) {
             }
         })
         .collect();
-    let keyed = controller::keyed_controllers(&mut data.pad_roster, devices);
-    for (path, effect) in data.pad_roster.take_effects() {
+    let keyed = controller::keyed_controllers(&mut data.pads, devices);
+    for (path, effect) in data.pads.take_effects() {
         match effect {
             tehuti_core::pad::PadEffect::ForgetGate => data.pad_gate.forget(&path),
             tehuti_core::pad::PadEffect::ReleaseHeld(buttons) => {
@@ -1042,7 +1065,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
     pump_virtual_pads(data);
     let (compositor, gate) = (&data.compositor, &mut data.pad_gate);
     let mut identity = None;
-    let keys = &mut data.pad_roster;
+    let keys = &mut data.pads;
     let mut event_controllers = Vec::new();
     let active = &mut data.active_pad;
     let spare = &mut data.spare_virtual_pad;
@@ -1050,7 +1073,7 @@ fn route_controller_input(data: &mut LoopData) -> PostAction {
         &mut data.controllers,
         |path, controller, event| {
             let key = keys
-                .key_for(path)
+                .id_for(path)
                 .map_or_else(|| controller.pad.name().to_owned(), |key| key.as_str().to_owned());
             let admitted = gate.admit(path, compositor.controller_chosen(&key), event);
             if admitted {
@@ -1121,11 +1144,11 @@ fn advance_time(data: &mut LoopData) {
         return;
     }
     let mut sampled = tehuti_core::dispatch::Sticks::default();
-    let keys = &data.pad_roster;
+    let keys = &data.pads;
     let recentres = data.compositor.take_recentre_requests();
     for (path, controller) in &mut data.controllers {
         let key = keys
-            .key_for(path)
+            .id_for(path)
             .map_or_else(|| controller.pad.name().to_owned(), |key| key.as_str().to_owned());
         let chosen = data.compositor.controller_chosen(&key);
         let measure = recentres.contains(&key);

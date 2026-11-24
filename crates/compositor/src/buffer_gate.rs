@@ -1,0 +1,282 @@
+//! Holds back a client commit whose dmabuf is not ready, so one stuck client
+//! never stalls the output: its last good buffer stays on screen and every
+//! other surface keeps drawing.
+
+use core::sync::atomic::{AtomicBool, Ordering};
+extern crate alloc;
+use core::time::Duration;
+use smithay::{
+    reexports::wayland_server::{Resource as _, Weak, backend::ObjectId, protocol::wl_surface::WlSurface},
+    wayland::compositor::{Blocker, BlockerState},
+};
+use std::{
+    collections::{HashMap, VecDeque},
+    os::fd::{AsFd, OwnedFd},
+    sync::Arc,
+    time::Instant,
+};
+
+/// How long a commit may wait before the stall is logged.
+pub const STALL_AFTER: Duration = Duration::from_secs(1);
+
+/// The planes of one client buffer, ready when every plane is readable.
+#[derive(Debug)]
+pub struct Gate {
+    planes: Vec<OwnedFd>,
+    client: String,
+    since: Instant,
+    reported: AtomicBool,
+}
+
+impl Gate {
+    #[must_use]
+    pub const fn new(planes: Vec<OwnedFd>, client: String, since: Instant) -> Self {
+        Self {
+            planes,
+            client,
+            since,
+            reported: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether the client's writes to the buffer have finished. Logs once when
+    /// the wait passes [`STALL_AFTER`].
+    #[must_use]
+    pub fn ready(&self, now: Instant) -> bool {
+        let ready = self.planes.iter().all(|plane| {
+            let mut fds = [rustix::event::PollFd::new(plane, rustix::event::PollFlags::IN)];
+            rustix::event::poll(
+                &mut fds,
+                Some(&rustix::time::Timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                }),
+            )
+            .is_ok_and(|count| count > 0)
+        });
+        if !ready
+            && now.saturating_duration_since(self.since) > STALL_AFTER
+            && !self.reported.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                client = %self.client,
+                waited = ?now.saturating_duration_since(self.since),
+                "frame not shown: client buffer not ready; keeping its last good buffer"
+            );
+        }
+        ready
+    }
+
+    #[must_use]
+    pub fn client(&self) -> &str {
+        &self.client
+    }
+}
+
+/// The blocker smithay holds a commit on. It does not own the gate, so a commit
+/// queued by smithay cannot keep the gate's fds alive after its surface is gone.
+#[derive(Debug, Clone)]
+pub struct BufferBlocker(pub alloc::sync::Weak<Gate>);
+
+impl Blocker for BufferBlocker {
+    fn state(&self) -> BlockerState {
+        // The surface owns the gate; a gate that is gone has nothing left to wait for.
+        if self.0.upgrade().is_none_or(|gate| gate.ready(Instant::now())) {
+            BlockerState::Released
+        } else {
+            BlockerState::Pending
+        }
+    }
+}
+
+/// The most gates one surface may hold; a client committing more unready buffers than
+/// this has its oldest held commit let through.
+pub const MAX_HELD: usize = 16;
+
+/// The gates of a surface's held commits, oldest first.
+///
+/// Lives in the surface's own data, so a dead surface's gates go with it. Each commit owns one
+/// gate; its blocker only watches it.
+#[derive(Debug, Default)]
+pub struct Held {
+    gates: std::sync::Mutex<VecDeque<Arc<Gate>>>,
+    overflowed: AtomicBool,
+}
+
+impl Held {
+    /// Adds the gate of a newly held commit. Past [`MAX_HELD`] the oldest gate is dropped,
+    /// which lets its commit through at the next [`Held::take_ready`].
+    pub fn hold(&self, gate: Arc<Gate>) {
+        let evicted = {
+            let mut gates = self.lock();
+            gates.push_back(gate);
+            if gates.len() > MAX_HELD {
+                gates.pop_front()
+            } else {
+                None
+            }
+        };
+        if evicted.is_some() {
+            self.overflowed.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Drops every gate that is ready, whatever its position. Returns whether any commit
+    /// should be re-evaluated: a gate went, by readiness or by the cap.
+    pub fn take_ready(&self, now: Instant) -> bool {
+        let mut gates = self.lock();
+        let before = gates.len();
+        gates.retain(|gate| !gate.ready(now));
+        let overflowed = self.overflowed.swap(false, Ordering::Relaxed);
+        overflowed || gates.len() < before
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+
+    #[must_use]
+    pub fn probes(&self) -> Vec<alloc::sync::Weak<Gate>> {
+        self.lock().iter().map(Arc::downgrade).collect()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<Arc<Gate>>> {
+        self.gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Runs `visit` on the surface's [`Held`], creating it on first use.
+pub fn with_held<T>(surface: &WlSurface, visit: impl FnOnce(&Held) -> T) -> T {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        visit(states.data_map.get_or_insert_threadsafe(Held::default))
+    })
+}
+
+/// Which surfaces may hold gates. Weak, and it owns no gate: the gates live in each
+/// surface's data.
+#[derive(Debug, Default)]
+pub struct Waiting(HashMap<ObjectId, Weak<WlSurface>>);
+
+impl Waiting {
+    /// Holds the gate of a newly held commit on its surface.
+    pub fn hold(&mut self, surface: &WlSurface, gate: Arc<Gate>) {
+        let _entry = self.0.entry(surface.id()).or_insert_with(|| surface.downgrade());
+        with_held(surface, |held| held.hold(gate));
+    }
+
+    /// Returns the live surfaces where a gate went, so their commits are re-evaluated, and
+    /// forgets surfaces that are gone or hold nothing.
+    pub fn take_ready(&mut self, now: Instant) -> Vec<WlSurface> {
+        let mut ready = Vec::new();
+        self.0.retain(|_, weak| {
+            let Ok(surface) = weak.upgrade() else {
+                return false;
+            };
+            let (changed, empty) = with_held(&surface, |held| (held.take_ready(now), held.is_empty()));
+            if changed {
+                ready.push(surface);
+            }
+            !empty
+        });
+        ready
+    }
+
+    /// Live surfaces still holding a commit.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0
+            .values()
+            .filter_map(|weak| weak.upgrade().ok())
+            .filter(|surface| !with_held(surface, Held::is_empty))
+            .count()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Weak handles to the surfaces that may hold gates.
+    #[must_use]
+    pub fn surfaces(&self) -> Vec<Weak<WlSurface>> {
+        self.0.values().cloned().collect()
+    }
+
+    /// Weak handles to every held gate, so tests can check teardown dropped them.
+    #[must_use]
+    pub fn gate_probes(&self) -> Vec<alloc::sync::Weak<Gate>> {
+        self.0
+            .values()
+            .filter_map(|weak| weak.upgrade().ok())
+            .flat_map(|surface| with_held(&surface, Held::probes))
+            .collect()
+    }
+}
+
+/// Duplicates the plane handles of a dmabuf so the gate outlives the buffer.
+#[must_use]
+pub fn planes_of(dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf) -> Vec<OwnedFd> {
+    dmabuf
+        .handles()
+        .filter_map(|handle| handle.as_fd().try_clone_to_owned().ok())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    fn pipe() -> (OwnedFd, std::fs::File) {
+        let (read, write) = rustix::pipe::pipe().expect("pipe");
+        (read, std::fs::File::from(write))
+    }
+
+    #[test]
+    fn a_buffer_nobody_finished_is_never_ready() {
+        let (read, _write) = pipe();
+        let start = Instant::now();
+        let gate = Gate::new(vec![read], "viewer".into(), start);
+        assert!(!gate.ready(start));
+        assert!(!gate.ready(start + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_finished_buffer_is_ready() {
+        let (read, mut write) = pipe();
+        write.write_all(b"x").expect("write");
+        let gate = Gate::new(vec![read], "viewer".into(), Instant::now());
+        assert!(gate.ready(Instant::now()));
+    }
+
+    #[test]
+    fn one_unfinished_plane_holds_the_buffer() {
+        let (done, mut write) = pipe();
+        write.write_all(b"x").expect("write");
+        let (stuck, _keep) = pipe();
+        let gate = Gate::new(vec![done, stuck], "viewer".into(), Instant::now());
+        assert!(!gate.ready(Instant::now()));
+    }
+
+    #[test]
+    fn the_blocker_stays_pending_while_the_buffer_is_unfinished() {
+        let (read, _write) = pipe();
+        let gate = Arc::new(Gate::new(vec![read], "viewer".into(), Instant::now()));
+        let blocker = BufferBlocker(Arc::downgrade(&gate));
+        assert_eq!(blocker.state(), BlockerState::Pending);
+        drop(gate);
+        assert_eq!(
+            blocker.state(),
+            BlockerState::Released,
+            "a dropped gate waits for nothing"
+        );
+    }
+}

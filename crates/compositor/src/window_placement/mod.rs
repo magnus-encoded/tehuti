@@ -85,6 +85,27 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
         }
     }
 
+    /// The layout place of a restore claim: under its anchor window when that is still
+    /// mapped, otherwise the saved column.
+    pub(crate) fn open_at(&self, claim: crate::session_restore::Claim<Key>) -> tehuti_core::layout::OpenAt {
+        use crate::session_restore::Claim;
+        use tehuti_core::layout::OpenAt;
+        match claim {
+            Claim::Column { workspace, column } => OpenAt::Column { workspace, column },
+            Claim::Under {
+                anchor,
+                workspace,
+                column,
+            } => self
+                .entries
+                .iter()
+                .find(|entry| entry.key == anchor)
+                .map_or(OpenAt::Column { workspace, column }, |entry| {
+                    OpenAt::StackedUnder(entry.identity)
+                }),
+        }
+    }
+
     pub(crate) fn map(&mut self, key: Key, window: Window, rules: WindowRules) -> Result<(), LayoutError> {
         let _effect = self.windows.step(tehuti_core::windows::Input::Map(key.clone()));
         let identity = WindowId(self.next_window);
@@ -124,6 +145,27 @@ impl<Key: Clone + Eq, Window> Placement<Key, Window> {
             }
             Ok(())
         }
+    }
+
+    /// Ends the pending focus restore when the user has moved focus since the restore last did.
+    pub(crate) fn guard_restored_focus(&self, placements: &mut crate::session_restore::Placements<Key>) {
+        placements.cancel_focus_if_moved(self.focused());
+    }
+
+    /// Returns the prior focus once every restore launch has opened or expired, and the
+    /// restore's report once it has settled.
+    pub(crate) fn finish_restored_focus(
+        &mut self,
+        placements: &mut crate::session_restore::Placements<Key>,
+        now: std::time::Instant,
+    ) -> Option<crate::session_restore::Report> {
+        if let Some(target) = placements.settled_focus(now)
+            && let Err(error) = self.focus(&target)
+        {
+            tracing::warn!(%error, "prior focus not restored");
+        }
+        placements.note_focus(self.focused());
+        placements.report(now)
     }
 
     pub(crate) fn focus(&mut self, key: &Key) -> Result<(), LayoutError> {
