@@ -29,6 +29,37 @@ mod tests {
     }
 
     #[test]
+    fn acquisition_never_returns_a_refused_controller() {
+        assert!(
+            controller::acquire(FakeDevice {
+                refuse: true,
+                ..FakeDevice::default()
+            })
+            .is_none()
+        );
+        let accepted = controller::acquire(FakeDevice::default()).expect("acquired");
+        assert!(accepted.grabbed && accepted.nonblocking);
+    }
+
+    #[test]
+    fn discovery_reconnects_only_after_a_due_scan_installs_a_controller() {
+        let state = Discovery::Searching {
+            retry_at: Duration::from_millis(250),
+        };
+        let (state, early) = controller::scan_discovery(state, Duration::from_millis(249), false, || {
+            panic!("scan before deadline")
+        });
+        assert_eq!(early, None);
+        let (state, refused) = controller::scan_discovery(state, Duration::from_millis(250), false, || false);
+        assert_eq!(refused, None, "a refused or missing controller cannot reconnect");
+        let (state, reconnected) =
+            controller::scan_discovery(state, Duration::from_millis(251), true, || true);
+        assert_eq!(reconnected, Some(DiscoveryEffect::Reconnected));
+        let (_, again) = controller::scan_discovery(state, Duration::from_secs(1), true, || true);
+        assert_eq!(again, None, "an attached controller cannot reconnect twice");
+    }
+
+    #[test]
     fn acquisition_grabs_exclusively_and_reports_refusal() {
         let mut device = FakeDevice::default();
         controller::grab_nonblocking(&mut device).expect("device accepts grab");
@@ -104,5 +135,63 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hidraw_tests {
+    use tehuti::controller::{HidrawSiblings, hidraw_siblings, hidraw_warning};
+
+    fn hid_device(root: &std::path::Path, dir: &str) -> std::path::PathBuf {
+        let hid = root.join(dir);
+        std::fs::create_dir_all(&hid).expect("hid dir");
+        std::fs::create_dir_all(root.join("bus/hid")).expect("bus dir");
+        std::os::unix::fs::symlink(root.join("bus/hid"), hid.join("subsystem")).expect("subsystem link");
+        hid
+    }
+
+    #[test]
+    fn siblings_and_phys_come_from_the_hid_device_only() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let parent = hid_device(root.path(), "devices/parent");
+        std::fs::create_dir_all(parent.join("hidraw/hidraw1")).expect("parent hidraw");
+        let hid = parent.join("child");
+        std::fs::create_dir_all(&hid).expect("child dir");
+        std::os::unix::fs::symlink(root.path().join("bus/hid"), hid.join("subsystem")).expect("link");
+        let event = hid.join("input/input5/event5");
+        std::fs::create_dir_all(&event).expect("event dir");
+        std::fs::create_dir_all(hid.join("hidraw/hidraw3")).expect("hidraw dir");
+        std::fs::write(hid.join("uevent"), "DRIVER=x\nHID_PHYS=pad/input0\n").expect("uevent");
+        assert_eq!(
+            hidraw_siblings(&event),
+            HidrawSiblings {
+                nodes: vec!["hidraw3".to_owned()],
+                phys: Some("pad/input0".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_parent_hidraw_is_not_a_sibling_without_a_hid_device() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let parent = root.path().join("devices/usb");
+        let event = parent.join("input/input5/event5");
+        std::fs::create_dir_all(&event).expect("event dir");
+        std::fs::create_dir_all(parent.join("hidraw/hidraw1")).expect("hidraw dir");
+        assert_eq!(hidraw_siblings(&event), HidrawSiblings::default());
+    }
+
+    #[test]
+    fn readable_sibling_warns_with_the_real_rule_and_closed_ones_stay_quiet() {
+        let siblings = HidrawSiblings {
+            nodes: vec!["hidraw3".to_owned(), "hidraw4".to_owned()],
+            phys: Some("pad/input0".to_owned()),
+        };
+        let message = hidraw_warning("Pad", &siblings, |node| node == "hidraw4").expect("warns");
+        assert!(message.contains("/dev/hidraw4"));
+        assert!(!message.contains("/dev/hidraw3"));
+        assert!(message.contains("ENV{HID_PHYS}==\"pad/input0\""));
+        assert!(message.contains("TAG-=\"uaccess\""));
+        assert!(hidraw_warning("Pad", &siblings, |_| false).is_none());
     }
 }

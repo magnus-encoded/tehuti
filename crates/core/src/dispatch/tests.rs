@@ -913,6 +913,27 @@ fn entering_mouse_mode_cancels_recording_and_a_later_release_does_not_restart_it
 }
 
 #[test]
+fn view_double_tap_toggles_mouse_mode_both_ways_with_the_launcher_open() {
+    let mut world = World::default();
+    let launcher = crate::launcher::Launcher::new("open", vec![launcher_row("Editor")], None);
+    let mut state = world.run(State::default(), Input::Launcher(Box::new(launcher)));
+    for active in [true, false] {
+        world.trace.clear();
+        for _ in 0..2 {
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Pressed));
+            state = world.run(state, pad_button(ButtonName::Select, ButtonState::Released));
+        }
+        let modes: Vec<_> = world
+            .trace
+            .iter()
+            .filter(|effect| matches!(effect, Effect::MouseMode(_)))
+            .collect();
+        assert_eq!(modes, vec![&Effect::MouseMode(active)]);
+        assert!(state.launcher().is_some(), "the launcher stays open");
+    }
+}
+
+#[test]
 fn escape_still_quits_when_view_toggles_mouse_mode_during_the_chord() {
     let mut world = World::default();
     let mut state = State::default();
@@ -3323,7 +3344,10 @@ fn one_right_reaches_the_next_controller_without_changing_anything() {
         Some("Xbox Controller")
     );
     assert_eq!(input_effects(&world), Vec::<Effect>::new());
-    assert_eq!(state.settings().input.disabled_controllers, Vec::<String>::new());
+    assert_eq!(
+        state.settings().input.disabled_controllers(),
+        Vec::<String>::new()
+    );
 }
 
 proptest! {
@@ -3355,7 +3379,7 @@ proptest! {
             prop_assert!(input.focus.row < rows.len() && input.focus.col < rows[input.focus.row], "focus is on a tile");
         }
         prop_assert_eq!(input_effects(&world), Vec::<Effect>::new());
-        prop_assert!(state.settings().input.disabled_controllers.is_empty());
+        prop_assert!(state.settings().input.disabled_controllers().is_empty());
         prop_assert_eq!(&state.settings().input.microphone, &MicrophoneChoice::All);
     }
 }
@@ -6419,4 +6443,86 @@ fn the_input_page_sorts_listed_nodes_and_marks_unlisted_ones_gone() {
     assert_eq!(input.audio_source("alsa_input.usb").kind, SourceKind::Microphone);
     assert!(input.audio_source("alsa_output.analog.monitor").kind.loops_back());
     assert_eq!(input.audio_source("unplugged").presence, Presence::Gone);
+}
+
+#[test]
+fn a_pad_with_no_saved_choice_is_on_with_no_own_button() {
+    let state = State::default();
+    let input = &state.settings().input;
+    assert!(input.pads.is_empty());
+    assert!(input.controller_enabled("Xbox Controller"));
+    assert_eq!(input.pad_settings("Xbox Controller").push_to_talk, None);
+}
+
+#[test]
+fn saved_off_pads_and_buttons_land_in_one_settings_entry_per_pad() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::InputChoices {
+            controller: ControllerChoice::Auto,
+            microphone: MicrophoneChoice::All,
+            disabled_controllers: vec!["pad-a".into()],
+            disabled_microphones: Vec::new(),
+        },
+    );
+    let state = world.run(
+        state,
+        Input::ControllerBindings(
+            [
+                ("pad-a".to_owned(), ButtonName::Start),
+                ("pad-b".to_owned(), ButtonName::Record),
+            ]
+            .into(),
+        ),
+    );
+    let input = &state.settings().input;
+    assert_eq!(input.pads.len(), 2);
+    assert!(!input.controller_enabled("pad-a"));
+    assert_eq!(input.pad_settings("pad-a").push_to_talk, Some(ButtonName::Start));
+    assert!(input.controller_enabled("pad-b"));
+    assert_eq!(input.pad_settings("pad-b").push_to_talk, Some(ButtonName::Record));
+    assert_eq!(input.disabled_controllers(), vec!["pad-a".to_owned()]);
+    assert_eq!(input.controller_bindings().len(), 2);
+}
+
+#[test]
+fn an_old_format_pad_file_loads_and_saves_with_the_same_settings() {
+    use std::collections::BTreeSet;
+    let mut world = World::default();
+    // The old files: a disabled list in insertion order with a duplicate, bindings apart.
+    let old_disabled = vec!["pad-b".to_owned(), "pad-a".to_owned(), "pad-b".to_owned()];
+    let old_bindings: std::collections::BTreeMap<String, ButtonName> = [
+        ("pad-c".to_owned(), ButtonName::Start),
+        ("pad-a".to_owned(), ButtonName::Record),
+    ]
+    .into();
+    let state = world.run(
+        State::default(),
+        Input::InputChoices {
+            controller: ControllerChoice::Auto,
+            microphone: MicrophoneChoice::All,
+            disabled_controllers: old_disabled.clone(),
+            disabled_microphones: Vec::new(),
+        },
+    );
+    let state = world.run(state, Input::ControllerBindings(old_bindings.clone()));
+    let input = &state.settings().input;
+    let saved_disabled: BTreeSet<_> = input.disabled_controllers().into_iter().collect();
+    assert_eq!(saved_disabled, old_disabled.into_iter().collect::<BTreeSet<_>>());
+    assert_eq!(input.controller_bindings(), old_bindings);
+}
+
+#[test]
+fn restoring_clears_what_the_saved_files_no_longer_hold() {
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::ControllerBindings([("pad-a".to_owned(), ButtonName::Start)].into()),
+    );
+    let state = world.run(
+        state,
+        Input::ControllerBindings(std::collections::BTreeMap::new()),
+    );
+    assert!(state.settings().input.pads.is_empty());
 }

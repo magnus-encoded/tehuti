@@ -58,9 +58,9 @@ pub enum Input {
     /// The connected pads and their labels, in device path order.
     Controllers(Vec<ControllerInfo>),
     ControllerBindings(std::collections::BTreeMap<String, ButtonName>),
-    /// The saved stick deadzones by pad key, in thousandths.
+    /// The saved stick deadzones by pad id, in thousandths.
     ControllerDeadzones(std::collections::BTreeMap<String, u16>),
-    /// The saved stick rest offsets by pad key: X, Y, right X, right Y, in thousandths of half travel.
+    /// The saved stick rest offsets by pad id: X, Y, right X, right Y, in thousandths of half travel.
     ControllerRecentres(std::collections::BTreeMap<String, [i16; 4]>),
     ActiveController(String),
     /// Reply to [`Effect::ListMicrophones`]: the capture sources found.
@@ -917,11 +917,11 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         } => state.settings.configure_wallpapers(names, locked, current),
         Input::WallpaperSaved(index) => state.settings.wallpaper_saved(index),
         Input::ModeApplied(current) => state.settings.applied(current, &mut effects),
-        Input::ControllerBindings(bindings) => state.settings.input.controller_bindings = bindings,
+        Input::ControllerBindings(bindings) => state.settings.input.restore_bindings(&bindings),
         Input::ControllerDeadzones(deadzones) => state.settings.input.controller_deadzones = deadzones,
         Input::ControllerRecentres(rests) => state.settings.input.controller_recentres = rests,
         Input::ActiveController(name) => {
-            let binding = state.settings.input.controller_bindings.get(&name).copied();
+            let binding = state.settings.input.pad_settings(&name).push_to_talk;
             state.core.set_controller_push_to_talk(binding);
             state.settings.input.active_controller = Some(name);
         }
@@ -931,11 +931,11 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::InputChoices {
             controller,
             microphone,
-            disabled_controllers,
+            disabled_controllers: off_pads,
             disabled_microphones,
         } => state
             .settings
-            .restore_input(controller, microphone, disabled_controllers, disabled_microphones),
+            .restore_input(controller, microphone, &off_pads, disabled_microphones),
         Input::Menu(_)
         | Input::Launcher(_)
         | Input::CloseInvitation
@@ -1812,8 +1812,9 @@ fn launcher_step(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
                 ButtonName::DpadUp,
                 ButtonName::DpadDown,
             ];
-            if launcher.is_invitation() && !own.contains(name) {
-                // The invitation leaves menus, mouse mode and shortcuts working.
+            // View passes through so its double tap toggles mouse mode with the
+            // launcher open; the invitation also leaves menus and shortcuts working.
+            if !own.contains(name) && (launcher.is_invitation() || *name == ButtonName::Select) {
                 return false;
             }
             if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {

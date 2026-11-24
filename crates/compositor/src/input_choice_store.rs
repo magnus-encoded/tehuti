@@ -148,7 +148,7 @@ impl Store {
         )
     }
 
-    /// The saved stick deadzones by pad key, in thousandths of full travel.
+    /// The saved stick deadzones by pad id, in thousandths of full travel.
     /// # Errors
     /// Returns read errors or a deadzone of half the travel or more.
     pub fn controller_deadzones(&self) -> io::Result<std::collections::BTreeMap<String, u16>> {
@@ -178,7 +178,7 @@ impl Store {
         )
     }
 
-    /// The saved stick rest offsets by pad key, in thousandths of half travel.
+    /// The saved stick rest offsets by pad id, in thousandths of half travel.
     /// # Errors
     /// Returns read errors or an offset beyond half the travel.
     pub fn controller_recentres(&self) -> io::Result<std::collections::BTreeMap<String, [i16; 4]>> {

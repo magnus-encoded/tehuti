@@ -78,7 +78,7 @@ impl proptest::arbitrary::Arbitrary for Text {
 }
 
 /// A controller button. Face buttons are named by position: South is A on an Xbox pad.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
 #[serde(rename_all = "snake_case")]
 pub enum ButtonName {
@@ -1672,6 +1672,8 @@ pub enum LayoutAction {
     MaximizeColumn,
 }
 
+/// Headless timing of the plugin JSON and stdio boundary.
+pub mod benchmark;
 mod fuzzy;
 mod plugin;
 pub use fuzzy::*;

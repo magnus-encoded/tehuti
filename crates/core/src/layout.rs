@@ -144,6 +144,22 @@ pub enum WindowKind {
     Helper,
 }
 
+/// A fixed place to open a window. A window opened this way never takes focus or changes
+/// the active workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenAt {
+    /// A new column at these positions, clamped to what exists.
+    Column {
+        /// Workspace position on the focused output.
+        workspace: usize,
+        /// Column position inside that workspace.
+        column: usize,
+    },
+    /// The bottom of the column holding this window. When that window is gone the window
+    /// opens as usual, so the caller names the fallback place itself with [`Self::Column`].
+    StackedUnder(WindowId),
+}
+
 /// Opening properties; applied once, when the window is added.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WindowRules {
@@ -161,6 +177,7 @@ pub struct WindowRules {
     pub open_maximized_to_edges: bool,
     pub open_on_output: Option<OutputId>,
     pub open_on_workspace: Option<String>,
+    pub open_at: Option<OpenAt>,
 }
 
 /// Rectangles in global logical coordinates.
@@ -493,6 +510,20 @@ struct Workspace {
     view: f64,
 }
 
+impl Workspace {
+    /// Inserts without taking focus; the focused column stays the same column.
+    fn insert_at_column(&mut self, column: Column, wanted: usize) -> usize {
+        let position = wanted.min(self.columns.len());
+        self.columns.insert(position, column);
+        match self.focused {
+            Some(focused) if position <= focused => self.focused = Some(focused.saturating_add(1)),
+            Some(_) => {}
+            None => self.focused = Some(position),
+        }
+        position
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Output {
     identity: OutputId,
@@ -511,6 +542,16 @@ pub struct Layout {
     next_workspace: u64,
     disconnected: Vec<(OutputId, WorkspaceId)>,
     detached: Vec<Workspace>,
+}
+
+const fn opening_mode(rules: &WindowRules) -> TileMode {
+    if rules.open_fullscreen {
+        TileMode::Fullscreen
+    } else if rules.open_maximized_to_edges {
+        TileMode::MaximizedToEdges
+    } else {
+        TileMode::Normal
+    }
 }
 
 impl Layout {
@@ -760,11 +801,33 @@ impl Layout {
         );
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let workspace = named.map_or(self.outputs[output].active, |(_, workspace)| workspace);
+        if let Some((placed_output, placed_workspace)) = self.placed_target(rules.open_at, output) {
+            return Ok((placed_output, placed_workspace, false));
+        }
         Ok((
             output,
             workspace,
             rules.open_focused.unwrap_or(output == fallback),
         ))
+    }
+    /// The output and workspace a fixed place opens on, if it names a usable one.
+    fn placed_target(&self, place: Option<OpenAt>, output: usize) -> Option<(usize, usize)> {
+        match place? {
+            OpenAt::Column { workspace, .. } => {
+                let last = self.outputs.get(output)?.workspaces.len().saturating_sub(1);
+                Some((output, workspace.min(last)))
+            }
+            OpenAt::StackedUnder(sibling) => self
+                .find_window(sibling)
+                .map(|(found, workspace, _, _)| (found, workspace)),
+        }
+    }
+    fn stack_tile(&mut self, output: usize, workspace: usize, column: usize, tile: Tile) -> usize {
+        #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
+        self.outputs[output].workspaces[workspace].columns[column]
+            .tiles
+            .push(tile);
+        column
     }
     fn insert_window(
         &mut self,
@@ -779,13 +842,7 @@ impl Layout {
         let previous = self.outputs[output].workspaces[workspace].focused_window();
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let view = self.outputs[output].workspaces[workspace].view;
-        let mode = if rules.open_fullscreen {
-            TileMode::Fullscreen
-        } else if rules.open_maximized_to_edges {
-            TileMode::MaximizedToEdges
-        } else {
-            TileMode::Normal
-        };
+        let mode = opening_mode(rules);
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let anchor = self.outputs[output].column_x(
             workspace,
@@ -803,6 +860,11 @@ impl Layout {
             fullscreen_view: None,
             client_fullscreen: false,
         };
+        if let Some(OpenAt::StackedUnder(sibling)) = rules.open_at
+            && let Some((_, _, position, _)) = self.find_window(sibling)
+        {
+            return self.stack_tile(output, workspace, position, tile);
+        }
         let width = if rules.open_maximized {
             Some(PresetSize::Proportion(1.0_f64))
         } else {
@@ -823,6 +885,9 @@ impl Layout {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]
         let target = &mut self.outputs[output].workspaces[workspace];
         target.original_output = Some(output_id);
+        if let Some(OpenAt::Column { column: wanted, .. }) = rules.open_at {
+            return target.insert_at_column(column, wanted);
+        }
         let position = target
             .focused
             .map_or(target.columns.len(), |index| index.saturating_add(1));
@@ -904,13 +969,18 @@ impl Layout {
     /// # Errors
     /// Returns an error for an unknown output or invalid geometry.
     pub fn update_output(&mut self, identity: OutputId, geometry: OutputGeometry) -> Result<(), LayoutError> {
+        let index = self
+            .outputs
+            .iter()
+            .position(|output| output.identity == identity)
+            .ok_or(LayoutError::UnknownOutput(identity))?;
         let output = self
             .outputs
-            .iter_mut()
-            .find(|output| output.identity == identity)
+            .get_mut(index)
             .ok_or(LayoutError::UnknownOutput(identity))?;
         validate_output(geometry, &output.config)?;
         output.geometry = geometry;
+        self.scroll(index, None, false);
         Ok(())
     }
 
@@ -1192,17 +1262,21 @@ impl Layout {
             .filter(|(index, _)| *index != output)
             .filter_map(|(index, candidate)| {
                 let other = candidate.geometry.area;
-                let distance = match direction {
-                    Direction::Left if other.x < area.x => area.x.sub(other.x),
-                    Direction::Right if other.x > area.x => other.x.sub(area.x),
-                    Direction::Upward if other.y < area.y => area.y.sub(other.y),
-                    Direction::Downward if other.y > area.y => other.y.sub(area.y),
+                let (distance, across) = match direction {
+                    Direction::Left if other.x < area.x => (area.x.sub(other.x), other.y.sub(area.y).abs()),
+                    Direction::Right if other.x > area.x => (other.x.sub(area.x), other.y.sub(area.y).abs()),
+                    Direction::Upward if other.y < area.y => (area.y.sub(other.y), other.x.sub(area.x).abs()),
+                    Direction::Downward if other.y > area.y => {
+                        (other.y.sub(area.y), other.x.sub(area.x).abs())
+                    }
                     _ => return None,
                 };
-                Some((index, distance))
+                Some((index, distance, across))
             })
-            .min_by(|(_, left), (_, right)| left.total_cmp(right))
-            .map(|(index, _)| index)
+            .min_by(|(_, left, left_across), (_, right, right_across)| {
+                left.total_cmp(right).then(left_across.total_cmp(right_across))
+            })
+            .map(|(index, _, _)| index)
     }
     fn move_column(&mut self, output: usize, destination: usize, workspace: usize) {
         #[expect(clippy::indexing_slicing, reason = "Layout-owned index.")]

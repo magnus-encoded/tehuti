@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 tehuti-protocol = { path = "../protocol" }
+zeroize = "1"
 
 [dev-dependencies]
 toml = "1.1"

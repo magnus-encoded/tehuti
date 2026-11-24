@@ -67,9 +67,24 @@ if [ "${1:-}" = --check ]; then
     exit 0
 fi
 
+# On the latest channel, name a newer pre-release (never switch channels on its own).
+hint() {
+    [ "$channel" = latest ] || return 0
+    curl -fsSL -H 'Accept: application/vnd.github+json' \
+        "https://api.github.com/repos/$repo/releases?per_page=30" > "$work/releases.json" 2>/dev/null || return 0
+    pre=$(jq -r --arg p "$asset_pattern" --arg t "$latest" '
+        ([.[] | .tag_name] | index($t)) as $i
+        | [.[0:($i // length)][] | select((.draft | not) and .prerelease
+            and any(.assets[]; .name | test($p; "i")))][0].tag_name // empty' "$work/releases.json" 2>/dev/null) || return 0
+    [ -z "$pre" ] || say "newer pre-release $pre exists; to get it run: TEHUTI_CHANNEL=prerelease tehuti-update (fish: set -Ux TEHUTI_CHANNEL prerelease)"
+}
+
 installed=$(tag_of tehuti)
-[ "$latest" != "$installed" ] || exit 0
-[ "$latest" != "$(cat "$lib/tehuti.skip" 2>/dev/null)" ] || exit 0
+if [ "$latest" = "$installed" ] || [ "$latest" = "$(cat "$lib/tehuti.skip" 2>/dev/null)" ]; then
+    say "channel $channel: kept $installed (newest on this channel is $latest)"
+    hint
+    exit 0
+fi
 [ -n "$url" ] || { say "$latest has no asset matching '$asset_pattern'"; exit 1; }
 
 name=${url##*/}
@@ -113,4 +128,5 @@ if [ -f "$work/x/wallpapers.pak" ]; then
     cp "$work/x/wallpapers.pak" "$data/wallpapers.pak.new"
     mv -f "$data/wallpapers.pak.new" "$data/wallpapers.pak"
 fi
-say "installed $latest; fallback is $(tag_of tehuti.prev). Restart Tehuti to use it."
+say "channel $channel: installed $latest (was $installed); fallback is $(tag_of tehuti.prev). Restart Tehuti to use it."
+hint

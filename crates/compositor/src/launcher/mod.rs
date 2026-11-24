@@ -296,10 +296,24 @@ impl Session {
     }
 
     pub(crate) fn launch_application(&mut self, entry: &str, socket: Option<&std::ffi::OsStr>) -> bool {
+        self.launch_with_token(entry, socket, None)
+    }
+
+    /// Launches an entry; a restore launch carries its token in the environment.
+    pub(crate) fn launch_with_token(
+        &mut self,
+        entry: &str,
+        socket: Option<&std::ffi::OsStr>,
+        token: Option<usize>,
+    ) -> bool {
         let result = socket
             .ok_or_else(|| "no compositor socket".to_owned())
             .and_then(|socket| {
-                let launch = crate::desktop::launch_for(entry, socket)?.labelled(&self.display_name(entry));
+                let mut launch =
+                    crate::desktop::launch_for(entry, socket)?.labelled(&self.display_name(entry));
+                if let Some(token) = token {
+                    launch = launch.with_env(crate::session_restore::TOKEN_VARIABLE, token.to_string());
+                }
                 self.children.start(&launch, Instant::now())
             });
         match result {

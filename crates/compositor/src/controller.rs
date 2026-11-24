@@ -11,10 +11,10 @@ use tracing::warn;
 
 use crate::input::InputSource;
 
-/// Labels pads in path order and keys them through `roster`; see [`PadRoster::observe`].
+/// Labels pads in path order and keys them through `pads`; see [`Pads::observe`].
 #[must_use]
 pub fn keyed_controllers(
-    roster: &mut tehuti_core::pad::PadRoster,
+    pads: &mut tehuti_core::pad::Pads,
     devices: impl IntoIterator<Item = tehuti_core::pad::PadSighting>,
 ) -> Vec<(std::path::PathBuf, tehuti_core::dispatch::ControllerInfo)> {
     let mut sightings = std::collections::BTreeMap::new();
@@ -24,13 +24,12 @@ pub fn keyed_controllers(
             let _old = sightings.insert(sighting.path.clone(), sighting.name.clone());
         })
         .collect();
-    roster
-        .observe(devices)
+    pads.observe(devices)
         .into_iter()
         .map(|(path, pad)| {
             let info = tehuti_core::dispatch::ControllerInfo {
                 name: sightings.remove(&path).unwrap_or_default(),
-                key: pad.key.as_str().to_owned(),
+                key: pad.pad_id.as_str().to_owned(),
                 label: pad.label,
                 origin: pad.origin,
             };
@@ -44,7 +43,7 @@ pub fn keyed_controllers(
 pub fn numbered_controllers(
     devices: impl IntoIterator<Item = tehuti_core::pad::PadSighting>,
 ) -> Vec<tehuti_core::dispatch::ControllerInfo> {
-    keyed_controllers(&mut tehuti_core::pad::PadRoster::default(), devices)
+    keyed_controllers(&mut tehuti_core::pad::Pads::default(), devices)
         .into_iter()
         .map(|(_, info)| info)
         .collect()
@@ -59,53 +58,144 @@ pub fn open_grabbed(
 ) -> Vec<(std::path::PathBuf, EvdevPad)> {
     pad_candidates(attached)
         .filter(|(path, device)| {
-            let sysfs = path
-                .file_name()
-                .and_then(|node| std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok());
-            accepts_pad(device.input_id().bus_type(), sysfs.as_deref(), device.name(), virtual_pad)
+            let sysfs = path.file_name().and_then(|node| {
+                std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok()
+            });
+            accepts_pad(
+                device.input_id().bus_type(),
+                sysfs.as_deref(),
+                device.name(),
+                virtual_pad,
+            )
         })
         .filter(|(_, device)| {
             device
                 .supported_keys()
                 .is_some_and(|keys| keys.contains(KeyCode::BTN_SOUTH))
         })
-        .filter_map(|(path, mut device)| match grab_nonblocking(&mut device) {
-            Ok(()) => {
-                let mut translator = DpadHat::for_node(
-                    device.input_id().vendor(),
-                    device.input_id().product(),
-                    device.name().unwrap_or_default(),
-                );
-                if let Ok(axes) = device.get_absinfo() {
-                    for (axis, info) in axes {
-                        translator.set_trigger_range(axis, info.minimum(), info.maximum());
-                    }
-                }
-                tracing::debug!(
-                    name = device.name().unwrap_or("unnamed"),
-                    vendor = device.input_id().vendor(),
-                    identity = ?translator.identity,
-                    "controller face layout selected"
-                );
-                match Device::open(&path) {
-                    Ok(probe) => {
-                        let sysfs = path.file_name().and_then(|node| {
-                            std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok()
-                        });
-                        Some((path, EvdevPad::new(device, probe, translator).with_sysfs(sysfs)))
-                    }
-                    Err(error) => {
-                        warn!(%error, "controller probe open failed; skipping it");
-                        None
-                    }
+        .filter_map(|(path, device)| acquire(device).map(|device| (path, device)))
+        .filter_map(|(path, device)| {
+            let mut translator = DpadHat::for_node(
+                device.input_id().vendor(),
+                device.input_id().product(),
+                device.name().unwrap_or_default(),
+            );
+            if let Ok(axes) = device.get_absinfo() {
+                for (axis, info) in axes {
+                    translator.set_trigger_range(axis, info.minimum(), info.maximum());
                 }
             }
-            Err(error) => {
-                warn!(%error, name = device.name().unwrap_or("unnamed"), "controller grab failed; skipping it");
-                None
+            tracing::debug!(
+                name = device.name().unwrap_or("unnamed"),
+                vendor = device.input_id().vendor(),
+                identity = ?translator.identity,
+                "controller face layout selected"
+            );
+            match Device::open(&path) {
+                Ok(probe) => {
+                    let sysfs = path.file_name().and_then(|node| {
+                        std::fs::canonicalize(std::path::Path::new("/sys/class/input").join(node)).ok()
+                    });
+                    warn_readable_hidraw(device.name().unwrap_or("unnamed"), sysfs.as_deref());
+                    Some((path, EvdevPad::new(device, probe, translator).with_sysfs(sysfs)))
+                }
+                Err(error) => {
+                    warn!(%error, "controller probe open failed; skipping it");
+                    None
+                }
             }
         })
         .collect()
+}
+
+/// Returns a candidate only after exclusive, nonblocking acquisition succeeds.
+pub fn acquire<D: GrabDevice>(mut device: D) -> Option<D> {
+    match grab_nonblocking(&mut device) {
+        Ok(()) => Some(device),
+        Err(error) => {
+            warn!(%error, "controller grab failed; skipping it");
+            None
+        }
+    }
+}
+
+/// The hidraw nodes of one HID device, and the physical path its udev rules can match.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct HidrawSiblings {
+    /// Node names such as `hidraw3`.
+    pub nodes: Vec<String>,
+    /// The device's `HID_PHYS`, when its uevent names one.
+    pub phys: Option<String>,
+}
+
+/// The hidraw nodes that belong to the same HID device as a pad's event node.
+///
+/// `sysfs` is the canonical sysfs path of the event node. The walk stops at the first ancestor
+/// whose subsystem is `hid`, so a parent device's hidraw nodes are never picked.
+#[must_use]
+pub fn hidraw_siblings(sysfs: &std::path::Path) -> HidrawSiblings {
+    let hid = sysfs.ancestors().skip(1).find(|ancestor| {
+        std::fs::canonicalize(ancestor.join("subsystem"))
+            .ok()
+            .and_then(|subsystem| subsystem.file_name().map(|name| name == "hid"))
+            .unwrap_or(false)
+    });
+    let Some(hid) = hid else {
+        return HidrawSiblings::default();
+    };
+    let mut nodes: Vec<String> = std::fs::read_dir(hid.join("hidraw"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    nodes.sort();
+    let phys = std::fs::read_to_string(hid.join("uevent")).ok().and_then(|text| {
+        text.lines()
+            .find_map(|line| line.strip_prefix("HID_PHYS=").map(str::to_owned))
+    });
+    HidrawSiblings { nodes, phys }
+}
+
+/// The warning for a grabbed pad whose hidraw siblings stay readable, or `None` when all are closed.
+/// A grab only covers the event node; a readable hidraw node still feeds other programs.
+#[must_use]
+pub fn hidraw_warning(
+    pad: &str,
+    siblings: &HidrawSiblings,
+    readable: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let open: Vec<&str> = siblings
+        .nodes
+        .iter()
+        .map(String::as_str)
+        .filter(|node| readable(node))
+        .collect();
+    if open.is_empty() {
+        return None;
+    }
+    let phys = siblings.phys.as_deref().unwrap_or("<pad phys>");
+    Some(format!(
+        "grabbed pad {pad} is still readable through /dev/{}; other programs can read it regardless of focus. \
+         Restrict it with a udev rule such as: KERNEL==\"hidraw*\", ENV{{HID_PHYS}}==\"{phys}\", TAG-=\"uaccess\", MODE=\"0600\"",
+        open.join(", /dev/")
+    ))
+}
+
+/// Warns once per grabbed pad when a sibling hidraw node is readable by this user.
+fn warn_readable_hidraw(name: &str, sysfs: Option<&std::path::Path>) {
+    let Some(sysfs) = sysfs else { return };
+    let siblings = hidraw_siblings(sysfs);
+    let readable = |node: &str| {
+        rustix::fs::access(
+            std::path::Path::new("/dev").join(node),
+            rustix::fs::Access::READ_OK,
+        )
+        .is_ok()
+    };
+    if let Some(message) = hidraw_warning(name, &siblings, readable) {
+        warn!("{message}");
+    }
 }
 
 /// True while a Wii remote's nunchuk extension node exists; it has no south button, so it is
@@ -2730,5 +2820,21 @@ mod remote_tests {
                 state: ButtonState::Pressed
             }]
         );
+    }
+}
+
+/// Polls discovery and reports a reconnect only after the scan installs a controller.
+#[must_use]
+pub fn scan_discovery(
+    state: Discovery,
+    now: core::time::Duration,
+    rescan: bool,
+    scan: impl FnOnce() -> bool,
+) -> (Discovery, Option<DiscoveryEffect>) {
+    let (next, effect) = discover(state, DiscoveryInput::Poll { now, rescan });
+    if effect == Some(DiscoveryEffect::Scan) && scan() {
+        discover(next, DiscoveryInput::Found)
+    } else {
+        (next, None)
     }
 }
