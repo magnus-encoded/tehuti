@@ -876,7 +876,16 @@ impl Compositor {
     /// Whether Tehuti holds `button` from the virtual pad; reads only, so a new mirror can ask.
     #[must_use]
     pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
-        (button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded())
+        let core = self.dispatch.core();
+        (button == tehuti_protocol::ButtonName::Guide
+            && core
+                .pad_button_owner(
+                    &self.virtual_pad_buttons,
+                    false,
+                    button,
+                    tehuti_core::ownership::Phase::Pressed,
+                )
+                .hides_from_pad(core.guide_forwarded()))
             || self.chord_buttons.contains(&button)
             || self.virtual_pad_talk.contains(&button)
             || self
@@ -891,56 +900,57 @@ impl Compositor {
         button: tehuti_protocol::ButtonName,
         state: tehuti_protocol::ButtonState,
     ) -> bool {
-        let push_to_talk = self.dispatch.core().talk_buttons().0;
+        use tehuti_core::ownership::{Owner, Phase, Why};
+        let push_to_talk = self.dispatch.core().talk_buttons().0.to_vec();
         let mut talk = self.virtual_pad_talk.contains(&button);
-        match state {
+        let chorded = self.chord_buttons.contains(&button);
+        let owner = match state {
             tehuti_protocol::ButtonState::Pressed => {
                 if !self.virtual_pad_buttons.contains(&button) {
                     self.virtual_pad_buttons.push(button);
                 }
-                if !push_to_talk.is_empty()
-                    && push_to_talk.contains(&button)
-                    && push_to_talk
-                        .iter()
-                        .all(|member| self.virtual_pad_buttons.contains(member))
-                {
-                    for member in push_to_talk {
-                        if !self.virtual_pad_talk.contains(member) {
-                            self.virtual_pad_talk.push(*member);
-                        }
-                    }
-                    talk = true;
-                }
+                Some(self.dispatch.core().pad_button_owner(
+                    &self.virtual_pad_buttons,
+                    chorded,
+                    button,
+                    Phase::Pressed,
+                ))
             }
             tehuti_protocol::ButtonState::Released => {
                 self.virtual_pad_buttons.retain(|held| *held != button);
                 self.virtual_pad_talk.retain(|held| *held != button);
+                None
             }
+        };
+        // Talk loses to a higher layer, including Guide and the system menu.
+        if let Some(Owner::Talk(_)) = owner {
+            for member in &push_to_talk {
+                if !self.virtual_pad_talk.contains(member) {
+                    self.virtual_pad_talk.push(*member);
+                }
+            }
+            talk = true;
         }
         let plugin = self
             .plugins
             .as_mut()
-            .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk));
+            .is_some_and(|plugins| plugins.pad_button(button, state, &push_to_talk));
         // Guide reaches the application only at the app level and only when the context forwards it.
-        let local_guide =
-            button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded();
+        let guide_forwarded = self.dispatch.core().guide_forwarded();
+        let local_guide = button == tehuti_protocol::ButtonName::Guide && !guide_forwarded;
         // Start pressed while Guide is held belongs to the escape chord in every mode, and so does its release.
-        // Guide is read from this hook's own held list: a batch of raw events reaches here before the core sees any.
-        let chord_start = if button != tehuti_protocol::ButtonName::Start {
-            false
-        } else if state == tehuti_protocol::ButtonState::Pressed {
-            if self
-                .virtual_pad_buttons
-                .contains(&tehuti_protocol::ButtonName::Guide)
-                && !self.chord_buttons.contains(&button)
-            {
-                self.chord_buttons.push(button);
+        let chord_start = match owner {
+            Some(Owner::Tehuti(Why::ChordStart)) => {
+                if !chorded {
+                    self.chord_buttons.push(button);
+                }
+                true
             }
-            self.chord_buttons.contains(&button)
-        } else {
-            let chorded = self.chord_buttons.contains(&button);
-            self.chord_buttons.retain(|held| *held != button);
-            chorded
+            Some(_) => chorded,
+            None => {
+                self.chord_buttons.retain(|held| *held != button);
+                chorded
+            }
         };
         talk || plugin || local_guide || chord_start
     }

@@ -1163,6 +1163,15 @@ mod synthetic_pad {
     }
 
     impl ApplicationPad {
+        fn keys(&self) -> Vec<(u16, i32)> {
+            self.delivered
+                .borrow()
+                .iter()
+                .filter(|event| event.event_type() == evdev::EventType::KEY)
+                .map(|event| (event.code(), event.value()))
+                .collect()
+        }
+
         fn mirror_button(
             &self,
             compositor: &mut Compositor,
@@ -1237,7 +1246,7 @@ mod synthetic_pad {
 
     #[test]
     fn synthetic_pad_mirror_hides_guide_chord_start_and_only_winning_talk() {
-        use evdev::{EventType, KeyCode};
+        use evdev::KeyCode;
         use tehuti::controller::{DpadHat, EvdevPad};
 
         for (guide, menu_open) in [
@@ -1287,13 +1296,6 @@ mod synthetic_pad {
             for value in [1, 0] {
                 application.mirror_button(&mut compositor, &mut pad, KeyCode::KEY_RECORD, value);
             }
-            let keys: Vec<_> = application
-                .delivered
-                .borrow()
-                .iter()
-                .filter(|event| event.event_type() == EventType::KEY)
-                .map(|event| (event.code(), event.value()))
-                .collect();
             let mut expected = Vec::new();
             if guide != "tehuti" {
                 expected.extend([(KeyCode::BTN_MODE.code(), 1), (KeyCode::BTN_MODE.code(), 0)]);
@@ -1301,7 +1303,11 @@ mod synthetic_pad {
             if menu_open {
                 expected.extend([(KeyCode::KEY_RECORD.code(), 1), (KeyCode::KEY_RECORD.code(), 0)]);
             }
-            assert_eq!(keys, expected, "guide={guide}, menu_open={menu_open}");
+            assert_eq!(
+                application.keys(),
+                expected,
+                "guide={guide}, menu_open={menu_open}"
+            );
         }
     }
 
