@@ -605,6 +605,16 @@ mod tests {
         check_terminal_save(MAX_WINDOWS, &"a".repeat(1024));
     }
 
+    #[test]
+    fn terminal_saves_accept_the_size_cap_and_reject_one_byte_more() {
+        let cap = usize::try_from(MAX_FILE_BYTES).unwrap();
+        let overhead = terminal_session_file(1, "a").to_text().len() - 1;
+        let identity = "a".repeat(cap - overhead);
+        assert_eq!(terminal_session_file(1, &identity).to_text().len(), cap);
+        check_terminal_save(1, &identity);
+        check_terminal_save(1, &(identity + "a"));
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
         #[test]
