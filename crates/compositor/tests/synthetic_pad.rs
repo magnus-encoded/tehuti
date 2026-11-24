@@ -1286,7 +1286,7 @@ mod synthetic_pad {
             let display: Display<Compositor> = Display::new().unwrap();
             let mut compositor = instant_compositor(&display);
             compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!(
-                    "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = 'record'"
+                    "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = ['record']"
                 )).unwrap()]);
             let mut synthetic = SyntheticPad::default();
             synthetic.push(Event::Focus {
