@@ -36,7 +36,9 @@ impl ApiKey {
 
     #[must_use]
     pub fn new(value: String) -> Option<Self> {
-        let printable = value.chars().all(|character| character.is_ascii_graphic());
+        let printable = value
+            .chars()
+            .all(|character| character.is_ascii_graphic() && !matches!(character, '"' | '\\'));
         (printable && !value.is_empty()).then_some(Self(value))
     }
 }
@@ -180,13 +182,54 @@ fn thousandths(fraction: f64) -> u16 {
 
 /// Posts through `curl`, so the key never appears in the argument list and no
 /// network library is linked.
-#[derive(Debug, Default)]
-pub struct Curl;
+#[derive(Debug)]
+pub struct Curl {
+    program: PathBuf,
+}
+
+impl Default for Curl {
+    fn default() -> Self {
+        Self::program_at("curl".into())
+    }
+}
+
+impl Curl {
+    /// The package that provides the program, for the missing-program warning.
+    pub const PACKAGE: &'static str = "curl";
+
+    #[must_use]
+    pub const fn program_at(program: PathBuf) -> Self {
+        Self { program }
+    }
+
+    /// Whether the program can be started; warns once with the package name when it cannot.
+    #[must_use]
+    pub fn available(&self) -> bool {
+        match std::process::Command::new(&self.program)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+        {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    package = Self::PACKAGE,
+                    "the speech resolver needs curl; install the package to use it"
+                );
+                false
+            }
+        }
+    }
+}
 
 impl Transport for Curl {
     fn post(&self, key: &ApiKey, body: &str, deadline: Duration) -> io::Result<String> {
-        let mut child = crate::child_process::command("curl")
+        let mut child = crate::child_process::command(&self.program)
             .args([
+                "-q",
                 "--silent",
                 "--fail",
                 "--max-time",
