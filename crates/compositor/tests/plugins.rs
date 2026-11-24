@@ -1039,6 +1039,37 @@ for line in sys.stdin:
         }
     }
 
+    #[test]
+    fn a_verb_plugin_shows_pending_without_focus_then_posts_a_reply_notice() {
+        let mut configuration = manifest();
+        configuration.kind = tehuti_protocol::PluginKind::Verb;
+        configuration.verbs = vec!["ada".into()];
+        configuration.app_ids.clear();
+        configuration.events = vec![Subscription::Speech];
+        configuration.permissions.clear();
+        let mut harness = Harness::with_script(
+            &configuration,
+            include_str!("fixtures/plugins/plugin-reply-notice.py"),
+        );
+        harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1);
+        settle(&mut harness);
+        assert!(has_pending_chip(&harness));
+        harness.send([speech("ada review this")]);
+        harness.pump_until(|harness| harness.compositor.visible_notice().is_some());
+        assert_eq!(harness.compositor.visible_notice().unwrap().1, "Review complete");
+        settle(&mut harness);
+        assert!(!has_pending_chip(&harness));
+    }
+
+    fn has_pending_chip(harness: &Harness) -> bool {
+        harness
+            .compositor
+            .voice_bar()
+            .segments()
+            .iter()
+            .any(|segment| segment.text == "Ada pending")
+    }
+
     fn verb_harness(verbs: &[&str], accept: bool) -> Harness {
         let mut configuration = manifest();
         configuration.kind = tehuti_protocol::PluginKind::Verb;

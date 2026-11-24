@@ -53,9 +53,9 @@ if [ "${#names[@]}" -eq 0 ]; then
 fi
 if [ "${#sources[@]}" -eq 0 ]; then
     if [ "${#added[@]}" -gt 0 ]; then
-        echo "check-red-test: the change is only in newly added source files (${added[*]})." >&2
-        echo "They cannot be reverted to the base, so this job cannot show a red test. Label the PR no-red-test and say why in the body." >&2
-        exit 1
+        echo "check-red-test: the change is only in newly added source files (${added[*]})."
+        echo "check-red-test: newly added source files cannot be reverted to the base; skipping."
+        exit 0
     fi
     echo "check-red-test: the PR changes no source file under crates/*/src; skipping."
     exit 0

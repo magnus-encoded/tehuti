@@ -1441,71 +1441,24 @@ mod synthetic_pad {
         }
     }
 
-    #[test]
-    fn synthetic_pad_mirror_hides_guide_chord_start_and_only_winning_talk() {
-        for (guide, menu_open) in [
-            ("tehuti", false),
-            ("both", false),
-            ("app", false),
-            ("tehuti", true),
-            ("both", true),
-        ] {
-            assert_mirrored_guide_and_talk(guide, menu_open);
-        }
-    }
-
-    fn assert_mirrored_guide_and_talk(guide: &str, menu_open: bool) {
+    fn mirror_guide_start_chord(
+        application: &ApplicationPad,
+        compositor: &mut Compositor,
+        pad: &mut tehuti::controller::EvdevPad<ApplicationPad>,
+    ) {
         use evdev::KeyCode;
-        use tehuti::controller::{DpadHat, EvdevPad};
 
-        let display: Display<Compositor> = Display::new().unwrap();
-        let mut compositor = instant_compositor(&display);
-        compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!(
-                "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = ['select']"
-            )).unwrap()]);
-        let mut synthetic = SyntheticPad::default();
-        synthetic.push(Event::Focus {
-            app_id: Some("org.example.Pad".into()),
-            title: String::new(),
-        });
-        route(&mut compositor, &mut synthetic).unwrap();
-        let application = ApplicationPad::default();
-        let mut pad = EvdevPad::new(application.clone(), application.clone(), DpadHat::default());
-        assert!(
-            pad.set_mirror(compositor.virtual_pad(), &|button| {
-                compositor.virtual_pad_consumed(button)
-            })
-            .unwrap()
-        );
         for (key, value) in [
             (KeyCode::BTN_MODE, 1),
             (KeyCode::BTN_START, 1),
             (KeyCode::BTN_MODE, 0),
             (KeyCode::BTN_START, 0),
         ] {
-            application.mirror_button(&mut compositor, &mut pad, key, value);
+            application.mirror_button(compositor, pad, key, value);
         }
-        if menu_open {
-            open_mirrored_pad_menu(&mut compositor, &mut synthetic);
-        }
-        for value in [1, 0] {
-            application.mirror_button(&mut compositor, &mut pad, KeyCode::BTN_SELECT, value);
-        }
-        let mut expected = Vec::new();
-        if guide != "tehuti" {
-            expected.extend([(KeyCode::BTN_MODE.code(), 1), (KeyCode::BTN_MODE.code(), 0)]);
-        }
-        if menu_open {
-            expected.extend([(KeyCode::BTN_SELECT.code(), 1), (KeyCode::BTN_SELECT.code(), 0)]);
-        }
-        assert_eq!(
-            application.keys(),
-            expected,
-            "guide={guide}, menu_open={menu_open}"
-        );
     }
 
-    fn open_mirrored_pad_menu(compositor: &mut Compositor, synthetic: &mut SyntheticPad) {
+    fn open_menu_with_synthetic_guide_hold(compositor: &mut Compositor, synthetic: &mut SyntheticPad) {
         synthetic.push(Event::Button {
             name: ButtonName::Guide,
             state: ButtonState::Pressed,
@@ -1513,17 +1466,64 @@ mod synthetic_pad {
         synthetic.push(Event::Tick {
             elapsed: Duration::from_millis(500),
         });
-        synthetic.push(Event::Button {
-            name: ButtonName::Guide,
-            state: ButtonState::Released,
-        });
         route(compositor, synthetic).unwrap();
-        assert!(
-            compositor
-                .visible_notice_text()
-                .is_some_and(|text| text.contains("SYSTEM MENU")),
-            "Guide hold must open the menu before testing Select"
-        );
+    }
+
+    #[test]
+    fn synthetic_pad_mirror_hides_guide_chord_start_and_only_winning_talk() {
+        use evdev::KeyCode;
+        use tehuti::controller::{DpadHat, EvdevPad};
+
+        for (guide, menu_open) in [
+            ("tehuti", false),
+            ("both", false),
+            ("app", false),
+            ("tehuti", true),
+            ("both", true),
+        ] {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = instant_compositor(&display);
+            compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!(
+                    "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = ['select']"
+                )).unwrap()]);
+            let mut synthetic = SyntheticPad::default();
+            synthetic.push(Event::Focus {
+                app_id: Some("org.example.Pad".into()),
+                title: String::new(),
+            });
+            route(&mut compositor, &mut synthetic).unwrap();
+            let application = ApplicationPad::default();
+            let mut pad = EvdevPad::new(application.clone(), application.clone(), DpadHat::default());
+            assert!(
+                pad.set_mirror(compositor.virtual_pad(), &|button| {
+                    compositor.virtual_pad_consumed(button)
+                })
+                .unwrap()
+            );
+            mirror_guide_start_chord(&application, &mut compositor, &mut pad);
+            if menu_open {
+                open_menu_with_synthetic_guide_hold(&mut compositor, &mut synthetic);
+                assert!(matches!(
+                    compositor.visible_notice(),
+                    Some((tehuti_core::overlay::Overlay::SystemMenu, _))
+                ));
+            }
+            for value in [1, 0] {
+                application.mirror_button(&mut compositor, &mut pad, KeyCode::BTN_SELECT, value);
+            }
+            let mut expected = Vec::new();
+            if guide != "tehuti" {
+                expected.extend([(KeyCode::BTN_MODE.code(), 1), (KeyCode::BTN_MODE.code(), 0)]);
+            }
+            if menu_open {
+                expected.extend([(KeyCode::BTN_SELECT.code(), 1), (KeyCode::BTN_SELECT.code(), 0)]);
+            }
+            assert_eq!(
+                application.keys(),
+                expected,
+                "guide={guide}, menu_open={menu_open}"
+            );
+        }
     }
 
     #[test]

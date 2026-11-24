@@ -79,7 +79,7 @@ the core sends an unknown method to a plugin, the plugin can reply with error
 The core ignores valid plugin `initialize`, `button`, `speech`, `verb`,
 `focus`, `adjuster` and `pad_input` calls. A plugin sends only replies and
 these notices: `actions`, `speech.hints`, `speech.language`, `invoke.words`, `verbs`,
-`pad_overrides` and `status`. It can also send `submit_actions` requests.
+`pad_overrides`, `status` and `notice`. It can also send `submit_actions` requests.
 
 Sometimes an `actions` notice lists a `key` action directly followed by a
 `text` action. Then the core waits 50 ms after the key. After that, it applies
@@ -620,6 +620,18 @@ completed initialization. They have no id, no response and no button deadline.
 They are independent actions. They never complete a pending request. `notice`
 actions are reserved for the core, like `launch` and `close`.
 
+A plugin displays an asynchronous reply with a `notice` notification, after
+initialization. It needs no permission and never types into the focused client:
+
+```json
+{"jsonrpc":"2.0","method":"notice","params":{"text":"Review complete"}}
+```
+
+Text is NUL-free and follows the ordinary notice display rules above. This
+notification does not complete an event. For slow work, reply `{"handled":true}`
+within the speech deadline, set a pending `status`, then post the reply notice
+and clear the status when the work finishes.
+
 Every action requires its matching manifest permission: `key`, `text`, or
 `quit`. This applies to actions in replies, in `submit_actions` and in notices.
 For example, a reply with a `text` action needs the `text` permission. The core
@@ -666,7 +678,7 @@ them has focus. It declares no `verbs`. A verb plugin follows these rules:
 - It has `start` set to `always`.
 
 ```json
-{"kind":"verb","verbs":["ada"],"executable":"./chief.py","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]}
+{"kind":"verb","verbs":["ada"],"executable":"./plugin-reply.py","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]}
 ```
 
 A plugin that needs both behaviours ships as two plugins.
@@ -855,7 +867,7 @@ holds at most 32 characters and no control characters. The core drops a line
 with longer or invalid text, like any invalid line. The status shows only when
 both of these conditions are true:
 
-- The focused application matches the `app_ids` in the manifest of the plugin.
+- The plugin is a verb plugin, or the focused application matches its `app_ids`.
 - The plugin is initialized.
 
 When several plugins qualify, the first in manifest order shows. A plugin exit
