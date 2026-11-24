@@ -443,11 +443,8 @@ impl Owner {
     /// Hides Guide unless forwarded, chord Start, and a winning Talk binding.
     #[must_use]
     pub const fn hides_from_pad(self, guide_forwarded: bool) -> bool {
-        match self {
-            Self::Tehuti(Why::EscapeChord) => !guide_forwarded,
-            Self::Tehuti(Why::ChordStart) | Self::Talk(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::Tehuti(Why::ChordStart) | Self::Talk(_))
+            || (matches!(self, Self::Tehuti(Why::EscapeChord)) && !guide_forwarded)
     }
 }
 

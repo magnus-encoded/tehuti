@@ -1224,11 +1224,14 @@ mod synthetic_pad {
         use tehuti::controller::{DpadHat, EvdevPad};
 
         for guide in ["tehuti", "both", "app"] {
-            for talk in ["north", "guide"] {
+            for menu_open in [false, true] {
+                if menu_open && guide == "app" {
+                    continue;
+                }
                 let display: Display<Compositor> = Display::new().unwrap();
                 let mut compositor = instant_compositor(&display);
                 compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!(
-                    "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = '{talk}'"
+                    "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = 'record'"
                 )).unwrap()]);
                 let mut synthetic = SyntheticPad::default();
                 synthetic.push(Event::Focus {
@@ -1249,11 +1252,28 @@ mod synthetic_pad {
                     (KeyCode::BTN_START, 1),
                     (KeyCode::BTN_MODE, 0),
                     (KeyCode::BTN_START, 0),
-                    (KeyCode::BTN_NORTH, 1),
-                    (KeyCode::BTN_NORTH, 0),
                 ] {
                     application.pending.borrow_mut().extend([
                         InputEvent::new(EventType::KEY.0, key.code(), value),
+                        InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
+                    ]);
+                    pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                        .unwrap();
+                    route(&mut compositor, &mut pad).unwrap();
+                }
+                if menu_open {
+                    synthetic.push(Event::Button {
+                        name: ButtonName::Guide,
+                        state: ButtonState::Pressed,
+                    });
+                    synthetic.push(Event::Tick {
+                        elapsed: Duration::from_millis(500),
+                    });
+                    route(&mut compositor, &mut synthetic).unwrap();
+                }
+                for value in [1, 0] {
+                    application.pending.borrow_mut().extend([
+                        InputEvent::new(EventType::KEY.0, KeyCode::KEY_RECORD.code(), value),
                         InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
                     ]);
                     pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
@@ -1271,10 +1291,10 @@ mod synthetic_pad {
                 if guide != "tehuti" {
                     expected.extend([(KeyCode::BTN_MODE.code(), 1), (KeyCode::BTN_MODE.code(), 0)]);
                 }
-                if talk == "guide" {
-                    expected.extend([(KeyCode::BTN_NORTH.code(), 1), (KeyCode::BTN_NORTH.code(), 0)]);
+                if menu_open {
+                    expected.extend([(KeyCode::KEY_RECORD.code(), 1), (KeyCode::KEY_RECORD.code(), 0)]);
                 }
-                assert_eq!(keys, expected, "guide={guide}, talk={talk}");
+                assert_eq!(keys, expected, "guide={guide}, menu_open={menu_open}");
             }
         }
     }
