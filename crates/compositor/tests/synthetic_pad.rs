@@ -1219,6 +1219,67 @@ mod synthetic_pad {
     }
 
     #[test]
+    fn synthetic_pad_mirror_hides_guide_chord_start_and_only_winning_talk() {
+        use evdev::{EventType, InputEvent, KeyCode, SynchronizationCode};
+        use tehuti::controller::{DpadHat, EvdevPad};
+
+        for guide in ["tehuti", "both", "app"] {
+            for talk in ["north", "guide"] {
+                let display: Display<Compositor> = Display::new().unwrap();
+                let mut compositor = instant_compositor(&display);
+                compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!(
+                    "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = '{talk}'"
+                )).unwrap()]);
+                let mut synthetic = SyntheticPad::default();
+                synthetic.push(Event::Focus {
+                    app_id: Some("org.example.Pad".into()),
+                    title: String::new(),
+                });
+                route(&mut compositor, &mut synthetic).unwrap();
+                let application = ApplicationPad::default();
+                let mut pad = EvdevPad::new(application.clone(), application.clone(), DpadHat::default());
+                assert!(
+                    pad.set_mirror(compositor.virtual_pad(), &|button| {
+                        compositor.virtual_pad_consumed(button)
+                    })
+                    .unwrap()
+                );
+                for (key, value) in [
+                    (KeyCode::BTN_MODE, 1),
+                    (KeyCode::BTN_START, 1),
+                    (KeyCode::BTN_MODE, 0),
+                    (KeyCode::BTN_START, 0),
+                    (KeyCode::BTN_NORTH, 1),
+                    (KeyCode::BTN_NORTH, 0),
+                ] {
+                    application.pending.borrow_mut().extend([
+                        InputEvent::new(EventType::KEY.0, key.code(), value),
+                        InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
+                    ]);
+                    pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                        .unwrap();
+                    route(&mut compositor, &mut pad).unwrap();
+                }
+                let keys: Vec<_> = application
+                    .delivered
+                    .borrow()
+                    .iter()
+                    .filter(|event| event.event_type() == EventType::KEY)
+                    .map(|event| (event.code(), event.value()))
+                    .collect();
+                let mut expected = Vec::new();
+                if guide != "tehuti" {
+                    expected.extend([(KeyCode::BTN_MODE.code(), 1), (KeyCode::BTN_MODE.code(), 0)]);
+                }
+                if talk == "guide" {
+                    expected.extend([(KeyCode::BTN_NORTH.code(), 1), (KeyCode::BTN_NORTH.code(), 0)]);
+                }
+                assert_eq!(keys, expected, "guide={guide}, talk={talk}");
+            }
+        }
+    }
+
+    #[test]
     fn passthrough_y_reaches_the_application_at_app_level_and_opens_keyboard_only_at_column_level() {
         use evdev::{EventType, InputEvent, KeyCode, SynchronizationCode};
         use tehuti::controller::{DpadHat, EvdevPad};

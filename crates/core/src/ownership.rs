@@ -419,9 +419,7 @@ impl State {
                 .collect(),
         }
     }
-}
 
-impl State {
     /// Who gets `button` on the virtual pad, from the mirror's own held list. The mirror sees raw
     /// events before the core does, so Guide, the held buttons and the chord Start come from it.
     #[must_use]
@@ -442,20 +440,13 @@ impl State {
 }
 
 impl Owner {
-    /// Whether the virtual pad keeps `button` from the application. `guide_forwarded` says Guide
-    /// also reaches it. The Guide d-pad chord and the system menu are not hidden here yet.
+    /// Hides Guide unless forwarded, chord Start, and a winning Talk binding.
     #[must_use]
     pub const fn hides_from_pad(self, guide_forwarded: bool) -> bool {
         match self {
             Self::Tehuti(Why::EscapeChord) => !guide_forwarded,
-            Self::Tehuti(Why::GuideDpadChord | Why::SystemMenu | Why::MenuRelease) | Self::App => false,
-            Self::Tehuti(_)
-            | Self::Level
-            | Self::Talk(_)
-            | Self::Plugin
-            | Self::Context { .. }
-            | Self::GlobalLayer
-            | Self::Dropped => true,
+            Self::Tehuti(Why::ChordStart) | Self::Talk(_) => true,
+            _ => false,
         }
     }
 }
@@ -1118,10 +1109,10 @@ mod tests {
     }
 
     proptest! {
-        /// The virtual pad hides chord Start and its Guide, whatever the mode, and passes plain buttons.
+        /// The virtual pad hides chord Start across generated configurations and held buttons.
         #[test]
-        fn the_pad_hook_hides_what_tehuti_owns(forwarded in any::<bool>(), others in buttons()) {
-            let state = State::default();
+        fn the_pad_hook_hides_what_tehuti_owns(forwarded in any::<bool>(), others in buttons(), scenario in scenario()) {
+            let state = scenario.state();
             let held: Vec<ButtonName> = others
                 .into_iter()
                 .filter(|held| !matches!(held, ButtonName::Guide | ButtonName::Start | ButtonName::Record))
@@ -1132,10 +1123,6 @@ mod tests {
             prop_assert!(start.hides_from_pad(forwarded));
             let release = state.pad_button_owner(&[ButtonName::Guide], true, ButtonName::Start, Phase::Released);
             prop_assert!(release.hides_from_pad(forwarded));
-            let guide = state.pad_button_owner(&held, false, ButtonName::Guide, Phase::Pressed);
-            prop_assert_eq!(guide.hides_from_pad(forwarded), !forwarded);
-            let plain = state.pad_button_owner(&[ButtonName::South], false, ButtonName::South, Phase::Pressed);
-            prop_assert!(!plain.hides_from_pad(forwarded));
         }
     }
 

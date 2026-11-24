@@ -877,7 +877,7 @@ impl Compositor {
     #[must_use]
     pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
         let core = self.dispatch.core();
-        let guide = button == tehuti_protocol::ButtonName::Guide
+        (button == tehuti_protocol::ButtonName::Guide
             && core
                 .pad_button_owner(
                     &self.virtual_pad_buttons,
@@ -885,8 +885,7 @@ impl Compositor {
                     button,
                     tehuti_core::ownership::Phase::Pressed,
                 )
-                .hides_from_pad(core.guide_forwarded());
-        guide
+                .hides_from_pad(core.guide_forwarded()))
             || self.chord_buttons.contains(&button)
             || self.virtual_pad_talk.contains(&button)
             || self
@@ -923,6 +922,7 @@ impl Compositor {
                 None
             }
         };
+        // Talk loses to a higher layer, including Guide and the system menu.
         if let Some(Owner::Talk(_)) = owner {
             for member in &push_to_talk {
                 if !self.virtual_pad_talk.contains(member) {
