@@ -21,7 +21,6 @@ mod synthetic_pad {
         os::unix::net::UnixStream,
         sync::{Arc, mpsc},
         thread,
-        time::Instant,
     };
 
     use proptest::prelude::*;
@@ -1346,8 +1345,9 @@ mod synthetic_pad {
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
-        let client = thread::spawn(move || {
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || {
             run_client_with_parent(
                 stream,
                 "player",
@@ -1357,17 +1357,28 @@ mod synthetic_pad {
                 Some("launcher"),
             )
         });
-        let started = Instant::now();
-        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        await_ready(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &receiver,
+        );
         let mut pad = SyntheticPad::default();
         pad.push(Event::Button {
             name: ButtonName::West,
             state: ButtonState::Pressed,
         });
         route(&mut compositor, &mut pad).unwrap();
-        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        await_finished(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &client,
+        );
         assert_eq!(
-            client.join().unwrap().keys,
+            client.join().keys,
             vec![(1, KeyState::Pressed), (1, KeyState::Released)]
         );
     }
@@ -1388,7 +1399,7 @@ mod synthetic_pad {
             ))
             .unwrap(),
         ]);
-        let mut process = std::process::Command::new(shell)
+        let process = std::process::Command::new(shell)
             .args(["-c", "\"$@\" & wait \"$!\"", "launcher"])
             .arg(std::env::current_exe().unwrap())
             .args([
@@ -1399,31 +1410,38 @@ mod synthetic_pad {
             .env("TEHUTI_TEST_CONTEXT_SOCKET", &socket)
             .spawn()
             .unwrap();
-        let started = Instant::now();
+        let mut process = KillOnDrop(process);
+        let mut harness = crate::harness::Harness::new();
         let mut connected = false;
-        while process.try_wait().unwrap().is_none() {
-            if started.elapsed() >= Duration::from_secs(10) {
-                let _killed = process.kill();
-                let _waited = process.wait();
-                panic!("process child did not receive its launcher mapping");
+        let mut handle = display.handle();
+        harness.serve_polled(&mut display, &mut compositor, |compositor| {
+            if process.0.try_wait().unwrap().is_some() {
+                return true;
             }
             if !connected && let Ok((stream, _)) = listener.accept() {
-                let _client = display
-                    .handle()
+                let _client = handle
                     .insert_client(stream, Arc::new(ClientState::default()))
                     .unwrap();
                 connected = true;
             }
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
             compositor.handle(&Event::Button {
                 name: ButtonName::West,
                 state: ButtonState::Pressed,
             });
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
+            false
+        });
         assert!(connected);
-        assert!(process.wait().unwrap().success());
+        assert!(process.0.wait().unwrap().success());
+    }
+
+    /// Kills the child process when a failed wait unwinds, so it never outlives the test.
+    struct KillOnDrop(std::process::Child);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _killed = self.0.kill();
+            let _waited = self.0.wait();
+        }
     }
 
     #[test]
@@ -1651,6 +1669,7 @@ mod synthetic_pad {
             let mut event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
             let (server, client) = UnixStream::pair().unwrap();
             let _client = display.handle().insert_client(server, Arc::new(ClientState::default())).unwrap();
+            let mut harness = crate::harness::Harness::new();
             let (send, receive) = mpsc::channel::<Command>();
             let (reports, snapshots) = mpsc::channel();
             let client = thread::spawn(move || {
@@ -1722,11 +1741,7 @@ mod synthetic_pad {
                     Command::Start if !installed => {
                         compositor.set_plugins(tehuti::plugins::install(&event_loop, directory.path(), |state| state).unwrap());
                         installed = true;
-                        let began = Instant::now();
-                        while compositor.initialized_plugins() == 0 {
-                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
-                            prop_assert!(began.elapsed() < Duration::from_secs(5));
-                        }
+                        crate::harness::pump_until(&mut event_loop, &mut compositor, |compositor| compositor.initialized_plugins() != 0);
                     }
                     Command::Crash if installed => {
                         compositor.handle(&Event::Button {
@@ -1736,21 +1751,16 @@ mod synthetic_pad {
                         let status = std::process::Command::new("kill").arg(pid.trim()).status().unwrap();
                         prop_assert!(status.success());
                         let pressed = compositor.pending_plugin_decisions();
-                        let began = Instant::now();
-                        while compositor.initialized_plugins() != 0 {
-                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
+                        crate::harness::pump_until(&mut event_loop, &mut compositor, |compositor| {
                             compositor.handle(&Event::Tick { elapsed: Duration::ZERO });
-                            prop_assert!(began.elapsed() < Duration::from_secs(5));
-                        }
+                            compositor.initialized_plugins() == 0
+                        });
                         prop_assert_eq!(compositor.pending_plugin_decisions(), 0, "crash releases pending fallbacks");
                         prop_assert_eq!(pressed, usize::from(model.plugin_focus && model.focus.is_some()), "a focused press awaits the plugin");
-                        let failed = Instant::now();
-                        let earliest = failed.checked_add(model.backoff.saturating_sub(Duration::from_millis(20))).unwrap();
-                        while compositor.initialized_plugins() == 0 {
-                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
-                            prop_assert!(failed.elapsed() < model.backoff.saturating_add(Duration::from_secs(5)));
-                        }
-                        prop_assert!(Instant::now() >= earliest, "restart respects model backoff");
+                        // The plugin supervisor keeps real time, so the backoff is waited out for real.
+                        let failed = crate::harness::Stopwatch::start();
+                        crate::harness::pump_until(&mut event_loop, &mut compositor, |compositor| compositor.initialized_plugins() != 0);
+                        prop_assert!(failed.elapsed() >= model.backoff.saturating_sub(Duration::from_millis(20)), "restart respects model backoff");
                         prop_assert_ne!(std::fs::read_to_string(directory.path().join("pid")).unwrap(), pid);
                         model.misses.fill(0);
                         model.backoff = model.backoff.saturating_mul(2).min(Duration::from_secs(30));
@@ -1799,21 +1809,16 @@ mod synthetic_pad {
                 prop_assert_eq!(compositor.pending_plugin_decisions(), requests, "requests remain pending before expiry");
                 if requests > 0 {
                     let pid = std::fs::read_to_string(directory.path().join("pid")).unwrap();
-                    thread::sleep(tehuti_core::plugin::BUTTON_BUDGET.saturating_add(Duration::from_millis(10)));
+                    crate::harness::pump_for(&mut event_loop, &mut compositor, tehuti_core::plugin::BUTTON_BUDGET.saturating_add(Duration::from_millis(10)), |_| {});
                     model.misses[0] = model.misses[0].saturating_add(requests);
                     compositor.handle(&Event::Tick { elapsed: tehuti_core::plugin::BUTTON_BUDGET.saturating_add(Duration::from_millis(10)) });
                     prop_assert_eq!(compositor.pending_plugin_decisions(), 0, "every decision settles");
                     if model.misses[0] >= 3 {
                         prop_assert_eq!(compositor.initialized_plugins(), 0, "three missed decisions stop the plugin");
-                        let failed = Instant::now();
-                        while failed.elapsed() < model.backoff.saturating_sub(Duration::from_millis(20)) {
-                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
-                            prop_assert_eq!(compositor.initialized_plugins(), 0, "restart waits for backoff");
-                        }
-                        while compositor.initialized_plugins() == 0 {
-                            event_loop.dispatch(Duration::from_millis(1), &mut compositor).unwrap();
-                            prop_assert!(failed.elapsed() < model.backoff.saturating_add(Duration::from_secs(5)));
-                        }
+                        crate::harness::pump_for(&mut event_loop, &mut compositor, model.backoff.saturating_sub(Duration::from_millis(20)), |compositor| {
+                            assert_eq!(compositor.initialized_plugins(), 0, "restart waits for backoff");
+                        });
+                        crate::harness::pump_until(&mut event_loop, &mut compositor, |compositor| compositor.initialized_plugins() != 0);
                         prop_assert_ne!(std::fs::read_to_string(directory.path().join("pid")).unwrap(), pid);
                         model.misses[0] = 0;
                         model.backoff = model.backoff.saturating_mul(2).min(Duration::from_secs(30));
@@ -1827,15 +1832,15 @@ mod synthetic_pad {
                     prop_assert!(!compositor.quit_requested(), "disconnect drains held Guide before its quit deadline");
                 }
                 send.send(command).unwrap();
-                let started = Instant::now();
-                let snapshot = loop {
-                    let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-                    event_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
-                    display.flush_clients().unwrap();
-                    if let Ok(snapshot) = snapshots.try_recv() { break snapshot; }
-                    prop_assert!(started.elapsed() < Duration::from_secs(5), "client progresses despite plugins");
-                    thread::yield_now();
-                };
+                // The client replies on a plain channel and plugin timers fire without socket
+                // traffic, so the harness waits in short bounded polls.
+                let mut snapshot = None;
+                harness.serve_polled(&mut display, &mut compositor, |compositor| {
+                    event_loop.dispatch(Duration::ZERO, compositor).unwrap();
+                    snapshot = snapshots.try_recv().ok();
+                    snapshot.is_some()
+                });
+                let snapshot = snapshot.unwrap();
                 prop_assert_eq!((snapshot.0, snapshot.1, snapshot.2.len()), (model.windows.len(), model.focus, model.taps.saturating_mul(2)));
                 let mut held_keys = std::collections::HashSet::new();
                 for (key, state) in snapshot.2 {
@@ -2332,23 +2337,18 @@ mod synthetic_pad {
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
+        let mut harness = crate::harness::Harness::new();
+        let (ready_sender, ready_receiver) = harness.channel();
         let client =
-            thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
-        let began = Instant::now();
+            harness.client(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
         let mut ready = false;
         let mut spoken = false;
         let mut speech_loop = smithay::reexports::calloop::EventLoop::<Compositor>::try_new().unwrap();
         let mut pad = SyntheticPad::default();
-        while !client.is_finished() {
-            assert!(
-                began.elapsed() < Duration::from_secs(5),
-                "speech delivery stalled: client ready={ready}, sidecar ready={}, spoken={spoken}",
-                compositor.speech_ready()
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            speech_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
-            display.flush_clients().unwrap();
+        // The sidecar is a real subprocess whose output arrives through the event loop, so the
+        // harness waits in short bounded polls instead of on a wake.
+        harness.serve_polled(&mut display, &mut compositor, |compositor| {
+            speech_loop.dispatch(Duration::ZERO, compositor).unwrap();
             ready |= ready_receiver.try_recv().is_ok();
             compositor.handle(&Event::Tick {
                 elapsed: Duration::from_millis(10),
@@ -2361,12 +2361,12 @@ mod synthetic_pad {
                         state,
                     });
                 }
-                route(&mut compositor, &mut pad).unwrap();
+                route(compositor, &mut pad).unwrap();
             }
-            thread::sleep(Duration::from_millis(10));
-        }
+            client.has_ended()
+        });
         assert_eq!(
-            client.join().unwrap().keys,
+            client.join().keys,
             vec![(15, KeyState::Pressed), (15, KeyState::Released)],
             "released speech executes focused mapping once"
         );
@@ -2676,11 +2676,24 @@ mod synthetic_pad {
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
-        let client = thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
-        wait_for_focused_plugin(&mut display, &mut compositor, &mut event_loop, &receiver);
-        thread::sleep(Duration::from_millis(150));
-        let started = Instant::now();
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
+        wait_for_focused_plugin(
+            &mut harness,
+            &mut display,
+            &mut compositor,
+            &mut event_loop,
+            &receiver,
+        );
+        // The plugin keeps its own real clock, so the settle time is real, spent in the event loop.
+        crate::harness::pump_for(
+            &mut event_loop,
+            &mut compositor,
+            Duration::from_millis(150),
+            |_| {},
+        );
+        let started = crate::harness::Stopwatch::start();
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {
@@ -2690,21 +2703,18 @@ mod synthetic_pad {
         }
         route(&mut compositor, &mut pad).unwrap();
         if change_focus {
-            change_focus_after_deadline(&mut compositor, &mut pad);
+            change_focus_after_deadline(&mut event_loop, &mut compositor, &mut pad);
         }
-        while !client.is_finished() {
+        harness.serve_polled(&mut display, &mut compositor, |compositor| {
             assert!(
                 started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET,
                 "selected hanging plugin exceeded the client delivery budget"
             );
             compositor.advance_time();
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            event_loop
-                .dispatch(Duration::from_millis(1), &mut compositor)
-                .unwrap();
-            display.flush_clients().unwrap();
-        }
-        let delivered = client.join().unwrap();
+            event_loop.dispatch(Duration::ZERO, compositor).unwrap();
+            client.has_ended()
+        });
+        let delivered = client.join();
         assert!(started.elapsed() < tehuti_core::plugin::BUTTON_LATENCY_BUDGET);
         assert!(started.elapsed() >= tehuti_core::plugin::BUTTON_BUDGET);
         let mut expected_keys = vec![(15, KeyState::Pressed), (15, KeyState::Released)];
@@ -2714,8 +2724,12 @@ mod synthetic_pad {
         assert_eq!(delivered.keys, expected_keys);
     }
 
-    fn change_focus_after_deadline(compositor: &mut Compositor, pad: &mut SyntheticPad) {
-        thread::sleep(Duration::from_millis(150));
+    fn change_focus_after_deadline(
+        event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
+        compositor: &mut Compositor,
+        pad: &mut SyntheticPad,
+    ) {
+        crate::harness::pump_for(event_loop, compositor, Duration::from_millis(150), |_| {});
         compositor.handle(&Event::Focus {
             app_id: Some("other".into()),
             title: String::new(),
@@ -2732,20 +2746,18 @@ mod synthetic_pad {
     }
 
     fn wait_for_focused_plugin(
+        harness: &mut crate::harness::Harness,
         display: &mut Display<Compositor>,
         compositor: &mut Compositor,
         event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
         receiver: &mpsc::Receiver<()>,
     ) {
-        let setup_started = Instant::now();
         let mut focused = false;
-        while !focused || compositor.initialized_plugins() != 1 {
-            assert!(setup_started.elapsed() < Duration::from_secs(5));
-            let _dispatched = display.dispatch_clients(compositor).unwrap();
-            event_loop.dispatch(Duration::from_millis(1), compositor).unwrap();
-            display.flush_clients().unwrap();
+        harness.serve_polled(display, compositor, |compositor| {
+            event_loop.dispatch(Duration::ZERO, compositor).unwrap();
             focused |= receiver.try_recv().is_ok();
-        }
+            focused && compositor.initialized_plugins() == 1
+        });
     }
 
     fn unresponsive_plugin(mode: &str) -> tempfile::TempDir {
@@ -2797,42 +2809,34 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
+        let mut harness = crate::harness::Harness::new();
+        let (ready_sender, ready_receiver) = harness.channel();
         let client =
-            thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
-        let started = Instant::now();
+            harness.client(move || run_client(client_end, "test", ClientTextState::Absent, &ready_sender));
+        let started = crate::harness::Stopwatch::start();
         let mut client_ready = false;
-        loop {
-            assert!(started.elapsed() < Duration::from_secs(5), "{mode} setup stalled");
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            event_loop
-                .dispatch(Duration::from_millis(1), &mut compositor)
-                .unwrap();
-            display.flush_clients().unwrap();
+        // The plugin is a real subprocess that signals readiness through a file and the event
+        // loop, so the harness waits in short bounded polls.
+        harness.serve_polled(&mut display, &mut compositor, |compositor| {
+            event_loop.dispatch(Duration::ZERO, compositor).unwrap();
             client_ready |= ready_receiver.try_recv().is_ok();
-            if client_ready
+            client_ready
                 && directory.path().join("ready").exists()
                 && (mode == "never_read" || compositor.initialized_plugins() == 1)
-            {
-                break;
-            }
-        }
+        });
 
         std::fs::write(directory.path().join("flood"), "").unwrap();
         let mut pad = SyntheticPad::default();
         let delivery_started = overload_then_send_keys(mode, &mut compositor, &mut event_loop, &mut pad);
-        while !client.is_finished() {
+        harness.serve_polled(&mut display, &mut compositor, |compositor| {
             assert!(
                 started.elapsed() < Duration::from_secs(5),
                 "{mode} blocked key delivery"
             );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            event_loop
-                .dispatch(Duration::from_millis(1), &mut compositor)
-                .unwrap();
-            display.flush_clients().unwrap();
-        }
-        let delivered = client.join().unwrap();
+            event_loop.dispatch(Duration::ZERO, compositor).unwrap();
+            client.has_ended()
+        });
+        let delivered = client.join();
         assert_unresponsive_delivery(&delivered, delivery_started.elapsed(), mode);
         assert_escape_deadline(mode, &mut compositor, &mut event_loop, &mut pad);
     }
@@ -2859,7 +2863,7 @@ else:
         compositor: &mut Compositor,
         event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
         pad: &mut SyntheticPad,
-    ) -> Instant {
+    ) -> crate::harness::Stopwatch {
         for _ in 0..2048 {
             pad.push(Event::Focus {
                 app_id: Some("test".into()),
@@ -2874,7 +2878,7 @@ else:
         }
         route(compositor, pad).unwrap();
         event_loop.dispatch(Duration::ZERO, compositor).unwrap();
-        let delivery_started = Instant::now();
+        let delivery_started = crate::harness::Stopwatch::start();
         for name in [ButtonName::South, ButtonName::East] {
             if name == ButtonName::East {
                 pad.push(Event::Focus {
@@ -2909,20 +2913,17 @@ else:
             state: ButtonState::Pressed,
         });
         route(compositor, pad).unwrap();
-        let escape_started = Instant::now();
-        let mut previous_tick = escape_started;
+        let mut escape_started = crate::harness::Stopwatch::start();
         let signal = event_loop.get_signal();
         event_loop
             .run(Some(Duration::from_millis(5)), compositor, |compositor| {
-                let now = Instant::now();
                 assert!(
                     escape_started.elapsed() < Duration::from_secs(4),
                     "{mode} missed escape deadline"
                 );
                 pad.push(Event::Tick {
-                    elapsed: now.duration_since(previous_tick),
+                    elapsed: escape_started.lap(),
                 });
-                previous_tick = now;
                 route(compositor, pad).unwrap();
                 tehuti::input::finish_quit(compositor, pad, &signal).unwrap();
             })
@@ -2972,8 +2973,9 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
-        let client = thread::spawn(move || run_client(client_end, app_id, text_state, &ready_sender));
+        let mut harness = crate::harness::Harness::new();
+        let (ready_sender, ready_receiver) = harness.channel();
+        let client = harness.client(move || run_client(client_end, app_id, text_state, &ready_sender));
 
         let mut pad = SyntheticPad::default();
         for name in if plugin {
@@ -2992,30 +2994,26 @@ else:
         }
         let mut pressed = false;
         let mut client_ready = false;
-        let started = Instant::now();
-        while !client.is_finished() {
-            assert!(
-                started.elapsed() < Duration::from_secs(10),
-                "client never received a key"
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            event_loop.dispatch(Duration::ZERO, &mut compositor).unwrap();
+        // The plugin is a real subprocess that initializes through the event loop, so the harness
+        // waits in short bounded polls instead of on a wake.
+        harness.serve_polled(&mut display, &mut compositor, |compositor| {
+            event_loop.dispatch(Duration::ZERO, compositor).unwrap();
             client_ready |= ready_receiver.try_recv().is_ok();
             if !pressed && client_ready && (!plugin || compositor.initialized_plugins() == 1) {
-                route(&mut compositor, &mut pad).unwrap();
+                route(compositor, &mut pad).unwrap();
                 pressed = true;
             }
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(5));
-        }
+            client.has_ended()
+        });
 
-        client.join().unwrap()
+        client.join()
     }
 
     #[test]
     fn a_context_key_action_holds_the_key_for_the_tap_hold_time() {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
+        let mut clock = crate::harness::FakeClock::install(&mut compositor);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context("app_id = 'test'\n[buttons.east]\nkey = 'escape'").unwrap(),
         ]);
@@ -3024,26 +3022,23 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
-        let worker = thread::spawn(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let worker = harness.client(move || run_client(client_end, "test", ClientTextState::Absent, &sender));
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(synthetic_button(ButtonName::East, state));
         }
         let mut sent = false;
-        let began = Instant::now();
-        while !worker.is_finished() {
-            assert!(began.elapsed() < Duration::from_secs(5), "key delivery stalled");
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            compositor.release_due_keys();
+        harness.serve_turns(&mut display, &mut compositor, |compositor| {
             if !sent && receiver.try_recv().is_ok() {
                 sent = true;
-                route(&mut compositor, &mut pad).unwrap();
+                route(compositor, &mut pad).unwrap();
+                clock.advance(compositor, tehuti_core::tap_hold::TAP_HOLD);
             }
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        let app = worker.join().unwrap();
+            worker.has_ended()
+        });
+        let app = worker.join();
         assert_eq!(app.keys, vec![(1, KeyState::Pressed), (1, KeyState::Released)]);
         let held = app.key_times[1].saturating_sub(app.key_times[0]);
         assert!((40..100).contains(&held), "key was held for {held} ms");
@@ -3246,12 +3241,18 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
-        let client = thread::spawn(move || {
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        let started = Instant::now();
-        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        await_ready(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &receiver,
+        );
         let mut pad = SyntheticPad::default();
         compositor.handle(&Event::Speech {
             text: tehuti_protocol::Text::new("keyboard".into()).unwrap(),
@@ -3261,10 +3262,15 @@ else:
         for key in [Key::Modifier(Modifier::Control), Key::Char('c')] {
             select_osk_key(&mut compositor, &mut pad, key);
         }
-        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        await_finished(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &client,
+        );
         let trace: Vec<_> = client
             .join()
-            .unwrap()
             .keyboard_trace
             .into_iter()
             .skip_while(|event| !matches!(event, Trace::Key(..)))
@@ -3346,22 +3352,33 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
-        let client = thread::spawn(move || {
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        let started = Instant::now();
-        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        await_ready(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &receiver,
+        );
         let shift = Keycode::new(42 + 8);
         let letter_a = Keycode::new(30 + 8);
         compositor.host_key(shift, true);
         compositor.host_key(letter_a, true);
         compositor.host_key(letter_a, false);
         compositor.release_host_keys();
-        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        await_finished(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &client,
+        );
         let trace: Vec<_> = client
             .join()
-            .unwrap()
             .keyboard_trace
             .into_iter()
             .skip_while(|event| !matches!(event, Trace::Key(..)))
@@ -3400,13 +3417,18 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
         let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
         let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        let started = Instant::now();
-        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        await_ready(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &receiver,
+        );
         let destination = compositor.layout_snapshot().focused_window;
         assert!(destination.is_some());
         let meta = Keycode::new(125 + 8);
@@ -3443,6 +3465,10 @@ else:
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the client setup and the five-argument harness waits cannot shrink further"
+    )]
     fn meta_and_arrows_move_focus_without_reaching_the_client() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();
@@ -3453,12 +3479,18 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
-        let client = thread::spawn(move || {
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        let started = Instant::now();
-        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        await_ready(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &receiver,
+        );
         let active = |state: &Compositor| state.layout_snapshot().outputs[0].active_workspace;
         let meta = Keycode::new(125 + 8);
         let up_arrow = Keycode::new(103 + 8);
@@ -3480,10 +3512,15 @@ else:
         }
         compositor.host_key(meta, false);
         compositor.release_host_keys();
-        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        await_finished(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &client,
+        );
         let trace: Vec<_> = client
             .join()
-            .unwrap()
             .keyboard_trace
             .into_iter()
             .skip_while(|event| !matches!(event, Trace::Key(..)))
@@ -3499,6 +3536,10 @@ else:
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the client setup and the five-argument harness waits cannot shrink further"
+    )]
     fn meta_takes_only_arrows_the_client_never_saw_and_moves_once_per_hold() {
         use smithay::input::keyboard::Keycode;
         let mut display: Display<Compositor> = Display::new().unwrap();
@@ -3509,12 +3550,18 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
-        let client = thread::spawn(move || {
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        let started = Instant::now();
-        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        await_ready(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &receiver,
+        );
         let active = |state: &Compositor| state.layout_snapshot().outputs[0].active_workspace;
         let meta = Keycode::new(125 + 8);
         let down_arrow = Keycode::new(108 + 8);
@@ -3539,10 +3586,15 @@ else:
         host_tap(&mut compositor, down_arrow);
         compositor.host_key(meta, false);
         assert_eq!(active(&compositor), 1, "a late release leaves the chord");
-        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
+        await_finished(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &client,
+        );
         let trace: Vec<_> = client
             .join()
-            .unwrap()
             .keyboard_trace
             .into_iter()
             .filter(|event| matches!(event, Trace::Key(..)))
@@ -3574,12 +3626,18 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
-        let client = thread::spawn(move || {
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || {
             run_client_with_app_id(client_end, "test", "test", ClientTextState::Enabled, &sender)
         });
-        let started = Instant::now();
-        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        await_ready(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &receiver,
+        );
         let window_workspace = |state: &Compositor| {
             let snapshot = state.layout_snapshot();
             snapshot.outputs[0]
@@ -3610,8 +3668,14 @@ else:
         compositor.host_key(plain_key, true);
         compositor.host_key(plain_key, false);
         compositor.release_host_keys();
-        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
-        drop(client.join().unwrap());
+        await_finished(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &client,
+        );
+        drop(client.join());
     }
 
     #[test]
@@ -3648,6 +3712,7 @@ else:
         const KEY_X: u32 = 45;
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = instant_compositor(&display);
+        let mut clock = crate::harness::FakeClock::install(&mut compositor);
         compositor.set_contexts(vec![
             tehuti_protocol::parse_context(
                 "app_id = 'mgba-qt'\n[buttons]\nsouth = { key = 'x', hold = true }",
@@ -3659,28 +3724,28 @@ else:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
         let worker =
-            thread::spawn(move || run_client(client_end, "mgba-qt", ClientTextState::Absent, &sender));
-        let mut pressed_at = None;
+            harness.client(move || run_client(client_end, "mgba-qt", ClientTextState::Absent, &sender));
+        let mut pressed = false;
         let mut released = false;
-        let began = Instant::now();
-        while !worker.is_finished() {
-            assert!(
-                began.elapsed() < Duration::from_secs(5),
-                "held key delivery stalled"
-            );
-            let _dispatched = display.dispatch_clients(&mut compositor).unwrap();
-            if pressed_at.is_none() && receiver.try_recv().is_ok() {
-                compositor.handle(&Event::Button {
-                    name: ButtonName::South,
-                    state: ButtonState::Pressed,
-                });
-                pressed_at = Some(Instant::now());
+        // Polled so a later turn comes even when the client sends nothing back.
+        harness.serve_polled(&mut display, &mut compositor, |compositor| {
+            if !pressed {
+                if receiver.try_recv().is_ok() {
+                    compositor.handle(&Event::Button {
+                        name: ButtonName::South,
+                        state: ButtonState::Pressed,
+                    });
+                    pressed = true;
+                    clock.advance(compositor, Duration::from_millis(101));
+                }
+                return false;
             }
-            if !released && pressed_at.is_some_and(|instant| instant.elapsed() > Duration::from_millis(100)) {
+            if !released {
                 assert!(
-                    !worker.is_finished(),
+                    !worker.has_ended(),
                     "the client saw only the press while South was held"
                 );
                 compositor.handle(&Event::Button {
@@ -3689,10 +3754,9 @@ else:
                 });
                 released = true;
             }
-            display.flush_clients().unwrap();
-            thread::sleep(Duration::from_millis(1));
-        }
-        let app = worker.join().unwrap();
+            worker.has_ended()
+        });
+        let app = worker.join();
         assert!(released);
         assert_eq!(
             app.keys,
@@ -4053,43 +4117,33 @@ for line in sys.stdin:
         }
     }
 
-    fn dispatch_until_ready(
+    fn await_ready(
+        harness: &mut crate::harness::Harness,
         display: &mut Display<Compositor>,
         event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
         compositor: &mut Compositor,
         ready: &mpsc::Receiver<()>,
-        started: Instant,
     ) {
-        while ready.try_recv().is_err() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "synthetic client did not focus"
-            );
-            let _dispatched = display.dispatch_clients(compositor).unwrap();
-            event_loop.dispatch(Duration::from_millis(1), compositor).unwrap();
-            display.flush_clients().unwrap();
-        }
+        harness.serve_turns(display, compositor, |compositor| {
+            event_loop.dispatch(Duration::ZERO, compositor).unwrap();
+            ready.try_recv().is_ok()
+        });
     }
 
-    fn dispatch_until_finished(
+    fn await_finished(
+        harness: &mut crate::harness::Harness,
         display: &mut Display<Compositor>,
         event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Compositor>,
         compositor: &mut Compositor,
-        client: &thread::JoinHandle<App>,
-        started: Instant,
+        client: &crate::harness::Client<App>,
     ) {
-        while !client.is_finished() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "secret delivery stalled"
-            );
+        harness.serve_turns(display, compositor, |compositor| {
             compositor.handle(&Event::Tick {
                 elapsed: Duration::from_millis(1),
             });
-            let _dispatched = display.dispatch_clients(compositor).unwrap();
-            event_loop.dispatch(Duration::from_millis(1), compositor).unwrap();
-            display.flush_clients().unwrap();
-        }
+            event_loop.dispatch(Duration::ZERO, compositor).unwrap();
+            client.has_ended()
+        });
     }
 
     fn assert_secret_confirmation_label(compositor: &Compositor) {
@@ -4185,16 +4239,16 @@ for line in sys.stdin:
             .handle()
             .insert_client(server_end, Arc::new(ClientState::default()))
             .unwrap();
-        let (ready_sender, ready_receiver) = crate::harness::silent_channel();
+        let mut harness = crate::harness::Harness::new();
+        let (ready_sender, ready_receiver) = harness.channel();
         let client =
-            thread::spawn(move || run_client(client_end, "test", ClientTextState::Enabled, &ready_sender));
-        let started = Instant::now();
-        dispatch_until_ready(
+            harness.client(move || run_client(client_end, "test", ClientTextState::Enabled, &ready_sender));
+        await_ready(
+            &mut harness,
             &mut display,
             &mut event_loop,
             &mut compositor,
             &ready_receiver,
-            started,
         );
 
         let mut pad = SyntheticPad::default();
@@ -4216,8 +4270,14 @@ for line in sys.stdin:
         }
         route(&mut compositor, &mut pad).unwrap();
 
-        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
-        let app = client.join().unwrap();
+        await_finished(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &client,
+        );
+        let app = client.join();
         assert_eq!(app.keyboard_text, "s3ntinel");
         assert_eq!(
             app.keys.len(),
@@ -4228,6 +4288,10 @@ for line in sys.stdin:
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the client setup and the five-argument harness waits cannot shrink further"
+    )]
     fn text_input_enablement_allows_y_without_automatically_opening_the_keyboard() {
         for mode in ["open", "button", "off"] {
             for text_state in [
@@ -4250,12 +4314,17 @@ for line in sys.stdin:
                     .handle()
                     .insert_client(server_end, Arc::new(ClientState::default()))
                     .unwrap();
-                let (sender, receiver) = crate::harness::silent_channel();
-                let client = thread::spawn(move || {
-                    run_client_with_app_id(client_end, "test", "test", text_state, &sender)
-                });
-                let started = Instant::now();
-                dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+                let mut harness = crate::harness::Harness::new();
+                let (sender, receiver) = harness.channel();
+                let client = harness
+                    .client(move || run_client_with_app_id(client_end, "test", "test", text_state, &sender));
+                await_ready(
+                    &mut harness,
+                    &mut display,
+                    &mut event_loop,
+                    &mut compositor,
+                    &receiver,
+                );
                 let active = matches!(text_state, ClientTextState::Enabled);
                 assert!(!compositor.on_screen_keyboard().is_open());
                 let mut pad = SyntheticPad::default();
@@ -4275,8 +4344,14 @@ for line in sys.stdin:
                     }
                 }
                 route(&mut compositor, &mut pad).unwrap();
-                dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
-                let _app = client.join().unwrap();
+                await_finished(
+                    &mut harness,
+                    &mut display,
+                    &mut event_loop,
+                    &mut compositor,
+                    &client,
+                );
+                let _app = client.join();
             }
         }
     }
@@ -4325,11 +4400,17 @@ for line in sys.stdin:
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
         let client =
-            thread::spawn(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
-        let started = Instant::now();
-        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+            harness.client(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
+        await_ready(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &receiver,
+        );
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {
@@ -4355,8 +4436,14 @@ for line in sys.stdin:
             }
         }
         route(&mut compositor, &mut pad).unwrap();
-        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
-        let app = client.join().unwrap();
+        await_finished(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &client,
+        );
+        let app = client.join();
         assert_eq!(app.deletions, deletions);
         if let Some((text, cursor)) = contents {
             assert_eq!(app.text, "q");
@@ -4374,8 +4461,9 @@ for line in sys.stdin:
             .handle()
             .insert_client(server, Arc::new(ClientState::default()))
             .unwrap();
-        let (sender, receiver) = crate::harness::silent_channel();
-        let client = thread::spawn(move || {
+        let mut harness = crate::harness::Harness::new();
+        let (sender, receiver) = harness.channel();
+        let client = harness.client(move || {
             run_client_with_app_id(
                 client,
                 "test",
@@ -4384,8 +4472,13 @@ for line in sys.stdin:
                 &sender,
             )
         });
-        let started = Instant::now();
-        dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+        await_ready(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &receiver,
+        );
         let mut pad = SyntheticPad::default();
         for state in [ButtonState::Pressed, ButtonState::Released] {
             pad.push(Event::Button {
@@ -4403,8 +4496,14 @@ for line in sys.stdin:
             });
         }
         route(&mut compositor, &mut pad).unwrap();
-        dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
-        let app = client.join().unwrap();
+        await_finished(
+            &mut harness,
+            &mut display,
+            &mut event_loop,
+            &mut compositor,
+            &client,
+        );
+        let app = client.join();
         assert_eq!(app.commit_lengths, vec![3999, 202]);
         assert_eq!(app.text, format!(" {}", "é".repeat(2100)));
     }
@@ -4420,11 +4519,17 @@ for line in sys.stdin:
                 .handle()
                 .insert_client(server, Arc::new(ClientState::default()))
                 .unwrap();
-            let (sender, receiver) = crate::harness::silent_channel();
+            let mut harness = crate::harness::Harness::new();
+            let (sender, receiver) = harness.channel();
             let client =
-                thread::spawn(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
-            let started = Instant::now();
-            dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+                harness.client(move || run_client_with_app_id(client, "test", "test", text_state, &sender));
+            await_ready(
+                &mut harness,
+                &mut display,
+                &mut event_loop,
+                &mut compositor,
+                &receiver,
+            );
             let mut pad = SyntheticPad::default();
             for state in [ButtonState::Pressed, ButtonState::Released] {
                 pad.push(Event::Button {
@@ -4444,8 +4549,14 @@ for line in sys.stdin:
                 }
             }
             route(&mut compositor, &mut pad).unwrap();
-            dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
-            let app = client.join().unwrap();
+            await_finished(
+                &mut harness,
+                &mut display,
+                &mut event_loop,
+                &mut compositor,
+                &client,
+            );
+            let app = client.join();
             assert_eq!(app.deletions, vec![(0, 0)]);
             assert_eq!(app.text, "q");
             assert_eq!(app.surrounding, Some(("q world".into(), 1, 1)));
@@ -4471,12 +4582,18 @@ for line in sys.stdin:
                 .handle()
                 .insert_client(server, Arc::new(ClientState::default()))
                 .unwrap();
-            let (sender, receiver) = crate::harness::silent_channel();
-            let client = thread::spawn(move || {
+            let mut harness = crate::harness::Harness::new();
+            let (sender, receiver) = harness.channel();
+            let client = harness.client(move || {
                 run_client_with_app_id(client, "test", "test", ClientTextState::Purpose(purpose), &sender)
             });
-            let started = Instant::now();
-            dispatch_until_ready(&mut display, &mut event_loop, &mut compositor, &receiver, started);
+            await_ready(
+                &mut harness,
+                &mut display,
+                &mut event_loop,
+                &mut compositor,
+                &receiver,
+            );
             assert!(
                 compositor.on_screen_keyboard().rows()[2]
                     .iter()
@@ -4494,8 +4611,14 @@ for line in sys.stdin:
                 });
             }
             route(&mut compositor, &mut pad).unwrap();
-            dispatch_until_finished(&mut display, &mut event_loop, &mut compositor, &client, started);
-            let _app = client.join().unwrap();
+            await_finished(
+                &mut harness,
+                &mut display,
+                &mut event_loop,
+                &mut compositor,
+                &client,
+            );
+            let _app = client.join();
             let _disconnected = display.dispatch_clients(&mut compositor).unwrap();
             assert!(!compositor.on_screen_keyboard().password_field_active());
         }
