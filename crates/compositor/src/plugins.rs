@@ -164,9 +164,21 @@ impl Plugins {
         })
     }
 
-    /// The powerline status of the first focused plugin that set one.
+    /// The first initialized verb or focused application plugin's powerline status.
     pub(crate) fn status(&self) -> Option<String> {
-        self.focused_ready()
+        self.entries
+            .iter()
+            .filter(|entry| {
+                (entry.manifest.kind == PluginKind::Verb
+                    || self
+                        .focus
+                        .as_ref()
+                        .is_some_and(|app_id| entry.manifest.app_ids.contains(app_id)))
+                    && entry
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.borrow().status == Status::Ready)
+            })
             .find_map(|entry| entry.session.as_ref()?.borrow().status_text.clone())
     }
 

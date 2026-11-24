@@ -513,6 +513,7 @@ impl Session {
     pub(crate) fn notice(&mut self, method: Method, now: Instant) -> Vec<Delivery> {
         match method {
             Method::Actions { actions } => self.notice_actions(actions, now),
+            Method::Notice { text } => vec![Delivery::Notice(vec![Action::Notice { text }])],
             Method::PadOverrides { overrides } => vec![Delivery::PadOverrides(overrides)],
             Method::Status { text } => {
                 self.status_text = text;

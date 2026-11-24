@@ -222,11 +222,11 @@ hyphens:
 
 ```toml
 app_id = "*"
-invoke = ["usage", "chief-of-staff"]
+invoke = ["usage", "plugin-reply"]
 ```
 
 The words after the verb snap to the closest word in the focused and global
-contexts' lists, so "invoke chief of stuff" still types `/chief-of-staff `; with
+contexts' lists, so "invoke plugin replay" still types `/plugin-reply `; with
 no close word they are typed as heard, lowercased and joined by hyphens. The
 verb comes after Tehuti's own phrases and before plugin verbs and context
 phrases. It overrides every context phrase that starts with "invoke", fixed

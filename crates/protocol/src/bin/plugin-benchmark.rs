@@ -59,6 +59,7 @@ fn reference() -> Result<(), Error> {
             | Method::Actions { .. }
             | Method::SubmitActions { .. }
             | Method::PadOverrides { .. }
+            | Method::Notice { .. }
             | Method::Status { .. }
             | Method::PadInput { .. } => return Err("unexpected reference workload".into()),
         };
