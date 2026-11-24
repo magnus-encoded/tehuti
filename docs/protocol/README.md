@@ -655,7 +655,7 @@ them has focus. It declares no `verbs`. A verb plugin follows these rules:
 - It has `start` set to `always`.
 
 ```json
-{"kind":"verb","verbs":["ada"],"executable":"./chief.py","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]}
+{"kind":"verb","verbs":["ada"],"executable":"./plugin-reply.py","app_ids":[],"events":["speech"],"start":"always","permissions":["text"]}
 ```
 
 A plugin that needs both behaviours ships as two plugins.

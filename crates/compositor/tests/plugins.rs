@@ -954,8 +954,10 @@ for line in sys.stdin:
         configuration.app_ids.clear();
         configuration.events = vec![Subscription::Speech];
         configuration.permissions.clear();
-        let mut harness =
-            Harness::with_script(&configuration, include_str!("fixtures/plugins/chief-notice.py"));
+        let mut harness = Harness::with_script(
+            &configuration,
+            include_str!("fixtures/plugins/plugin-reply-notice.py"),
+        );
         harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1);
         settle(&mut harness);
         assert!(has_pending_chip(&harness));

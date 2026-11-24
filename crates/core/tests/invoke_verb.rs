@@ -90,9 +90,9 @@ mod invoke_verb {
 
     #[test]
     fn a_misheard_long_word_snaps_to_the_closest_known_word() {
-        let state = focused("app_id = 'editor'\ninvoke = ['usage', 'chief-of-staff']\n[buttons]");
-        let (state, snapped) = step(state, &speech("Invoke chief of stuff."));
-        assert_eq!(snapped, typed("/chief-of-staff "), "a near miss snaps");
+        let state = focused("app_id = 'editor'\ninvoke = ['usage', 'plugin-reply']\n[buttons]");
+        let (state, snapped) = step(state, &speech("Invoke plugin replay."));
+        assert_eq!(snapped, typed("/plugin-reply "), "a near miss snaps");
         let (_, exact) = step(state, &speech("invoke usage"));
         assert_eq!(exact, typed("/usage "), "an exact word types itself");
     }
