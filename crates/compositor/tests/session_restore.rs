@@ -561,17 +561,19 @@ mod tests {
     }
     fn terminal_session_file(count: usize, identity: &str) -> Saved {
         let windows: Vec<_> = (0..count)
-            .map(|column| serde_json::json!({
-                "app_id": "org.example.Terminal.desktop",
-                "workspace": 0,
-                "column": column,
-                "terminal": {
-                    "emulator": "foot",
-                    "target": "work",
-                    "socket": "restore-tests",
-                    "app_id": identity
-                }
-            }))
+            .map(|column| {
+                serde_json::json!({
+                    "app_id": "org.example.Terminal.desktop",
+                    "workspace": 0,
+                    "column": column,
+                    "terminal": {
+                        "emulator": "foot",
+                        "target": "work",
+                        "socket": "restore-tests",
+                        "app_id": identity
+                    }
+                })
+            })
             .collect();
         Saved::parse(&serde_json::json!({"version": 1, "windows": windows}).to_string())
             .expect("valid terminal identities")
