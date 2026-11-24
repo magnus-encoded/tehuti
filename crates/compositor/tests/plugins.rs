@@ -1077,10 +1077,8 @@ for line in sys.stdin:
         configuration.app_ids.clear();
         configuration.events = vec![Subscription::Speech];
         configuration.permissions.clear();
-        let mut harness = Harness::with_script(
-            &configuration,
-            include_str!("fixtures/plugins/reply-state.py"),
-        );
+        let mut harness =
+            Harness::with_script(&configuration, include_str!("fixtures/plugins/reply-state.py"));
         harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1);
         harness
     }
