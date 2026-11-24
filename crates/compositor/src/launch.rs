@@ -173,7 +173,7 @@ impl Spawner for SystemSpawner {
                     setting = OsString::from("--property=UnsetEnvironment=");
                     setting.push(key);
                 }
-                let _command = service.arg(setting);
+                let _setting = service.arg(setting);
             }
             let result = service
                 .arg("--")
