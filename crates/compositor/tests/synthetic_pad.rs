@@ -913,7 +913,7 @@ mod synthetic_pad {
         let mut display: Display<Compositor> = Display::new().unwrap();
         let mut compositor = Compositor::new(&display.handle()).unwrap();
         tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
-        let now = std::rc::Rc::new(core::cell::Cell::new(Instant::now()));
+        let now = std::rc::Rc::new(core::cell::Cell::new(std::time::Instant::now()));
         let clock = std::rc::Rc::clone(&now);
         compositor.set_clock(std::rc::Rc::new(move || clock.get()));
         compositor.set_launch_socket("restore-test".into());
