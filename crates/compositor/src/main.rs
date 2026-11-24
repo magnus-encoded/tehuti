@@ -435,7 +435,7 @@ fn start_session(
     )?;
     compositor.set_launch_socket(socket_name.clone());
     if driver.is_none() {
-        restore_session(&mut compositor);
+        restore_session(&mut compositor, &event_loop);
     }
     if driver.is_none()
         && let Err(error) = insert_controller_watch(&event_loop)
@@ -539,7 +539,8 @@ fn start_session(
     Ok(code)
 }
 
-fn restore_session(compositor: &mut tehuti::state::Compositor) {
+fn restore_session(compositor: &mut tehuti::state::Compositor, event_loop: &EventLoop<LoopData>) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     if !tehuti::session_restore::enabled() {
         return;
     }
@@ -547,7 +548,17 @@ fn restore_session(compositor: &mut tehuti::state::Compositor) {
         .map_err(|error| error.to_string())
         .and_then(|store| store.take().map_err(|error| error.to_string()));
     match taken {
-        Ok(Some(saved)) => compositor.begin_session_restore(&saved),
+        Ok(Some(saved)) => {
+            compositor.begin_session_restore(&saved);
+            let timer = Timer::from_duration(tehuti::session_restore::PLACEMENT_LIFETIME);
+            let armed = event_loop.handle().insert_source(timer, |_, (), data| {
+                data.compositor.advance_time();
+                TimeoutAction::Drop
+            });
+            if let Err(error) = armed {
+                warn!(%error, "session restore expiry timer unavailable");
+            }
+        }
         Ok(None) => {}
         Err(error) => warn!(%error, "session restore skipped"),
     }

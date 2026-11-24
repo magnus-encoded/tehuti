@@ -325,6 +325,30 @@ impl Session {
         }
     }
 
+    pub(crate) fn launch_restored(
+        &mut self,
+        window: &crate::session_restore::SavedWindow,
+        socket: Option<&std::ffi::OsStr>,
+        token: usize,
+    ) -> bool {
+        let result = socket
+            .ok_or_else(|| "no compositor socket".to_owned())
+            .and_then(|socket| window.launch(socket))
+            .and_then(|launch| {
+                self.children.start(
+                    &launch
+                        .labelled(&self.display_name(&window.app_id))
+                        .with_env(crate::session_restore::TOKEN_VARIABLE, token.to_string()),
+                    Instant::now(),
+                )
+            });
+        if let Err(error) = result {
+            tracing::warn!(%error, "restore launch failed");
+            return false;
+        }
+        true
+    }
+
     /// The name the launcher shows for a desktop entry id, else the id without its suffix.
     fn display_name(&self, entry: &str) -> String {
         use crate::destinations::Target;

@@ -4,6 +4,7 @@
 mod launch {
     use core::time::Duration;
     use proptest::prelude::*;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::time::Instant;
     use tehuti::launch::{Exit, Failure, FakeSpawner, Launch, Launches};
 
@@ -130,5 +131,82 @@ mod launch {
             Failure::summary(&failures).as_deref(),
             Some("2 apps closed right away: First, Second")
         );
+    }
+    #[test]
+    fn applications_outlive_the_restore_helper_process() {
+        const PROBE: &str = "TEHUTI_RESTORE_HELPER_PROBE";
+        if let Some(pid_file) = std::env::var_os(PROBE) {
+            run_restore_helper(std::path::Path::new(&pid_file));
+            return;
+        }
+        for mode in ["service", "missing", "failed"] {
+            let root = tempfile::tempdir().unwrap();
+            let scope = root.path().join("systemd-run");
+            if mode != "missing" {
+                let script = if mode == "failed" {
+                    "#!/bin/sh\nexit 1\n"
+                } else {
+                    "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\n\"$@\" &\n"
+                };
+                std::fs::write(&scope, script).unwrap();
+                std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let pid_file = root.path().join("child-pid");
+            let helper = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "launch::applications_outlive_the_restore_helper_process",
+                ])
+                .env(PROBE, &pid_file)
+                .env("PATH", root.path())
+                .status()
+                .unwrap();
+            let pid = restored_child_pid(&pid_file).to_string();
+            let alive = std::process::Command::new("/bin/kill")
+                .args(["-0", &pid])
+                .status()
+                .unwrap();
+            let _terminated = std::process::Command::new("/bin/kill")
+                .args(["-TERM", &pid])
+                .status()
+                .unwrap();
+            assert!(helper.success());
+            assert!(
+                alive.success(),
+                "application must outlive its restore helper process"
+            );
+        }
+    }
+
+    fn run_restore_helper(pid_file: &std::path::Path) {
+        let mut owner: Launches = Launches::default();
+        owner
+            .start(
+                &Launch::new("/bin/sh", "stub application")
+                    .arg("-c")
+                    .arg("echo \"$$\" >\"$TEHUTI_RESTORE_HELPER_PROBE\"; exec /bin/sleep 30")
+                    .with_env(tehuti::session_restore::TOKEN_VARIABLE, "0"),
+                Instant::now(),
+            )
+            .unwrap();
+        let pid = restored_child_pid(pid_file);
+        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+        while !std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.trim() == "sleep") {
+            assert!(Instant::now() < deadline, "stub application did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn restored_child_pid(path: &std::path::Path) -> u32 {
+        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && let Ok(pid) = text.trim().parse()
+            {
+                return pid;
+            }
+            assert!(Instant::now() < deadline, "restore helper child did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }

@@ -523,4 +523,140 @@ mod tests {
         let report = placements.report(start).expect("settled");
         assert_eq!((report.restored, report.failed.len()), (3, 0));
     }
+    #[test]
+    fn capture_resolves_window_app_ids_to_installed_desktop_entries() {
+        let (layout, names) = layout_with(&[(1, "org.example.Terminal")], &[]);
+        let saved = capture(&layout, &names, &["org.example.Terminal.desktop"]);
+        assert_eq!(saved.windows().len(), 1);
+        assert_eq!(saved.windows()[0].app_id, "org.example.Terminal.desktop");
+    }
+
+    #[test]
+    fn persistent_terminal_identity_survives_the_session_file() {
+        let text = r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}}]}"#;
+        let saved = Saved::parse(text).expect("terminal session");
+        let value: serde_json::Value = serde_json::from_str(&saved.to_text()).unwrap();
+        assert_eq!(value["windows"][0]["terminal"]["target"], "work");
+        assert_eq!(value["windows"][0]["terminal"]["socket"], "restore-tests");
+    }
+
+    #[test]
+    fn terminal_restore_rejects_commands_and_ambiguous_targets() {
+        for target in [
+            "",
+            "-other",
+            "work:1",
+            "work.1",
+            "work; command",
+            "#{session_name}",
+        ] {
+            let text = serde_json::json!({"version":1,"windows":[{
+                "app_id":"org.example.Terminal.desktop", "workspace":0, "column":0,
+                "terminal":{"emulator":"foot","target":target,"socket":null}
+            }]})
+            .to_string();
+            assert!(Saved::parse(&text).is_err(), "{target:?}");
+        }
+    }
+    #[test]
+    fn terminal_restore_only_attaches_and_receives_no_input() {
+        const PROBE: &str = "TEHUTI_TERMINAL_RESTORE_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            terminal_restore_probe();
+            return;
+        }
+        let display =
+            smithay::reexports::wayland_server::Display::<tehuti::state::Compositor>::new().unwrap();
+        let mut compositor = tehuti::state::Compositor::new(&display.handle()).unwrap();
+        compositor.set_launch_socket("restore-test".into());
+        let saved = Saved::parse(r#"{"version":1,"windows":[{"app_id":"org.example.Terminal.desktop","workspace":0,"column":0,"terminal":{"emulator":"foot","target":"work","socket":"restore-tests"}},{"app_id":"org.example.Terminal.desktop","workspace":0,"column":1,"terminal":{"emulator":"foot","target":null}},{"app_id":"foot.desktop","workspace":0,"column":2,"terminal":{"emulator":"foot","target":null}},{"app_id":"org.example.kitty.desktop","workspace":0,"column":3}]}"#).unwrap();
+        compositor.begin_session_restore(&saved);
+        compositor.begin_session_restore(&saved);
+        let trace = std::env::var_os("TEHUTI_TERMINAL_TRACE").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::fs::read_to_string(&trace).is_ok_and(|text| text.ends_with("eof\n"))
+                && std::fs::read_to_string(std::env::var_os("TEHUTI_APPLICATION_TRACE").unwrap())
+                    .is_ok_and(|text| text == "relaunch\n")
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "terminal did not attach");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    const FOOT_ATTACHMENT: [&str; 9] = [
+        "--app-id",
+        "org.example.Terminal.desktop",
+        "tmux",
+        "-L",
+        "restore-tests",
+        "attach-session",
+        "-t",
+        "=work",
+        "eof",
+    ];
+
+    fn terminal_restore_probe() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let applications = root.path().join("applications");
+        std::fs::create_dir(&applications).unwrap();
+        for entry in [
+            "org.example.Terminal.desktop",
+            "foot.desktop",
+            "org.example.kitty.desktop",
+        ] {
+            std::fs::write(
+                applications.join(entry),
+                "[Desktop Entry]\nType=Application\nName=Terminal stub\nExec=foot\n",
+            )
+            .unwrap();
+        }
+        let launcher = root.path().join("gtk-launch");
+        std::fs::write(
+            &launcher,
+            "#!/bin/sh\necho relaunch >>\"$TEHUTI_APPLICATION_TRACE\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let executable = root.path().join("foot");
+        std::fs::write(&executable,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >>\"$TEHUTI_TERMINAL_TRACE\"\nif read -r input; then echo input >>\"$TEHUTI_TERMINAL_TRACE\"; else echo eof >>\"$TEHUTI_TERMINAL_TRACE\"; fi\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let scope = root.path().join("systemd-run");
+        std::fs::write(&scope, "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$TEHUTI_SCOPE_TRACE\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\n\"$@\" &\n").unwrap();
+        std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let scope_trace = root.path().join("scope-trace");
+        let trace = root.path().join("trace");
+        let application_trace = root.path().join("application-trace");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::terminal_restore_only_attaches_and_receives_no_input",
+            ])
+            .env("TEHUTI_TERMINAL_RESTORE_PROBE", "1")
+            .env("XDG_DATA_HOME", root.path())
+            .env("XDG_DATA_DIRS", root.path())
+            .env("PATH", root.path())
+            .env("TEHUTI_TERMINAL_TRACE", &trace)
+            .env("TEHUTI_APPLICATION_TRACE", &application_trace)
+            .env("TEHUTI_SCOPE_TRACE", &scope_trace)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(application_trace).unwrap(), "relaunch\n");
+        let scope_args = std::fs::read_to_string(scope_trace).unwrap();
+        assert!(
+            scope_args
+                .starts_with("--user\n--collect\n--quiet\n--service-type=exec\n--expand-environment=no\n")
+        );
+        assert_eq!(
+            std::fs::read_to_string(trace)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            FOOT_ATTACHMENT
+        );
+    }
 }

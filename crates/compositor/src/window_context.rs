@@ -50,6 +50,21 @@ pub fn restore_token(surface: &WlSurface, display: &DisplayHandle) -> Option<usi
     crate::session_restore::token_from_reader(file)
 }
 
+pub(crate) fn terminal_session(
+    surface: &WlSurface,
+    display: &DisplayHandle,
+) -> Option<crate::session_restore::TerminalSession> {
+    use std::io::Read as _;
+    let process = pid(surface, display)?;
+    let file = std::fs::File::open(format!("/proc/{process}/cmdline")).ok()?;
+    let mut command = Vec::new();
+    let _bytes = file
+        .take(crate::session_restore::MAX_ENVIRON_BYTES)
+        .read_to_end(&mut command)
+        .ok()?;
+    crate::session_restore::TerminalSession::from_command(&command, app_id(surface)?)
+}
+
 fn pid(surface: &WlSurface, display: &DisplayHandle) -> Option<i32> {
     surface
         .client()?

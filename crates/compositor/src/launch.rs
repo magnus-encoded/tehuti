@@ -82,6 +82,12 @@ impl Launch {
         self.app_id.as_deref()
     }
 
+    fn restoring(&self) -> bool {
+        self.env
+            .iter()
+            .any(|(key, _)| key == crate::session_restore::TOKEN_VARIABLE)
+    }
+
     /// The command with the session environment and detached standard streams.
     #[must_use]
     pub fn command(&self) -> std::process::Command {
@@ -147,7 +153,49 @@ impl Spawner for SystemSpawner {
     type Process = Child;
 
     fn spawn(&mut self, launch: &Launch) -> io::Result<Child> {
-        launch.command().spawn()
+        let mut direct = launch.command();
+        if launch.restoring() {
+            let mut service = crate::child_process::command("systemd-run");
+            let _command = service.args([
+                "--user",
+                "--collect",
+                "--quiet",
+                "--service-type=exec",
+                "--expand-environment=no",
+            ]);
+            for (key, value) in direct.get_envs() {
+                let mut setting = OsString::from("--setenv=");
+                if let Some(value) = value {
+                    setting.push(key);
+                    setting.push("=");
+                    setting.push(value);
+                } else {
+                    setting = OsString::from("--property=UnsetEnvironment=");
+                    setting.push(key);
+                }
+                let _setting = service.arg(setting);
+            }
+            let result = service
+                .arg("--")
+                .arg(&launch.program)
+                .args(&launch.args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .and_then(|mut child| {
+                    if child.wait()?.success() {
+                        Ok(child)
+                    } else {
+                        Err(io::Error::other("systemd service startup failed"))
+                    }
+                });
+            match result {
+                Ok(child) => return Ok(child),
+                Err(error) => tracing::warn!(%error, "restore service unavailable; launching directly"),
+            }
+        }
+        direct.spawn()
     }
 }
 
@@ -194,9 +242,10 @@ struct Running<P> {
     label: String,
     app_id: Option<String>,
     started: Instant,
+    independent: bool,
 }
 
-/// Owns every launched child until it exits; dropping it terminates the rest.
+/// Monitors launched children; dropping it terminates ordinary launches and leaves restores running.
 #[derive(Debug)]
 pub struct Launches<S: Spawner = SystemSpawner> {
     spawner: S,
@@ -231,6 +280,7 @@ impl<S: Spawner> Launches<S> {
             label: launch.label.clone(),
             app_id: launch.app_id.clone(),
             started: now,
+            independent: launch.restoring(),
         });
         Ok(())
     }
@@ -273,7 +323,9 @@ impl<S: Spawner> Launches<S> {
 impl<S: Spawner> Drop for Launches<S> {
     fn drop(&mut self) {
         for child in &mut self.running {
-            child.process.terminate();
+            if !child.independent {
+                child.process.terminate();
+            }
         }
     }
 }
