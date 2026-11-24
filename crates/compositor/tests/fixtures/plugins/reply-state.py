@@ -19,6 +19,12 @@ for line in sys.stdin:
         command = message["params"]["text"]
         if command == "crash":
             sys.exit(1)
+        if command == "flood":
+            for _ in range(8192):
+                send(method="status", params=dict(text="Work pending"))
+        if command == "malformed_burst":
+            for _ in range(16):
+                send(method="status", params=dict(text="bad\nstatus"))
         if command == "set":
             send(method="status", params=dict(text="Work pending"))
         elif command == "clear":

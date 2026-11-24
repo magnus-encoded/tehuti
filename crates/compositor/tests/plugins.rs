@@ -1155,18 +1155,20 @@ for line in sys.stdin:
     }
 
     #[test]
-    fn a_crashed_verb_plugin_cannot_leave_a_pending_chip_after_restart() {
-        let mut harness = reply_state_harness();
-        reply_command(&mut harness, "set");
-        assert!(work_pending(&harness));
-        harness.send([speech("worker crash")]);
-        harness.pump_until(|harness| harness.compositor.initialized_plugins() == 0);
-        assert!(!work_pending(&harness));
-        harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1);
-        assert!(!work_pending(&harness));
-        reply_command(&mut harness, "notice");
-        assert_eq!(harness.compositor.visible_notice().unwrap().1, "Work complete");
-        assert!(!work_pending(&harness));
+    fn a_failed_verb_plugin_cannot_leave_a_pending_chip_after_restart() {
+        for failure in ["crash", "flood", "malformed_burst"] {
+            let mut harness = reply_state_harness();
+            reply_command(&mut harness, "set");
+            assert!(work_pending(&harness));
+            harness.send([speech(&format!("worker {failure}"))]);
+            harness.pump_until(|harness| harness.compositor.initialized_plugins() == 0);
+            assert!(!work_pending(&harness));
+            harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1);
+            assert!(!work_pending(&harness));
+            reply_command(&mut harness, "notice");
+            assert_eq!(harness.compositor.visible_notice().unwrap().1, "Work complete");
+            assert!(!work_pending(&harness));
+        }
     }
 
     fn verb_harness(verbs: &[&str], accept: bool) -> Harness {
