@@ -933,14 +933,34 @@ mod synthetic_pad {
         let mut sent = false;
         harness.serve_turns(&mut display, &mut compositor, |compositor| {
             if !sent && receiver.try_recv().is_ok() {
-                now.set(now.get() + Duration::from_secs(61));
                 let mode = std::env::var("TEHUTI_RESTORE_FOCUS_MODE").unwrap();
+                if mode == "pending" {
+                    let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+                    let writer = LogWriter(Arc::clone(&logs));
+                    let subscriber = tracing_subscriber::fmt()
+                        .with_ansi(false)
+                        .with_max_level(tracing::Level::TRACE)
+                        .with_writer(move || writer.clone())
+                        .finish();
+                    tracing::subscriber::with_default(subscriber, || {
+                        for _ in 0..3 {
+                            compositor.advance_time();
+                        }
+                    });
+                    let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+                    assert!(
+                        !output.contains("Focus unchanged"),
+                        "pending ticks repeated focus synchronization: {output}"
+                    );
+                } else {
+                    now.set(now.get().checked_add(Duration::from_secs(61)).unwrap());
+                }
                 if matches!(mode.as_str(), "capture" | "unavailable") {
                     assert_captured_terminals(compositor);
                 }
                 if mode == "timer" {
                     compositor.advance_time();
-                } else if !matches!(mode.as_str(), "capture" | "unavailable") {
+                } else if !matches!(mode.as_str(), "capture" | "unavailable" | "pending") {
                     compositor.handle(&Event::Tick {
                         elapsed: Duration::ZERO,
                     });
@@ -990,7 +1010,7 @@ mod synthetic_pad {
         .unwrap();
         std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut failures = Vec::new();
-        for mode in ["capture", "unavailable", "input", "timer"] {
+        for mode in ["capture", "unavailable", "pending", "input", "timer"] {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .arg0("foot")
                 .args([

@@ -4,6 +4,7 @@
 mod launch {
     use core::time::Duration;
     use proptest::prelude::*;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::time::Instant;
     use tehuti::launch::{Exit, Failure, FakeSpawner, Launch, Launches};
 
@@ -138,7 +139,6 @@ mod launch {
             run_restore_helper(std::path::Path::new(&pid_file));
             return;
         }
-        use std::os::unix::fs::PermissionsExt as _;
         let root = tempfile::tempdir().unwrap();
         let scope = root.path().join("systemd-run");
         std::fs::write(
@@ -185,7 +185,7 @@ mod launch {
             )
             .unwrap();
         let pid = restored_child_pid(pid_file);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
         while !std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.trim() == "sleep") {
             assert!(Instant::now() < deadline, "stub application did not start");
             std::thread::sleep(Duration::from_millis(10));
@@ -193,7 +193,7 @@ mod launch {
     }
 
     fn restored_child_pid(path: &std::path::Path) -> u32 {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
         loop {
             if let Ok(text) = std::fs::read_to_string(path)
                 && let Ok(pid) = text.trim().parse()
