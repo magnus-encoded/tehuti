@@ -1163,6 +1163,23 @@ mod synthetic_pad {
     }
 
     impl ApplicationPad {
+        fn mirror_button(
+            &self,
+            compositor: &mut Compositor,
+            pad: &mut tehuti::controller::EvdevPad<Self>,
+            key: evdev::KeyCode,
+            value: i32,
+        ) {
+            use evdev::{EventType, InputEvent, SynchronizationCode};
+            self.pending.borrow_mut().extend([
+                InputEvent::new(EventType::KEY.0, key.code(), value),
+                InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
+            ]);
+            pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
+                .unwrap();
+            route(compositor, pad).unwrap();
+        }
+
         fn north(&self) -> Vec<i32> {
             self.delivered
                 .borrow()
@@ -1220,7 +1237,7 @@ mod synthetic_pad {
 
     #[test]
     fn synthetic_pad_mirror_hides_guide_chord_start_and_only_winning_talk() {
-        use evdev::{EventType, InputEvent, KeyCode, SynchronizationCode};
+        use evdev::{EventType, KeyCode};
         use tehuti::controller::{DpadHat, EvdevPad};
 
         for guide in ["tehuti", "both", "app"] {
@@ -1253,13 +1270,7 @@ mod synthetic_pad {
                     (KeyCode::BTN_MODE, 0),
                     (KeyCode::BTN_START, 0),
                 ] {
-                    application.pending.borrow_mut().extend([
-                        InputEvent::new(EventType::KEY.0, key.code(), value),
-                        InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
-                    ]);
-                    pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
-                        .unwrap();
-                    route(&mut compositor, &mut pad).unwrap();
+                    application.mirror_button(&mut compositor, &mut pad, key, value);
                 }
                 if menu_open {
                     synthetic.push(Event::Button {
@@ -1272,13 +1283,7 @@ mod synthetic_pad {
                     route(&mut compositor, &mut synthetic).unwrap();
                 }
                 for value in [1, 0] {
-                    application.pending.borrow_mut().extend([
-                        InputEvent::new(EventType::KEY.0, KeyCode::KEY_RECORD.code(), value),
-                        InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0),
-                    ]);
-                    pad.pump_mirror(&mut |button, state| compositor.virtual_pad_button(button, state))
-                        .unwrap();
-                    route(&mut compositor, &mut pad).unwrap();
+                    application.mirror_button(&mut compositor, &mut pad, KeyCode::KEY_RECORD, value);
                 }
                 let keys: Vec<_> = application
                     .delivered
