@@ -1240,67 +1240,68 @@ mod synthetic_pad {
         use evdev::{EventType, KeyCode};
         use tehuti::controller::{DpadHat, EvdevPad};
 
-        for guide in ["tehuti", "both", "app"] {
-            for menu_open in [false, true] {
-                if menu_open && guide == "app" {
-                    continue;
-                }
-                let display: Display<Compositor> = Display::new().unwrap();
-                let mut compositor = instant_compositor(&display);
-                compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!(
+        for (guide, menu_open) in [
+            ("tehuti", false),
+            ("both", false),
+            ("app", false),
+            ("tehuti", true),
+            ("both", true),
+        ] {
+            let display: Display<Compositor> = Display::new().unwrap();
+            let mut compositor = instant_compositor(&display);
+            compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!(
                     "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = 'record'"
                 )).unwrap()]);
-                let mut synthetic = SyntheticPad::default();
-                synthetic.push(Event::Focus {
-                    app_id: Some("org.example.Pad".into()),
-                    title: String::new(),
+            let mut synthetic = SyntheticPad::default();
+            synthetic.push(Event::Focus {
+                app_id: Some("org.example.Pad".into()),
+                title: String::new(),
+            });
+            route(&mut compositor, &mut synthetic).unwrap();
+            let application = ApplicationPad::default();
+            let mut pad = EvdevPad::new(application.clone(), application.clone(), DpadHat::default());
+            assert!(
+                pad.set_mirror(compositor.virtual_pad(), &|button| {
+                    compositor.virtual_pad_consumed(button)
+                })
+                .unwrap()
+            );
+            for (key, value) in [
+                (KeyCode::BTN_MODE, 1),
+                (KeyCode::BTN_START, 1),
+                (KeyCode::BTN_MODE, 0),
+                (KeyCode::BTN_START, 0),
+            ] {
+                application.mirror_button(&mut compositor, &mut pad, key, value);
+            }
+            if menu_open {
+                synthetic.push(Event::Button {
+                    name: ButtonName::Guide,
+                    state: ButtonState::Pressed,
+                });
+                synthetic.push(Event::Tick {
+                    elapsed: Duration::from_millis(500),
                 });
                 route(&mut compositor, &mut synthetic).unwrap();
-                let application = ApplicationPad::default();
-                let mut pad = EvdevPad::new(application.clone(), application.clone(), DpadHat::default());
-                assert!(
-                    pad.set_mirror(compositor.virtual_pad(), &|button| {
-                        compositor.virtual_pad_consumed(button)
-                    })
-                    .unwrap()
-                );
-                for (key, value) in [
-                    (KeyCode::BTN_MODE, 1),
-                    (KeyCode::BTN_START, 1),
-                    (KeyCode::BTN_MODE, 0),
-                    (KeyCode::BTN_START, 0),
-                ] {
-                    application.mirror_button(&mut compositor, &mut pad, key, value);
-                }
-                if menu_open {
-                    synthetic.push(Event::Button {
-                        name: ButtonName::Guide,
-                        state: ButtonState::Pressed,
-                    });
-                    synthetic.push(Event::Tick {
-                        elapsed: Duration::from_millis(500),
-                    });
-                    route(&mut compositor, &mut synthetic).unwrap();
-                }
-                for value in [1, 0] {
-                    application.mirror_button(&mut compositor, &mut pad, KeyCode::KEY_RECORD, value);
-                }
-                let keys: Vec<_> = application
-                    .delivered
-                    .borrow()
-                    .iter()
-                    .filter(|event| event.event_type() == EventType::KEY)
-                    .map(|event| (event.code(), event.value()))
-                    .collect();
-                let mut expected = Vec::new();
-                if guide != "tehuti" {
-                    expected.extend([(KeyCode::BTN_MODE.code(), 1), (KeyCode::BTN_MODE.code(), 0)]);
-                }
-                if menu_open {
-                    expected.extend([(KeyCode::KEY_RECORD.code(), 1), (KeyCode::KEY_RECORD.code(), 0)]);
-                }
-                assert_eq!(keys, expected, "guide={guide}, menu_open={menu_open}");
             }
+            for value in [1, 0] {
+                application.mirror_button(&mut compositor, &mut pad, KeyCode::KEY_RECORD, value);
+            }
+            let keys: Vec<_> = application
+                .delivered
+                .borrow()
+                .iter()
+                .filter(|event| event.event_type() == EventType::KEY)
+                .map(|event| (event.code(), event.value()))
+                .collect();
+            let mut expected = Vec::new();
+            if guide != "tehuti" {
+                expected.extend([(KeyCode::BTN_MODE.code(), 1), (KeyCode::BTN_MODE.code(), 0)]);
+            }
+            if menu_open {
+                expected.extend([(KeyCode::KEY_RECORD.code(), 1), (KeyCode::KEY_RECORD.code(), 0)]);
+            }
+            assert_eq!(keys, expected, "guide={guide}, menu_open={menu_open}");
         }
     }
 
