@@ -935,23 +935,7 @@ mod synthetic_pad {
             if !sent && receiver.try_recv().is_ok() {
                 let mode = std::env::var("TEHUTI_RESTORE_FOCUS_MODE").unwrap();
                 if mode == "pending" {
-                    let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
-                    let writer = LogWriter(Arc::clone(&logs));
-                    let subscriber = tracing_subscriber::fmt()
-                        .with_ansi(false)
-                        .with_max_level(tracing::Level::TRACE)
-                        .with_writer(move || writer.clone())
-                        .finish();
-                    tracing::subscriber::with_default(subscriber, || {
-                        for _ in 0..3 {
-                            compositor.advance_time();
-                        }
-                    });
-                    let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
-                    assert!(
-                        !output.contains("Focus unchanged"),
-                        "pending ticks repeated focus synchronization: {output}"
-                    );
+                    assert_pending_ticks_leave_focus_alone(compositor);
                 } else {
                     now.set(now.get().checked_add(Duration::from_secs(61)).unwrap());
                 }
@@ -971,6 +955,26 @@ mod synthetic_pad {
             client.has_ended()
         });
         client.join();
+    }
+
+    fn assert_pending_ticks_leave_focus_alone(compositor: &mut Compositor) {
+        let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = LogWriter(Arc::clone(&logs));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            for _ in 0..3 {
+                compositor.advance_time();
+            }
+        });
+        let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(
+            !output.contains("Focus unchanged"),
+            "pending ticks repeated focus synchronization: {output}"
+        );
     }
 
     fn assert_captured_terminals(compositor: &Compositor) {
